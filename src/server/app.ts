@@ -1,0 +1,406 @@
+import express, { type NextFunction, type Request, type Response } from 'express';
+import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import multer from 'multer';
+import pino from 'pino';
+import { pinoHttp } from 'pino-http';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import { toNodeHandler } from 'better-auth/node';
+import type { Db } from './db.js';
+import { DEMO_USER_ID, DEMO_WORKSPACE_ID, id, resetDemoData } from './db.js';
+import { runRecommendationEngine } from './recommendation-engine.js';
+import { listAutomationRules, listConnections, listRecommendations } from './serializers.js';
+import { approveAction, executeAction, prepareAction } from './action-service.js';
+import { runAutomationCycle } from './automation-service.js';
+import { auth as betterAuth, resolveBetterAuthIdentity } from './auth-service.js';
+import { importCommercialDocument } from './document-service.js';
+import {
+  createNangoConnectSession,
+  disconnectIntegration,
+  handleNangoWebhook,
+  importMarketplaceCsv,
+  ingestCanonicalRecord,
+  listAvailableIntegrations,
+  processStripeWebhook,
+  recordOutcome,
+  triggerConnectionSync
+} from './integration-service.js';
+
+const SESSION_COOKIE = 'trevra_session';
+const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
+const documentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 10 },
+  fileFilter: (_req, file, callback) => {
+    const extension = file.originalname.toLowerCase().split('.').pop();
+    const allowed = new Set(['pdf', 'docx', 'txt', 'md', 'rtf']);
+    if (!allowed.has(extension ?? '')) return callback(new Error('Unsupported document type'));
+    callback(null, true);
+  }
+});
+
+type AuthedRequest = Request & { auth?: { userId: string; workspaceId: string; email: string } };
+
+export function createApp(db: Db) {
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+  app.use(helmet({ contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false }));
+  app.use(pinoHttp({
+    logger: pino({ level: process.env.NODE_ENV === 'test' ? 'silent' : (process.env.LOG_LEVEL ?? 'info') }),
+    genReqId: (req, res) => {
+      const requestId = String(req.headers['x-request-id'] ?? randomUUID());
+      res.setHeader('x-request-id', requestId);
+      return requestId;
+    },
+    redact: {
+      paths: ['req.headers.authorization', 'req.headers.cookie', 'res.headers.set-cookie', 'req.body.password', 'req.body.csv'],
+      censor: '[REDACTED]'
+    },
+    customLogLevel: (_req, res, error) => error || res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info'
+  }));
+  app.use(cookieParser());
+
+  app.post('/api/webhooks/nango', express.raw({ type: 'application/json', limit: '2mb' }), async (req, res) => {
+    try {
+      const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body ?? '');
+      const result = await handleNangoWebhook(db, raw, req.headers as Record<string, unknown>);
+      res.status(result.duplicate ? 200 : 202).json(result);
+    } catch (error) {
+      res.status(401).json({ error: error instanceof Error ? error.message : 'Invalid Nango webhook' });
+    }
+  });
+
+  app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '2mb' }), (req, res) => {
+    try {
+      const signature = req.header('stripe-signature');
+      if (!signature) return res.status(400).json({ error: 'Missing Stripe signature' });
+      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body ?? ''));
+      const result = processStripeWebhook(db, body, signature);
+      res.status(result.duplicate ? 200 : 202).json(result);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid Stripe webhook' });
+    }
+  });
+
+  app.get('/api/health', (_req, res) => res.json({
+    ok: true,
+    service: 'trevra-api',
+    integrations: Boolean(process.env.NANGO_API_KEY),
+    stripeWebhooks: Boolean(process.env.STRIPE_WEBHOOK_SECRET)
+  }));
+
+  app.get('/api/public-config', (_req, res) => res.json({
+    googleAuthEnabled: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
+    modelExtractionEnabled: Boolean(process.env.OPENAI_API_KEY)
+  }));
+
+  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+  app.post('/api/auth/demo', authLimiter, (_req, res) => {
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEMO_AUTH !== 'true') {
+      return res.status(404).json({ error: 'Demo authentication is disabled' });
+    }
+    const token = createSession(db, DEMO_USER_ID);
+    setSessionCookie(res, token);
+    res.json({
+      user: { id: DEMO_USER_ID, name: 'Alex Morgan', email: 'alex@northstar.studio' },
+      workspace: { id: DEMO_WORKSPACE_ID, name: 'Northstar Studio' }
+    });
+  });
+
+  app.post('/api/auth/demo/logout', (_req, res) => {
+    res.clearCookie(SESSION_COOKIE, { path: '/' });
+    res.json({ ok: true });
+  });
+
+  app.get('/api/auth/session', async (req: AuthedRequest, res) => {
+    const identity = await readSession(db, req);
+    if (!identity) return res.status(401).json({ error: 'Authentication required' });
+    res.json({ auth: identity });
+  });
+
+  app.all('/api/auth/*splat', toNodeHandler(betterAuth));
+
+  app.use(express.json({ limit: '6mb' }));
+  app.use(enforceAllowedOrigin);
+  app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false }));
+  app.use('/api', requireSession(db));
+
+  app.get('/api/dashboard', async (req: AuthedRequest, res, next) => {
+    try {
+      const workspaceId = req.auth!.workspaceId;
+      runRecommendationEngine(db, workspaceId);
+      await runAutomationCycle(db, workspaceId);
+      const recommendations = listRecommendations(db, workspaceId);
+      const clients = db.prepare(`
+        SELECT c.*,
+          (SELECT recommended_action FROM recommendations r WHERE r.client_id=c.id AND r.status IN ('ready','approved') ORDER BY priority_score DESC LIMIT 1) AS next_action
+        FROM clients c WHERE c.workspace_id=? ORDER BY c.last_interaction_at DESC
+      `).all(workspaceId) as Array<Record<string, unknown>>;
+      const overdue = db.prepare("SELECT COUNT(*) AS count FROM invoices WHERE workspace_id=? AND paid_at IS NULL AND due_at < datetime('now')").get(workspaceId) as { count: number };
+      const outcomes = db.prepare(`
+        SELECT ro.outcome_type, COALESCE(SUM(ro.amount),0) AS total
+        FROM recommendation_outcomes ro JOIN recommendations r ON r.id=ro.recommendation_id
+        WHERE r.workspace_id=? GROUP BY ro.outcome_type
+      `).all(workspaceId) as Array<{ outcome_type: string; total: number }>;
+      const outcomeMap = new Map(outcomes.map((item) => [item.outcome_type, Number(item.total)]));
+      const connections = listConnections(db, workspaceId);
+
+      res.json({
+        workspace: db.prepare('SELECT id,name FROM workspaces WHERE id=?').get(workspaceId),
+        metrics: {
+          revenueAtRisk: recommendations.reduce((sum, item) => sum + item.estimatedAmount, 0),
+          revenueProtected: outcomeMap.get('revenue_protected') ?? 0,
+          revenueCollected: outcomeMap.get('revenue_collected') ?? 0,
+          readyToInvoice: recommendations.filter((item) => item.type === 'unbilled_milestone').reduce((sum, item) => sum + item.estimatedAmount, 0),
+          openRecommendations: recommendations.length,
+          overdueInvoices: overdue.count,
+          activeClients: clients.filter((client) => client.status === 'active').length,
+          connectedSources: connections.filter((connection) => connection.status === 'connected' && !connection.isDemo).length,
+          currency: String((db.prepare('SELECT currency FROM workspace_settings WHERE workspace_id=?').get(workspaceId) as { currency?: string } | undefined)?.currency ?? 'EUR')
+        },
+        recommendations,
+        connections,
+        availableIntegrations: listAvailableIntegrations(db, workspaceId),
+        automationRules: listAutomationRules(db, workspaceId),
+        clients: clients.map((client) => ({
+          id: String(client.id), name: String(client.name), contactName: String(client.contact_name), email: String(client.email),
+          status: String(client.status), activeValue: Number(client.active_value), currency: String(client.currency),
+          lastInteractionAt: String(client.last_interaction_at), nextAction: client.next_action ? String(client.next_action) : null
+        }))
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/recommendations', (req: AuthedRequest, res) => {
+    runRecommendationEngine(db, req.auth!.workspaceId);
+    res.json({ recommendations: listRecommendations(db, req.auth!.workspaceId) });
+  });
+
+  app.post('/api/recommendations/:id/snooze', (req: AuthedRequest, res) => {
+    const recommendationId = String(req.params.id);
+    const body = z.object({ days: z.number().int().min(1).max(30).default(3) }).parse(req.body);
+    const until = new Date(Date.now() + body.days * 86400000).toISOString();
+    const result = db.prepare("UPDATE recommendations SET status='snoozed',snoozed_until=?,updated_at=? WHERE id=? AND workspace_id=?")
+      .run(until, new Date().toISOString(), recommendationId, req.auth!.workspaceId);
+    if (result.changes === 0) return res.status(404).json({ error: 'Recommendation not found' });
+    res.json({ ok: true, snoozedUntil: until });
+  });
+
+  app.post('/api/recommendations/:id/dismiss', (req: AuthedRequest, res) => {
+    const recommendationId = String(req.params.id);
+    const input = z.object({ reason: z.string().max(500).optional() }).parse(req.body ?? {});
+    const recommendation = db.prepare('SELECT * FROM recommendations WHERE id=? AND workspace_id=?').get(recommendationId, req.auth!.workspaceId) as Record<string, unknown> | undefined;
+    if (!recommendation) return res.status(404).json({ error: 'Recommendation not found' });
+    db.prepare("UPDATE recommendations SET status='dismissed',updated_at=? WHERE id=?").run(new Date().toISOString(), recommendationId);
+    recordOutcome(db, recommendationId, 'dismissed', 0, String(recommendation.currency), { reason: input.reason ?? null });
+    res.json({ ok: true });
+  });
+
+  app.post('/api/recommendations/:id/prepare', (req: AuthedRequest, res) => {
+    try { res.status(201).json({ action: prepareAction(db, req.auth!.workspaceId, String(req.params.id)) }); }
+    catch (error) { res.status(404).json({ error: error instanceof Error ? error.message : 'Unable to prepare action' }); }
+  });
+
+  app.post('/api/actions/:id/approve', (req: AuthedRequest, res) => {
+    const input = z.object({
+      recipient: z.string().email(), subject: z.string().min(1).max(200), body: z.string().min(1).max(20000),
+      scheduledFor: z.string().datetime().nullable().optional()
+    }).parse(req.body);
+    try { res.json({ action: approveAction(db, req.auth!.workspaceId, req.auth!.userId, String(req.params.id), input) }); }
+    catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to approve action' }); }
+  });
+
+  app.post('/api/actions/:id/execute', async (req: AuthedRequest, res) => {
+    try { res.json({ action: await executeAction(db, req.auth!.workspaceId, String(req.params.id)) }); }
+    catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to execute action' }); }
+  });
+
+  app.get('/api/integrations', (req: AuthedRequest, res) => {
+    res.json({
+      connections: listConnections(db, req.auth!.workspaceId),
+      available: listAvailableIntegrations(db, req.auth!.workspaceId),
+      configured: Boolean(process.env.NANGO_API_KEY)
+    });
+  });
+
+  app.post('/api/integrations/connect-session', async (req: AuthedRequest, res) => {
+    const input = z.object({ allowedIntegrations: z.array(z.string()).max(12).default([]) }).parse(req.body ?? {});
+    try {
+      const session = await createNangoConnectSession({
+        workspaceId: req.auth!.workspaceId, userId: req.auth!.userId, userEmail: req.auth!.email,
+        allowedIntegrations: input.allowedIntegrations
+      });
+      res.status(201).json({ session });
+    } catch (error) {
+      res.status(503).json({ error: error instanceof Error ? error.message : 'Unable to start connection' });
+    }
+  });
+
+  app.post('/api/integrations/:id/sync', async (req: AuthedRequest, res) => {
+    try {
+      await triggerConnectionSync(db, req.auth!.workspaceId, String(req.params.id));
+      res.status(202).json({ accepted: true });
+    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to sync connection' }); }
+  });
+
+  app.delete('/api/integrations/:id', async (req: AuthedRequest, res) => {
+    try {
+      await disconnectIntegration(db, req.auth!.workspaceId, String(req.params.id));
+      res.json({ ok: true });
+    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to disconnect' }); }
+  });
+
+  app.post('/api/imports/marketplace', (req: AuthedRequest, res) => {
+    const input = z.object({ provider: z.enum(['upwork', 'fiverr', 'contra', 'generic']), csv: z.string().min(1).max(5_000_000) }).parse(req.body);
+    const result = importMarketplaceCsv(db, req.auth!.workspaceId, input.provider, input.csv);
+    runRecommendationEngine(db, req.auth!.workspaceId);
+    res.status(201).json(result);
+  });
+
+  app.post('/api/imports/document', documentUpload.single('file'), async (req: AuthedRequest, res) => {
+    if (!req.file) return res.status(400).json({ error: 'A PDF, DOCX, or text document is required' });
+    const hints = z.object({
+      clientName: z.string().max(200).optional(),
+      contactName: z.string().max(200).optional(),
+      clientEmail: z.string().email().optional().or(z.literal('')),
+      projectName: z.string().max(300).optional(),
+      currency: z.string().length(3).optional()
+    }).parse(req.body);
+    try {
+      const result = await importCommercialDocument(db, req.auth!.workspaceId, req.file, {
+        ...hints,
+        clientEmail: hints.clientEmail || undefined
+      });
+      runRecommendationEngine(db, req.auth!.workspaceId);
+      res.status(201).json(result);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to import document' });
+    }
+  });
+
+  app.get('/api/automation/rules', (req: AuthedRequest, res) => res.json({ rules: listAutomationRules(db, req.auth!.workspaceId) }));
+
+  app.put('/api/automation/rules/:type', (req: AuthedRequest, res) => {
+    const recommendationType = z.enum(['stale_proposal', 'scope_creep', 'unbilled_milestone', 'overdue_invoice']).parse(String(req.params.type));
+    const input = z.object({
+      mode: z.enum(['suggest', 'prepare', 'execute']), minConfidence: z.number().min(0.5).max(1),
+      maxAmount: z.number().nonnegative().max(10_000_000), delayMinutes: z.number().int().min(0).max(43_200), enabled: z.boolean()
+    }).parse(req.body);
+    if (recommendationType === 'scope_creep' && input.mode === 'execute') return res.status(400).json({ error: 'Scope changes always require manual approval' });
+    const now = new Date().toISOString();
+    const existing = db.prepare('SELECT id FROM automation_rules WHERE workspace_id=? AND recommendation_type=?').get(req.auth!.workspaceId, recommendationType) as { id: string } | undefined;
+    db.prepare(`
+      INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,max_amount,delay_minutes,enabled,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(workspace_id,recommendation_type) DO UPDATE SET
+        mode=excluded.mode,min_confidence=excluded.min_confidence,max_amount=excluded.max_amount,
+        delay_minutes=excluded.delay_minutes,enabled=excluded.enabled,updated_at=excluded.updated_at
+    `).run(existing?.id ?? id('rule'), req.auth!.workspaceId, recommendationType, input.mode, input.minConfidence, input.maxAmount, input.delayMinutes, input.enabled ? 1 : 0, now, now);
+    res.json({ rules: listAutomationRules(db, req.auth!.workspaceId) });
+  });
+
+  app.post('/api/automation/run', async (req: AuthedRequest, res) => {
+    res.json(await runAutomationCycle(db, req.auth!.workspaceId));
+  });
+
+  app.get('/api/clients/:id', (req: AuthedRequest, res) => {
+    const clientId = String(req.params.id);
+    const workspaceId = req.auth!.workspaceId;
+    const client = db.prepare('SELECT * FROM clients WHERE id=? AND workspace_id=?').get(clientId, workspaceId);
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+    const messages = db.prepare('SELECT id,direction,subject,body,occurred_at,source_record_id FROM messages WHERE client_id=? ORDER BY occurred_at DESC').all(clientId);
+    const invoices = db.prepare('SELECT id,external_ref,amount,currency,status,issued_at,due_at,paid_at FROM invoices WHERE client_id=? ORDER BY issued_at DESC').all(clientId);
+    const projects = db.prepare('SELECT id,name,status,total_value,currency FROM projects WHERE client_id=? ORDER BY created_at DESC').all(clientId);
+    const commitments = db.prepare('SELECT * FROM commitments WHERE client_id=? ORDER BY due_at').all(clientId);
+    const contracts = db.prepare('SELECT * FROM contracts WHERE client_id=? ORDER BY created_at DESC').all(clientId);
+    const outcomes = db.prepare(`
+      SELECT ro.* FROM recommendation_outcomes ro JOIN recommendations r ON r.id=ro.recommendation_id
+      WHERE r.client_id=? ORDER BY ro.created_at DESC
+    `).all(clientId);
+    res.json({ client, messages, invoices, projects, commitments, contracts, outcomes });
+  });
+
+  app.post('/api/events', (req: AuthedRequest, res) => {
+    const ingestKey = req.header('x-trevra-ingest-key');
+    if (!process.env.INGEST_API_KEY || ingestKey !== process.env.INGEST_API_KEY) return res.status(401).json({ error: 'Invalid ingest key' });
+    const event = z.object({ provider: z.string().default('custom'), record: z.record(z.unknown()) }).parse(req.body);
+    ingestCanonicalRecord(db, req.auth!.workspaceId, event.provider, null, event.record as never);
+    const count = runRecommendationEngine(db, req.auth!.workspaceId);
+    res.status(202).json({ accepted: true, recommendationsEvaluated: count });
+  });
+
+  app.post('/api/demo/reset', (req: AuthedRequest, res) => {
+    if (req.auth!.workspaceId !== DEMO_WORKSPACE_ID) return res.status(403).json({ error: 'Only the demo workspace can be reset' });
+    resetDemoData(db);
+    res.clearCookie(SESSION_COOKIE);
+    res.json({ ok: true });
+  });
+
+  app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', issues: error.issues });
+    if (error instanceof multer.MulterError) return res.status(400).json({ error: error.message });
+    req.log.error({ err: error }, 'Unhandled request error');
+    res.status(500).json({ error: 'Internal server error', requestId: req.id });
+  });
+
+  return app;
+}
+
+function requireSession(db: Db) {
+  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    try {
+      const identity = await readSession(db, req);
+      if (!identity) return res.status(401).json({ error: 'Session expired' });
+      req.auth = identity;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+async function readSession(db: Db, req: Request): Promise<{ userId: string; workspaceId: string; email: string } | null> {
+  const token = req.cookies?.[SESSION_COOKIE] as string | undefined;
+  if (token) {
+    const session = db.prepare(`
+      SELECT s.user_id, u.workspace_id, u.email FROM sessions s JOIN users u ON u.id=s.user_id
+      WHERE s.token_hash=? AND s.expires_at > ?
+    `).get(hash(token), new Date().toISOString()) as { user_id: string; workspace_id: string; email: string } | undefined;
+    if (session) return { userId: session.user_id, workspaceId: session.workspace_id, email: session.email };
+  }
+  return resolveBetterAuthIdentity(db, req.headers);
+}
+
+function createSession(db: Db, userId: string): string {
+  const token = randomBytes(32).toString('hex');
+  const now = new Date();
+  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now.toISOString());
+  db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)')
+    .run(hash(token), userId, new Date(now.getTime() + SESSION_TTL).toISOString(), now.toISOString());
+  return token;
+}
+
+function setSessionCookie(res: Response, token: string): void {
+  res.cookie(SESSION_COOKIE, token, {
+    httpOnly: true, sameSite: 'lax', secure: process.env.COOKIE_SECURE === 'true', maxAge: SESSION_TTL, path: '/'
+  });
+}
+
+function enforceAllowedOrigin(req: Request, res: Response, next: NextFunction) {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  const origin = req.header('origin');
+  if (!origin) return next();
+  const allowed = new Set([
+    ...(process.env.APP_ORIGIN ?? 'http://localhost:5173').split(',').map((item) => item.trim()),
+    'http://localhost:5173', 'http://localhost:8787'
+  ]);
+  if (!allowed.has(origin)) return res.status(403).json({ error: 'Origin not allowed' });
+  next();
+}
+
+function hash(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
