@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: trevra
       POSTGRES_PASSWORD: ${TREVRA_DB_PASSWORD:-trevra-local-password}
     ports:
-      - "${TREVRA_DB_PORT:-5432}:5432"
+      - "${TREVRA_DB_PORT:-45432}:5432"
     volumes:
       - trevra-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -25,24 +25,27 @@ services:
     environment:
       NODE_ENV: development
       PORT: 8787
+      # Internal container ports; host mappings below use the collision-resistant values.
+      TREVRA_WEB_PORT: 5173
+      TREVRA_API_PORT: 8787
       DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:-trevra-local-password}@postgres:5432/trevra
       DATABASE_POOL_MAX: 10
-      APP_ORIGIN: http://localhost:${TREVRA_WEB_PORT:-5173},http://localhost:${TREVRA_API_PORT:-8787}
-      BETTER_AUTH_URL: http://localhost:${TREVRA_WEB_PORT:-5173}
+      APP_ORIGIN: http://localhost:${TREVRA_WEB_PORT:-43173},http://localhost:${TREVRA_API_PORT:-43887}
+      BETTER_AUTH_URL: http://localhost:${TREVRA_WEB_PORT:-43173}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-development-only-trevra-secret-change-before-production}
       COOKIE_SECURE: "false"
       ALLOW_DEMO_AUTH: "true"
       ALLOW_SIMULATED_EXECUTION: "true"
       NANGO_HOST: http://nango-server:3003
-      NANGO_PUBLIC_SERVER_URL: http://localhost:${NANGO_API_PORT:-3003}
+      NANGO_PUBLIC_SERVER_URL: http://localhost:${NANGO_API_PORT:-43003}
       NANGO_API_KEY: ${NANGO_API_KEY:-}
       NANGO_WEBHOOK_SIGNING_KEY: ${NANGO_WEBHOOK_SIGNING_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_EXTRACTION_MODEL: ${OPENAI_EXTRACTION_MODEL:-gpt-5-mini}
       INGEST_API_KEY: ${INGEST_API_KEY:-local-ingest-key-change-me}
     ports:
-      - "${TREVRA_WEB_PORT:-5173}:5173"
-      - "${TREVRA_API_PORT:-8787}:8787"
+      - "${TREVRA_WEB_PORT:-43173}:5173"
+      - "${TREVRA_API_PORT:-43887}:8787"
     volumes:
       - ./:/app
       - trevra-node-modules:/app/node_modules
@@ -60,7 +63,7 @@ services:
       POSTGRES_USER: nango
       POSTGRES_PASSWORD: ${NANGO_DB_PASSWORD:-nango-local-password}
     ports:
-      - "${NANGO_DB_PORT:-55432}:5432"
+      - "${NANGO_DB_PORT:-45433}:5432"
     volumes:
       - nango-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -74,7 +77,7 @@ services:
     image: redis:7.2-alpine
     command: redis-server --appendonly yes
     ports:
-      - "${NANGO_REDIS_PORT:-6379}:6379"
+      - "${NANGO_REDIS_PORT:-46379}:6379"
     volumes:
       - nango-redis-data:/data
     healthcheck:
@@ -101,17 +104,17 @@ services:
       NANGO_REDIS_URL: redis://nango-redis:6379
       SERVER_PORT: 3003
       NANGO_CONNECT_UI_PORT: 3009
-      NANGO_SERVER_URL: http://localhost:${NANGO_API_PORT:-3003}
-      NANGO_PUBLIC_SERVER_URL: http://localhost:${NANGO_API_PORT:-3003}
-      NANGO_PUBLIC_CONNECT_URL: http://localhost:${NANGO_CONNECT_PORT:-3009}
+      NANGO_SERVER_URL: http://localhost:${NANGO_API_PORT:-43003}
+      NANGO_PUBLIC_SERVER_URL: http://localhost:${NANGO_API_PORT:-43003}
+      NANGO_PUBLIC_CONNECT_URL: http://localhost:${NANGO_CONNECT_PORT:-43009}
       FLAG_SERVE_CONNECT_UI: "true"
       FLAG_AUTH_ENABLED: "false"
       CSP_REPORT_ONLY: "true"
       LOG_LEVEL: ${NANGO_LOG_LEVEL:-info}
       NANGO_LOGS_ENABLED: "false"
     ports:
-      - "${NANGO_API_PORT:-3003}:3003"
-      - "${NANGO_CONNECT_PORT:-3009}:3009"
+      - "${NANGO_API_PORT:-43003}:3003"
+      - "${NANGO_CONNECT_PORT:-43009}:3009"
     depends_on:
       nango-db:
         condition: service_healthy

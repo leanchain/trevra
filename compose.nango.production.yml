@@ -27,8 +27,8 @@ services:
       FLAG_SERVE_CONNECT_UI: "true"
       NANGO_LOGS_ENABLED: "false"
     ports:
-      - "127.0.0.1:3003:3003"
-      - "127.0.0.1:3009:3009"
+      - "127.0.0.1:${NANGO_BIND_API_PORT:-43013}:3003"
+      - "127.0.0.1:${NANGO_BIND_CONNECT_PORT:-43019}:3009"
     depends_on:
       - cloud-sql-proxy
     healthcheck:

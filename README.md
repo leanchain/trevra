@@ -44,11 +44,13 @@ Requirements:
 - Docker with Compose v2
 - at least 6 GB of free Docker memory for the complete Trevra + Nango stack
 
-Create your development environment file:
+Create your development environment file. It ships with a dedicated high-port block to avoid common local conflicts; every host port remains overrideable:
 
 ```bash
 cp .env.dev.example .env.dev
 ```
+
+Current defaults are `43173`, `43887`, `45432`, `45433`, `46379`, `43003`, and `43009`. Change any value in `.env.dev` before startup if one is already occupied.
 
 Generate a unique Nango encryption key and replace the example value in `.env.dev`:
 
@@ -64,12 +66,13 @@ docker compose --env-file .env.dev -f compose.dev.yml up --build
 
 Open:
 
-- Trevra: `http://localhost:5173`
-- Trevra API: `http://localhost:8787`
-- Nango API/dashboard: `http://localhost:3003`
-- Nango Connect UI: `http://localhost:3009`
-- Trevra PostgreSQL: `localhost:5432`
-- Nango PostgreSQL: `localhost:55432`
+- Trevra: `http://localhost:43173`
+- Trevra API: `http://localhost:43887`
+- Nango API/dashboard: `http://localhost:43003`
+- Nango Connect UI: `http://localhost:43009`
+- Trevra PostgreSQL: `localhost:45432`
+- Nango PostgreSQL: `localhost:45433`
+- Nango Redis: `localhost:46379`
 
 The Trevra frontend and API hot-reload through the bind-mounted source tree.
 
@@ -109,7 +112,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:43173`.
 
 ## Tests and build
 

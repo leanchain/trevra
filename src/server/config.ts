@@ -12,8 +12,8 @@ export interface RuntimeConfig {
 export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
   const production = env.NODE_ENV === 'production';
   const base = z.object({
-    PORT: z.coerce.number().int().min(1).max(65535).default(8787),
-    APP_ORIGIN: z.string().default('http://localhost:5173,http://localhost:8787'),
+    PORT: z.coerce.number().int().min(1).max(65535).default(43887),
+    APP_ORIGIN: z.string().default('http://localhost:43173,http://localhost:43887'),
     DATABASE_URL: z.string().min(1),
     AUTOMATION_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
     COOKIE_SECURE: booleanString.default(production ? 'true' : 'false'),

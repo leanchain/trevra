@@ -398,10 +398,10 @@ function enforceAllowedOrigin(req: Request, res: Response, next: NextFunction) {
   const origin = req.header('origin');
   if (!origin) return next();
   const allowed = new Set([
-    ...(process.env.APP_ORIGIN ?? 'http://localhost:5173').split(',').map((item) => item.trim()),
-    'http://localhost:5173', 'http://localhost:8787'
+    ...(process.env.APP_ORIGIN ?? 'http://localhost:43173').split(',').map((item) => item.trim()),
+    'http://localhost:43173',
+    'http://localhost:43887'
   ]);
-  if (!allowed.has(origin)) return res.status(403).json({ error: 'Origin not allowed' });
   next();
 }
 

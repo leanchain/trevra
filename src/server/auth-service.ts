@@ -15,8 +15,8 @@ if (!connectionString) throw new Error('DATABASE_URL is required; Better Auth us
 const secret = process.env.BETTER_AUTH_SECRET ?? (production ? '' : 'development-only-trevra-secret-change-before-production');
 if (production && secret.length < 32) throw new Error('BETTER_AUTH_SECRET must be at least 32 characters in production');
 
-const baseURL = process.env.BETTER_AUTH_URL ?? process.env.APP_ORIGIN?.split(',')[0]?.trim() ?? 'http://localhost:5173';
-const trustedOrigins = (process.env.APP_ORIGIN ?? 'http://localhost:5173,http://localhost:8787')
+const baseURL = process.env.BETTER_AUTH_URL ?? process.env.APP_ORIGIN?.split(',')[0]?.trim() ?? 'http://localhost:43173';
+const trustedOrigins = (process.env.APP_ORIGIN ?? 'http://localhost:43173,http://localhost:43887')
   .split(',')
   .map((item) => item.trim())
   .filter(Boolean);

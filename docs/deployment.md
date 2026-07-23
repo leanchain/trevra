@@ -10,7 +10,7 @@ Application migrations are stored in `migrations/` and recorded in `schema_migra
 
 ## Local development stack
 
-`compose.dev.yml` deliberately uses two PostgreSQL databases:
+`compose.dev.yml` deliberately uses uncommon, independently configurable host ports from `.env.dev` and two PostgreSQL databases:
 
 - `postgres`: Trevra and Better Auth data;
 - `nango-db`: Nango provider configuration, encrypted credentials, sync records, and internal state.
@@ -23,6 +23,8 @@ Persistent Docker volumes:
 - `nango-postgres-data`;
 - `nango-redis-data`;
 - `trevra-node-modules`.
+
+Internal container ports remain standard, while host ports use the `TREVRA_*_PORT` and `NANGO_*_PORT` variables. This allows several Trevra-like stacks to coexist without changing service-to-service URLs.
 
 Do not run `docker compose down -v` unless you intend to destroy all local data.
 
