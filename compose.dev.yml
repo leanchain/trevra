@@ -1,0 +1,132 @@
+name: trevra-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: trevra
+      POSTGRES_USER: trevra
+      POSTGRES_PASSWORD: ${TREVRA_DB_PASSWORD:-trevra-local-password}
+    ports:
+      - "${TREVRA_DB_PORT:-5432}:5432"
+    volumes:
+      - trevra-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trevra -d trevra"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  trevra:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment:
+      NODE_ENV: development
+      PORT: 8787
+      DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:-trevra-local-password}@postgres:5432/trevra
+      DATABASE_POOL_MAX: 10
+      APP_ORIGIN: http://localhost:${TREVRA_WEB_PORT:-5173},http://localhost:${TREVRA_API_PORT:-8787}
+      BETTER_AUTH_URL: http://localhost:${TREVRA_WEB_PORT:-5173}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-development-only-trevra-secret-change-before-production}
+      COOKIE_SECURE: "false"
+      ALLOW_DEMO_AUTH: "true"
+      ALLOW_SIMULATED_EXECUTION: "true"
+      NANGO_HOST: http://nango-server:3003
+      NANGO_PUBLIC_SERVER_URL: http://localhost:${NANGO_API_PORT:-3003}
+      NANGO_API_KEY: ${NANGO_API_KEY:-}
+      NANGO_WEBHOOK_SIGNING_KEY: ${NANGO_WEBHOOK_SIGNING_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_EXTRACTION_MODEL: ${OPENAI_EXTRACTION_MODEL:-gpt-5-mini}
+      INGEST_API_KEY: ${INGEST_API_KEY:-local-ingest-key-change-me}
+    ports:
+      - "${TREVRA_WEB_PORT:-5173}:5173"
+      - "${TREVRA_API_PORT:-8787}:8787"
+    volumes:
+      - ./:/app
+      - trevra-node-modules:/app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nango-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  nango-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: nango
+      POSTGRES_USER: nango
+      POSTGRES_PASSWORD: ${NANGO_DB_PASSWORD:-nango-local-password}
+    ports:
+      - "${NANGO_DB_PORT:-55432}:5432"
+    volumes:
+      - nango-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nango -d nango"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  nango-redis:
+    image: redis:7.2-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "${NANGO_REDIS_PORT:-6379}:6379"
+    volumes:
+      - nango-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  nango-server:
+    image: nangohq/nango-server:${NANGO_IMAGE_TAG:-hosted}
+    platform: linux/amd64
+    environment:
+      NANGO_ENCRYPTION_KEY: ${NANGO_ENCRYPTION_KEY:?Set NANGO_ENCRYPTION_KEY in .env.dev}
+      NANGO_DB_USER: nango
+      NANGO_DB_PASSWORD: ${NANGO_DB_PASSWORD:-nango-local-password}
+      NANGO_DB_HOST: nango-db
+      NANGO_DB_PORT: 5432
+      NANGO_DB_NAME: nango
+      NANGO_DB_SSL: "false"
+      NANGO_DB_POOL_MIN: 1
+      NANGO_DB_POOL_MAX: 10
+      RECORDS_DATABASE_URL: postgresql://nango:${NANGO_DB_PASSWORD:-nango-local-password}@nango-db:5432/nango
+      NANGO_REDIS_URL: redis://nango-redis:6379
+      SERVER_PORT: 3003
+      NANGO_CONNECT_UI_PORT: 3009
+      NANGO_SERVER_URL: http://localhost:${NANGO_API_PORT:-3003}
+      NANGO_PUBLIC_SERVER_URL: http://localhost:${NANGO_API_PORT:-3003}
+      NANGO_PUBLIC_CONNECT_URL: http://localhost:${NANGO_CONNECT_PORT:-3009}
+      FLAG_SERVE_CONNECT_UI: "true"
+      FLAG_AUTH_ENABLED: "false"
+      CSP_REPORT_ONLY: "true"
+      LOG_LEVEL: ${NANGO_LOG_LEVEL:-info}
+      NANGO_LOGS_ENABLED: "false"
+    ports:
+      - "${NANGO_API_PORT:-3003}:3003"
+      - "${NANGO_CONNECT_PORT:-3009}:3009"
+    depends_on:
+      nango-db:
+        condition: service_healthy
+      nango-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3003/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    restart: unless-stopped
+
+volumes:
+  trevra-postgres-data:
+  trevra-node-modules:
+  nango-postgres-data:
+  nango-redis-data:

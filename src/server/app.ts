@@ -73,24 +73,26 @@ export function createApp(db: Db) {
     }
   });
 
-  app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '2mb' }), (req, res) => {
+  app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '2mb' }), async (req, res) => {
     try {
       const signature = req.header('stripe-signature');
       if (!signature) return res.status(400).json({ error: 'Missing Stripe signature' });
       const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body ?? ''));
-      const result = processStripeWebhook(db, body, signature);
+      const result = await processStripeWebhook(db, body, signature);
       res.status(result.duplicate ? 200 : 202).json(result);
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid Stripe webhook' });
     }
   });
 
-  app.get('/api/health', (_req, res) => res.json({
-    ok: true,
-    service: 'trevra-api',
-    integrations: Boolean(process.env.NANGO_API_KEY),
-    stripeWebhooks: Boolean(process.env.STRIPE_WEBHOOK_SECRET)
-  }));
+  app.get('/api/health', async (_req, res) => {
+    try {
+      await db.prepare('SELECT 1 AS ok').get();
+      res.json({ ok: true, service: 'trevra-api', database: 'postgresql', integrations: Boolean(process.env.NANGO_API_KEY), stripeWebhooks: Boolean(process.env.STRIPE_WEBHOOK_SECRET) });
+    } catch {
+      res.status(503).json({ ok: false, service: 'trevra-api', database: 'unavailable' });
+    }
+  });
 
   app.get('/api/public-config', (_req, res) => res.json({
     googleAuthEnabled: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
@@ -98,11 +100,11 @@ export function createApp(db: Db) {
   }));
 
   const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
-  app.post('/api/auth/demo', authLimiter, (_req, res) => {
+  app.post('/api/auth/demo', authLimiter, async (_req, res) => {
     if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEMO_AUTH !== 'true') {
       return res.status(404).json({ error: 'Demo authentication is disabled' });
     }
-    const token = createSession(db, DEMO_USER_ID);
+    const token = await createSession(db, DEMO_USER_ID);
     setSessionCookie(res, token);
     res.json({
       user: { id: DEMO_USER_ID, name: 'Alex Morgan', email: 'alex@northstar.studio' },
@@ -131,25 +133,27 @@ export function createApp(db: Db) {
   app.get('/api/dashboard', async (req: AuthedRequest, res, next) => {
     try {
       const workspaceId = req.auth!.workspaceId;
-      runRecommendationEngine(db, workspaceId);
+      await runRecommendationEngine(db, workspaceId);
       await runAutomationCycle(db, workspaceId);
-      const recommendations = listRecommendations(db, workspaceId);
-      const clients = db.prepare(`
+      const recommendations = await listRecommendations(db, workspaceId);
+      const clients = await db.prepare(`
         SELECT c.*,
           (SELECT recommended_action FROM recommendations r WHERE r.client_id=c.id AND r.status IN ('ready','approved') ORDER BY priority_score DESC LIMIT 1) AS next_action
         FROM clients c WHERE c.workspace_id=? ORDER BY c.last_interaction_at DESC
       `).all(workspaceId) as Array<Record<string, unknown>>;
-      const overdue = db.prepare("SELECT COUNT(*) AS count FROM invoices WHERE workspace_id=? AND paid_at IS NULL AND due_at < datetime('now')").get(workspaceId) as { count: number };
-      const outcomes = db.prepare(`
+      const overdue = await db.prepare("SELECT COUNT(*) AS count FROM invoices WHERE workspace_id=? AND paid_at IS NULL AND due_at < datetime('now')").get(workspaceId) as { count: number };
+      const outcomes = await db.prepare(`
         SELECT ro.outcome_type, COALESCE(SUM(ro.amount),0) AS total
         FROM recommendation_outcomes ro JOIN recommendations r ON r.id=ro.recommendation_id
         WHERE r.workspace_id=? GROUP BY ro.outcome_type
       `).all(workspaceId) as Array<{ outcome_type: string; total: number }>;
       const outcomeMap = new Map(outcomes.map((item) => [item.outcome_type, Number(item.total)]));
-      const connections = listConnections(db, workspaceId);
+      const connections = await listConnections(db, workspaceId);
+      const availableIntegrations = await listAvailableIntegrations(db, workspaceId);
+      const automationRules = await listAutomationRules(db, workspaceId);
 
       res.json({
-        workspace: db.prepare('SELECT id,name FROM workspaces WHERE id=?').get(workspaceId),
+        workspace: await db.prepare('SELECT id,name FROM workspaces WHERE id=?').get(workspaceId),
         metrics: {
           revenueAtRisk: recommendations.reduce((sum, item) => sum + item.estimatedAmount, 0),
           revenueProtected: outcomeMap.get('revenue_protected') ?? 0,
@@ -159,12 +163,12 @@ export function createApp(db: Db) {
           overdueInvoices: overdue.count,
           activeClients: clients.filter((client) => client.status === 'active').length,
           connectedSources: connections.filter((connection) => connection.status === 'connected' && !connection.isDemo).length,
-          currency: String((db.prepare('SELECT currency FROM workspace_settings WHERE workspace_id=?').get(workspaceId) as { currency?: string } | undefined)?.currency ?? 'EUR')
+          currency: String((await db.prepare('SELECT currency FROM workspace_settings WHERE workspace_id=?').get(workspaceId) as { currency?: string } | undefined)?.currency ?? 'EUR')
         },
         recommendations,
         connections,
-        availableIntegrations: listAvailableIntegrations(db, workspaceId),
-        automationRules: listAutomationRules(db, workspaceId),
+        availableIntegrations,
+        automationRules,
         clients: clients.map((client) => ({
           id: String(client.id), name: String(client.name), contactName: String(client.contact_name), email: String(client.email),
           status: String(client.status), activeValue: Number(client.active_value), currency: String(client.currency),
@@ -174,42 +178,42 @@ export function createApp(db: Db) {
     } catch (error) { next(error); }
   });
 
-  app.get('/api/recommendations', (req: AuthedRequest, res) => {
-    runRecommendationEngine(db, req.auth!.workspaceId);
-    res.json({ recommendations: listRecommendations(db, req.auth!.workspaceId) });
+  app.get('/api/recommendations', async (req: AuthedRequest, res) => {
+    await runRecommendationEngine(db, req.auth!.workspaceId);
+    res.json({ recommendations: await listRecommendations(db, req.auth!.workspaceId) });
   });
 
-  app.post('/api/recommendations/:id/snooze', (req: AuthedRequest, res) => {
+  app.post('/api/recommendations/:id/snooze', async (req: AuthedRequest, res) => {
     const recommendationId = String(req.params.id);
     const body = z.object({ days: z.number().int().min(1).max(30).default(3) }).parse(req.body);
     const until = new Date(Date.now() + body.days * 86400000).toISOString();
-    const result = db.prepare("UPDATE recommendations SET status='snoozed',snoozed_until=?,updated_at=? WHERE id=? AND workspace_id=?")
+    const result = await db.prepare("UPDATE recommendations SET status='snoozed',snoozed_until=?,updated_at=? WHERE id=? AND workspace_id=?")
       .run(until, new Date().toISOString(), recommendationId, req.auth!.workspaceId);
     if (result.changes === 0) return res.status(404).json({ error: 'Recommendation not found' });
     res.json({ ok: true, snoozedUntil: until });
   });
 
-  app.post('/api/recommendations/:id/dismiss', (req: AuthedRequest, res) => {
+  app.post('/api/recommendations/:id/dismiss', async (req: AuthedRequest, res) => {
     const recommendationId = String(req.params.id);
     const input = z.object({ reason: z.string().max(500).optional() }).parse(req.body ?? {});
-    const recommendation = db.prepare('SELECT * FROM recommendations WHERE id=? AND workspace_id=?').get(recommendationId, req.auth!.workspaceId) as Record<string, unknown> | undefined;
+    const recommendation = await db.prepare('SELECT * FROM recommendations WHERE id=? AND workspace_id=?').get(recommendationId, req.auth!.workspaceId) as Record<string, unknown> | undefined;
     if (!recommendation) return res.status(404).json({ error: 'Recommendation not found' });
-    db.prepare("UPDATE recommendations SET status='dismissed',updated_at=? WHERE id=?").run(new Date().toISOString(), recommendationId);
-    recordOutcome(db, recommendationId, 'dismissed', 0, String(recommendation.currency), { reason: input.reason ?? null });
+    await db.prepare("UPDATE recommendations SET status='dismissed',updated_at=? WHERE id=?").run(new Date().toISOString(), recommendationId);
+    await recordOutcome(db, recommendationId, 'dismissed', 0, String(recommendation.currency), { reason: input.reason ?? null });
     res.json({ ok: true });
   });
 
-  app.post('/api/recommendations/:id/prepare', (req: AuthedRequest, res) => {
-    try { res.status(201).json({ action: prepareAction(db, req.auth!.workspaceId, String(req.params.id)) }); }
+  app.post('/api/recommendations/:id/prepare', async (req: AuthedRequest, res) => {
+    try { res.status(201).json({ action: await prepareAction(db, req.auth!.workspaceId, String(req.params.id)) }); }
     catch (error) { res.status(404).json({ error: error instanceof Error ? error.message : 'Unable to prepare action' }); }
   });
 
-  app.post('/api/actions/:id/approve', (req: AuthedRequest, res) => {
+  app.post('/api/actions/:id/approve', async (req: AuthedRequest, res) => {
     const input = z.object({
       recipient: z.string().email(), subject: z.string().min(1).max(200), body: z.string().min(1).max(20000),
       scheduledFor: z.string().datetime().nullable().optional()
     }).parse(req.body);
-    try { res.json({ action: approveAction(db, req.auth!.workspaceId, req.auth!.userId, String(req.params.id), input) }); }
+    try { res.json({ action: await approveAction(db, req.auth!.workspaceId, req.auth!.userId, String(req.params.id), input) }); }
     catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to approve action' }); }
   });
 
@@ -218,10 +222,10 @@ export function createApp(db: Db) {
     catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to execute action' }); }
   });
 
-  app.get('/api/integrations', (req: AuthedRequest, res) => {
+  app.get('/api/integrations', async (req: AuthedRequest, res) => {
     res.json({
-      connections: listConnections(db, req.auth!.workspaceId),
-      available: listAvailableIntegrations(db, req.auth!.workspaceId),
+      connections: await listConnections(db, req.auth!.workspaceId),
+      available: await listAvailableIntegrations(db, req.auth!.workspaceId),
       configured: Boolean(process.env.NANGO_API_KEY)
     });
   });
@@ -253,10 +257,10 @@ export function createApp(db: Db) {
     } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to disconnect' }); }
   });
 
-  app.post('/api/imports/marketplace', (req: AuthedRequest, res) => {
+  app.post('/api/imports/marketplace', async (req: AuthedRequest, res) => {
     const input = z.object({ provider: z.enum(['upwork', 'fiverr', 'contra', 'generic']), csv: z.string().min(1).max(5_000_000) }).parse(req.body);
-    const result = importMarketplaceCsv(db, req.auth!.workspaceId, input.provider, input.csv);
-    runRecommendationEngine(db, req.auth!.workspaceId);
+    const result = await importMarketplaceCsv(db, req.auth!.workspaceId, input.provider, input.csv);
+    await runRecommendationEngine(db, req.auth!.workspaceId);
     res.status(201).json(result);
   });
 
@@ -274,16 +278,16 @@ export function createApp(db: Db) {
         ...hints,
         clientEmail: hints.clientEmail || undefined
       });
-      runRecommendationEngine(db, req.auth!.workspaceId);
+      await runRecommendationEngine(db, req.auth!.workspaceId);
       res.status(201).json(result);
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to import document' });
     }
   });
 
-  app.get('/api/automation/rules', (req: AuthedRequest, res) => res.json({ rules: listAutomationRules(db, req.auth!.workspaceId) }));
+  app.get('/api/automation/rules', async (req: AuthedRequest, res) => res.json({ rules: await listAutomationRules(db, req.auth!.workspaceId) }));
 
-  app.put('/api/automation/rules/:type', (req: AuthedRequest, res) => {
+  app.put('/api/automation/rules/:type', async (req: AuthedRequest, res) => {
     const recommendationType = z.enum(['stale_proposal', 'scope_creep', 'unbilled_milestone', 'overdue_invoice']).parse(String(req.params.type));
     const input = z.object({
       mode: z.enum(['suggest', 'prepare', 'execute']), minConfidence: z.number().min(0.5).max(1),
@@ -291,50 +295,50 @@ export function createApp(db: Db) {
     }).parse(req.body);
     if (recommendationType === 'scope_creep' && input.mode === 'execute') return res.status(400).json({ error: 'Scope changes always require manual approval' });
     const now = new Date().toISOString();
-    const existing = db.prepare('SELECT id FROM automation_rules WHERE workspace_id=? AND recommendation_type=?').get(req.auth!.workspaceId, recommendationType) as { id: string } | undefined;
-    db.prepare(`
+    const existing = await db.prepare('SELECT id FROM automation_rules WHERE workspace_id=? AND recommendation_type=?').get(req.auth!.workspaceId, recommendationType) as { id: string } | undefined;
+    await db.prepare(`
       INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,max_amount,delay_minutes,enabled,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(workspace_id,recommendation_type) DO UPDATE SET
         mode=excluded.mode,min_confidence=excluded.min_confidence,max_amount=excluded.max_amount,
         delay_minutes=excluded.delay_minutes,enabled=excluded.enabled,updated_at=excluded.updated_at
     `).run(existing?.id ?? id('rule'), req.auth!.workspaceId, recommendationType, input.mode, input.minConfidence, input.maxAmount, input.delayMinutes, input.enabled ? 1 : 0, now, now);
-    res.json({ rules: listAutomationRules(db, req.auth!.workspaceId) });
+    res.json({ rules: await listAutomationRules(db, req.auth!.workspaceId) });
   });
 
   app.post('/api/automation/run', async (req: AuthedRequest, res) => {
     res.json(await runAutomationCycle(db, req.auth!.workspaceId));
   });
 
-  app.get('/api/clients/:id', (req: AuthedRequest, res) => {
+  app.get('/api/clients/:id', async (req: AuthedRequest, res) => {
     const clientId = String(req.params.id);
     const workspaceId = req.auth!.workspaceId;
-    const client = db.prepare('SELECT * FROM clients WHERE id=? AND workspace_id=?').get(clientId, workspaceId);
+    const client = await db.prepare('SELECT * FROM clients WHERE id=? AND workspace_id=?').get(clientId, workspaceId);
     if (!client) return res.status(404).json({ error: 'Client not found' });
-    const messages = db.prepare('SELECT id,direction,subject,body,occurred_at,source_record_id FROM messages WHERE client_id=? ORDER BY occurred_at DESC').all(clientId);
-    const invoices = db.prepare('SELECT id,external_ref,amount,currency,status,issued_at,due_at,paid_at FROM invoices WHERE client_id=? ORDER BY issued_at DESC').all(clientId);
-    const projects = db.prepare('SELECT id,name,status,total_value,currency FROM projects WHERE client_id=? ORDER BY created_at DESC').all(clientId);
-    const commitments = db.prepare('SELECT * FROM commitments WHERE client_id=? ORDER BY due_at').all(clientId);
-    const contracts = db.prepare('SELECT * FROM contracts WHERE client_id=? ORDER BY created_at DESC').all(clientId);
-    const outcomes = db.prepare(`
+    const messages = await db.prepare('SELECT id,direction,subject,body,occurred_at,source_record_id FROM messages WHERE client_id=? ORDER BY occurred_at DESC').all(clientId);
+    const invoices = await db.prepare('SELECT id,external_ref,amount,currency,status,issued_at,due_at,paid_at FROM invoices WHERE client_id=? ORDER BY issued_at DESC').all(clientId);
+    const projects = await db.prepare('SELECT id,name,status,total_value,currency FROM projects WHERE client_id=? ORDER BY created_at DESC').all(clientId);
+    const commitments = await db.prepare('SELECT * FROM commitments WHERE client_id=? ORDER BY due_at').all(clientId);
+    const contracts = await db.prepare('SELECT * FROM contracts WHERE client_id=? ORDER BY created_at DESC').all(clientId);
+    const outcomes = await db.prepare(`
       SELECT ro.* FROM recommendation_outcomes ro JOIN recommendations r ON r.id=ro.recommendation_id
       WHERE r.client_id=? ORDER BY ro.created_at DESC
     `).all(clientId);
     res.json({ client, messages, invoices, projects, commitments, contracts, outcomes });
   });
 
-  app.post('/api/events', (req: AuthedRequest, res) => {
+  app.post('/api/events', async (req: AuthedRequest, res) => {
     const ingestKey = req.header('x-trevra-ingest-key');
     if (!process.env.INGEST_API_KEY || ingestKey !== process.env.INGEST_API_KEY) return res.status(401).json({ error: 'Invalid ingest key' });
     const event = z.object({ provider: z.string().default('custom'), record: z.record(z.unknown()) }).parse(req.body);
-    ingestCanonicalRecord(db, req.auth!.workspaceId, event.provider, null, event.record as never);
-    const count = runRecommendationEngine(db, req.auth!.workspaceId);
+    await ingestCanonicalRecord(db, req.auth!.workspaceId, event.provider, null, event.record as never);
+    const count = await runRecommendationEngine(db, req.auth!.workspaceId);
     res.status(202).json({ accepted: true, recommendationsEvaluated: count });
   });
 
-  app.post('/api/demo/reset', (req: AuthedRequest, res) => {
+  app.post('/api/demo/reset', async (req: AuthedRequest, res) => {
     if (req.auth!.workspaceId !== DEMO_WORKSPACE_ID) return res.status(403).json({ error: 'Only the demo workspace can be reset' });
-    resetDemoData(db);
+    await resetDemoData(db);
     res.clearCookie(SESSION_COOKIE);
     res.json({ ok: true });
   });
@@ -365,7 +369,7 @@ function requireSession(db: Db) {
 async function readSession(db: Db, req: Request): Promise<{ userId: string; workspaceId: string; email: string } | null> {
   const token = req.cookies?.[SESSION_COOKIE] as string | undefined;
   if (token) {
-    const session = db.prepare(`
+    const session = await db.prepare(`
       SELECT s.user_id, u.workspace_id, u.email FROM sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token_hash=? AND s.expires_at > ?
     `).get(hash(token), new Date().toISOString()) as { user_id: string; workspace_id: string; email: string } | undefined;
@@ -374,11 +378,11 @@ async function readSession(db: Db, req: Request): Promise<{ userId: string; work
   return resolveBetterAuthIdentity(db, req.headers);
 }
 
-function createSession(db: Db, userId: string): string {
+async function createSession(db: Db, userId: string): Promise<string> {
   const token = randomBytes(32).toString('hex');
   const now = new Date();
-  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now.toISOString());
-  db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)')
+  await db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now.toISOString());
+  await db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)')
     .run(hash(token), userId, new Date(now.getTime() + SESSION_TTL).toISOString(), now.toISOString());
   return token;
 }

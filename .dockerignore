@@ -1,9 +1,14 @@
 node_modules
 dist
 dist-server
-data
 .git
 .lemoncrow
 .env
+.env.*
+data
+__pycache__
+*.pyc
 coverage
 *.log
+.terraform
+terraform.tfstate*

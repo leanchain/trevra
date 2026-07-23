@@ -1,27 +1,31 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import Stripe from 'stripe';
-import { openDatabase, type Db } from './db.js';
+import { openDatabase, resetDemoData, type Db } from './db.js';
 import { createApp } from './app.js';
-import { migrateAuthDatabase } from './auth-service.js';
+import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 
 let db: Db | undefined;
+
 beforeAll(async () => migrateAuthDatabase());
-afterEach(() => {
-  db?.close();
+afterAll(async () => closeAuthDatabase());
+afterEach(async () => {
+  await db?.close();
+  db = undefined;
   delete process.env.STRIPE_WEBHOOK_SECRET;
   delete process.env.STRIPE_SECRET_KEY;
   delete process.env.OPENAI_API_KEY;
 });
 
 async function agentWithSession() {
-  db = openDatabase(':memory:');
+  db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+  await resetDemoData(db);
   const agent = request.agent(createApp(db));
   await agent.post('/api/auth/demo').expect(200);
   return agent;
 }
 
-describe('Trevra API', () => {
+describe('Trevra API on PostgreSQL', () => {
   it('returns a revenue dashboard with proof packs and prepared work', async () => {
     const agent = await agentWithSession();
     const response = await agent.get('/api/dashboard').expect(200);
@@ -53,10 +57,10 @@ describe('Trevra API', () => {
     ].join('\n');
     const imported = await agent.post('/api/imports/marketplace').send({ provider: 'upwork', csv }).expect(201);
     expect(imported.body).toEqual({ imported: 2, skipped: 0 });
-    const clients = db!.prepare("SELECT COUNT(*) AS count FROM clients WHERE name IN ('Pine Labs','Oak Studio')").get() as { count: number };
-    const sourceRecords = db!.prepare("SELECT COUNT(*) AS count FROM source_records WHERE provider='upwork'").get() as { count: number };
-    expect(clients.count).toBe(1);
-    expect(sourceRecords.count).toBe(2);
+    const clients = await db!.prepare("SELECT COUNT(*) AS count FROM clients WHERE name IN ('Pine Labs','Oak Studio')").get<{ count: number }>();
+    const sourceRecords = await db!.prepare("SELECT COUNT(*) AS count FROM source_records WHERE provider='upwork'").get<{ count: number }>();
+    expect(clients?.count).toBe(1);
+    expect(sourceRecords?.count).toBe(2);
   });
 
   it('runs delegated low-risk automation end to end', async () => {
@@ -67,19 +71,19 @@ describe('Trevra API', () => {
     }).expect(200);
     const result = await agent.post('/api/automation/run').expect(200);
     expect(result.body.executed).toBe(1);
-    const completed = db!.prepare("SELECT COUNT(*) AS count FROM recommendations WHERE type='stale_proposal' AND status='completed'").get() as { count: number };
-    expect(completed.count).toBe(1);
+    const completed = await db!.prepare("SELECT COUNT(*) AS count FROM recommendations WHERE type='stale_proposal' AND status='completed'").get<{ count: number }>();
+    expect(completed?.count).toBe(1);
   });
 
   it('creates a real account and maps it to an isolated Trevra workspace', async () => {
-    db = openDatabase(':memory:');
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const agent = request.agent(createApp(db));
     const email = `freelancer-${Date.now()}@example.com`;
     await agent.post('/api/auth/sign-up/email').send({ name: 'Independent Alex', email, password: 'correct-horse-battery-staple' }).expect(200);
     const dashboard = await agent.get('/api/dashboard').expect(200);
     expect(dashboard.body.workspace.name).toBe("Independent Alex's Studio");
     expect(dashboard.body.metrics.openRecommendations).toBe(0);
-    const mapped = db.prepare('SELECT workspace_id FROM users WHERE email=?').get(email) as { workspace_id: string } | undefined;
+    const mapped = await db.prepare('SELECT workspace_id FROM users WHERE email=?').get<{ workspace_id: string }>(email);
     expect(mapped?.workspace_id).toBe(dashboard.body.workspace.id);
   });
 
@@ -88,13 +92,13 @@ describe('Trevra API', () => {
     const dashboard = await agent.get('/api/dashboard').expect(200);
     const recommendation = dashboard.body.recommendations.find((item: { type: string }) => item.type === 'stale_proposal');
     const action = recommendation.preparedAction;
-    const future = new Date(Date.now() + 3600000).toISOString();
+    const future = new Date(Date.now() + 3_600_000).toISOString();
     await agent.post(`/api/actions/${action.id}/approve`).send({ recipient: action.recipient, subject: action.subject, body: action.body, scheduledFor: future }).expect(200);
-    db!.prepare("UPDATE actions SET scheduled_for=? WHERE id=?").run(new Date(Date.now() - 1000).toISOString(), action.id);
+    await db!.prepare('UPDATE actions SET scheduled_for=? WHERE id=?').run(new Date(Date.now() - 1000).toISOString(), action.id);
     const cycle = await agent.post('/api/automation/run').expect(200);
     expect(cycle.body.executed).toBeGreaterThanOrEqual(1);
-    const executed = db!.prepare('SELECT status FROM actions WHERE id=?').get(action.id) as { status: string };
-    expect(executed.status).toBe('executed');
+    const executed = await db!.prepare('SELECT status FROM actions WHERE id=?').get<{ status: string }>(action.id);
+    expect(executed?.status).toBe('executed');
   });
 
   it('creates a ledger invoice after executing ready-to-invoice work', async () => {
@@ -104,10 +108,11 @@ describe('Trevra API', () => {
     const action = recommendation.preparedAction;
     await agent.post(`/api/actions/${action.id}/approve`).send({ recipient: action.recipient, subject: action.subject, body: action.body }).expect(200);
     await agent.post(`/api/actions/${action.id}/execute`).expect(200);
-    const milestone = db!.prepare("SELECT status,invoiced_at FROM milestones WHERE id='mil_luma_final'").get() as { status: string; invoiced_at: string | null };
-    const invoice = db!.prepare("SELECT external_ref,amount,status FROM invoices WHERE project_id='prj_luma' ORDER BY created_at DESC LIMIT 1").get() as { external_ref: string; amount: number; status: string } | undefined;
-    expect(milestone.status).toBe('invoiced');
-    expect(milestone.invoiced_at).not.toBeNull();
+    const milestone = await db!.prepare("SELECT status,invoiced_at FROM milestones WHERE id='mil_luma_final'").get<{ status: string; invoiced_at: string | null }>();
+    const invoice = await db!.prepare("SELECT external_ref,amount,status FROM invoices WHERE project_id='prj_luma' ORDER BY created_at DESC LIMIT 1")
+      .get<{ external_ref: string; amount: number; status: string }>();
+    expect(milestone?.status).toBe('invoiced');
+    expect(milestone?.invoiced_at).not.toBeNull();
     expect(invoice?.amount).toBe(2400);
     expect(invoice?.status).toBe('sent');
   });
@@ -138,10 +143,10 @@ describe('Trevra API', () => {
     expect(response.body.scopeItems).toBeGreaterThanOrEqual(2);
     expect(response.body.clauses).toBeGreaterThanOrEqual(1);
     expect(response.body.milestones).toBeGreaterThanOrEqual(1);
-    const contract = db!.prepare("SELECT COUNT(*) AS count FROM contracts ct JOIN clients c ON c.id=ct.client_id WHERE c.name='Cedar Labs'").get() as { count: number };
-    const scope = db!.prepare("SELECT COUNT(*) AS count FROM scope_items s JOIN projects p ON p.id=s.project_id JOIN clients c ON c.id=p.client_id WHERE c.name='Cedar Labs'").get() as { count: number };
-    expect(contract.count).toBe(1);
-    expect(scope.count).toBeGreaterThanOrEqual(2);
+    const contract = await db!.prepare("SELECT COUNT(*) AS count FROM contracts ct JOIN clients c ON c.id=ct.client_id WHERE c.name='Cedar Labs'").get<{ count: number }>();
+    const scope = await db!.prepare("SELECT COUNT(*) AS count FROM scope_items s JOIN projects p ON p.id=s.project_id JOIN clients c ON c.id=p.client_id WHERE c.name='Cedar Labs'").get<{ count: number }>();
+    expect(contract?.count).toBe(1);
+    expect(scope?.count).toBeGreaterThanOrEqual(2);
   });
 
   it('verifies and deduplicates Stripe payment webhooks', async () => {
@@ -149,24 +154,18 @@ describe('Trevra API', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_placeholder';
     const agent = await agentWithSession();
     const payload = JSON.stringify({
-      id: 'evt_trevra_paid',
-      object: 'event',
-      api_version: '2025-06-30.basil',
-      created: Math.floor(Date.now() / 1000),
-      type: 'invoice.paid',
-      data: {
-        object: {
-          id: 'in_test', object: 'invoice', number: 'INV-104', amount_paid: 185000, currency: 'eur',
-          metadata: { trevra_workspace_id: 'ws_demo', trevra_invoice_id: 'inv_acme_104' },
-          status_transitions: { paid_at: Math.floor(Date.now() / 1000) }
-        }
-      }
+      id: 'evt_trevra_paid', object: 'event', api_version: '2025-06-30.basil', created: Math.floor(Date.now() / 1000), type: 'invoice.paid',
+      data: { object: {
+        id: 'in_test', object: 'invoice', number: 'INV-104', amount_paid: 185000, currency: 'eur',
+        metadata: { trevra_workspace_id: 'ws_demo', trevra_invoice_id: 'inv_acme_104' },
+        status_transitions: { paid_at: Math.floor(Date.now() / 1000) }
+      } }
     });
     const signature = Stripe.webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET });
     await agent.post('/api/webhooks/stripe').set('stripe-signature', signature).set('content-type', 'application/json').send(payload).expect(202);
     await agent.post('/api/webhooks/stripe').set('stripe-signature', signature).set('content-type', 'application/json').send(payload).expect(200);
-    const invoice = db!.prepare("SELECT status,paid_at FROM invoices WHERE id='inv_acme_104'").get() as { status: string; paid_at: string | null };
-    expect(invoice.status).toBe('paid');
-    expect(invoice.paid_at).not.toBeNull();
+    const invoice = await db!.prepare("SELECT status,paid_at FROM invoices WHERE id='inv_acme_104'").get<{ status: string; paid_at: string | null }>();
+    expect(invoice?.status).toBe('paid');
+    expect(invoice?.paid_at).not.toBeNull();
   });
 });

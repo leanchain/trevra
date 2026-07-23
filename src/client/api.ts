@@ -73,8 +73,8 @@ export async function getIntegrations(): Promise<{ connections: ConnectionSummar
   return request('/api/integrations');
 }
 
-export async function createConnectSession(allowedIntegrations: string[]): Promise<{ token: string; expires_at?: string; connect_link?: string }> {
-  const result = await request<{ session: { token: string; expires_at?: string; connect_link?: string } }>('/api/integrations/connect-session', {
+export async function createConnectSession(allowedIntegrations: string[]): Promise<{ token: string; expires_at?: string; connect_link?: string; browser_host?: string }> {
+  const result = await request<{ session: { token: string; expires_at?: string; connect_link?: string; browser_host?: string } }>('/api/integrations/connect-session', {
     method: 'POST', body: JSON.stringify({ allowedIntegrations })
   });
   return result.session;

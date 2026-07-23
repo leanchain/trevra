@@ -1,0 +1,46 @@
+# Cloud Run Compose is a preview deployment path. For production use infra/gcp/terraform.
+# Required shell variables: GCP_IMAGE, CLOUD_SQL_INSTANCE, DATABASE_URL,
+# APP_ORIGIN, BETTER_AUTH_URL, BETTER_AUTH_SECRET, NANGO_API_KEY,
+# NANGO_WEBHOOK_SIGNING_KEY.
+name: trevra-cloud-run
+
+services:
+  trevra:
+    image: ${GCP_IMAGE}
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      APP_ORIGIN: ${APP_ORIGIN}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      COOKIE_SECURE: "true"
+      NANGO_HOST: ${NANGO_HOST}
+      NANGO_PUBLIC_SERVER_URL: ${NANGO_HOST}
+      NANGO_API_KEY: ${NANGO_API_KEY}
+      NANGO_WEBHOOK_SIGNING_KEY: ${NANGO_WEBHOOK_SIGNING_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      INGEST_API_KEY: ${INGEST_API_KEY}
+      ALLOW_DEMO_AUTH: "false"
+      ALLOW_SIMULATED_EXECUTION: "false"
+    depends_on:
+      - cloud-sql-proxy
+    x-google-cloudrun:
+      ingress-container: true
+    cpus: 2
+
+  cloud-sql-proxy:
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.18.2
+    command:
+      - "--structured-logs"
+      - "--address=0.0.0.0"
+      - "--port=5432"
+      - "${CLOUD_SQL_INSTANCE}"
+    expose:
+      - "5432"
+    cpus: 1

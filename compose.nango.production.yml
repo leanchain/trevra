@@ -1,0 +1,40 @@
+# Run this stack on a hardened GCE VM. Cloud SQL and Memorystore are external.
+name: trevra-nango-production
+
+services:
+  cloud-sql-proxy:
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.18.2
+    command:
+      - "--structured-logs"
+      - "--address=0.0.0.0"
+      - "--port=5432"
+      - "${NANGO_CLOUD_SQL_INSTANCE}"
+    restart: unless-stopped
+
+  nango-server:
+    image: ${NANGO_IMAGE:-nangohq/nango-server:hosted}
+    platform: linux/amd64
+    env_file:
+      - .env.nango.production
+    environment:
+      NANGO_DB_HOST: cloud-sql-proxy
+      NANGO_DB_PORT: 5432
+      NANGO_DB_SSL: "false"
+      RECORDS_DATABASE_URL: postgresql://${NANGO_DB_USER}:${NANGO_DB_PASSWORD}@cloud-sql-proxy:5432/${NANGO_DB_NAME}
+      NANGO_REDIS_URL: redis://${NANGO_REDIS_HOST}:${NANGO_REDIS_PORT:-6379}
+      SERVER_PORT: 3003
+      NANGO_CONNECT_UI_PORT: 3009
+      FLAG_SERVE_CONNECT_UI: "true"
+      NANGO_LOGS_ENABLED: "false"
+    ports:
+      - "127.0.0.1:3003:3003"
+      - "127.0.0.1:3009:3009"
+    depends_on:
+      - cloud-sql-proxy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3003/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped

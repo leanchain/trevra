@@ -62,8 +62,10 @@ const catalog = [
   { key: 'contra', provider: 'contra', name: 'Contra', category: 'marketplace', description: 'Import projects and payments from an export.', mode: 'import' }
 ] as const;
 
-export function listAvailableIntegrations(db: Db, workspaceId: string): AvailableIntegration[] {
-  const connectedKeys = new Set((db.prepare("SELECT provider_config_key FROM connections WHERE workspace_id=? AND status='connected'").all(workspaceId) as Array<{ provider_config_key: string }>).map((row) => row.provider_config_key));
+export async function listAvailableIntegrations(db: Db, workspaceId: string): Promise<AvailableIntegration[]> {
+  const connected = await db.prepare("SELECT provider_config_key FROM connections WHERE workspace_id=? AND status='connected'")
+    .all<{ provider_config_key: string }>(workspaceId);
+  const connectedKeys = new Set(connected.map((row) => row.provider_config_key));
   return catalog.map((item) => {
     const providerConfigKey = item.mode === 'oauth' ? String(process.env[item.env] ?? item.fallback) : item.key;
     return {
@@ -97,7 +99,10 @@ export async function createNangoConnectSession(input: {
       end_user_display_name: input.userEmail
     }
   });
-  return result.data;
+  return {
+    ...result.data,
+    browser_host: process.env.NANGO_PUBLIC_SERVER_URL ?? process.env.NANGO_HOST
+  };
 }
 
 export async function handleNangoWebhook(db: Db, rawBody: string, headers: Record<string, unknown>): Promise<{ duplicate: boolean; processed: string }> {
@@ -106,7 +111,7 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
   const payload = JSON.parse(rawBody) as Record<string, unknown>;
   const payloadHash = sha(rawBody);
   const externalEventId = String(payload.id ?? payload.activityLogId ?? `${payload.type}:${payload.operation ?? payload.syncName ?? ''}:${payloadHash}`);
-  const inserted = recordWebhook(db, 'nango', externalEventId, null, payloadHash);
+  const inserted = await recordWebhook(db, 'nango', externalEventId, null, payloadHash);
   if (!inserted) return { duplicate: true, processed: 'duplicate' };
 
   try {
@@ -118,10 +123,10 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
       const now = new Date().toISOString();
       const providerConfigKey = String(payload.providerConfigKey);
       const connectionId = String(payload.connectionId);
-      const existing = db.prepare('SELECT id FROM connections WHERE workspace_id=? AND provider_config_key=? AND external_connection_id=?')
+      const existing = await db.prepare('SELECT id FROM connections WHERE workspace_id=? AND provider_config_key=? AND external_connection_id=?')
         .get(workspaceId, providerConfigKey, connectionId) as { id: string } | undefined;
       const localId = existing?.id ?? id('conn');
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO connections (id,workspace_id,provider,provider_config_key,external_connection_id,display_name,status,is_demo,last_error,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(workspace_id,provider_config_key,external_connection_id) DO UPDATE SET
@@ -131,14 +136,14 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
         tags.end_user_email ? String(tags.end_user_email) : null, success ? 'connected' : 'needs_reauth', 0,
         success ? null : JSON.stringify(payload.error ?? 'Connection failed'), now, now
       );
-      completeWebhook(db, 'nango', externalEventId, 'processed', null, workspaceId);
+      await completeWebhook(db, 'nango', externalEventId, 'processed', null, workspaceId);
       return { duplicate: false, processed: success ? 'connection-upserted' : 'connection-needs-reauth' };
     }
 
     if (payload.type === 'sync' && payload.success === true) {
       const connectionId = String(payload.connectionId);
       const providerConfigKey = String(payload.providerConfigKey);
-      const connection = db.prepare('SELECT * FROM connections WHERE provider_config_key=? AND external_connection_id=?')
+      const connection = await db.prepare('SELECT * FROM connections WHERE provider_config_key=? AND external_connection_id=?')
         .get(providerConfigKey, connectionId) as Record<string, unknown> | undefined;
       if (!connection) throw new Error('Unknown Nango connection');
       const count = await syncNangoRecords(db, {
@@ -146,22 +151,22 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
         providerConfigKey, externalConnectionId: connectionId, model: String(payload.model),
         modifiedAfter: payload.modifiedAfter ? String(payload.modifiedAfter) : undefined
       });
-      db.prepare("UPDATE connections SET status='connected',last_synced_at=?,last_error=NULL,updated_at=? WHERE id=?")
+      await db.prepare("UPDATE connections SET status='connected',last_synced_at=?,last_error=NULL,updated_at=? WHERE id=?")
         .run(new Date().toISOString(), new Date().toISOString(), String(connection.id));
-      completeWebhook(db, 'nango', externalEventId, 'processed', null, String(connection.workspace_id));
+      await completeWebhook(db, 'nango', externalEventId, 'processed', null, String(connection.workspace_id));
       return { duplicate: false, processed: `synced-${count}` };
     }
 
-    completeWebhook(db, 'nango', externalEventId, 'ignored', null, null);
+    await completeWebhook(db, 'nango', externalEventId, 'ignored', null, null);
     return { duplicate: false, processed: 'ignored' };
   } catch (error) {
-    completeWebhook(db, 'nango', externalEventId, 'failed', error instanceof Error ? error.message : String(error), null);
+    await completeWebhook(db, 'nango', externalEventId, 'failed', error instanceof Error ? error.message : String(error), null);
     throw error;
   }
 }
 
 export async function triggerConnectionSync(db: Db, workspaceId: string, localConnectionId: string): Promise<void> {
-  const connection = db.prepare('SELECT * FROM connections WHERE id=? AND workspace_id=? AND is_demo=0').get(localConnectionId, workspaceId) as Record<string, unknown> | undefined;
+  const connection = await db.prepare('SELECT * FROM connections WHERE id=? AND workspace_id=? AND is_demo=0').get(localConnectionId, workspaceId) as Record<string, unknown> | undefined;
   if (!connection) throw new Error('Live connection not found');
   const syncNames = syncNamesForProvider(String(connection.provider));
   if (syncNames.length === 0) throw new Error('No sync functions configured for this provider');
@@ -169,16 +174,16 @@ export async function triggerConnectionSync(db: Db, workspaceId: string, localCo
 }
 
 export async function disconnectIntegration(db: Db, workspaceId: string, localConnectionId: string): Promise<void> {
-  const connection = db.prepare('SELECT * FROM connections WHERE id=? AND workspace_id=?').get(localConnectionId, workspaceId) as Record<string, unknown> | undefined;
+  const connection = await db.prepare('SELECT * FROM connections WHERE id=? AND workspace_id=?').get(localConnectionId, workspaceId) as Record<string, unknown> | undefined;
   if (!connection) throw new Error('Connection not found');
   if (!Boolean(connection.is_demo)) await getNango().deleteConnection(String(connection.provider_config_key), String(connection.external_connection_id));
-  db.prepare("UPDATE connections SET status='disconnected',updated_at=? WHERE id=?").run(new Date().toISOString(), localConnectionId);
+  await db.prepare("UPDATE connections SET status='disconnected',updated_at=? WHERE id=?").run(new Date().toISOString(), localConnectionId);
 }
 
 export async function executeConnectedAction(db: Db, workspaceId: string, action: Record<string, unknown>): Promise<{ provider: string; externalRef: string }> {
   const actionType = String(action.type);
   let connection = action.connection_id
-    ? db.prepare('SELECT * FROM connections WHERE id=? AND workspace_id=? AND status=\'connected\'').get(String(action.connection_id), workspaceId) as Record<string, unknown> | undefined
+    ? await db.prepare('SELECT * FROM connections WHERE id=? AND workspace_id=? AND status=\'connected\'').get(String(action.connection_id), workspaceId) as Record<string, unknown> | undefined
     : undefined;
   if (!connection) {
     const providerFilter = actionType === 'invoice_draft'
@@ -186,7 +191,7 @@ export async function executeConnectedAction(db: Db, workspaceId: string, action
       : actionType === 'change_order_draft'
         ? "provider IN ('honeybook','bonsai','gmail','google-mail','microsoft','outlook')"
         : "provider IN ('gmail','google-mail','microsoft','outlook')";
-    connection = db.prepare(`SELECT * FROM connections WHERE workspace_id=? AND status='connected' AND ${providerFilter} ORDER BY is_demo ASC,updated_at DESC LIMIT 1`)
+    connection = await db.prepare(`SELECT * FROM connections WHERE workspace_id=? AND status='connected' AND ${providerFilter} ORDER BY is_demo ASC,updated_at DESC LIMIT 1`)
       .get(workspaceId) as Record<string, unknown> | undefined;
   }
   if (!connection) {
@@ -257,32 +262,32 @@ export async function executeConnectedAction(db: Db, workspaceId: string, action
   });
   return { provider: 'gmail', externalRef: String(response.data.id ?? id('gmail')) };
 }
-export function importMarketplaceCsv(db: Db, workspaceId: string, provider: 'upwork' | 'fiverr' | 'contra' | 'generic', csv: string): { imported: number; skipped: number } {
+export async function importMarketplaceCsv(db: Db, workspaceId: string, provider: 'upwork' | 'fiverr' | 'contra' | 'generic', csv: string): Promise<{ imported: number; skipped: number }> {
   const rows = parse(csv, { columns: true, skip_empty_lines: true, trim: true, bom: true, relax_column_count: true }) as Array<Record<string, string>>;
   let imported = 0;
   let skipped = 0;
   for (const [index, row] of rows.entries()) {
     const normalized = normalizeMarketplaceRow(provider, row, index);
     if (!normalized) { skipped += 1; continue; }
-    ingestCanonicalRecord(db, workspaceId, provider, null, normalized);
+    await ingestCanonicalRecord(db, workspaceId, provider, null, normalized);
     imported += 1;
   }
   return { imported, skipped };
 }
 
-export function processStripeWebhook(db: Db, rawBody: Buffer, signature: string): { duplicate: boolean; processed: string } {
+export async function processStripeWebhook(db: Db, rawBody: Buffer, signature: string): Promise<{ duplicate: boolean; processed: string }> {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) throw new Error('STRIPE_WEBHOOK_SECRET is not configured');
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? 'sk_test_placeholder');
   const event = stripe.webhooks.constructEvent(rawBody, signature, secret);
   const payloadHash = sha(rawBody.toString('utf8'));
-  if (!recordWebhook(db, 'stripe', event.id, null, payloadHash)) return { duplicate: true, processed: 'duplicate' };
+  if (!await recordWebhook(db, 'stripe', event.id, null, payloadHash)) return { duplicate: true, processed: 'duplicate' };
 
   const object = event.data.object as Stripe.Invoice | Stripe.PaymentIntent;
   const metadata = 'metadata' in object ? object.metadata : {};
   const workspaceId = metadata?.trevra_workspace_id;
   if (!workspaceId) {
-    completeWebhook(db, 'stripe', event.id, 'ignored', 'Missing trevra_workspace_id metadata', null);
+    await completeWebhook(db, 'stripe', event.id, 'ignored', 'Missing trevra_workspace_id metadata', null);
     return { duplicate: false, processed: 'ignored' };
   }
 
@@ -290,25 +295,25 @@ export function processStripeWebhook(db: Db, rawBody: Buffer, signature: string)
     if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') {
       const invoice = event.data.object as Stripe.Invoice;
       const externalRef = invoice.number ?? invoice.id;
-      const localInvoice = db.prepare('SELECT * FROM invoices WHERE workspace_id=? AND (external_ref=? OR id=?)').get(workspaceId, externalRef, metadata?.trevra_invoice_id ?? '') as Record<string, unknown> | undefined;
+      const localInvoice = await db.prepare('SELECT * FROM invoices WHERE workspace_id=? AND (external_ref=? OR id=?)').get(workspaceId, externalRef, metadata?.trevra_invoice_id ?? '') as Record<string, unknown> | undefined;
       const amount = Number(invoice.amount_paid ?? 0) / 100;
       if (localInvoice) {
         const paidAt = new Date((invoice.status_transitions?.paid_at ?? event.created) * 1000).toISOString();
-        db.prepare("UPDATE invoices SET status='paid',paid_at=? WHERE id=?").run(paidAt, String(localInvoice.id));
-        db.prepare(`
+        await db.prepare("UPDATE invoices SET status='paid',paid_at=? WHERE id=?").run(paidAt, String(localInvoice.id));
+        await db.prepare(`
           INSERT INTO payments (id,workspace_id,invoice_id,external_id,amount,currency,paid_at,created_at)
           VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,external_id) DO NOTHING
         `).run(id('pay'), workspaceId, String(localInvoice.id), event.id, amount, invoice.currency.toUpperCase(), paidAt, new Date().toISOString());
-        const rec = db.prepare('SELECT id FROM recommendations WHERE workspace_id=? AND source_key=?').get(workspaceId, `invoice:${localInvoice.id}:overdue`) as { id: string } | undefined;
-        if (rec) recordOutcome(db, rec.id, 'revenue_collected', amount, invoice.currency.toUpperCase(), { stripeEventId: event.id });
+        const rec = await db.prepare('SELECT id FROM recommendations WHERE workspace_id=? AND source_key=?').get(workspaceId, `invoice:${localInvoice.id}:overdue`) as { id: string } | undefined;
+        if (rec) await recordOutcome(db, rec.id, 'revenue_collected', amount, invoice.currency.toUpperCase(), { stripeEventId: event.id });
       }
-      completeWebhook(db, 'stripe', event.id, 'processed', null, workspaceId);
+      await completeWebhook(db, 'stripe', event.id, 'processed', null, workspaceId);
       return { duplicate: false, processed: 'invoice-paid' };
     }
-    completeWebhook(db, 'stripe', event.id, 'ignored', null, workspaceId);
+    await completeWebhook(db, 'stripe', event.id, 'ignored', null, workspaceId);
     return { duplicate: false, processed: 'ignored' };
   } catch (error) {
-    completeWebhook(db, 'stripe', event.id, 'failed', error instanceof Error ? error.message : String(error), workspaceId);
+    await completeWebhook(db, 'stripe', event.id, 'failed', error instanceof Error ? error.message : String(error), workspaceId);
     throw error;
   }
 }
@@ -328,7 +333,7 @@ export async function syncNangoRecords(db: Db, input: {
     for (const raw of result.records) {
       const normalized = normalizeNangoRecord(input.model, raw as Record<string, unknown>);
       if (!normalized) continue;
-      ingestCanonicalRecord(db, input.workspaceId, input.provider, input.localConnectionId, normalized);
+      await ingestCanonicalRecord(db, input.workspaceId, input.provider, input.localConnectionId, normalized);
       count += 1;
     }
     cursor = result.next_cursor;
@@ -336,90 +341,90 @@ export async function syncNangoRecords(db: Db, input: {
   return count;
 }
 
-export function ingestCanonicalRecord(db: Db, workspaceId: string, provider: string, connectionId: string | null, input: CanonicalRecord): void {
+export async function ingestCanonicalRecord(db: Db, workspaceId: string, provider: string, connectionId: string | null, input: CanonicalRecord): Promise<void> {
   const record = canonicalRecordSchema.parse(input);
   const now = new Date().toISOString();
-  const sourceId = upsertSourceRecord(db, workspaceId, connectionId, provider, record.kind, record.id, record.externalUrl ?? null, record, 'occurredAt' in record ? record.occurredAt : now);
+  const sourceId = await upsertSourceRecord(db, workspaceId, connectionId, provider, record.kind, record.id, record.externalUrl ?? null, record, 'occurredAt' in record ? record.occurredAt : now);
 
   if (record.kind === 'payment') {
     const invoice = record.invoiceExternalRef
-      ? db.prepare('SELECT * FROM invoices WHERE workspace_id=? AND external_ref=?').get(workspaceId, record.invoiceExternalRef) as Record<string, unknown> | undefined
+      ? await db.prepare('SELECT * FROM invoices WHERE workspace_id=? AND external_ref=?').get(workspaceId, record.invoiceExternalRef) as Record<string, unknown> | undefined
       : undefined;
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO payments (id,workspace_id,invoice_id,external_id,amount,currency,paid_at,source_record_id,created_at)
       VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,external_id) DO UPDATE SET amount=excluded.amount,paid_at=excluded.paid_at,source_record_id=excluded.source_record_id
     `).run(id('pay'), workspaceId, invoice ? String(invoice.id) : null, record.id, record.amount, record.currency, record.paidAt, sourceId, now);
-    if (invoice) db.prepare("UPDATE invoices SET status='paid',paid_at=? WHERE id=?").run(record.paidAt, String(invoice.id));
+    if (invoice) await db.prepare("UPDATE invoices SET status='paid',paid_at=? WHERE id=?").run(record.paidAt, String(invoice.id));
     return;
   }
 
-  const client = findOrCreateClient(db, workspaceId, provider, record.clientName, 'contactName' in record ? record.contactName : undefined, 'clientEmail' in record ? record.clientEmail : undefined, now);
+  const client = await findOrCreateClient(db, workspaceId, provider, record.clientName, 'contactName' in record ? record.contactName : undefined, 'clientEmail' in record ? record.clientEmail : undefined, now);
   const projectName = 'projectName' in record ? record.projectName : undefined;
-  const projectId = projectName ? findOrCreateProject(db, workspaceId, client.id, projectName, 'currency' in record ? record.currency : 'EUR', now) : null;
+  const projectId = projectName ? await findOrCreateProject(db, workspaceId, client.id, projectName, 'currency' in record ? record.currency : 'EUR', now) : null;
 
   switch (record.kind) {
     case 'message': {
-      const existing = db.prepare('SELECT id FROM messages WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
-      if (existing) db.prepare('UPDATE messages SET client_id=?,project_id=?,direction=?,subject=?,body=?,occurred_at=? WHERE id=?')
+      const existing = await db.prepare('SELECT id FROM messages WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
+      if (existing) await db.prepare('UPDATE messages SET client_id=?,project_id=?,direction=?,subject=?,body=?,occurred_at=? WHERE id=?')
         .run(client.id, projectId, record.direction, record.subject, record.body, record.occurredAt, existing.id);
-      else db.prepare('INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      else await db.prepare('INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
         .run(id('msg'), workspaceId, client.id, projectId, record.direction, record.subject, record.body, record.occurredAt, sourceId, now);
-      db.prepare('UPDATE clients SET last_interaction_at=? WHERE id=?').run(record.occurredAt, client.id);
+      await db.prepare('UPDATE clients SET last_interaction_at=? WHERE id=?').run(record.occurredAt, client.id);
       break;
     }
     case 'opportunity': {
-      const existing = db.prepare('SELECT id FROM opportunities WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
-      if (existing) db.prepare('UPDATE opportunities SET client_id=?,title=?,value=?,currency=?,status=?,proposal_sent_at=?,expected_response_at=? WHERE id=?')
+      const existing = await db.prepare('SELECT id FROM opportunities WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
+      if (existing) await db.prepare('UPDATE opportunities SET client_id=?,title=?,value=?,currency=?,status=?,proposal_sent_at=?,expected_response_at=? WHERE id=?')
         .run(client.id, record.title, record.value, record.currency, record.status, record.proposalSentAt ?? null, record.expectedResponseAt ?? null, existing.id);
-      else db.prepare('INSERT INTO opportunities (id,workspace_id,client_id,title,value,currency,status,proposal_sent_at,expected_response_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      else await db.prepare('INSERT INTO opportunities (id,workspace_id,client_id,title,value,currency,status,proposal_sent_at,expected_response_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
         .run(id('opp'), workspaceId, client.id, record.title, record.value, record.currency, record.status, record.proposalSentAt ?? null, record.expectedResponseAt ?? null, sourceId, now);
       break;
     }
     case 'invoice': {
-      const existing = db.prepare('SELECT id FROM invoices WHERE source_record_id=? OR (workspace_id=? AND external_ref=?)').get(sourceId, workspaceId, record.externalRef) as { id: string } | undefined;
-      if (existing) db.prepare('UPDATE invoices SET client_id=?,project_id=?,amount=?,currency=?,status=?,issued_at=?,due_at=?,paid_at=?,source_record_id=? WHERE id=?')
+      const existing = await db.prepare('SELECT id FROM invoices WHERE source_record_id=? OR (workspace_id=? AND external_ref=?)').get(sourceId, workspaceId, record.externalRef) as { id: string } | undefined;
+      if (existing) await db.prepare('UPDATE invoices SET client_id=?,project_id=?,amount=?,currency=?,status=?,issued_at=?,due_at=?,paid_at=?,source_record_id=? WHERE id=?')
         .run(client.id, projectId, record.amount, record.currency, record.status, record.issuedAt, record.dueAt, record.paidAt ?? null, sourceId, existing.id);
-      else db.prepare('INSERT INTO invoices (id,workspace_id,client_id,project_id,external_ref,amount,currency,status,issued_at,due_at,paid_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      else await db.prepare('INSERT INTO invoices (id,workspace_id,client_id,project_id,external_ref,amount,currency,status,issued_at,due_at,paid_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(id('inv'), workspaceId, client.id, projectId, record.externalRef, record.amount, record.currency, record.status, record.issuedAt, record.dueAt, record.paidAt ?? null, sourceId, now);
       break;
     }
     case 'milestone': {
       if (!projectId) throw new Error('Milestone requires a project');
-      const existing = db.prepare('SELECT id FROM milestones WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
-      if (existing) db.prepare('UPDATE milestones SET project_id=?,name=?,amount=?,currency=?,status=?,delivered_at=?,invoiced_at=? WHERE id=?')
+      const existing = await db.prepare('SELECT id FROM milestones WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
+      if (existing) await db.prepare('UPDATE milestones SET project_id=?,name=?,amount=?,currency=?,status=?,delivered_at=?,invoiced_at=? WHERE id=?')
         .run(projectId, record.name, record.amount, record.currency, record.status, record.deliveredAt ?? null, record.invoicedAt ?? null, existing.id);
-      else db.prepare('INSERT INTO milestones (id,project_id,name,amount,currency,status,delivered_at,invoiced_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      else await db.prepare('INSERT INTO milestones (id,project_id,name,amount,currency,status,delivered_at,invoiced_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
         .run(id('mil'), projectId, record.name, record.amount, record.currency, record.status, record.deliveredAt ?? null, record.invoicedAt ?? null, sourceId, now);
       break;
     }
     case 'scope_item': {
       if (!projectId) throw new Error('Scope item requires a project');
-      const existing = db.prepare('SELECT id FROM scope_items WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
-      if (existing) db.prepare('UPDATE scope_items SET project_id=?,description=?,included=?,unit_price=? WHERE id=?')
+      const existing = await db.prepare('SELECT id FROM scope_items WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
+      if (existing) await db.prepare('UPDATE scope_items SET project_id=?,description=?,included=?,unit_price=? WHERE id=?')
         .run(projectId, record.description, record.included ? 1 : 0, record.unitPrice ?? null, existing.id);
-      else db.prepare('INSERT INTO scope_items (id,project_id,description,included,unit_price,source_record_id,created_at) VALUES (?,?,?,?,?,?,?)')
+      else await db.prepare('INSERT INTO scope_items (id,project_id,description,included,unit_price,source_record_id,created_at) VALUES (?,?,?,?,?,?,?)')
         .run(id('scope'), projectId, record.description, record.included ? 1 : 0, record.unitPrice ?? null, sourceId, now);
       break;
     }
     case 'contract': {
-      const existing = db.prepare('SELECT id FROM contracts WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
+      const existing = await db.prepare('SELECT id FROM contracts WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
       const contractId = existing?.id ?? id('contract');
-      if (existing) db.prepare('UPDATE contracts SET client_id=?,project_id=?,title=?,status=?,signed_at=?,effective_at=? WHERE id=?')
+      if (existing) await db.prepare('UPDATE contracts SET client_id=?,project_id=?,title=?,status=?,signed_at=?,effective_at=? WHERE id=?')
         .run(client.id, projectId, record.title, record.status, record.signedAt ?? null, record.effectiveAt ?? null, contractId);
-      else db.prepare('INSERT INTO contracts (id,workspace_id,client_id,project_id,title,status,signed_at,effective_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      else await db.prepare('INSERT INTO contracts (id,workspace_id,client_id,project_id,title,status,signed_at,effective_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
         .run(contractId, workspaceId, client.id, projectId, record.title, record.status, record.signedAt ?? null, record.effectiveAt ?? null, sourceId, now);
-      db.prepare('DELETE FROM contract_clauses WHERE contract_id=?').run(contractId);
-      for (const clause of record.clauses) db.prepare('INSERT INTO contract_clauses (id,contract_id,clause_type,title,content,value_number,unit,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      await db.prepare('DELETE FROM contract_clauses WHERE contract_id=?').run(contractId);
+      for (const clause of record.clauses) await db.prepare('INSERT INTO contract_clauses (id,contract_id,clause_type,title,content,value_number,unit,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
         .run(id('clause'), contractId, clause.type, clause.title, clause.content, clause.value ?? null, clause.unit ?? null, sourceId, now);
       break;
     }
   }
 }
 
-export function recordOutcome(db: Db, recommendationId: string, outcomeType: string, amount: number, currency: string, details: Record<string, unknown> = {}): void {
-  const existing = db.prepare('SELECT id FROM recommendation_outcomes WHERE recommendation_id=? AND outcome_type=?').get(recommendationId, outcomeType) as { id: string } | undefined;
+export async function recordOutcome(db: Db, recommendationId: string, outcomeType: string, amount: number, currency: string, details: Record<string, unknown> = {}): Promise<void> {
+  const existing = await db.prepare('SELECT id FROM recommendation_outcomes WHERE recommendation_id=? AND outcome_type=?').get(recommendationId, outcomeType) as { id: string } | undefined;
   if (existing) return;
-  db.prepare('INSERT INTO recommendation_outcomes (id,recommendation_id,outcome_type,amount,currency,details_json,created_at) VALUES (?,?,?,?,?,?,?)')
+  await db.prepare('INSERT INTO recommendation_outcomes (id,recommendation_id,outcome_type,amount,currency,details_json,created_at) VALUES (?,?,?,?,?,?,?)')
     .run(id('outcome'), recommendationId, outcomeType, amount, currency, JSON.stringify(details), new Date().toISOString());
 }
 
@@ -494,38 +499,38 @@ function detectCurrency(value: string): string {
   return 'USD';
 }
 
-function findOrCreateClient(db: Db, workspaceId: string, provider: string, name: string, contactName: string | undefined, email: string | undefined, now: string): { id: string } {
+async function findOrCreateClient(db: Db, workspaceId: string, provider: string, name: string, contactName: string | undefined, email: string | undefined, now: string): Promise<{ id: string }> {
   const normalizedEmail = email?.toLowerCase();
   let existing: { id: string } | undefined;
-  if (normalizedEmail) existing = db.prepare('SELECT client_id AS id FROM contact_identities WHERE workspace_id=? AND identity_value=?').get(workspaceId, normalizedEmail) as { id: string } | undefined;
-  if (!existing) existing = db.prepare('SELECT id FROM clients WHERE workspace_id=? AND lower(name)=lower(?)').get(workspaceId, name) as { id: string } | undefined;
+  if (normalizedEmail) existing = await db.prepare('SELECT client_id AS id FROM contact_identities WHERE workspace_id=? AND identity_value=?').get(workspaceId, normalizedEmail) as { id: string } | undefined;
+  if (!existing) existing = await db.prepare('SELECT id FROM clients WHERE workspace_id=? AND lower(name)=lower(?)').get(workspaceId, name) as { id: string } | undefined;
   if (existing) return existing;
   const clientId = id('cl');
   const safeEmail = normalizedEmail ?? `import-${sha(`${provider}:${name}`).slice(0, 12)}@trevra.invalid`;
-  db.prepare('INSERT INTO clients (id,workspace_id,name,contact_name,email,status,active_value,currency,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+  await db.prepare('INSERT INTO clients (id,workspace_id,name,contact_name,email,status,active_value,currency,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
     .run(clientId, workspaceId, name, contactName ?? name, safeEmail, 'active', 0, 'EUR', now, now);
-  db.prepare('INSERT OR IGNORE INTO contact_identities (id,workspace_id,client_id,provider,identity_type,identity_value,created_at) VALUES (?,?,?,?,?,?,?)')
+  await db.prepare('INSERT INTO contact_identities (id,workspace_id,client_id,provider,identity_type,identity_value,created_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING')
     .run(id('ident'), workspaceId, clientId, provider, 'email', safeEmail, now);
   return { id: clientId };
 }
 
-function findOrCreateProject(db: Db, workspaceId: string, clientId: string, name: string, currency: string, now: string): string {
-  const existing = db.prepare('SELECT id FROM projects WHERE workspace_id=? AND client_id=? AND lower(name)=lower(?)').get(workspaceId, clientId, name) as { id: string } | undefined;
+async function findOrCreateProject(db: Db, workspaceId: string, clientId: string, name: string, currency: string, now: string): Promise<string> {
+  const existing = await db.prepare('SELECT id FROM projects WHERE workspace_id=? AND client_id=? AND lower(name)=lower(?)').get(workspaceId, clientId, name) as { id: string } | undefined;
   if (existing) return existing.id;
   const projectId = id('prj');
-  db.prepare('INSERT INTO projects (id,workspace_id,client_id,name,status,total_value,currency,created_at) VALUES (?,?,?,?,?,?,?,?)')
+  await db.prepare('INSERT INTO projects (id,workspace_id,client_id,name,status,total_value,currency,created_at) VALUES (?,?,?,?,?,?,?,?)')
     .run(projectId, workspaceId, clientId, name, 'active', 0, currency, now);
   return projectId;
 }
 
-function upsertSourceRecord(db: Db, workspaceId: string, connectionId: string | null, provider: string, objectType: string, externalId: string, externalUrl: string | null, payload: unknown, occurredAt: string): string {
+async function upsertSourceRecord(db: Db, workspaceId: string, connectionId: string | null, provider: string, objectType: string, externalId: string, externalUrl: string | null, payload: unknown, occurredAt: string): Promise<string> {
   const payloadJson = JSON.stringify(payload);
   const contentHash = sha(payloadJson);
-  const existing = db.prepare('SELECT id FROM source_records WHERE workspace_id=? AND provider=? AND object_type=? AND external_id=?')
+  const existing = await db.prepare('SELECT id FROM source_records WHERE workspace_id=? AND provider=? AND object_type=? AND external_id=?')
     .get(workspaceId, provider, objectType, externalId) as { id: string } | undefined;
   const sourceId = existing?.id ?? id('src');
   const now = new Date().toISOString();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO source_records (id,workspace_id,connection_id,provider,object_type,external_id,external_url,content_hash,occurred_at,payload_json,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(workspace_id,provider,object_type,external_id) DO UPDATE SET
@@ -535,14 +540,14 @@ function upsertSourceRecord(db: Db, workspaceId: string, connectionId: string | 
   return sourceId;
 }
 
-function recordWebhook(db: Db, provider: string, externalEventId: string, workspaceId: string | null, payloadHash: string): boolean {
-  const result = db.prepare('INSERT OR IGNORE INTO webhook_events (id,provider,external_event_id,workspace_id,payload_hash,status,received_at) VALUES (?,?,?,?,?,?,?)')
+async function recordWebhook(db: Db, provider: string, externalEventId: string, workspaceId: string | null, payloadHash: string): Promise<boolean> {
+  const result = await db.prepare('INSERT INTO webhook_events (id,provider,external_event_id,workspace_id,payload_hash,status,received_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(provider,external_event_id) DO NOTHING')
     .run(id('webhook'), provider, externalEventId, workspaceId, payloadHash, 'received', new Date().toISOString());
   return result.changes > 0;
 }
 
-function completeWebhook(db: Db, provider: string, externalEventId: string, status: string, error: string | null, workspaceId: string | null): void {
-  db.prepare('UPDATE webhook_events SET status=?,error=?,workspace_id=COALESCE(?,workspace_id),processed_at=? WHERE provider=? AND external_event_id=?')
+async function completeWebhook(db: Db, provider: string, externalEventId: string, status: string, error: string | null, workspaceId: string | null): Promise<void> {
+  await db.prepare('UPDATE webhook_events SET status=?,error=?,workspace_id=COALESCE(?,workspace_id),processed_at=? WHERE provider=? AND external_event_id=?')
     .run(status, error, workspaceId, new Date().toISOString(), provider, externalEventId);
 }
 

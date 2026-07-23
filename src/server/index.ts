@@ -9,7 +9,7 @@ import { validateEnvironment } from './config.js';
 const runtime = validateEnvironment();
 const port = runtime.port;
 await migrateAuthDatabase();
-const db = openDatabase();
+const db = await openDatabase();
 const app = createApp(db);
 
 if (process.env.NODE_ENV === 'production') {
@@ -27,16 +27,13 @@ const automationTimer = setInterval(() => {
   void runAllAutomationCycles(db).catch((error) => console.error('Automation cycle failed', error));
 }, automationIntervalMs);
 automationTimer.unref();
-
-function shutdown(signal: string) {
+async function shutdown(signal: string) {
   console.log(`${signal} received; shutting down`);
   clearInterval(automationTimer);
-  server.close(() => {
-    db.close();
-    closeAuthDatabase();
-    process.exit(0);
-  });
+  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  await Promise.all([db.close(), closeAuthDatabase()]);
+  process.exit(0);
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));

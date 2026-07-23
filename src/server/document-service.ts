@@ -91,7 +91,7 @@ export async function importCommercialDocument(
   const contactName = hints.contactName?.trim() || extracted.contactName || undefined;
   const clientEmail = hints.clientEmail?.trim() || extracted.clientEmail || undefined;
 
-  ingestCanonicalRecord(db, workspaceId, 'document-upload', null, {
+  await ingestCanonicalRecord(db, workspaceId, 'document-upload', null, {
     kind: 'contract',
     id: `contract-${documentId}`,
     clientName,
@@ -110,21 +110,22 @@ export async function importCommercialDocument(
       unit: clause.unit ?? undefined
     }))
   });
+  for (const [index, item] of extracted.scopeItems.entries()) {
+    await ingestCanonicalRecord(db, workspaceId, 'document-upload', null, {
+      kind: 'scope_item',
+      id: `scope-${documentId}-${index}`,
+      clientName,
+      projectName,
+      description: item.description,
+      included: item.included,
+      unitPrice: item.unitPrice ?? undefined,
+      currency
+    });
+  }
 
-  extracted.scopeItems.forEach((item, index) => ingestCanonicalRecord(db, workspaceId, 'document-upload', null, {
-    kind: 'scope_item',
-    id: `scope-${documentId}-${index}`,
-    clientName,
-    projectName,
-    description: item.description,
-    included: item.included,
-    unitPrice: item.unitPrice ?? undefined,
-    currency
-  }));
-
-  extracted.milestones.forEach((milestone, index) => {
-    if (milestone.amount === null) return;
-    ingestCanonicalRecord(db, workspaceId, 'document-upload', null, {
+  for (const [index, milestone] of extracted.milestones.entries()) {
+    if (milestone.amount === null) continue;
+    await ingestCanonicalRecord(db, workspaceId, 'document-upload', null, {
       kind: 'milestone',
       id: `milestone-${documentId}-${index}`,
       clientName,
@@ -137,7 +138,7 @@ export async function importCommercialDocument(
       status: milestone.status,
       deliveredAt: milestone.deliveredAt ?? undefined
     });
-  });
+  }
 
   return {
     extractionMethod,

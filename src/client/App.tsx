@@ -390,7 +390,7 @@ function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
     setBusyId(item.key);
     try {
       const session = await createConnectSession([item.key]);
-      const nango = new Nango({ connectSessionToken: session.token });
+      const nango = new Nango({ connectSessionToken: session.token, host: session.browser_host });
       nango.openConnectUI({
         sessionToken: session.token,
         onEvent: (event) => {

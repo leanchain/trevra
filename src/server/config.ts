@@ -14,6 +14,7 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
   const base = z.object({
     PORT: z.coerce.number().int().min(1).max(65535).default(8787),
     APP_ORIGIN: z.string().default('http://localhost:5173,http://localhost:8787'),
+    DATABASE_URL: z.string().min(1),
     AUTOMATION_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
     COOKIE_SECURE: booleanString.default(production ? 'true' : 'false'),
     ALLOW_DEMO_AUTH: booleanString.optional(),
@@ -26,6 +27,7 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     STRIPE_WEBHOOK_SECRET: z.string().optional()
   }).parse(env);
 
+  if (!/^postgres(?:ql)?:\/\//i.test(base.DATABASE_URL)) throw new Error('DATABASE_URL must be a PostgreSQL connection string');
   const origins = base.APP_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean);
   for (const origin of origins) z.string().url().parse(origin);
 

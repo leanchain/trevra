@@ -1,6 +1,16 @@
 # Trevra
 
-Trevra is a revenue chief of staff for independent professionals. It continuously reconstructs what was sold, requested, delivered, invoiced, and paid; assembles a Revenue Proof Pack for every finding; prepares the corrective work; and executes approved or explicitly delegated actions through the freelancer's existing tools.
+Trevra is a revenue chief of staff for independent professionals. It reconstructs what was sold, requested, delivered, invoiced, and paid; assembles a Revenue Proof Pack for every finding; prepares the corrective work; and executes approved or explicitly delegated actions through the freelancer's existing tools.
+
+## Storage guarantee
+
+Trevra is **PostgreSQL-only**. There is no SQLite dependency, fallback, database file, or embedded development database.
+
+- Application data and Better Auth use PostgreSQL.
+- Every multi-step write uses a real PostgreSQL transaction.
+- Action preparation and execution use row locks to prevent duplicate concurrent work.
+- Schema migrations use a PostgreSQL advisory lock, so multiple Cloud Run instances cannot race migrations.
+- Tests run against a real ephemeral PostgreSQL container.
 
 ## What is implemented
 
@@ -14,76 +24,84 @@ Trevra is a revenue chief of staff for independent professionals. It continuousl
 - editable prepared actions and scheduled delivery;
 - configurable standing instructions through Autopilot.
 
-### Execution
+### Execution and integrations
 
 - Gmail and Microsoft 365 message delivery through Nango-managed connections;
-- QuickBooks, Xero, or Stripe invoice creation through the standardized `trevra-create-invoice` Nango action;
+- QuickBooks, Xero, or Stripe invoice creation through `trevra-create-invoice`;
 - HoneyBook or Bonsai change-order creation through `trevra-create-change-order`;
 - marketplace history imports for Upwork, Fiverr, Contra, and generic CSV exports;
-- PDF, DOCX, TXT, Markdown, and RTF agreement imports that build contracts, clauses, scope items, and milestones;
+- PDF, DOCX, TXT, Markdown, and RTF agreement imports that create contracts, clauses, scope items, and milestones;
 - optional structured model extraction with a deterministic local fallback;
-- direct signed Stripe payment webhooks;
-- signed Nango auth and incremental-sync webhooks;
-- a canonical ingestion API for private internal systems.
+- signed and deduplicated Stripe and Nango webhooks;
+- canonical ingestion API for private systems.
 
-### Defensible product layer
+Trevra does not rebuild OAuth, refresh-token rotation, provider credential storage, integration retries, or rate-limit handling. Nango Cloud or a self-hosted Nango deployment provides that plumbing. The canonical model and action contracts are in [`docs/integration-contracts.md`](docs/integration-contracts.md).
 
-- provider-independent commercial graph;
-- immutable source provenance with content hashes;
-- contract clauses and a living Scope Ledger;
-- evidence-linked recommendations;
-- standardized Revenue Proof Packs;
-- exact approval hashing covering visible text and structured financial payloads;
-- deterministic idempotency keys for external writes;
-- recommendation outcomes and confirmed payment attribution;
-- complete audit events.
-
-### Production foundations
-
-- Better Auth for account and session management;
-- stable `better-sqlite3` databases with WAL and busy timeouts;
-- automatic auth and application migrations;
-- tenant-scoped queries and automatic workspace creation;
-- Helmet security headers, same-origin write enforcement, secure cookies, and rate limiting;
-- Pino structured request logs with credential and payload redaction;
-- signed and deduplicated webhooks;
-- background automation and scheduled-action worker;
-- strict production environment validation;
-- non-root multi-stage Docker image with persistent volume and health check;
-- ten API and engine tests.
-
-## Architecture boundary
-
-Trevra does **not** reimplement OAuth, refresh-token rotation, provider credential storage, integration retries, rate-limit handling, or incremental sync infrastructure. Nango Cloud or a self-hosted Nango deployment provides that integration plumbing.
-
-Trevra owns the part that differentiates the product:
-
-```text
-Connected provider
-      ↓
-Nango authorization, sync, retries, write-back
-      ↓
-Canonical commercial records + immutable provenance
-      ↓
-Commercial graph and Scope Ledger
-      ↓
-Revenue detection and Proof Pack
-      ↓
-Policy / standing instruction
-      ↓
-Prepare → approve or delegate → execute
-      ↓
-Invoice, message, change order, or payment outcome
-```
-
-The canonical models and action contracts are defined in [`docs/integration-contracts.md`](docs/integration-contracts.md).
-
-## Local development
+## Fastest local start
 
 Requirements:
 
-- Node.js 24+
-- npm
+- Docker with Compose v2
+- at least 6 GB of free Docker memory for the complete Trevra + Nango stack
+
+Create your development environment file:
+
+```bash
+cp .env.dev.example .env.dev
+```
+
+Generate a unique Nango encryption key and replace the example value in `.env.dev`:
+
+```bash
+openssl rand -base64 32
+```
+
+Start Trevra, PostgreSQL, Redis, and self-hosted Nango:
+
+```bash
+docker compose --env-file .env.dev -f compose.dev.yml up --build
+```
+
+Open:
+
+- Trevra: `http://localhost:5173`
+- Trevra API: `http://localhost:8787`
+- Nango API/dashboard: `http://localhost:3003`
+- Nango Connect UI: `http://localhost:3009`
+- Trevra PostgreSQL: `localhost:5432`
+- Nango PostgreSQL: `localhost:55432`
+
+The Trevra frontend and API hot-reload through the bind-mounted source tree.
+
+After Nango starts, configure its provider integrations and copy the Nango environment secret key and webhook signing key into `.env.dev` as `NANGO_API_KEY` and `NANGO_WEBHOOK_SIGNING_KEY`. Restart only Trevra afterward:
+
+```bash
+docker compose --env-file .env.dev -f compose.dev.yml up -d --force-recreate trevra
+```
+
+Until those Nango keys are configured, the core Trevra demo, document import, marketplace import, recommendations, Proof Packs, and simulated development execution still work; live OAuth connections do not.
+
+Stop the stack without deleting data:
+
+```bash
+docker compose --env-file .env.dev -f compose.dev.yml down
+```
+
+Delete all local development data explicitly:
+
+```bash
+docker compose --env-file .env.dev -f compose.dev.yml down -v
+```
+
+## Run the app directly against PostgreSQL
+
+Start only PostgreSQL:
+
+```bash
+docker compose --env-file .env.dev -f compose.dev.yml up -d postgres
+```
+
+Then:
 
 ```bash
 cp .env.example .env
@@ -91,11 +109,11 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. The sign-in screen includes a seeded demo button in development.
-
-Frontend changes use Vite HMR. Server changes restart through `tsx watch`.
+Open `http://localhost:5173`.
 
 ## Tests and build
+
+The test runner launches a real PostgreSQL 17 Testcontainer. Docker must be running.
 
 ```bash
 npm run check
@@ -109,70 +127,123 @@ npm test
 npm run build
 ```
 
-## Production configuration
+## Production on Google Cloud
 
-Production startup rejects unsafe configuration. At minimum configure:
-
-```bash
-NODE_ENV=production
-APP_ORIGIN=https://app.example.com
-BETTER_AUTH_URL=https://app.example.com
-BETTER_AUTH_SECRET=<at-least-32-random-characters>
-COOKIE_SECURE=true
-NANGO_API_KEY=<nango-secret-key>
-NANGO_WEBHOOK_SIGNING_KEY=<nango-webhook-signing-key>
-```
-
-Also configure the provider integration IDs and sync/action names shown in `.env.example`. Set `OPENAI_API_KEY` and `OPENAI_EXTRACTION_MODEL` to use structured model extraction for uploaded agreements; without them, Trevra uses the deterministic local parser.
-
-Production validation rejects demo authentication and simulated execution. It also requires a Stripe webhook secret whenever a Stripe secret key is configured.
-
-## Nango setup
-
-1. Create or self-host a Nango environment.
-2. Add the provider integrations required for the launch segment.
-3. Configure Nango Connect and the callback URLs for the deployment domain.
-4. Implement sync functions that return the canonical models in `docs/integration-contracts.md`.
-5. Implement `trevra-create-invoice` for the chosen accounting provider.
-6. Optionally implement `trevra-create-change-order` for HoneyBook or Bonsai.
-7. Point Nango webhooks to `https://<domain>/api/webhooks/nango`.
-8. Set the matching integration and sync names in the environment.
-
-Gmail and Microsoft message writes use Nango's proxy directly. Accounting and project-management writes use standardized Nango actions because creating an invoice or change order requires provider-specific customer, account, tax, and item mapping.
-
-## Stripe setup
-
-Point signed Stripe events to:
+The supported production path is:
 
 ```text
-https://<domain>/api/webhooks/stripe
+Browser
+   ↓
+Cloud Run: Trevra
+   ↓ Unix socket through Cloud SQL integration
+Cloud SQL for PostgreSQL: regional HA + backups + PITR
+
+Trevra Cloud Run
+   ↓ HTTPS
+Self-hosted Nango service
+   ↓
+Separate Nango PostgreSQL and Redis
 ```
 
-Add `trevra_workspace_id` and, where available, `trevra_invoice_id` to Stripe metadata. Trevra verifies the raw webhook signature, stores the Stripe event ID before processing, updates the invoice ledger, and records confirmed collected revenue.
+Terraform under [`infra/gcp/terraform`](infra/gcp/terraform) provisions:
 
-## Docker
+- Artifact Registry;
+- a dedicated Cloud Run service account;
+- Cloud Run with startup and liveness probes;
+- Cloud SQL PostgreSQL 16 with regional high availability;
+- SSD autoscaling, automated backups, 14 retained backups, and seven days of point-in-time recovery logs;
+- Secret Manager values for the PostgreSQL URL, Better Auth, Nango, and internal ingestion;
+- Cloud SQL Client and Secret Manager least-privilege access;
+- migration-safe multi-instance startup.
 
-Build:
+### 1. Bootstrap remote Terraform state
 
 ```bash
-docker build -t trevra:production .
+export GCP_PROJECT_ID=your-project
+export GCP_REGION=europe-west6
+export TF_STATE_BUCKET=your-globally-unique-trevra-tfstate
+
+./infra/gcp/bootstrap.sh
 ```
 
-Run:
+### 2. Deploy Trevra
+
+Use a production HTTPS domain for the app and a separately deployed HTTPS Nango endpoint:
 
 ```bash
-docker run --rm \
-  -p 8787:8787 \
-  -v trevra-data:/app/data \
-  --env-file .env.production \
-  trevra:production
+export GCP_PROJECT_ID=your-project
+export GCP_REGION=europe-west6
+export TF_STATE_BUCKET=your-globally-unique-trevra-tfstate
+export APP_ORIGIN=https://app.example.com
+export BETTER_AUTH_URL=https://app.example.com
+export NANGO_HOST=https://nango-api.example.com
+export NANGO_API_KEY='...'
+export NANGO_WEBHOOK_SIGNING_KEY='...'
+
+./infra/gcp/deploy.sh
 ```
 
-The image runs as a non-root `trevra` user. Both application and authentication databases live in `/app/data`.
+The script enables required APIs, prepares Artifact Registry, builds the image with Cloud Build, and applies Terraform.
 
-## Deployment profile
+Cloud Run Compose is also represented in [`compose.gcp.yml`](compose.gcp.yml) for inspection or preview deployment, but [`infra/gcp/terraform`](infra/gcp/terraform) is the production source of truth.
 
-The included database configuration is production-suitable for a **single application instance or private beta** with persistent storage, WAL, backups, and regular restore tests. A horizontally scaled multi-instance deployment should replace the application storage layer with PostgreSQL before enabling concurrent writers across instances. Better Auth already supports PostgreSQL; the commercial repository currently uses synchronous SQL tailored to SQLite.
+### Production self-hosted Nango
+
+[`compose.nango.production.yml`](compose.nango.production.yml) runs Nango with a Cloud SQL Auth Proxy and an external Redis endpoint. It is intended for a hardened GCE VM or equivalent long-running container host—not inside the Trevra Cloud Run service.
+
+```bash
+cp .env.nango.production.example .env.nango.production
+chmod 600 .env.nango.production
+docker compose --env-file .env.nango.production -f compose.nango.production.yml up -d
+```
+
+Place a TLS reverse proxy or HTTPS load balancer in front of ports 3003 and 3009. Keep the Nango encryption key permanently backed up: changing it after credentials have been encrypted can make those credentials unreadable.
+
+See [`docs/deployment.md`](docs/deployment.md) for DNS, secrets, scaling, backup, restore, and Nango details.
+
+## Database operations
+
+Migrations run automatically at startup from `migrations/`. Trevra and Better Auth migrations are serialized with PostgreSQL advisory locks.
+
+### One-time migration from the previous SQLite build
+
+The application never reads SQLite at runtime. A separate migration utility exists only to preserve data from the previous build and requires Python 3's standard library.
+
+Stop the old application, point `DATABASE_URL` at a **fresh PostgreSQL database**, and inspect the transfer first:
+
+```bash
+npm run db:migrate-sqlite -- --dry-run \
+  --app data/trevra.db \
+  --auth data/trevra-auth.db
+```
+
+Commit the migration:
+
+```bash
+npm run db:migrate-sqlite -- \
+  --app data/trevra.db \
+  --auth data/trevra-auth.db
+```
+
+Before reading any rows, the utility uses Python's SQLite backup API to create consistent snapshots in a timestamped `data/sqlite-backup-*` directory. The PostgreSQL import is one transaction and aborts if rows conflict. `--allow-conflicts` enables a non-destructive merge that skips existing rows.
+
+Reset only the seeded demo workspace:
+
+```bash
+npm run db:reset
+```
+
+Production data is never deleted by this command.
+
+Recommended production controls:
+
+- Cloud SQL deletion protection;
+- regional high availability;
+- point-in-time recovery;
+- automated backups plus periodic on-demand backups;
+- scheduled logical exports to a separate project or bucket;
+- quarterly restore drills into an isolated Cloud SQL instance;
+- alerting on storage, connections, replication, backup failures, and database availability.
 
 ## Primary API surface
 
@@ -198,6 +269,7 @@ The included database configuration is production-suitable for a **single applic
 - `POST /api/integrations/connect-session`
 - `POST /api/integrations/:id/sync`
 - `DELETE /api/integrations/:id`
+- `POST /api/imports/document`
 - `POST /api/imports/marketplace`
 - `POST /api/events`
 - `POST /api/webhooks/nango`
@@ -212,22 +284,22 @@ The included database configuration is production-suitable for a **single applic
 ## Safety rules
 
 - Scope changes can never be auto-executed.
-- A manual or delegated approval stores the hash of visible and structured payloads.
-- Execution is blocked if that payload changes.
+- Approval hashes cover visible text and structured financial payloads.
+- Execution is blocked if an approved payload changes.
 - Production refuses simulated delivery.
-- Scheduled work is executed only after its approved time.
-- Provider writes receive deterministic idempotency keys.
-- Incoming provider events are signature-verified and deduplicated.
+- Scheduled work executes only after the approved time.
+- External writes receive deterministic idempotency keys.
+- Provider events are signature-verified and deduplicated.
 - Every material state transition is audited.
 
 ## Before accepting paying customers
 
-The software path is implemented, but the operator must still complete non-code launch requirements:
+The code and deployment foundations are implemented. The operator still must complete:
 
-- provider OAuth applications, scopes, and any required reviews;
-- Nango production integration functions and test connections;
-- privacy policy, terms, DPA, subprocessor list, and deletion policy;
-- encrypted infrastructure backups and restore drills;
-- domain, TLS, transactional-email configuration, and monitoring alerts;
-- security review and cross-tenant adversarial testing;
-- accounting-provider sandbox certification where applicable.
+- provider OAuth applications, scopes, reviews, and callback domains;
+- Nango production integration functions and provider test connections;
+- privacy policy, terms, DPA, subprocessor list, and deletion process;
+- custom domains and DNS;
+- alerts, incident response, backup validation, and restore drills;
+- accounting-provider sandbox certification where applicable;
+- security review and cross-tenant adversarial testing.
