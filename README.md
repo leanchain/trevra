@@ -2,6 +2,10 @@
 
 Trevra is a revenue chief of staff for independent professionals. It reconstructs what was sold, requested, delivered, invoiced, and paid; assembles a Revenue Proof Pack for every finding; prepares the corrective work; and executes approved or explicitly delegated actions through the freelancer's existing tools.
 
+## Public launch and discoverability
+
+Trevra includes crawlable launch copy, canonical and social metadata, JSON-LD, a sitemap, robots directives, Web App Manifest, `llms.txt`, `llms-full.txt`, public `agents.md`, `humans.txt`, RFC 9116 `security.txt`, IndexNow support, and privacy-preserving first-party traction measurement. Configuration and launch verification are documented in [`docs/discoverability.md`](docs/discoverability.md).
+
 ## Storage guarantee
 
 Trevra is **PostgreSQL-only**. There is no SQLite dependency, fallback, database file, or embedded development database.

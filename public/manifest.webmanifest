@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Trevra — Revenue Chief of Staff",
+  "short_name": "Trevra",
+  "description": "AI revenue operations for freelancers and independent professionals.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f7f3",
+  "theme_color": "#1f6f4a",
+  "categories": ["business", "productivity", "finance"],
+  "icons": [
+    { "src": "/icons/trevra-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/trevra-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Open revenue brief", "short_name": "Revenue brief", "url": "/" },
+    { "name": "How Trevra works", "short_name": "How it works", "url": "/how-it-works" }
+  ]
+}

@@ -13,7 +13,9 @@
     "test:watch": "vitest",
     "check": "npm test && npm run build",
     "db:reset": "tsx scripts/reset-db.ts",
-    "db:migrate-sqlite": "tsx scripts/migrate-sqlite-to-postgres.ts"
+    "db:migrate-sqlite": "tsx scripts/migrate-sqlite-to-postgres.ts",
+    "traction:report": "tsx scripts/traction-report.ts",
+    "seo:submit": "tsx scripts/submit-indexnow.ts"
   },
   "dependencies": {
     "@nangohq/frontend": "^0.71.2",

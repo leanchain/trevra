@@ -8,6 +8,12 @@ set -euo pipefail
 : "${BETTER_AUTH_URL:=${APP_ORIGIN}}"
 : "${GOOGLE_CLIENT_ID:?Set GOOGLE_CLIENT_ID from the Google OAuth web client}"
 : "${GOOGLE_CLIENT_SECRET:?Set GOOGLE_CLIENT_SECRET from the Google OAuth web client}"
+: "${PUBLIC_LEGAL_NAME:=Trevra}"
+: "${PUBLIC_SUPPORT_EMAIL:?Set PUBLIC_SUPPORT_EMAIL to a monitored inbox}"
+: "${ALERT_EMAIL:=${PUBLIC_SUPPORT_EMAIL}}"
+: "${SECURITY_CONTACT_EMAIL:?Set SECURITY_CONTACT_EMAIL to a monitored vulnerability inbox}"
+: "${GOOGLE_SITE_VERIFICATION:=}"
+: "${BING_SITE_VERIFICATION:=}"
 : "${NANGO_HOST:?Set NANGO_HOST to the public self-hosted Nango API URL}"
 : "${NANGO_API_KEY:?Set NANGO_API_KEY}"
 : "${NANGO_WEBHOOK_SIGNING_KEY:?Set NANGO_WEBHOOK_SIGNING_KEY}"
@@ -25,12 +31,18 @@ export TF_VAR_app_origin="${APP_ORIGIN}"
 export TF_VAR_better_auth_url="${BETTER_AUTH_URL}"
 export TF_VAR_google_client_id="${GOOGLE_CLIENT_ID}"
 export TF_VAR_google_client_secret="${GOOGLE_CLIENT_SECRET}"
+export TF_VAR_legal_name="${PUBLIC_LEGAL_NAME}"
+export TF_VAR_support_email="${PUBLIC_SUPPORT_EMAIL}"
+export TF_VAR_alert_email="${ALERT_EMAIL}"
+export TF_VAR_security_contact_email="${SECURITY_CONTACT_EMAIL}"
+export TF_VAR_google_site_verification="${GOOGLE_SITE_VERIFICATION}"
+export TF_VAR_bing_site_verification="${BING_SITE_VERIFICATION}"
 export TF_VAR_nango_host="${NANGO_HOST}"
 export TF_VAR_nango_api_key="${NANGO_API_KEY}"
 export TF_VAR_nango_webhook_signing_key="${NANGO_WEBHOOK_SIGNING_KEY}"
 
 gcloud config set project "${GCP_PROJECT_ID}"
-gcloud services enable artifactregistry.googleapis.com cloudbuild.googleapis.com run.googleapis.com secretmanager.googleapis.com sqladmin.googleapis.com
+gcloud services enable artifactregistry.googleapis.com cloudbuild.googleapis.com run.googleapis.com monitoring.googleapis.com secretmanager.googleapis.com sqladmin.googleapis.com
 
 terraform -chdir="${TF_DIR}" init \
   -backend-config="bucket=${TF_STATE_BUCKET}" \
@@ -43,5 +55,9 @@ terraform -chdir="${TF_DIR}" apply -auto-approve \
 gcloud builds submit "${ROOT_DIR}" --tag "${IMAGE}" --project "${GCP_PROJECT_ID}"
 terraform -chdir="${TF_DIR}" apply -auto-approve
 
-printf '\nTrevra deployed.\nURL: %s\nImage: %s\nGoogle callback: %s/api/auth/callback/google\n' \
-  "$(terraform -chdir="${TF_DIR}" output -raw cloud_run_url)" "${IMAGE}" "${BETTER_AUTH_URL%/}"
+INDEXNOW_KEY="$(terraform -chdir="${TF_DIR}" output -raw indexnow_key)"
+PUBLIC_SITE_URL="${APP_ORIGIN}" INDEXNOW_KEY="${INDEXNOW_KEY}" npm --prefix "${ROOT_DIR}" run seo:submit || \
+  printf 'Warning: IndexNow submission failed; run npm run seo:submit after DNS is live.\n' >&2
+
+printf '\nTrevra deployed.\nURL: %s\nImage: %s\nGoogle callback: %s/api/auth/callback/google\nSitemap: %s/sitemap.xml\nTraction token: terraform -chdir=%s output -raw traction_admin_token\n' \
+  "$(terraform -chdir="${TF_DIR}" output -raw cloud_run_url)" "${IMAGE}" "${BETTER_AUTH_URL%/}" "${APP_ORIGIN%/}" "${TF_DIR}"

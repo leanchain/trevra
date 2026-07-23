@@ -27,6 +27,7 @@ import {
   recordOutcome,
   triggerConnectionSync
 } from './integration-service.js';
+import { getSiteConfig, recordMarketingEvent, registerPublicSiteRoutes } from './public-site.js';
 
 const SESSION_COOKIE = 'trevra_session';
 const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -47,7 +48,15 @@ export function createApp(db: Db) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
-  app.use(helmet({ contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false }));
+  app.use((_req, res, next) => {
+    res.locals.cspNonce = randomBytes(16).toString('base64');
+    next();
+  });
+  app.use(helmet({
+    contentSecurityPolicy: process.env.NODE_ENV === 'production'
+      ? { directives: { scriptSrc: ["'self'", (_req, res) => `'nonce-${String((res as unknown as Response).locals.cspNonce)}'`] } }
+      : false
+  }));
   app.use(pinoHttp({
     logger: pino({ level: process.env.NODE_ENV === 'test' ? 'silent' : (process.env.LOG_LEVEL ?? 'info') }),
     genReqId: (req, res) => {
@@ -62,6 +71,11 @@ export function createApp(db: Db) {
     customLogLevel: (_req, res, error) => error || res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info'
   }));
   app.use(cookieParser());
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    next();
+  });
+  registerPublicSiteRoutes(app, db);
 
   app.post('/api/webhooks/nango', express.raw({ type: 'application/json', limit: '2mb' }), async (req, res) => {
     try {
@@ -106,6 +120,7 @@ export function createApp(db: Db) {
     }
     const token = await createSession(db, DEMO_USER_ID);
     setSessionCookie(res, token);
+    await recordMarketingEvent(db, { eventName: 'demo_started', workspaceId: DEMO_WORKSPACE_ID, path: '/' });
     res.json({
       user: { id: DEMO_USER_ID, name: 'Alex Morgan', email: 'alex@northstar.studio' },
       workspace: { id: DEMO_WORKSPACE_ID, name: 'Northstar Studio' }
@@ -204,7 +219,11 @@ export function createApp(db: Db) {
   });
 
   app.post('/api/recommendations/:id/prepare', async (req: AuthedRequest, res) => {
-    try { res.status(201).json({ action: await prepareAction(db, req.auth!.workspaceId, String(req.params.id)) }); }
+    try {
+      const action = await prepareAction(db, req.auth!.workspaceId, String(req.params.id));
+      await recordMarketingEvent(db, { eventName: 'action_prepared', workspaceId: req.auth!.workspaceId, metadata: { actionType: action.type } });
+      res.status(201).json({ action });
+    }
     catch (error) { res.status(404).json({ error: error instanceof Error ? error.message : 'Unable to prepare action' }); }
   });
 
@@ -213,12 +232,20 @@ export function createApp(db: Db) {
       recipient: z.string().email(), subject: z.string().min(1).max(200), body: z.string().min(1).max(20000),
       scheduledFor: z.string().datetime().nullable().optional()
     }).parse(req.body);
-    try { res.json({ action: await approveAction(db, req.auth!.workspaceId, req.auth!.userId, String(req.params.id), input) }); }
+    try {
+      const action = await approveAction(db, req.auth!.workspaceId, req.auth!.userId, String(req.params.id), input);
+      await recordMarketingEvent(db, { eventName: 'action_approved', workspaceId: req.auth!.workspaceId, metadata: { actionType: action.type, scheduled: Boolean(action.scheduledFor) } });
+      res.json({ action });
+    }
     catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to approve action' }); }
   });
 
   app.post('/api/actions/:id/execute', async (req: AuthedRequest, res) => {
-    try { res.json({ action: await executeAction(db, req.auth!.workspaceId, String(req.params.id)) }); }
+    try {
+      const action = await executeAction(db, req.auth!.workspaceId, String(req.params.id));
+      await recordMarketingEvent(db, { eventName: 'action_executed', workspaceId: req.auth!.workspaceId, metadata: { actionType: action.type, provider: action.executionProvider } });
+      res.json({ action });
+    }
     catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to execute action' }); }
   });
 
@@ -237,6 +264,7 @@ export function createApp(db: Db) {
         workspaceId: req.auth!.workspaceId, userId: req.auth!.userId, userEmail: req.auth!.email,
         allowedIntegrations: input.allowedIntegrations
       });
+      await recordMarketingEvent(db, { eventName: 'integration_connect_started', workspaceId: req.auth!.workspaceId, metadata: { integrations: input.allowedIntegrations.join(',') } });
       res.status(201).json({ session });
     } catch (error) {
       res.status(503).json({ error: error instanceof Error ? error.message : 'Unable to start connection' });
@@ -261,6 +289,7 @@ export function createApp(db: Db) {
     const input = z.object({ provider: z.enum(['upwork', 'fiverr', 'contra', 'generic']), csv: z.string().min(1).max(5_000_000) }).parse(req.body);
     const result = await importMarketplaceCsv(db, req.auth!.workspaceId, input.provider, input.csv);
     await runRecommendationEngine(db, req.auth!.workspaceId);
+    await recordMarketingEvent(db, { eventName: 'marketplace_imported', workspaceId: req.auth!.workspaceId, metadata: { provider: input.provider, imported: result.imported } });
     res.status(201).json(result);
   });
 
@@ -279,6 +308,7 @@ export function createApp(db: Db) {
         clientEmail: hints.clientEmail || undefined
       });
       await runRecommendationEngine(db, req.auth!.workspaceId);
+      await recordMarketingEvent(db, { eventName: 'document_imported', workspaceId: req.auth!.workspaceId, metadata: { extractionMethod: result.extractionMethod, scopeItems: result.scopeItems } });
       res.status(201).json(result);
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to import document' });
@@ -342,6 +372,8 @@ export function createApp(db: Db) {
     res.clearCookie(SESSION_COOKIE);
     res.json({ ok: true });
   });
+
+  app.use('/api', (_req, res) => res.status(404).json({ error: 'API route not found' }));
 
   app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', issues: error.issues });

@@ -23,6 +23,12 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     BETTER_AUTH_URL: z.string().url().optional(),
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
+    PUBLIC_SITE_URL: z.string().url().optional(),
+    PUBLIC_SUPPORT_EMAIL: z.string().email().optional(),
+    SECURITY_CONTACT_EMAIL: z.string().email().optional(),
+    MARKETING_HASH_SALT: z.string().optional(),
+    TRACTION_ADMIN_TOKEN: z.string().optional(),
+    INDEXNOW_KEY: z.string().optional(),
     NANGO_API_KEY: z.string().optional(),
     NANGO_WEBHOOK_SIGNING_KEY: z.string().optional(),
     STRIPE_SECRET_KEY: z.string().optional(),
@@ -33,6 +39,7 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
   if (Boolean(base.GOOGLE_CLIENT_ID?.trim()) !== Boolean(base.GOOGLE_CLIENT_SECRET?.trim())) {
     throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured together');
   }
+  if (base.INDEXNOW_KEY && !/^[A-Za-z0-9._-]{8,128}$/.test(base.INDEXNOW_KEY)) throw new Error('INDEXNOW_KEY must contain 8-128 URL-safe characters');
   const origins = base.APP_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean);
   for (const origin of origins) z.string().url().parse(origin);
 
@@ -40,6 +47,12 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     const problems: string[] = [];
     if (!base.BETTER_AUTH_SECRET || base.BETTER_AUTH_SECRET.length < 32) problems.push('BETTER_AUTH_SECRET must contain at least 32 characters');
     if (!base.BETTER_AUTH_URL) problems.push('BETTER_AUTH_URL is required');
+    if (!base.PUBLIC_SITE_URL?.startsWith('https://')) problems.push('PUBLIC_SITE_URL is required and must use HTTPS');
+    if (!base.PUBLIC_SUPPORT_EMAIL) problems.push('PUBLIC_SUPPORT_EMAIL is required');
+    if (!base.SECURITY_CONTACT_EMAIL) problems.push('SECURITY_CONTACT_EMAIL is required');
+    if (!base.MARKETING_HASH_SALT || base.MARKETING_HASH_SALT.length < 32) problems.push('MARKETING_HASH_SALT must contain at least 32 characters');
+    if (!base.TRACTION_ADMIN_TOKEN || base.TRACTION_ADMIN_TOKEN.length < 32) problems.push('TRACTION_ADMIN_TOKEN must contain at least 32 characters');
+    if (!base.INDEXNOW_KEY) problems.push('INDEXNOW_KEY is required');
     if (base.COOKIE_SECURE !== 'true') problems.push('COOKIE_SECURE must be true');
     if (!base.NANGO_API_KEY) problems.push('NANGO_API_KEY is required for live integrations');
     if (!base.NANGO_WEBHOOK_SIGNING_KEY) problems.push('NANGO_WEBHOOK_SIGNING_KEY is required for signed integration webhooks');

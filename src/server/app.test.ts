@@ -17,6 +17,10 @@ afterEach(async () => {
   delete process.env.OPENAI_API_KEY;
   delete process.env.GOOGLE_CLIENT_ID;
   delete process.env.GOOGLE_CLIENT_SECRET;
+  delete process.env.PUBLIC_SITE_URL;
+  delete process.env.TRACTION_ADMIN_TOKEN;
+  delete process.env.MARKETING_HASH_SALT;
+  delete process.env.INDEXNOW_KEY;
 });
 
 async function agentWithSession() {
@@ -28,6 +32,36 @@ async function agentWithSession() {
 }
 
 describe('Trevra API on PostgreSQL', () => {
+  it('publishes canonical search, AI, and security discovery resources', async () => {
+    process.env.PUBLIC_SITE_URL = 'https://trevra.example';
+    process.env.INDEXNOW_KEY = 'trevra-indexnow-key-12345678';
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    expect((await request(app).get('/robots.txt').expect(200)).text).toContain('Sitemap: https://trevra.example/sitemap.xml');
+    expect((await request(app).get('/sitemap.xml').expect(200)).text).toContain('<loc>https://trevra.example/how-it-works</loc>');
+    expect((await request(app).get('/llms.txt').expect(200)).text).toContain('# Trevra');
+    expect((await request(app).get('/agents.md').expect(200)).text).toContain('Restricted areas');
+    expect((await request(app).get('/.well-known/security.txt').expect(200)).text).toContain('Canonical: https://trevra.example/.well-known/security.txt');
+    expect((await request(app).get('/trevra-indexnow-key-12345678.txt').expect(200)).text).toBe('trevra-indexnow-key-12345678');
+  });
+
+  it('records privacy-preserving attribution and protects aggregate traction', async () => {
+    process.env.TRACTION_ADMIN_TOKEN = 'traction-token-with-at-least-32-characters';
+    process.env.MARKETING_HASH_SALT = 'marketing-salt-with-at-least-32-characters';
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    const visitorId = 'visitor-12345678';
+    await request(app).post('/api/marketing/events').send({ eventName: 'page_view', visitorId, source: 'search', campaign: 'launch' }).expect(202);
+    const stored = await db.prepare("SELECT visitor_hash,source,campaign FROM marketing_events WHERE event_name='page_view' ORDER BY created_at DESC LIMIT 1").get<{ visitor_hash: string; source: string; campaign: string }>();
+    expect(stored?.visitor_hash).not.toBe(visitorId);
+    expect(stored?.visitor_hash).toHaveLength(64);
+    await request(app).get('/api/internal/traction').expect(401);
+    const report = await request(app).get('/api/internal/traction?days=30').set('Authorization', `Bearer ${process.env.TRACTION_ADMIN_TOKEN}`).expect(200);
+    expect(report.body.funnel.pageViews).toBeGreaterThanOrEqual(1);
+    expect(report.body.funnel.uniqueVisitors).toBeGreaterThanOrEqual(1);
+    expect(report.body.sources.some((item: { source: string }) => item.source === 'search')).toBe(true);
+  });
+
   it('exposes Google OAuth only when both credentials are configured', async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const app = createApp(db);

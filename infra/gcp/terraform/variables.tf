@@ -31,8 +31,8 @@ variable "app_origin" {
   type        = string
 
   validation {
-    condition     = startswith(var.app_origin, "https://")
-    error_message = "app_origin must use HTTPS."
+    condition     = can(regex("^https://[^/]+/?$", var.app_origin))
+    error_message = "app_origin must be an HTTPS origin without a path."
   }
 }
 
@@ -44,6 +44,52 @@ variable "better_auth_url" {
     condition     = startswith(var.better_auth_url, "https://")
     error_message = "better_auth_url must use HTTPS."
   }
+}
+
+variable "legal_name" {
+  description = "Public legal or operating name shown in policy pages."
+  type        = string
+  default     = "Trevra"
+}
+
+variable "support_email" {
+  description = "Monitored public support email."
+  type        = string
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.support_email))
+    error_message = "support_email must be a valid email address."
+  }
+}
+
+variable "alert_email" {
+  description = "Email for uptime and certificate alerts. Defaults to support_email when empty."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.alert_email == "" || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.alert_email))
+    error_message = "alert_email must be empty or a valid email address."
+  }
+}
+
+variable "security_contact_email" {
+  description = "Monitored vulnerability disclosure email."
+  type        = string
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.security_contact_email))
+    error_message = "security_contact_email must be a valid email address."
+  }
+}
+
+variable "google_site_verification" {
+  description = "Optional Google Search Console HTML verification token."
+  type        = string
+  default     = ""
+}
+
+variable "bing_site_verification" {
+  description = "Optional Bing Webmaster Tools meta verification token."
+  type        = string
+  default     = ""
 }
 
 variable "google_client_id" {

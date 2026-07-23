@@ -32,6 +32,8 @@ Do not run `docker compose down -v` unless you intend to destroy all local data.
 
 The Terraform configuration mounts Cloud SQL at `/cloudsql` and injects a PostgreSQL Unix-socket URL from Secret Manager. The runtime service account receives only Cloud SQL Client and access to Trevra's named secrets.
 
+Cloud Monitoring performs an external HTTPS check of `/api/health` every five minutes and sends an email alert after sustained failures. The same policy warns when the public TLS certificate has fewer than 15 days remaining. Confirm the monitoring notification email after deployment.
+
 Cloud SQL is configured with:
 
 - PostgreSQL 16;

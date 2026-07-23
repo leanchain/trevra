@@ -6,6 +6,7 @@ import { fromNodeHeaders } from 'better-auth/node';
 import { getMigrations } from 'better-auth/db/migration';
 import type { Db } from './db.js';
 import { id } from './db.js';
+import { recordMarketingEvent } from './public-site.js';
 
 const { Pool } = pg;
 const production = process.env.NODE_ENV === 'production';
@@ -115,6 +116,7 @@ export async function resolveBetterAuthIdentity(db: Db, headers: IncomingHttpHea
       await createDefaultAutomationRules(tx, workspaceId, now);
       await tx.prepare('INSERT INTO audit_events (id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
         .run(id('audit'), workspaceId, 'system', null, 'workspace.created', 'workspace', workspaceId, JSON.stringify({ authUserId: session.user.id }), now);
+      await recordMarketingEvent(tx, { eventName: 'signup_completed', workspaceId, metadata: { source: 'authenticated_identity' } });
       return { userId, workspaceId, email };
     });
   } catch (error) {

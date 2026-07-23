@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import express from 'express';
 import { openDatabase } from './db.js';
@@ -5,6 +6,7 @@ import { createApp } from './app.js';
 import { runAllAutomationCycles } from './automation-service.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 import { validateEnvironment } from './config.js';
+import { getSiteConfig, renderAppIndex, renderNotFoundPage } from './public-site.js';
 
 const runtime = validateEnvironment();
 const port = runtime.port;
@@ -14,8 +16,33 @@ const app = createApp(db);
 
 if (process.env.NODE_ENV === 'production') {
   const clientDir = resolve('dist');
-  app.use(express.static(clientDir, { maxAge: '1h', etag: true }));
-  app.get('/{*splat}', (_req, res) => res.sendFile(resolve(clientDir, 'index.html')));
+  const indexTemplate = await readFile(resolve(clientDir, 'index.html'), 'utf8');
+  const siteConfig = getSiteConfig();
+  app.use(express.static(clientDir, {
+    index: false,
+    maxAge: '1h',
+    etag: true,
+    setHeaders: (res, path) => {
+      if (/assets\/.+-[A-Za-z0-9_-]{8,}\.(?:js|css)$/i.test(path)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      } else if (/[\\/](?:icons|og)[\\/]|favicon\.svg$/i.test(path)) {
+        res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=2592000');
+      }
+    }
+  }));
+  app.get('/', (_req, res) => {
+    res.type('html').set({
+      'Cache-Control': 'public, max-age=0, must-revalidate',
+      'Content-Language': 'en',
+      Link: `<${siteConfig.origin}/>; rel="canonical"`
+    });
+    res.send(renderAppIndex(indexTemplate, String(res.locals.cspNonce ?? '')));
+  });
+  app.get('/index.html', (_req, res) => res.redirect(308, '/'));
+  app.use((req, res) => {
+    if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'API route not found' });
+    res.status(404).type('html').send(renderNotFoundPage(String(res.locals.cspNonce ?? '')));
+  });
 }
 
 const server = app.listen(port, () => {

@@ -1,8 +1,12 @@
 locals {
+  public_host = trimsuffix(trimprefix(var.app_origin, "https://"), "/")
+  alert_email = var.alert_email != "" ? var.alert_email : var.support_email
+
   required_apis = toset([
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "run.googleapis.com",
+    "monitoring.googleapis.com",
     "secretmanager.googleapis.com",
     "sqladmin.googleapis.com"
   ])
@@ -10,6 +14,9 @@ locals {
   secret_values = {
     "database-url"              = "postgresql://${var.database_user}:${urlencode(random_password.database.result)}@/${var.database_name}?host=/cloudsql/${google_sql_database_instance.trevra.connection_name}"
     "better-auth-secret"        = random_password.better_auth.result
+    "marketing-hash-salt"       = random_password.marketing_hash.result
+    "traction-admin-token"      = random_password.traction_admin.result
+    "indexnow-key"              = random_id.indexnow.hex
     "google-client-id"          = var.google_client_id
     "google-client-secret"      = var.google_client_secret
     "nango-api-key"             = var.nango_api_key
@@ -90,6 +97,20 @@ resource "random_password" "better_auth" {
 resource "random_password" "ingest" {
   length  = 64
   special = false
+}
+
+resource "random_password" "marketing_hash" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "traction_admin" {
+  length  = 64
+  special = false
+}
+
+resource "random_id" "indexnow" {
+  byte_length = 16
 }
 
 resource "google_sql_database_instance" "trevra" {
@@ -242,6 +263,30 @@ resource "google_cloud_run_v2_service" "trevra" {
         value = var.better_auth_url
       }
       env {
+        name  = "PUBLIC_SITE_URL"
+        value = var.app_origin
+      }
+      env {
+        name  = "PUBLIC_LEGAL_NAME"
+        value = var.legal_name
+      }
+      env {
+        name  = "PUBLIC_SUPPORT_EMAIL"
+        value = var.support_email
+      }
+      env {
+        name  = "SECURITY_CONTACT_EMAIL"
+        value = var.security_contact_email
+      }
+      env {
+        name  = "GOOGLE_SITE_VERIFICATION"
+        value = var.google_site_verification
+      }
+      env {
+        name  = "BING_SITE_VERIFICATION"
+        value = var.bing_site_verification
+      }
+      env {
         name  = "COOKIE_SECURE"
         value = "true"
       }
@@ -311,6 +356,110 @@ resource "google_cloud_run_v2_service" "trevra" {
     google_sql_database.trevra,
     google_sql_user.trevra
   ]
+}
+
+resource "google_monitoring_notification_channel" "uptime_email" {
+  project      = var.project_id
+  display_name = "Trevra uptime email"
+  type         = "email"
+  enabled      = true
+  labels = {
+    email_address = local.alert_email
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_monitoring_uptime_check_config" "trevra" {
+  project            = var.project_id
+  display_name       = "Trevra public health"
+  timeout            = "10s"
+  period             = "300s"
+  checker_type       = "STATIC_IP_CHECKERS"
+  log_check_failures = true
+
+  http_check {
+    path           = "/api/health"
+    port           = 443
+    use_ssl        = true
+    validate_ssl   = true
+    request_method = "GET"
+  }
+
+  monitored_resource {
+    type = "uptime_url"
+    labels = {
+      project_id = var.project_id
+      host       = local.public_host
+    }
+  }
+
+  content_matchers {
+    content = "\"ok\":true"
+    matcher = "CONTAINS_STRING"
+  }
+
+  depends_on = [google_project_service.required, google_cloud_run_v2_service.trevra]
+}
+
+resource "google_monitoring_alert_policy" "uptime" {
+  project               = var.project_id
+  display_name          = "Trevra public availability"
+  combiner              = "OR"
+  enabled               = true
+  severity              = "ERROR"
+  notification_channels = [google_monitoring_notification_channel.uptime_email.name]
+
+  conditions {
+    display_name = "Trevra health check failures"
+    condition_threshold {
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.label.check_id=\"${google_monitoring_uptime_check_config.trevra.uptime_check_id}\" AND resource.type=\"uptime_url\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 1
+      duration        = "300s"
+
+      aggregations {
+        alignment_period     = "600s"
+        per_series_aligner   = "ALIGN_NEXT_OLDER"
+        cross_series_reducer = "REDUCE_COUNT_FALSE"
+        group_by_fields      = ["resource.label.*"]
+      }
+
+      trigger { count = 1 }
+    }
+  }
+
+  conditions {
+    display_name = "Trevra TLS certificate expires within 15 days"
+    condition_threshold {
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/time_until_ssl_cert_expires\" AND metric.label.check_id=\"${google_monitoring_uptime_check_config.trevra.uptime_check_id}\" AND resource.type=\"uptime_url\""
+      comparison      = "COMPARISON_LT"
+      threshold_value = 15
+      duration        = "600s"
+
+      aggregations {
+        alignment_period     = "1200s"
+        per_series_aligner   = "ALIGN_NEXT_OLDER"
+        cross_series_reducer = "REDUCE_MEAN"
+        group_by_fields      = ["resource.label.*"]
+      }
+
+      trigger { count = 1 }
+    }
+  }
+
+  documentation {
+    mime_type = "text/markdown"
+    subject   = "Trevra needs attention"
+    content   = "Trevra's public health check or TLS certificate failed. Verify ${var.app_origin}/api/health, Cloud Run revisions, Cloud SQL connectivity, DNS, and the custom-domain certificate."
+  }
+
+  alert_strategy {
+    auto_close           = "1800s"
+    notification_prompts = ["OPENED", "CLOSED"]
+  }
+
+  depends_on = [google_monitoring_uptime_check_config.trevra]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public" {

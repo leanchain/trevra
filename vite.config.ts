@@ -5,6 +5,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const webPort = Number(env.TREVRA_WEB_PORT ?? env.VITE_PORT ?? 43173);
   const apiPort = Number(env.TREVRA_API_PORT ?? env.PORT ?? 43887);
+  const apiTarget = `http://localhost:${apiPort}`;
 
   return {
     plugins: [react()],
@@ -13,7 +14,19 @@ export default defineConfig(({ mode }) => {
       port: webPort,
       strictPort: true,
       proxy: {
-        '/api': `http://localhost:${apiPort}`
+        '/api': apiTarget,
+        '/robots.txt': apiTarget,
+        '/sitemap.xml': apiTarget,
+        '/llms.txt': apiTarget,
+        '/llms-full.txt': apiTarget,
+        '/agents.md': apiTarget,
+        '/humans.txt': apiTarget,
+        '/security.txt': apiTarget,
+        '/.well-known': apiTarget,
+        '/how-it-works': apiTarget,
+        '/security': apiTarget,
+        '/privacy': apiTarget,
+        '/terms': apiTarget
       }
     }
   };

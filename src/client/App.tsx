@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import Nango from '@nangohq/frontend';
 import {
   ArrowUpRight,
   Bell,
@@ -57,6 +56,7 @@ import {
   updateAutomationRule
 } from './api';
 import { authClient } from './auth-client';
+import { trackEvent, trackPageView } from './analytics';
 
 type View = 'today' | 'clients' | 'integrations' | 'autopilot';
 
@@ -105,7 +105,7 @@ export function App() {
     }
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { trackPageView(); void load(); }, []);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(''), 5000);
@@ -216,7 +216,6 @@ export function App() {
         )}
         {activeView === 'clients' && <ClientsView data={data} />}
         {activeView === 'integrations' && <IntegrationsView data={data} reload={load} setToast={setToast} busyId={busyId} setBusyId={setBusyId} />}
-        {activeView === 'autopilot' && <AutopilotView rules={data.automationRules} reload={load} setToast={setToast} />}
       </main>
 
       {activeAction && (
@@ -250,11 +249,9 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: () => Promise<void> 
   const signInWithGoogle = async () => {
     setGoogleBusy(true);
     setAuthError('');
+    trackEvent('google_auth_started');
     try {
-      const result = await authClient.signIn.social({
-        provider: 'google',
-        callbackURL: `${window.location.origin}/`
-      });
+      const result = await authClient.signIn.social({ provider: 'google', callbackURL: `${window.location.origin}/` });
       if (result?.error) {
         setAuthError(result.error.message ?? 'Google sign-in failed');
         setGoogleBusy(false);
@@ -268,6 +265,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: () => Promise<void> 
   const submit = async () => {
     setBusy(true);
     setAuthError('');
+    if (mode === 'signup') trackEvent('email_signup_submitted');
     try {
       const result = mode === 'signup'
         ? await authClient.signUp.email({ name: name.trim(), email: email.trim(), password })
@@ -284,44 +282,42 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: () => Promise<void> 
     }
   };
 
-  return <main className="auth-shell">
-    <section className="auth-story">
-      <div className="brand auth-brand"><span className="brand-mark">T</span><span>Trevra</span></div>
-      <div>
-        <span className="hero-kicker"><Sparkles size={14} /> Revenue chief of staff</span>
-        <h1>Your freelance business should run while you do the work.</h1>
-        <p>Trevra connects your client systems, proves what you are owed, prepares the action, and completes approved commercial work.</p>
-      </div>
-      <div className="auth-proof-list">
-        <span><Check size={16} /> Follow up on every proposal</span>
-        <span><Check size={16} /> Stop unapproved scope creep</span>
-        <span><Check size={16} /> Invoice delivered work automatically</span>
-        <span><Check size={16} /> Track money through payment</span>
-      </div>
-    </section>
-    <section className="auth-panel">
-      <div className="auth-card">
-        <span className="auth-icon"><ShieldCheck /></span>
-        <h2>{mode === 'signin' ? 'Sign in to Trevra' : 'Create your workspace'}</h2>
-        <p>{mode === 'signin' ? 'Continue to your revenue work queue.' : 'Start with a private commercial graph for your business.'}</p>
-        {mode === 'signup' && <label>Name<input autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Alex Morgan" /></label>}
-        <label>Email<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@studio.com" /></label>
-        <label>Password<input type="password" autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 10 characters" onKeyDown={(event) => { if (event.key === 'Enter') void submit(); }} /></label>
-        {authError && <div className="error-banner">{authError}</div>}
-        {googleEnabled && <>
-          <button className="google-auth-button" disabled={busy || googleBusy} onClick={() => void signInWithGoogle()}>
-            {googleBusy ? <LoaderCircle className="spin" size={17} /> : <GoogleMark />}
-            Continue with Google
-          </button>
-          <div className="auth-divider"><span>or continue with email</span></div>
-        </>}
-        <button className="primary-button auth-submit" disabled={busy || googleBusy || !email || password.length < 10 || (mode === 'signup' && !name.trim())} onClick={() => void submit()}>{busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{mode === 'signin' ? 'Sign in' : 'Create workspace'}</button>
-        {import.meta.env.DEV && <button className="ghost-button auth-submit" disabled={busy || googleBusy} onClick={() => void startDemoSession().then(onAuthenticated)}>Open seeded demo</button>}
-        <button className="auth-switch" onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setAuthError(''); }}>
-          {mode === 'signin' ? 'New to Trevra? Create an account' : 'Already have an account? Sign in'}
-        </button>
-      </div>
-    </section>
+  const switchMode = () => {
+    const next = mode === 'signin' ? 'signup' : 'signin';
+    setMode(next);
+    setAuthError('');
+    if (next === 'signup') trackEvent('signup_started');
+  };
+
+  return <main className="marketing-runtime">
+    <div className="auth-shell">
+      <section className="auth-story">
+        <div className="brand auth-brand"><span className="brand-mark">T</span><span>Trevra</span></div>
+        <div><span className="hero-kicker"><Sparkles size={14} /> AI revenue chief of staff</span><h1>Your freelance business should run while you do the work.</h1><p>Trevra connects your client systems, proves what you are owed, prepares the action, and completes approved commercial work.</p></div>
+        <div className="auth-proof-list"><span><Check size={16} /> Follow up on every proposal</span><span><Check size={16} /> Stop unapproved scope creep</span><span><Check size={16} /> Invoice delivered work automatically</span><span><Check size={16} /> Track money through payment</span></div>
+      </section>
+      <section className="auth-panel" id="get-started">
+        <div className="auth-card">
+          <span className="auth-icon"><ShieldCheck /></span>
+          <h2>{mode === 'signin' ? 'Sign in to Trevra' : 'Create your workspace'}</h2>
+          <p>{mode === 'signin' ? 'Continue to your revenue work queue.' : 'Start with a private commercial graph for your business.'}</p>
+          {mode === 'signup' && <label>Name<input autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Alex Morgan" /></label>}
+          <label>Email<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@studio.com" /></label>
+          <label>Password<input type="password" autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 10 characters" onKeyDown={(event) => { if (event.key === 'Enter') void submit(); }} /></label>
+          {authError && <div className="error-banner">{authError}</div>}
+          {googleEnabled && <><button className="google-auth-button" disabled={busy || googleBusy} onClick={() => void signInWithGoogle()}>{googleBusy ? <LoaderCircle className="spin" size={17} /> : <GoogleMark />}Continue with Google</button><div className="auth-divider"><span>or continue with email</span></div></>}
+          <button className="primary-button auth-submit" disabled={busy || googleBusy || !email || password.length < 10 || (mode === 'signup' && !name.trim())} onClick={() => void submit()}>{busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{mode === 'signin' ? 'Sign in' : 'Create workspace'}</button>
+          {import.meta.env.DEV && <button className="ghost-button auth-submit" disabled={busy || googleBusy} onClick={() => void startDemoSession().then(onAuthenticated)}>Open seeded demo</button>}
+          <button className="auth-switch" onClick={switchMode}>{mode === 'signin' ? 'New to Trevra? Create an account' : 'Already have an account? Sign in'}</button>
+          <p className="auth-consent">By creating or using a workspace, you agree to the <a href="/terms">Terms</a> and acknowledge the <a href="/privacy">Privacy Notice</a>.</p>
+          <div className="auth-legal-links"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/security">Security</a><a href="/how-it-works">How it works</a></div>
+        </div>
+      </section>
+    </div>
+    <section className="launch-section"><div className="launch-section-heading"><span className="launch-eyebrow">Built for independent professionals</span><h2>Not another dashboard to maintain.</h2><p>Trevra turns fragmented commercial activity into completed work.</p></div><div className="launch-grid"><article className="launch-feature"><span>01</span><h2>Protect every opportunity</h2><p>Follow up on proposals at the right moment with the context and draft already prepared.</p></article><article className="launch-feature"><span>02</span><h2>Stop working for free</h2><p>Compare new requests with accepted scope and prepare evidence-backed change orders.</p></article><article className="launch-feature"><span>03</span><h2>Get delivered work billed</h2><p>Detect completed milestones without invoices and create the next billing action.</p></article></div></section>
+    <section className="launch-section launch-integrations"><div className="launch-section-heading"><span className="launch-eyebrow">Existing stack, one commercial memory</span><h2>Connect the tools where client work already happens.</h2></div><div className="launch-integration-list"><span>Gmail</span><span>Microsoft 365</span><span>Google Calendar</span><span>Stripe</span><span>QuickBooks</span><span>Xero</span><span>HoneyBook</span><span>Bonsai</span><span>Upwork</span><span>Fiverr</span><span>Contra</span></div></section>
+    <section className="launch-section"><div className="launch-section-heading"><span className="launch-eyebrow">Questions</span><h2>What freelancers need to know.</h2></div><div className="launch-faq"><details><summary>What does Trevra do for freelancers?</summary><p>Trevra finds commercial work that is about to be missed, assembles the supporting evidence, prepares the next action, and completes approved work through connected business tools.</p></details><details><summary>Can Trevra send messages or create invoices automatically?</summary><p>Trevra can prepare, schedule, and execute actions. Consequential work is approval-gated, and delegated automation is limited by action type, confidence, amount, and delay. Scope changes always require manual approval.</p></details><details><summary>How is Trevra different from a general AI assistant?</summary><p>Trevra maintains an evidence-linked commercial graph of agreements, requests, delivery, invoices, payments, and outcomes. Its product is the verified commercial memory and execution policy.</p></details></div></section>
+    <footer className="launch-footer"><div><a className="launch-logo" href="/"><span>T</span>Trevra</a><p>Commercial memory and execution for independent professionals.</p></div><nav><a href="/how-it-works">How it works</a><a href="/security">Security</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav></footer>
   </main>;
 }
 
@@ -424,6 +420,7 @@ function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
     setBusyId(item.key);
     try {
       const session = await createConnectSession([item.key]);
+      const { default: Nango } = await import('@nangohq/frontend');
       const nango = new Nango({ connectSessionToken: session.token, host: session.browser_host });
       nango.openConnectUI({
         sessionToken: session.token,

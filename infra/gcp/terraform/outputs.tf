@@ -13,3 +13,21 @@ output "artifact_repository" {
 output "runtime_service_account" {
   value = google_service_account.cloud_run.email
 }
+
+output "indexnow_key" {
+  value     = random_id.indexnow.hex
+  sensitive = true
+}
+
+output "traction_admin_token" {
+  value     = random_password.traction_admin.result
+  sensitive = true
+}
+
+output "uptime_check_name" {
+  value = google_monitoring_uptime_check_config.trevra.name
+}
+
+output "uptime_alert_policy" {
+  value = google_monitoring_alert_policy.uptime.name
+}
