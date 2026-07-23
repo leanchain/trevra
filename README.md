@@ -72,7 +72,28 @@ Open:
 - Nango Connect UI: `http://localhost:43009`
 - Trevra PostgreSQL: `localhost:45432`
 - Nango PostgreSQL: `localhost:45433`
-- Nango Redis: `localhost:46379`
+
+### Google sign-in
+
+Create a Google OAuth **Web application** client and configure:
+
+- Authorized JavaScript origin: `http://localhost:43173`
+- Authorized redirect URI: `http://localhost:43173/api/auth/callback/google`
+
+Put the credentials in `.env.dev`:
+
+```env
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
+Then restart Trevra:
+
+```bash
+docker compose --env-file .env.dev -f compose.dev.yml up -d --force-recreate trevra
+```
+
+The sign-in flow requests only `openid`, `email`, and `profile`. Gmail and Calendar permissions are requested separately through Nango when the freelancer explicitly connects those tools.
 
 The Trevra frontend and API hot-reload through the bind-mounted source tree.
 
@@ -179,6 +200,8 @@ export GCP_REGION=europe-west6
 export TF_STATE_BUCKET=your-globally-unique-trevra-tfstate
 export APP_ORIGIN=https://app.example.com
 export BETTER_AUTH_URL=https://app.example.com
+export GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
+export GOOGLE_CLIENT_SECRET='your-client-secret'
 export NANGO_HOST=https://nango-api.example.com
 export NANGO_API_KEY='...'
 export NANGO_WEBHOOK_SIGNING_KEY='...'

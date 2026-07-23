@@ -21,6 +21,8 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     ALLOW_SIMULATED_EXECUTION: booleanString.optional(),
     BETTER_AUTH_SECRET: z.string().optional(),
     BETTER_AUTH_URL: z.string().url().optional(),
+    GOOGLE_CLIENT_ID: z.string().optional(),
+    GOOGLE_CLIENT_SECRET: z.string().optional(),
     NANGO_API_KEY: z.string().optional(),
     NANGO_WEBHOOK_SIGNING_KEY: z.string().optional(),
     STRIPE_SECRET_KEY: z.string().optional(),
@@ -28,6 +30,9 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
   }).parse(env);
 
   if (!/^postgres(?:ql)?:\/\//i.test(base.DATABASE_URL)) throw new Error('DATABASE_URL must be a PostgreSQL connection string');
+  if (Boolean(base.GOOGLE_CLIENT_ID?.trim()) !== Boolean(base.GOOGLE_CLIENT_SECRET?.trim())) {
+    throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured together');
+  }
   const origins = base.APP_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean);
   for (const origin of origins) z.string().url().parse(origin);
 

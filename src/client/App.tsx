@@ -71,6 +71,15 @@ const recommendationLabels: Record<RecommendationType, string> = {
   overdue_invoice: 'Payment collection'
 };
 
+function GoogleMark() {
+  return <svg aria-hidden="true" viewBox="0 0 18 18" width="18" height="18">
+    <path fill="#4285F4" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.482h4.844a4.14 4.14 0 0 1-1.797 2.715v2.258h2.909c1.702-1.567 2.684-3.875 2.684-6.614Z" />
+    <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.181l-2.909-2.258c-.806.54-1.835.859-3.047.859-2.344 0-4.328-1.585-5.037-3.715H.956v2.333A9 9 0 0 0 9 18Z" />
+    <path fill="#FBBC05" d="M3.963 10.705A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.167.281-1.705V4.962H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.038l3.007-2.333Z" />
+    <path fill="#EA4335" d="M9 3.58c1.321 0 2.507.454 3.441 1.346l2.581-2.581C13.463.892 11.426 0 9 0A9 9 0 0 0 .956 4.962l3.007 2.333C4.672 5.165 6.656 3.58 9 3.58Z" />
+  </svg>;
+}
+
 export function App() {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [error, setError] = useState('');
@@ -230,12 +239,31 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: () => Promise<void> 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [authError, setAuthError] = useState('');
   const [googleEnabled, setGoogleEnabled] = useState(false);
 
   useEffect(() => {
     void getPublicConfig().then((config) => setGoogleEnabled(config.googleAuthEnabled)).catch(() => undefined);
   }, []);
+
+  const signInWithGoogle = async () => {
+    setGoogleBusy(true);
+    setAuthError('');
+    try {
+      const result = await authClient.signIn.social({
+        provider: 'google',
+        callbackURL: `${window.location.origin}/`
+      });
+      if (result?.error) {
+        setAuthError(result.error.message ?? 'Google sign-in failed');
+        setGoogleBusy(false);
+      }
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Google sign-in failed');
+      setGoogleBusy(false);
+    }
+  };
 
   const submit = async () => {
     setBusy(true);
@@ -280,9 +308,15 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: () => Promise<void> 
         <label>Email<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@studio.com" /></label>
         <label>Password<input type="password" autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 10 characters" onKeyDown={(event) => { if (event.key === 'Enter') void submit(); }} /></label>
         {authError && <div className="error-banner">{authError}</div>}
-        <button className="primary-button auth-submit" disabled={busy || !email || password.length < 10 || (mode === 'signup' && !name.trim())} onClick={() => void submit()}>{busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{mode === 'signin' ? 'Sign in' : 'Create workspace'}</button>
-        {googleEnabled && <button className="secondary-button auth-submit" onClick={() => void authClient.signIn.social({ provider: 'google', callbackURL: window.location.origin })}>Continue with Google</button>}
-        {import.meta.env.DEV && <button className="ghost-button auth-submit" onClick={() => void startDemoSession().then(onAuthenticated)}>Open seeded demo</button>}
+        {googleEnabled && <>
+          <button className="google-auth-button" disabled={busy || googleBusy} onClick={() => void signInWithGoogle()}>
+            {googleBusy ? <LoaderCircle className="spin" size={17} /> : <GoogleMark />}
+            Continue with Google
+          </button>
+          <div className="auth-divider"><span>or continue with email</span></div>
+        </>}
+        <button className="primary-button auth-submit" disabled={busy || googleBusy || !email || password.length < 10 || (mode === 'signup' && !name.trim())} onClick={() => void submit()}>{busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{mode === 'signin' ? 'Sign in' : 'Create workspace'}</button>
+        {import.meta.env.DEV && <button className="ghost-button auth-submit" disabled={busy || googleBusy} onClick={() => void startDemoSession().then(onAuthenticated)}>Open seeded demo</button>}
         <button className="auth-switch" onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setAuthError(''); }}>
           {mode === 'signin' ? 'New to Trevra? Create an account' : 'Already have an account? Sign in'}
         </button>

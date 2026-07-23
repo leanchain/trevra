@@ -46,6 +46,18 @@ variable "better_auth_url" {
   }
 }
 
+variable "google_client_id" {
+  description = "Google OAuth web application client ID."
+  type        = string
+  sensitive   = true
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth web application client secret."
+  type        = string
+  sensitive   = true
+}
+
 variable "nango_host" {
   description = "Public HTTPS URL of the separately deployed self-hosted Nango API."
   type        = string

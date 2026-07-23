@@ -15,14 +15,29 @@ if (!connectionString) throw new Error('DATABASE_URL is required; Better Auth us
 const secret = process.env.BETTER_AUTH_SECRET ?? (production ? '' : 'development-only-trevra-secret-change-before-production');
 if (production && secret.length < 32) throw new Error('BETTER_AUTH_SECRET must be at least 32 characters in production');
 
-const baseURL = process.env.BETTER_AUTH_URL ?? process.env.APP_ORIGIN?.split(',')[0]?.trim() ?? 'http://localhost:43173';
+const baseURL = (process.env.BETTER_AUTH_URL ?? process.env.APP_ORIGIN?.split(',')[0]?.trim() ?? 'http://localhost:43173').replace(/\/$/, '');
 const trustedOrigins = (process.env.APP_ORIGIN ?? 'http://localhost:43173,http://localhost:43887')
   .split(',')
   .map((item) => item.trim())
   .filter(Boolean);
 
-const socialProviders = process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
-  ? { google: { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET } }
+const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+if (Boolean(googleClientId) !== Boolean(googleClientSecret)) {
+  throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured together');
+}
+
+const socialProviders = googleClientId && googleClientSecret
+  ? {
+      google: {
+        clientId: googleClientId,
+        clientSecret: googleClientSecret,
+        disableDefaultScope: true,
+        scope: ['openid', 'email', 'profile'],
+        prompt: 'select_account' as const,
+        redirectURI: `${baseURL}/api/auth/callback/google`
+      }
+    }
   : undefined;
 
 const authPool = new Pool({

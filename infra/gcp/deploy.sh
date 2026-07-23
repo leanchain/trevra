@@ -6,6 +6,8 @@ set -euo pipefail
 : "${TF_STATE_BUCKET:?Set TF_STATE_BUCKET}"
 : "${APP_ORIGIN:?Set APP_ORIGIN to the public HTTPS app URL}"
 : "${BETTER_AUTH_URL:=${APP_ORIGIN}}"
+: "${GOOGLE_CLIENT_ID:?Set GOOGLE_CLIENT_ID from the Google OAuth web client}"
+: "${GOOGLE_CLIENT_SECRET:?Set GOOGLE_CLIENT_SECRET from the Google OAuth web client}"
 : "${NANGO_HOST:?Set NANGO_HOST to the public self-hosted Nango API URL}"
 : "${NANGO_API_KEY:?Set NANGO_API_KEY}"
 : "${NANGO_WEBHOOK_SIGNING_KEY:?Set NANGO_WEBHOOK_SIGNING_KEY}"
@@ -21,6 +23,8 @@ export TF_VAR_region="${GCP_REGION}"
 export TF_VAR_image="${IMAGE}"
 export TF_VAR_app_origin="${APP_ORIGIN}"
 export TF_VAR_better_auth_url="${BETTER_AUTH_URL}"
+export TF_VAR_google_client_id="${GOOGLE_CLIENT_ID}"
+export TF_VAR_google_client_secret="${GOOGLE_CLIENT_SECRET}"
 export TF_VAR_nango_host="${NANGO_HOST}"
 export TF_VAR_nango_api_key="${NANGO_API_KEY}"
 export TF_VAR_nango_webhook_signing_key="${NANGO_WEBHOOK_SIGNING_KEY}"
@@ -39,5 +43,5 @@ terraform -chdir="${TF_DIR}" apply -auto-approve \
 gcloud builds submit "${ROOT_DIR}" --tag "${IMAGE}" --project "${GCP_PROJECT_ID}"
 terraform -chdir="${TF_DIR}" apply -auto-approve
 
-printf '\nTrevra deployed.\nURL: %s\nImage: %s\n' \
-  "$(terraform -chdir="${TF_DIR}" output -raw cloud_run_url)" "${IMAGE}"
+printf '\nTrevra deployed.\nURL: %s\nImage: %s\nGoogle callback: %s/api/auth/callback/google\n' \
+  "$(terraform -chdir="${TF_DIR}" output -raw cloud_run_url)" "${IMAGE}" "${BETTER_AUTH_URL%/}"

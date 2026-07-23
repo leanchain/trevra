@@ -402,6 +402,7 @@ function enforceAllowedOrigin(req: Request, res: Response, next: NextFunction) {
     'http://localhost:43173',
     'http://localhost:43887'
   ]);
+  if (!allowed.has(origin)) return res.status(403).json({ error: 'Origin not allowed' });
   next();
 }
 

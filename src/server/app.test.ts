@@ -15,6 +15,8 @@ afterEach(async () => {
   delete process.env.STRIPE_WEBHOOK_SECRET;
   delete process.env.STRIPE_SECRET_KEY;
   delete process.env.OPENAI_API_KEY;
+  delete process.env.GOOGLE_CLIENT_ID;
+  delete process.env.GOOGLE_CLIENT_SECRET;
 });
 
 async function agentWithSession() {
@@ -26,6 +28,20 @@ async function agentWithSession() {
 }
 
 describe('Trevra API on PostgreSQL', () => {
+  it('exposes Google OAuth only when both credentials are configured', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    expect((await request(app).get('/api/public-config').expect(200)).body.googleAuthEnabled).toBe(false);
+    process.env.GOOGLE_CLIENT_ID = 'google-client-id.apps.googleusercontent.com';
+    process.env.GOOGLE_CLIENT_SECRET = 'google-client-secret';
+    expect((await request(app).get('/api/public-config').expect(200)).body.googleAuthEnabled).toBe(true);
+  });
+
+  it('rejects state-changing requests from untrusted browser origins', async () => {
+    const agent = await agentWithSession();
+    await agent.post('/api/automation/run').set('Origin', 'https://malicious.example').expect(403);
+  });
+
   it('returns a revenue dashboard with proof packs and prepared work', async () => {
     const agent = await agentWithSession();
     const response = await agent.get('/api/dashboard').expect(200);

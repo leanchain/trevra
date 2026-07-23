@@ -57,9 +57,16 @@ Generated database and application secrets are represented in Terraform state. `
 
 Restrict access to the state bucket. Do not copy state files into source control or developer chat systems.
 
-## Custom domains
+## Custom domains and Google OAuth
 
 `APP_ORIGIN` and `BETTER_AUTH_URL` must be final HTTPS origins. Configure the Cloud Run custom domain or external HTTPS load balancer before enabling production sign-in callbacks.
+
+Create a Google OAuth Web application client with:
+
+- Authorized JavaScript origin: the exact `APP_ORIGIN`, such as `https://app.example.com`;
+- Authorized redirect URI: `${BETTER_AUTH_URL}/api/auth/callback/google`, such as `https://app.example.com/api/auth/callback/google`.
+
+The scheme, host, port, path, and trailing slash behavior must match exactly. The GCP deploy script requires `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; Terraform stores both in Secret Manager and injects them into Cloud Run. Google login uses only identity scopes (`openid`, `email`, `profile`). Workspace Gmail and Calendar access remains a separate Nango authorization.
 
 Nango needs browser-reachable HTTPS endpoints for its API/dashboard and Connect UI. `NANGO_HOST` and `NANGO_PUBLIC_SERVER_URL` should point to the public Nango API origin from Trevra's production environment.
 

@@ -10,6 +10,8 @@ locals {
   secret_values = {
     "database-url"              = "postgresql://${var.database_user}:${urlencode(random_password.database.result)}@/${var.database_name}?host=/cloudsql/${google_sql_database_instance.trevra.connection_name}"
     "better-auth-secret"        = random_password.better_auth.result
+    "google-client-id"          = var.google_client_id
+    "google-client-secret"      = var.google_client_secret
     "nango-api-key"             = var.nango_api_key
     "nango-webhook-signing-key" = var.nango_webhook_signing_key
     "ingest-api-key"            = random_password.ingest.result

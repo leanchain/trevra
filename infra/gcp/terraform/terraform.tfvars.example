@@ -3,8 +3,10 @@ region        = "europe-west6"
 image         = "europe-west6-docker.pkg.dev/your-gcp-project/trevra/trevra:latest"
 app_origin    = "https://app.example.com"
 better_auth_url = "https://app.example.com"
-nango_host    = "https://nango-api.example.com"
+nango_host       = "https://nango-api.example.com"
 
-# Prefer TF_VAR_nango_api_key and TF_VAR_nango_webhook_signing_key instead of storing these here.
+# Prefer TF_VAR_* environment variables instead of storing OAuth and provider secrets here.
+google_client_id          = "your-client-id.apps.googleusercontent.com"
+google_client_secret      = "replace-me"
 nango_api_key             = "replace-me"
 nango_webhook_signing_key = "replace-me"

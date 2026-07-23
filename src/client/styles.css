@@ -236,6 +236,11 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .auth-card label { display: grid; gap: 6px; margin-bottom: 13px; font-size: 11px; font-weight: 700; }
 .auth-card input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; background: #fbfcfb; outline-color: var(--green); }
 .auth-submit { width: 100%; min-height: 42px; margin-top: 4px; }
+.google-auth-button { width: 100%; min-height: 44px; border: 1px solid #cfd7d0; border-radius: 10px; background: white; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 10px; font-size: 12px; font-weight: 700; cursor: pointer; margin-bottom: 14px; }
+.google-auth-button:hover:not(:disabled) { background: #f8faf8; border-color: #aebbb0; }
+.auth-divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .07em; margin: 2px 0 14px; }
+.auth-divider::before, .auth-divider::after { content: ''; height: 1px; background: var(--line); flex: 1; }
+.auth-divider span { white-space: nowrap; }
 .auth-switch { width: 100%; border: 0; background: transparent; color: var(--green); padding: 15px 0 0; font-size: 11px; font-weight: 700; cursor: pointer; }
 @media (max-width: 850px) {
   .auth-shell { grid-template-columns: 1fr; }

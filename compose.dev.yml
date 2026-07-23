@@ -33,6 +33,8 @@ services:
       APP_ORIGIN: http://localhost:${TREVRA_WEB_PORT:-43173},http://localhost:${TREVRA_API_PORT:-43887}
       BETTER_AUTH_URL: http://localhost:${TREVRA_WEB_PORT:-43173}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-development-only-trevra-secret-change-before-production}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       COOKIE_SECURE: "false"
       ALLOW_DEMO_AUTH: "true"
       ALLOW_SIMULATED_EXECUTION: "true"
