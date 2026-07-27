@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
 const booleanString = z.enum(['true', 'false']);
+const optionalUrl = z.preprocess(
+  (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+  z.string().url().optional()
+);
 
 export interface RuntimeConfig {
   production: boolean;
@@ -22,19 +26,19 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     TEMPORAL_TASK_QUEUE: z.string().optional(),
     TEMPORAL_TLS: booleanString.optional(),
     TEMPORAL_API_KEY: z.string().optional(),
-    PUBLIC_REGISTRY_API_URL: z.string().url().optional(),
+    PUBLIC_REGISTRY_API_URL: optionalUrl,
     PUBLIC_REGISTRY_CORS_ORIGIN: z.string().optional(),
-    TREVRA_SANDBOX_GATEWAY_URL: z.string().url().optional(),
+    TREVRA_SANDBOX_GATEWAY_URL: optionalUrl,
     TREVRA_SANDBOX_GATEWAY_TOKEN: z.string().optional(),
     TREVRA_REMOTE_ACTION_ADAPTERS_JSON: z.string().optional(),
     COOKIE_SECURE: booleanString.default(production ? 'true' : 'false'),
     ALLOW_DEMO_AUTH: booleanString.optional(),
     ALLOW_SIMULATED_EXECUTION: booleanString.optional(),
     BETTER_AUTH_SECRET: z.string().optional(),
-    BETTER_AUTH_URL: z.string().url().optional(),
+    BETTER_AUTH_URL: optionalUrl,
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
-    PUBLIC_SITE_URL: z.string().url().optional(),
+    PUBLIC_SITE_URL: optionalUrl,
     PUBLIC_SUPPORT_EMAIL: z.string().email().optional(),
     SECURITY_CONTACT_EMAIL: z.string().email().optional(),
     MARKETING_HASH_SALT: z.string().optional(),

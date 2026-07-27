@@ -5,12 +5,13 @@ import { runAllAutomationCycles } from '../server/automation-service.js';
 import { runReadyPlaybooks } from '../server/playbooks/engine.js';
 import { runCommercialProjectionCycle } from '../server/projections/commercial.js';
 import { orchestrationMode } from '../server/orchestration/client.js';
-import { startTemporalWorker } from '../server/orchestration/worker.js';
 import { validateEnvironment } from '../server/config.js';
 
 const runtime=validateEnvironment();
 const db=await openDatabase();
-const temporalWorker=orchestrationMode()==='temporal'?await startTemporalWorker(db):null;
+const temporalWorker=orchestrationMode()==='temporal'
+  ? await (await import('../server/orchestration/worker.js')).startTemporalWorker(db)
+  : null;
 const app=express();
 app.disable('x-powered-by');
 app.get('/health',async(_req,res)=>{

@@ -1,4 +1,4 @@
-FROM node:24-alpine
+FROM node:24-bookworm-slim
 WORKDIR /app
 RUN npm install --global npm@11.6.2
 COPY package.json package-lock.json ./
