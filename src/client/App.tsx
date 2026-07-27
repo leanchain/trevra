@@ -679,7 +679,8 @@ function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
   const [csv, setCsv] = useState('');
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentHints, setDocumentHints] = useState({ clientName: '', contactName: '', clientEmail: '', projectName: '', currency: 'EUR' });
-  const available: AvailableIntegration[] = data.availableIntegrations.filter((item) => item.mode === 'oauth');
+  // OAuth and API-key providers both connect through the Nango Connect UI; only CSV imports are excluded.
+  const available: AvailableIntegration[] = data.availableIntegrations.filter((item) => item.mode !== 'import');
   const connect = async (item: AvailableIntegration) => {
     setBusyId(item.key);
     try {
@@ -748,7 +749,7 @@ function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
     </section>
 
     <section className="page-panel">
-      <div className="section-heading"><div><h3>Add a live source</h3><p>OAuth, token refresh, retries, and provider quirks are handled by the integration layer.</p></div></div>
+      <div className="section-heading"><div><h3>Add a live source</h3><p>OAuth, API keys, token refresh, retries, and provider quirks are handled by the integration layer. Credentials are entered in the provider connect screen and stay there; Trevra keeps only the connection reference.</p></div></div>
       <div className="integration-grid">
         {available.map((item) => <article className="integration-card" key={item.key}>
           <span className="integration-logo">{initials(item.name)}</span>

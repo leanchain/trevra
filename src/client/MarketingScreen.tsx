@@ -27,6 +27,8 @@ import moduleCatalog from '../generated/public-modules.json';
 import { getPublicConfig } from './api';
 import { trackEvent } from './analytics';
 
+const REPO_URL = 'https://github.com/leanchain/trevra';
+
 type MarketingScreenProps = {
   onGetStarted: () => void;
   hostedAppUrl?: string;
@@ -186,7 +188,7 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
   const [registryApiUrl, setRegistryApiUrl] = useState(import.meta.env.VITE_CATALOG_API_URL?.trim() ?? '');
   const [liveModules, setLiveModules] = useState<PublicModule[]>(STATIC_MODULES);
   const primaryHref = hostedAppUrl || '#hosted';
-  const sourceHref = githubUrl || '#modules';
+  const sourceHref = githubUrl || REPO_URL;
 
   useEffect(() => {
     if (supportEmail && registryApiUrl) return;
@@ -244,7 +246,7 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
         </nav>
         <div className="launch-nav-actions">
           <ThemeToggle />
-          <a className="nav-source" href={sourceHref} onClick={() => trackEvent('marketing_source_cta')}><Github size={16} /> Source</a>
+          <a className="nav-source" href={sourceHref} target="_blank" rel="noreferrer" onClick={() => trackEvent('marketing_source_cta')}><Github size={16} /> Source</a>
           <a className="launch-nav-cta" href={primaryHref} onClick={handlePrimary}>Launch Trevra <ArrowRight size={16} /></a>
         </div>
       </header>

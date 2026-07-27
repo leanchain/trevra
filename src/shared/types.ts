@@ -85,13 +85,32 @@ export interface ConnectionSummary {
   lastError?: string | null;
 }
 
+export type IntegrationCategory =
+  | 'communication'
+  | 'calendar'
+  | 'accounting'
+  | 'payments'
+  | 'marketplace'
+  | 'project'
+  | 'crm'
+  | 'data';
+
+/**
+ * `oauth`  — the end user authorizes Trevra through the provider's OAuth screen.
+ * `apiKey` — the end user pastes a provider API key into the Nango Connect UI. The key is posted
+ *            from the browser to Nango and stored there; Trevra only ever holds the resulting
+ *            connection reference and never receives, renders, logs, or persists the key.
+ * `import` — no live connection; the operator uploads a CSV export.
+ */
+export type IntegrationMode = 'oauth' | 'apiKey' | 'import';
+
 export interface AvailableIntegration {
   key: string;
   provider: string;
   name: string;
-  category: 'communication' | 'calendar' | 'accounting' | 'payments' | 'marketplace' | 'project';
+  category: IntegrationCategory;
   description: string;
-  mode: 'oauth' | 'import';
+  mode: IntegrationMode;
   connected: boolean;
 }
 

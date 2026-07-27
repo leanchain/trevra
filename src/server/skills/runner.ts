@@ -1,6 +1,6 @@
 import { id } from '../db.js';
 import { getSkill } from './registry.js';
-import type { SkillContext, SkillEvidence, SkillRun, SkillRunStatus } from './types.js';
+import type { SkillContext, SkillEvidence, SkillRetention, SkillRun, SkillRunStatus } from './types.js';
 
 /**
  * Skill runner.
@@ -32,6 +32,33 @@ function extractEvidence(output: unknown): SkillEvidence[] {
   const evidence = (output as { evidence?: unknown }).evidence;
   if (!Array.isArray(evidence)) return [];
   return evidence.filter((item): item is SkillEvidence => typeof item === 'object' && item !== null);
+}
+
+/**
+ * Read the output's `retention` declaration -- the same well-known-key
+ * convention `extractEvidence` uses.
+ */
+function retentionOf(output: unknown): SkillRetention {
+  if (typeof output !== 'object' || output === null) return 'default';
+  return (output as { retention?: unknown }).retention === 'none' ? 'none' : 'default';
+}
+
+/**
+ * What actually gets written to `skill_runs.output_json`.
+ *
+ * A `retention: 'none'` output is replaced by a stub. The row still records
+ * that the run happened, under which skill and workspace, with what status --
+ * the audit trail the ledger exists for is intact. Only the third-party
+ * payload is dropped, because storing it is what the provider's licence
+ * forbids. Suppressing the whole ROW instead would make a licensed lookup
+ * invisible to an audit, which is a worse answer than an empty one.
+ */
+export function redactForLedger(output: unknown): unknown {
+  if (retentionOf(output) !== 'none') return output;
+  return {
+    retention: 'none',
+    withheld: "Provider terms do not permit storing this output. The run is recorded; the payload was returned to the caller in memory only."
+  };
 }
 
 function toJson(value: unknown): string | null {
@@ -74,7 +101,10 @@ export async function runSkill(skillId: string, input: unknown, ctx: SkillContex
 
   const finishedAt = ctx.now();
   const durationMs = Math.max(0, finishedAt.getTime() - startedAt.getTime());
-  const evidence = status === 'ok' ? extractEvidence(output) : [];
+  const retention = status === 'ok' ? retentionOf(output) : 'default';
+  // Evidence is derived FROM the output, so a non-storable output cannot leave
+  // its evidence behind either -- that would persist the payload one field over.
+  const evidence = status === 'ok' && retention === 'default' ? extractEvidence(output) : [];
   const runId = id('run');
 
   await ctx.db.prepare(`
@@ -90,7 +120,7 @@ export async function runSkill(skillId: string, input: unknown, ctx: SkillContex
     ctx.workspaceId,
     status,
     toJson(parsedInput) ?? '{}',
-    toJson(output),
+    toJson(redactForLedger(output)),
     error,
     toJson(evidence) ?? '[]',
     startedAt.toISOString(),

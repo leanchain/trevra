@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.js';
 import { getSkill, listSkills, registerSkill, seedSkills } from './registry.js';
-import { runSkill } from './runner.js';
+import { redactForLedger, runSkill } from './runner.js';
 import type { Skill, SkillContext } from './types.js';
 
 let db: Db | undefined;
@@ -117,6 +117,21 @@ describe('skill registry', () => {
   });
 });
 
+describe('redactForLedger', () => {
+  it('passes an ordinary output through untouched', () => {
+    const output = { score: 48, evidence: [] };
+    expect(redactForLedger(output)).toBe(output);
+    expect(redactForLedger(null)).toBeNull();
+  });
+
+  it('replaces a retention:none payload with a stub that still records the refusal', () => {
+    const redacted = redactForLedger({ retention: 'none', candidates: ['acme.test'] }) as Record<string, unknown>;
+    expect(redacted.retention).toBe('none');
+    expect(redacted.candidates).toBeUndefined();
+    expect(String(redacted.withheld)).toContain('do not permit storing');
+  });
+});
+
 describe('runSkill', () => {
   it('records a ledger row on success', async () => {
     const database = await openTestDatabase();
@@ -210,6 +225,43 @@ describe('runSkill', () => {
     expect(run.evidence).toEqual([{ label: 'robots.txt', detail: 'GPTBot is blocked' }]);
     const row = await ledgerRow(database, run.id);
     expect(row?.evidence_json).toEqual([{ label: 'robots.txt', detail: 'GPTBot is blocked' }]);
+  });
+
+  it('keeps the ledger row but drops a payload the provider licence forbids storing', async () => {
+    const database = await openTestDatabase();
+    const licensedSkill: Skill<Record<string, never>, unknown> = {
+      manifest: {
+        id: 'test.licensed',
+        name: 'Licensed test skill',
+        version: '0.0.1',
+        description: 'Returns third-party data that may not be stored.',
+        sideEffect: 'network-read',
+        requiresApproval: false,
+        inputSchema: z.object({}),
+        outputSchema: z.object({
+          retention: z.literal('none'),
+          candidates: z.array(z.string()),
+          evidence: z.array(z.object({ label: z.string(), detail: z.string() }))
+        })
+      },
+      async run() {
+        return { retention: 'none', candidates: ['acme.test'], evidence: [{ label: 'vendor', detail: 'acme.test' }] };
+      }
+    };
+    registerSkill(licensedSkill);
+
+    const run = await runSkill('test.licensed', {}, contextFor(database));
+
+    expect(run.status).toBe('ok');
+    // The caller still gets the data, in memory.
+    expect((run.output as { candidates: string[] }).candidates).toEqual(['acme.test']);
+    // The ledger keeps the fact of the run and nothing the licence covers.
+    expect(run.evidence).toEqual([]);
+    const row = await ledgerRow(database, run.id);
+    expect(row?.status).toBe('ok');
+    expect(row?.evidence_json).toEqual([]);
+    expect(row?.output_json).toMatchObject({ retention: 'none' });
+    expect(JSON.stringify(row?.output_json)).not.toContain('acme.test');
   });
 
   it('measures duration from the injected clock', async () => {

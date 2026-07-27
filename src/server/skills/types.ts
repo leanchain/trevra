@@ -37,6 +37,21 @@ export interface SkillEvidence {
   sourceUrl?: string | null;
 }
 
+/**
+ * Whether a skill's output may be written to the ledger.
+ *
+ * `'none'` means the payload is licensed by a third party on terms that do not
+ * permit Trevra to store it. The runner honours this by keeping the ledger ROW
+ * -- who ran what, when, and whether it worked -- and dropping the payload and
+ * its evidence. The caller still receives the full output in memory.
+ *
+ * Declared on the OUTPUT rather than the manifest because it is a per-run
+ * fact, not a per-skill one: `gtm.source-leads` may store the operator's own
+ * seed list and must not store a licensed vendor's results, and which of those
+ * happened is only known once a provider has been chosen.
+ */
+export type SkillRetention = 'default' | 'none';
+
 export interface SkillManifest {
   /** Stable, namespaced identifier, e.g. `gtm.score-lead`. Also the `skills.id` primary key. */
   id: string;

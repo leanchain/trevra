@@ -1,7 +1,14 @@
 import { z } from 'zod';
 import { createSsrfFetch, validatePublicHost, type FetchLike } from './guard.js';
+import { extractJsonLd, isRecord, isType, jsonLdTypes, metaContent, pageTitle, parseRobots, type RobotsRules } from './html.js';
 import { normalizeDomain } from './ladder.js';
+import { probe } from './probe.js';
 import type { Skill, SkillEvidence } from './types.js';
+
+// Shared with the research skills; re-exported so this module stays the single
+// import site for callers that already depend on the audit's vocabulary.
+export { parseRobots, type RobotsRules } from './html.js';
+export { TIMEOUT_MS, USER_AGENT } from './probe.js';
 
 /**
  * Self-contained AI-visibility audit probe suite.
@@ -18,9 +25,6 @@ import type { Skill, SkillEvidence } from './types.js';
  * scored 100 on the four checks that answered is not punished with a 40 for
  * the three that timed out.
  */
-
-export const USER_AGENT = 'TrevraGrowthBot/0.1';
-export const TIMEOUT_MS = 8_000;
 
 /** AI crawler / answer-engine user agents we care about (case-insensitive). */
 export const AI_BOTS: readonly string[] = [
@@ -99,12 +103,6 @@ export interface AuditResult {
   evidence: SkillEvidence[];
 }
 
-interface Probe {
-  status: number;
-  contentType: string;
-  text: string;
-}
-
 function check(id: string, status: CheckStatus, detail: string, extra: { evidence?: string; impact?: string } = {}): CheckResult {
   return {
     id,
@@ -115,72 +113,6 @@ function check(id: string, status: CheckStatus, detail: string, extra: { evidenc
     weight: WEIGHTS[id] ?? 0,
     impact: extra.impact ?? null
   };
-}
-
-/** GET `url`, returning the probe, or `null` on any transport error. */
-async function probe(client: FetchLike, url: string): Promise<Probe | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    const response = await client(url, {
-      headers: { 'User-Agent': USER_AGENT, Accept: '*/*' },
-      signal: controller.signal
-    });
-    return {
-      status: response.status,
-      contentType: response.headers.get('content-type') ?? '',
-      text: await response.text()
-    };
-  } catch {
-    // Transport error, timeout, or the SSRF guard blocking a redirect to an
-    // internal host. All of them degrade the check rather than failing the run.
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// --------------------------------------------------------------------------- //
-// robots.txt parsing
-// --------------------------------------------------------------------------- //
-
-export type RobotsRules = Map<string, Array<[string, string]>>;
-
-/**
- * Return `{ user_agent_lower: [[directive, value], ...] }`.
- *
- * Consecutive `User-agent` lines share the rules that follow them, per the
- * robots grammar -- the `expectingAgent` latch is what implements that, and
- * getting it wrong silently mis-reads every stacked-agent robots.txt in the
- * wild. Comments and unrelated directives are ignored.
- */
-export function parseRobots(text: string): RobotsRules {
-  const agents: RobotsRules = new Map();
-  let current: string[] = [];
-  let expectingAgent = true;
-  for (const raw of text.split(/\r\n|\r|\n/)) {
-    const line = raw.split('#', 1)[0].trim();
-    if (!line || !line.includes(':')) continue;
-    const separator = line.indexOf(':');
-    const key = line.slice(0, separator).trim().toLowerCase();
-    const value = line.slice(separator + 1).trim();
-    if (key === 'user-agent') {
-      // A User-agent line that follows a rule starts a fresh group.
-      if (!expectingAgent) current = [];
-      const agent = value.toLowerCase();
-      current.push(agent);
-      if (!agents.has(agent)) agents.set(agent, []);
-      expectingAgent = true;
-    } else if (key === 'allow' || key === 'disallow') {
-      for (const agent of current) {
-        const rules = agents.get(agent) ?? [];
-        rules.push([key, value]);
-        agents.set(agent, rules);
-      }
-      expectingAgent = false;
-    }
-  }
-  return agents;
 }
 
 function blockedEntirely(agents: RobotsRules, bot: string): boolean {
@@ -277,80 +209,10 @@ async function checkProductsFeed(client: FetchLike, base: string): Promise<{ res
 }
 
 // --------------------------------------------------------------------------- //
-// JSON-LD / meta parsing
+// structured-data checks (parsers live in html.ts)
 // --------------------------------------------------------------------------- //
 
-const JSONLD_RE = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-const META_RE = /<meta\b[^>]*>/gi;
-const TITLE_RE = /<title[^>]*>([\s\S]*?)<\/title>/i;
 const PRODUCT_LOC_RE = /<loc>\s*([^<\s]*\/products\/[^<\s]+)\s*<\/loc>/i;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function flattenJsonLd(data: unknown): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = [];
-  if (Array.isArray(data)) {
-    for (const item of data) out.push(...flattenJsonLd(item));
-  } else if (isRecord(data)) {
-    const graph = data['@graph'];
-    if (Array.isArray(graph)) {
-      for (const item of graph) out.push(...flattenJsonLd(item));
-    }
-    out.push(data);
-  }
-  return out;
-}
-
-function extractJsonLd(html: string): Array<Record<string, unknown>> {
-  const objects: Array<Record<string, unknown>> = [];
-  for (const match of html.matchAll(JSONLD_RE)) {
-    try {
-      objects.push(...flattenJsonLd(JSON.parse(match[1].trim())));
-    } catch {
-      continue;
-    }
-  }
-  return objects;
-}
-
-function jsonLdTypes(objects: Array<Record<string, unknown>>): Set<string> {
-  const types = new Set<string>();
-  for (const object of objects) {
-    const type = object['@type'];
-    if (typeof type === 'string') types.add(type);
-    else if (Array.isArray(type)) for (const item of type) if (typeof item === 'string') types.add(item);
-  }
-  return types;
-}
-
-function isType(object: Record<string, unknown>, name: string): boolean {
-  const type = object['@type'];
-  if (typeof type === 'string') return type === name;
-  if (Array.isArray(type)) return type.includes(name);
-  return false;
-}
-
-function metaContent(html: string, attribute: string, value: string): string | null {
-  const matcher = new RegExp(`${attribute}\\s*=\\s*["']${escapeRegExp(value)}["']`, 'i');
-  for (const tag of html.matchAll(META_RE)) {
-    if (!matcher.test(tag[0])) continue;
-    const content = /content\s*=\s*["']([\s\S]*?)["']/i.exec(tag[0]);
-    if (content) return content[1].trim();
-  }
-  return null;
-}
-
-function pageTitle(html: string): string | null {
-  const match = TITLE_RE.exec(html);
-  if (!match) return null;
-  return match[1].replace(/\s+/g, ' ').trim() || null;
-}
 
 function checkStructuredDataHome(html: string): CheckResult {
   if (!html) return check('structured_data_home', 'skip', 'Could not fetch homepage.');

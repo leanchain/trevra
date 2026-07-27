@@ -17,8 +17,8 @@
   --launch-shadow: 0 24px 70px rgba(24, 43, 31, 0.1);
   --launch-radius: 24px;
   --launch-page: 1180px;
-  --launch-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  --launch-body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --launch-display: "Avenir Next", "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --launch-body: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --launch-mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
   color-scheme: light;
 }
@@ -101,6 +101,8 @@
     var(--launch-bg);
   color: var(--launch-ink);
   font-family: var(--launch-body);
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
   line-height: 1.55;
 }
 
@@ -257,8 +259,8 @@
   margin-bottom: 24px;
   font-family: var(--launch-display);
   font-size: clamp(54px, 6vw, 84px);
-  font-weight: 640;
-  letter-spacing: -0.065em;
+  font-weight: 720;
+  letter-spacing: -0.055em;
   line-height: 0.96;
 }
 
@@ -474,8 +476,8 @@
   margin-bottom: 0;
   font-family: var(--launch-display);
   font-size: clamp(40px, 5vw, 63px);
-  font-weight: 610;
-  letter-spacing: -0.05em;
+  font-weight: 680;
+  letter-spacing: -0.045em;
   line-height: 1.02;
 }
 
@@ -508,7 +510,7 @@
 .role-icon { width: 44px; height: 44px; margin-bottom: 38px; display: grid; place-items: center; border-radius: 14px; background: var(--launch-green-soft); color: var(--launch-green); }
 .role-icon svg { width: 21px; }
 .agent-role > p { margin-bottom: 6px; color: var(--launch-green); font-family: var(--launch-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
-.agent-role h3 { margin-bottom: 13px; font-family: var(--launch-display); font-size: 30px; font-weight: 620; }
+.agent-role h3 { margin-bottom: 13px; font-family: var(--launch-display); font-size: 30px; font-weight: 700; letter-spacing: -0.035em; }
 .agent-role > div:not(.role-icon) { color: var(--launch-muted); font-size: 13px; line-height: 1.65; }
 .agent-role ul { margin: 24px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; list-style: none; }
 .agent-role li { padding: 5px 7px; border: 1px solid var(--launch-line); border-radius: 7px; color: var(--launch-muted); font-family: var(--launch-mono); font-size: 9px; }
@@ -622,7 +624,7 @@
 .deploy-card.featured { border-color: color-mix(in srgb, var(--launch-green) 55%, var(--launch-line)); box-shadow: inset 0 4px var(--launch-green); }
 .deploy-icon { width: 48px; height: 48px; margin-bottom: 32px; display: grid; place-items: center; border-radius: 14px; background: var(--launch-green-soft); color: var(--launch-green); }
 .deploy-label { margin-bottom: 10px; color: var(--launch-green); font-family: var(--launch-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
-.deploy-card h3 { margin-bottom: 13px; font-family: var(--launch-display); font-size: 33px; font-weight: 610; letter-spacing: -.035em; line-height: 1.08; }
+.deploy-card h3 { margin-bottom: 13px; font-family: var(--launch-display); font-size: 33px; font-weight: 680; letter-spacing: -.035em; line-height: 1.08; }
 .deploy-card > p { color: var(--launch-muted); font-size: 13px; line-height: 1.7; }
 .deploy-card ul { margin: 18px 0 30px; padding: 0; display: grid; gap: 11px; list-style: none; }
 .deploy-card li { display: flex; align-items: center; gap: 8px; color: var(--launch-muted); font-size: 12px; }

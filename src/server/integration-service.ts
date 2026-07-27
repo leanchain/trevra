@@ -48,6 +48,33 @@ const canonicalRecordSchema = z.discriminatedUnion('kind', [
 
 export type CanonicalRecord = z.infer<typeof canonicalRecordSchema>;
 
+/**
+ * The integration catalog is the single source of truth for what Trevra can connect to.
+ *
+ * `mode: 'oauth'` and `mode: 'apiKey'` both resolve their Nango integration id (provider config
+ * key) from `process.env[env] ?? fallback`; they differ only in what the Nango Connect UI asks the
+ * end user for. For `apiKey` the user pastes their provider key into the Connect UI, which posts it
+ * straight to Nango — the raw key never reaches a Trevra process, is never rendered, logged, or
+ * written to the database. Trevra stores only the connection reference returned on the auth webhook.
+ * `mode: 'import'` has no live connection and uses its own key as an identifier.
+ *
+ * CRM integrations (HubSpot, Attio) are READ / sync only, deliberately.
+ * Creating or updating a record in someone else's CRM is an `external-write` side effect, and every
+ * external write in Trevra must go through prepareAction -> approveAction -> executeAction in
+ * action-service.ts, where the exact approved payload is hashed and a drifted payload is rejected.
+ * Wiring that up needs a new prepared-action type plus its schema, approval UI, and policy surface,
+ * which is out of scope here. `executeConnectedAction` has no hubspot/attio branch and falls through
+ * to `throw new Error(\`Provider ${provider} cannot execute ${actionType}\`)`, so no ungated write
+ * path exists. Do not add one without routing it through the approval gate first.
+ *
+ * APOLLO IS DELIBERATELY ABSENT, and must stay absent. Nango ships an `apollo` provider config, so
+ * adding a row here would work -- but Apollo's Terms of Service, Section 3 (API Usage Requirements ->
+ * Access and Integration), https://www.apollo.io/terms, read on 2026-07-27, state: "You may not
+ * access the APIs via a third party's API credentials or integrate the Apollo APIs with your own
+ * product or service." That clause is unqualified; the "internal tools ... not separately
+ * commercialized" carve-out lives in the General Usage Restrictions and does not reach it. Shipping
+ * an Apollo connection is exactly what it prohibits, whether Trevra is self-hosted or hosted.
+ */
 const catalog = [
   { key: 'gmail', provider: 'gmail', name: 'Gmail', category: 'communication', description: 'Read client threads and send approved follow-ups.', mode: 'oauth', env: 'NANGO_GMAIL_INTEGRATION', fallback: 'trevra-gmail' },
   { key: 'google-calendar', provider: 'google-calendar', name: 'Google Calendar', category: 'calendar', description: 'Understand meetings, commitments, and availability.', mode: 'oauth', env: 'NANGO_GOOGLE_CALENDAR_INTEGRATION', fallback: 'trevra-google-calendar' },
@@ -57,17 +84,32 @@ const catalog = [
   { key: 'stripe', provider: 'stripe', name: 'Stripe', category: 'payments', description: 'Confirm invoices, payments, and failures.', mode: 'oauth', env: 'NANGO_STRIPE_INTEGRATION', fallback: 'trevra-stripe' },
   { key: 'honeybook', provider: 'honeybook', name: 'HoneyBook', category: 'project', description: 'Import client lifecycle and project records.', mode: 'oauth', env: 'NANGO_HONEYBOOK_INTEGRATION', fallback: 'trevra-honeybook' },
   { key: 'bonsai', provider: 'bonsai', name: 'Bonsai', category: 'project', description: 'Import contracts, projects, and invoices.', mode: 'oauth', env: 'NANGO_BONSAI_INTEGRATION', fallback: 'trevra-bonsai' },
+  { key: 'hubspot', provider: 'hubspot', name: 'HubSpot', category: 'crm', description: 'Read contacts, companies, and deals so the revenue ledger sits over your CRM instead of becoming a second one. Read-only: Trevra never writes back to HubSpot.', mode: 'oauth', env: 'NANGO_HUBSPOT_INTEGRATION', fallback: 'trevra-hubspot' },
+  { key: 'attio', provider: 'attio', name: 'Attio', category: 'crm', description: 'Read people, companies, and deal records into the ledger so pipeline stage and evidence stay in one place. Read-only: Trevra never writes back to Attio.', mode: 'oauth', env: 'NANGO_ATTIO_INTEGRATION', fallback: 'trevra-attio' },
+  { key: 'exa', provider: 'exa', name: 'Exa', category: 'data', description: 'Neural web search for company and buying-signal discovery. Authenticates with your Exa API key, entered in the provider connect screen and held there, never by Trevra.', mode: 'apiKey', env: 'NANGO_EXA_INTEGRATION', fallback: 'trevra-exa' },
   { key: 'upwork', provider: 'upwork', name: 'Upwork', category: 'marketplace', description: 'Import contracts and earnings from an export.', mode: 'import' },
   { key: 'fiverr', provider: 'fiverr', name: 'Fiverr', category: 'marketplace', description: 'Import orders and earnings from an export.', mode: 'import' },
   { key: 'contra', provider: 'contra', name: 'Contra', category: 'marketplace', description: 'Import projects and payments from an export.', mode: 'import' }
 ] as const;
+
+type CatalogEntry = (typeof catalog)[number];
+
+/** Nango-backed modes resolve their integration id from the environment; imports use their own key. */
+function providerConfigKeyFor(item: CatalogEntry): string {
+  return item.mode === 'import' ? item.key : String(process.env[item.env] ?? item.fallback);
+}
+
+/** Integration ids the Connect UI may offer when the caller does not restrict the session. */
+export function defaultConnectSessionIntegrations(): string[] {
+  return catalog.filter((item) => item.mode !== 'import').map(providerConfigKeyFor);
+}
 
 export async function listAvailableIntegrations(db: Db, workspaceId: string): Promise<AvailableIntegration[]> {
   const connected = await db.prepare("SELECT provider_config_key FROM connections WHERE workspace_id=? AND status='connected'")
     .all<{ provider_config_key: string }>(workspaceId);
   const connectedKeys = new Set(connected.map((row) => row.provider_config_key));
   return catalog.map((item) => {
-    const providerConfigKey = item.mode === 'oauth' ? String(process.env[item.env] ?? item.fallback) : item.key;
+    const providerConfigKey = providerConfigKeyFor(item);
     return {
       key: providerConfigKey,
       provider: item.provider,
@@ -89,7 +131,7 @@ export async function createNangoConnectSession(input: {
   const nango = getNango();
   const allowed = input.allowedIntegrations.length > 0
     ? input.allowedIntegrations
-    : catalog.filter((item) => item.mode === 'oauth').map((item) => String(process.env[item.env] ?? item.fallback));
+    : defaultConnectSessionIntegrations();
   const result = await nango.createConnectSession({
     allowed_integrations: allowed,
     tags: {
