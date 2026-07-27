@@ -10,8 +10,20 @@
     "isolatedModules": false,
     "declaration": false,
     "sourceMap": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/server/**/*.ts", "src/shared/**/*.ts"],
-  "exclude": ["src/**/*.test.ts"]
+  "include": [
+    "src/server/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/agent/**/*.ts",
+    "src/mcp/**/*.ts",
+    "src/cli/**/*.ts",
+    "src/sandbox-gateway/**/*.ts",
+    "src/worker/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts"
+  ]
 }

@@ -1,10 +1,19 @@
 import type {
+  AgentScope,
+  AgentTokenSummary,
   AutomationRule,
   AvailableIntegration,
   ConnectionSummary,
   DashboardPayload,
+  PlaybookManifest,
+  PlaybookRun,
+  PlaybookRunStatus,
   PreparedAction,
-  RecommendationType
+  RecommendationType,
+  WorkspacePolicy,
+  PublicRegistryModule,
+  InstalledCommunityModule,
+  RegistryPublisher
 } from '../shared/types';
 
 export class ApiError extends Error {
@@ -26,7 +35,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function getPublicConfig(): Promise<{ googleAuthEnabled: boolean; modelExtractionEnabled: boolean }> {
+export async function getPublicConfig(): Promise<{ googleAuthEnabled: boolean; modelExtractionEnabled: boolean; supportEmail: string; catalogApiUrl?: string }> {
   return request('/api/public-config');
 }
 
@@ -128,4 +137,137 @@ export async function updateAutomationRule(type: RecommendationType, input: Omit
 
 export async function runAutomation(): Promise<{ prepared: number; executed: number; failed: number }> {
   return request('/api/automation/run', { method: 'POST' });
+}
+
+
+
+export async function getPlaybooks(): Promise<PlaybookManifest[]> {
+  const result = await request<{ playbooks: PlaybookManifest[] }>('/api/playbooks');
+  return result.playbooks;
+}
+
+export async function startPlaybook(id: string, input: unknown, version?: string): Promise<PlaybookRun> {
+  const result = await request<{ run: PlaybookRun }>(`/api/playbooks/${encodeURIComponent(id)}/runs`, {
+    method: 'POST',
+    body: JSON.stringify({ input: input ?? {}, ...(version ? { version } : {}) })
+  });
+  return result.run;
+}
+
+export async function getPlaybookRuns(filters: { status?: PlaybookRunStatus; limit?: number } = {}): Promise<PlaybookRun[]> {
+  const query = new URLSearchParams();
+  if (filters.status) query.set('status', filters.status);
+  if (filters.limit) query.set('limit', String(filters.limit));
+  const result = await request<{ runs: PlaybookRun[] }>(`/api/playbook-runs${query.size ? `?${query}` : ''}`);
+  return result.runs;
+}
+
+export async function getPlaybookRun(id: string): Promise<PlaybookRun> {
+  const result = await request<{ run: PlaybookRun }>(`/api/playbook-runs/${encodeURIComponent(id)}`);
+  return result.run;
+}
+
+export async function decidePlaybookStep(
+  runId: string,
+  stepId: string,
+  decision: 'approve' | 'reject',
+  comment?: string
+): Promise<PlaybookRun> {
+  const result = await request<{ run: PlaybookRun }>(
+    `/api/playbook-runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}/decision`,
+    { method: 'POST', body: JSON.stringify({ decision, comment }) }
+  );
+  return result.run;
+}
+
+
+export async function getPolicies(): Promise<WorkspacePolicy[]> {
+  const result = await request<{ policies: WorkspacePolicy[] }>('/api/policies');
+  return result.policies;
+}
+
+export async function createPolicy(input: {
+  name: string;
+  priority?: number;
+  actionPattern: string;
+  effect: WorkspacePolicy['effect'];
+  conditions?: Record<string, unknown>;
+  enabled?: boolean;
+}): Promise<WorkspacePolicy[]> {
+  const result = await request<{ policies: WorkspacePolicy[] }>('/api/policies', {
+    method: 'POST', body: JSON.stringify(input)
+  });
+  return result.policies;
+}
+
+export async function deletePolicy(id: string): Promise<void> {
+  await request(`/api/policies/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function getAgentTokens(): Promise<AgentTokenSummary[]> {
+  const result = await request<{ tokens: AgentTokenSummary[] }>('/api/agent-tokens');
+  return result.tokens;
+}
+
+export async function createAgentToken(input: {
+  name: string;
+  scopes?: AgentScope[];
+  expiresAt?: string | null;
+}): Promise<{ token: string; record: AgentTokenSummary }> {
+  return request('/api/agent-tokens', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function revokeAgentToken(id: string): Promise<void> {
+  await request(`/api/agent-tokens/${id}`, { method: 'DELETE' });
+}
+
+
+export async function getPublicRegistryModules(): Promise<PublicRegistryModule[]> {
+  const result = await request<{ modules: PublicRegistryModule[] }>('/api/public/modules');
+  return result.modules;
+}
+
+export async function getRegistryPublishers(): Promise<RegistryPublisher[]> {
+  const result = await request<{ publishers: RegistryPublisher[] }>('/api/registry/publishers');
+  return result.publishers;
+}
+
+export async function createRegistryPublisher(input: {
+  slug: string;
+  displayName: string;
+  publicKeyPem: string;
+}): Promise<RegistryPublisher> {
+  const result = await request<{ publisher: RegistryPublisher }>('/api/registry/publishers', {
+    method: 'POST', body: JSON.stringify(input)
+  });
+  return result.publisher;
+}
+
+export async function publishRegistryModule(input: {
+  moduleId: string;
+  publisherId: string;
+  manifest: Record<string, unknown>;
+  signature: string;
+  sbom: Record<string, unknown>;
+}): Promise<Record<string, unknown>> {
+  const result = await request<{ release: Record<string, unknown> }>(
+    `/api/registry/modules/${encodeURIComponent(input.moduleId)}/releases`,
+    { method: 'POST', body: JSON.stringify({ publisherId: input.publisherId, manifest: input.manifest, signature: input.signature, sbom: input.sbom }) }
+  );
+  return result.release;
+}
+
+export async function getInstalledRegistryModules(): Promise<InstalledCommunityModule[]> {
+  const result = await request<{ modules: InstalledCommunityModule[] }>('/api/registry/installations');
+  return result.modules;
+}
+
+export async function installRegistryModule(moduleId: string, version: string, config: Record<string, unknown> = {}): Promise<void> {
+  await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, {
+    method: 'POST', body: JSON.stringify({ version, config })
+  });
+}
+
+export async function uninstallRegistryModule(moduleId: string): Promise<void> {
+  await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, { method: 'DELETE' });
 }

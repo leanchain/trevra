@@ -10,7 +10,12 @@ export type ClientMarketingEvent =
   | 'marketplace_imported'
   | 'action_prepared'
   | 'action_approved'
-  | 'action_executed';
+  | 'action_executed'
+  | 'marketing_primary_cta'
+  | 'marketing_source_cta'
+  | 'marketing_catalog_json'
+  | 'marketing_self_host_cta'
+  | 'marketing_founder_cta';
 
 type EventProperties = Record<string, string | number | boolean | null | undefined>;
 

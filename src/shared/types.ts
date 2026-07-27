@@ -97,6 +97,20 @@ export interface AvailableIntegration {
 
 export type AutomationMode = 'suggest' | 'prepare' | 'execute';
 
+
+export interface WorkspacePolicy {
+  id: string;
+  name: string;
+  version: number;
+  priority: number;
+  actionPattern: string;
+  effect: 'allow' | 'deny' | 'require_approval';
+  conditions: Record<string, unknown>;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AutomationRule {
   id: string;
   recommendationType: RecommendationType;
@@ -115,6 +129,142 @@ export interface DashboardPayload {
   connections: ConnectionSummary[];
   availableIntegrations: AvailableIntegration[];
   automationRules: AutomationRule[];
+}
+
+export type AgentScope =
+  | 'skills:read' | 'skills:run' | 'runs:read' | 'workspace:read' | 'actions:prepare'
+  | 'playbooks:read' | 'playbooks:run' | 'workflows:read';
+
+
+export type PlaybookRunStatus = 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
+export type PlaybookStepStatus = 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'skipped' | 'cancelled';
+
+export interface PlaybookManifest {
+  id: string;
+  version: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  pinnedVersion: string | null;
+  inputSchema: Record<string, unknown>;
+  definition: Record<string, unknown>;
+  source: { type: string; ref: string | null };
+  config: Record<string, unknown>;
+}
+
+export interface PlaybookStepRun {
+  id: string;
+  stepId: string;
+  stepType: 'skill' | 'approval' | 'action';
+  skillId: string | null;
+  skillVersion: string | null;
+  skillRunId: string | null;
+  status: PlaybookStepStatus;
+  attempt: number;
+  input: unknown;
+  output: unknown;
+  evidence: unknown[];
+  error: string | null;
+  policyDecision: unknown;
+  approvalPayloadHash: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string;
+}
+
+export interface PlaybookRun {
+  id: string;
+  workspaceId: string;
+  playbookId: string;
+  playbookVersion: string;
+  status: PlaybookRunStatus;
+  actorType: string;
+  actorId: string | null;
+  input: unknown;
+  output: unknown;
+  error: string | null;
+  currentStepId: string | null;
+  correlationId: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string;
+  steps: PlaybookStepRun[];
+}
+
+
+
+export interface ModulePopularity {
+  totalRuns: number;
+  successfulRuns: number;
+  failedRuns: number;
+  successRate: number | null;
+  uniqueWorkspaces: number;
+  activeInstallations: number;
+  lastRunAt: string | null;
+  rank: number;
+}
+
+export interface RegistryPublisher {
+  id: string;
+  slug: string;
+  displayName?: string;
+  name?: string;
+  keyFingerprint: string;
+  verified: boolean;
+  reputationScore: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PublicRegistryModule {
+  id: string;
+  name: string;
+  description: string;
+  sourceType: 'builtin' | 'community';
+  version: string | null;
+  runtime: 'builtin' | 'oci' | 'wasi' | 'remote';
+  sideEffect: 'none' | 'network-read' | 'external-write';
+  requiresApproval: boolean;
+  artifactDigest: string | null;
+  publishedAt: string | null;
+  publisher: {
+    id: string | null;
+    slug: string;
+    name: string;
+    verified: boolean;
+    keyFingerprint: string | null;
+    reputationScore: number;
+  };
+  trust: { signed: boolean; sbom: boolean; verifiedRelease: boolean };
+  popularity: ModulePopularity;
+}
+
+export interface InstalledCommunityModule {
+  id: string;
+  version: string;
+  name: string;
+  description: string;
+  runtime: 'oci' | 'wasi' | 'remote';
+  artifactRef: string;
+  artifactDigest: string;
+  sideEffect: 'none' | 'network-read' | 'external-write';
+  requiresApproval: boolean;
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  config: Record<string, unknown>;
+  publisher: { id: string; slug: string; keyFingerprint: string; verified: boolean };
+}
+
+export interface AgentTokenSummary {
+  id: string;
+  name: string;
+  prefix: string;
+  scopes: AgentScope[];
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
 }
 
 export interface PreparedAction {

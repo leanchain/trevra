@@ -1,12 +1,18 @@
 # AGENTS.md — Trevra repository guidance
 
 ## Product
-Trevra is an evidence-backed revenue chief of staff for freelancers. Preserve the core boundary: models interpret commercial content, deterministic software controls money, permissions, state transitions, approvals, and external execution.
+Trevra is the evidence-backed ledger and control plane for agent-operated go-to-market, aimed at founders. Preserve the core boundary: models interpret commercial content, deterministic software controls money, permissions, state transitions, approvals, and external execution.
 
 ## Architecture
 - `src/client`: React work console and public conversion surface.
-- `src/server`: Express API, Better Auth, PostgreSQL data access, commercial intelligence, integrations, automation, and public discovery routes.
+- `src/server`: Express API, Better Auth, PostgreSQL data access, commercial intelligence, integrations, durable playbooks, policy evaluation, append-only events, automation, and public discovery routes.
 - `migrations`: forward-only PostgreSQL migrations. Never add a SQLite runtime path.
+
+- `src/server/playbooks`: versioned playbook definitions and PostgreSQL durable orchestration. Preserve resumability and exact approval payload hashing.
+- `src/server/control-plane`: append-only domain events, exact payload hashing, execution adapters, and deterministic workspace policy evaluation.
+- `src/server/registry` and `src/server/sandbox`: signed community releases, aggregate popularity, installation, and isolated execution.
+- `src/worker` and `src/server/orchestration`: standalone workflow worker, Temporal integration, PostgreSQL fallback, automation, and projections.
+- External-write skills must never execute through the generic skill or playbook runner. They require a dedicated prepared-action adapter and the existing approval/execution boundary.
 - `docs/integration-contracts.md`: normalized Nango records and actions.
 - `infra/gcp`: Cloud Run, Cloud SQL, Secret Manager, and self-hosted Nango deployment material.
 

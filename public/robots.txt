@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+
+Sitemap: https://usetrevra.com/sitemap.xml
+Host: usetrevra.com

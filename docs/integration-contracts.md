@@ -193,3 +193,43 @@ Input is the same commercial payload plus `subject` and `message`. Output must c
 ## Direct webhooks
 
 Stripe may send signed events directly to `/api/webhooks/stripe`. Nango sends signed auth and sync events to `/api/webhooks/nango`. Both endpoints store provider event IDs before processing, so retries are idempotent.
+
+## Proprietary systems
+
+Trevra supports proprietary systems through three implemented boundaries:
+
+1. **Read/analysis modules** run as signed OCI, WASI, or restricted remote community modules through the sandbox gateway.
+2. **Canonical ingestion** accepts signed or trusted normalized records through `/api/events`, Nango syncs, CSV imports, or document imports. Supported canonical kinds are message, opportunity, contract, scope item, milestone, invoice, and payment.
+3. **Approved remote action adapters** perform proprietary write-back only after a playbook approval step has pinned the exact payload hash.
+
+Configure remote write adapters with `TREVRA_REMOTE_ACTION_ADAPTERS_JSON`:
+
+```json
+[
+  {
+    "actionType": "acme.crm.update",
+    "endpoint": "https://actions.internal.example/trevra",
+    "tokenEnv": "TREVRA_REMOTE_ACTION_ADAPTER_TOKEN",
+    "provider": "acme-crm",
+    "timeoutSeconds": 30,
+    "payloadSchema": {
+      "type": "object",
+      "properties": {
+        "contactId": { "type": "string" },
+        "lifecycle": { "enum": ["qualified", "customer"] }
+      },
+      "required": ["contactId", "lifecycle"],
+      "additionalProperties": false
+    }
+  }
+]
+```
+
+The receiving adapter gets:
+
+- `Authorization: Bearer <token>`;
+- `X-Trevra-Action` with the configured action type;
+- `X-Trevra-Idempotency-Key` containing the exact approved payload hash;
+- `X-Trevra-Signature: sha256=<HMAC-SHA256>` over the canonical JSON body.
+
+The JSON body contains `actionType`, `workspaceId`, `idempotencyKey`, and `payload`. The adapter must return `externalRef` or `id`, and should return its provider name. Production endpoints must use HTTPS. A custom playbook may reference the configured action type, but generic external-write modules remain blocked.

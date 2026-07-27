@@ -1,9 +1,28 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import Stripe from 'stripe';
-import { openDatabase, resetDemoData, type Db } from './db.js';
+import { z } from 'zod';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from './db.js';
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
+import { registerPlaybook } from './playbooks/registry.js';
+
+
+registerPlaybook({
+  id: 'test.api-score-approval',
+  version: '1.0.0',
+  name: 'API score approval',
+  description: 'Exercise durable workflow routes.',
+  inputSchema: z.object({ lead: z.record(z.unknown()) }),
+  steps: [
+    { id: 'score', type: 'skill', skillId: 'gtm.score-lead', input: { lead: { $ref: '$.input.lead' } } },
+    { id: 'approve', type: 'approval', title: 'Approve score', needs: ['score'], payload: { score: { $ref: '$.steps.score.output.overall' } } }
+  ],
+  output: { approved: { $ref: '$.steps.approve.output.approved' }, score: { $ref: '$.steps.score.output' } },
+  source: { type: 'builtin' }
+});
 
 let db: Db | undefined;
 
@@ -18,9 +37,13 @@ afterEach(async () => {
   delete process.env.GOOGLE_CLIENT_ID;
   delete process.env.GOOGLE_CLIENT_SECRET;
   delete process.env.PUBLIC_SITE_URL;
+  delete process.env.PUBLIC_REGISTRY_CORS_ORIGIN;
+  delete process.env.TREVRA_SANDBOX_GATEWAY_URL;
+  delete process.env.TREVRA_SANDBOX_GATEWAY_TOKEN;
   delete process.env.TRACTION_ADMIN_TOKEN;
   delete process.env.MARKETING_HASH_SALT;
   delete process.env.INDEXNOW_KEY;
+  delete process.env.TREVRA_AGENT_TOKEN_PEPPER;
 });
 
 async function agentWithSession() {
@@ -60,6 +83,19 @@ describe('Trevra API on PostgreSQL', () => {
     expect(report.body.funnel.pageViews).toBeGreaterThanOrEqual(1);
     expect(report.body.funnel.uniqueVisitors).toBeGreaterThanOrEqual(1);
     expect(report.body.sources.some((item: { source: string }) => item.source === 'search')).toBe(true);
+  });
+
+  it('publishes aggregate module popularity without leaking workspace data', async () => {
+    process.env.PUBLIC_REGISTRY_CORS_ORIGIN = 'https://www.trevra.example';
+    const agent = await agentWithSession();
+    await agent.post('/api/skills/gtm.score-lead/run').send({ lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } }).expect(201);
+    const response = await agent.get('/api/public/modules').set('Origin', 'https://www.trevra.example').expect(200);
+    expect(response.headers['access-control-allow-origin']).toBe('https://www.trevra.example');
+    const module = response.body.modules.find((item: { id: string }) => item.id === 'gtm.score-lead');
+    expect(module.popularity.totalRuns).toBeGreaterThan(0);
+    expect(module.popularity.successRate).toBeGreaterThan(0);
+    expect(JSON.stringify(response.body)).not.toContain(DEMO_WORKSPACE_ID);
+    expect(JSON.stringify(response.body)).not.toContain('northstar.studio');
   });
 
   it('exposes Google OAuth only when both credentials are configured', async () => {
@@ -128,7 +164,7 @@ describe('Trevra API on PostgreSQL', () => {
   it('creates a real account and maps it to an isolated Trevra workspace', async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const agent = request.agent(createApp(db));
-    const email = `freelancer-${Date.now()}@example.com`;
+    const email = `founder-${Date.now()}@example.com`;
     await agent.post('/api/auth/sign-up/email').send({ name: 'Independent Alex', email, password: 'correct-horse-battery-staple' }).expect(200);
     const dashboard = await agent.get('/api/dashboard').expect(200);
     expect(dashboard.body.workspace.name).toBe("Independent Alex's Studio");
@@ -197,6 +233,178 @@ describe('Trevra API on PostgreSQL', () => {
     const scope = await db!.prepare("SELECT COUNT(*) AS count FROM scope_items s JOIN projects p ON p.id=s.project_id JOIN clients c ON c.id=p.client_id WHERE c.name='Cedar Labs'").get<{ count: number }>();
     expect(contract?.count).toBe(1);
     expect(scope?.count).toBeGreaterThanOrEqual(2);
+  });
+
+  it('creates scoped agent tokens and runs skills through the agent API', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    await resetDemoData(db);
+    const app = createApp(db);
+    const browser = request.agent(app);
+    await browser.post('/api/auth/demo').expect(200);
+
+    const created = await browser.post('/api/agent-tokens').send({ name: 'Claude Code test' }).expect(201);
+    expect(created.body.token).toMatch(/^trv_live_/);
+    expect(created.body.record.scopes).toEqual([
+      'skills:read', 'skills:run', 'runs:read', 'workspace:read', 'actions:prepare',
+      'playbooks:read', 'playbooks:run', 'workflows:read'
+    ]);
+
+    const listedTokens = await browser.get('/api/agent-tokens').expect(200);
+    expect(listedTokens.body.tokens[0].prefix).toBe(created.body.record.prefix);
+    expect(JSON.stringify(listedTokens.body)).not.toContain(created.body.token);
+
+    const authorization = `Bearer ${created.body.token}`;
+    const skills = await request(app).get('/api/agent/skills').set('Authorization', authorization).expect(200);
+    const scoreManifest = skills.body.skills.find((skill: { id: string }) => skill.id === 'gtm.score-lead');
+    expect(scoreManifest.enabled).toBe(true);
+    expect(scoreManifest.inputSchema.type).toBe('object');
+
+    const executed = await request(app)
+      .post('/api/agent/skills/gtm.score-lead/run')
+      .set('Authorization', authorization)
+      .send({ lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } })
+      .expect(201);
+    expect(executed.body.run.status).toBe('ok');
+    expect(executed.body.run.output.wedge).toBe('sizing');
+    expect(executed.body.approvalRequired).toBe(false);
+
+    const runs = await request(app).get('/api/agent/runs?skillId=gtm.score-lead').set('Authorization', authorization).expect(200);
+    expect(runs.body.runs.some((run: { id: string }) => run.id === executed.body.run.id)).toBe(true);
+    await request(app).get(`/api/agent/runs/${executed.body.run.id}`).set('Authorization', authorization).expect(200);
+
+    const brief = await request(app).get('/api/agent/revenue-brief').set('Authorization', authorization).expect(200);
+    expect(brief.body.recommendations.length).toBe(4);
+    const recommendationId = brief.body.recommendations[0].id;
+    const prepared = await request(app)
+      .post(`/api/agent/recommendations/${recommendationId}/prepare`)
+      .set('Authorization', authorization)
+      .send({})
+      .expect(201);
+    expect(prepared.body.action.status).toBe('draft');
+    expect(prepared.body.instruction).toContain('founder');
+    const pending = await request(app).get('/api/agent/actions').set('Authorization', authorization).expect(200);
+    expect(pending.body.actions.some((action: { id: string }) => action.id === prepared.body.action.id)).toBe(true);
+    await request(app)
+      .post(`/api/actions/${prepared.body.action.id}/approve`)
+      .set('Authorization', authorization)
+      .send({ recipient: prepared.body.action.recipient, subject: prepared.body.action.subject, body: prepared.body.action.body })
+      .expect(401);
+
+    // An agent token is not a browser session and cannot reach the rest of the product API.
+    await request(app).get('/api/dashboard').set('Authorization', authorization).expect(401);
+
+    await browser.delete(`/api/agent-tokens/${created.body.record.id}`).expect(200);
+    await request(app).get('/api/agent/skills').set('Authorization', authorization).expect(401);
+  });
+
+  it('serves the same skill catalog over authenticated Streamable HTTP MCP', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    await resetDemoData(db);
+    const app = createApp(db);
+    const browser = request.agent(app);
+    await browser.post('/api/auth/demo').expect(200);
+    const created = await browser.post('/api/agent-tokens').send({ name: 'Remote MCP test' }).expect(201);
+
+    const httpServer = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => httpServer.once('listening', resolve));
+    const address = httpServer.address();
+    if (!address || typeof address === 'string') throw new Error('MCP test server did not bind');
+    const mcp = new Client({ name: 'remote-trevra-test', version: '1.0.0' });
+    try {
+      await mcp.connect(new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${address.port}/api/agent/mcp`),
+        { requestInit: { headers: { Authorization: `Bearer ${created.body.token}` } } }
+      ));
+      const tools = await mcp.listTools();
+      expect(tools.tools.some((tool) => tool.name === 'trevra_gtm_score-lead')).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === 'trevra_revenue_brief')).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === 'trevra_prepare_recommendation')).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === 'trevra_list_playbooks')).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === 'trevra_start_playbook')).toBe(true);
+      const briefResult = await mcp.callTool({ name: 'trevra_revenue_brief', arguments: {} });
+      const briefContent = briefResult.content as Array<{ type: string; text?: string }>;
+      const briefText = briefContent.find((item) => item.type === 'text')?.text;
+      const recommendationId = briefText ? JSON.parse(briefText).recommendations[0].id : null;
+      expect(recommendationId).toBeTruthy();
+      const preparedResult = await mcp.callTool({
+        name: 'trevra_prepare_recommendation',
+        arguments: { recommendationId }
+      });
+      const preparedContent = preparedResult.content as Array<{ type: string; text?: string }>;
+      const preparedText = preparedContent.find((item) => item.type === 'text')?.text;
+      expect(preparedText ? JSON.parse(preparedText).action.status : null).toBe('draft');
+      const result = await mcp.callTool({
+        name: 'trevra_gtm_score-lead',
+        arguments: { lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } }
+      });
+      const content = result.content as Array<{ type: string; text?: string }>;
+      const text = content.find((item) => item.type === 'text')?.text;
+      expect(text ? JSON.parse(text).run.output.wedge : null).toBe('sizing');
+    } finally {
+      await mcp.close().catch(() => undefined);
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    }
+  });
+
+  it('enforces agent-token scopes', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    await resetDemoData(db);
+    const app = createApp(db);
+    const browser = request.agent(app);
+    await browser.post('/api/auth/demo').expect(200);
+    const created = await browser.post('/api/agent-tokens').send({
+      name: 'Read-only agent', scopes: ['skills:read']
+    }).expect(201);
+    const authorization = `Bearer ${created.body.token}`;
+    await request(app).get('/api/agent/skills').set('Authorization', authorization).expect(200);
+    await request(app)
+      .post('/api/agent/skills/gtm.score-lead/run')
+      .set('Authorization', authorization)
+      .send({ lead: {} })
+      .expect(403);
+    await request(app).get('/api/agent/runs').set('Authorization', authorization).expect(403);
+  });
+
+  it('starts, inspects, approves, and audits a durable playbook through the API', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    await resetDemoData(db);
+    const app = createApp(db);
+    const browser = request.agent(app);
+    await browser.post('/api/auth/demo').expect(200);
+
+    const catalog = await browser.get('/api/playbooks').expect(200);
+    expect(catalog.body.playbooks.some((playbook: { id: string }) => playbook.id === 'test.api-score-approval')).toBe(true);
+
+    const started = await browser.post('/api/playbooks/test.api-score-approval/runs').send({
+      input: { lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } }
+    }).expect(201);
+    expect(started.body.run.status).toBe('waiting_approval');
+    const runId = started.body.run.id as string;
+    const approval = started.body.run.steps.find((step: { status: string }) => step.status === 'waiting_approval');
+    expect(approval.approvalPayloadHash).toHaveLength(64);
+
+    const inspected = await browser.get(`/api/playbook-runs/${runId}`).expect(200);
+    expect(inspected.body.run.currentStepId).toBe('approve');
+
+    const decided = await browser.post(`/api/playbook-runs/${runId}/steps/approve/decision`).send({ decision: 'approve' }).expect(200);
+    expect(decided.body.run.status).toBe('completed');
+    expect(decided.body.run.output).toMatchObject({ approved: true, score: { wedge: 'sizing' } });
+
+    const events = await browser.get(`/api/control-plane/events?streamType=playbook_run&streamId=${runId}`).expect(200);
+    expect(events.body.events.map((event: { eventType: string }) => event.eventType)).toContain('playbook.run.completed');
+    expect(events.body.events.map((event: { streamVersion: number }) => event.streamVersion)).toEqual(
+      events.body.events.map((_: unknown, index: number) => index + 1)
+    );
+
+    const created = await browser.post('/api/agent-tokens').send({ name: 'Workflow agent' }).expect(201);
+    const authorization = `Bearer ${created.body.token}`;
+    await request(app).get('/api/agent/playbooks').set('Authorization', authorization).expect(200);
+    await request(app).get(`/api/agent/playbook-runs/${runId}`).set('Authorization', authorization).expect(200);
+    await request(app)
+      .post(`/api/playbook-runs/${runId}/steps/approve/decision`)
+      .set('Authorization', authorization)
+      .send({ decision: 'approve' })
+      .expect(401);
   });
 
   it('verifies and deduplicates Stripe payment webhooks', async () => {

@@ -90,6 +90,29 @@ export async function openDatabase(options: {
   pool.on('error', (error) => console.error('Unexpected PostgreSQL pool error', error));
   const db = new Db(pool, pool);
   await migrate(db);
+  const [{ seedSkills }, { seedChannels }, { seedPlaybooks }] = await Promise.all([
+    import('./skills/registry.js'),
+    import('./channels/registry.js'),
+    import('./playbooks/registry.js')
+  ]);
+  await seedSkills(db);
+  await seedChannels(db);
+  await seedPlaybooks(db);
+  const [{ seedBuiltinModuleRegistry }, { listSkills }, { zodToJsonSchema }] = await Promise.all([
+    import('./registry/service.js'),
+    import('./skills/registry.js'),
+    import('zod-to-json-schema')
+  ]);
+  let builtinSbom: Record<string, unknown> = {};
+  for (const candidate of ['public/catalog/trevra.sbom.cdx.json','dist/catalog/trevra.sbom.cdx.json']) {
+    try { builtinSbom = JSON.parse(await readFile(resolve(candidate),'utf8')) as Record<string, unknown>; break; } catch { /* optional before catalog build */ }
+  }
+  await seedBuiltinModuleRegistry(db, listSkills().map(({ manifest }) => ({
+    id: manifest.id, name: manifest.name, version: manifest.version, description: manifest.description,
+    sideEffect: manifest.sideEffect, requiresApproval: manifest.requiresApproval,
+    inputSchema: zodToJsonSchema(manifest.inputSchema, { target: 'jsonSchema7', $refStrategy: 'none' }) as Record<string, unknown>,
+    outputSchema: zodToJsonSchema(manifest.outputSchema, { target: 'jsonSchema7', $refStrategy: 'none' }) as Record<string, unknown>
+  })),builtinSbom);
   if (options.seedDemo ?? process.env.NODE_ENV !== 'production') await seedDemo(db);
   return db;
 }

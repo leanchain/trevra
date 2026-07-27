@@ -11,7 +11,7 @@ locals {
     "sqladmin.googleapis.com"
   ])
 
-  secret_values = {
+  secret_values = merge({
     "database-url"              = "postgresql://${var.database_user}:${urlencode(random_password.database.result)}@/${var.database_name}?host=/cloudsql/${google_sql_database_instance.trevra.connection_name}"
     "better-auth-secret"        = random_password.better_auth.result
     "marketing-hash-salt"       = random_password.marketing_hash.result
@@ -22,7 +22,14 @@ locals {
     "nango-api-key"             = var.nango_api_key
     "nango-webhook-signing-key" = var.nango_webhook_signing_key
     "ingest-api-key"            = random_password.ingest.result
-  }
+    "trevra-agent-token-pepper" = random_password.agent_token_pepper.result
+    }, var.temporal_api_key != "" ? {
+    "temporal-api-key" = var.temporal_api_key
+    } : {}, var.sandbox_gateway_token != "" ? {
+    "trevra-sandbox-gateway-token" = var.sandbox_gateway_token
+    } : {}, var.remote_action_adapter_token != "" ? {
+    "trevra-remote-action-adapter-token" = var.remote_action_adapter_token
+  } : {})
 }
 
 data "google_project" "current" {
@@ -105,6 +112,11 @@ resource "random_password" "marketing_hash" {
 }
 
 resource "random_password" "traction_admin" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "agent_token_pepper" {
   length  = 64
   special = false
 }
@@ -310,6 +322,42 @@ resource "google_cloud_run_v2_service" "trevra" {
         name  = "ALLOW_SIMULATED_EXECUTION"
         value = "false"
       }
+      env {
+        name  = "TREVRA_ORCHESTRATOR"
+        value = var.orchestrator
+      }
+      env {
+        name  = "TEMPORAL_ADDRESS"
+        value = var.temporal_address
+      }
+      env {
+        name  = "TEMPORAL_NAMESPACE"
+        value = var.temporal_namespace
+      }
+      env {
+        name  = "TEMPORAL_TASK_QUEUE"
+        value = var.temporal_task_queue
+      }
+      env {
+        name  = "TEMPORAL_TLS"
+        value = tostring(var.temporal_tls)
+      }
+      env {
+        name  = "PUBLIC_REGISTRY_API_URL"
+        value = var.app_origin
+      }
+      env {
+        name  = "PUBLIC_REGISTRY_CORS_ORIGIN"
+        value = var.registry_cors_origin != "" ? var.registry_cors_origin : var.app_origin
+      }
+      env {
+        name  = "TREVRA_SANDBOX_GATEWAY_URL"
+        value = var.sandbox_gateway_url
+      }
+      env {
+        name  = "TREVRA_REMOTE_ACTION_ADAPTERS_JSON"
+        value = var.remote_action_adapters_json
+      }
 
       dynamic "env" {
         for_each = local.secret_values
@@ -342,6 +390,132 @@ resource "google_cloud_run_v2_service" "trevra" {
         failure_threshold     = 3
         http_get {
           path = "/api/health"
+          port = 8080
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    google_project_service.required,
+    google_project_iam_member.cloud_sql_client,
+    google_secret_manager_secret_iam_member.runtime,
+    google_secret_manager_secret_version.application,
+    google_sql_database.trevra,
+    google_sql_user.trevra
+  ]
+}
+
+resource "google_cloud_run_v2_service" "trevra_worker" {
+  project             = var.project_id
+  name                = "${var.service_name}-worker"
+  location            = var.region
+  deletion_protection = var.deletion_protection
+  ingress             = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+
+  template {
+    service_account                  = google_service_account.cloud_run.email
+    timeout                          = "3600s"
+    max_instance_request_concurrency = 1
+
+    scaling {
+      min_instance_count = var.worker_min_instances
+      max_instance_count = var.worker_max_instances
+    }
+
+    volumes {
+      name = "cloudsql"
+      cloud_sql_instance {
+        instances = [google_sql_database_instance.trevra.connection_name]
+      }
+    }
+
+    containers {
+      image   = var.image
+      command = ["node"]
+      args    = ["dist-server/worker/index.js"]
+
+      ports {
+        container_port = 8080
+      }
+
+      resources {
+        limits = {
+          cpu    = "2"
+          memory = "1Gi"
+        }
+        cpu_idle          = false
+        startup_cpu_boost = true
+      }
+
+      volume_mounts {
+        name       = "cloudsql"
+        mount_path = "/cloudsql"
+      }
+
+      dynamic "env" {
+        for_each = {
+          NODE_ENV                           = "production"
+          PORT                               = "8080"
+          APP_ORIGIN                         = var.app_origin
+          BETTER_AUTH_URL                    = var.better_auth_url
+          PUBLIC_SITE_URL                    = var.app_origin
+          PUBLIC_LEGAL_NAME                  = var.legal_name
+          PUBLIC_SUPPORT_EMAIL               = var.support_email
+          SECURITY_CONTACT_EMAIL             = var.security_contact_email
+          COOKIE_SECURE                      = "true"
+          DATABASE_POOL_MAX                  = tostring(var.database_pool_max)
+          NANGO_HOST                         = var.nango_host
+          NANGO_PUBLIC_SERVER_URL            = var.nango_host
+          ALLOW_DEMO_AUTH                    = "false"
+          ALLOW_SIMULATED_EXECUTION          = "false"
+          TREVRA_ORCHESTRATOR                = var.orchestrator
+          TEMPORAL_ADDRESS                   = var.temporal_address
+          TEMPORAL_NAMESPACE                 = var.temporal_namespace
+          TEMPORAL_TASK_QUEUE                = var.temporal_task_queue
+          TEMPORAL_TLS                       = tostring(var.temporal_tls)
+          PUBLIC_REGISTRY_API_URL            = var.app_origin
+          PUBLIC_REGISTRY_CORS_ORIGIN        = var.registry_cors_origin != "" ? var.registry_cors_origin : var.app_origin
+          TREVRA_SANDBOX_GATEWAY_URL         = var.sandbox_gateway_url
+          TREVRA_REMOTE_ACTION_ADAPTERS_JSON = var.remote_action_adapters_json
+        }
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.secret_values
+        content {
+          name = upper(replace(env.key, "-", "_"))
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.application[env.key].secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      startup_probe {
+        initial_delay_seconds = 5
+        timeout_seconds       = 5
+        period_seconds        = 5
+        failure_threshold     = 24
+        http_get {
+          path = "/health"
+          port = 8080
+        }
+      }
+
+      liveness_probe {
+        initial_delay_seconds = 30
+        timeout_seconds       = 5
+        period_seconds        = 30
+        failure_threshold     = 3
+        http_get {
+          path = "/health"
           port = 8080
         }
       }

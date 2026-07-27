@@ -5,7 +5,7 @@ import rateLimit from 'express-rate-limit';
 import multer from 'multer';
 import pino from 'pino';
 import { pinoHttp } from 'pino-http';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { toNodeHandler } from 'better-auth/node';
 import type { Db } from './db.js';
@@ -28,6 +28,45 @@ import {
   triggerConnectionSync
 } from './integration-service.js';
 import { getSiteConfig, recordMarketingEvent, registerPublicSiteRoutes } from './public-site.js';
+import {
+  AGENT_SCOPES,
+  createAgentToken,
+  hasAgentScope,
+  listAgentTokens,
+  resolveAgentIdentity,
+  revokeAgentToken,
+  type AgentIdentity,
+  type AgentScope
+} from './agent-access.js';
+import {
+  executeWorkspaceSkill,
+  getWorkspaceSkillRun,
+  listWorkspaceSkillRuns,
+  listWorkspaceSkills,
+  SkillApiError
+} from './skill-api.js';
+import { handleMcpHttpRequest, rejectMcpNonPost } from './mcp-http.js';
+import { getAgentRevenueBrief, listAgentPendingActions, prepareRecommendationForAgent } from './agent-operations.js';
+import {
+  decidePlaybookApproval,
+  getPlaybookRun,
+  listPlaybookRuns,
+  listWorkspacePlaybooks,
+  PlaybookError,
+  startPlaybookRun
+} from './playbooks/engine.js';
+import { listDomainEvents } from './control-plane/events.js';
+import { listWorkspacePolicies } from './control-plane/policy.js';
+import {
+  createModulePublisher,
+  installModuleRelease,
+  listWorkspaceCommunityModules,
+  listWorkspacePublishers,
+  publishModuleRelease,
+  uninstallModuleRelease,
+  setPublisherVerification
+} from './registry/service.js';
+import { listCommercialProjections, rebuildCommercialProjections } from './projections/commercial.js';
 
 const SESSION_COOKIE = 'trevra_session';
 const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -43,6 +82,7 @@ const documentUpload = multer({
 });
 
 type AuthedRequest = Request & { auth?: { userId: string; workspaceId: string; email: string } };
+type AgentRequest = Request & { agent?: AgentIdentity };
 
 export function createApp(db: Db) {
   const app = express();
@@ -110,7 +150,9 @@ export function createApp(db: Db) {
 
   app.get('/api/public-config', (_req, res) => res.json({
     googleAuthEnabled: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
-    modelExtractionEnabled: Boolean(process.env.OPENAI_API_KEY)
+    modelExtractionEnabled: Boolean(process.env.OPENAI_API_KEY),
+    supportEmail: getSiteConfig().supportEmail,
+    catalogApiUrl: process.env.PUBLIC_REGISTRY_API_URL?.trim() || ''
   }));
 
   const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
@@ -143,7 +185,364 @@ export function createApp(db: Db) {
   app.use(express.json({ limit: '6mb' }));
   app.use(enforceAllowedOrigin);
   app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false }));
+
+  app.post('/api/admin/registry/publishers/:id/verification', async (req, res, next) => {
+    try {
+      const expected = process.env.TRACTION_ADMIN_TOKEN?.trim();
+      if (!expected) return res.status(404).json({ error: 'Not found' });
+      const supplied = req.header('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? '';
+      if (!secureTokenEqual(supplied,expected)) return res.status(401).json({ error: 'Invalid registry admin token' });
+      const input = z.object({ verified: z.boolean() }).parse(req.body ?? {});
+      const updated = await setPublisherVerification(db,String(req.params.id),input.verified);
+      if (!updated) return res.status(404).json({ error: 'Publisher not found' });
+      res.json({ ok: true, verified: input.verified });
+    } catch (error) { next(error); }
+  });
+
+  // Agent tokens deliberately expose a smaller surface than browser sessions.
+  // Claude Code, Codex, and other MCP clients can inspect and run skills, but
+  // cannot silently inherit billing, integration, or account-management access.
+  app.post('/api/agent/mcp', requireAgentScope(db, 'skills:read'), async (req: AgentRequest, res, next) => {
+    try { await handleMcpHttpRequest(db, req.agent!, req, res); }
+    catch (error) { next(error); }
+  });
+  app.get('/api/agent/mcp', requireAgentScope(db, 'skills:read'), rejectMcpNonPost);
+  app.delete('/api/agent/mcp', requireAgentScope(db, 'skills:read'), rejectMcpNonPost);
+
+  app.get('/api/agent/revenue-brief', requireAgentScope(db, 'workspace:read'), async (req: AgentRequest, res, next) => {
+    try { res.json(await getAgentRevenueBrief(db, req.agent!.workspaceId)); }
+    catch (error) { next(error); }
+  });
+
+  app.get('/api/agent/actions', requireAgentScope(db, 'workspace:read'), async (req: AgentRequest, res, next) => {
+    try { res.json({ actions: await listAgentPendingActions(db, req.agent!.workspaceId) }); }
+    catch (error) { next(error); }
+  });
+
+  app.post('/api/agent/recommendations/:id/prepare', requireAgentScope(db, 'actions:prepare'), async (req: AgentRequest, res, next) => {
+    try {
+      const result = await prepareRecommendationForAgent(
+        db,
+        req.agent!.workspaceId,
+        req.agent!.tokenId,
+        String(req.params.id)
+      );
+      res.status(201).json(result);
+    } catch (error) {
+      if (error instanceof Error && /not found/i.test(error.message)) return res.status(404).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  app.get('/api/agent/skills', requireAgentScope(db, 'skills:read'), async (req: AgentRequest, res, next) => {
+    try { res.json({ skills: await listWorkspaceSkills(db, req.agent!.workspaceId) }); }
+    catch (error) { next(error); }
+  });
+
+  app.post('/api/agent/skills/:id/run', requireAgentScope(db, 'skills:run'), async (req: AgentRequest, res, next) => {
+    try {
+      const result = await executeWorkspaceSkill(db, {
+        workspaceId: req.agent!.workspaceId,
+        skillId: String(req.params.id),
+        payload: req.body ?? {},
+        actorType: 'agent',
+        actorId: req.agent!.tokenId
+      });
+      res.status(201).json(result);
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/agent/runs', requireAgentScope(db, 'runs:read'), async (req: AgentRequest, res, next) => {
+    try {
+      const filters = skillRunFiltersSchema.parse(req.query);
+      res.json({ runs: await listWorkspaceSkillRuns(db, req.agent!.workspaceId, filters) });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/agent/runs/:id', requireAgentScope(db, 'runs:read'), async (req: AgentRequest, res, next) => {
+    try {
+      const run = await getWorkspaceSkillRun(db, req.agent!.workspaceId, String(req.params.id));
+      if (!run) return res.status(404).json({ error: 'Skill run not found' });
+      res.json({ run });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/agent/playbooks', requireAgentScope(db, 'playbooks:read'), async (req: AgentRequest, res, next) => {
+    try { res.json({ playbooks: await listWorkspacePlaybooks(db, req.agent!.workspaceId) }); }
+    catch (error) { next(error); }
+  });
+
+  app.post('/api/agent/playbooks/:id/runs', requireAgentScope(db, 'playbooks:run'), async (req: AgentRequest, res, next) => {
+    try {
+      const input = playbookStartSchema.parse(req.body ?? {});
+      const run = await startPlaybookRun(db, {
+        workspaceId: req.agent!.workspaceId,
+        playbookId: String(req.params.id),
+        version: input.version,
+        payload: input.input,
+        actorType: 'agent',
+        actorId: req.agent!.tokenId
+      });
+      res.status(201).json({ run });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/agent/playbook-runs', requireAgentScope(db, 'workflows:read'), async (req: AgentRequest, res, next) => {
+    try {
+      const filters = playbookRunFiltersSchema.parse(req.query);
+      res.json({ runs: await listPlaybookRuns(db, req.agent!.workspaceId, filters) });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/agent/playbook-runs/:id', requireAgentScope(db, 'workflows:read'), async (req: AgentRequest, res, next) => {
+    try {
+      const run = await getPlaybookRun(db, req.agent!.workspaceId, String(req.params.id));
+      if (!run) return res.status(404).json({ error: 'Playbook run not found' });
+      res.json({ run });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/agent/events', requireAgentScope(db, 'workflows:read'), async (req: AgentRequest, res, next) => {
+    try {
+      const filters = eventFiltersSchema.parse(req.query);
+      res.json({ events: await listDomainEvents(db, req.agent!.workspaceId, filters) });
+    } catch (error) { next(error); }
+  });
+
   app.use('/api', requireSession(db));
+
+  app.get('/api/skills', async (req: AuthedRequest, res, next) => {
+    try { res.json({ skills: await listWorkspaceSkills(db, req.auth!.workspaceId) }); }
+    catch (error) { next(error); }
+  });
+
+  app.post('/api/skills/:id/run', async (req: AuthedRequest, res, next) => {
+    try {
+      const result = await executeWorkspaceSkill(db, {
+        workspaceId: req.auth!.workspaceId,
+        skillId: String(req.params.id),
+        payload: req.body ?? {},
+        actorType: 'user',
+        actorId: req.auth!.userId
+      });
+      res.status(201).json(result);
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/skill-runs', async (req: AuthedRequest, res, next) => {
+    try {
+      const filters = skillRunFiltersSchema.parse(req.query);
+      res.json({ runs: await listWorkspaceSkillRuns(db, req.auth!.workspaceId, filters) });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/skill-runs/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      const run = await getWorkspaceSkillRun(db, req.auth!.workspaceId, String(req.params.id));
+      if (!run) return res.status(404).json({ error: 'Skill run not found' });
+      res.json({ run });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/playbooks', async (req: AuthedRequest, res, next) => {
+    try { res.json({ playbooks: await listWorkspacePlaybooks(db, req.auth!.workspaceId) }); }
+    catch (error) { next(error); }
+  });
+
+  app.post('/api/playbooks/:id/runs', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = playbookStartSchema.parse(req.body ?? {});
+      const run = await startPlaybookRun(db, {
+        workspaceId: req.auth!.workspaceId,
+        playbookId: String(req.params.id),
+        version: input.version,
+        payload: input.input,
+        actorType: 'user',
+        actorId: req.auth!.userId
+      });
+      res.status(201).json({ run });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/playbook-runs', async (req: AuthedRequest, res, next) => {
+    try {
+      const filters = playbookRunFiltersSchema.parse(req.query);
+      res.json({ runs: await listPlaybookRuns(db, req.auth!.workspaceId, filters) });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/playbook-runs/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      const run = await getPlaybookRun(db, req.auth!.workspaceId, String(req.params.id));
+      if (!run) return res.status(404).json({ error: 'Playbook run not found' });
+      res.json({ run });
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/playbook-runs/:id/steps/:stepId/decision', async (req: AuthedRequest, res, next) => {
+    try {
+      const decision = playbookDecisionSchema.parse(req.body ?? {});
+      const run = await decidePlaybookApproval(db, {
+        workspaceId: req.auth!.workspaceId,
+        runId: String(req.params.id),
+        stepId: String(req.params.stepId),
+        userId: req.auth!.userId,
+        decision: decision.decision,
+        comment: decision.comment
+      });
+      res.json({ run });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/control-plane/events', async (req: AuthedRequest, res, next) => {
+    try {
+      const filters = eventFiltersSchema.parse(req.query);
+      res.json({ events: await listDomainEvents(db, req.auth!.workspaceId, filters) });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/policies', async (req: AuthedRequest, res, next) => {
+    try { res.json({ policies: await listWorkspacePolicies(db, req.auth!.workspaceId) }); }
+    catch (error) { next(error); }
+  });
+
+  app.post('/api/policies', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = policyWriteSchema.parse(req.body ?? {});
+      const now = new Date().toISOString();
+      const policyId = id('pol');
+      await db.prepare(`
+        INSERT INTO workspace_policies (
+          id,workspace_id,name,version,priority,action_pattern,effect,conditions_json,enabled,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      `).run(
+        policyId,req.auth!.workspaceId,input.name,1,input.priority,input.actionPattern,input.effect,
+        JSON.stringify(input.conditions),input.enabled,now,now
+      );
+      res.status(201).json({ policies: await listWorkspacePolicies(db, req.auth!.workspaceId) });
+    } catch (error) { next(error); }
+  });
+
+  app.delete('/api/policies/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      const result = await db.prepare('DELETE FROM workspace_policies WHERE id=? AND workspace_id=?')
+        .run(String(req.params.id),req.auth!.workspaceId);
+      if (result.changes === 0) return res.status(404).json({ error: 'Policy not found' });
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+
+  app.get('/api/registry/publishers', async (req: AuthedRequest, res, next) => {
+    try { res.json({ publishers: await listWorkspacePublishers(db, req.auth!.workspaceId) }); }
+    catch (error) { next(error); }
+  });
+
+  app.post('/api/registry/publishers', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = publisherCreateSchema.parse(req.body ?? {});
+      const publisher = await createModulePublisher(db, {
+        workspaceId: req.auth!.workspaceId,
+        userId: req.auth!.userId,
+        slug: input.slug,
+        displayName: input.displayName,
+        publicKeyPem: input.publicKeyPem
+      });
+      res.status(201).json({ publisher });
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/registry/modules/:id/releases', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = moduleReleaseSchema.parse(req.body ?? {});
+      if (typeof input.manifest !== 'object' || input.manifest === null || Array.isArray(input.manifest) ||
+          String((input.manifest as Record<string, unknown>).id ?? '') !== String(req.params.id)) {
+        return res.status(400).json({ error: 'Manifest id must match the module route' });
+      }
+      const release = await publishModuleRelease(db, {
+        workspaceId: req.auth!.workspaceId,
+        userId: req.auth!.userId,
+        publisherId: input.publisherId,
+        manifest: input.manifest,
+        signature: input.signature,
+        sbom: input.sbom
+      });
+      res.status(201).json({ release });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/registry/installations', async (req: AuthedRequest, res, next) => {
+    try { res.json({ modules: await listWorkspaceCommunityModules(db, req.auth!.workspaceId) }); }
+    catch (error) { next(error); }
+  });
+
+  app.post('/api/registry/modules/:id/install', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = moduleInstallSchema.parse(req.body ?? {});
+      const installation = await installModuleRelease(db, {
+        workspaceId: req.auth!.workspaceId,
+        userId: req.auth!.userId,
+        moduleId: String(req.params.id),
+        version: input.version,
+        config: input.config
+      });
+      res.status(201).json({ installation });
+    } catch (error) { next(error); }
+  });
+
+  app.delete('/api/registry/modules/:id/install', async (req: AuthedRequest, res, next) => {
+    try {
+      const removed = await uninstallModuleRelease(db, req.auth!.workspaceId, String(req.params.id));
+      if (!removed) return res.status(404).json({ error: 'Installed module not found' });
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/commercial-projections', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = projectionFiltersSchema.parse(req.query);
+      res.json({ projections: await listCommercialProjections(db, req.auth!.workspaceId, input) });
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/commercial-projections/rebuild', async (_req: AuthedRequest, res, next) => {
+    try { res.status(202).json({ processed: await rebuildCommercialProjections(db) }); }
+    catch (error) { next(error); }
+  });
+
+  app.get('/api/agent-tokens', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ tokens: await listAgentTokens(db, req.auth!.workspaceId) });
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/agent-tokens', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z.object({
+        name: z.string().trim().min(1).max(100),
+        scopes: z.array(z.enum(AGENT_SCOPES)).min(1).max(AGENT_SCOPES.length).optional(),
+        expiresAt: z.string().datetime().nullable().optional()
+      }).parse(req.body ?? {});
+      const created = await createAgentToken(db, {
+        workspaceId: req.auth!.workspaceId,
+        userId: req.auth!.userId,
+        name: input.name,
+        scopes: input.scopes,
+        expiresAt: input.expiresAt
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(201).json(created);
+    } catch (error) { next(error); }
+  });
+
+  app.delete('/api/agent-tokens/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      const revoked = await revokeAgentToken(db, req.auth!.workspaceId, req.auth!.userId, String(req.params.id));
+      if (!revoked) return res.status(404).json({ error: 'Active agent token not found' });
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
 
   app.get('/api/dashboard', async (req: AuthedRequest, res, next) => {
     try {
@@ -376,6 +775,7 @@ export function createApp(db: Db) {
   app.use('/api', (_req, res) => res.status(404).json({ error: 'API route not found' }));
 
   app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
+    if (error instanceof SkillApiError || error instanceof PlaybookError) return res.status(error.status).json({ error: error.message });
     if (error instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', issues: error.issues });
     if (error instanceof multer.MulterError) return res.status(400).json({ error: error.message });
     req.log.error({ err: error }, 'Unhandled request error');
@@ -383,6 +783,83 @@ export function createApp(db: Db) {
   });
 
   return app;
+}
+
+const skillRunFiltersSchema = z.object({
+  skillId: z.string().min(1).max(200).optional(),
+  status: z.enum(['ok', 'error']).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50)
+});
+
+
+const publisherCreateSchema = z.object({
+  slug: z.string().min(3).max(64),
+  displayName: z.string().min(1).max(120),
+  publicKeyPem: z.string().min(40).max(10_000)
+});
+
+const moduleReleaseSchema = z.object({
+  publisherId: z.string().min(1).max(100),
+  manifest: z.unknown(),
+  signature: z.string().min(40).max(20_000),
+  sbom: z.record(z.unknown()).default({})
+});
+
+const moduleInstallSchema = z.object({
+  version: z.string().min(1).max(100),
+  config: z.record(z.unknown()).default({})
+});
+
+const projectionFiltersSchema = z.object({
+  entityType: z.string().min(1).max(100).optional(),
+  includeDeleted: z.coerce.boolean().default(false),
+  limit: z.coerce.number().int().min(1).max(1000).default(200)
+});
+
+const playbookStartSchema = z.object({
+  version: z.string().min(1).max(50).optional(),
+  input: z.unknown().default({})
+});
+
+const playbookRunFiltersSchema = z.object({
+  status: z.enum(['queued','running','waiting_approval','completed','failed','cancelled']).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50)
+});
+
+const playbookDecisionSchema = z.object({
+  decision: z.enum(['approve','reject']),
+  comment: z.string().trim().max(1000).optional()
+});
+
+const eventFiltersSchema = z.object({
+  streamType: z.string().min(1).max(100).optional(),
+  streamId: z.string().min(1).max(200).optional(),
+  correlationId: z.string().min(1).max(200).optional(),
+  afterPosition: z.coerce.number().int().nonnegative().optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+});
+
+const policyWriteSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  priority: z.number().int().min(-10000).max(10000).default(0),
+  actionPattern: z.string().trim().min(1).max(200),
+  effect: z.enum(['allow','deny','require_approval']),
+  conditions: z.record(z.unknown()).default({}),
+  enabled: z.boolean().default(true)
+});
+
+function requireAgentScope(db: Db, scope: AgentScope) {
+  return async (req: AgentRequest, res: Response, next: NextFunction) => {
+    try {
+      const identity = await resolveAgentIdentity(db, req.headers);
+      if (!identity) return res.status(401).json({ error: 'Valid Trevra agent token required' });
+      if (!hasAgentScope(identity, scope)) return res.status(403).json({ error: `Agent token is missing scope: ${scope}` });
+      req.agent = identity;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 function requireSession(db: Db) {
@@ -436,6 +913,12 @@ function enforceAllowedOrigin(req: Request, res: Response, next: NextFunction) {
   ]);
   if (!allowed.has(origin)) return res.status(403).json({ error: 'Origin not allowed' });
   next();
+}
+
+function secureTokenEqual(left:string,right:string):boolean{
+  const leftHash=createHash('sha256').update(left).digest();
+  const rightHash=createHash('sha256').update(right).digest();
+  return timingSafeEqual(leftHash,rightHash);
 }
 
 function hash(value: string): string {

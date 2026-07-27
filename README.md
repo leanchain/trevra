@@ -1,6 +1,6 @@
 # Trevra
 
-Trevra is a revenue chief of staff for independent professionals. It reconstructs what was sold, requested, delivered, invoiced, and paid; assembles a Revenue Proof Pack for every finding; prepares the corrective work; and executes approved or explicitly delegated actions through the freelancer's existing tools.
+Trevra is the open-source ledger and control plane for agent-operated go-to-market. Claude runs the revenue loop through modular skills; Trevra reconstructs what was sourced, proposed, agreed, delivered, invoiced, and paid, assembles a Revenue Proof Pack behind every finding, prepares the corrective work, and executes only what the founder approved or explicitly delegated — through the tools the business already uses.
 
 ## Public launch and discoverability
 
@@ -18,7 +18,7 @@ Trevra is **PostgreSQL-only**. There is no SQLite dependency, fallback, database
 
 ## What is implemented
 
-### Freelancer work console
+### Approval and evidence console
 
 - prioritized daily revenue queue;
 - proposal follow-ups, scope protection, unbilled-work detection, and overdue-payment collection;
@@ -40,6 +40,45 @@ Trevra is **PostgreSQL-only**. There is no SQLite dependency, fallback, database
 - canonical ingestion API for private systems.
 
 Trevra does not rebuild OAuth, refresh-token rotation, provider credential storage, integration retries, or rate-limit handling. Nango Cloud or a self-hosted Nango deployment provides that plumbing. The canonical model and action contracts are in [`docs/integration-contracts.md`](docs/integration-contracts.md).
+
+Proprietary systems can use sandboxed read modules, the trusted canonical ingestion endpoint, and configured HTTPS action adapters. Proprietary writes still pass through a playbook approval, exact-payload hash, JSON-schema validation, signed request, and idempotency key.
+
+## Durable playbooks and hosted module registry
+
+Trevra includes Temporal or PostgreSQL durable orchestration, exact-payload approvals, event-derived commercial projections, and built-in outreach, invoice, and change-order playbooks.
+
+The hosted module registry supports Ed25519 publisher identities, signed digest-pinned releases, SBOMs, workspace installation, isolated OCI/WASI/remote execution, and privacy-safe popularity counters. The public landing page displays real run counts, success rates, installations, and popularity ranks without publishing workspace or customer data.
+
+Architecture and operations are documented in:
+
+- [`docs/control-plane-architecture.md`](docs/control-plane-architecture.md)
+- [`docs/module-registry.md`](docs/module-registry.md)
+- [`docs/sandbox-execution.md`](docs/sandbox-execution.md)
+- [`docs/temporal-orchestration.md`](docs/temporal-orchestration.md)
+
+## Operate from Claude Code or Codex
+
+Trevra ships a restricted agent API, a local stdio MCP server, and a hosted Streamable HTTP MCP endpoint. Agent tokens can read the evidence-backed revenue brief, run enabled skills, inspect the run ledger, list pending actions, and prepare recommendations. They cannot approve or execute actions.
+
+Create a scoped token in **Autopilot → Claude Code and Codex access**, then connect a local MCP bridge:
+
+```bash
+claude mcp add trevra --scope user \
+  --env TREVRA_API_URL=http://localhost:43887 \
+  --env TREVRA_AGENT_TOKEN=<agent-token> \
+  -- npm --prefix /absolute/path/to/trevra run mcp
+```
+
+Or connect Codex directly to the hosted product runtime:
+
+```bash
+export TREVRA_AGENT_TOKEN=<agent-token>
+codex mcp add trevra \
+  --url https://app.example.com/api/agent/mcp \
+  --bearer-token-env-var TREVRA_AGENT_TOKEN
+```
+
+Complete setup, CLI commands, API routes, scopes, and operating boundaries are documented in [`docs/agent-operation.md`](docs/agent-operation.md).
 
 ## Fastest local start
 
@@ -97,7 +136,7 @@ Then restart Trevra:
 docker compose --env-file .env.dev -f compose.dev.yml up -d --force-recreate trevra
 ```
 
-The sign-in flow requests only `openid`, `email`, and `profile`. Gmail and Calendar permissions are requested separately through Nango when the freelancer explicitly connects those tools.
+The sign-in flow requests only `openid`, `email`, and `profile`. Gmail and Calendar permissions are requested separately through Nango when the founder explicitly connects those tools.
 
 The Trevra frontend and API hot-reload through the bind-mounted source tree.
 
@@ -333,3 +372,33 @@ The code and deployment foundations are implemented. The operator still must com
 - alerts, incident response, backup validation, and restore drills;
 - accounting-provider sandbox certification where applicable;
 - security review and cross-tenant adversarial testing.
+
+## Durable GTM control plane
+
+Trevra includes a versioned playbook engine above the individual skill runner. Playbook runs persist their step state, attempts, evidence, policy decisions, approval payload hashes, retries, and outcomes in PostgreSQL. An append-only domain event stream records the same run across process restarts and worker resumptions.
+
+The first built-in playbook is `gtm.audit-led-outreach`:
+
+```text
+score lead -> audit domain -> prepare outreach -> founder approval -> email execution
+```
+
+The **Work** view starts playbooks, displays step progress, and handles exact-payload approval or rejection. **Autopilot** includes a workspace policy editor and scoped Claude Code/Codex tokens.
+
+Architecture and migration details are in [`docs/control-plane-architecture.md`](docs/control-plane-architecture.md).
+
+### Playbook API
+
+```text
+GET    /api/playbooks
+POST   /api/playbooks/:id/runs
+GET    /api/playbook-runs
+GET    /api/playbook-runs/:id
+POST   /api/playbook-runs/:id/steps/:stepId/decision
+GET    /api/control-plane/events
+GET    /api/policies
+POST   /api/policies
+DELETE /api/policies/:id
+```
+
+Agent equivalents live under `/api/agent` and deliberately omit approval and execution.

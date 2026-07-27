@@ -1,0 +1,266 @@
+{
+  "schemaVersion": "1.0.0",
+  "generatedAt": "2026-07-23T10:05:27+02:00",
+  "sourceRevision": "7ea5ccd68731",
+  "project": "Trevra",
+  "contract": {
+    "inputs": "Zod-validated input schema",
+    "outputs": "Zod-validated output schema",
+    "sideEffects": [
+      "none",
+      "network-read",
+      "external-write"
+    ],
+    "approvals": "Declared per module and enforced by the runner"
+  },
+  "modules": [
+    {
+      "id": "gtm.channel-plan",
+      "name": "Plan distribution channels",
+      "version": "1.0.0",
+      "description": "Rank distribution channels for a draft by audience overlap, automation mode, and how much reshaping the draft needs, with a reason for every point scored.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/channels"
+    },
+    {
+      "id": "gtm.channel-prepare",
+      "name": "Prepare a post for one channel",
+      "version": "1.0.0",
+      "description": "Shape a draft to one channel's constraints and run the result through the slop critic, reporting a failed critique rather than passing the copy through.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/channels"
+    },
+    {
+      "id": "gtm.copy-critique",
+      "name": "Critique copy for slop",
+      "version": "1.0.0",
+      "description": "Deterministically check copy against the substitution test, banned machine-outreach phrases, length, ask count, hedging, and adverb density.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.lead-status",
+      "name": "Lead status transition check",
+      "version": "1.0.0",
+      "description": "Decide whether a lead status change is legal on the lifecycle ladder, and normalize the lead domain.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.outreach-draft",
+      "name": "Draft outreach email",
+      "version": "1.0.0",
+      "description": "Produce a deterministic, compliance-footed outreach draft for a lead.",
+      "sideEffect": "none",
+      "requiresApproval": true,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.score-lead",
+      "name": "Score lead fit",
+      "version": "1.0.0",
+      "description": "Deterministic per-wedge fit scoring with a human-readable reason for every contribution.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.visibility-audit",
+      "name": "AI-visibility audit",
+      "version": "1.0.0",
+      "description": "Probe a domain for how readable it is to AI shopping assistants and answer engines.",
+      "sideEffect": "network-read",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "net.validate-host",
+      "name": "Validate outbound host",
+      "version": "1.0.0",
+      "description": "Reject hosts that are not safe, public outbound destinations (SSRF pre-flight).",
+      "sideEffect": "network-read",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    }
+  ]
+}

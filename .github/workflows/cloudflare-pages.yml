@@ -1,0 +1,47 @@
+name: Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: cloudflare-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      VITE_MARKETING_ONLY: "true"
+      VITE_PUBLIC_SITE_URL: ${{ vars.PUBLIC_SITE_URL }}
+      VITE_HOSTED_APP_URL: ${{ vars.HOSTED_APP_URL }}
+      VITE_GITHUB_URL: ${{ vars.PUBLIC_GITHUB_URL }}
+      VITE_SUPPORT_EMAIL: ${{ vars.PUBLIC_SUPPORT_EMAIL }}
+      VITE_CATALOG_API_URL: ${{ vars.CATALOG_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:marketing
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trevra-marketing-${{ github.sha }}
+          path: dist
+          retention-days: 7
+      - name: Deploy to Cloudflare Pages
+        if: github.event_name != 'pull_request'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }} --branch=${{ github.ref_name }} --commit-hash=${{ github.sha }}

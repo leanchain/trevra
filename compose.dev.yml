@@ -30,6 +30,18 @@ services:
       TREVRA_API_PORT: 8787
       DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:-trevra-local-password}@postgres:5432/trevra
       DATABASE_POOL_MAX: 10
+      TREVRA_ORCHESTRATOR: ${TREVRA_ORCHESTRATOR:-postgres}
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-temporal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-trevra-playbooks}
+      TEMPORAL_TLS: ${TEMPORAL_TLS:-false}
+      TEMPORAL_API_KEY: ${TEMPORAL_API_KEY:-}
+      PUBLIC_REGISTRY_CORS_ORIGIN: ${PUBLIC_REGISTRY_CORS_ORIGIN:-${APP_ORIGIN:-http://localhost:43173}}
+      PUBLIC_REGISTRY_API_URL: http://localhost:${TREVRA_API_PORT:-43887}
+      TREVRA_SANDBOX_GATEWAY_URL: ${TREVRA_SANDBOX_GATEWAY_URL:-}
+      TREVRA_SANDBOX_GATEWAY_TOKEN: ${TREVRA_SANDBOX_GATEWAY_TOKEN:-}
+      TREVRA_REMOTE_ACTION_ADAPTERS_JSON: ${TREVRA_REMOTE_ACTION_ADAPTERS_JSON:-[]}
+      TREVRA_REMOTE_ACTION_ADAPTER_TOKEN: ${TREVRA_REMOTE_ACTION_ADAPTER_TOKEN:-}
       APP_ORIGIN: http://localhost:${TREVRA_WEB_PORT:-43173},http://localhost:${TREVRA_API_PORT:-43887}
       BETTER_AUTH_URL: http://localhost:${TREVRA_WEB_PORT:-43173}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-development-only-trevra-secret-change-before-production}
@@ -43,6 +55,7 @@ services:
       BING_SITE_VERIFICATION: ${BING_SITE_VERIFICATION:-}
       MARKETING_HASH_SALT: ${MARKETING_HASH_SALT:-development-marketing-salt-change-before-production}
       TRACTION_ADMIN_TOKEN: ${TRACTION_ADMIN_TOKEN:-development-traction-token-change-before-production}
+      TREVRA_AGENT_TOKEN_PEPPER: ${TREVRA_AGENT_TOKEN_PEPPER:-development-agent-token-pepper-change-before-production}
       INDEXNOW_KEY: ${INDEXNOW_KEY:-trevra-development-indexnow-key}
       COOKIE_SECURE: "false"
       ALLOW_DEMO_AUTH: "true"
@@ -65,6 +78,18 @@ services:
         condition: service_healthy
       nango-server:
         condition: service_healthy
+    restart: unless-stopped
+
+
+  temporal:
+    image: temporalio/temporal:1.8.1
+    profiles: ["temporal"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
+    ports:
+      - "${TEMPORAL_PORT:-47233}:7233"
+      - "${TEMPORAL_UI_PORT:-48233}:8233"
+    volumes:
+      - temporal-data:/data
     restart: unless-stopped
 
   nango-db:
@@ -144,3 +169,4 @@ volumes:
   trevra-node-modules:
   nango-postgres-data:
   nango-redis-data:
+  temporal-data:

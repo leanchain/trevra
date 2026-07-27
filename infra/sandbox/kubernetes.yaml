@@ -1,0 +1,149 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trevra-system
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trevra-sandbox
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-module-traffic
+  namespace: trevra-sandbox
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trevra-sandbox-gateway
+  namespace: trevra-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: trevra-sandbox-jobs
+  namespace: trevra-sandbox
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs", "jobs/status"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: trevra-sandbox-gateway
+  namespace: trevra-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: trevra-sandbox-gateway
+    namespace: trevra-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: trevra-sandbox-jobs
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trevra-sandbox-gateway
+  namespace: trevra-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: trevra-sandbox-gateway
+  template:
+    metadata:
+      labels:
+        app: trevra-sandbox-gateway
+    spec:
+      serviceAccountName: trevra-sandbox-gateway
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: trevra/trevra:latest
+          imagePullPolicy: IfNotPresent
+          command: ["node", "dist-server/sandbox-gateway/index.js"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "8080"
+            - name: TREVRA_SANDBOX_BACKEND
+              value: kubernetes
+            - name: TREVRA_SANDBOX_NAMESPACE
+              value: trevra-sandbox
+            - name: TREVRA_SANDBOX_RUNTIME_CLASS
+              value: gvisor
+            - name: TREVRA_SANDBOX_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: trevra-sandbox-gateway
+                  key: token
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trevra-sandbox-gateway
+  namespace: trevra-system
+spec:
+  type: ClusterIP
+  selector:
+    app: trevra-sandbox-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

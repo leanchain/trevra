@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Db } from './db.js';
 import { id } from './db.js';
+import { appendDomainEvent } from './control-plane/events.js';
 import { executeConnectedAction, recordOutcome } from './integration-service.js';
 import { serializeAction } from './serializers.js';
 
@@ -12,7 +13,7 @@ export async function prepareAction(db: Db, workspaceId: string, recommendationI
   return db.transaction(async (tx) => {
     const recommendation = await tx.prepare(`
       SELECT r.*, c.contact_name, c.email, c.name AS client_name,
-        COALESCE(ws.sender_name, u.name, 'Your freelancer') AS sender_name
+        COALESCE(ws.sender_name, u.name, 'Your team') AS sender_name
       FROM recommendations r
       JOIN clients c ON c.id=r.client_id
       LEFT JOIN workspace_settings ws ON ws.workspace_id=r.workspace_id
@@ -30,7 +31,7 @@ export async function prepareAction(db: Db, workspaceId: string, recommendationI
     if (existing) return serializeAction(existing);
 
     const firstName = String(recommendation.contact_name).split(' ')[0];
-    const senderName = String(recommendation.sender_name || 'Your freelancer');
+    const senderName = String(recommendation.sender_name || 'Your team');
     let type: 'email_draft' | 'invoice_draft' | 'change_order_draft' = 'email_draft';
     let subject = '';
     let body = '';
@@ -98,6 +99,15 @@ export async function prepareAction(db: Db, workspaceId: string, recommendationI
     `).run(actionId, workspaceId, recommendationId, connection?.id ?? null, type, recipient, subject, body,
       structuredPayloadJson, payloadHash, 'draft', connection?.provider ?? (type === 'invoice_draft' ? 'accounting-required' : 'unconfigured'), now, now);
     await audit(tx, workspaceId, 'system', null, 'action.prepared', 'action', actionId, { recommendationId, provider: connection?.provider ?? null });
+    await appendDomainEvent(tx, {
+      workspaceId,
+      streamType: 'action',
+      streamId: actionId,
+      eventType: 'action.prepared',
+      actorType: 'system',
+      correlationId: recommendationId,
+      payload: { recommendationId, type, recipient, subject, payloadHash, provider: connection?.provider ?? null }
+    });
     const row = await tx.prepare('SELECT * FROM actions WHERE id=?').get<Record<string, unknown>>(actionId);
     if (!row) throw new Error('Prepared action could not be loaded');
     return serializeAction(row);
@@ -149,6 +159,16 @@ async function approve(
       .run(now, String(action.recommendation_id));
     await audit(tx, workspaceId, actor.type === 'manual' ? 'user' : 'automation', actor.userId ?? actor.automationRuleId,
       'action.approved', 'action', actionId, { hash: payloadHash, scheduledFor });
+    await appendDomainEvent(tx, {
+      workspaceId,
+      streamType: 'action',
+      streamId: actionId,
+      eventType: scheduledFor ? 'action.scheduled' : 'action.approved',
+      actorType: actor.type === 'manual' ? 'user' : 'automation',
+      actorId: actor.userId ?? actor.automationRuleId,
+      correlationId: String(action.recommendation_id),
+      payload: { payloadHash, scheduledFor, recipient: input.recipient, subject: input.subject }
+    });
     const updated = await tx.prepare('SELECT * FROM actions WHERE id=?').get<Record<string, unknown>>(actionId);
     if (!updated) throw new Error('Approved action could not be loaded');
     return serializeAction(updated);
@@ -170,6 +190,15 @@ export async function executeAction(db: Db, workspaceId: string, actionId: strin
       .get<Record<string, unknown>>(actionId);
     if (!approval || approval.approved_payload_hash !== row.payload_hash) throw new Error('Approved payload no longer matches action payload');
     await tx.prepare("UPDATE actions SET status='executing',updated_at=? WHERE id=?").run(new Date().toISOString(), actionId);
+    await appendDomainEvent(tx, {
+      workspaceId,
+      streamType: 'action',
+      streamId: actionId,
+      eventType: 'action.execution_started',
+      actorType: 'system',
+      correlationId: String(row.recommendation_id),
+      payload: { provider: row.execution_provider, payloadHash: row.payload_hash }
+    });
     return row;
   });
 
@@ -183,6 +212,15 @@ export async function executeAction(db: Db, workspaceId: string, actionId: strin
         .run(now, String(action.recommendation_id));
       await audit(tx, workspaceId, 'system', null, 'action.executed', 'action', actionId,
         { provider: delivery.provider, externalRef: delivery.externalRef, recipient: String(action.recipient) });
+      await appendDomainEvent(tx, {
+        workspaceId,
+        streamType: 'action',
+        streamId: actionId,
+        eventType: 'action.executed',
+        actorType: 'system',
+        correlationId: String(action.recommendation_id),
+        payload: { provider: delivery.provider, externalRef: delivery.externalRef, recipient: String(action.recipient) }
+      });
 
       const recommendationType = String(action.recommendation_type);
       if (recommendationType === 'unbilled_milestone') {
@@ -218,6 +256,15 @@ export async function executeAction(db: Db, workspaceId: string, actionId: strin
       await tx.prepare("UPDATE actions SET status='failed',last_error=?,updated_at=? WHERE id=?")
         .run(message, new Date().toISOString(), actionId);
       await audit(tx, workspaceId, 'system', null, 'action.failed', 'action', actionId, { error: message });
+      await appendDomainEvent(tx, {
+        workspaceId,
+        streamType: 'action',
+        streamId: actionId,
+        eventType: 'action.failed',
+        actorType: 'system',
+        correlationId: String(action.recommendation_id),
+        payload: { error: message }
+      });
     });
     throw error;
   }

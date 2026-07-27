@@ -175,3 +175,98 @@ variable "deletion_protection" {
   type        = bool
   default     = true
 }
+
+variable "orchestrator" {
+  description = "Durable playbook orchestrator: postgres or temporal."
+  type        = string
+  default     = "postgres"
+  validation {
+    condition     = contains(["postgres", "temporal"], var.orchestrator)
+    error_message = "orchestrator must be postgres or temporal."
+  }
+}
+
+variable "temporal_address" {
+  description = "Temporal frontend address for hosted orchestration."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_namespace" {
+  type    = string
+  default = "default"
+}
+
+variable "temporal_task_queue" {
+  type    = string
+  default = "trevra-playbooks"
+}
+
+variable "temporal_tls" {
+  type    = bool
+  default = true
+}
+
+variable "temporal_api_key" {
+  description = "Optional Temporal Cloud API key."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "sandbox_gateway_url" {
+  description = "HTTPS endpoint of the isolated community-module execution service."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.sandbox_gateway_url == "" || startswith(var.sandbox_gateway_url, "https://")
+    error_message = "sandbox_gateway_url must be empty or use HTTPS."
+  }
+}
+
+variable "sandbox_gateway_token" {
+  description = "Bearer token used only for the isolated sandbox gateway."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "remote_action_adapters_json" {
+  description = "JSON array of approved proprietary action adapters. Adapter tokenEnv should be TREVRA_REMOTE_ACTION_ADAPTER_TOKEN."
+  type        = string
+  default     = "[]"
+  validation {
+    condition     = can(jsondecode(var.remote_action_adapters_json)) && can(tolist(jsondecode(var.remote_action_adapters_json)))
+    error_message = "remote_action_adapters_json must be a JSON array."
+  }
+}
+
+variable "remote_action_adapter_token" {
+  description = "Shared bearer/HMAC secret for approved proprietary action adapters."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+
+variable "registry_cors_origin" {
+  description = "Marketing origin allowed to read the public hosted registry API."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.registry_cors_origin == "" || startswith(var.registry_cors_origin, "https://")
+    error_message = "registry_cors_origin must be empty or use HTTPS."
+  }
+}
+
+variable "worker_min_instances" {
+  description = "Always-on worker instances. Temporal workers require at least one."
+  type        = number
+  default     = 1
+}
+
+variable "worker_max_instances" {
+  description = "Maximum independent workflow worker instances."
+  type        = number
+  default     = 3
+}

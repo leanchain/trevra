@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c auto \"tsx watch src/server/index.ts\" \"vite --host 0.0.0.0\"",
-    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "dev": "concurrently -k -n api,worker,web -c auto \"tsx watch src/server/index.ts\" \"PORT=43888 tsx watch src/worker/index.ts\" \"vite --host 0.0.0.0\"",
+    "build": "npm run catalog:build && npm run typecheck && vite build && tsc -p tsconfig.server.json",
     "start": "NODE_ENV=production node dist-server/server/index.js",
     "typecheck": "tsc --noEmit",
     "test": "tsx scripts/test-with-postgres.ts",
@@ -15,11 +15,28 @@
     "db:reset": "tsx scripts/reset-db.ts",
     "db:migrate-sqlite": "tsx scripts/migrate-sqlite-to-postgres.ts",
     "traction:report": "tsx scripts/traction-report.ts",
-    "seo:submit": "tsx scripts/submit-indexnow.ts"
+    "seo:submit": "tsx scripts/submit-indexnow.ts",
+    "catalog:build": "tsx scripts/build-public-catalog.ts && npm run sbom:build",
+    "build:marketing": "npm run catalog:build && npm run typecheck && vite build --mode marketing && tsx scripts/build-marketing-headers.ts dist/_headers",
+    "deploy:cloudflare": "npm run build:marketing && npx wrangler pages deploy dist",
+    "agent": "tsx src/cli/trevra-agent.ts",
+    "mcp": "tsx src/mcp/server.ts",
+    "start:mcp": "node dist-server/mcp/server.js",
+    "sandbox:dev": "tsx watch src/sandbox-gateway/index.ts",
+    "sandbox:start": "node dist-server/sandbox-gateway/index.js",
+    "start:worker": "NODE_ENV=production node dist-server/worker/index.js",
+    "module": "tsx src/cli/trevra-module.ts",
+    "sbom:build": "npm sbom --sbom-format cyclonedx > public/catalog/trevra.sbom.cdx.json"
   },
   "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@nangohq/frontend": "^0.71.2",
     "@nangohq/node": "^0.71.2",
+    "@temporalio/client": "^1.21.1",
+    "@temporalio/worker": "^1.21.1",
+    "@temporalio/workflow": "^1.21.1",
+    "ajv": "^8.20.0",
     "better-auth": "^1.6.24",
     "cookie-parser": "^1.4.7",
     "csv-parse": "^7.0.1",
@@ -38,7 +55,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "stripe": "^22.3.2",
-    "zod": "^3.24.1"
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.0.4",
@@ -58,5 +76,9 @@
     "typescript": "^5.7.2",
     "vite": "^8.1.5",
     "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.5",
+    "brace-expansion": "5.0.8"
   }
 }

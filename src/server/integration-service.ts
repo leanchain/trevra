@@ -195,7 +195,19 @@ export async function executeConnectedAction(db: Db, workspaceId: string, action
       .get(workspaceId) as Record<string, unknown> | undefined;
   }
   if (!connection) {
-    const requirement = actionType === 'invoice_draft' ? 'QuickBooks, Xero, or Stripe' : 'Gmail or Microsoft 365';
+    const settings = await db.prepare('SELECT demo_mode FROM workspace_settings WHERE workspace_id=?')
+      .get<{ demo_mode?: number }>(workspaceId);
+    if (Boolean(settings?.demo_mode)) {
+      connection = await db.prepare("SELECT * FROM connections WHERE workspace_id=? AND is_demo=1 AND status='connected' ORDER BY updated_at DESC LIMIT 1")
+        .get<Record<string, unknown>>(workspaceId);
+    }
+  }
+  if (!connection) {
+    const requirement = actionType === 'invoice_draft'
+      ? 'QuickBooks, Xero, or Stripe'
+      : actionType === 'change_order_draft'
+        ? 'HoneyBook, Bonsai, Gmail, or Microsoft 365'
+        : 'Gmail or Microsoft 365';
     throw new Error(`Connect ${requirement} before executing this action`);
   }
   if (Boolean(connection.is_demo)) {
