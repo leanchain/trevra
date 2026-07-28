@@ -26,10 +26,11 @@ services:
     restart: unless-stopped
 
   trevra:
-    image: trevra:local
-    build:
-      context: ../..
-      dockerfile: Dockerfile
+    # Built and pushed by .github/workflows/image.yml as a multi-arch manifest
+    # (amd64 + arm64), so the same tag runs on an A1 or an E2 box and neither
+    # has to build anything. Pin TREVRA_IMAGE_TAG to a commit SHA for a
+    # reproducible rollback; 'main' tracks the branch head.
+    image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
     env_file:
       - .env.oracle
     environment:
@@ -50,7 +51,7 @@ services:
   # Same image, different entrypoint: the automation/playbook/projection loop.
   # Runs in its own container so a crash here cannot take the API down.
   worker:
-    image: trevra:local
+    image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
     command: ["node", "dist-server/worker/index.js"]
     env_file:
       - .env.oracle

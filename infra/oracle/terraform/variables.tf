@@ -13,6 +13,22 @@ variable "region" {
   description = "Tenancy home region. Always Free resources created outside the home region are billed."
 }
 
+variable "user_ocid" {
+  type        = string
+  description = "OCID of the user the API key belongs to."
+}
+
+variable "api_key_fingerprint" {
+  type        = string
+  description = "Fingerprint of the uploaded API public key, as shown in the console."
+}
+
+variable "private_key_path" {
+  type        = string
+  description = "Path to the API private key .pem. Read at plan time; never stored in state."
+  default     = "~/.oci/oci_api_key.pem"
+}
+
 variable "ssh_public_key" {
   type        = string
   description = "Contents of the SSH public key authorised for the ubuntu user."

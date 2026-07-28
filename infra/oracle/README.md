@@ -28,6 +28,16 @@ list opens only SSH.
 - **Home region only.** Resources created outside it are billed normally.
 - **One box, no HA.** Backups and patching are yours; nothing here is managed.
 
+## Images
+
+`.github/workflows/image.yml` builds a multi-arch manifest (amd64 + arm64) on
+native runners and publishes it to `ghcr.io/leanchain/trevra`. Nothing is built
+on the instance — an E2.1.Micro has 1 GB of RAM and cannot run `tsc` + `vite`,
+and the same tag works whether the box turns out to be A1 (arm64) or E2 (amd64).
+
+`deploy.sh <ip> [tag]` defaults to the `main` tag. Pass a commit SHA to pin or
+roll back.
+
 ## First deploy
 
 ```sh
@@ -64,17 +74,22 @@ cd .. && ./deploy.sh "$IP"
 
 ## Updating
 
-`./deploy.sh <ip>` rsyncs the checkout, rebuilds natively on ARM, and restarts.
-It refuses to run if `/opt/trevra/.env.oracle` is missing and never copies a
-local env file over it.
+Push to `main`, wait for the image workflow, then `./deploy.sh <ip>`. It copies
+the compose files, pulls the new image, and restarts. It refuses to run if
+`/opt/trevra/.env.oracle` is missing and never copies a local env file over it.
+
+```sh
+./deploy.sh "$IP"            # latest main
+./deploy.sh "$IP" sha-abc123 # pin or roll back
+```
 
 ## Operating
 
 ```sh
 ssh ubuntu@$IP
-cd /opt/trevra/src-tree/infra/oracle
-docker compose --env-file /opt/trevra/.env.oracle -f compose.oracle.yml ps
-docker compose --env-file /opt/trevra/.env.oracle -f compose.oracle.yml logs -f trevra
+cd /opt/trevra
+docker compose --env-file .env.oracle -f compose.oracle.yml ps
+docker compose --env-file .env.oracle -f compose.oracle.yml logs -f trevra
 ```
 
 Postgres data is on the attached block volume at `/mnt/data/postgres`, not in a
