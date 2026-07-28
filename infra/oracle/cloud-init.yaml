@@ -1,0 +1,64 @@
+#cloud-config
+# Prepares the Always Free ARM box for the Trevra stack: Docker, a mounted data
+# volume for Postgres, and an unprivileged directory to deploy into.
+#
+# No inbound port is opened. Public traffic arrives through the Cloudflare
+# tunnel container, which dials out, so the OCI security list and the host
+# firewall both stay closed to everything except SSH.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - git
+  - jq
+
+write_files:
+  - path: /etc/systemd/system/trevra.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Trevra stack
+      Requires=docker.service
+      After=docker.service mnt-data.mount
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/trevra
+      ExecStart=/usr/bin/docker compose --env-file /opt/trevra/.env.oracle -f compose.oracle.yml up -d --remove-orphans
+      ExecStop=/usr/bin/docker compose --env-file /opt/trevra/.env.oracle -f compose.oracle.yml down
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Docker CE from the official repo; the Ubuntu archive version lags and the
+  # compose plugin is packaged separately there.
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - >
+    echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc]
+    https://download.docker.com/linux/ubuntu jammy stable"
+    > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - usermod -aG docker ubuntu
+
+  # Format the attached data volume only if it has no filesystem, so a re-run
+  # of cloud-init can never wipe the database.
+  - test -b /dev/oracleoci/oraclevdb
+  - blkid /dev/oracleoci/oraclevdb || mkfs.ext4 -L trevra-data /dev/oracleoci/oraclevdb
+  - mkdir -p /mnt/data
+  - grep -q '/mnt/data' /etc/fstab || echo 'LABEL=trevra-data /mnt/data ext4 defaults,_netdev,nofail 0 2' >> /etc/fstab
+  - mount -a
+  - mkdir -p /mnt/data/postgres /mnt/data/nango-postgres /mnt/data/nango-redis
+
+  - mkdir -p /opt/trevra
+  - chown ubuntu:ubuntu /opt/trevra
+  - systemctl daemon-reload
+  - systemctl enable trevra.service

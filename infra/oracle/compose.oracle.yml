@@ -1,0 +1,77 @@
+# Production stack for the Oracle Always Free ARM box.
+#
+# Nothing publishes a host port. cloudflared dials out to Cloudflare and routes
+# app.usetrevra.com to the trevra service over the internal compose network, so
+# the instance needs no inbound rule beyond SSH.
+#
+# Postgres data lives on the attached block volume (/mnt/data) rather than a
+# Docker named volume, so destroying and recreating the instance keeps the data.
+
+name: trevra
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: trevra
+      POSTGRES_USER: trevra
+      POSTGRES_PASSWORD: ${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}
+    volumes:
+      - /mnt/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trevra -d trevra"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  trevra:
+    image: trevra:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    env_file:
+      - .env.oracle
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  # Same image, different entrypoint: the automation/playbook/projection loop.
+  # Runs in its own container so a crash here cannot take the API down.
+  worker:
+    image: trevra:local
+    command: ["node", "dist-server/worker/index.js"]
+    env_file:
+      - .env.oracle
+    environment:
+      NODE_ENV: production
+      PORT: 8081
+      DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
+    depends_on:
+      postgres:
+        condition: service_healthy
+      trevra:
+        condition: service_started
+    restart: unless-stopped
+
+  # Ingress. Requires TUNNEL_TOKEN from `cloudflared tunnel create`; the public
+  # hostname mapping is configured Cloudflare-side, pointing at http://trevra:8080.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - trevra
+    restart: unless-stopped

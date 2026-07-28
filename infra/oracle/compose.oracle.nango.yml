@@ -1,0 +1,83 @@
+# Optional overlay: self-hosted Nango alongside Trevra.
+#
+#   docker compose --env-file .env.oracle \
+#     -f compose.oracle.yml -f compose.oracle.nango.yml up -d
+#
+# WARNING -- nangohq/nango-server publishes an amd64 image only. There is no
+# arm64 manifest on any tag, so on this ARM box it runs under qemu emulation
+# (binfmt), typically several times slower and with more memory pressure. It
+# works, but on 2 OCPUs it is not a comfortable production setup.
+#
+# Prefer Nango Cloud (free tier: 10 connections, 100k proxy requests) and point
+# NANGO_HOST at it, or build Nango from source for arm64. Use this overlay only
+# if self-hosting on this box is a hard requirement.
+#
+# Enable emulation first:
+#   docker run --privileged --rm tonistiigi/binfmt --install arm64,amd64
+
+services:
+  nango-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: nango
+      POSTGRES_USER: nango
+      POSTGRES_PASSWORD: ${NANGO_DB_PASSWORD:?Set NANGO_DB_PASSWORD}
+    volumes:
+      - /mnt/data/nango-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nango -d nango"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  nango-redis:
+    image: redis:7.2-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - /mnt/data/nango-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  nango-server:
+    image: nangohq/nango-server:${NANGO_IMAGE_TAG:-hosted}
+    platform: linux/amd64
+    environment:
+      NANGO_ENCRYPTION_KEY: ${NANGO_ENCRYPTION_KEY:?Set NANGO_ENCRYPTION_KEY}
+      NANGO_DB_USER: nango
+      NANGO_DB_PASSWORD: ${NANGO_DB_PASSWORD:?Set NANGO_DB_PASSWORD}
+      NANGO_DB_HOST: nango-db
+      NANGO_DB_PORT: 5432
+      NANGO_DB_NAME: nango
+      NANGO_DB_SSL: "false"
+      NANGO_DB_POOL_MIN: 1
+      NANGO_DB_POOL_MAX: 10
+      RECORDS_DATABASE_URL: postgresql://nango:${NANGO_DB_PASSWORD:?Set NANGO_DB_PASSWORD}@nango-db:5432/nango
+      NANGO_REDIS_URL: redis://nango-redis:6379
+      SERVER_PORT: 3003
+      NANGO_CONNECT_UI_PORT: 3009
+      NANGO_SERVER_URL: ${NANGO_PUBLIC_SERVER_URL:?Set NANGO_PUBLIC_SERVER_URL}
+      NANGO_PUBLIC_SERVER_URL: ${NANGO_PUBLIC_SERVER_URL:?Set NANGO_PUBLIC_SERVER_URL}
+      NANGO_PUBLIC_CONNECT_URL: ${NANGO_PUBLIC_CONNECT_URL:?Set NANGO_PUBLIC_CONNECT_URL}
+      FLAG_SERVE_CONNECT_UI: "true"
+      # Unlike the dev compose file this must stay on: the connect UI and API
+      # are reachable from the internet through the tunnel.
+      FLAG_AUTH_ENABLED: "true"
+      LOG_LEVEL: ${NANGO_LOG_LEVEL:-info}
+    depends_on:
+      nango-db:
+        condition: service_healthy
+      nango-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3003/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      # Emulated startup is slow; this is deliberately longer than the dev file.
+      start_period: 240s
+    restart: unless-stopped

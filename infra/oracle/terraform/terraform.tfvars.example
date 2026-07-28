@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars and fill in. Find OCIDs under Profile > Tenancy in
+# the OCI console; the region must be the tenancy HOME region or the resources
+# are billed instead of being Always Free.
+
+tenancy_ocid     = "ocid1.tenancy.oc1..replace-me"
+compartment_ocid = "ocid1.tenancy.oc1..replace-me" # root compartment == tenancy OCID
+region           = "eu-frankfurt-1"
+
+# Contents of the public key, not a path.
+ssh_public_key = "ssh-ed25519 AAAA... you@example.com"
+
+# Narrow this to your own address; the default leaves SSH open to the internet.
+# ssh_allowed_cidr = "203.0.113.4/32"
+
+# Always Free ceilings: 2 OCPU, 12 GB RAM, 200 GB total block storage.
+ocpus                   = 2
+memory_in_gbs           = 12
+boot_volume_size_in_gbs = 50
+data_volume_size_in_gbs = 100
+
+# A1 capacity is often exhausted. On "Out of host capacity", bump this and retry.
+availability_domain_index = 0
