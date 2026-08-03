@@ -472,13 +472,30 @@ async function runSkillStep(
     return 'waiting';
   }
 
-  const result = await executeWorkspaceSkill(db,{
-    workspaceId: run.workspaceId,
-    skillId: step.skillId,
-    payload: resolvedInput,
-    actorType: run.actorType === 'agent' ? 'agent' : 'user',
-    actorId: run.actorId
-  });
+  // A $ref that resolves to `undefined` (most commonly: a prior step returned
+  // zero items and this step indexes `.0` into that array -- an ordinary
+  // "nothing qualified" outcome, not an anomaly) makes `resolvedInput` fail
+  // the skill's input schema. `runSkill` deliberately THROWS for that --
+  // it's a caller error, not a skill failure -- so it must be caught here.
+  // Left uncaught, it propagates out of `advancePlaybookRun` as a raw Zod
+  // error, the run is never marked failed, and it re-throws on every future
+  // `runReadyPlaybooks` sweep forever.
+  let result: Awaited<ReturnType<typeof executeWorkspaceSkill>>;
+  try {
+    result = await executeWorkspaceSkill(db,{
+      workspaceId: run.workspaceId,
+      skillId: step.skillId,
+      payload: resolvedInput,
+      actorType: run.actorType === 'agent' ? 'agent' : 'user',
+      actorId: run.actorId
+    });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    // Not retried: the same template resolves to the same missing field on
+    // every attempt, so retrying would only repeat the failure.
+    await failStep(db,run,stepRun,`Skill ${step.skillId} rejected its resolved input (check for a $ref into an empty prior-step result): ${message}`,decision);
+    return 'completed';
+  }
   const now = new Date().toISOString();
   if (result.run.status === 'ok') {
     await db.prepare(`

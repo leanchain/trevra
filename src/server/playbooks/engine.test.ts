@@ -56,6 +56,51 @@ registerPlaybook({
   source: { type: 'builtin' }
 });
 
+registerSkill({
+  manifest: {
+    id: 'test.list-items',
+    name: 'List items test',
+    version: '1.0.0',
+    description: 'Always returns an empty list, to exercise a downstream $ref into an empty array.',
+    sideEffect: 'none',
+    requiresApproval: false,
+    inputSchema: z.object({}),
+    outputSchema: z.object({ items: z.array(z.object({ thing: z.string() })) })
+  },
+  async run() {
+    return { items: [] };
+  }
+});
+
+registerSkill({
+  manifest: {
+    id: 'test.needs-thing',
+    name: 'Needs thing test',
+    version: '1.0.0',
+    description: 'Requires `thing`; proves a step fails cleanly, not by throwing, when its $ref resolves to nothing.',
+    sideEffect: 'none',
+    requiresApproval: false,
+    inputSchema: z.object({ thing: z.string() }),
+    outputSchema: z.object({ ok: z.boolean() })
+  },
+  async run() {
+    return { ok: true };
+  }
+});
+
+registerPlaybook({
+  id: 'test.missing-ref-playbook',
+  version: '1.0.0',
+  name: 'Missing ref',
+  description: 'A downstream step $refs into a prior step that returned zero items -- the ordinary "nothing qualified" case.',
+  inputSchema: z.object({}),
+  steps: [
+    { id: 'list', type: 'skill', skillId: 'test.list-items', input: {} },
+    { id: 'use', type: 'skill', skillId: 'test.needs-thing', needs: ['list'], input: { thing: { $ref: '$.steps.list.output.items.0.thing' } } }
+  ],
+  source: { type: 'builtin' }
+});
+
 registerPlaybook({
   id: 'test.external-write-playbook',
   version: '1.0.0',
@@ -203,6 +248,24 @@ describe('durable playbook engine', () => {
     expect(skillRuns?.total).toBe(0);
   });
 
+
+  it('fails the run cleanly, instead of throwing, when a step $refs into an empty prior-step result', async () => {
+    const database = await openTestDb();
+    const run = await startPlaybookRun(database, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      playbookId: 'test.missing-ref-playbook',
+      payload: {},
+      actorType: 'user',
+      actorId: DEMO_USER_ID
+    });
+    expect(run.status).toBe('failed');
+    expect(run.currentStepId).toBe('use');
+    expect(run.steps.find((step) => step.stepId === 'list')?.status).toBe('completed');
+    expect(run.steps.find((step) => step.stepId === 'use')?.status).toBe('failed');
+    expect(run.error).toContain('test.needs-thing');
+    const events = await listDomainEvents(database, DEMO_WORKSPACE_ID, { streamType: 'playbook_run', streamId: run.id });
+    expect(events.map((event) => event.eventType)).toContain('playbook.step.failed');
+  });
 
   it('executes a dedicated email action only after the exact payload is approved', async () => {
     const database = await openTestDb();
