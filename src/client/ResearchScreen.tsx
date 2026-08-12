@@ -1,0 +1,47 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Check, Database, LoaderCircle, Play, Plus, RefreshCw, Search } from 'lucide-react';
+import type { ConnectionSummary } from '../shared/types';
+import { createResearchSource, getIntegrations, getResearch, runResearchSource, searchResearch } from './api';
+
+interface Source { id:string; name:string; connectionId:string; subreddits:string[]; queries:string[]; includeComments:boolean; maxPostsPerRun:number; maxCommentsPerPost:number; maxPagesPerRun:number; pollIntervalMinutes:number; enabled:boolean; lastSyncedAt:string|null; nextSyncAt:string; lastError:string|null; documents:number; runs:number }
+interface Run { id:string; source_id:string; status:string; mode:string; documents_seen:number; documents_inserted:number; documents_updated:number; request_count:number; error:string|null; started_at:string; finished_at:string|null }
+interface Result { id:string; document_type:string; community:string|null; title:string; content:string|null; source_url:string; score:number; reply_count:number; occurred_at:string|null; removed:boolean }
+
+export function ResearchScreen({ connections, setToast }:{connections:ConnectionSummary[];setToast:(message:string)=>void}){
+  const [sources,setSources]=useState<Source[]>([]),[runs,setRuns]=useState<Run[]>([]),[results,setResults]=useState<Result[]>([]);
+  const [liveConnections,setLiveConnections]=useState(connections);
+  const [busy,setBusy]=useState(''),[query,setQuery]=useState(''),[showForm,setShowForm]=useState(false);
+  const redditConnection=liveConnections.find(c=>c.provider==='reddit'&&c.status!=='disconnected');
+  const reddit=redditConnection?.status==='connected'?redditConnection:undefined;
+  const [form,setForm]=useState({name:'SEO research',subreddits:'seo\nbigseo\nTechSEO',queries:'SEO automation\ninternal linking\nprogrammatic SEO',pollIntervalMinutes:60,maxPostsPerRun:50,maxCommentsPerPost:100,maxPagesPerRun:2,includeComments:true});
+  const load=async()=>{const [data,integrations]=await Promise.all([getResearch(),getIntegrations()]);setSources(data.sources);setRuns(data.runs);setLiveConnections(integrations.connections)};
+  useEffect(()=>{setLiveConnections(connections)},[connections]);
+  useEffect(()=>{void load().catch(()=>undefined)},[]);
+  const sourceById=useMemo(()=>new Map(sources.map(s=>[s.id,s])),[sources]);
+  const save=async()=>{if(!reddit)return;setBusy('save');try{await createResearchSource({...form,connectionId:reddit.id,subreddits:form.subreddits.split(/\n|,/).map(x=>x.trim()).filter(Boolean),queries:form.queries.split('\n').map(x=>x.trim()).filter(Boolean),enabled:true});await load();setShowForm(false);setToast('Research source saved. The worker will collect it on schedule.')}catch(e){setToast(e instanceof Error?e.message:'Could not save source')}finally{setBusy('')}};
+  const run=async(sourceId:string,mode:'incremental'|'backfill')=>{setBusy(`${sourceId}:${mode}`);try{const r=await runResearchSource(sourceId,mode);await load();setToast(`Research run completed: ${r.seen} documents, ${r.requests} Reddit requests.`)}catch(e){await load().catch(()=>undefined);setToast(e instanceof Error?e.message:'Research sync failed')}finally{setBusy('')}};
+  const search=async()=>{setBusy('search');try{setResults((await searchResearch({text:query,includeComments:true,limit:100})).results)}catch(e){setToast(e instanceof Error?e.message:'Search failed')}finally{setBusy('')}};
+  return <div className="page-stack">
+    <section className="page-panel"><div className="section-heading"><div><h2><Database size={19}/> Research corpus</h2><p>Reusable community research collected through connected providers. Reddit credentials and refresh tokens stay in Nango.</p></div><span className={`status-pill ${reddit?'':'warning'}`}>{reddit?'Reddit connected':redditConnection?.status==='needs_reauth'?'Reddit needs reconnect':redditConnection?.status==='error'?'Reddit connection error':'Connect Reddit first'}</span></div>
+      {!reddit&&<div className="empty-state"><Database size={28}/><h4>{redditConnection?'Reddit needs attention':'Reddit is not connected'}</h4><p>{redditConnection?.status==='needs_reauth'?'Reddit rejected the current authorization. Go to Setup → Connections and reconnect it through Nango.':redditConnection?.lastError||'Go to Setup → Connections, connect Reddit through Nango, then return here to create sources.'}</p></div>}
+      {reddit&&<div className="panel-footer"><span>{sources.length} source{sources.length===1?'':'s'} · {sources.reduce((n,s)=>n+s.documents,0)} documents</span><button className="secondary-button" onClick={()=>setShowForm(!showForm)}><Plus size={16}/> Add source</button></div>}
+      {showForm&&reddit&&<div className="document-hints">
+        <label>Source name<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>
+        <label>Poll every (minutes)<input type="number" min={15} value={form.pollIntervalMinutes} onChange={e=>setForm({...form,pollIntervalMinutes:Number(e.target.value)})}/></label>
+        <label>Subreddits<textarea rows={5} value={form.subreddits} onChange={e=>setForm({...form,subreddits:e.target.value})}/></label>
+        <label>Queries<textarea rows={5} value={form.queries} onChange={e=>setForm({...form,queries:e.target.value})}/></label>
+        <label>Posts per run<input type="number" min={1} max={200} value={form.maxPostsPerRun} onChange={e=>setForm({...form,maxPostsPerRun:Number(e.target.value)})}/></label>
+        <label>Comments per post<input type="number" min={0} max={500} value={form.maxCommentsPerPost} onChange={e=>setForm({...form,maxCommentsPerPost:Number(e.target.value)})}/></label>
+        <label>Pages per feed<input type="number" min={1} max={10} value={form.maxPagesPerRun} onChange={e=>setForm({...form,maxPagesPerRun:Number(e.target.value)})}/></label>
+        <label><input type="checkbox" checked={form.includeComments} onChange={e=>setForm({...form,includeComments:e.target.checked})}/> Include comments</label>
+        <button className="primary-button" disabled={busy==='save'||!form.name.trim()} onClick={()=>void save()}>{busy==='save'?<LoaderCircle className="spin" size={16}/>:<Check size={16}/>} Save source</button>
+      </div>}
+    </section>
+
+    {sources.length>0&&<section className="page-panel"><div className="section-heading"><div><h3 aria-level={2}>Sources</h3><p>Incremental sync runs automatically. Backfill advances a bounded historical cursor each time.</p></div></div><div className="connection-grid">{sources.map(s=><article className="connection-card" key={s.id}><span className="integration-logo">r/</span><div><h4>{s.name}</h4><p>{s.subreddits.map(x=>`r/${x}`).join(', ')}</p><span className="connection-status connected">{s.documents} documents · {s.runs} runs</span>{s.lastError&&<p className="error-text">{s.lastError}</p>}</div><div className="connection-actions"><button className="icon-button" title="Sync now" disabled={busy.startsWith(s.id)} onClick={()=>void run(s.id,'incremental')}>{busy===`${s.id}:incremental`?<LoaderCircle className="spin" size={17}/>:<RefreshCw size={17}/>}</button><button className="secondary-button" disabled={busy.startsWith(s.id)} onClick={()=>void run(s.id,'backfill')}>{busy===`${s.id}:backfill`?<LoaderCircle className="spin" size={16}/>:<Play size={16}/>} Backfill</button></div></article>)}</div></section>}
+
+    <section className="page-panel"><div className="section-heading"><div><h3 aria-level={2}>Search corpus</h3><p>Search collected posts and comments. Every result retains its exact Reddit permalink.</p></div></div><div className="import-controls"><label>Search<input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')void search()}} placeholder="internal linking automation"/></label><button className="secondary-button" disabled={busy==='search'} onClick={()=>void search()}>{busy==='search'?<LoaderCircle className="spin" size={16}/>:<Search size={16}/>} Search</button></div><div className="client-table">{results.map(r=><article className="client-card-large" key={r.id}><span className="client-avatar large">{r.document_type==='comment'?'C':'P'}</span><div><h3><a href={r.source_url} target="_blank" rel="noreferrer">{r.title||`Comment in r/${r.community}`}</a></h3><p>{(r.content??'[removed]').slice(0,420)}</p><span className="client-status">r/{r.community} · {r.score} points</span></div></article>)}{query&&results.length===0&&busy!== 'search'&&<div className="empty-state"><Search size={26}/><h4>No collected matches</h4><p>Run or backfill a source, or broaden the search.</p></div>}</div></section>
+
+    {runs.length>0&&<section className="page-panel"><div className="section-heading"><div><h3 aria-level={2}>Recent runs</h3><p>Collection volume and request cost are recorded for every attempt.</p></div></div><div className="client-table">{runs.slice(0,20).map(r=><article className="client-card-large" key={r.id}><span className="client-avatar large">{r.status==='completed'?'✓':'!'}</span><div><h3>{sourceById.get(r.source_id)?.name??'Deleted source'} · {r.mode}</h3><p>{r.documents_seen} seen · {r.documents_inserted} new · {r.documents_updated} changed · {r.request_count} requests</p><span className={`client-status status-${r.status}`}>{r.status} · {new Date(r.started_at).toLocaleString()}</span>{r.error&&<p className="error-text">{r.error}</p>}</div></article>)}</div></section>}
+  </div>;
+}

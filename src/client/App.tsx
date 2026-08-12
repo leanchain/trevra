@@ -1,49 +1,46 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  ArrowUpRight,
-  Bell,
   Bot,
-  Boxes,
   BriefcaseBusiness,
+  Building2,
   CalendarClock,
   Check,
+  CheckCircle2,
   ChevronRight,
+  CircleAlert,
   CircleDollarSign,
-  Clock3,
+  CircleHelp,
+  Coins,
   Copy,
   FileCheck2,
   FileUp,
-  FileWarning,
   Inbox,
   KeyRound,
+  Linkedin,
   Link2,
   LoaderCircle,
   LogOut,
   Play,
   RefreshCw,
-  Search,
+  Repeat,
   Settings2,
-  Terminal,
-  Trash2,
   ShieldCheck,
   Sparkles,
+  Terminal,
+  Trash2,
   Unplug,
-  Users,
   Workflow,
-  X,
-  Zap
+  X
 } from 'lucide-react';
 import type {
+  AgentSetup,
   AgentTokenSummary,
   AutomationRule,
   AvailableIntegration,
+  ConnectionSummary,
   DashboardPayload,
-  PlaybookManifest,
-  PlaybookRun,
   PreparedAction,
-  PublicRegistryModule,
-  InstalledCommunityModule,
-  RegistryPublisher,
   Recommendation,
   RecommendationType,
   WorkspacePolicy
@@ -55,56 +52,151 @@ import {
   createConnectSession,
   ApiError,
   disconnectIntegration,
-  decidePlaybookStep,
+  deleteAgentKey,
   deletePolicy,
   dismissRecommendation,
   endDemoSession,
   ensureSession,
   executeAction,
+  getAgentSetup,
   getAgentTokens,
   getDashboard,
-  getPlaybookRuns,
-  getPlaybooks,
   getPolicies,
   getPublicConfig,
-  getPublicRegistryModules,
-  getInstalledRegistryModules,
-  getRegistryPublishers,
   importCommercialDocument,
-  installRegistryModule,
   importMarketplace,
   prepareRecommendation,
-  createRegistryPublisher,
-  publishRegistryModule,
   revokeAgentToken,
   runAutomation,
+  saveAgentBudget,
+  saveAgentKey,
+  saveAgentModelConfig,
+  saveAgentSchedule,
   snoozeRecommendation,
+  startAgentRun,
   startDemoSession,
-  startPlaybook,
   syncIntegration,
-  updateAutomationRule,
-  uninstallRegistryModule
+  updateAutomationRule
 } from './api';
 import { authClient } from './auth-client';
+import { AccountsScreen } from './AccountsScreen';
+import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
+import { OutreachInbox } from './LinkedInInbox';
+import { OutreachLeads } from './LinkedInLeads';
+import { LinkedInExclusions, LinkedInSeatSetup, OutreachQueue, OutreachSeat } from './LinkedInScreen';
 import { MarketingScreen } from './MarketingScreen';
+import { RedditScreen } from './RedditScreen';
+import { ResearchScreen } from './ResearchScreen';
 import { trackEvent, trackPageView } from './analytics';
+import { ConfirmDrawer, useDialog } from './ui/dialog';
+import { HelpPanel, JumpPalette, ShortcutSheet } from './ui/HelpPanel';
+import { useShortcuts } from './ui/keys';
+import { useHashRoute, type Route, type Section } from './ui/route';
+import { StopBar } from './ui/StopBar';
+import { formatEvery } from './ui/duration';
+import { formatMoment } from './views/inspector';
+import { LedgerView } from './views/LedgerView';
+import { LoopCostView, LoopView, Metric } from './views/LoopView';
+import { SkillsView } from './views/SkillsView';
+import { clip, initials, money, prettyProvider, usd } from './views/format';
+import {
+  EmptyRecommendations,
+  RecommendationList,
+  automationDescription,
+  iconFor,
+  recommendationLabels,
+  type RecommendationActions
+} from './views/recommendations';
 
-type View = 'today' | 'work' | 'modules' | 'clients' | 'integrations' | 'autopilot';
+/**
+ * Five screens, because the product is one loop with two ends.
+ *
+ * The old four -- Approvals, Activity, LinkedIn, Setup -- described an
+ * accounts-receivable product that had grown an outreach engine in a side
+ * pocket. Nothing on screen said the two halves were the same loop, so the app
+ * read as two products sharing a login. See docs/gtm-shell-shape.md §2.
+ *
+ * `docs/app-spec.md` §4 used to say "Three nav items. Not six." That table
+ * predates the LinkedIn engine and had already lost the argument to a fourth
+ * item; §4 is amended in the same change rather than quietly contradicted.
+ */
+const NAV_ITEMS: Array<{ section: Section; path: string; icon: React.ReactNode; label: string }> = [
+  { section: 'loop', path: '/loop', icon: <Repeat size={18} />, label: 'Loop' },
+  { section: 'outreach', path: '/outreach', icon: <Linkedin size={18} />, label: 'Outreach' },
+  { section: 'money', path: '/money', icon: <Coins size={18} />, label: 'Money' },
+  { section: 'ledger', path: '/ledger', icon: <Workflow size={18} />, label: 'Ledger' },
+  { section: 'setup', path: '/setup', icon: <Settings2 size={18} />, label: 'Setup' }
+];
+
+/**
+ * The six sub-screens of `#/outreach`, in the order the work happens: the seat
+ * you are risking, the people you found, what is planned, the campaigns that
+ * plan came from, what is queued to leave, and what came back.
+ *
+ * Kept next to `NAV_ITEMS` rather than inside the view, because these two lists
+ * plus `SETUP_ROUTES` are every route the shell offers and they should be
+ * readable in one place. Must stay a subset of `SUB_ROUTES.outreach`
+ * (ui/route.ts): a tab pointing at a segment the router does not answer to
+ * would silently land on the section root.
+ */
+const OUTREACH_ROUTES: Array<{ sub: string; label: string }> = [
+  { sub: '', label: 'Seat' },
+  { sub: 'leads', label: 'Lead sources' },
+  { sub: 'plan', label: 'Plan' },
+  { sub: 'campaigns', label: 'Campaigns' },
+  { sub: 'queue', label: 'Queue' },
+  { sub: 'inbox', label: 'Inbox' }
+];
+
+type ToastMessage = { message: string; undo?: () => void };
+
+/** How long a snooze or a dismissal can still be taken back. */
+const UNDO_MS = 9000;
+
+/**
+ * The one motion preference the shell reads in script.
+ *
+ * The stylesheet handles everything it declares; a smooth `scrollIntoView` is
+ * not declared anywhere, so it has to be asked here. Read at call time rather
+ * than cached: the preference can change while a tab is open.
+ */
+const reducedMotion = () => typeof window !== 'undefined'
+  && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+
+/**
+ * `#/leads` -- the account spine's ranked list, addressed beside the sections.
+ *
+ * It is NOT a `Section` in ui/route.ts, and the seam is deliberate rather than
+ * an oversight. The five sections are the shell's own shape (docs/gtm-shell-
+ * shape.md) and reorganising them around a spine that has one screen so far
+ * would be settling a question the spine has not answered yet -- so the screen
+ * ships at its own hash, the router keeps its five, and the day accounts earn
+ * a section this hook deletes and a `SECTIONS` entry replaces it.
+ *
+ * `parseRoute` sends an unknown head to the default route, so this reads the
+ * hash directly. Nothing rewrites it: `useHashRoute` only normalises the old
+ * parameter-list shape, and `#/leads` is a path.
+ *
+ * lc-debt: one screen addressed outside the router's Section union; upgrade
+ * path is 'accounts' in SECTIONS + SUB_ROUTES, at which point this is an
+ * ordinary `route.section === 'accounts'`.
+ */
+const isAccountsHash = (hash: string) => hash === '#/leads' || hash.startsWith('#/leads/');
+
+function useAccountsRoute(): boolean {
+  const [open, setOpen] = useState(() => typeof window !== 'undefined' && isAccountsHash(window.location.hash));
+  useEffect(() => {
+    const sync = () => setOpen(isAccountsHash(window.location.hash));
+    sync();
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+  return open;
+}
 
 const MARKETING_ONLY = import.meta.env.VITE_MARKETING_ONLY === 'true';
 const HOSTED_APP_URL = import.meta.env.VITE_HOSTED_APP_URL?.trim() ?? '';
 const GITHUB_URL = import.meta.env.VITE_GITHUB_URL?.trim() ?? '';
-
-const money = (amount: number, currency = 'EUR') => new Intl.NumberFormat('en-US', {
-  style: 'currency', currency, maximumFractionDigits: 0
-}).format(amount);
-
-const recommendationLabels: Record<RecommendationType, string> = {
-  stale_proposal: 'Proposal follow-up',
-  scope_creep: 'Scope protection',
-  unbilled_milestone: 'Ready to invoice',
-  overdue_invoice: 'Payment collection'
-};
 
 function GoogleMark() {
   return <svg aria-hidden="true" viewBox="0 0 18 18" width="18" height="18">
@@ -120,10 +212,19 @@ export function App() {
   const [error, setError] = useState('');
   const [needsAuth, setNeedsAuth] = useState<boolean | null>(null);
   const [showAuth, setShowAuth] = useState(false);
-  const [activeView, setActiveView] = useState<View>('today');
+  // Where you are lives in the URL as one path, so every screen is
+  // addressable, bookmarkable and Back-able -- and reachable by typing, which
+  // is the only escape hatch a phone has when a nav goes missing.
+  const [route, go] = useHashRoute();
+  // Read beside the route rather than out of it: see `useAccountsRoute`.
+  const accountsOpen = useAccountsRoute();
   const [activeAction, setActiveAction] = useState<PreparedAction | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [toast, setToast] = useState('');
+  const [toast, setToastState] = useState<ToastMessage | null>(null);
+  // Rows already off the list while their undo window is still open.
+  const [hiddenIds, setHiddenIds] = useState<string[]>([]);
+  const [overlay, setOverlay] = useState<'help' | 'shortcuts' | 'jump' | null>(null);
+  const setToast = (message: string) => setToastState(message ? { message } : null);
 
   const load = async () => {
     try {
@@ -142,20 +243,34 @@ export function App() {
   };
 
   useEffect(() => {
-    trackPageView();
     if (MARKETING_ONLY) return;
     void load();
+    // Not a route. `#get-started` is the marketing site's link into the signup
+    // panel, and `parseRoute` leaves it alone precisely so this still sees it.
     if (window.location.hash === '#get-started') setShowAuth(true);
   }, []);
+  // Fired per screen, not once per session: page views that cannot see
+  // navigation cannot tell you anything about navigation.
+  useEffect(() => { trackPageView(); }, [route.path]);
   useEffect(() => {
-    if (!toast) return;
-    const timer = window.setTimeout(() => setToast(''), 5000);
+    // An undo toast lives exactly as long as its undo window, so the button is
+    // never on screen after it has stopped working.
+    if (!toast || toast.undo) return;
+    // 5s was under the time it takes to read the message, and the toast is the
+    // only success confirmation in the product.
+    const hold = Math.min(14_000, Math.max(7_000, toast.message.length * 60));
+    const timer = window.setTimeout(() => setToastState(null), hold);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const today = useMemo(() => new Intl.DateTimeFormat('en-CH', {
-    weekday: 'long', month: 'long', day: 'numeric'
-  }).format(new Date()), []);
+  useShortcuts({
+    onJump: () => setOverlay('jump'),
+    onSheet: () => setOverlay('shortcuts'),
+    // A dialog owns the keyboard while it is open, and `useDialog` traps Tab
+    // and Escape inside it. A global binding firing underneath would be a
+    // second thing listening to keys that are not addressed to it.
+    suspended: overlay !== null || activeAction !== null
+  });
 
   const prepare = async (recommendation: Recommendation) => {
     setBusyId(recommendation.id);
@@ -167,22 +282,62 @@ export function App() {
     } finally { setBusyId(null); }
   };
 
-  const snooze = async (id: string) => {
-    setBusyId(id);
+  /**
+   * Snooze and dismiss are deferred, not fired.
+   *
+   * There is no route that reopens a snoozed or dismissed recommendation, so an
+   * Undo offered after the write would be a promise the product cannot keep.
+   * Instead the row leaves the list at once and the write goes out when the undo
+   * window closes -- which is the only version of Undo that is true.
+   */
+  const pending = useRef<{ id: string; commit: () => Promise<void>; timer: number } | null>(null);
+
+  const commitPending = async () => {
+    const job = pending.current;
+    if (!job) return;
+    pending.current = null;
+    window.clearTimeout(job.timer);
+    setToastState((current) => (current?.undo ? null : current));
     try {
-      await snoozeRecommendation(id);
+      await job.commit();
       await load();
-      setToast('Snoozed for 3 days');
-    } finally { setBusyId(null); }
+    } catch (err) {
+      setToastState({ message: err instanceof Error ? err.message : 'That did not go through — nothing changed. Try it again.' });
+    } finally {
+      setHiddenIds((ids) => ids.filter((id) => id !== job.id));
+    }
   };
 
-  const dismiss = async (id: string) => {
-    setBusyId(id);
-    try {
-      await dismissRecommendation(id, 'Not useful right now');
-      await load();
-    } finally { setBusyId(null); }
+  const deferRemoval = (id: string, message: string, commit: () => Promise<void>) => {
+    // One at a time: starting a second lets the first one through.
+    void commitPending();
+    setHiddenIds((ids) => [...ids, id]);
+    const timer = window.setTimeout(() => { void commitPending(); }, UNDO_MS);
+    pending.current = { id, commit, timer };
+    setToastState({
+      message,
+      undo: () => {
+        const job = pending.current;
+        if (!job) return;
+        pending.current = null;
+        window.clearTimeout(job.timer);
+        setHiddenIds((ids) => ids.filter((entry) => entry !== job.id));
+        setToastState(null);
+      }
+    });
   };
+
+  // A tab closed inside the undo window must not quietly drop a write the toast
+  // has already said happened.
+  useEffect(() => {
+    const flush = () => { void commitPending(); };
+    window.addEventListener('pagehide', flush);
+    return () => { window.removeEventListener('pagehide', flush); flush(); };
+  }, []);
+
+  const snooze = (id: string) => deferRemoval(id, 'Snoozed for 3 days. It comes back then.', () => snoozeRecommendation(id));
+
+  const dismiss = (id: string) => deferRemoval(id, 'Dismissed. Trevra will not raise it again.', () => dismissRecommendation(id, 'Not useful right now'));
 
   const signOut = async () => {
     await Promise.allSettled([authClient.signOut(), endDemoSession()]);
@@ -214,7 +369,7 @@ export function App() {
   if (MARKETING_ONLY) return <MarketingScreen
     hostedAppUrl={HOSTED_APP_URL}
     githubUrl={GITHUB_URL}
-    onGetStarted={() => document.getElementById('hosted')?.scrollIntoView({ behavior: 'smooth' })}
+    onGetStarted={() => document.getElementById('hosted')?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth' })}
   />;
   if (needsAuth === null) return <div className="center-state"><LoaderCircle className="spin" /> <span>Building your revenue brief…</span></div>;
   if (needsAuth) return showAuth
@@ -224,54 +379,155 @@ export function App() {
   if (error) return <div className="center-state error"><p>{error}</p><button onClick={() => void load()}>Try again</button></div>;
   if (!data) return null;
 
+  // What is actually on the list right now, which is not the server's count
+  // while something is sitting inside its undo window.
+  const open = data.recommendations.filter((item) => !hiddenIds.includes(item.id));
+  const recommendationActions: RecommendationActions = {
+    busyId, onPrepare: prepare, onSnooze: snooze, onDismiss: dismiss
+  };
+
   return (
     <div className="app-shell">
+      {/* Five nav items and a sign-out precede the content on every load. One
+          key gets past all of them. `href` is kept for the semantics and the
+          default is prevented, because assigning `#main` would overwrite the
+          route the hash is carrying. */}
+      <a
+        className="skip-link"
+        href="#main"
+        onClick={(event) => {
+          event.preventDefault();
+          const main = document.getElementById('main');
+          main?.focus({ preventScroll: false });
+        }}
+      >Skip to what is on this screen</a>
+
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">T</span><span>Trevra</span></div>
         <nav>
-          <NavButton active={activeView === 'today'} icon={<Sparkles size={18} />} label="Today" onClick={() => setActiveView('today')} />
-          <NavButton active={activeView === 'work'} icon={<Workflow size={18} />} label="Work" onClick={() => setActiveView('work')} />
-          <NavButton active={activeView === 'modules'} icon={<Boxes size={18} />} label="Modules" onClick={() => setActiveView('modules')} />
-          <NavButton active={activeView === 'clients'} icon={<Users size={18} />} label="Clients" onClick={() => setActiveView('clients')} />
-          <NavButton active={activeView === 'integrations'} icon={<Link2 size={18} />} label="Connections" onClick={() => setActiveView('integrations')} />
-          <NavButton active={activeView === 'autopilot'} icon={<Bot size={18} />} label="Autopilot" onClick={() => setActiveView('autopilot')} />
+          {NAV_ITEMS.map((item) => <NavButton
+            key={item.section}
+            active={!accountsOpen && route.section === item.section}
+            icon={item.icon}
+            label={item.label}
+            // The unread count sits where clicking it already goes somewhere.
+            badge={item.section === 'money' ? open.length : undefined}
+            onClick={() => go(item.path)}
+          />)}
+          {/* Beside the five, not inside them, for the reason `useAccountsRoute`
+              gives. Rendered here so the screen has a way in that is not a
+              typed URL. */}
+          <NavButton
+            active={accountsOpen}
+            icon={<Building2 size={18} />}
+            label="Accounts"
+            onClick={() => go('/leads')}
+          />
         </nav>
         <div className="sidebar-promise">
           <ShieldCheck size={18} />
-          <div><strong>Commercial memory</strong><span>Every recommendation carries its proof.</span></div>
+          <div><strong>You have the final say</strong><span>Your agent prepares. Nothing goes out until you approve it.</span></div>
         </div>
         <div className="sidebar-bottom">
-          <div className="workspace-avatar">NS</div>
-          <div><strong>{data.workspace.name}</strong><span>{data.metrics.connectedSources} live sources</span></div>
-          <button className="sidebar-signout" title="Sign out" onClick={() => void signOut()}><LogOut size={16} /></button>
+          <div className="workspace-avatar">{initials(data.workspace.name)}</div>
+          <div><strong>{data.workspace.name}</strong><span>{data.metrics.connectedSources} connected</span></div>
         </div>
       </aside>
 
-      <main className="main">
+      <main className="main" id="main" tabIndex={-1}>
         <header className="topbar">
-          <div><p className="eyebrow">{today}</p><h1>{viewTitle(activeView)}</h1></div>
+          <div><h1>{accountsOpen ? 'Accounts' : viewTitle(route)}</h1></div>
+          {/* Sign-out lives here rather than in the sidebar, because below
+              760px the sidebar is not on the screen at all. */}
           <div className="top-actions">
-            <button className="icon-button" aria-label="Search"><Search size={19} /></button>
-            <button className="icon-button" aria-label="Notifications"><Bell size={19} />{data.metrics.openRecommendations > 0 && <i />}</button>
+            <button
+              className="icon-button"
+              aria-label="What this screen is for"
+              title="What this screen is for"
+              onClick={() => setOverlay('help')}
+            ><CircleHelp size={18} /></button>
+            <ThemeToggle />
+            <button className="icon-button" aria-label="Sign out" title="Sign out" onClick={() => void signOut()}><LogOut size={18} /></button>
           </div>
         </header>
 
-        {activeView === 'today' && (
-          <TodayView
-            data={data}
-            busyId={busyId}
-            onPrepare={prepare}
-            onSnooze={snooze}
-            onDismiss={dismiss}
-            onNavigate={setActiveView}
-          />
-        )}
-        {activeView === 'work' && <WorkView setToast={setToast} />}
-        {activeView === 'modules' && <ModulesView setToast={setToast} />}
-        {activeView === 'clients' && <ClientsView data={data} />}
-        {activeView === 'integrations' && <IntegrationsView data={data} reload={load} setToast={setToast} busyId={busyId} setBusyId={setBusyId} />}
-        {activeView === 'autopilot' && <AutopilotView rules={data.automationRules} reload={load} setToast={setToast} />}
+        {/* One incident surface, on every route. It is never a nav item and it
+            survives below 760px, where the sidebar does not. */}
+        <StopBar setToast={setToast} />
+
+        {/* `#/leads` parses to the default section, so it is answered before
+            it -- and only the default section has to know that. */}
+        {accountsOpen && <AccountsScreen setToast={setToast} />}
+
+        {!accountsOpen && route.section === 'loop' && (route.sub === 'cost'
+          ? <LoopCostView onNavigate={go} />
+          : <LoopView
+              data={data}
+              recommendations={open}
+              actions={recommendationActions}
+              onNavigate={go}
+            />)}
+
+        {route.section === 'outreach' && <div className="page-stack">
+          {/* Six sub-screens, and until now no way to reach five of them: the
+              routes existed, the strip that names them did not. Same markup
+              and same class family as Setup's, because they are the same
+              control and a second dialect would be a second thing to learn. */}
+          <nav className="outreach-nav" aria-label="Outreach sections">
+            {OUTREACH_ROUTES.map((entry) => <button
+              key={entry.sub}
+              type="button"
+              className={route.sub === entry.sub ? 'is-active' : undefined}
+              aria-current={route.sub === entry.sub ? 'page' : undefined}
+              onClick={() => go(`/outreach${entry.sub ? `/${entry.sub}` : ''}`)}
+            >{entry.label}</button>)}
+          </nav>
+
+          {route.sub === '' && <OutreachSeat setToast={setToast} />}
+          {route.sub === 'campaigns' && <OutreachCampaigns setToast={setToast} campaignId={route.id} />}
+          {route.sub === 'inbox' && <OutreachInbox setToast={setToast} />}
+          {route.sub === 'leads' && <OutreachLeads setToast={setToast} />}
+          {route.sub === 'plan' && <OutreachPlan setToast={setToast} />}
+          {route.sub === 'queue' && <OutreachQueue setToast={setToast} />}
+        </div>}
+
+        {route.section === 'money' && <MoneyView
+          data={data}
+          recommendations={open}
+          actions={recommendationActions}
+          onNavigate={go}
+        />}
+
+        {route.section === 'ledger' && <LedgerView runId={route.id} setToast={setToast} onNavigate={go} />}
+
+        {route.section === 'setup' && <SetupView
+          route={route}
+          data={data}
+          reload={load}
+          setToast={setToast}
+          busyId={busyId}
+          setBusyId={setBusyId}
+          onNavigate={go}
+        />}
       </main>
+
+      {/* Below 760px the sidebar is gone and with it every route out of this
+          screen. Rendered always; the stylesheet hides it above 760px. */}
+      <nav className="mobile-tabbar" aria-label="Sections">
+        {NAV_ITEMS.map((item) => <button
+          key={item.section}
+          type="button"
+          className={!accountsOpen && route.section === item.section ? 'is-active' : undefined}
+          aria-current={!accountsOpen && route.section === item.section ? 'page' : undefined}
+          onClick={() => go(item.path)}
+        >{item.icon}<span>{item.label}</span></button>)}
+        <button
+          type="button"
+          className={accountsOpen ? 'is-active' : undefined}
+          aria-current={accountsOpen ? 'page' : undefined}
+          onClick={() => go('/leads')}
+        ><Building2 size={18} /><span>Accounts</span></button>
+      </nav>
 
       {activeAction && (
         <ActionDrawer
@@ -282,9 +538,170 @@ export function App() {
           onExecute={() => void execute()}
         />
       )}
-      {toast && <button className="toast" onClick={() => setToast('')}><Check size={16} />{toast}<X size={14} /></button>}
+
+      {overlay === 'help' && <HelpPanel route={route} onClose={() => setOverlay(null)} />}
+      {overlay === 'shortcuts' && <ShortcutSheet onClose={() => setOverlay(null)} />}
+      {overlay === 'jump' && <JumpPalette onGo={go} onClose={() => setOverlay(null)} />}
+
+      {/* A live region that outlives its messages -- announcing a toast means
+          the region has to already be there when the text arrives -- and one
+          mounted outside `.app-shell`, so an open dialog's `inert` cannot
+          silence the product's only success confirmation. */}
+      {createPortal(
+        <div className="toast" role="status" style={toast ? { cursor: 'default' } : HIDDEN_LIVE_REGION}>
+          {toast && <>
+            <Check size={16} />
+            <span>{toast.message}</span>
+            {toast.undo && <button className="ghost-button" onClick={toast.undo}>Undo</button>}
+            <button className="ghost-button" aria-label="Dismiss this message" onClick={() => setToastState(null)}><X size={14} /></button>
+          </>}
+        </div>,
+        document.body
+      )}
     </div>
   );
+}
+
+/**
+ * The same switch the marketing site has, on the same attribute and the same
+ * storage key, so a choice made before signing in survives signing in.
+ *
+ * `/theme.js` owns the state: it is a blocking script in the document head that
+ * stamps `data-theme` before first paint and binds every `[data-theme-toggle]`
+ * by delegation. So this renders markup and nothing else -- no handler, no
+ * second copy of the state, one source of truth.
+ */
+function ThemeToggle() {
+  return <button type="button" className="icon-button theme-toggle" data-theme-toggle aria-label="Switch theme">
+    <svg className="icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M2 12h2M20 12h2" />
+    </svg>
+    <svg className="icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+    </svg>
+  </button>;
+}
+
+/* `display: none` takes a live region out of the accessibility tree, so the
+   first message would arrive at a region the reader never saw appear. Empty, it
+   stays mounted and unseen instead. */
+const HIDDEN_LIVE_REGION: React.CSSProperties = {
+  position: 'fixed', width: 1, height: 1, margin: -1, padding: 0, border: 0,
+  overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap', pointerEvents: 'none'
+};
+
+/* --------------------------------------------------------------------------
+ * Setup, split into routes.
+ *
+ * It used to be one unbroken scroll of agent access, keys, spending,
+ * connections, imports, autopilot, limits and modules, with a jump strip on
+ * top. Changing a spend cap meant scrolling past all of it, and a jump is not
+ * a URL: nobody could be sent a link to the limits.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * `spend` is deliberately NOT in here.
+ *
+ * It was a tab that rendered the Agent access screen and then scroll-jumped
+ * inside it, so the strip underlined a section you were not on and the title
+ * named a screen that does not exist. The block's own reasoning is why it
+ * cannot be split out: where your key goes, your key, and what it may spend
+ * are one decision in one order, and a separate screen would ask an operator
+ * to set a cap for a key nobody has asked them for yet.
+ *
+ * So `#/setup/spend` survives as a DEEP LINK -- "Change the cap" on the cost
+ * screen still points at it, and it still lands on the cap -- and stops
+ * pretending to be a peer of the six screens that are real.
+ */
+const SETUP_ROUTES: Array<{ sub: string; label: string }> = [
+  { sub: 'agent', label: 'Agent access' },
+  { sub: 'data', label: 'Connections' },
+  { sub: 'research', label: 'Research' },
+  { sub: 'seat', label: 'LinkedIn seat' },
+  { sub: 'reddit', label: 'Reddit account' },
+  { sub: 'skills', label: 'Skills' },
+  { sub: 'limits', label: 'Limits' }
+];
+
+function SetupView({ route, data, reload, setToast, busyId, setBusyId, onNavigate }: {
+  route: Route;
+  data: DashboardPayload;
+  reload: () => Promise<void>;
+  setToast: (message: string) => void;
+  busyId: string | null;
+  setBusyId: (id: string | null) => void;
+  onNavigate: (path: string) => void;
+}) {
+  // `#/setup` on its own is agent access: nothing else in Trevra works until
+  // an agent can reach the workspace, so it is both the first tab and the
+  // default one. See docs/app-spec.md §9.
+  const sub = route.sub === '' ? 'agent' : route.sub;
+
+  // `#/setup/spend` is a deep link into the Agent access screen, not a screen.
+  // The strip below underlines Agent access for it, because that is where the
+  // reader ends up.
+  const navSub = sub === 'spend' ? 'agent' : sub;
+
+  useEffect(() => {
+    if (sub !== 'spend') return;
+    // The block is inside a panel that renders nothing until its own read
+    // lands, so the element is not there on the first frame. Look for it for a
+    // couple of seconds and then stop -- a deployment without the hosted agent
+    // has no such block at all, and hunting forever would be a leak.
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      const target = document.getElementById('setup-spend');
+      if (target) {
+        window.clearInterval(timer);
+        target.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+        // The caret follows the eye, so the keyboard carries on from the jump
+        // rather than from the top of the page.
+        if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+        target.focus({ preventScroll: true });
+        return;
+      }
+      if (++tries > 20) window.clearInterval(timer);
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [sub]);
+
+  return <div className="page-stack">
+    <nav className="setup-nav" aria-label="Setup sections">
+      {SETUP_ROUTES.map((entry) => <button
+        key={entry.sub}
+        type="button"
+        className={navSub === entry.sub ? 'is-active' : undefined}
+        aria-current={navSub === entry.sub ? 'page' : undefined}
+        onClick={() => onNavigate(`/setup/${entry.sub}`)}
+      >{entry.label}</button>)}
+    </nav>
+
+    {(sub === 'agent' || sub === 'spend') && <>
+      <AgentAccessPanel setToast={setToast} />
+      <HostedAgentPanel setToast={setToast} onInspectRun={(runId) => onNavigate(`/ledger/run/${runId}`)} />
+    </>}
+
+    {sub === 'data' && <ConnectionsView
+      data={data}
+      reload={reload}
+      setToast={setToast}
+      busyId={busyId}
+      setBusyId={setBusyId}
+    />}
+
+    {sub === 'research' && <ResearchScreen connections={data.connections} setToast={setToast} />}
+
+    {sub === 'seat' && <LinkedInSeatSetup setToast={setToast} />}
+
+    {sub === 'reddit' && <RedditScreen setToast={setToast} />}
+
+    {sub === 'skills' && <SkillsView setToast={setToast} onNavigate={onNavigate} />}
+
+    {sub === 'limits' && <>
+      <AutopilotView rules={data.automationRules} reload={reload} setToast={setToast} />
+      <LinkedInExclusions setToast={setToast} />
+    </>}
+  </div>;
 }
 
 function AuthScreen({ onAuthenticated, onBack }: { onAuthenticated: () => Promise<void>; onBack: () => void }) {
@@ -348,14 +765,16 @@ function AuthScreen({ onAuthenticated, onBack }: { onAuthenticated: () => Promis
     <div className="auth-shell">
       <section className="auth-story">
         <a className="brand auth-brand" href="/" onClick={(event) => { event.preventDefault(); onBack(); }}><span className="brand-mark">T</span><span>Trevra</span></a>
-        <div><span className="hero-kicker"><Sparkles size={14} /> Agentic GTM for founders</span><h1>Run growth from Claude. Trevra remembers what happened.</h1><p>Ask Claude to source, qualify, reach out, follow up, and bill. Every action is evidence-backed, approval-gated, and logged in one open-source ledger you own.</p></div>
-        <div className="auth-proof-list"><span><Check size={16} /> Every action carries its evidence</span><span><Check size={16} /> Approved payloads hashed before execution</span><span><Check size={16} /> Delegation with explicit ceilings</span><span><Check size={16} /> Open source, self-hostable, yours</span></div>
+        {/* No kicker above the heading: the h1 and the line under it already
+            say what this is, and the marketing page dropped its own. */}
+        <div><h1>Run growth from Claude. Trevra remembers what happened.</h1><p>Ask Claude to source, qualify, reach out, follow up, and bill. Every action is evidence-backed, approval-gated, and logged in one open-source ledger you own.</p></div>
+        <div className="auth-proof-list"><span><Check size={16} /> Every suggestion shows the evidence behind it</span><span><Check size={16} /> Trevra sends exactly what you approved, or nothing</span><span><Check size={16} /> Limits you set that your agent cannot cross</span><span><Check size={16} /> Open source, self-hostable, yours</span></div>
       </section>
       <section className="auth-panel" id="get-started">
         <div className="auth-card">
           <span className="auth-icon"><ShieldCheck /></span>
           <h2>{mode === 'signin' ? 'Sign in to Trevra' : 'Create your workspace'}</h2>
-          <p>{mode === 'signin' ? 'Continue to your approval queue.' : 'Start with a private revenue ledger only you control.'}</p>
+          <p>{mode === 'signin' ? 'Continue to your loop.' : 'Start with a private revenue ledger only you control.'}</p>
           {googleEnabled && <><button className="google-auth-button" disabled={busy || googleBusy} onClick={() => void signInWithGoogle()}>{googleBusy ? <LoaderCircle className="spin" size={17} /> : <GoogleMark />}Continue with Google</button><div className="auth-divider"><span>Or the email</span></div></>}
           {mode === 'signup' && <label>Name<input autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Alex Morgan" /></label>}
           <label>Email<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" /></label>
@@ -374,301 +793,724 @@ function AuthScreen({ onAuthenticated, onBack }: { onAuthenticated: () => Promis
 }
 
 /**
- * The theme boot script (served inline in the document head) binds the switch
- * by delegation on `[data-theme-toggle]`, so this renders markup only -- no
- * click handler, no duplicated state, one source of truth for the theme.
+ * Connect Claude Code or Codex in one click.
+ *
+ * This is the most important button in the product: the operator is an agent,
+ * so a workspace no agent can reach does nothing. It used to be seven manual
+ * steps at the bottom of Autopilot -- name a token, create it, copy it, then
+ * hand-assemble a command from the docs. Now it mints the token and hands back
+ * the exact line to paste, with the real host and token already in it.
+ *
+ * The token is shown ONCE. It is stored as a hash, so the command is built
+ * here, in the browser, at the only moment the secret exists.
  */
-function TodayView({ data, busyId, onPrepare, onSnooze, onDismiss, onNavigate }: {
-  data: DashboardPayload;
-  busyId: string | null;
-  onPrepare: (item: Recommendation) => Promise<void>;
-  onSnooze: (id: string) => Promise<void>;
-  onDismiss: (id: string) => Promise<void>;
-  onNavigate: (view: View) => void;
-}) {
-  const prepared = data.recommendations.filter((item) => item.preparedAction).length;
-  return <>
-    <section className="hero-card">
-      <div>
-        <span className="hero-kicker"><Zap size={14} /> Trevra is working</span>
-        <h2>{money(data.metrics.revenueAtRisk, data.metrics.currency)} has a next action</h2>
-        <p>{prepared > 0 ? `${prepared} actions are already prepared for review.` : 'Connect your tools and Trevra will prepare the work automatically.'}</p>
-      </div>
-      <div className="hero-orbit"><span>{data.metrics.openRecommendations}</span><small>open actions</small></div>
-    </section>
-    <section className="metrics-grid metrics-grid-four">
-      <Metric icon={<CircleDollarSign />} label="Revenue at risk" value={money(data.metrics.revenueAtRisk, data.metrics.currency)} detail="Prioritized opportunities" />
-      <Metric icon={<FileCheck2 />} label="Ready to invoice" value={money(data.metrics.readyToInvoice, data.metrics.currency)} detail="Delivered work found" />
-      <Metric icon={<Check />} label="Collected by Trevra" value={money(data.metrics.revenueCollected, data.metrics.currency)} detail="Confirmed payment outcomes" />
-      <Metric icon={<Link2 />} label="Live sources" value={String(data.metrics.connectedSources)} detail="Connected business systems" />
-    </section>
-
-    {data.metrics.connectedSources === 0 && (
-      <section className="setup-banner">
-        <div className="setup-icon"><Link2 /></div>
-        <div><strong>Turn the demo into your real business</strong><p>Connect email, calendar, accounting, or import marketplace history. Trevra will build the commercial graph for you.</p></div>
-        <button className="primary-button" onClick={() => onNavigate('integrations')}>Connect tools <ChevronRight size={16} /></button>
-      </section>
-    )}
-
-    <section className="content-grid">
-      <div className="recommendations-panel">
-        <div className="section-heading"><div><h3>Work queue</h3><p>Actions Trevra found, proved, and ranked.</p></div><span className="status-pill">{prepared} prepared</span></div>
-        <div className="recommendation-list">
-          {data.recommendations.map((item) => (
-            <RecommendationCard
-              key={item.id}
-              item={item}
-              busy={busyId === item.id}
-              onPrepare={() => void onPrepare(item)}
-              onSnooze={() => void onSnooze(item.id)}
-              onDismiss={() => void onDismiss(item.id)}
-            />
-          ))}
-          {data.recommendations.length === 0 && <div className="empty-state"><Check size={28} /><h4>Trevra handled today’s queue</h4><p>No revenue action needs attention right now.</p></div>}
-        </div>
-      </div>
-
-      <aside className="client-panel">
-        <div className="section-heading"><div><h3>Client pulse</h3><p>Where each commercial relationship stands.</p></div></div>
-        <div className="client-list">
-          {data.clients.map((client) => (
-            <button className="client-row" key={client.id}>
-              <span className="client-avatar">{initials(client.name)}</span>
-              <span className="client-copy"><strong>{client.name}</strong><small>{client.nextAction ?? client.status}</small></span>
-              <span className="client-value">{money(client.activeValue, client.currency)}<ChevronRight size={15} /></span>
-            </button>
-          ))}
-        </div>
-        <div className="security-note"><ShieldCheck size={18} /><div><strong>Evidence before action</strong><p>Trevra shows the agreement, request, delivery, and billing proof behind each decision.</p></div></div>
-      </aside>
-    </section>
-  </>;
-}
-
-const STARTER_PLAYBOOK_INPUT = JSON.stringify({
-  lead: {
-    domain: 'example.com',
-    name: 'Example Company',
-    contactName: 'Alex',
-    contactEmail: 'alex@example.com',
-    platform: 'shopify',
-    vertical: 'footwear',
-    catalogSize: 100
-  },
-  draftConfig: {
-    offer: 'I can send the full audit if it is useful.',
-    senderName: 'Your name',
-    postalAddress: 'Your business postal address',
-    voiceSample: null
-  }
-}, null, 2);
-
-function WorkView({ setToast }: { setToast: (message: string) => void }) {
-  const [playbooks, setPlaybooks] = useState<PlaybookManifest[]>([]);
-  const [runs, setRuns] = useState<PlaybookRun[]>([]);
-  const [selectedId, setSelectedId] = useState('');
-  const [input, setInput] = useState(STARTER_PLAYBOOK_INPUT);
+function AgentAccessPanel({ setToast }: { setToast: (message: string) => void }) {
+  const [tokens, setTokens] = useState<AgentTokenSummary[]>([]);
+  const [revealed, setRevealed] = useState('');
+  const [apiBaseUrl, setApiBaseUrl] = useState('');
+  const [target, setTarget] = useState<'claude' | 'codex'>('claude');
   const [busy, setBusy] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [confirmRevoke, setConfirmRevoke] = useState<AgentTokenSummary | null>(null);
 
-  const reload = async () => {
-    const [nextPlaybooks, nextRuns] = await Promise.all([getPlaybooks(), getPlaybookRuns({ limit: 50 })]);
-    setPlaybooks(nextPlaybooks);
-    setRuns(nextRuns);
-    if (!selectedId && nextPlaybooks[0]) setSelectedId(nextPlaybooks[0].id);
-  };
+  const reload = async () => setTokens(await getAgentTokens());
 
-  useEffect(() => { void reload().catch((error) => setToast(error instanceof Error ? error.message : 'Unable to load work')); }, []);
+  useEffect(() => {
+    void reload().catch(() => undefined);
+    void getPublicConfig()
+      .then((config) => setApiBaseUrl(config.apiBaseUrl ?? window.location.origin))
+      .catch(() => setApiBaseUrl(window.location.origin));
+  }, []);
 
-  const launch = async () => {
-    const selected = playbooks.find((playbook) => playbook.id === selectedId);
-    if (!selected) return;
-    setBusy('launch');
+  const active = tokens.filter((token) => !token.revokedAt);
+
+  const create = async () => {
+    setBusy('create');
     try {
-      const payload = JSON.parse(input) as unknown;
-      const run = await startPlaybook(selected.id, payload, selected.version);
+      // Auto-named. Asking a founder to invent a token name before they can
+      // connect anything was a question with no useful answer.
+      const created = await createAgentToken({ name: `${target === 'claude' ? 'Claude Code' : 'Codex'} · ${new Date().toLocaleDateString()}` });
+      setRevealed(created.token);
       await reload();
-      setToast(run.status === 'waiting_approval' ? 'Playbook reached an approval boundary' : `Playbook ${run.status}`);
     } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Unable to start playbook');
+      setToast(error instanceof Error ? error.message : 'Could not create the token');
     } finally { setBusy(''); }
   };
 
-  const decide = async (run: PlaybookRun, stepId: string, decision: 'approve' | 'reject') => {
-    setBusy(`${run.id}:${stepId}`);
+  const revoke = async (tokenId: string) => {
+    setBusy(tokenId);
     try {
-      const updated = await decidePlaybookStep(run.id, stepId, decision);
+      await revokeAgentToken(tokenId);
       await reload();
-      setToast(decision === 'approve' ? `Approved; workflow is ${updated.status}` : 'Approval rejected');
+      setToast('Access revoked. Any session using that token is now locked out.');
     } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Unable to record decision');
-    } finally { setBusy(''); }
+      setToast(error instanceof Error ? error.message : 'Could not revoke that token. Try again in a moment.');
+    } finally { setBusy(''); setConfirmRevoke(null); }
   };
 
-  const selected = playbooks.find((playbook) => playbook.id === selectedId);
-  const waiting = runs.filter((run) => run.status === 'waiting_approval');
+  const mcpUrl = `${apiBaseUrl || window.location.origin}/api/agent/mcp`;
+  const secret = revealed || '<your-token>';
+  const command = target === 'claude'
+    ? `claude mcp add trevra --scope project --transport http ${mcpUrl} --header "Authorization: Bearer ${secret}"`
+    : `export TREVRA_AGENT_TOKEN=${secret}\ncodex mcp add trevra --url ${mcpUrl} --bearer-token-env-var TREVRA_AGENT_TOKEN`;
 
-  return <div className="page-stack work-view">
-    <section className="work-hero">
-      <div><span className="hero-kicker"><Workflow size={14} /> Durable control plane</span><h2>Run GTM playbooks that survive restarts and stop for decisions.</h2><p>Every step, policy verdict, retry, approval, and result is persisted in the append-only event stream.</p></div>
-      <div className="work-hero-count"><strong>{waiting.length}</strong><span>waiting approval</span></div>
-    </section>
-
-    <section className="page-panel">
-      <div className="section-heading"><div><h3>Start a playbook</h3><p>Playbooks compose typed modules into a versioned, durable workflow.</p></div><span className="status-pill">{playbooks.length} installed</span></div>
-      <div className="playbook-launch-grid">
-        <div className="playbook-catalog">
-          {playbooks.map((playbook) => <button key={`${playbook.id}@${playbook.version}`} className={selectedId === playbook.id ? 'is-selected' : undefined} onClick={() => setSelectedId(playbook.id)}>
-            <span><Workflow size={17} /><strong>{playbook.name}</strong></span>
-            <p>{playbook.description}</p>
-            <code>{playbook.id}@{playbook.version}</code>
-          </button>)}
-        </div>
-        <div className="playbook-input">
-          <div><strong>{selected?.name ?? 'Select a playbook'}</strong><span>Input is validated against the published JSON schema before a run is created.</span></div>
-          <textarea rows={18} value={input} onChange={(event) => setInput(event.target.value)} spellCheck={false} />
-          <button className="primary-button" disabled={!selected || busy === 'launch'} onClick={() => void launch()}>{busy === 'launch' ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} Start durable run</button>
-        </div>
-      </div>
-    </section>
-
-    <section className="page-panel">
-      <div className="section-heading"><div><h3>Runs and approvals</h3><p>The current state is derived from persisted steps; approval decisions are applied to an exact payload hash.</p></div><button className="secondary-button" onClick={() => void reload()}><RefreshCw size={15} /> Refresh</button></div>
-      <div className="playbook-run-list">
-        {runs.map((run) => {
-          const approval = run.steps.find((step) => step.status === 'waiting_approval');
-          const completed = run.steps.filter((step) => step.status === 'completed').length;
-          return <article key={run.id} className={`playbook-run status-${run.status}`}>
-            <header><div><span className={`run-status run-${run.status}`}>{run.status.replace('_', ' ')}</span><h3>{run.playbookId}</h3><code>{run.id} · v{run.playbookVersion}</code></div><strong>{completed}/{run.steps.length}</strong></header>
-            <div className="playbook-step-track">{run.steps.map((step) => <div key={step.id} className={`step-${step.status}`}><i /><span>{step.stepId}</span><small>{step.status.replace('_', ' ')}</small></div>)}</div>
-            {run.error && <div className="error-banner">{run.error}</div>}
-            {approval && <div className="workflow-approval">
-              <div className="approval-banner"><ShieldCheck size={19} /><p><strong>Founder decision required.</strong> This exact payload is pinned as <code>{approval.approvalPayloadHash?.slice(0, 16)}…</code>.</p></div>
-              <pre>{JSON.stringify(approval.input, null, 2)}</pre>
-              <div><button className="secondary-button" disabled={busy === `${run.id}:${approval.stepId}`} onClick={() => void decide(run, approval.stepId, 'reject')}>Reject</button><button className="primary-button" disabled={busy === `${run.id}:${approval.stepId}`} onClick={() => void decide(run, approval.stepId, 'approve')}>{busy === `${run.id}:${approval.stepId}` ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Approve exact payload</button></div>
-            </div>}
-            {run.status === 'completed' && <details className="run-output"><summary>View output</summary><pre>{JSON.stringify(run.output, null, 2)}</pre></details>}
-          </article>;
-        })}
-        {runs.length === 0 && <div className="empty-state"><Workflow size={28} /><h4>No playbook runs yet</h4><p>Start the first durable GTM workflow above.</p></div>}
-      </div>
-    </section>
-  </div>;
-}
-
-function ModulesView({ setToast }: { setToast: (message: string) => void }) {
-  const [modules, setModules] = useState<PublicRegistryModule[]>([]);
-  const [installed, setInstalled] = useState<InstalledCommunityModule[]>([]);
-  const [publishers, setPublishers] = useState<RegistryPublisher[]>([]);
-  const [busy, setBusy] = useState('');
-  const [publisherDraft, setPublisherDraft] = useState({ slug: '', displayName: '', publicKeyPem: '' });
-  const [releaseDraft, setReleaseDraft] = useState({ publisherId: '', manifest: '', sbom: '{}', signature: '' });
-
-  const loadRegistry = async () => {
-    const [publicModules, installations, publisherList] = await Promise.all([
-      getPublicRegistryModules(), getInstalledRegistryModules(), getRegistryPublishers()
-    ]);
-    setModules(publicModules);
-    setInstalled(installations);
-    setPublishers(publisherList);
-    if (!releaseDraft.publisherId && publisherList[0]) {
-      setReleaseDraft((current) => ({ ...current, publisherId: publisherList[0].id }));
+  const copy = async () => {
+    if (!revealed) {
+      setToast('Click "Create access" first to generate your command');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(command);
+      setToast('Command copied — paste it in your terminal');
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setToast('Could not copy. Select the command and copy it manually.');
     }
   };
 
-  useEffect(() => { void loadRegistry().catch((error) => setToast(error instanceof Error ? error.message : 'Unable to load registry')); }, []);
-  const installedIds = new Set(installed.map((module) => module.id));
+  return <section className="page-panel agent-panel" id="setup-agent">
+    <div className="section-heading">
+      <div>
+        {/* aria-level, not <h2>: the page title is the topbar's h1, so a bare
+            h3 here skips a level. The element stays h3 because that is what
+            styles.css paints. */}
+        <h3 aria-level={2}><Terminal size={18} /> Connect Claude Code or Codex</h3>
+        <p>Trevra is run by your coding agent. Paste one line and it can read your revenue brief, run jobs, and prepare work — it can never approve or send anything.</p>
+      </div>
+      <span className="status-pill">{active.length} connected</span>
+    </div>
 
-  const toggleInstall = async (module: PublicRegistryModule) => {
-    if (!module.version || module.sourceType === 'builtin') return;
-    setBusy(module.id);
+    <div className="agent-target-switch">
+      <button className={target === 'claude' ? 'is-active' : undefined} onClick={() => setTarget('claude')}>Claude Code</button>
+      <button className={target === 'codex' ? 'is-active' : undefined} onClick={() => setTarget('codex')}>Codex</button>
+    </div>
+
+    {!revealed && (
+      <button className="primary-button agent-create" onClick={() => void create()} disabled={busy === 'create'}>
+        {busy === 'create' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
+        Create access for {target === 'claude' ? 'Claude Code' : 'Codex'}
+      </button>
+    )}
+
+    <div className="agent-command">
+      <div className="agent-command-head">
+        <span>{revealed ? 'Paste this in your terminal' : 'Your command will look like this'}</span>
+        <button className="secondary-button" onClick={() => void copy()}>{copied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy</>}</button>
+      </div>
+      <pre><code>{command}</code></pre>
+      {revealed
+        ? <p className="agent-command-note">This is the only time the token is shown — Trevra stores it hashed. Lost it? Create another.</p>
+        : <p className="agent-command-note">Create access above and the real token drops straight into this command.</p>}
+      {target === 'claude' && <p className="agent-command-note">Run this from the project directory you want Trevra wired into. <code>--scope project</code> writes the server to that project's <code>.mcp.json</code> instead of your global config, so it only loads there — not in every Claude Code session — and can be shared with teammates via version control. Prefer it truly local and unshared? Drop <code>--scope project</code> to use the default <code>local</code> scope instead.</p>}
+    </div>
+
+    {active.length > 0 && <div className="agent-token-list">
+      {tokens.map((token) => <article key={token.id} className={token.revokedAt ? 'is-revoked' : undefined}>
+        <div><strong>{token.name}</strong><code>{token.prefix}…</code></div>
+        <span>{token.revokedAt ? 'Revoked' : token.lastUsedAt ? `Last used ${new Date(token.lastUsedAt).toLocaleString()}` : 'Not used yet'}</span>
+        {!token.revokedAt && <button className="ghost-button danger" disabled={busy === token.id} onClick={() => setConfirmRevoke(token)}>{busy === token.id ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Revoke</button>}
+      </article>)}
+    </div>}
+
+    {confirmRevoke && <ConfirmDrawer
+      title="Revoke this access?"
+      tone="danger"
+      body={<>
+        <p><strong>{confirmRevoke.name}</strong> (<code>{confirmRevoke.prefix}…</code>) stops working the moment you revoke it. Any Claude Code or Codex session holding that token loses this workspace mid-job.</p>
+        <p>Revoking cannot be undone. You can create fresh access straight afterwards, but you have to paste the new command everywhere this token was used.</p>
+      </>}
+      confirmLabel="Revoke this access"
+      busy={busy === confirmRevoke.id}
+      onCancel={() => setConfirmRevoke(null)}
+      onConfirm={() => void revoke(confirmRevoke.id)}
+    />}
+  </section>;
+}
+
+/** How often the standing job runs, said the way a person would say it. */
+const SCHEDULE_CHOICES = [60, 240, 720, 1440, 10080];
+
+/**
+ * Turn a failure from the setup routes into something a founder can act on.
+ *
+ * A status code is not an explanation. The 400s are already written for a
+ * person -- the server owns the endpoint rules and says them in words -- so
+ * those pass through, with the field name swapped for the thing it names.
+ */
+function agentSetupMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) {
+    if (error.status === 404) return 'This workspace is on a build that does not run Trevra’s own agent yet. Your own agent above still works.';
+    if (error.status === 409) return 'Nothing ran: spending is switched off, or this month’s cap is already used up.';
+    if (error.status === 429) return 'Too many attempts in a row. Wait a minute, then try again.';
+    if (error.status >= 500) return 'Trevra could not save that. Try again in a moment.';
+    return error.message
+      .replace(/^baseUrl /, 'The endpoint address ')
+      .replace(/^model is required$/, 'Name the model you want it to use.');
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
+/** `a`, `a and b`, `a, b and c` -- for naming which parts of one save went through. */
+const andList = (parts: string[]) =>
+  parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
+
+/**
+ * Trevra's agent, running on the operator's own key.
+ *
+ * The second way to be the operator (app-spec §2): identical permissions to
+ * the laptop agent, on Trevra's side, so it keeps working when the laptop is
+ * shut. Nothing here can approve or send -- see app-spec §11.
+ *
+ * Two deliberate absences.
+ *
+ * There is no reveal, no "show key", no copy-key control. Plaintext leaves
+ * exactly one internal function on the server, at the moment of a model call,
+ * and no route returns it at any privilege -- so such a control could not be
+ * wired to anything, and adding one is a server redesign, not a UI change.
+ *
+ * And the warning is the first thing in the panel rather than a footnote under
+ * the field. A hosted service holding customer model keys is a real,
+ * concentrated liability; the design doc's §7 says the operator deserves to
+ * weigh that before pasting, which only means anything if they read it first.
+ *
+ * ONE SAVE, NOT FOUR. Setting this up used to cost four round-trips and four
+ * toasts -- Save endpoint, Store key, Save cap, Save schedule -- for what is
+ * one sitting. The three blocks keep their order, their headings and their
+ * argument, because that order IS the decision: where your key goes, then your
+ * key, then what it may spend. What changed is that the button moved to the
+ * bottom and writes only the parts that changed.
+ *
+ * Two writes stay on their own, and both for the same stated reason: an off
+ * switch that needs a second click to take effect is not an off switch. The
+ * spending toggle and the schedule toggle fire immediately.
+ */
+function HostedAgentPanel({ setToast, onInspectRun }: {
+  setToast: (message: string) => void;
+  onInspectRun: (runId: string) => void;
+}) {
+  const [setup, setSetup] = useState<AgentSetup | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState('');
+  const [problem, setProblem] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [model, setModel] = useState('');
+  const [providerLabel, setProviderLabel] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [replacingKey, setReplacingKey] = useState(false);
+  const [capDollars, setCapDollars] = useState('20');
+  const [goal, setGoal] = useState('');
+  const [every, setEvery] = useState('1440');
+  const [confirmRemoveKey, setConfirmRemoveKey] = useState(false);
+
+  useEffect(() => {
+    void getAgentSetup()
+      .then((next) => {
+        if (!next) return;
+        setSetup(next);
+        setBaseUrl(next.config?.baseUrl ?? '');
+        setModel(next.config?.model ?? '');
+        setProviderLabel(next.config?.label ?? next.secret?.label ?? '');
+        setCapDollars(String(Math.round(next.budget.monthlyCapCents / 100)));
+        if (next.schedule) {
+          setGoal(next.schedule.goal ?? '');
+          if (next.schedule.intervalMinutes > 0) setEvery(String(next.schedule.intervalMinutes));
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setLoaded(true));
+  }, []);
+
+  const removeKey = async () => {
+    setBusy('key-remove');
+    setProblem('');
     try {
-      if (installedIds.has(module.id)) await uninstallRegistryModule(module.id);
-      else await installRegistryModule(module.id, module.version);
-      await loadRegistry();
-      setToast(installedIds.has(module.id) ? `${module.name} uninstalled` : `${module.name} installed`);
-    } catch (error) { setToast(error instanceof Error ? error.message : 'Unable to update installation'); }
-    finally { setBusy(''); }
+      await deleteAgentKey();
+      setSetup((current) => current && { ...current, secret: null });
+      setApiKey('');
+      setReplacingKey(false);
+      setToast('Key removed here. Revoke it at your provider too.');
+    } catch (error) {
+      setProblem(agentSetupMessage(error, 'Could not remove the key'));
+    } finally { setBusy(''); setConfirmRemoveKey(false); }
   };
 
-  const createPublisher = async () => {
-    setBusy('publisher');
+  // Its own write, not part of Save: an off switch that needs a second click
+  // to take effect is not an off switch.
+  const setSpending = async (enabled: boolean) => {
+    setBusy('spend');
+    setProblem('');
     try {
-      const publisher = await createRegistryPublisher(publisherDraft);
-      setPublisherDraft({ slug: '', displayName: '', publicKeyPem: '' });
-      await loadRegistry();
-      setReleaseDraft((current) => ({ ...current, publisherId: publisher.id }));
-      setToast('Publisher identity created. Keep the matching private key outside Trevra.');
-    } catch (error) { setToast(error instanceof Error ? error.message : 'Unable to create publisher'); }
-    finally { setBusy(''); }
+      const budget = await saveAgentBudget({ enabled });
+      setSetup((current) => current && { ...current, budget });
+      setToast(enabled
+        ? `Spending on, up to ${usd(budget.monthlyCapCents)} a month.`
+        : 'Spending off. Trevra will not pay for another model call.');
+    } catch (error) {
+      setProblem(agentSetupMessage(error, 'Could not change the spending switch'));
+    } finally { setBusy(''); }
   };
 
-  const publishRelease = async () => {
-    setBusy('release');
+  const setScheduleEnabled = async (enabled: boolean) => {
+    setBusy('schedule-switch');
+    setProblem('');
     try {
-      const manifest = JSON.parse(releaseDraft.manifest) as Record<string, unknown>;
-      const sbom = JSON.parse(releaseDraft.sbom) as Record<string, unknown>;
-      const moduleId = String(manifest.id ?? '');
-      if (!moduleId) throw new Error('Manifest must include an id');
-      await publishRegistryModule({ moduleId, publisherId: releaseDraft.publisherId, manifest, sbom, signature: releaseDraft.signature });
-      setReleaseDraft((current) => ({ ...current, manifest: '', sbom: '{}', signature: '' }));
-      await loadRegistry();
-      setToast(`${moduleId} published as a verified release`);
-    } catch (error) { setToast(error instanceof Error ? error.message : 'Unable to publish release'); }
-    finally { setBusy(''); }
+      const schedule = await saveAgentSchedule({ enabled });
+      setSetup((current) => current && { ...current, schedule });
+      setToast(enabled ? 'Autopilot on' : 'Autopilot off');
+    } catch (error) {
+      setProblem(agentSetupMessage(error, 'Could not change the schedule switch'));
+    } finally { setBusy(''); }
   };
+
+  const runNow = async () => {
+    const job = goal.trim();
+    if (!job) return;
+    setBusy('run');
+    setProblem('');
+    try {
+      const run = await startAgentRun({ goal: job });
+      setToast('Started. Every step it takes shows up in the run ledger as it happens.');
+      onInspectRun(run.id);
+    } catch (error) {
+      setProblem(agentSetupMessage(error, 'Could not start the run'));
+    } finally { setBusy(''); }
+  };
+
+  // Nothing at all rather than a broken panel: a build without the hosted
+  // agent has no such route, and "this feature is not here" is not a question
+  // to hand a founder.
+  if (!loaded || !setup) return null;
+
+  const { available, config, secret, budget } = setup;
+  const schedule = setup.schedule;
+  const hasSchedule = schedule !== undefined;
+
+  const heading = <div className="section-heading">
+    <div>
+      <h3 aria-level={2}><Bot size={18} /> Or let Trevra run the agent, on your key</h3>
+      <p>The same work, the same limits, on Trevra’s side instead of yours — so it keeps going with your laptop closed. It reads, researches and prepares. Like the agent above, it can never approve or send anything.</p>
+    </div>
+    <span className="status-pill">{!available ? 'Switched off' : secret ? 'Key stored' : 'Not set up'}</span>
+  </div>;
+
+  // No key field at all when the deployment cannot encrypt one. Offering a
+  // paste box that is guaranteed to fail is worse than saying so.
+  if (!available) return <section className="page-panel agent-panel byok-panel">
+    {heading}
+    <div className="byok-warning byok-warning-off">
+      <CircleAlert size={18} />
+      <div>
+        <strong>This is switched off on this server.</strong>
+        <p>There is nowhere here to encrypt a model key, so there is nothing to set up and nothing to paste. Your own agent above is unaffected and does the same work while you are at the keyboard.</p>
+        <p>Running Trevra yourself? Whoever administers this server can switch it on, and this section fills in.</p>
+      </div>
+    </div>
+  </section>;
+
+  const capCents = Math.round(Number(capDollars) * 100);
+  const capValid = Number.isFinite(Number(capDollars)) && Number(capDollars) >= 0 && Number(capDollars) <= 10_000;
+
+  // What is on screen and not yet on the server, block by block. Each one is
+  // also what the single Save writes -- it never sends a call for a block
+  // nobody touched.
+  const dirtyConfig = config
+    ? baseUrl.trim() !== config.baseUrl || model.trim() !== config.model || (providerLabel.trim() || '') !== (config.label ?? '')
+    : Boolean(baseUrl.trim() || model.trim());
+  const dirtyKey = apiKey.trim().length > 0;
+  const dirtyCap = capValid && capCents !== budget.monthlyCapCents;
+  const dirtySchedule = hasSchedule && Boolean(schedule)
+    && (goal.trim() !== (schedule?.goal ?? '') || Number(every) !== schedule?.intervalMinutes);
+  const dirty = dirtyConfig || dirtyKey || dirtyCap || dirtySchedule;
+
+  const pendingLabels = [
+    dirtyConfig ? 'the endpoint' : null,
+    dirtyKey ? (secret ? 'the replacement key' : 'your key') : null,
+    dirtyCap ? 'the cap' : null,
+    dirtySchedule ? 'the standing job' : null
+  ].filter((entry): entry is string => entry !== null);
+
+  /**
+   * One button, in the order the blocks are read.
+   *
+   * Sequential rather than parallel because the order is the argument: the
+   * endpoint is where the key goes, and a cap is a cap on calls made with it.
+   * A failure stops there and names both halves -- what did save, and what did
+   * not -- because "could not save" over a panel where three of four writes
+   * went through is the worst version of this message.
+   */
+  const saveAll = async () => {
+    if (!capValid) {
+      setProblem('Set a monthly cap between $0 and $10,000. Nothing else was saved.');
+      return;
+    }
+    if (dirtyConfig && (!baseUrl.trim() || !model.trim())) {
+      setProblem('The endpoint needs both an address and a model name. Nothing was saved.');
+      return;
+    }
+    setBusy('save');
+    setProblem('');
+    const done: string[] = [];
+    try {
+      if (dirtyConfig) {
+        const next = await saveAgentModelConfig({
+          baseUrl: baseUrl.trim(), model: model.trim(), label: providerLabel.trim() || undefined
+        });
+        setSetup((current) => current && { ...current, config: next });
+        done.push('the endpoint');
+      }
+      if (dirtyKey) {
+        const next = await saveAgentKey({ apiKey: apiKey.trim(), label: providerLabel.trim() || undefined });
+        setSetup((current) => current && { ...current, secret: next });
+        setApiKey('');
+        setReplacingKey(false);
+        done.push('your key');
+      }
+      if (dirtyCap) {
+        const next = await saveAgentBudget({ monthlyCapCents: capCents });
+        setSetup((current) => current && { ...current, budget: next });
+        setCapDollars(String(Math.round(next.monthlyCapCents / 100)));
+        done.push(`a cap of ${usd(next.monthlyCapCents)} a month`);
+      }
+      if (dirtySchedule) {
+        const next = await saveAgentSchedule({ goal: goal.trim(), intervalMinutes: Number(every) });
+        setSetup((current) => current && { ...current, schedule: next });
+        done.push('the standing job');
+      }
+      setToast(done.length > 0 ? `Saved ${andList(done)}.` : 'Nothing had changed, so nothing was saved.');
+    } catch (error) {
+      setProblem(`${agentSetupMessage(error, 'Could not save that')}${done.length > 0
+        ? ` ${andList(done)} did save — press Save again to finish the rest.`
+        : ' Nothing was saved, so nothing changed.'}`);
+    } finally { setBusy(''); }
+  };
+
+  const capReached = budget.spentCents >= budget.monthlyCapCents && budget.monthlyCapCents > 0;
+  const spendLine = budget.spentCents > 0
+    ? `${usd(budget.spentCents)} of ${usd(budget.monthlyCapCents)} used this month.`
+    : `Nothing spent this month. The cap is ${usd(budget.monthlyCapCents)} a month.`;
+
+  const nextRun = schedule ? formatMoment(schedule.nextRunAt) : null;
+  const scheduleLine = !schedule || !schedule.enabled
+    ? 'Off. Write the standing job, save it, then switch it on.'
+    : schedule.lastRunAt
+      ? `Last ran ${formatMoment(schedule.lastRunAt) ?? 'earlier'}${nextRun ? ` · next ${nextRun}` : ''}.`
+      : `On. It has not run yet${nextRun ? ` — first run ${nextRun}` : ''}.`;
+
+  // Each blocker names the next action, in the order you have to do them. The
+  // unsaved case is first, because a run against a half-typed endpoint is a
+  // run against the old one and the operator would read the result as the new.
+  const runBlocker = dirty ? `Save ${andList(pendingLabels)} first — a run uses what is stored, not what is typed.`
+    : !config ? 'Add the endpoint and model first.'
+      : !secret ? 'Store your key first.'
+        : !budget.enabled ? 'Switch spending on first — a run costs money at your provider.'
+          : capReached ? `This month’s ${usd(budget.monthlyCapCents)} is used up. Raise the cap to run again.`
+            : !goal.trim() ? 'Write what it should work on first.'
+              : null;
+
+  const goalField = (label: string) => <label>{label}<textarea
+    rows={2}
+    value={goal}
+    onChange={(event) => setGoal(event.target.value)}
+    placeholder="Check which invoices are overdue and draft the follow-ups."
+  /></label>;
+
+  const scheduleOptions = Array.from(new Set([...SCHEDULE_CHOICES, Number(every) || 1440])).sort((a, b) => a - b);
+
+  return <section className="page-panel agent-panel byok-panel">
+    {heading}
+
+    {problem && <div className="error-banner byok-error">{problem}</div>}
+
+    <div className="byok-warning">
+      <CircleAlert size={18} />
+      <div>
+        <strong>Read this before you paste a key.</strong>
+        <p>Trevra encrypts your key and uses it on your behalf. Nobody gets it back out — not you, not us, not through any screen, export or support ticket. But storing it here moves a real risk onto Trevra: on the hosted service, one break-in exposes the stored key of every workspace, including yours. You deserve to weigh that before pasting.</p>
+        <p>You do not have to. Your own agent on your laptop does the same work and stores no key at all — that stays the default, and it stays the safer one. If you do paste a key, use one you can revoke at your provider in seconds, and set the monthly cap below.</p>
+      </div>
+    </div>
+
+    <div className="byok-block">
+      <div className="byok-block-head">
+        <div>
+          <h4 aria-level={3}>Where your key goes</h4>
+          <p>Any endpoint that speaks the OpenAI format works — OpenAI, Azure, Groq, OpenRouter, Together, or a server you run yourself. Trevra ships no default and does not guess: your key goes exactly where you name here, and nowhere else.</p>
+        </div>
+      </div>
+      <div className="byok-fields">
+        <label>Endpoint address<input
+          value={baseUrl}
+          onChange={(event) => setBaseUrl(event.target.value)}
+          placeholder="https://api.openai.com/v1"
+          autoComplete="off"
+          spellCheck={false}
+        /></label>
+        <label>Model<input
+          value={model}
+          onChange={(event) => setModel(event.target.value)}
+          placeholder="the model name your provider uses"
+          autoComplete="off"
+          spellCheck={false}
+        /></label>
+        <label>Call it something (optional)<input
+          value={providerLabel}
+          onChange={(event) => setProviderLabel(event.target.value)}
+          placeholder="Work account"
+          maxLength={120}
+        /></label>
+      </div>
+      <p className="byok-meter-copy">{config
+        ? `Saved ${formatMoment(config.updatedAt) ?? 'earlier'}.${dirtyConfig ? ' Edited since — Save at the bottom.' : ''}`
+        : 'Nothing saved yet. Fill in the endpoint and the model, then save at the bottom.'}</p>
+    </div>
+
+    <div className="byok-block">
+      <div className="byok-block-head">
+        <div>
+          <h4 aria-level={3}>Your key</h4>
+          <p>It goes in and never comes out. Trevra keeps it encrypted, applies it at the moment of a call, and shows you the last four characters so you can find this key at your provider. There is no screen anywhere that can display it back to you.</p>
+        </div>
+      </div>
+      {secret && !replacingKey ? <div className="byok-key-stored">
+        <span className="byok-key-mask"><KeyRound size={16} /> •••• {secret.last4}</span>
+        <span>{secret.label ? `${secret.label} · ` : ''}Added {new Date(secret.createdAt).toLocaleDateString()}</span>
+        <div className="byok-key-actions">
+          <button className="secondary-button" onClick={() => setReplacingKey(true)}>Replace</button>
+          {/* Removal is destructive and irreversible, so it is its own act with
+              its own confirmation. It is not folded into Save. */}
+          <button className="ghost-button danger" disabled={busy === 'key-remove'} onClick={() => setConfirmRemoveKey(true)}>
+            {busy === 'key-remove' ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Remove
+          </button>
+        </div>
+      </div> : <>
+        <div className="byok-fields byok-fields-one">
+          <label>{secret ? 'New key' : 'Paste your key'}<input
+            type="password"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder="Paste it here"
+            autoComplete="off"
+            spellCheck={false}
+          /></label>
+        </div>
+        <p className="byok-meter-copy">{secret
+          ? `This replaces •••• ${secret.last4} here when you save. The old key keeps working at your provider until you revoke it there.`
+          : 'Trevra stores it encrypted and keeps it out of every log, error and transcript.'}</p>
+        {secret && <div className="byok-key-actions">
+          <button className="ghost-button" onClick={() => { setReplacingKey(false); setApiKey(''); }}>Cancel the replacement</button>
+        </div>}
+      </>}
+    </div>
+
+    <div className="byok-block" id="setup-spend">
+      <div className="byok-block-head">
+        <div>
+          <h4 aria-level={3}>What it may spend</h4>
+          <p>Storing a key is not permission to spend it. Until you switch this on, Trevra will not make a single paid call — and it stops the moment you switch it back off.</p>
+        </div>
+        <label className="toggle">
+          <input type="checkbox" checked={budget.enabled} disabled={busy === 'spend'} onChange={(event) => void setSpending(event.target.checked)} />
+          <span />
+        </label>
+      </div>
+      <div className="byok-fields byok-fields-one">
+        <label>Most it may spend a month<span className="byok-amount"><small>$</small><input
+          type="number"
+          min="0"
+          max="10000"
+          step="1"
+          value={capDollars}
+          onChange={(event) => setCapDollars(event.target.value)}
+        /></span></label>
+      </div>
+      <p className="byok-meter-copy">{spendLine}{dirtyCap ? ' The cap on screen is not saved yet.' : ''}</p>
+      {budget.spentCents > 0 && <div className="byok-meter"><i style={{
+        width: `${Math.min(100, Math.round((budget.spentCents / Math.max(budget.monthlyCapCents, 1)) * 100))}%`
+      }} /></div>}
+      <p className="byok-meter-copy">{budget.enabled
+        ? 'On. Trevra checks the cap before each call, so a long job cannot run past it.'
+        : 'Off. Nothing Trevra’s agent does can cost you money.'}</p>
+    </div>
+
+    {/* Absent from the response means this build has no schedule yet. Hide it
+        rather than show a control that writes to a route that is not there. */}
+    {hasSchedule && <div className="byok-block">
+      <div className="byok-block-head">
+        <div>
+          <h4 aria-level={3}>Work on a schedule</h4>
+          <p>Give it a standing job and Trevra picks it up on its own, with your laptop closed. It still stops at every approval — nothing leaves your business without you.</p>
+        </div>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={schedule?.enabled ?? false}
+            disabled={busy === 'schedule-switch' || !goal.trim() || dirtySchedule}
+            onChange={(event) => void setScheduleEnabled(event.target.checked)}
+          />
+          <span />
+        </label>
+      </div>
+      <div className="byok-fields byok-fields-schedule">
+        {goalField('Standing job')}
+        <label>How often<select value={every} onChange={(event) => setEvery(event.target.value)}>
+          {scheduleOptions.map((minutes) => <option key={minutes} value={String(minutes)}>{formatEvery(minutes)}</option>)}
+        </select></label>
+      </div>
+      <p className="byok-meter-copy">{scheduleLine}{dirtySchedule
+        ? ' The job on screen is not saved yet, so the switch is held until it is.'
+        : ''}</p>
+    </div>}
+
+    {/* One button for the whole sitting. It writes only what changed, in the
+        order the blocks are read, and names each part by what it is. */}
+    <div className="panel-footer">
+      <span>{dirty
+        ? `Not saved yet: ${andList(pendingLabels)}.`
+        : 'Everything on this panel matches what is stored.'}</span>
+      <button className="primary-button" disabled={!dirty || busy === 'save'} onClick={() => void saveAll()}>
+        {busy === 'save' ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Save {pendingLabels.length > 1 ? 'these changes' : 'this change'}
+      </button>
+    </div>
+
+    <div className="byok-block">
+      <div className="byok-block-head">
+        <div>
+          <h4 aria-level={3}>Run it once, now</h4>
+          <p>{hasSchedule
+            ? 'The same job, straight away, without waiting for the schedule.'
+            : 'Give it a job and watch it work. Every step lands in the run ledger while it runs.'}</p>
+        </div>
+      </div>
+      {!hasSchedule && <div className="byok-fields byok-fields-one">{goalField('What should it work on?')}</div>}
+      <div className="panel-footer">
+        <span>{runBlocker ?? 'It stops at the first thing that needs your decision, and waits for you in Money.'}</span>
+        <button className="secondary-button" disabled={Boolean(runBlocker) || busy === 'run'} onClick={() => void runNow()}>
+          {busy === 'run' ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} Run now
+        </button>
+      </div>
+    </div>
+
+    {confirmRemoveKey && secret && <ConfirmDrawer
+      title="Remove this key from Trevra?"
+      tone="danger"
+      body={<>
+        <p>Trevra deletes its encrypted copy of •••• {secret.last4}. Nothing here can read a key back out, so there is nothing to restore — you would have to paste it again from your provider.</p>
+        <p>Anything Trevra’s agent is doing stops at its next model call. Your own agent on your laptop is unaffected and keeps working.</p>
+        <p><strong>This does not revoke the key at your provider.</strong> If it may have leaked, revoke it there as well.</p>
+      </>}
+      confirmLabel="Remove this key"
+      busy={busy === 'key-remove'}
+      onCancel={() => setConfirmRemoveKey(false)}
+      onConfirm={() => void removeKey()}
+    />}
+  </section>;
+}
+
+/* --------------------------------------------------------------------------
+ * `#/money` -- the paid end of the loop.
+ *
+ * Not a second product and not a legacy screen: it is stages 4 to 6 of the one
+ * loop `#/loop` draws. Every recommendation type, every string and every enum
+ * member is untouched -- `stale_proposal`, `scope_creep`,
+ * `unbilled_milestone`, `overdue_invoice` are the vocabulary of getting paid
+ * and there is nothing wrong with them. What changed is only their GROUPING:
+ * three columns, one per loop stage, so the flat list stops reading as an
+ * undifferentiated inbox.
+ * -------------------------------------------------------------------------- */
+
+const MONEY_GROUPS: Array<{ heading: string; blurb: string; types: RecommendationType[] }> = [
+  {
+    heading: 'Delivered, not billed',
+    blurb: 'Work that is proven done and has no invoice against it yet.',
+    types: ['unbilled_milestone']
+  },
+  {
+    heading: 'Billed, not paid',
+    blurb: 'Invoices past their date. The money exists; it has not arrived.',
+    types: ['overdue_invoice']
+  },
+  {
+    heading: 'Not agreed',
+    blurb: 'Requests outside the agreement, and proposals that went quiet.',
+    types: ['scope_creep', 'stale_proposal']
+  }
+];
+
+function MoneyView({ data, recommendations, actions, onNavigate }: {
+  data: DashboardPayload;
+  recommendations: Recommendation[];
+  actions: RecommendationActions;
+  onNavigate: (path: string) => void;
+}) {
+  const isNew = data.clients.length === 0 && data.recommendations.length === 0;
+  // Figures on the screen that came from a demo rather than from the
+  // operator's own tools. A workspace with no connection AND no data of its
+  // own is not reading demo numbers -- it is reading zeros.
+  const showsDemoNumbers = data.connections.some((connection) => connection.isDemo)
+    || (data.metrics.connectedSources === 0 && !isNew);
 
   return <div className="page-stack">
-    <section className="page-panel registry-summary">
-      <div className="section-heading"><div><h3><Boxes size={18} /> Hosted module registry</h3><p>Popularity is aggregated from completed runs. Inputs, outputs, workspace names, and customer records are never published.</p></div><span className="status-pill">{modules.reduce((sum, module) => sum + module.popularity.totalRuns, 0).toLocaleString('en-US')} runs</span></div>
-      <div className="registry-grid">
-        {modules.map((module) => {
-          const isInstalled = installedIds.has(module.id);
-          return <article className="registry-card" key={module.id}>
-            <div className="registry-card-head"><code>{module.id}</code><span>#{module.popularity.rank || '—'}</span></div>
-            <h3>{module.name}</h3><p>{module.description}</p>
-            <div className="registry-stats"><span><strong>{module.popularity.totalRuns.toLocaleString('en-US')}</strong>runs</span><span><strong>{module.popularity.successRate === null ? '—' : `${Math.round(module.popularity.successRate * 100)}%`}</strong>success</span><span><strong>{module.popularity.activeInstallations.toLocaleString('en-US')}</strong>installs</span></div>
-            <div className="registry-trust"><span><ShieldCheck size={14} /> {module.publisher.verified ? 'Verified publisher' : module.publisher.name}</span><span>{module.trust.signed ? 'Signed' : 'Built in'} · {module.trust.sbom ? 'SBOM' : 'No SBOM'}</span></div>
-            {module.sourceType === 'community' && <button className={isInstalled ? 'secondary-button' : 'primary-button'} disabled={busy === module.id || !module.version} onClick={() => void toggleInstall(module)}>{busy === module.id ? <LoaderCircle className="spin" size={15} /> : isInstalled ? <Trash2 size={15} /> : <Boxes size={15} />}{isInstalled ? 'Uninstall' : `Install v${module.version}`}</button>}
-          </article>;
-        })}
-      </div>
+    {showsDemoNumbers && (
+      <section className="setup-banner">
+        <div className="setup-icon"><Link2 /></div>
+        <div><strong>This is demo data</strong><p>Connect your own email, calendar, or accounting and Trevra will work from your real business instead.</p></div>
+        <button className="secondary-button" onClick={() => onNavigate('/setup/data')}>Connect tools <ChevronRight size={16} /></button>
+      </section>
+    )}
+
+    <section className="metrics-grid metrics-grid-four">
+      <Metric icon={<CircleDollarSign />} label="At risk" value={money(data.metrics.revenueAtRisk, data.metrics.currency)} detail="Billed and unpaid" />
+      <Metric icon={<FileCheck2 />} label="Ready to invoice" value={money(data.metrics.readyToInvoice, data.metrics.currency)} detail="Delivered but not billed" />
+      {/* The one trophy number in the product, and the only place it belongs:
+          it is a result, not a queue, so it is not on the home screen. */}
+      <Metric icon={<Check />} label="Collected" value={money(data.metrics.revenueCollected, data.metrics.currency)} detail="Paid after Trevra chased it" />
+      <Metric icon={<BriefcaseBusiness />} label="Clients" value={String(data.metrics.activeClients)} detail="With something open right now" />
     </section>
 
-    <section className="page-panel">
-      <div className="section-heading"><div><h3>Publisher identity</h3><p>Register an Ed25519 public key. Trevra never asks for or stores the private signing key.</p></div></div>
-      <div className="registry-form-grid"><label>Slug<input value={publisherDraft.slug} onChange={(event) => setPublisherDraft({ ...publisherDraft, slug: event.target.value })} placeholder="your-company" /></label><label>Display name<input value={publisherDraft.displayName} onChange={(event) => setPublisherDraft({ ...publisherDraft, displayName: event.target.value })} placeholder="Your Company" /></label></div>
-      <label>Ed25519 public key PEM<textarea rows={6} value={publisherDraft.publicKeyPem} onChange={(event) => setPublisherDraft({ ...publisherDraft, publicKeyPem: event.target.value })} placeholder="-----BEGIN PUBLIC KEY-----" /></label>
-      <div className="panel-footer"><span>{publishers.length} publisher identities in this workspace</span><button className="primary-button" disabled={busy === 'publisher' || !publisherDraft.slug || !publisherDraft.displayName || !publisherDraft.publicKeyPem} onClick={() => void createPublisher()}>{busy === 'publisher' ? <LoaderCircle className="spin" size={15} /> : <KeyRound size={15} />} Create publisher</button></div>
-    </section>
+    {MONEY_GROUPS.map((group) => {
+      const items = recommendations.filter((item) => group.types.includes(item.type));
+      // A column with nothing in it says nothing. The all-clear is said once,
+      // below, rather than three times in three boxes.
+      if (items.length === 0) return null;
+      return <section className="recommendations-panel" key={group.heading}>
+        <div className="section-heading">
+          <div><h2>{group.heading}</h2><p>{group.blurb}</p></div>
+          <span className="status-pill">{items.length} open</span>
+        </div>
+        <RecommendationList
+          items={items}
+          actions={actions}
+          empty={<EmptyRecommendations isNew={isNew} />}
+        />
+      </section>;
+    })}
 
-    <section className="page-panel">
-      <div className="section-heading"><div><h3>Publish a signed release</h3><p>Sign the canonical manifest and SBOM digest outside Trevra, then submit only the public artifact metadata and signature.</p></div></div>
-      <label>Publisher<select value={releaseDraft.publisherId} onChange={(event) => setReleaseDraft({ ...releaseDraft, publisherId: event.target.value })}><option value="">Select publisher</option>{publishers.map((publisher) => <option value={publisher.id} key={publisher.id}>{publisher.displayName ?? publisher.slug}</option>)}</select></label>
-      <label>Manifest JSON<textarea rows={12} value={releaseDraft.manifest} onChange={(event) => setReleaseDraft({ ...releaseDraft, manifest: event.target.value })} placeholder={'{"id":"acme.module","version":"1.0.0","runtime":"oci",...}'} /></label>
-      <label>SBOM JSON<textarea rows={7} value={releaseDraft.sbom} onChange={(event) => setReleaseDraft({ ...releaseDraft, sbom: event.target.value })} /></label>
-      <label>Base64 Ed25519 signature<textarea rows={4} value={releaseDraft.signature} onChange={(event) => setReleaseDraft({ ...releaseDraft, signature: event.target.value })} /></label>
-      <div className="panel-footer"><span>Artifact digests, schemas, permissions, signature, and SBOM are verified before publication.</span><button className="primary-button" disabled={busy === 'release' || !releaseDraft.publisherId || !releaseDraft.manifest || !releaseDraft.signature} onClick={() => void publishRelease()}>{busy === 'release' ? <LoaderCircle className="spin" size={15} /> : <FileCheck2 size={15} />} Publish release</button></div>
-    </section>
+    {recommendations.length === 0 && <section className="recommendations-panel">
+      <div className="section-heading"><div><h2>What needs you</h2><p>Ranked by what it costs you to ignore.</p></div></div>
+      <EmptyRecommendations isNew={isNew} />
+    </section>}
+
+    <ClientsView data={data} onNavigate={onNavigate} />
   </div>;
 }
 
-function ClientsView({ data }: { data: DashboardPayload }) {
+function ClientsView({ data, onNavigate }: { data: DashboardPayload; onNavigate: (path: string) => void }) {
   return <section className="page-panel">
-    <div className="section-heading"><div><h3>Commercial relationships</h3><p>Value, latest activity, and the next revenue action for every client.</p></div></div>
+    <div className="section-heading"><div><h2>Every client</h2><p>Value, latest activity, and the next revenue action for each one.</p></div></div>
     <div className="client-table">
       {data.clients.map((client) => <article key={client.id} className="client-card-large">
         <span className="client-avatar large">{initials(client.name)}</span>
         <div><h3>{client.name}</h3><p>{client.contactName} · {client.email}</p><span className={`client-status status-${client.status}`}>{client.status}</span></div>
         <div className="client-card-value"><small>Relationship value</small><strong>{money(client.activeValue, client.currency)}</strong></div>
-        <div className="client-next"><small>Next action</small><strong>{client.nextAction ?? 'No urgent action'}</strong></div>
-        <button className="icon-button"><ChevronRight size={18} /></button>
+        <div className="client-next"><small>Next action</small><strong title={client.nextAction ?? undefined}>{clip(client.nextAction ?? 'No urgent action', 60)}</strong></div>
       </article>)}
+      {data.clients.length === 0 && <div className="empty-state"><BriefcaseBusiness size={28} /><h4>No clients yet</h4><p>Connect a tool or upload an agreement and your clients appear here.</p><button className="secondary-button" onClick={() => onNavigate('/setup/data')}>Connect a tool <ChevronRight size={15} /></button></div>}
     </div>
   </section>;
 }
 
-function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
+function ConnectionsView({ data, reload, setToast, busyId, setBusyId }: {
   data: DashboardPayload;
   reload: () => Promise<void>;
   setToast: (message: string) => void;
@@ -679,6 +1521,10 @@ function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
   const [csv, setCsv] = useState('');
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentHints, setDocumentHints] = useState({ clientName: '', contactName: '', clientEmail: '', projectName: '', currency: 'EUR' });
+  // Disconnecting is the one control on this screen that takes data off every
+  // other screen, and it sat 8px from Sync now at the same size in the same
+  // grey. It now stops here first, like every other destructive act in the app.
+  const [confirmDisconnect, setConfirmDisconnect] = useState<ConnectionSummary | null>(null);
   // OAuth and API-key providers both connect through the Nango Connect UI; only CSV imports are excluded.
   const available: AvailableIntegration[] = data.availableIntegrations.filter((item) => item.mode !== 'import');
   const connect = async (item: AvailableIntegration) => {
@@ -728,33 +1574,37 @@ function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
   };
 
   return <div className="page-stack">
-    <section className="page-panel">
-      <div className="section-heading"><div><h3>Connected accounts</h3><p>Trevra uses existing integration infrastructure; your source data stays linked to its origin.</p></div></div>
+    <section className="page-panel" id="setup-connections">
+      <div className="section-heading"><div><h3 aria-level={2}>Connected accounts</h3><p>Your data stays in these tools. Trevra reads it, it does not copy it away.</p></div></div>
       <div className="connection-grid">
         {data.connections.map((connection) => <article className="connection-card" key={connection.id}>
           <span className="integration-logo">{initials(connection.provider)}</span>
-          <div><h4>{prettyProvider(connection.provider)}</h4><p>{connection.displayName ?? connection.providerConfigKey}</p><span className={`connection-status ${connection.status}`}>{connection.isDemo ? 'Demo' : connection.status.replace('_', ' ')}</span></div>
+          <div><h4 aria-level={3}>{prettyProvider(connection.provider)}</h4><p>{connection.displayName ?? connection.providerConfigKey}</p><span className={`connection-status ${connection.status}`}>{connection.isDemo ? 'Demo' : connection.status.replace('_', ' ')}</span></div>
           <div className="connection-actions">
-            {!connection.isDemo && <button className="icon-button" title="Sync now" disabled={busyId === connection.id} onClick={() => {
+            {!connection.isDemo && <button className="icon-button" aria-label={`Sync ${prettyProvider(connection.provider)} now`} title="Sync now" disabled={busyId === connection.id} onClick={() => {
               setBusyId(connection.id);
               void syncIntegration(connection.id).then(() => setToast('Sync requested')).catch((err) => setToast(err.message)).finally(() => setBusyId(null));
             }}>{busyId === connection.id ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}</button>}
-            {!connection.isDemo && <button className="icon-button danger" title="Disconnect" onClick={() => {
-              setBusyId(connection.id);
-              void disconnectIntegration(connection.id).then(reload).then(() => setToast('Disconnected')).catch((err) => setToast(err.message)).finally(() => setBusyId(null));
-            }}><Unplug size={17} /></button>}
+            {!connection.isDemo && <button
+              className="icon-button danger"
+              aria-label={`Disconnect ${prettyProvider(connection.provider)}`}
+              title={`Disconnect ${prettyProvider(connection.provider)}`}
+              disabled={busyId === connection.id}
+              onClick={() => setConfirmDisconnect(connection)}
+            ><Unplug size={17} /></button>}
           </div>
         </article>)}
+        {data.connections.length === 0 && <div className="empty-state"><Link2 size={28} /><h4>No tools connected</h4><p>Pick one below and sign in on the provider’s own screen — it takes about a minute.</p></div>}
       </div>
     </section>
 
     <section className="page-panel">
-      <div className="section-heading"><div><h3>Add a live source</h3><p>OAuth, API keys, token refresh, retries, and provider quirks are handled by the integration layer. Credentials are entered in the provider connect screen and stay there; Trevra keeps only the connection reference.</p></div></div>
+      <div className="section-heading"><div><h3 aria-level={2}>Connect a tool</h3><p>You sign in on the provider’s own screen. Trevra never sees or stores your password.</p></div></div>
       <div className="integration-grid">
         {available.map((item) => <article className="integration-card" key={item.key}>
           <span className="integration-logo">{initials(item.name)}</span>
-          <div><h4>{item.name}</h4><p>{item.description}</p></div>
-          <button className={item.connected ? 'secondary-button' : 'primary-button'} disabled={item.connected || busyId === item.key} onClick={() => void connect(item)}>
+          <div><h4 aria-level={3}>{item.name}</h4><p>{item.description}</p></div>
+          <button className="secondary-button" disabled={item.connected || busyId === item.key} onClick={() => void connect(item)}>
             {busyId === item.key ? <LoaderCircle className="spin" size={16} /> : item.connected ? <Check size={16} /> : <Link2 size={16} />}
             {item.connected ? 'Connected' : 'Connect'}
           </button>
@@ -762,8 +1612,8 @@ function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
       </div>
     </section>
 
-    <section className="page-panel import-panel">
-      <div className="section-heading"><div><h3>Build the Scope Ledger from an agreement</h3><p>Upload a proposal, statement of work, or contract. Trevra extracts the commercial facts instead of asking you to enter them twice.</p></div></div>
+    <section className="page-panel import-panel" id="setup-import">
+      <div className="section-heading"><div><h3 aria-level={2}>Build the Scope Ledger from an agreement</h3><p>Upload a proposal, statement of work, or contract. Trevra extracts the commercial facts instead of asking you to enter them twice.</p></div></div>
       <div className="document-hints">
         <label>Client name<input value={documentHints.clientName} onChange={(event) => setDocumentHints({ ...documentHints, clientName: event.target.value })} placeholder="Acme Labs" /></label>
         <label>Project name<input value={documentHints.projectName} onChange={(event) => setDocumentHints({ ...documentHints, projectName: event.target.value })} placeholder="Website launch" /></label>
@@ -772,12 +1622,12 @@ function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
       </div>
       <div className="document-upload-row">
         <label className="file-picker"><FileUp size={18} /> {documentFile ? documentFile.name : 'Choose PDF, DOCX, or text'}<input type="file" accept=".pdf,.docx,.txt,.md,.rtf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => setDocumentFile(event.target.files?.[0] ?? null)} /></label>
-        <button className="primary-button" disabled={!documentFile || busyId === 'document-import'} onClick={() => void importDocument()}>{busyId === 'document-import' ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />} Build Scope Ledger</button>
+        <button className="secondary-button" disabled={!documentFile || busyId === 'document-import'} onClick={() => void importDocument()}>{busyId === 'document-import' ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />} Build Scope Ledger</button>
       </div>
     </section>
 
     <section className="page-panel import-panel">
-      <div className="section-heading"><div><h3>Import a marketplace export</h3><p>Useful when a marketplace API is unavailable or restricted. Trevra still normalizes the history into your commercial graph.</p></div></div>
+      <div className="section-heading"><div><h3 aria-level={2}>Import from Upwork, Fiverr, or Contra</h3><p>Download your history as a CSV from the platform and drop it here. Trevra turns it into clients, projects, and payments.</p></div></div>
       <div className="import-controls">
         <label>Platform<select value={provider} onChange={(event) => setProvider(event.target.value as typeof provider)}><option value="upwork">Upwork</option><option value="fiverr">Fiverr</option><option value="contra">Contra</option><option value="generic">Generic CSV</option></select></label>
         <label className="file-picker"><FileUp size={18} /> Choose CSV<input type="file" accept=".csv,text/csv" onChange={(event) => {
@@ -786,33 +1636,166 @@ function IntegrationsView({ data, reload, setToast, busyId, setBusyId }: {
         }} /></label>
       </div>
       <label>CSV preview<textarea rows={7} value={csv} onChange={(event) => setCsv(event.target.value)} placeholder="Client,Project,Amount,Status,Date…" /></label>
-      <div className="panel-footer"><span>{csv ? `${csv.split('\n').length - 1} possible records` : 'No file selected'}</span><button className="primary-button" disabled={!csv || busyId === 'csv-import'} onClick={() => void importCsv()}>{busyId === 'csv-import' ? <LoaderCircle className="spin" size={16} /> : <FileUp size={16} />} Import history</button></div>
+      <div className="panel-footer"><span>{csv ? `${csv.split('\n').length - 1} possible records` : 'No file selected'}</span><button className="secondary-button" disabled={!csv || busyId === 'csv-import'} onClick={() => void importCsv()}>{busyId === 'csv-import' ? <LoaderCircle className="spin" size={16} /> : <FileUp size={16} />} Import history</button></div>
     </section>
+
+    {confirmDisconnect && <ConfirmDrawer
+      title={`Disconnect ${prettyProvider(confirmDisconnect.provider)}?`}
+      tone="danger"
+      body={<>
+        <p><strong>{prettyProvider(confirmDisconnect.provider)}</strong> — {confirmDisconnect.displayName ?? confirmDisconnect.providerConfigKey}</p>
+        <p>Trevra stops reading this account immediately. Anything it was the only source of goes off the Money screen and out of the loop — invoices, milestones, replies and the evidence behind them stop being visible, and the agent stops being able to see the facts it was working from.</p>
+        <p>Nothing already in Trevra is deleted, and reconnecting brings the account back. But it signs in again from scratch and only backfills what the provider still returns.</p>
+      </>}
+      confirmLabel={`Disconnect ${prettyProvider(confirmDisconnect.provider)}`}
+      busy={busyId === confirmDisconnect.id}
+      onCancel={() => { if (busyId !== confirmDisconnect.id) setConfirmDisconnect(null); }}
+      onConfirm={() => {
+        const target = confirmDisconnect;
+        setBusyId(target.id);
+        void disconnectIntegration(target.id)
+          .then(reload)
+          .then(() => { setConfirmDisconnect(null); setToast(`${prettyProvider(target.provider)} is disconnected. Trevra has stopped reading it.`); })
+          .catch((err) => setToast(err instanceof Error ? err.message : 'That did not go through — nothing changed.'))
+          .finally(() => setBusyId(null));
+      }}
+    />}
   </div>;
+}
+
+/**
+ * The only condition keys the runtime actually matches on, with the only
+ * values it ever compares against. Mirrors `matchesConditions` in
+ * src/server/control-plane/policy.ts -- if that grows, this grows with it.
+ *
+ * `playbookIds` and `skillIds` are deliberately absent: there is no list of
+ * them loaded on this screen, and asking a founder to type an id is a field a
+ * machine should fill. See docs/app-spec.md §7.
+ */
+const SIDE_EFFECT_CHOICES = [
+  { value: 'external-write', label: 'Sends or changes something outside your business' },
+  { value: 'network-read', label: 'Reads something from outside' },
+  { value: 'none', label: 'Thinks only, nothing leaves Trevra' }
+] as const;
+
+const ACTOR_CHOICES = [
+  { value: 'agent', label: 'Your agent' },
+  { value: 'user', label: 'You' },
+  { value: 'system', label: 'Trevra, on a schedule' }
+] as const;
+
+const ENVIRONMENT_CHOICES = [
+  { value: 'production', label: 'Your live workspace' },
+  { value: 'development', label: 'A development copy' },
+  { value: 'test', label: 'Automated tests' }
+] as const;
+
+type ConditionChoice = { value: string; label: string };
+
+type ConditionDraft = {
+  sideEffects: string[];
+  actorTypes: string[];
+  environments: string[];
+  maxAmount: string;
+  minConfidence: string;
+  maxRecipients: string;
+};
+
+const EMPTY_CONDITIONS: ConditionDraft = {
+  sideEffects: [], actorTypes: [], environments: [], maxAmount: '', minConfidence: '', maxRecipients: ''
+};
+
+const conditionLabel = (choices: readonly ConditionChoice[], value: string) =>
+  choices.find((choice) => choice.value === value)?.label ?? value;
+
+/** A list matches if ANY entry matches, so these read as "or". */
+const orList = (parts: string[]) =>
+  parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} or ${parts.at(-1)}`;
+
+const asStringList = (value: unknown): string[] => Array.isArray(value) ? value.map(String) : [];
+const asNumber = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/**
+ * Emit exactly the object the server matches on, with empty keys omitted:
+ * `{sideEffects: []}` matches nothing, so sending it would silently disarm the
+ * rule the founder just wrote.
+ */
+function buildConditions(draft: ConditionDraft): Record<string, unknown> {
+  const conditions: Record<string, unknown> = {};
+  if (draft.sideEffects.length > 0) conditions.sideEffects = draft.sideEffects;
+  if (draft.actorTypes.length > 0) conditions.actorTypes = draft.actorTypes;
+  if (draft.environments.length > 0) conditions.environments = draft.environments;
+  const amount = Number(draft.maxAmount);
+  if (draft.maxAmount.trim() !== '' && Number.isFinite(amount)) conditions.maxAmount = amount;
+  const confidence = Number(draft.minConfidence);
+  if (draft.minConfidence.trim() !== '' && Number.isFinite(confidence)) conditions.minConfidence = confidence / 100;
+  const recipients = Number(draft.maxRecipients);
+  if (draft.maxRecipients.trim() !== '' && Number.isFinite(recipients)) conditions.maxRecipients = recipients;
+  return conditions;
+}
+
+/** The saved rule, as a sentence a founder can check. Never as JSON. */
+function describePolicy(effect: WorkspacePolicy['effect'], conditions: Record<string, unknown>): string {
+  const verb = effect === 'deny' ? 'Blocks it' : effect === 'allow' ? 'Lets it run without asking' : 'Asks you first';
+  const clauses: string[] = [];
+  const sideEffects = asStringList(conditions.sideEffects);
+  if (sideEffects.length > 0) clauses.push(`it ${orList(sideEffects.map((value) => conditionLabel(SIDE_EFFECT_CHOICES, value).toLowerCase()))}`);
+  const actorTypes = asStringList(conditions.actorTypes);
+  if (actorTypes.length > 0) clauses.push(`${orList(actorTypes.map((value) => conditionLabel(ACTOR_CHOICES, value).toLowerCase()))} is the one acting`);
+  const environments = asStringList(conditions.environments);
+  if (environments.length > 0) clauses.push(`it runs in ${orList(environments.map((value) => conditionLabel(ENVIRONMENT_CHOICES, value).toLowerCase()))}`);
+  const playbookIds = asStringList(conditions.playbookIds);
+  if (playbookIds.length > 0) clauses.push(`the job is ${orList(playbookIds)}`);
+  const skillIds = asStringList(conditions.skillIds);
+  if (skillIds.length > 0) clauses.push(`the step is ${orList(skillIds)}`);
+  const maxAmount = asNumber(conditions.maxAmount);
+  if (maxAmount !== null) clauses.push(`the amount is ${money(maxAmount)} or less`);
+  const minConfidence = asNumber(conditions.minConfidence);
+  if (minConfidence !== null) clauses.push(`Trevra is at least ${Math.round(minConfidence * 100)}% sure`);
+  const maxRecipients = asNumber(conditions.maxRecipients);
+  if (maxRecipients !== null) clauses.push(`it reaches ${maxRecipients} ${maxRecipients === 1 ? 'person' : 'people'} or fewer`);
+  return clauses.length === 0 ? `${verb}, every time.` : `${verb} when ${clauses.join(', and ')}.`;
+}
+
+function ConditionChecklist({ legend, choices, selected, onToggle }: {
+  legend: string;
+  choices: readonly ConditionChoice[];
+  selected: string[];
+  onToggle: (value: string) => void;
+}) {
+  return <fieldset className="condition-group">
+    <legend>{legend}</legend>
+    {choices.map((choice) => <label key={choice.value}>
+      <input type="checkbox" checked={selected.includes(choice.value)} onChange={() => onToggle(choice.value)} />
+      <span>{choice.label}</span>
+    </label>)}
+  </fieldset>;
 }
 
 function AutopilotView({ rules, reload, setToast }: { rules: AutomationRule[]; reload: () => Promise<void>; setToast: (message: string) => void }) {
   const [drafts, setDrafts] = useState<Record<string, AutomationRule>>(() => Object.fromEntries(rules.map((rule) => [rule.recommendationType, rule])));
   const [busy, setBusy] = useState('');
-  const [agentTokens, setAgentTokens] = useState<AgentTokenSummary[]>([]);
-  const [tokenName, setTokenName] = useState('Claude Code');
-  const [revealedToken, setRevealedToken] = useState('');
   const [policies, setPolicies] = useState<WorkspacePolicy[]>([]);
+  const [confirmDeletePolicy, setConfirmDeletePolicy] = useState<WorkspacePolicy | null>(null);
   const [policyDraft, setPolicyDraft] = useState({
-    name: 'Require approval for external writes',
+    name: 'Ask me before anything leaves my business',
     actionPattern: 'skill:*',
     effect: 'require_approval' as WorkspacePolicy['effect'],
-    priority: 100,
-    conditions: JSON.stringify({ sideEffects: ['external-write'] }, null, 2)
+    priority: 100
   });
+  const [conditionDraft, setConditionDraft] = useState<ConditionDraft>({ ...EMPTY_CONDITIONS, sideEffects: ['external-write'] });
+
+  const toggleCondition = (key: 'sideEffects' | 'actorTypes' | 'environments', value: string) =>
+    setConditionDraft((current) => ({
+      ...current,
+      [key]: current[key].includes(value)
+        ? current[key].filter((entry) => entry !== value)
+        : [...current[key], value]
+    }));
 
   useEffect(() => setDrafts(Object.fromEntries(rules.map((rule) => [rule.recommendationType, rule]))), [rules]);
-  useEffect(() => {
-    void Promise.all([getAgentTokens(), getPolicies()]).then(([tokens, nextPolicies]) => {
-      setAgentTokens(tokens);
-      setPolicies(nextPolicies);
-    }).catch(() => undefined);
-  }, []);
+  useEffect(() => { void getPolicies().then(setPolicies).catch(() => undefined); }, []);
 
   const save = async (type: RecommendationType) => {
     const rule = drafts[type];
@@ -846,17 +1829,16 @@ function AutopilotView({ rules, reload, setToast }: { rules: AutomationRule[]; r
     if (!policyDraft.name.trim() || !policyDraft.actionPattern.trim()) return;
     setBusy('policy-create');
     try {
-      const conditions = JSON.parse(policyDraft.conditions || '{}') as Record<string, unknown>;
       setPolicies(await createPolicy({
         name: policyDraft.name.trim(),
         actionPattern: policyDraft.actionPattern.trim(),
         effect: policyDraft.effect,
         priority: policyDraft.priority,
-        conditions,
+        conditions: buildConditions(conditionDraft),
         enabled: true
       }));
-      setToast('Workspace policy created');
-    } catch (err) { setToast(err instanceof Error ? err.message : 'Unable to create policy'); }
+      setToast('Limit saved');
+    } catch (err) { setToast(err instanceof Error ? err.message : 'Unable to save this limit'); }
     finally { setBusy(''); }
   };
 
@@ -865,44 +1847,17 @@ function AutopilotView({ rules, reload, setToast }: { rules: AutomationRule[]; r
     try {
       await deletePolicy(policyId);
       setPolicies(await getPolicies());
-      setToast('Workspace policy deleted');
-    } catch (err) { setToast(err instanceof Error ? err.message : 'Unable to delete policy'); }
-    finally { setBusy(''); }
-  };
-
-  const createToken = async () => {
-    if (!tokenName.trim()) return;
-    setBusy('agent-token');
-    try {
-      const created = await createAgentToken({ name: tokenName.trim() });
-      setRevealedToken(created.token);
-      setAgentTokens(await getAgentTokens());
-      setToast('Agent token created. Copy it now; Trevra will not show it again.');
-    } catch (err) { setToast(err instanceof Error ? err.message : 'Unable to create agent token'); }
-    finally { setBusy(''); }
-  };
-
-  const revokeToken = async (tokenId: string) => {
-    setBusy(tokenId);
-    try {
-      await revokeAgentToken(tokenId);
-      setAgentTokens(await getAgentTokens());
-      setToast('Agent token revoked');
-    } catch (err) { setToast(err instanceof Error ? err.message : 'Unable to revoke token'); }
-    finally { setBusy(''); }
-  };
-
-  const copyToken = async () => {
-    try {
-      await navigator.clipboard.writeText(revealedToken);
-      setToast('Agent token copied');
-    } catch { setToast('Copy failed. Select the token manually.'); }
+      setToast('Limit deleted. Your agent is no longer held by it.');
+    } catch (err) { setToast(err instanceof Error ? err.message : 'Could not delete that limit. It is still in force — try again.'); }
+    finally { setBusy(''); setConfirmDeletePolicy(null); }
   };
 
   return <div className="page-stack">
-    <section className="autopilot-hero">
-      <div><span className="hero-kicker"><Bot size={14} /> Standing instructions</span><h2>Decide once. Trevra handles the routine work.</h2><p>Prepare actions automatically, or allow low-risk follow-ups within limits you control.</p></div>
-      <button className="primary-button light" onClick={() => void run()} disabled={busy === 'run'}>{busy === 'run' ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} Run now</button>
+    <section className="page-panel" id="setup-autopilot">
+      <div className="section-heading">
+        <div><h3 aria-level={2}><Sparkles size={18} /> Standing instructions</h3><p>Decide once. Tell Trevra what it may do on its own, and where it must stop and ask you.</p></div>
+        <button className="secondary-button" onClick={() => void run()} disabled={busy === 'run'}>{busy === 'run' ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} Run now</button>
+      </div>
     </section>
     <div className="automation-list">
       {(Object.keys(recommendationLabels) as RecommendationType[]).map((type) => {
@@ -922,89 +1877,119 @@ function AutopilotView({ rules, reload, setToast }: { rules: AutomationRule[]; r
         </article>;
       })}
     </div>
-    <section className="page-panel policy-panel">
-      <div className="section-heading"><div><h3><ShieldCheck size={18} /> Workspace execution policies</h3><p>Policies are evaluated before every playbook skill step. A matching deny wins immediately; external writes remain approval-gated by default.</p></div><span className="status-pill">{policies.length} policies</span></div>
+    <section className="page-panel policy-panel" id="setup-limits">
+      <div className="section-heading"><div><h3 aria-level={2}><ShieldCheck size={18} /> Hard limits</h3><p>Rules Trevra can never break, whatever else it is told to do. Anything that leaves your business needs your approval unless you say otherwise.</p></div><span className="status-pill">{policies.length} set</span></div>
       <div className="policy-editor">
-        <label>Name<input value={policyDraft.name} onChange={(event) => setPolicyDraft({ ...policyDraft, name: event.target.value })} /></label>
-        <label>Action pattern<input value={policyDraft.actionPattern} onChange={(event) => setPolicyDraft({ ...policyDraft, actionPattern: event.target.value })} placeholder="skill:gtm.*" /></label>
-        <label>Effect<select value={policyDraft.effect} onChange={(event) => setPolicyDraft({ ...policyDraft, effect: event.target.value as WorkspacePolicy['effect'] })}><option value="allow">Allow</option><option value="require_approval">Require approval</option><option value="deny">Deny</option></select></label>
-        <label>Priority<input type="number" value={policyDraft.priority} onChange={(event) => setPolicyDraft({ ...policyDraft, priority: Number(event.target.value) })} /></label>
-        <label className="policy-conditions">Conditions JSON<textarea rows={6} value={policyDraft.conditions} onChange={(event) => setPolicyDraft({ ...policyDraft, conditions: event.target.value })} spellCheck={false} /></label>
-        <button className="primary-button" disabled={busy === 'policy-create'} onClick={() => void addPolicy()}>{busy === 'policy-create' ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />} Add policy</button>
+        <label>Name it<input value={policyDraft.name} onChange={(event) => setPolicyDraft({ ...policyDraft, name: event.target.value })} /></label>
+        <label>What it covers<input value={policyDraft.actionPattern} onChange={(event) => setPolicyDraft({ ...policyDraft, actionPattern: event.target.value })} placeholder="skill:*" /><small>* stands for everything</small></label>
+        <label>What happens<select value={policyDraft.effect} onChange={(event) => setPolicyDraft({ ...policyDraft, effect: event.target.value as WorkspacePolicy['effect'] })}><option value="allow">Let it run</option><option value="require_approval">Ask me first</option><option value="deny">Block it</option></select></label>
+        <label>Priority<input type="number" value={policyDraft.priority} onChange={(event) => setPolicyDraft({ ...policyDraft, priority: Number(event.target.value) })} /><small>higher wins a tie</small></label>
       </div>
+      <fieldset className="policy-conditions">
+        <legend>When does it apply?</legend>
+        <p className="condition-hint">Leave a group untouched and it applies to all of them.</p>
+        <div className="condition-groups">
+          <ConditionChecklist legend="What is being done" choices={SIDE_EFFECT_CHOICES} selected={conditionDraft.sideEffects} onToggle={(value) => toggleCondition('sideEffects', value)} />
+          <ConditionChecklist legend="Who is doing it" choices={ACTOR_CHOICES} selected={conditionDraft.actorTypes} onToggle={(value) => toggleCondition('actorTypes', value)} />
+          <ConditionChecklist legend="Where it runs" choices={ENVIRONMENT_CHOICES} selected={conditionDraft.environments} onToggle={(value) => toggleCondition('environments', value)} />
+        </div>
+        <div className="condition-numbers">
+          <label>Only when the amount is at most<span className="condition-number"><input type="number" min="0" step="100" placeholder="any amount" value={conditionDraft.maxAmount} onChange={(event) => setConditionDraft({ ...conditionDraft, maxAmount: event.target.value })} /><small>EUR</small></span></label>
+          <label>Only when Trevra is at least this sure<span className="condition-number"><input type="number" min="0" max="100" placeholder="any confidence" value={conditionDraft.minConfidence} onChange={(event) => setConditionDraft({ ...conditionDraft, minConfidence: event.target.value })} /><small>%</small></span></label>
+          <label>Only when it reaches at most<span className="condition-number"><input type="number" min="1" placeholder="any number" value={conditionDraft.maxRecipients} onChange={(event) => setConditionDraft({ ...conditionDraft, maxRecipients: event.target.value })} /><small>people</small></span></label>
+        </div>
+        <p className="policy-preview">{describePolicy(policyDraft.effect, buildConditions(conditionDraft))}</p>
+      </fieldset>
+      <div className="panel-footer"><span>Takes effect the moment you add it.</span><button className="secondary-button" disabled={busy === 'policy-create'} onClick={() => void addPolicy()}>{busy === 'policy-create' ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />} Add limit</button></div>
       <div className="workspace-policy-list">
         {policies.map((policy) => <article key={policy.id}>
           <div><strong>{policy.name}</strong><code>{policy.actionPattern}</code></div>
           <span className={`policy-effect effect-${policy.effect}`}>{policy.effect.replace('_', ' ')}</span>
-          <pre>{JSON.stringify(policy.conditions, null, 2)}</pre>
-          <button className="ghost-button danger" disabled={busy === policy.id} onClick={() => void removePolicy(policy.id)}>{busy === policy.id ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete</button>
+          <p className="policy-summary">{describePolicy(policy.effect, policy.conditions)}</p>
+          <button className="ghost-button danger" disabled={busy === policy.id} onClick={() => setConfirmDeletePolicy(policy)}>{busy === policy.id ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Delete</button>
         </article>)}
-        {policies.length === 0 && <p className="empty-copy">No custom policies. Built-in safe defaults still apply.</p>}
+        {policies.length === 0 && <p className="empty-copy">No limits of your own yet. Add one above — until then, Trevra still asks you before anything leaves your business.</p>}
       </div>
     </section>
 
-    <section className="page-panel agent-access-panel">
-      <div className="section-heading"><div><h3><Terminal size={18} /> Claude Code and Codex access</h3><p>Create a scoped token for the Trevra MCP server. Agent tokens can inspect the revenue brief, run skills and durable playbooks, read workflow events, and prepare actions; they cannot approve, execute, manage integrations, or administer your account.</p></div></div>
-      <div className="agent-token-create">
-        <label>Token name<input value={tokenName} onChange={(event) => setTokenName(event.target.value)} placeholder="Claude Code on laptop" /></label>
-        <button className="primary-button" onClick={() => void createToken()} disabled={busy === 'agent-token' || !tokenName.trim()}>{busy === 'agent-token' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />} Create token</button>
-      </div>
-      {revealedToken && <div className="agent-token-reveal">
-        <div><strong>Copy this token now</strong><span>It is stored only as a hash and cannot be revealed again.</span></div>
-        <code>{revealedToken}</code>
-        <button className="secondary-button" onClick={() => void copyToken()}><Copy size={15} /> Copy</button>
-      </div>}
-      <div className="agent-token-command">
-        <span>Run the local MCP server</span>
-        <code>TREVRA_API_URL=http://localhost:43887 TREVRA_AGENT_TOKEN=… npm run mcp</code>
-      </div>
-      <div className="agent-token-list">
-        {agentTokens.length === 0 && <p className="empty-copy">No agent tokens yet.</p>}
-        {agentTokens.map((token) => <article key={token.id} className={token.revokedAt ? 'is-revoked' : undefined}>
-          <div><strong>{token.name}</strong><code>{token.prefix}…</code></div>
-          <span>{token.revokedAt ? 'Revoked' : token.lastUsedAt ? `Last used ${new Date(token.lastUsedAt).toLocaleString()}` : 'Never used'}</span>
-          {!token.revokedAt && <button className="ghost-button danger" disabled={busy === token.id} onClick={() => void revokeToken(token.id)}>{busy === token.id ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Revoke</button>}
-        </article>)}
-      </div>
-    </section>
+    {confirmDeletePolicy && <ConfirmDrawer
+      title="Delete this limit?"
+      tone="danger"
+      body={<>
+        <p><strong>{confirmDeletePolicy.name}</strong> — {describePolicy(confirmDeletePolicy.effect, confirmDeletePolicy.conditions)}</p>
+        <p>Deleting it takes that guardrail off your agent immediately. Work this limit was blocking, or holding back for your approval, can go through on the very next run.</p>
+        <p>There is no undo. You can write the limit again, but it will not apply to anything that ran in between.</p>
+      </>}
+      confirmLabel="Delete this limit"
+      busy={busy === confirmDeletePolicy.id}
+      onCancel={() => setConfirmDeletePolicy(null)}
+      onConfirm={() => void removePolicy(confirmDeletePolicy.id)}
+    />}
   </div>;
-}
-
-function Metric({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail: string }) {
-  return <article className="metric-card"><span className="metric-icon">{icon}</span><div><p>{label}</p><strong>{value}</strong><span>{detail}</span></div></article>;
-}
-
-function RecommendationCard({ item, busy, onPrepare, onSnooze, onDismiss }: {
-  item: Recommendation; busy: boolean; onPrepare: () => void; onSnooze: () => void; onDismiss: () => void;
-}) {
-  const proofItems = item.proofPack?.items ?? item.evidence;
-  return <article className="recommendation-card">
-    <div className={`recommendation-icon type-${item.type}`}>{iconFor(item.type)}</div>
-    <div className="recommendation-body">
-      <div className="recommendation-meta"><span>{recommendationLabels[item.type]}</span><i>•</i><span>{Math.round(item.confidence * 100)}% confidence</span>{item.preparedAction && <span className="prepared-badge"><Sparkles size={11} /> Prepared</span>}</div>
-      <h4>{item.title}</h4>
-      <p>{item.summary}</p>
-      <details className="proof-pack">
-        <summary><FileCheck2 size={14} /> Open Revenue Proof Pack</summary>
-        <p className="proof-summary">{item.proofPack?.summary}</p>
-        <div className="proof-items">{proofItems.map((evidence) => <div className={`proof-item proof-${evidence.category}`} key={evidence.id}><span>{evidence.label}</span><blockquote>{evidence.excerpt}</blockquote></div>)}</div>
-      </details>
-      <div className="recommendation-action"><strong>{item.recommendedAction}</strong><span>{money(item.estimatedAmount, item.currency)}</span></div>
-      <div className="recommendation-buttons">
-        <button className="primary-button" onClick={onPrepare} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : item.preparedAction ? <FileCheck2 size={16} /> : <Sparkles size={16} />} {item.preparedAction ? 'Review prepared action' : 'Prepare action'}</button>
-        <button className="secondary-button" onClick={onSnooze} disabled={busy}><CalendarClock size={16} /> Snooze</button>
-        <button className="ghost-button" onClick={onDismiss} disabled={busy}>Dismiss</button>
-      </div>
-    </div>
-  </article>;
 }
 
 function ActionDrawer({ action, busy, onChange, onClose, onExecute }: {
   action: PreparedAction; busy: boolean; onChange: (action: PreparedAction) => void; onClose: () => void; onExecute: () => void;
 }) {
+  const dialog = useRef<HTMLElement>(null);
+  const opened = useRef(action);
+  // A misclick outside the drawer must not throw away an edited draft. The X,
+  // Cancel, and Escape are explicit; the backdrop is not.
+  const edited = action.recipient !== opened.current.recipient
+    || action.subject !== opened.current.subject
+    || action.body !== opened.current.body
+    || action.scheduledFor !== opened.current.scheduledFor;
+  const closeIfUnedited = () => { if (!edited) onClose(); };
   const scheduleValue = action.scheduledFor ? toLocalDateTime(action.scheduledFor) : '';
-  return <div className="drawer-backdrop" role="presentation"><section className="drawer" role="dialog" aria-modal="true" aria-label="Review prepared action">
-    <header><div><span className="drawer-kicker"><Sparkles size={14} /> Prepared by Trevra</span><h3>Review the completed work</h3></div><button className="icon-button" onClick={onClose}><X size={20} /></button></header>
+  const scheduled = Boolean(action.scheduledFor);
+
+  /**
+   * The last gate, and the only one that was missing.
+   *
+   * Everything else in this product that cannot be taken back -- revoking a
+   * token, deleting a limit, pausing a seat -- stops at a `ConfirmDrawer`
+   * first, and the one act that reaches a person outside the business did not.
+   * It does now, at the same interruption and in the same chrome.
+   *
+   * NO DEFERRED SEND, and the drawer says so rather than implying it. The nine
+   * second hold behind Undo works for snooze and dismiss because those are
+   * writes to Trevra's own tables, and Trevra can simply not make them. This
+   * is a mail provider: there is no unsend to call, so a nine second window
+   * would only be a period in which the app says "sent" while nothing has
+   * been. This file already refuses that trade elsewhere -- a "Send" that does
+   * not send is the one lie this product cannot afford -- and the same rule
+   * applies to an Undo that does not undo. The delay would also move the
+   * approve-then-execute failure to after the drawer had closed, with the
+   * payload no longer on screen to fix.
+   *
+   * `tone="caution"`, not `"danger"`: sending the message you wrote is the
+   * product working. Red is for a stop that already happened.
+   */
+  const [confirming, setConfirming] = useState(false);
+
+  // Two dialogs, one Escape key. Both `useDialog` calls listen on `document` in
+  // the capture phase, and `stopPropagation` does not reach a second listener
+  // on the same node -- so without this guard one Escape would close the
+  // confirmation AND throw away the draft underneath it.
+  useDialog(dialog, () => { if (!confirming) onClose(); });
+
+  // Cmd/Ctrl+Enter opens that confirmation -- it does not send. It works from
+  // inside the message field on purpose: that is where the caret is when you
+  // have finished reading, and a modified Enter is not a character anywhere.
+  // What it must never be is a two-key path past the one gate.
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !busy) {
+      event.preventDefault();
+      setConfirming(true);
+    }
+  };
+
+  // Portalled out of `.app-shell` so the shell itself can be made inert while
+  // this is open -- an ancestor cannot be switched off from inside.
+  return createPortal(<><div className="drawer-backdrop" role="presentation" onClick={closeIfUnedited}><section ref={dialog} className="drawer" role="dialog" aria-modal="true" aria-labelledby="action-drawer-title" onClick={(event) => event.stopPropagation()} onKeyDown={onKeyDown}>
+    {/* Prepared, not completed: nothing here has happened yet, and the button
+        below is the thing that makes it happen. */}
+    <header><div><span className="drawer-kicker"><Sparkles size={14} /> Prepared by Trevra</span><h3 id="action-drawer-title">Check this before it goes out</h3></div><button className="icon-button" aria-label="Close without sending" onClick={onClose}><X size={20} /></button></header>
     <div className="drawer-body">
       <div className="approval-banner"><ShieldCheck size={19} /><p><strong>Exact-payload approval.</strong> Trevra executes only the recipient, subject, message, and schedule you approve.</p></div>
       <div className="delivery-row"><span>Delivery</span><strong>{prettyProvider(action.executionProvider)}</strong></div>
@@ -1013,44 +1998,65 @@ function ActionDrawer({ action, busy, onChange, onClose, onExecute }: {
       <label>Message<textarea rows={14} value={action.body} onChange={(e) => onChange({ ...action, body: e.target.value })} /></label>
       <label>Send later <input type="datetime-local" value={scheduleValue} onChange={(event) => onChange({ ...action, scheduledFor: event.target.value ? new Date(event.target.value).toISOString() : null })} /></label>
       {action.lastError && <div className="error-banner">{action.lastError}</div>}
+      <p className="panel-note">Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to reach the last check without reaching for the mouse.</p>
     </div>
-    <footer><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={onExecute} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : action.scheduledFor ? <CalendarClock size={16} /> : <Check size={16} />} {action.scheduledFor ? 'Approve & schedule' : 'Approve & send'}</button></footer>
-  </section></div>;
+    <footer><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={() => setConfirming(true)} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : scheduled ? <CalendarClock size={16} /> : <Check size={16} />} {scheduled ? 'Approve & schedule' : 'Approve & send'}</button></footer>
+  </section></div>
+
+  {confirming && <ConfirmDrawer
+      tone="caution"
+      title={scheduled
+        ? `Schedule this for ${action.recipient}?`
+        : `Send this to ${action.recipient} now?`}
+      body={<>
+        <p><strong>{action.subject}</strong> goes to <strong>{action.recipient}</strong> through {prettyProvider(action.executionProvider)}{scheduled ? <> at {formatMoment(action.scheduledFor as string)}</> : null}.</p>
+        <p>{scheduled
+          ? 'Trevra holds the exact wording you approved until that moment and then sends it. Nothing on this screen changes it afterwards.'
+          : 'This leaves your business the moment you confirm.'} <strong>There is no recall.</strong> Trevra cannot take a message back out of someone else’s inbox, and it will not offer you an Undo it could not honour.</p>
+        <p>Cancel here and the draft stays exactly as you edited it.</p>
+      </>}
+      confirmLabel={scheduled ? 'Schedule it' : 'Send it'}
+      cancelLabel="Keep editing"
+      busy={busy}
+      onCancel={() => setConfirming(false)}
+      onConfirm={() => { setConfirming(false); onExecute(); }}
+    />}
+  </>, document.body);
 }
 
-function NavButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
-  return <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>{icon}{label}</button>;
+function NavButton({ active, icon, label, badge, onClick }: {
+  active: boolean; icon: React.ReactNode; label: string; badge?: number; onClick: () => void;
+}) {
+  return <button className={`nav-item ${active ? 'active' : ''}`} aria-current={active ? 'page' : undefined} onClick={onClick}>
+    {icon}{label}
+    {badge !== undefined && badge > 0 && <span className="status-pill" style={{ marginLeft: 'auto' }} aria-label={`${badge} waiting for you`}>{badge}</span>}
+  </button>;
 }
 
-function viewTitle(view: View) {
-  if (view === 'today') return 'Your revenue workday';
-  if (view === 'work') return 'Work and approvals';
-  if (view === 'modules') return 'Modules and registry';
-  if (view === 'clients') return 'Clients';
-  if (view === 'integrations') return 'Connections';
-  return 'Autopilot';
-}
-
-function iconFor(type: RecommendationType) {
-  if (type === 'scope_creep') return <FileWarning />;
-  if (type === 'overdue_invoice') return <Clock3 />;
-  if (type === 'unbilled_milestone') return <CircleDollarSign />;
-  return <Inbox />;
-}
-
-function automationDescription(type: RecommendationType) {
-  if (type === 'stale_proposal') return 'Follow up when a proposal goes quiet.';
-  if (type === 'scope_creep') return 'Detect and price requests outside the agreement.';
-  if (type === 'unbilled_milestone') return 'Prepare invoices when delivery is proven.';
-  return 'Follow up when an invoice passes its due date.';
-}
-
-function prettyProvider(provider: string) {
-  return provider.replace('google-mail', 'Gmail').replace('gmail', 'Gmail').replace('microsoft', 'Microsoft 365').replaceAll('-', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function initials(value: string) {
-  return value.split(/[\s-]+/).filter(Boolean).map((word) => word[0]).join('').slice(0, 2).toUpperCase();
+/**
+ * The heading over each screen.
+ *
+ * The nav item says "Money"; the heading over the queue inside it stays "What
+ * needs you". Both sentences are true and neither is redundant: one names the
+ * place, the other names the job.
+ */
+function viewTitle(route: Route): string {
+  if (route.section === 'loop') return route.sub === 'cost' ? 'What this cost' : 'Your loop';
+  if (route.section === 'outreach') {
+    if (route.sub === 'campaigns') return 'Campaigns';
+    if (route.sub === 'inbox') return 'Inbox';
+    if (route.sub === 'leads') return 'Lead sources';
+    if (route.sub === 'plan') return 'Plan preview';
+    if (route.sub === 'queue') return 'Queue';
+    return 'Outreach seat';
+  }
+  if (route.section === 'money') return 'What needs you';
+  if (route.section === 'ledger') return 'Run ledger';
+  // `spend` is a deep link into Agent access, so it is titled as the screen it
+  // actually lands on rather than as a screen of its own.
+  const sub = route.sub === 'spend' ? 'agent' : route.sub;
+  const setup = SETUP_ROUTES.find((entry) => entry.sub === sub);
+  return setup ? `Setup · ${setup.label}` : 'Setup';
 }
 
 function toLocalDateTime(value: string) {

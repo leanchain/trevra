@@ -3,6 +3,32 @@ WORKDIR /app
 RUN npm install --global npm@11.6.2
 COPY package.json package-lock.json ./
 RUN npm ci
+
+# Chromium, and ONLY chromium.
+#
+# Without this the container can plan, pace and gate LinkedIn work but cannot
+# perform any of it: `~/.cache/ms-playwright` is empty, so
+# `linkedInBrowserReadiness` and `linkedInHeadlessReadiness` both answer no and
+# every detect is queued for a worker on the operator's own machine.
+#
+# With it, a seat that stored its own LinkedIn sign-in (auth_mode='credentials')
+# is served here, headlessly, with the operator having typed an email and a
+# password once and run nothing (docs/linkedin-outreach-plan.md 4.1, 4.9). A
+# headless browser cannot show a human a login window -- which is exactly why
+# that path needs a password and the manual one does not.
+#
+# `chromium` alone, not `install` bare: firefox and webkit would add ~700MB to
+# an image that will never drive either. `--with-deps` because the slim base is
+# missing the shared libraries Chromium links against, and a browser that fails
+# to start is harder to diagnose than one that was never installed.
+RUN npx playwright install --with-deps chromium
+
+# The subscription CLIs the hosted agent can run instead of a BYOK model key
+# (TREVRA_AGENT_CLI in .env.example). They ship no credential -- the container
+# gets one at runtime through TREVRA_AGENT_CLI_OAUTH_TOKEN, because there is no
+# browser in here to complete an interactive login with.
+RUN npm install --global @anthropic-ai/claude-code @openai/codex
+
 COPY . .
 EXPOSE 5173 8787
 CMD ["npm", "run", "dev"]

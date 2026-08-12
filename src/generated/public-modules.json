@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1.0.0",
-  "generatedAt": "2026-07-27T10:09:16+02:00",
-  "sourceRevision": "21280161f6b5",
+  "generatedAt": "2026-08-04T00:03:19+02:00",
+  "sourceRevision": "365131940d83",
   "project": "Trevra",
   "contract": {
     "inputs": "Zod-validated input schema",
@@ -108,10 +108,196 @@
       "source": "src/server/skills"
     },
     {
+      "id": "gtm.draft-reply",
+      "name": "Draft a community reply",
+      "version": "1.0.0",
+      "description": "Write the reply for one discovered thread, shaped to the platform's constraints and put through the anti-slop critic, reporting a failed critique rather than passing the copy through.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.enrich-company",
+      "name": "Enrich company from its own site",
+      "version": "1.0.0",
+      "description": "Derive firmographics, platform, tech fingerprint, catalog size, and page presence for a domain from the company's own public site. No credentials required.",
+      "sideEffect": "network-read",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.find-contact",
+      "name": "Find published contacts",
+      "version": "1.0.0",
+      "description": "Crawl a bounded, robots-respecting set of a domain's own pages for published mailto: addresses and social profiles. Every result carries its source URL.",
+      "sideEffect": "network-read",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
       "id": "gtm.lead-status",
       "name": "Lead status transition check",
       "version": "1.0.0",
       "description": "Decide whether a lead status change is legal on the lifecycle ladder, and normalize the lead domain.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.linkedin-guard",
+      "name": "LinkedIn seat safety gate",
+      "version": "1.0.0",
+      "description": "Check one proposed LinkedIn action against every per-seat ceiling at once: pause state, warm-up week, rolling 24h/7d/30d windows, day-over-day variance, acceptance rate, business hours, weekends, the published InMail quota, the outstanding-invite backlog, and duplicate targets.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.linkedin-pace",
+      "name": "LinkedIn pacing plan",
+      "version": "1.0.0",
+      "description": "Schedule LinkedIn actions for one seat across a horizon: warm-up ramp from account age, day-over-day variance smoothing against the real ledger, acceptance-rate throttle, weekend and enforcement-scan rules, and a deterministic spread inside the seat's business hours.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.linkedin-sequence",
+      "name": "LinkedIn outreach sequence",
+      "version": "1.0.0",
+      "description": "Write or critique a multi-touch LinkedIn sequence as merge-field templates. Given a step list it validates and critiques exactly that list; given an ICP and offer it drafts the default five-touch shape. Either way every template goes through the same anti-slop critic as gtm.draft-reply, and a failed critique is reported rather than passed through.",
       "sideEffect": "none",
       "requiresApproval": false,
       "runtime": "builtin",
@@ -170,6 +356,68 @@
       "source": "src/server/skills"
     },
     {
+      "id": "gtm.outreach-guard",
+      "name": "Community outreach safety gate",
+      "version": "1.0.0",
+      "description": "Enforce daily caps, account-age and karma minimums, per-community cooldowns, blacklists, and the self-promotion ratio before any reply is prepared for approval.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.research-brief",
+      "name": "Build a research brief",
+      "version": "1.0.0",
+      "description": "Join audit, enrichment, contact, and signal outputs into one checkable observation shaped for gtm.outreach-draft, or report that nothing specific was found.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
       "id": "gtm.score-lead",
       "name": "Score lead fit",
       "version": "1.0.0",
@@ -201,10 +449,134 @@
       "source": "src/server/skills"
     },
     {
+      "id": "gtm.score-threads",
+      "name": "Score community threads",
+      "version": "1.0.0",
+      "description": "Rank discovered community threads for reply-worthiness on a 0-10 relevance scale, with every scoring component itemised.",
+      "sideEffect": "none",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.scout-threads",
+      "name": "Scout community threads",
+      "version": "1.0.0",
+      "description": "Poll Hacker News, Reddit, GitHub, Lobsters, dev.to, Mastodon, and Stack Overflow for threads discussing AI-coding-agent cost, returning only threads not already triaged.",
+      "sideEffect": "network-read",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.source-leads",
+      "name": "Source candidate companies",
+      "version": "1.0.0",
+      "description": "Turn an ICP description into candidate company domains through a pluggable provider registry. Defaults to the credential-free seed provider.",
+      "sideEffect": "network-read",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
       "id": "gtm.visibility-audit",
       "name": "AI-visibility audit",
       "version": "1.0.0",
       "description": "Probe a domain for how readable it is to AI shopping assistants and answer engines.",
+      "sideEffect": "network-read",
+      "requiresApproval": false,
+      "runtime": "builtin",
+      "sourceType": "builtin",
+      "publisher": {
+        "slug": "trevra",
+        "name": "Trevra",
+        "verified": true
+      },
+      "trust": {
+        "signed": false,
+        "sbom": true,
+        "verifiedRelease": true
+      },
+      "popularity": {
+        "totalRuns": 0,
+        "successfulRuns": 0,
+        "failedRuns": 0,
+        "successRate": null,
+        "uniqueWorkspaces": 0,
+        "activeInstallations": 0,
+        "lastRunAt": null,
+        "rank": null
+      },
+      "source": "src/server/skills"
+    },
+    {
+      "id": "gtm.watch-signal",
+      "name": "Watch a domain for change signals",
+      "version": "1.0.0",
+      "description": "Capture hiring, pricing, headline, and tech snapshots for a domain and diff them against the previous capture into typed change signals.",
       "sideEffect": "network-read",
       "requiresApproval": false,
       "runtime": "builtin",

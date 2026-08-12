@@ -1,5 +1,12 @@
 import type {
+  AgentBudget,
+  AgentKeySummary,
+  AgentModelConfig,
+  AgentRun,
+  AgentRunSummary,
+  AgentSchedule,
   AgentScope,
+  AgentSetup,
   AgentTokenSummary,
   AutomationRule,
   AvailableIntegration,
@@ -10,11 +17,66 @@ import type {
   PlaybookRunStatus,
   PreparedAction,
   RecommendationType,
+  SkillRun,
   WorkspacePolicy,
   PublicRegistryModule,
-  InstalledCommunityModule,
-  RegistryPublisher
+  InstalledCommunityModule
 } from '../shared/types';
+/**
+ * LinkedIn (docs/linkedin-outreach-plan.md sections 5 and 6).
+ *
+ * TYPE-ONLY, and that is load-bearing twice. `import type` is erased before
+ * the bundler sees it, so nothing under src/server/ -- zod, pg, the Playwright
+ * driver -- can reach the browser build through these lines. And reading the
+ * shapes from the modules that own them is what stops the screen drifting from
+ * the ledger: a field renamed in linkedin/campaigns.ts fails the typecheck here
+ * instead of rendering `undefined` beside a number an operator is betting a
+ * LinkedIn account on.
+ */
+import type { LedgerExportFile, LedgerExportRecord, LedgerExportSection } from '../server/ledger-export';
+import type {
+  LoopCost,
+  LoopCostActionCount,
+  LoopCostAgentRuns,
+  LoopCostConfidence,
+  LoopCostModelLine,
+  LoopCostProduced,
+  LoopCostSent,
+  LoopCostSpent
+} from '../server/loop-cost';
+import type { LinkedInActionKind, LinkedInActionStatus } from '../server/linkedin/actions';
+import type { BranchOn, StepCondition } from '../server/linkedin/branching';
+import type { LinkedInSafetyCheck, LinkedInSafetyVerdict } from '../server/linkedin/guard';
+import type { LinkedInConversation, LinkedInMessageRecord, LinkedInThreadRecord } from '../server/linkedin/inbox';
+import type { LeadSourceKind, LeadSourceStatus, LinkedInLead, LinkedInLeadSource } from '../server/linkedin/leads';
+import type {
+  Account,
+  AccountImportResult,
+  AccountScore,
+  AccountSignal,
+  AccountSignalKind,
+  AccountSource,
+  AccountStatus,
+  AccountTier,
+  RankedAccount,
+  ScoreComponent,
+  ScoreRationale
+} from '../server/accounts/types';
+import type { WithdrawalCandidate, WithdrawalRecord, WithdrawalStatus } from '../server/linkedin/withdraw';
+import type {
+  CampaignStatus,
+  LinkedInActionView,
+  LinkedInAnalytics,
+  LinkedInCampaign,
+  LinkedInExportRecord
+} from '../server/linkedin/campaigns';
+import type { LinkedInExclusion } from '../server/linkedin/exclusions';
+import type { ExportContact, ExportFormat, ScheduledDay } from '../server/linkedin/export';
+import type { BandName, PacedKind } from '../server/linkedin/limits';
+import type { SeatDetectRequest } from '../server/linkedin/local-worker';
+import type { PacingPlan } from '../server/linkedin/pacing';
+import type { LinkedInSeat, SeatPatch, SeatPosture } from '../server/linkedin/seats';
+import type { LinkedInIcp, LinkedInOffer, LinkedInSequence, SequenceTone } from '../server/linkedin/sequence';
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -35,7 +97,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function getPublicConfig(): Promise<{ googleAuthEnabled: boolean; modelExtractionEnabled: boolean; supportEmail: string; catalogApiUrl?: string }> {
+export async function getPublicConfig(): Promise<PublicConfig> {
   return request('/api/public-config');
 }
 
@@ -181,6 +243,145 @@ export async function decidePlaybookStep(
 }
 
 
+/**
+ * Every run of one skill. The route has existed since the skills registry
+ * shipped and no client had ever called it, so a module's own history was
+ * visible nowhere in the product.
+ */
+export async function getSkillRuns(filters: {
+  skillId?: string;
+  status?: 'ok' | 'error';
+  limit?: number;
+} = {}): Promise<SkillRun[]> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '') query.set(key, String(value));
+  }
+  const suffix = query.size > 0 ? `?${query}` : '';
+  const result = await request<{ runs?: SkillRun[] }>(`/api/skill-runs${suffix}`);
+  return result.runs ?? [];
+}
+
+/** One step of a job, on its own. Reached from the step that ran it. */
+export async function getSkillRun(id: string): Promise<SkillRun> {
+  const result = await request<{ run: SkillRun }>(`/api/skill-runs/${encodeURIComponent(id)}`);
+  return result.run;
+}
+
+/**
+ * What Trevra's own agent did, if this deployment runs one.
+ *
+ * A workspace on a build without the hosted agent has no such endpoint, so a
+ * 404 is read as "no runs" rather than surfaced as a failure: the difference
+ * between "nothing happened" and "this feature is not here" is not one a
+ * founder should have to interpret from an error.
+ */
+export async function getAgentRuns(limit = 50): Promise<AgentRunSummary[]> {
+  try {
+    const result = await request<{ runs: AgentRunSummary[] }>(`/api/agent-runs?limit=${limit}`);
+    return result.runs ?? [];
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return [];
+    throw error;
+  }
+}
+
+export async function getAgentRun(id: string): Promise<AgentRun | null> {
+  try {
+    const result = await request<{ run: AgentRun }>(`/api/agent-runs/${encodeURIComponent(id)}`);
+    return result.run ?? null;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/**
+ * Setup for Trevra's own agent: the endpoint, the key, the spend cap, the
+ * schedule.
+ *
+ * A build without the hosted agent has no such route, so a 404 is read as
+ * "this deployment does not run one" and the screen hides the section --
+ * the same call getAgentRuns makes, for the same reason.
+ */
+export async function getAgentSetup(): Promise<AgentSetup | null> {
+  try {
+    return await request<AgentSetup>('/api/agent-setup');
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** No default endpoint ships, so this is always the operator's own words. */
+export async function saveAgentModelConfig(input: { baseUrl: string; model: string; label?: string }): Promise<AgentModelConfig> {
+  const result = await request<{ config: AgentModelConfig }>('/api/agent-setup/config', {
+    method: 'PUT', body: JSON.stringify(input)
+  });
+  return result.config;
+}
+
+/**
+ * Write-only. What comes back is `last4`, a label and timestamps -- never the
+ * key. There is no companion read function here because there is no route to
+ * call: plaintext leaves exactly one internal function on the server, at the
+ * moment of a model request, and no API returns it at any privilege.
+ */
+export async function saveAgentKey(input: { apiKey: string; label?: string }): Promise<AgentKeySummary> {
+  const result = await request<{ secret: AgentKeySummary }>('/api/agent-setup/key', {
+    method: 'PUT', body: JSON.stringify(input)
+  });
+  return result.secret;
+}
+
+export async function deleteAgentKey(): Promise<void> {
+  await request('/api/agent-setup/key', { method: 'DELETE' });
+}
+
+export async function saveAgentBudget(input: { monthlyCapCents?: number; enabled?: boolean }): Promise<AgentBudget> {
+  const result = await request<{ budget: AgentBudget }>('/api/agent-setup/budget', {
+    method: 'PUT', body: JSON.stringify(input)
+  });
+  return result.budget;
+}
+
+export async function saveAgentSchedule(input: { enabled?: boolean; goal?: string; intervalMinutes?: number }): Promise<AgentSchedule> {
+  const result = await request<{ schedule: AgentSchedule }>('/api/agent-setup/schedule', {
+    method: 'PUT', body: JSON.stringify(input)
+  });
+  return result.schedule;
+}
+
+export async function startAgentRun(input: { goal: string; maxSteps?: number }): Promise<AgentRunSummary> {
+  const result = await request<{ run: AgentRunSummary }>('/api/agent-runs', {
+    method: 'POST', body: JSON.stringify(input)
+  });
+  return result.run;
+}
+
+/**
+ * Ask one agent run to stop, saying why, and return how many runs were asked.
+ *
+ * It is a REQUEST, not a kill, and the UI must say so. The server records the
+ * request; the run itself ends at its next step boundary, once it has finished
+ * whatever it is in the middle of. Nothing here may report it as stopped --
+ * that only becomes true when the run's own status says so.
+ *
+ * A zero back is not a failure: it means that run was not running, or had
+ * already been asked. A second click never overwrites the first note.
+ *
+ * `reason` is optional and is never sent as a placeholder. It is the note you
+ * will read three weeks from now -- the same argument the outreach kill switch
+ * has made since it shipped, which was never LinkedIn-specific.
+ */
+export async function stopAgentRun(runId: string, reason?: string): Promise<number> {
+  const result = await request<{ stopped: number }>('/api/agent-runs/stop', {
+    method: 'POST',
+    body: JSON.stringify({ runId, ...(reason && reason.trim() ? { reason } : {}) })
+  });
+  return result.stopped ?? 0;
+}
+
 export async function getPolicies(): Promise<WorkspacePolicy[]> {
   const result = await request<{ policies: WorkspacePolicy[] }>('/api/policies');
   return result.policies;
@@ -202,6 +403,14 @@ export async function createPolicy(input: {
 
 export async function deletePolicy(id: string): Promise<void> {
   await request(`/api/policies/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export interface PublicConfig {
+  googleAuthEnabled: boolean;
+  modelExtractionEnabled: boolean;
+  supportEmail: string;
+  catalogApiUrl: string;
+  apiBaseUrl?: string;
 }
 
 export async function getAgentTokens(): Promise<AgentTokenSummary[]> {
@@ -227,36 +436,6 @@ export async function getPublicRegistryModules(): Promise<PublicRegistryModule[]
   return result.modules;
 }
 
-export async function getRegistryPublishers(): Promise<RegistryPublisher[]> {
-  const result = await request<{ publishers: RegistryPublisher[] }>('/api/registry/publishers');
-  return result.publishers;
-}
-
-export async function createRegistryPublisher(input: {
-  slug: string;
-  displayName: string;
-  publicKeyPem: string;
-}): Promise<RegistryPublisher> {
-  const result = await request<{ publisher: RegistryPublisher }>('/api/registry/publishers', {
-    method: 'POST', body: JSON.stringify(input)
-  });
-  return result.publisher;
-}
-
-export async function publishRegistryModule(input: {
-  moduleId: string;
-  publisherId: string;
-  manifest: Record<string, unknown>;
-  signature: string;
-  sbom: Record<string, unknown>;
-}): Promise<Record<string, unknown>> {
-  const result = await request<{ release: Record<string, unknown> }>(
-    `/api/registry/modules/${encodeURIComponent(input.moduleId)}/releases`,
-    { method: 'POST', body: JSON.stringify({ publisherId: input.publisherId, manifest: input.manifest, signature: input.signature, sbom: input.sbom }) }
-  );
-  return result.release;
-}
-
 export async function getInstalledRegistryModules(): Promise<InstalledCommunityModule[]> {
   const result = await request<{ modules: InstalledCommunityModule[] }>('/api/registry/installations');
   return result.modules;
@@ -270,4 +449,1366 @@ export async function installRegistryModule(moduleId: string, version: string, c
 
 export async function uninstallRegistryModule(moduleId: string): Promise<void> {
   await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, { method: 'DELETE' });
+}
+
+/* =====================================================================
+ * The ledger, and the one combined spend surface.
+ * docs/gtm-shell-shape.md sections 3.4, 3.5 and 3.7 (Wave B).
+ * ================================================================== */
+
+/**
+ * Re-exported from the modules that own the shapes, exactly like the LinkedIn
+ * types below and for the same reason: a field renamed on the server fails the
+ * typecheck here instead of rendering `undefined` beside a number somebody is
+ * making a spending decision on.
+ */
+export type {
+  LedgerExportFile,
+  LedgerExportRecord,
+  LedgerExportSection,
+  LoopCost,
+  LoopCostActionCount,
+  LoopCostAgentRuns,
+  LoopCostConfidence,
+  LoopCostModelLine,
+  LoopCostProduced,
+  LoopCostSent,
+  LoopCostSpent
+};
+
+/**
+ * The sections an export may carry, as values.
+ *
+ * Restated rather than imported because `ledger-export.ts` pulls `node:crypto`
+ * and `node:zlib`, and importing the value would drag both into the browser
+ * bundle. The `readonly LedgerExportSection[]` annotation is the guard: a
+ * section added on the server breaks this line at typecheck rather than
+ * silently leaving a checkbox missing from the export panel.
+ */
+export const LEDGER_EXPORT_SECTIONS: readonly LedgerExportSection[] =
+  ['runs', 'steps', 'evidence', 'approvals', 'actions'];
+
+/**
+ * Render an export and get back what is in it.
+ *
+ * `counts` is rows per SOURCE TABLE; `sha256` is the digest of each FILE in the
+ * archive, keyed by file name, exactly as `manifest.json` inside the archive
+ * publishes them. Show them: the hash is the same promise `SignedNote` makes
+ * about an approval, and a hash nobody is shown proves nothing to anybody.
+ *
+ * The bytes are stored server-side and never re-rendered, so the id this
+ * returns keeps naming the same file the hashes describe.
+ */
+export async function createLedgerExport(input: { window: number; include: string[] }): Promise<{
+  id: string;
+  counts: Record<string, number>;
+  sha256: Record<string, string>;
+}> {
+  return request('/api/ledger/exports', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/** Every export this workspace has rendered, newest first. Metadata only -- no bytes. */
+export async function getLedgerExports(): Promise<LedgerExportRecord[]> {
+  const result = await request<{ exports: LedgerExportRecord[] }>('/api/ledger/exports');
+  return result.exports;
+}
+
+/**
+ * The download URL. A plain href, not a fetch: the response is an attachment
+ * with `Cache-Control: no-store`, and letting the browser handle it keeps the
+ * archive out of JS memory and out of any cache.
+ */
+export function ledgerExportDownloadPath(id: string): string {
+  return `/api/ledger/exports/${encodeURIComponent(id)}`;
+}
+
+/**
+ * Spent, sent and produced for one period.
+ *
+ * TWO THINGS THE SCREEN MUST NOT SOFTEN.
+ *
+ * Every line in `spent.byModel` carries its own `confidence`. HARD FACT means
+ * the provider measured that call; REPORTED means Trevra estimated it from a
+ * list-price table. Render the flag on the line, never once at the top.
+ *
+ * `produced.attribution` is a sentence to print VERBATIM. Nothing joins a model
+ * call or an outreach action to an invoice, and the three rows being adjacent
+ * must not be allowed to read as one of them causing another.
+ */
+export async function fetchLoopCost(windowDays: number): Promise<LoopCost> {
+  return request(`/api/loop/cost?window=${encodeURIComponent(String(windowDays))}`);
+}
+
+/* =====================================================================
+ * LinkedIn (docs/linkedin-outreach-plan.md sections 5 and 6).
+ *
+ * NOTHING HERE SENDS ANYTHING, and the client half of that invariant is worth
+ * stating where the fetches live: there is no `send` call below because there
+ * is no route to call. `recordLinkedInOutcome` is the one function that moves
+ * an action to sent/accepted/replied, and it is a REPORT of something that
+ * already happened in the operator's own tool.
+ * ================================================================== */
+
+/** Re-exported so the screens read one vocabulary and never reach into src/server themselves. */
+export type {
+  BandName,
+  BranchOn,
+  CampaignStatus,
+  ExportContact,
+  ExportFormat,
+  LeadSourceKind,
+  LeadSourceStatus,
+  LinkedInActionKind,
+  LinkedInActionStatus,
+  LinkedInActionView,
+  LinkedInAnalytics,
+  LinkedInCampaign,
+  LinkedInConversation,
+  LinkedInExclusion,
+  LinkedInExportRecord,
+  LinkedInIcp,
+  LinkedInLead,
+  LinkedInLeadSource,
+  LinkedInMessageRecord,
+  LinkedInOffer,
+  LinkedInSafetyCheck,
+  LinkedInSafetyVerdict,
+  LinkedInSeat,
+  LinkedInSequence,
+  LinkedInThreadRecord,
+  PacedKind,
+  PacingPlan,
+  ScheduledDay,
+  SeatPosture,
+  SequenceTone,
+  StepCondition,
+  WithdrawalCandidate,
+  WithdrawalRecord,
+  WithdrawalStatus
+};
+
+/**
+ * The pacing policy table itself, imported as VALUES.
+ *
+ * `linkedin/limits.ts` is a dependency-free constants module -- no zod, no pg,
+ * no db handle, nothing but numbers and the comments recording where each one
+ * came from -- so the bundler inlines it and nothing else follows it in. That
+ * is what makes this one client-to-server import worth making: the warm-up ramp
+ * the Safety screen draws is the ramp the engine paces by, not a copy of it
+ * that drifts the first time somebody tunes a multiplier. Every other server
+ * module in this file is type-only.
+ */
+export { MAX_DAY_OVER_DAY_DELTA, MIN_RAMP_STEP, PACED_KINDS, WARMUP_MULTIPLIERS, WARMUP_WEEKS } from '../server/linkedin/limits';
+
+/**
+ * The kinds, statuses and formats that do NOT live in that table.
+ *
+ * Restated as values because their modules pull zod and pg, and importing the
+ * value would drag both into the browser bundle. The `readonly X[]` annotation
+ * is the guard: adding a kind or a format on the server breaks this line at
+ * typecheck rather than silently leaving an option missing from a filter.
+ */
+export const LINKEDIN_ACTION_KINDS: readonly LinkedInActionKind[] =
+  ['invite', 'dm', 'reply', 'inmail', 'profile_view', 'comment', 'follow', 'like', 'endorse'];
+export const LINKEDIN_ACTION_STATUSES: readonly LinkedInActionStatus[] =
+  ['planned', 'exported', 'sent', 'accepted', 'replied', 'declined', 'skipped', 'withdrawn'];
+export const LINKEDIN_EXPORT_FORMATS: readonly ExportFormat[] = ['dripify', 'heyreach', 'expandi', 'generic'];
+
+/**
+ * The five outcomes a step may branch on, restated as values for the reason
+ * every other list here is: `branching.ts` pulls zod, and importing the value
+ * would drag it into the browser bundle. `readonly BranchOn[]` is the guard.
+ *
+ * `always` leads, because it is what every existing sequence is and the
+ * control has to open on the unremarkable answer. `GET
+ * /api/linkedin/sequence-templates` returns the same closed list in the
+ * server's own order; `branchOnOptions` below reconciles the two.
+ */
+export const LINKEDIN_BRANCH_ON: readonly BranchOn[] =
+  ['always', 'accepted', 'replied', 'not_accepted', 'not_replied'];
+
+/** Whatever the server published, with `always` first and nothing invented. */
+export function branchOnOptions(published?: readonly BranchOn[] | null): readonly BranchOn[] {
+  const list = Array.isArray(published) && published.length > 0 ? published : LINKEDIN_BRANCH_ON;
+  return ['always', ...list.filter((value) => value !== 'always')];
+}
+
+/**
+ * The kinds a sequence step may be.
+ *
+ * `follow`, `like` and `endorse` joined the four in migration 034: the server
+ * validates a step against the WHOLE action taxonomy
+ * (`sequenceStepInputSchema`), and the warm-up ramp in plan 1.4 is written in
+ * terms of passive engagement, so a builder that could not schedule any of it
+ * could only ever author half of a warm-up. `comment` stays out -- the ledger
+ * records one, nothing here schedules one.
+ */
+export type SequenceStepKind =
+  Extract<LinkedInActionKind, 'profile_view' | 'invite' | 'dm' | 'inmail' | 'follow' | 'like' | 'endorse'>;
+export const SEQUENCE_STEP_KINDS: readonly SequenceStepKind[] =
+  ['profile_view', 'invite', 'dm', 'inmail', 'follow', 'like', 'endorse'];
+
+/** The three ENGAGEMENT kinds `POST /api/linkedin/engagement` performs. */
+export type LinkedInEngagementKind = Extract<LinkedInActionKind, 'follow' | 'like' | 'endorse'>;
+export const LINKEDIN_ENGAGEMENT_KINDS: readonly LinkedInEngagementKind[] = ['follow', 'like', 'endorse'];
+
+/**
+ * The merge fields step copy may carry. A CLOSED set: the server rejects a
+ * `{{field}}` it does not know, so the builder offers exactly these and flags
+ * anything else it finds rather than letting an operator invent one and lose
+ * the save at the door.
+ */
+export const LINKEDIN_MERGE_FIELDS: readonly string[] = ['firstName', 'lastName', 'company', 'jobTitle'];
+
+/** LinkedIn truncates a connection-request note here -- `INVITE_NOTE_MAX_CHARS` in src/server/linkedin/sequence.ts. */
+export const LINKEDIN_INVITE_NOTE_MAX_CHARS = 300;
+
+/**
+ * HARD FACT -- published by LinkedIn or a contractual term. REPORTED --
+ * practitioner telemetry, directionally right and never a guarantee.
+ *
+ * The server tags every ceiling it returns; the UI's job is to never drop the
+ * tag on the way to the screen.
+ */
+export type LinkedInLimitConfidence = 'HARD FACT' | 'REPORTED';
+
+/**
+ * One effective ceiling with its provenance.
+ *
+ * Declared here rather than imported because `effectiveLinkedInLimits` is a
+ * private function inside src/server/app.ts and its return type is not
+ * exported. Everything this file CAN import, it imports.
+ */
+export interface LinkedInCeiling {
+  kind: PacedKind;
+  window: 'day' | 'week' | 'month';
+  /** What applies right now, after warm-up, throttle and posture. */
+  ceiling: number;
+  /** The band's own number, before any of that. */
+  bandCeiling: number;
+  used: number;
+  remaining: number;
+  /** Which rule produced `ceiling`. */
+  boundBy: string;
+  rule: string;
+  confidence: LinkedInLimitConfidence;
+  source: string;
+}
+
+interface LinkedInSignalBase {
+  rule: string;
+  confidence: LinkedInLimitConfidence;
+  source: string;
+}
+
+export interface LinkedInLimitsReport {
+  seat: {
+    configured: boolean;
+    label: string | null;
+    timezone: string | null;
+    posture: SeatPosture | null;
+    pausedReason: string | null;
+    warmupWeek: number;
+    warmupWeeks: number;
+    warmupMultiplier: number;
+    band: BandName;
+  };
+  limits: LinkedInCeiling[];
+  signals: {
+    acceptance: LinkedInSignalBase & {
+      windowDays: number;
+      decided: number;
+      accepted: number;
+      /** Null when nothing has been decided. Never 0-of-0 rendered as 0%. */
+      rate: number | null;
+      floor: number;
+      throttleFactor: number;
+      throttled: boolean;
+    };
+    dayOverDay: LinkedInSignalBase & { maxDelta: number; minRampStep: number };
+    rhythm: LinkedInSignalBase & {
+      businessHours: { start: number; end: number };
+      actionGapSeconds: { min: number; max: number };
+      weekendFactor: number;
+      enforcementScanWeekdays: number[];
+    };
+  };
+}
+
+/**
+ * `seat.activatedAt` is the warm-up ramp clock, and it is weeks-since-this-seat-
+ * started-sending-through-Trevra -- NOT how old the LinkedIn account is.
+ * `seat.detectedAt` is when the profile was last read out of the logged-in
+ * session. Both come off `LinkedInSeat`, which owns them.
+ */
+export interface LinkedInSeatResponse {
+  seat: LinkedInSeat | null;
+  auth: LinkedInSeatAuth;
+  /** What became of the last detect handed to a worker that can open a browser. */
+  detectRequest: SeatDetectRequest | null;
+  posture: SeatPosture | null;
+  warmupWeek: number;
+  warmupWeeks: number;
+  /** Rolling 24h, not since-midnight. */
+  today: Record<PacedKind, number>;
+}
+
+/**
+ * How this seat gets into LinkedIn: Trevra holds an encrypted email and
+ * password and opens the session itself. The password is never on this type
+ * in any form -- `maskedEmail` is the most the server will say back, and
+ * `sessionValidAt` is the only evidence the screen has that a sign-in worked.
+ */
+export interface LinkedInSeatAuth {
+  hasCredentials: boolean;
+  maskedEmail: string | null;
+  sessionValidAt: string | null;
+}
+/** Also declared rather than imported: the handler builds this object inline. */
+export interface LinkedInWorkerStatus {
+  enabled: boolean;
+  playwrightInstalled: boolean;
+  playwrightPath: string | null;
+  /** The seat's confirmed-session record: true only once a session was CONFIRMED live. */
+  loggedIn: boolean;
+  /** What THIS process could open, answered without opening anything. */
+  browser: {
+    canLaunchHeaded: boolean;
+    canLaunchHeadless: boolean;
+    /** Why a headed window cannot open. Empty exactly when `canLaunchHeaded`. */
+    reasons: string[];
+    /** Why a headless one cannot. Empty exactly when `canLaunchHeadless`. */
+    headlessReasons: string[];
+  };
+  ready: boolean;
+  blockers: string[];
+  source: string;
+}
+
+export interface LinkedInExcluded {
+  targetRef: string;
+  reason: string;
+}
+
+export interface LinkedInPlanResponse {
+  plan: PacingPlan;
+  excluded: LinkedInExcluded[];
+  /** Always false. A plan is a dry run; only an approved campaign persists slots. */
+  persisted: boolean;
+}
+
+export interface LinkedInCampaignDetail {
+  campaign: LinkedInCampaign;
+  run: PlaybookRun | null;
+  actions: LinkedInActionView[];
+  exports: LinkedInExportRecord[];
+}
+
+export interface LinkedInCampaignCreated {
+  campaign: LinkedInCampaign;
+  run: PlaybookRun;
+  excluded: LinkedInExcluded[];
+}
+
+export interface LinkedInExportResponse {
+  export: LinkedInExportRecord;
+  /** False when the same approved bytes had already been rendered. */
+  rendered: boolean;
+  schedule?: ScheduledDay[];
+  ceilingsApplied?: string[];
+  warmupWeek?: number;
+  timezone?: string;
+  recorded?: { attempted: number; written: number; duplicate: number };
+  downloadPath?: string;
+}
+
+export interface LinkedInImportResponse {
+  persisted: boolean;
+  parsed: number;
+  kind: LinkedInActionKind;
+  targets: string[];
+  contacts: ExportContact[];
+  excluded: LinkedInExcluded[];
+  /** Already carries a non-skipped action of this kind. Planning them again would be refused. */
+  alreadyContacted: string[];
+  skippedRows: Array<{ row: number; reason: string }>;
+}
+
+/** What every campaign carries, whichever way its copy arrives. */
+interface LinkedInCampaignCommonInput {
+  targets: string[];
+  tone?: SequenceTone;
+  includeInMail?: boolean;
+  /** `none` drafts a connection request with no note at all. Ignored when the campaign carries its own steps. */
+  inviteNote?: 'drafted' | 'none';
+  kind?: PacedKind;
+  horizonDays?: number;
+  seatKey?: string;
+  format?: ExportFormat;
+  contacts?: ExportContact[];
+}
+
+/**
+ * Starting a campaign, and there are exactly two ways to do it.
+ *
+ * A BRIEF is something to draft copy from. `sequenceSteps` is copy that
+ * already exists -- a template the operator picked, or a sequence they
+ * assembled step by step -- and it skips generation entirely: one run, one
+ * approval, and the stored sequence is the one that was posted.
+ *
+ * The union is the server's rule written where the compiler can hold us to it:
+ * the route refuses a request carrying both, so `sequenceSteps?: never` on the
+ * brief arm turns that 400 into a type error instead.
+ */
+export interface LinkedInCampaignInput {
+  name: string;
+  version?: string;
+  input:
+    | (LinkedInCampaignCommonInput & { icp: LinkedInIcp; offer: LinkedInOffer; sequenceSteps?: never })
+    | (LinkedInCampaignCommonInput & { sequenceSteps: EditableSequenceStep[]; icp?: never; offer?: never });
+}
+
+export async function getLinkedInSeat(): Promise<LinkedInSeatResponse> {
+  return request('/api/linkedin/seat');
+}
+
+export async function saveLinkedInSeat(patch: SeatPatch): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
+  return request('/api/linkedin/seat', { method: 'PUT', body: JSON.stringify(patch) });
+}
+
+/** What one read of the logged-in session produced. */
+export interface LinkedInDetectedProfile {
+  profileUrl: string;
+  name: string | null;
+  connectionsCount: number | null;
+}
+
+export interface LinkedInSeatDetection {
+  /** 'pending' on a 202: the read was queued for a machine that can open a browser. */
+  status?: 'detected' | 'pending';
+  /** null when the read reached LinkedIn but produced nothing usable. */
+  detected: LinkedInDetectedProfile | null;
+  seat: LinkedInSeatResponse | null;
+  /** What could not be read. Each one stays unknown on the screen, never zero. */
+  degraded: string[];
+  /** Set with 'pending': the one sentence naming what has to run, and where. */
+  message?: string;
+  requestedAt?: string;
+}
+
+/**
+ * Read the seat out of the browser session the operator already logged into.
+ *
+ * The timezone is the only thing this browser knows that the worker cannot see,
+ * so it is the only thing sent -- there is no other field on the way in. A 409
+ * is not an error to dress up: it means the local worker is off, or the read hit
+ * a login or challenge wall, and the server's message already names the profile
+ * directory to log into. Surface that message verbatim.
+ */
+export async function detectLinkedInSeat(timezone: string): Promise<LinkedInSeatDetection> {
+  return request('/api/linkedin/seat/detect', { method: 'POST', body: JSON.stringify({ timezone }) });
+}
+
+/**
+ * The email and password this machine signs into LinkedIn with.
+ *
+ * It goes up once and never comes back: the response carries the masked
+ * address and nothing else, which is the only form any screen renders. The
+ * server holds it encrypted and hands it to one thing -- the browser session
+ * it opens on this machine.
+ */
+export async function saveLinkedInCredentials(input: { email: string; password: string }): Promise<{
+  hasCredentials: true;
+  maskedEmail: string;
+}> {
+  return request('/api/linkedin/seat/credentials', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/** Removable at any time, which is half of why storing it is defensible at all. */
+export async function deleteLinkedInCredentials(): Promise<{ hasCredentials: false }> {
+  return request('/api/linkedin/seat/credentials', { method: 'DELETE' });
+}
+
+export type LinkedInLoginStatus = 'ok' | 'otp_required' | 'challenge' | 'failed';
+
+/** One sentence with every status, including the two that are not failures. */
+export interface LinkedInLoginResult {
+  status: LinkedInLoginStatus;
+  message: string;
+}
+
+/**
+ * Open the session with the stored credentials.
+ *
+ * `otp` is a second call to the same route rather than a route of its own,
+ * because LinkedIn's code only exists after the first attempt. It travels in
+ * the body for the reason every one-time code does: a query string is a proxy
+ * log.
+ */
+export async function loginLinkedInSeat(otp?: string): Promise<LinkedInLoginResult> {
+  return request('/api/linkedin/seat/login', { method: 'POST', body: JSON.stringify(otp ? { otp } : {}) });
+}
+
+/**
+ * The kill switch.
+ *
+ * `reason` is required by the server rather than defaulted, because "why is
+ * this stopped" three weeks later is the question the column answers.
+ */
+export async function pauseLinkedInSeat(reason: string): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
+  return request('/api/linkedin/seat/pause', { method: 'POST', body: JSON.stringify({ reason }) });
+}
+
+export async function resumeLinkedInSeat(): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
+  return request('/api/linkedin/seat/resume', { method: 'POST' });
+}
+
+/**
+ * Forget this seat, including its ramp clock. Leaves send history, detect
+ * requests and stored credentials untouched -- only the seat row goes.
+ */
+export async function deleteLinkedInSeat(): Promise<{ deleted: boolean }> {
+  return request('/api/linkedin/seat', { method: 'DELETE' });
+}
+
+export async function getLinkedInLimits(): Promise<LinkedInLimitsReport> {
+  return request('/api/linkedin/limits');
+}
+
+/** A dry run. No slot becomes a `linkedin_actions` row on this path. */
+export async function planLinkedIn(input: {
+  kind: PacedKind;
+  targets: string[];
+  horizonDays?: number;
+  seatKey?: string;
+}): Promise<LinkedInPlanResponse> {
+  return request('/api/linkedin/plan', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function getLinkedInActions(filters: {
+  status?: LinkedInActionStatus;
+  kind?: LinkedInActionKind;
+  campaignId?: string;
+  seatKey?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+} = {}): Promise<LinkedInActionView[]> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '') query.set(key, String(value));
+  }
+  const result = await request<{ actions: LinkedInActionView[] }>(`/api/linkedin/actions${query.size ? `?${query}` : ''}`);
+  return result.actions;
+}
+
+export async function skipLinkedInAction(id: string): Promise<LinkedInActionView> {
+  const result = await request<{ action: LinkedInActionView }>(`/api/linkedin/actions/${encodeURIComponent(id)}/skip`, {
+    method: 'POST', body: JSON.stringify({})
+  });
+  return result.action;
+}
+
+/**
+ * Report what already happened in the operator's own tool.
+ *
+ * `occurredAt` is not decoration: every rolling window reads it, so an outcome
+ * reported on Friday for a send that happened on Tuesday must charge Tuesday.
+ */
+export async function recordLinkedInOutcome(input: {
+  actionId?: string;
+  kind?: LinkedInActionKind;
+  targetRef?: string;
+  seatKey?: string;
+  outcome: 'sent' | 'accepted' | 'replied' | 'declined';
+  occurredAt?: string;
+}): Promise<LinkedInActionView> {
+  const result = await request<{ action: LinkedInActionView }>('/api/linkedin/actions/outcome', {
+    method: 'POST', body: JSON.stringify(input)
+  });
+  return result.action;
+}
+
+export async function getLinkedInCampaigns(): Promise<LinkedInCampaign[]> {
+  const result = await request<{ campaigns: LinkedInCampaign[] }>('/api/linkedin/campaigns');
+  return result.campaigns;
+}
+
+/** Runs `gtm.linkedin-outreach`, whose first step is the `gtm.linkedin-sequence` skill. */
+export async function createLinkedInCampaign(input: LinkedInCampaignInput): Promise<LinkedInCampaignCreated> {
+  return request('/api/linkedin/campaigns', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function getLinkedInCampaign(id: string): Promise<LinkedInCampaignDetail> {
+  return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}`);
+}
+
+/**
+ * One step as the builder edits it.
+ *
+ * Deliberately NOT the server's `SequenceStep`, which also carries `variables`
+ * and `critique`. Both are DERIVED from the copy by the thing that reads it;
+ * sending them back would be handing the server its own homework, and typing
+ * the editor against them would make every hand-written step claim a critique
+ * that never ran.
+ */
+export interface EditableSequenceStep {
+  id: string;
+  /** Days after campaign start. The first step is day 0. */
+  day: number;
+  kind: SequenceStepKind;
+  /** Why this step exists, for the human approving the campaign. */
+  intent: string;
+  /** The copy, with `{{mergeField}}` placeholders. Empty for `profile_view`. */
+  template: string;
+  /**
+   * A branch on an EARLIER step's outcome.
+   *
+   * `undefined` and `null` both mean unconditional, and the server accepts
+   * either (`stepConditionSchema.nullish()`), so clearing a branch in the
+   * builder is a save rather than a 400. `always` is spelled out rather than
+   * dropped when an operator picks it: the shape stays uniform, and an
+   * `always` naming a step that no longer exists is an edit they want to hear
+   * about at save time.
+   */
+  condition?: StepCondition | null;
+}
+
+export interface LinkedInSequenceTemplate {
+  id: string;
+  name: string;
+  description: string;
+  steps: EditableSequenceStep[];
+}
+
+/**
+ * Everything `GET /api/linkedin/sequence-templates` publishes.
+ *
+ * The templates were only ever half of it. `mergeFields`, `inviteNoteMaxChars`
+ * and `branchOn` ride along precisely so a builder does not hardcode what the
+ * server validates -- the failure mode being an editor that lets an operator
+ * pick a branch the API then refuses.
+ */
+export interface LinkedInSequenceConfig {
+  templates: LinkedInSequenceTemplate[];
+  /** Null when the server published none. Never a slug this file invented. */
+  defaultTemplateId: string | null;
+  mergeFields: readonly string[];
+  inviteNoteMaxChars: number;
+  maxSteps: number;
+  branchOn: readonly BranchOn[];
+  actionKinds: readonly LinkedInActionKind[];
+  pacedKinds: readonly PacedKind[];
+}
+
+/**
+ * A proposed brief and sequence. NOTHING is persisted -- no campaign, no run,
+ * no ledger row. It is the AI's first draft for the operator to edit.
+ *
+ * `degraded` names what enrichment could not determine from the domain. Those
+ * fields must render EMPTY: a plausible guess sitting in a brief field is the
+ * one failure this screen cannot recover from, because the operator would
+ * approve it without ever knowing it was invented.
+ */
+export interface LinkedInCampaignDraft {
+  brief: { icp: Partial<LinkedInIcp>; offer: Partial<LinkedInOffer> };
+  sequence: { steps: EditableSequenceStep[] };
+  degraded: string[];
+  /**
+   * The four fields a homepage cannot state, PROPOSED by a model -- absent when
+   * no model is configured. Deliberately outside `brief`: everything in there
+   * was read off the site with evidence behind it, and these were not. They are
+   * still named in `degraded`, because a guess does not make a field known.
+   */
+  suggested?: { role: string; segment: string; pain: string; mechanism: string };
+  /** Which backend proposed them, for the sentence the screen shows. */
+  suggestedBy?: 'model' | 'cli';
+}
+
+export async function getLinkedInSequenceTemplates(): Promise<LinkedInSequenceTemplate[]> {
+  const result = await request<{ templates?: LinkedInSequenceTemplate[] }>('/api/linkedin/sequence-templates');
+  return result.templates ?? [];
+}
+
+/**
+ * The same route, read whole.
+ *
+ * Every field is defaulted from the constants above rather than trusted: a
+ * deployment one version behind serves a response with no `branchOn` in it,
+ * and a branch control that renders an empty dropdown there is worse than one
+ * that renders the five it already knows.
+ */
+export async function getLinkedInSequenceConfig(): Promise<LinkedInSequenceConfig> {
+  const result = await request<Partial<LinkedInSequenceConfig>>('/api/linkedin/sequence-templates');
+  return {
+    templates: Array.isArray(result.templates) ? result.templates : [],
+    defaultTemplateId: result.defaultTemplateId ?? null,
+    mergeFields: Array.isArray(result.mergeFields) && result.mergeFields.length > 0
+      ? result.mergeFields
+      : LINKEDIN_MERGE_FIELDS,
+    inviteNoteMaxChars: Number.isFinite(Number(result.inviteNoteMaxChars))
+      ? Number(result.inviteNoteMaxChars)
+      : LINKEDIN_INVITE_NOTE_MAX_CHARS,
+    maxSteps: Number.isFinite(Number(result.maxSteps)) ? Number(result.maxSteps) : 25,
+    branchOn: branchOnOptions(Array.isArray(result.branchOn) ? result.branchOn : null),
+    actionKinds: Array.isArray(result.actionKinds) && result.actionKinds.length > 0
+      ? result.actionKinds
+      : LINKEDIN_ACTION_KINDS,
+    pacedKinds: Array.isArray(result.pacedKinds) ? result.pacedKinds : []
+  };
+}
+
+/** Writes nothing. The response is a draft the operator edits before a campaign exists. */
+export async function draftLinkedInCampaign(input: {
+  domain: string;
+  targets?: string[];
+  templateId?: string;
+}): Promise<LinkedInCampaignDraft> {
+  return request('/api/linkedin/campaigns/draft', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/** Exactly what `PATCH /api/linkedin/campaigns/:id/sequence` returns -- every field, none optional. */
+export interface LinkedInSequenceSaved {
+  campaign: LinkedInCampaign;
+  /** The critiqued sequence now stored on the campaign. */
+  sequence: LinkedInSequence;
+  /** The re-plan. Its approval step is the one that has to be granted again. */
+  run: PlaybookRun;
+  /** The run whose approval this edit retired. Null when there was nothing to retire. */
+  previousRunId: string | null;
+  /** True when the save threw away an approval that had already been given. */
+  approvalInvalidated: boolean;
+}
+
+/**
+ * Replace a campaign's sequence.
+ *
+ * Re-plans, and INVALIDATES any approval already recorded: an approval is bound
+ * to the hash of the bytes that were read, and these are different bytes. The
+ * screen says so before the button is pressed, not after.
+ */
+export async function saveLinkedInCampaignSequence(
+  id: string,
+  steps: EditableSequenceStep[]
+): Promise<LinkedInSequenceSaved> {
+  return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/sequence`, {
+    method: 'PATCH', body: JSON.stringify({ steps })
+  });
+}
+
+/** Renders the APPROVED bytes. Only the format may be chosen at this point. */
+export async function exportLinkedInCampaign(id: string, format?: ExportFormat): Promise<LinkedInExportResponse> {
+  return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/export`, {
+    method: 'POST', body: JSON.stringify(format ? { format } : {})
+  });
+}
+
+export async function stopLinkedInCampaign(id: string): Promise<{ campaign: LinkedInCampaign; releasedActions: number }> {
+  return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+}
+
+export function linkedInExportDownloadPath(campaignId: string, exportId: string): string {
+  return `/api/linkedin/campaigns/${encodeURIComponent(campaignId)}/export/${encodeURIComponent(exportId)}`;
+}
+
+/** Persists nothing. The response splits the file into usable, excluded and already-contacted. */
+export async function importLinkedInTargets(file: File, kind: LinkedInActionKind = 'invite'): Promise<LinkedInImportResponse> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('kind', kind);
+  const response = await fetch('/api/linkedin/targets/import', { method: 'POST', body: form, credentials: 'include' });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    throw new ApiError(body.error ?? 'Target import failed', response.status);
+  }
+  return response.json();
+}
+
+export async function getLinkedInExclusions(): Promise<LinkedInExclusion[]> {
+  const result = await request<{ exclusions: LinkedInExclusion[] }>('/api/linkedin/exclusions');
+  return result.exclusions;
+}
+
+export async function addLinkedInExclusions(
+  targets: Array<{ targetRef: string; reason?: string }>,
+  source: 'manual' | 'import' = 'manual'
+): Promise<{ exclusions: LinkedInExclusion[]; added: number; updated: number }> {
+  return request('/api/linkedin/exclusions', { method: 'POST', body: JSON.stringify({ targets, source }) });
+}
+
+export async function getLinkedInAnalytics(days = 30): Promise<LinkedInAnalytics> {
+  return request(`/api/linkedin/analytics?days=${days}`);
+}
+
+/** Never throws on the server side: a missing playwright comes back as an honest false. */
+export async function getLinkedInWorkerStatus(): Promise<LinkedInWorkerStatus> {
+  return request('/api/linkedin/worker/status');
+}
+
+/* =====================================================================
+ * Lead sourcing (migration 030).
+ *
+ * OFF BY DEFAULT AND THAT IS THE FEATURE. Sending on your own account is
+ * what the product is for; reading other people's profiles out of a search
+ * page is scraping under LinkedIn's User Agreement 8.2, so it is a second,
+ * separate opt-in that a hosted deployment cannot grant at all.
+ *
+ * The LIST route reports the switch rather than refusing -- a workspace with
+ * sources from before it was turned off must still be able to read what they
+ * found -- and only the WRITE route 409s. `offReason` is the server's own
+ * sentence and names which kind of off it is; render it verbatim.
+ * ================================================================== */
+
+export interface LinkedInLeadSourceList {
+  sources: LinkedInLeadSource[];
+  enabled: boolean;
+  /** Null exactly when `enabled`. A calm explanation, not an error. */
+  offReason: string | null;
+}
+
+/** 201 for a new source, 200 with `duplicate` when this URL is already live. */
+export async function createLinkedInLeadSource(input: { kind: LeadSourceKind; url: string }): Promise<{
+  source: LinkedInLeadSource;
+  duplicate: boolean;
+}> {
+  const result = await request<{ source: LinkedInLeadSource; duplicate?: boolean }>('/api/linkedin/lead-sources', {
+    method: 'POST', body: JSON.stringify({ kind: input.kind, url: input.url })
+  });
+  return { source: result.source, duplicate: result.duplicate ?? false };
+}
+
+export async function getLinkedInLeadSources(limit?: number): Promise<LinkedInLeadSourceList> {
+  const result = await request<Partial<LinkedInLeadSourceList>>(
+    `/api/linkedin/lead-sources${limit ? `?limit=${limit}` : ''}`
+  );
+  return {
+    sources: Array.isArray(result.sources) ? result.sources : [],
+    enabled: result.enabled === true,
+    offReason: result.offReason ?? null
+  };
+}
+
+export async function getLinkedInLeadSource(id: string): Promise<LinkedInLeadSource> {
+  const result = await request<{ source: LinkedInLeadSource }>(`/api/linkedin/lead-sources/${encodeURIComponent(id)}`);
+  return result.source;
+}
+
+/** The people one walk stored, with the source they came from. */
+export async function getLinkedInLeads(id: string, limit?: number): Promise<{
+  source: LinkedInLeadSource | null;
+  leads: LinkedInLead[];
+}> {
+  const result = await request<{ source?: LinkedInLeadSource; leads?: LinkedInLead[] }>(
+    `/api/linkedin/lead-sources/${encodeURIComponent(id)}/leads${limit ? `?limit=${limit}` : ''}`
+  );
+  return { source: result.source ?? null, leads: Array.isArray(result.leads) ? result.leads : [] };
+}
+
+/* =====================================================================
+ * The unified inbox (migration 031).
+ *
+ * THE READS ARE PLAIN DATABASE READS of what a previous sync stored, so they
+ * answer instantly on any deployment. THE SYNCS DRIVE A BROWSER, so they are
+ * available only where this process can open one for this seat and 409 with
+ * the one thing to do where it cannot -- the same contract `detectLinkedInSeat`
+ * has, and its message is surfaced verbatim for the same reason.
+ *
+ * REPLYING SENDS NOTHING. It queues a gated `linkedin_actions` row that the
+ * worker claims, gates again, and executes at paced gaps.
+ * ================================================================== */
+
+export interface LinkedInInboxSyncResult {
+  /** Null on success. The routes turn a non-null into a 409 before it reaches here. */
+  blocked: string | null;
+  threads: number;
+  created: number;
+  updated: number;
+  /** Conversations resolved to a ledger row, and therefore to a campaign. */
+  linked: number;
+  messages: number;
+  /** Of those, inbound. The whole point of the walk. */
+  inbound: number;
+  linkage: string[];
+  /** What could not be read. Never a reason to fail the run. */
+  degraded: string[];
+}
+
+export interface LinkedInThreadSyncResult {
+  blocked: string | null;
+  inserted: number;
+  inbound: number;
+  linkage: string | null;
+  degraded: string[];
+}
+
+/**
+ * One reply, queued.
+ *
+ * `verdict` rides along so a screen may show WHAT was checked rather than only
+ * that it passed -- the same honesty rule the limits route follows. A refusal
+ * never reaches here: it is a 409 carrying the gate's own sentence.
+ */
+export interface LinkedInQueuedReply {
+  actionId: string;
+  threadId: string;
+  threadUrn: string;
+  targetRef: string;
+  campaignId: string | null;
+  plannedFor: string;
+  verdict: LinkedInSafetyVerdict;
+}
+
+/**
+ * The inbox list.
+ *
+ * `unread` AND `hasReply` ARE ON-OR-ABSENT, never `false`, and that is not a
+ * simplification. The route parses them with `z.coerce.boolean()`, and
+ * `Boolean('false')` is `true` -- so `?hasReply=false`, which the store layer
+ * would read as "the ones still silent", arrives at the handler as `true` and
+ * asks for the exact opposite. Until that schema takes a literal enum, the
+ * only two states this filter can honestly express are on and off, so a
+ * `false` here is dropped rather than sent as its own opposite.
+ */
+export async function getLinkedInThreads(filters: {
+  unread?: boolean;
+  hasReply?: boolean;
+  campaignId?: string;
+  seatKey?: string;
+  limit?: number;
+} = {}): Promise<LinkedInThreadRecord[]> {
+  const query = new URLSearchParams();
+  if (filters.unread === true) query.set('unread', 'true');
+  if (filters.hasReply === true) query.set('hasReply', 'true');
+  if (filters.campaignId) query.set('campaignId', filters.campaignId);
+  if (filters.seatKey) query.set('seatKey', filters.seatKey);
+  if (filters.limit !== undefined) query.set('limit', String(filters.limit));
+  const result = await request<{ threads?: LinkedInThreadRecord[] }>(
+    `/api/linkedin/inbox/threads${query.size ? `?${query}` : ''}`
+  );
+  return Array.isArray(result.threads) ? result.threads : [];
+}
+
+/** Messages come back OLDEST FIRST, ordered by the position they were read in. */
+export async function getLinkedInThread(threadUrn: string): Promise<LinkedInConversation> {
+  const result = await request<{ thread: LinkedInThreadRecord; messages?: LinkedInMessageRecord[] }>(
+    `/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}`
+  );
+  return { thread: result.thread, messages: Array.isArray(result.messages) ? result.messages : [] };
+}
+
+/** Walks the conversation rail in a real browser. 409 where this process cannot open one. */
+export async function syncLinkedInInbox(input: { maxThreads?: number; maxMessages?: number } = {}): Promise<LinkedInInboxSyncResult> {
+  const result = await request<Partial<LinkedInInboxSyncResult>>('/api/linkedin/inbox/sync', {
+    method: 'POST', body: JSON.stringify(input)
+  });
+  return {
+    blocked: result.blocked ?? null,
+    threads: result.threads ?? 0,
+    created: result.created ?? 0,
+    updated: result.updated ?? 0,
+    linked: result.linked ?? 0,
+    messages: result.messages ?? 0,
+    inbound: result.inbound ?? 0,
+    linkage: Array.isArray(result.linkage) ? result.linkage : [],
+    degraded: Array.isArray(result.degraded) ? result.degraded : []
+  };
+}
+
+export async function syncLinkedInThread(threadUrn: string, input: { maxMessages?: number } = {}): Promise<LinkedInThreadSyncResult> {
+  const result = await request<Partial<LinkedInThreadSyncResult>>(
+    `/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}/sync`,
+    { method: 'POST', body: JSON.stringify(input) }
+  );
+  return {
+    blocked: result.blocked ?? null,
+    inserted: result.inserted ?? 0,
+    inbound: result.inbound ?? 0,
+    linkage: result.linkage ?? null,
+    degraded: Array.isArray(result.degraded) ? result.degraded : []
+  };
+}
+
+/**
+ * QUEUES a reply. It does not send one, and no screen may say otherwise.
+ *
+ * A 409 is the safety gate refusing, and its message is the gate's own words.
+ * Surface it verbatim: that sentence is the product working, and rewriting it
+ * would drop the one thing that names what to do next.
+ */
+export async function replyToLinkedInThread(
+  threadUrn: string,
+  body: string,
+  plannedFor?: string
+): Promise<LinkedInQueuedReply> {
+  return request(`/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}/reply`, {
+    method: 'POST',
+    body: JSON.stringify({ body, ...(plannedFor ? { plannedFor } : {}) })
+  });
+}
+
+/* =====================================================================
+ * Pending-invite withdrawal (migration 032).
+ *
+ * FOUR ROUTES BECAUSE THERE ARE FOUR DECISIONS, and only the last one -- the
+ * queue drain, which the worker performs on its own tick -- clicks anything in
+ * a real account. `queueLinkedInWithdrawals` is reversible database work and
+ * its response ALWAYS says `withdrawn: 0`; a UI that implies otherwise is a
+ * UI that will read as broken the first time somebody checks.
+ * ================================================================== */
+
+export interface LinkedInPendingSyncResult {
+  blocked: string | null;
+  /** Entries LinkedIn showed us. */
+  listed: number;
+  /** Of those, ones this ledger has an outstanding invite for. */
+  matched: number;
+  /** Pending on LinkedIn with no ledger row -- almost always sent by hand. Reported, never invented. */
+  unmatched: number;
+  /** Seen pending before and absent now. Accepted, declined, expired and withdrawn look identical here. */
+  disappeared: number;
+  truncated: boolean;
+  degraded: string[];
+}
+
+export interface LinkedInWithdrawalCandidates {
+  candidates: WithdrawalCandidate[];
+  /** The whole backlog, unwindowed: an invite sent in March still occupies a slot in June. */
+  pendingInvites: number;
+  maxOutstandingInvites: number;
+  staleAfterDays: number;
+}
+
+export interface LinkedInWithdrawalsQueued {
+  candidates: WithdrawalCandidate[];
+  queued: number;
+  duplicates: number;
+  /** ALWAYS 0. This route enqueues; the worker withdraws, paced and gated. */
+  withdrawn: number;
+}
+
+/** Re-reads LinkedIn's own sent-invitations list. Browser work: 409 where none can open. */
+export async function syncLinkedInPendingInvites(): Promise<LinkedInPendingSyncResult> {
+  const result = await request<Partial<LinkedInPendingSyncResult>>('/api/linkedin/withdrawals/sync', { method: 'POST' });
+  return {
+    blocked: result.blocked ?? null,
+    listed: result.listed ?? 0,
+    matched: result.matched ?? 0,
+    unmatched: result.unmatched ?? 0,
+    disappeared: result.disappeared ?? 0,
+    truncated: result.truncated === true,
+    degraded: Array.isArray(result.degraded) ? result.degraded : []
+  };
+}
+
+/** A pure query. It shows what WOULD be withdrawn, before anything is. */
+export async function getLinkedInWithdrawalCandidates(filters: {
+  olderThanDays?: number;
+  limit?: number;
+} = {}): Promise<LinkedInWithdrawalCandidates> {
+  const query = new URLSearchParams();
+  if (filters.olderThanDays !== undefined) query.set('olderThanDays', String(filters.olderThanDays));
+  if (filters.limit !== undefined) query.set('limit', String(filters.limit));
+  const result = await request<Partial<LinkedInWithdrawalCandidates>>(
+    `/api/linkedin/withdrawals/candidates${query.size ? `?${query}` : ''}`
+  );
+  return {
+    candidates: Array.isArray(result.candidates) ? result.candidates : [],
+    pendingInvites: result.pendingInvites ?? 0,
+    maxOutstandingInvites: result.maxOutstandingInvites ?? 0,
+    staleAfterDays: result.staleAfterDays ?? 21
+  };
+}
+
+/**
+ * Queue withdrawals. NOTHING IS WITHDRAWN HERE.
+ *
+ * The rows are filed `queued`; the local worker claims them, re-runs the whole
+ * safety gate against each one, and clicks at 30-120s gaps. Clearing a backlog
+ * in one burst is the same volume spike as sending one.
+ */
+export async function queueLinkedInWithdrawals(input: {
+  olderThanDays?: number;
+  limit?: number;
+} = {}): Promise<LinkedInWithdrawalsQueued> {
+  const result = await request<Partial<LinkedInWithdrawalsQueued>>('/api/linkedin/withdrawals', {
+    method: 'POST', body: JSON.stringify(input)
+  });
+  return {
+    candidates: Array.isArray(result.candidates) ? result.candidates : [],
+    queued: result.queued ?? 0,
+    duplicates: result.duplicates ?? 0,
+    withdrawn: result.withdrawn ?? 0
+  };
+}
+
+export async function getLinkedInWithdrawals(filters: {
+  status?: WithdrawalStatus;
+  seatKey?: string;
+  limit?: number;
+} = {}): Promise<WithdrawalRecord[]> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '') query.set(key, String(value));
+  }
+  const result = await request<{ withdrawals?: WithdrawalRecord[] }>(
+    `/api/linkedin/withdrawals${query.size ? `?${query}` : ''}`
+  );
+  return Array.isArray(result.withdrawals) ? result.withdrawals : [];
+}
+
+/* =====================================================================
+ * Engagement (migration 034): follow, like, endorse.
+ *
+ * FILED `planned` AND FULLY GATED. `evaluateEngagementSafety` is the ordinary
+ * safety gate with an engagement kind -- every check, unfiltered, no exception
+ * for "it is only a like". A refusal is a 409 in the gate's own words, and a
+ * duplicate is a 409 too: one target takes one action of one kind per seat.
+ * ================================================================== */
+
+export interface LinkedInQueuedEngagement {
+  actionId: string;
+  kind: LinkedInEngagementKind;
+  targetRef: string;
+  plannedFor: string;
+  verdict: LinkedInSafetyVerdict;
+}
+
+export async function queueLinkedInEngagement(input: {
+  kind: LinkedInEngagementKind;
+  targetRef: string;
+  campaignId?: string;
+  plannedFor?: string;
+}): Promise<LinkedInQueuedEngagement> {
+  return request('/api/linkedin/engagement', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/* =====================================================================
+ * Accounts (migration 039): the ranked list and its evidence.
+ *
+ * THE SCREEN INVENTS NOTHING AND SO NEITHER DOES THIS FILE. Every number a
+ * row shows -- the score, a component's points, an age in days, a combination
+ * bonus -- arrives inside `RankedAccount` from `accounts/score.ts`, next to
+ * the `evidenceUrl` it was read from. There is no client-side arithmetic here
+ * and there must not be one: a score the operator cannot click through to the
+ * page it came from is a claim, and claims do not go in outbound mail.
+ *
+ * `score` is NULLABLE and that is a real state, not a loading one. An account
+ * imported a minute ago has no score row yet, and the honest sentence for it
+ * is "the sweep has not read this yet", never a zero dressed up as a verdict.
+ * ================================================================== */
+
+/** Re-exported so the screens read one vocabulary and never reach into src/server themselves. */
+export type {
+  Account,
+  AccountImportResult,
+  AccountScore,
+  AccountSignal,
+  AccountSignalKind,
+  AccountSource,
+  AccountStatus,
+  AccountTier,
+  RankedAccount,
+  ScoreComponent,
+  ScoreRationale
+};
+
+/** Hot first, then by score. The server owns the order; the screen renders it. */
+export async function getRankedAccounts(filters: { tier?: AccountTier; limit?: number } = {}): Promise<RankedAccount[]> {
+  const query = new URLSearchParams();
+  if (filters.tier) query.set('tier', filters.tier);
+  if (filters.limit) query.set('limit', String(filters.limit));
+  const suffix = query.toString();
+  const result = await request<{ accounts?: RankedAccount[] }>(`/api/accounts${suffix ? `?${suffix}` : ''}`);
+  return Array.isArray(result.accounts) ? result.accounts : [];
+}
+
+/**
+ * One paste, or one dropped CSV read into a string.
+ *
+ * `rejected` comes back with the LINE and the reason, and the screen shows
+ * both: a line the parser could not use is the operator's data, and silently
+ * dropping it is how an import of 500 quietly becomes a list of 480.
+ */
+export async function importAccounts(input: {
+  text: string;
+  source?: AccountSource;
+  tags?: string[];
+}): Promise<AccountImportResult> {
+  return request('/api/accounts/import', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function getAccount(id: string): Promise<RankedAccount> {
+  return request(`/api/accounts/${encodeURIComponent(id)}`);
+}
+
+/** The verdict is training data about the SHAPE of the signals, not just this one company. */
+export async function sendAccountFeedback(
+  id: string,
+  input: { verdict: 'not_a_fit' | 'good_fit'; reason?: string }
+): Promise<RankedAccount> {
+  return request(`/api/accounts/${encodeURIComponent(id)}/feedback`, {
+    method: 'POST', body: JSON.stringify(input)
+  });
+}
+
+/** Recompute every active account's score against the signals as they stand now. */
+export async function rescoreAccounts(): Promise<{ rescored: number }> {
+  return request('/api/accounts/rescore', { method: 'POST' });
+}
+
+export async function getResearch(): Promise<{ sources: any[]; runs: any[] }> { return request('/api/research'); }
+export async function createResearchSource(input: Record<string, unknown>): Promise<any> { return request('/api/research/sources', { method: 'POST', body: JSON.stringify(input) }); }
+export async function runResearchSource(id: string, mode: 'incremental'|'backfill'): Promise<any> { return request(`/api/research/sources/${id}/run`, { method: 'POST', body: JSON.stringify({ mode }) }); }
+export async function searchResearch(input: Record<string, unknown>): Promise<{ results:any[] }> { return request('/api/research/search', { method: 'POST', body: JSON.stringify(input) }); }
+
+/* ---------------------------------------------------------------------------
+ * Reddit (migration 041).
+ *
+ * THE SAME CONTRACT AS THE LINKEDIN SEAT, and the same one-way street: the
+ * username and password go up once and neither comes back. The most any
+ * response here carries is `hasCredentials` and the PUBLIC handle -- which is
+ * unmasked on purpose, because it is printed under every comment the account
+ * posts and hiding it would conceal which account is about to speak.
+ * -------------------------------------------------------------------------- */
+
+/** The row: which handle this workspace speaks as, and when its session was last live. */
+export interface RedditAccountRow {
+  workspaceId: string;
+  username: string | null;
+  authMode: 'manual' | 'credentials';
+  sessionValidAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RedditAuth {
+  hasCredentials: boolean;
+  /** `u/pankaj`, or null. Public by design. */
+  username: string | null;
+  /** The only evidence the screen has that a sign-in actually worked. */
+  sessionValidAt: string | null;
+}
+
+/** What THIS process could open, answered without opening anything. */
+export interface RedditWorkerStatus {
+  enabled: boolean;
+  playwrightPath: string | null;
+  profileDir: string;
+  browser: {
+    canLaunchHeaded: boolean;
+    canLaunchHeadless: boolean;
+    /** Why a headed window cannot open. Empty exactly when `canLaunchHeaded`. */
+    reasons: string[];
+    /** Why a headless one cannot. Empty exactly when `canLaunchHeadless`. */
+    headlessReasons: string[];
+  };
+  ready: boolean;
+  blockers: string[];
+}
+
+export interface RedditAccountResponse {
+  account: RedditAccountRow | null;
+  auth: RedditAuth;
+  worker: RedditWorkerStatus;
+}
+
+export async function getRedditAccount(): Promise<RedditAccountResponse> {
+  return request('/api/reddit/account');
+}
+
+/**
+ * The username and password this machine signs into Reddit with.
+ *
+ * It goes up once and never comes back: the response carries the handle and
+ * nothing else. The server holds the pair encrypted and hands it to one thing
+ * -- the browser session it opens on this machine.
+ */
+export async function saveRedditCredentials(input: { username: string; password: string }): Promise<{
+  hasCredentials: true;
+  username: string;
+}> {
+  return request('/api/reddit/credentials', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/** Removable at any time, which is half of why storing it is defensible at all. */
+export async function deleteRedditCredentials(): Promise<{ hasCredentials: false }> {
+  return request('/api/reddit/credentials', { method: 'DELETE' });
+}
+
+export type RedditLoginStatus = 'ok' | 'otp_required' | 'challenge' | 'failed';
+
+/** One sentence with every status, including the two that are not failures. */
+export interface RedditLoginResult {
+  status: RedditLoginStatus;
+  message: string;
+  username?: string | null;
+}
+
+/**
+ * Open the session with the stored credentials.
+ *
+ * `otp` is a second call to the same route rather than a route of its own,
+ * because the code only matters after the first attempt. It travels in the body
+ * for the reason every one-time code does: a query string is a proxy log.
+ */
+export async function loginReddit(otp?: string): Promise<RedditLoginResult> {
+  return request('/api/reddit/login', { method: 'POST', body: JSON.stringify(otp ? { otp } : {}) });
+}
+
+/** One post exactly as the listing reported it. A count nobody could read is null, never 0. */
+export interface RedditThread {
+  id: string;
+  url: string;
+  title: string;
+  author: string | null;
+  subreddit: string | null;
+  score: number | null;
+  comments: number | null;
+  createdAt: string | null;
+}
+
+export interface RedditResearchRead {
+  subreddit: string;
+  sort: 'hot' | 'new' | 'top' | 'rising';
+  threads: RedditThread[];
+  /** What could not be read. Shown, never swallowed. */
+  degraded: string[];
+}
+
+export interface RedditResearchResult {
+  reads: RedditResearchRead[];
+  /** Named rather than dropped: a private or misspelled subreddit has to reach the operator. */
+  refused: Array<{ subreddit: string; reason: string }>;
+}
+
+/**
+ * Read subreddits through the signed-in session.
+ *
+ * Read-only, so there is nothing to approve. The server walks them one at a
+ * time -- a burst of parallel listing reads from one account is exactly what
+ * gets rate-limited -- so this call is slow by design with several names.
+ */
+export async function researchReddit(input: {
+  subreddits: string[];
+  sort?: 'hot' | 'new' | 'top' | 'rising';
+  limit?: number;
+}): Promise<RedditResearchResult> {
+  return request('/api/reddit/research', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/**
+ * Post one comment, in one thread, right now.
+ *
+ * NO QUEUE AND NO APPROVAL STEP: there is no Reddit pacing engine to hand it
+ * to, so the operator is the pacing engine and they wrote the words. A 409
+ * arrives as an ApiError whose message is the server's own sentence -- a locked
+ * thread, a rate limit, or a dead session. Surface it verbatim, and do NOT
+ * retry it: the reply may already be posted, and a duplicate cannot be un-sent.
+ */
+export async function commentOnReddit(input: { url: string; body: string }): Promise<{
+  posted: true;
+  url: string;
+  detail: string | null;
+}> {
+  return request('/api/reddit/comment', { method: 'POST', body: JSON.stringify(input) });
 }

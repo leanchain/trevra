@@ -56,6 +56,41 @@ const BLOCKED_V4: ReadonlyArray<readonly [string, number]> = [
 
 const REDIRECT_STATUS: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
+/**
+ * Headers the platform's own `fetch` drops when a redirect crosses to another
+ * origin. Walking the chain by hand (see {@link createSsrfFetch}) means re-issuing
+ * the request ourselves, so it means re-implementing this rule too -- otherwise
+ * the guard *restores* a credential the platform would have removed, and
+ * `https://api.example` answering `302 Location: https://attacker.example` walks
+ * off with the caller's `Authorization` header.
+ */
+const CROSS_ORIGIN_STRIPPED_HEADERS: ReadonlySet<string> = new Set(['authorization', 'cookie']);
+
+/**
+ * A copy of `headers` with the credential headers removed.
+ *
+ * `HeadersInit` is three different things -- a `Headers`, a plain object, or an
+ * array of pairs -- and all three arrive here in practice. The caller's value is
+ * never mutated: it may be reused for a retry, and stripping it in place would
+ * silently disarm the request that follows.
+ */
+function withoutCredentialHeaders(headers: HeadersInit | undefined): HeadersInit | undefined {
+  if (!headers) return headers;
+  if (Array.isArray(headers)) {
+    return headers.filter(([name]) => !CROSS_ORIGIN_STRIPPED_HEADERS.has(String(name).toLowerCase()));
+  }
+  if (typeof (headers as Headers).forEach === 'function') {
+    const copy = new Headers(headers as HeadersInit);
+    for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) copy.delete(name);
+    return copy;
+  }
+  return Object.fromEntries(
+    Object.entries(headers as Record<string, string>).filter(
+      ([name]) => !CROSS_ORIGIN_STRIPPED_HEADERS.has(name.toLowerCase())
+    )
+  );
+}
+
 function parseIpv4(value: string): Uint8Array | null {
   const parts = value.split('.');
   if (parts.length !== 4) return null;
@@ -213,35 +248,82 @@ export interface SsrfFetchOptions {
   resolve?: boolean;
   maxRedirects?: number;
   fetchImpl?: FetchLike;
+  /**
+   * Turn the host allow-list OFF for this wrapper. **Defaults to false and must
+   * stay that way** -- this is not a tuning knob, it is a deliberate escape
+   * hatch with exactly one caller.
+   *
+   * `validatePublicHost` rejects loopback, raw IP literals, explicit ports and
+   * single-label hosts *structurally*, before `resolve` is consulted, so no
+   * value of `resolve` can ever admit `http://localhost:11434/v1`. An operator
+   * running Ollama, vLLM or a LiteLLM Proxy on their own box has opted in via
+   * `TREVRA_ALLOW_PRIVATE_MODEL_HOSTS=true` (byok-and-hosted-agent.md §3), and
+   * that opt-in has to be able to reach the endpoint it names or it is not an
+   * escape hatch at all. Set only by `agent/provider.ts`, only from that
+   * environment variable, and never from anything a workspace can supply.
+   *
+   * The scheme check and the redirect ceiling still apply; only the destination
+   * allow-list is waived.
+   */
+  allowPrivateHosts?: boolean;
 }
 
 /**
  * Build a `fetch` wrapper that validates every request host, redirect hops
  * included. Resolutions are cached per wrapper (i.e. per audit run), mirroring
  * the per-client cache of the reference's `make_ssrf_hook`.
+ *
+ * Credential headers are dropped when a hop changes origin -- see
+ * {@link CROSS_ORIGIN_STRIPPED_HEADERS}.
  */
 export function createSsrfFetch(options: SsrfFetchOptions = {}): FetchLike {
   const shouldResolve = options.resolve ?? true;
   const maxRedirects = options.maxRedirects ?? 5;
+  const allowPrivateHosts = options.allowPrivateHosts ?? false;
   const fetchImpl = options.fetchImpl ?? ((input: string, init?: RequestInit) => fetch(input, init));
   const checked = new Set<string>();
 
   return async function ssrfFetch(input: string, init?: RequestInit): Promise<Response> {
     let url = new URL(input);
+    /** The origin the caller actually asked for. Only it can carry the private-host waiver. */
+    const originalOrigin = url.origin;
+    // The origin the current `hopInit` headers were addressed to. Once a hop
+    // leaves it, the credentials go and do not come back.
+    let credentialOrigin = url.origin;
+    let hopInit = init;
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
       if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new SsrfError(`unsupported scheme: ${url.protocol}`);
-      if (!checked.has(url.hostname)) {
+      // The private-host waiver applies to the ORIGIN THE OPERATOR NAMED, and
+      // nowhere else. Waiving it for every hop turned the self-host flag into an
+      // SSRF primitive: the configured endpoint could answer 302 to
+      // http://169.254.169.254/ and the guard followed it into the cloud
+      // metadata service.
+      //
+      // Scoped to the origin rather than to hop 0 alone so that a local proxy
+      // redirecting within itself still works -- that is an ordinary thing for a
+      // LiteLLM or vLLM front end to do, and the redirect ceiling still bounds
+      // it. What the endpoint cannot do is send the request somewhere else
+      // private: the operator chose one private destination, not a tour of the
+      // network.
+      const waived = allowPrivateHosts && url.origin === originalOrigin;
+      if (!waived && !checked.has(url.hostname)) {
         await validatePublicHost(url.hostname, { resolve: shouldResolve });
         checked.add(url.hostname);
       }
       // `manual` hands each hop back to us so the guard runs again before the
       // next request leaves the process.
-      const response = await fetchImpl(url.toString(), { ...init, redirect: 'manual' });
+      const response = await fetchImpl(url.toString(), { ...hopInit, redirect: 'manual' });
       if (!REDIRECT_STATUS.has(response.status)) return response;
       const location = response.headers.get('location');
       if (!location) return response;
       if (response.body) await response.body.cancel().catch(() => undefined);
-      url = new URL(location, url);
+      const next = new URL(location, url);
+      // Origin is scheme + host + port, so a bare port or scheme change counts.
+      if (next.origin !== credentialOrigin) {
+        hopInit = { ...hopInit, headers: withoutCredentialHeaders(hopInit?.headers) };
+        credentialOrigin = next.origin;
+      }
+      url = next;
     }
     throw new SsrfError(`too many redirects (>${maxRedirects})`);
   };

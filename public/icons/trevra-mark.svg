@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Trevra">
+  <g fill="currentColor">
+    <rect x="11" y="15" width="11" height="11" rx="3"/>
+    <rect x="42" y="15" width="11" height="11" rx="3"/>
+    <rect x="25.5" y="15" width="13" height="34" rx="3.4"/>
+  </g>
+</svg>

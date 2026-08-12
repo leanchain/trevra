@@ -1,1 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="18" fill="#1f6f4a"/><path d="M16 17h32v9H37v23H27V26H16z" fill="#fff"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Trevra">
+  <rect width="64" height="64" rx="14" fill="#1f6f4a"/>
+  <g fill="#fff">
+    <rect x="11" y="15" width="11" height="11" rx="3"/>
+    <rect x="42" y="15" width="11" height="11" rx="3"/>
+    <rect x="25.5" y="15" width="13" height="34" rx="3.4"/>
+  </g>
+</svg>

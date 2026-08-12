@@ -1,0 +1,33 @@
+#cloud-config
+# API + automation worker + cloudflared, 1 GB RAM.
+#
+# No inbound port is opened: cloudflared dials out to Cloudflare, so the only
+# ingress rule this host needs is SSH.
+
+package_update: true
+packages: [ca-certificates, curl, gnupg]
+
+runcmd:
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - >
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+    https://download.docker.com/linux/ubuntu jammy stable"
+    > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - usermod -aG docker ubuntu
+
+  # 2 GB swap absorbs the HTML/PDF parsing spikes in the research skills, which
+  # are the largest transient allocations the app makes.
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  - sysctl -w vm.swappiness=20
+  - echo 'vm.swappiness=20' > /etc/sysctl.d/99-trevra.conf
+
+  - mkdir -p /opt/trevra
+  - chown ubuntu:ubuntu /opt/trevra

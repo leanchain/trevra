@@ -1,3 +1,23 @@
+import { readFileSync } from 'node:fs';
+
+/**
+ * A token from a file rather than the environment.
+ *
+ * Environment variables of a child process are readable on most systems, and
+ * a token passed on a command line is readable by anyone who can run `ps`. The
+ * CLI agent backend (`src/server/agent/cli.ts`) therefore writes its single-run
+ * token to a 0600 file and passes the PATH. Absent or unreadable means "not
+ * configured", which the constructor reports as a missing token.
+ */
+function readTokenFile(path: string | undefined): string {
+  if (!path?.trim()) return '';
+  try {
+    return readFileSync(path, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
 export interface TrevraSkillManifest {
   id: string;
   name: string;
@@ -55,11 +75,27 @@ export class TrevraAgentClient {
   readonly baseUrl: string;
   private readonly token: string;
 
+  /**
+   * The Authorization header for the resolved token.
+   *
+   * Exists so the stdio bridge does not rebuild it from `TREVRA_AGENT_TOKEN`
+   * itself: this class already resolves the token from the environment OR from
+   * TREVRA_AGENT_TOKEN_FILE, and a second, simpler resolution somewhere else
+   * silently sends `Bearer ` when the token came from the file.
+   */
+  get authorization(): string {
+    return `Bearer ${this.token}`;
+  }
+
   constructor(options: { baseUrl?: string; token?: string } = {}) {
     this.baseUrl = (options.baseUrl ?? process.env.TREVRA_API_URL ?? 'http://localhost:43887').replace(/\/$/, '');
-    this.token = options.token ?? process.env.TREVRA_AGENT_TOKEN ?? '';
+    // `||`, not `??`: an EMPTY variable must fall through to the file. A shell
+    // or a compose file that declares TREVRA_AGENT_TOKEN and leaves it blank
+    // otherwise wins the `??` and the token file is never opened -- the bridge
+    // then reports a missing token while holding a perfectly good one.
+    this.token = options.token?.trim() || process.env.TREVRA_AGENT_TOKEN?.trim() || readTokenFile(process.env.TREVRA_AGENT_TOKEN_FILE);
     if (!this.token) {
-      throw new Error('TREVRA_AGENT_TOKEN is required. Create one in Trevra Autopilot or POST /api/agent-tokens from an authenticated session.');
+      throw new Error('TREVRA_AGENT_TOKEN is required (or TREVRA_AGENT_TOKEN_FILE, a path to a file holding one). Create one in Trevra Autopilot or POST /api/agent-tokens from an authenticated session.');
     }
   }
 

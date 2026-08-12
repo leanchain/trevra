@@ -1,0 +1,29 @@
+-- Per-step timing for the hosted agent's run ledger.
+--
+-- 017 recorded WHEN each step happened and nothing about how long it took, so
+-- the run inspector could only say "Recorded 14:02:11" where every other run
+-- type in the product shows a duration. That is the wrong gap to leave in an
+-- agent that runs with the laptop closed and spends the founder's money: the
+-- first question about an expensive run is which step was slow, and until now
+-- the ledger could not answer it.
+--
+-- The numbers are the ones the model SDK already measured -- the model call's
+-- own response time for a 'model' step, the tool's execution time for a 'tool'
+-- step -- so this records a measurement rather than inventing one from the
+-- gaps between created_at values, which would silently attribute the ledger's
+-- own write latency to the step.
+
+-- NULLABLE, and deliberately not back-filled.
+--
+-- Every step written before this migration genuinely was not timed. The only
+-- back-fill available would be the difference between consecutive created_at
+-- values, which is not the step's duration: it also contains the ledger write,
+-- the budget accounting and, for the last step of a run, nothing at all. A
+-- plausible number in this column is worse than an empty one, because an
+-- operator reading "4.2s" has no way to tell it was guessed. NULL means "not
+-- recorded", the UI says exactly that, and it stays true forever.
+--
+-- New rows may also be NULL: if a future SDK stops reporting a step's timing,
+-- the writer stores nothing rather than a plausible-looking zero (see
+-- normalizeDurationMs in src/server/agent/runs.ts).
+ALTER TABLE agent_run_steps ADD COLUMN IF NOT EXISTS duration_ms INTEGER;

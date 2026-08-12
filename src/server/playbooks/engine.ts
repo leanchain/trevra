@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Db } from '../db.js';
 import { id } from '../db.js';
 import { appendDomainEvent } from '../control-plane/events.js';
-import { evaluatePolicy, type PolicyDecision } from '../control-plane/policy.js';
+import { evaluatePolicy, policyAttributesFrom, type PolicyDecision } from '../control-plane/policy.js';
 import { canonicalPayloadHash } from '../control-plane/payload.js';
 import { executePreparedPlaybookAction } from '../control-plane/execution.js';
 import { executeWorkspaceSkill, getWorkspaceSkillManifest } from '../skill-api.js';
@@ -310,7 +310,10 @@ async function runActionStep(
     actorId: run.actorId,
     sideEffect: 'external-write',
     playbookId: run.playbookId,
-    environment: process.env.NODE_ENV ?? 'development'
+    environment: process.env.NODE_ENV ?? 'development',
+    // Without these, every amount/confidence/recipient condition a founder set
+    // is unevaluable and the rule is resolved by its effect alone.
+    attributes: policyAttributesFrom(payload)
   });
   const now = new Date().toISOString();
   await db.prepare(`UPDATE playbook_step_runs SET input_json=?,policy_decision_json=?,updated_at=? WHERE id=?`)
@@ -438,7 +441,8 @@ async function runSkillStep(
       sideEffect: skill.sideEffect,
       playbookId: run.playbookId,
       skillId: step.skillId,
-      environment: process.env.NODE_ENV ?? 'development'
+      environment: process.env.NODE_ENV ?? 'development',
+      attributes: policyAttributesFrom(resolvedInput)
     });
     await failStep(
       db,
@@ -457,7 +461,8 @@ async function runSkillStep(
     sideEffect: skill.sideEffect,
     playbookId: run.playbookId,
     skillId: step.skillId,
-    environment: process.env.NODE_ENV ?? 'development'
+    environment: process.env.NODE_ENV ?? 'development',
+    attributes: policyAttributesFrom(resolvedInput)
   });
 
   await db.prepare(`UPDATE playbook_step_runs SET input_json=?,policy_decision_json=?,skill_version=?,updated_at=? WHERE id=?`)

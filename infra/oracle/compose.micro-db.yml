@@ -1,0 +1,41 @@
+# Postgres on a 1 GB Always Free micro instance.
+#
+# Defaults assume far more RAM than this host has: shared_buffers alone would
+# claim 128 MB and max_connections reserves work_mem per connection. These
+# values leave headroom for the OS and the page cache instead of relying on swap.
+
+name: trevra-db
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=20
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - effective_cache_size=256MB
+    environment:
+      POSTGRES_DB: trevra
+      POSTGRES_USER: trevra
+      POSTGRES_PASSWORD: ${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}
+    # Bound to the private IP so the app instance can reach it inside the VCN.
+    # The security list and host firewall both restrict 5432 to the VCN CIDR.
+    ports:
+      - "${DB_BIND_IP:?Set DB_BIND_IP to the private IP}:5432:5432"
+    volumes:
+      - /mnt/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trevra -d trevra"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    # Leaves ~700 MB for the OS and page cache on a 1 GB host.
+    mem_limit: 320m
+    restart: unless-stopped

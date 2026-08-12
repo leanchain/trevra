@@ -1,0 +1,61 @@
+-- LinkedIn as a contact identity, so a LinkedIn touch reaches the CRM.
+--
+-- `crm_activities` (014) already knows how to attach a note to a contact that
+-- was resolved from a platform handle: `resolveLocalContact()` matches
+-- (workspace_id, provider, identity_value) in `contact_identities` and NEVER
+-- hands a raw handle to the CRM's own search, because a fuzzy match there
+-- attaches one person's outreach to another person's record. Until now the
+-- only providers ever written were 'email' and the community platforms, so a
+-- LinkedIn action had nothing to resolve through and every LinkedIn touch
+-- ended as `skipped -- no matching CRM contact`.
+--
+-- WHAT "ALLOW kind='linkedin'" MEANS HERE, precisely: `contact_identities`
+-- carries NO CHECK constraint on `provider` or `identity_type`, so nothing in
+-- the schema was refusing the value. The thing that was missing is the index
+-- the resolution query can actually use, and a written-down convention for
+-- what a LinkedIn identity_value IS -- without which two callers would store
+-- two different spellings of the same profile and neither would match.
+--
+-- This migration therefore does NOT add a CHECK enumerating identity kinds.
+-- Adding one would be a restriction, not a permission, and it would fail on
+-- any workspace that has already imported an identity kind we did not
+-- anticipate. One logical change per migration, and the change is an index
+-- plus a convention.
+--
+-- THE CONVENTION, and it is load-bearing:
+--
+--   provider       = 'linkedin'
+--   identity_type  = 'linkedin'
+--   identity_value = the same opaque string stored in
+--                    `linkedin_actions.target_ref`
+--
+-- The last line is the whole point. `target_ref` is user-supplied and Trevra
+-- never resolves it against LinkedIn (plan 1.2 -- User Agreement 8.2 forbids
+-- the scrape that would canonicalise it), so the ONLY way an action joins to a
+-- contact is by the operator having stored the same string in both places.
+-- Normalising here would be inventing a canonical form for data we are not
+-- allowed to verify; matching is therefore case-insensitive and otherwise
+-- literal, which is exactly what `resolveLocalContact()` already does.
+--
+-- After this, `recordOutreachInCrm()` and `logCrmActivity()` work UNCHANGED
+-- for a LinkedIn touch: pass
+--   contact.handle          = linkedin_actions.target_ref
+--   contact.handleProvider  = 'linkedin'
+--   activity_type           = 'linkedin_touch'
+--   source_type             = 'linkedin_action'
+--   source_id               = linkedin_actions.id
+-- and the existing replay guard on
+-- (workspace_id, provider, source_type, source_id) WHERE status <> 'failed'
+-- keeps a retried action from leaving a second note on somebody's record.
+-- Neither function needed a code change; both are already provider-agnostic.
+
+-- The index 014 added is on the raw column:
+--   idx_contact_identities_lookup (workspace_id, provider, identity_value)
+-- but `resolveLocalContact()` compares LOWER(identity_value), which no b-tree
+-- over the raw column can serve. Postgres will use an expression index only
+-- when the expression matches the predicate, so this is the one that turns
+-- LinkedIn contact resolution from a sequential scan of every identity in the
+-- workspace into a lookup -- and it improves the community-platform handle
+-- path (GitHub, Mastodon) by the same query, for free.
+CREATE INDEX IF NOT EXISTS idx_contact_identities_handle_ci
+  ON contact_identities(workspace_id, provider, LOWER(identity_value));

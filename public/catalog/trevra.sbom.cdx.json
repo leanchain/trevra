@@ -5,7 +5,7 @@
   "serialNumber": "urn:uuid:***",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-07-27T08:09:41.123Z",
+    "timestamp": "2026-08-06T09:39:58.541Z",
     "lifecycles": [
       {
         "phase": "build"
@@ -35,6 +35,207 @@
     }
   },
   "components": [
+    {
+      "bom-ref": "@ai-sdk/gateway@4.0.38",
+      "type": "library",
+      "name": "@ai-sdk/gateway",
+      "version": "4.0.38",
+      "scope": "required",
+      "purl": "pkg:npm/%40ai-sdk/gateway@4.0.38",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@ai-sdk/gateway/-/gateway-4.0.38.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/vercel/ai"
+        },
+        {
+          "type": "website",
+          "url": "https://ai-sdk.dev/docs"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/vercel/ai/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "04cc621867d79665107830825bfed7b3105354f065c3883293add118cd6a5724ede43acc79019e0b192c712fc49d4cc2be62c27050a5f1ff04a2ceb53c86a0f6"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "@ai-sdk/openai-compatible@3.0.20",
+      "type": "library",
+      "name": "@ai-sdk/openai-compatible",
+      "version": "3.0.20",
+      "scope": "required",
+      "purl": "pkg:npm/%40ai-sdk/openai-compatible@3.0.20",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@ai-sdk/openai-compatible/-/openai-compatible-3.0.20.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/vercel/ai"
+        },
+        {
+          "type": "website",
+          "url": "https://ai-sdk.dev/docs"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/vercel/ai/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "46c3e0f878a5b0a73f77e8f2e3322d1bbbfb449426f9c694bbe894d1ae5bc777b2c97e6d91ac8c18346495730c3003dae25df896ecd0c13dede1c99e1df7625b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "@ai-sdk/provider@4.0.4",
+      "type": "library",
+      "name": "@ai-sdk/provider",
+      "version": "4.0.4",
+      "scope": "required",
+      "purl": "pkg:npm/%40ai-sdk/provider@4.0.4",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@ai-sdk/provider/-/provider-4.0.4.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/vercel/ai"
+        },
+        {
+          "type": "website",
+          "url": "https://ai-sdk.dev/docs"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/vercel/ai/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b5b1ca34b8ab96550d177665902b179f069bd995754a5e1bd47fc2a7daee09c7b5e48066b2413c1b0924d32a3dc43598fa3868da87fb9555edc12b32aeaedcc1"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "@ai-sdk/provider-utils@5.0.18",
+      "type": "library",
+      "name": "@ai-sdk/provider-utils",
+      "version": "5.0.18",
+      "scope": "required",
+      "purl": "pkg:npm/%40ai-sdk/provider-utils@5.0.18",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@ai-sdk/provider-utils/-/provider-utils-5.0.18.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/vercel/ai"
+        },
+        {
+          "type": "website",
+          "url": "https://ai-sdk.dev/docs"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/vercel/ai/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "501342ae4c52e65960376fd15cb0519230854c8b8be980751a8ab973ec9179c9f39e1b57e173e34f02c7cf686bb1396d4d5674aea55e82d9f015774f0648c31c"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "undici@7.29.0",
+      "type": "library",
+      "name": "undici",
+      "version": "7.29.0",
+      "scope": "required",
+      "description": "An HTTP/1.1 client, written from scratch for Node.js",
+      "purl": "pkg:npm/undici@7.29.0",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/undici/-/undici-7.29.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/nodejs/undici.git"
+        },
+        {
+          "type": "website",
+          "url": "https://undici.nodejs.org"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/nodejs/undici/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "203c5f95e2e699b4ac91f5925004e23759df9f6ac3baf9cc3aa6f909647dda221fa2303451dfae94e000110e7b2cfafdad69acade5327f9970c9aa3eec634d57"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
     {
       "bom-ref": "@balena/dockerignore@1.0.2",
       "type": "library",
@@ -112,44 +313,6 @@
       ]
     },
     {
-      "bom-ref": "@noble/hashes@2.2.0",
-      "type": "library",
-      "name": "@noble/hashes",
-      "version": "2.2.0",
-      "scope": "required",
-      "author": "Paul Miller (https://paulmillr.com)",
-      "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt",
-      "purl": "pkg:npm/%40noble/hashes@2.2.0",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-2.2.0.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/paulmillr/noble-hashes.git"
-        },
-        {
-          "type": "website",
-          "url": "https://paulmillr.com/noble/"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "218a831a24d769be859e20209d2759c2059ba26c69cbd16d62f2cab3bc0252cd9af119084c6f831463b50ccf5cafe137fd18000d1a458eb295689d73eac8ed12"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "@better-fetch/fetch@1.3.1",
       "type": "library",
       "name": "@better-fetch/fetch",
@@ -171,6 +334,85 @@
         {
           "alg": "SHA-512",
           "content": "001903d568727cf669aca4502376e10138de885b8d582f4f5e17c65aa2feb20fe02ab33defba05ad891d6f89ac337860506a27afb2a53ac3854f94d4dab86df6"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "@emnapi/wasi-threads@1.2.2",
+      "type": "library",
+      "name": "@emnapi/wasi-threads",
+      "version": "1.2.2",
+      "scope": "optional",
+      "author": "toyobayashi",
+      "description": "WASI threads proposal implementation in JavaScript",
+      "purl": "pkg:npm/%40emnapi/wasi-threads@1.2.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:extraneous",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/toyobayashi/emnapi.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/toyobayashi/emnapi#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/toyobayashi/emnapi/issues"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "@esbuild/linux-x64@0.28.1",
+      "type": "library",
+      "name": "@esbuild/linux-x64",
+      "version": "0.28.1",
+      "scope": "optional",
+      "description": "The Linux 64-bit binary for esbuild, a JavaScript bundler.",
+      "purl": "pkg:npm/%40esbuild/linux-x64@0.28.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.28.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/evanw/esbuild.git"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "bbf6a73581769a654e103c0bb67435c0eaf7119f6c4cd18b5abb18198c075b3180dd28bce083a41d795b5930f5341fbdff595c9f079828ee78ba1c59c9d3737c"
         }
       ],
       "licenses": [
@@ -258,53 +500,6 @@
       ]
     },
     {
-      "bom-ref": "@grpc/proto-loader@0.7.15",
-      "type": "library",
-      "name": "@grpc/proto-loader",
-      "version": "0.7.15",
-      "scope": "optional",
-      "author": "Google Inc.",
-      "description": "gRPC utility library for loading .proto files",
-      "purl": "pkg:npm/%40grpc/proto-loader@0.7.15",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/@grpc/proto-loader/-/proto-loader-0.7.15.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/grpc/grpc-node.git"
-        },
-        {
-          "type": "website",
-          "url": "https://grpc.io/"
-        },
-        {
-          "type": "issue-tracker",
-          "url": "https://github.com/grpc/grpc-node/issues"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "b4c5dd4427d8562c63b852be1e4d10d6cdfc815f730e20c97d62f7875aefe10737f6820b0aed534530edefe7c6508f0ae06d458f5db91f1febbb76b3102593c9"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "@hono/node-server@2.0.12",
       "type": "library",
       "name": "@hono/node-server",
@@ -373,224 +568,6 @@
         {
           "license": {
             "id": "ISC"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "ansi-regex@6.2.2",
-      "type": "library",
-      "name": "ansi-regex",
-      "version": "6.2.2",
-      "scope": "optional",
-      "author": "Sindre Sorhus",
-      "description": "Regular expression for matching ANSI escape codes",
-      "purl": "pkg:npm/ansi-regex@6.2.2",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/ansi-regex/-/ansi-regex-6.2.2.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "06add2992a721476968cf93c21ff7273ab2f33c739e9d079040b56e106f0e631d3c305d77132e844c9290c9a7a54bd17ce559a0874d7ae415444c6260f4b0baa"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "ansi-styles@6.2.3",
-      "type": "library",
-      "name": "ansi-styles",
-      "version": "6.2.3",
-      "scope": "optional",
-      "author": "Sindre Sorhus",
-      "description": "ANSI escape codes for styling strings in the terminal",
-      "purl": "pkg:npm/ansi-styles@6.2.3",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/ansi-styles/-/ansi-styles-6.2.3.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "e038fa336f0907ea001fc9059132d4a3e6b68f038592ea9bdf2b9c53408035c45151bc52d1c3f49d96021a371cdc1357c1122c5159831a0cdac267bbcef247be"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "emoji-regex@9.2.2",
-      "type": "library",
-      "name": "emoji-regex",
-      "version": "9.2.2",
-      "scope": "optional",
-      "author": "Mathias Bynens",
-      "description": "A regular expression to match all Emoji-only symbols as per the Unicode Standard.",
-      "purl": "pkg:npm/emoji-regex@9.2.2",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/emoji-regex/-/emoji-regex-9.2.2.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/mathiasbynens/emoji-regex.git"
-        },
-        {
-          "type": "website",
-          "url": "https://mths.be/emoji-regex"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "2f5f03689b17494936fb8da9bfc98bb398c94f686a164144e23db5c0e9a06d4aac67684bef636c514efce60f515e0a37b3464d815978d93887a7766d3affd5ca"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "string-width@5.1.2",
-      "type": "library",
-      "name": "string-width",
-      "version": "5.1.2",
-      "scope": "optional",
-      "author": "Sindre Sorhus",
-      "description": "Get the visual width of a string - the number of columns required to display it",
-      "purl": "pkg:npm/string-width@5.1.2",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/string-width/-/string-width-5.1.2.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "1e72ce091def8dc63c6dea0d2ed723679fe7c67d9a7e6304ea586b0eb79ba24a8c6a9f976de5bc9fd4d7a4f0cea9d18ae6a708de84f418a4d6eb00bb10c895a8"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "strip-ansi@7.2.0",
-      "type": "library",
-      "name": "strip-ansi",
-      "version": "7.2.0",
-      "scope": "optional",
-      "author": "Sindre Sorhus",
-      "description": "Strip ANSI escape codes from a string",
-      "purl": "pkg:npm/strip-ansi@7.2.0",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/strip-ansi/-/strip-ansi-7.2.0.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "c833cc363a785b27d80641e78c844b7dc6b58ba28cc860adb1582829eff3d7eeafba481a10d76018166df9998a3dce206afbc46793a01df1ddadace180dc86ef"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "wrap-ansi@8.1.0",
-      "type": "library",
-      "name": "wrap-ansi",
-      "version": "8.1.0",
-      "scope": "optional",
-      "author": "Sindre Sorhus",
-      "description": "Wordwrap a string with ANSI escape codes",
-      "purl": "pkg:npm/wrap-ansi@8.1.0",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-8.1.0.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "b22ed0588eb350cab9e9b11216f6a0b66ccc7463ada317d1f927b3d753286df73bb66f9591472493d6d6d9479f7d319551b3a4b31992c34000da0b3c83bd4d09"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
           }
         }
       ]
@@ -1652,19 +1629,19 @@
       ]
     },
     {
-      "bom-ref": "@modelcontextprotocol/sdk@1.29.0",
+      "bom-ref": "@modelcontextprotocol/sdk@1.30.0",
       "type": "library",
       "name": "@modelcontextprotocol/sdk",
-      "version": "1.29.0",
+      "version": "1.30.0",
       "scope": "required",
       "author": "Anthropic, PBC (https://anthropic.com)",
       "description": "Model Context Protocol implementation for TypeScript",
-      "purl": "pkg:npm/%40modelcontextprotocol/sdk@1.29.0",
+      "purl": "pkg:npm/%40modelcontextprotocol/sdk@1.30.0",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.29.0.tgz"
+          "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.30.0.tgz"
         },
         {
           "type": "vcs",
@@ -1678,7 +1655,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "ce8dfb99903d8495a950b824469a307b07b3d72e8c2f91ac5c93d8f05234b4104277bec712fcdae230ea44a397807367f3aecf5460b24ddceaa73d22ceee598d"
+          "content": "c4a77c388ce5a8dcdca9c36e98601aea0f8f5b69230f9beba5c28e9df95d0143cfde3ee59ea30fc254d7426f2017e5301fbdb3d25a9a45b8ebf61a86cf47884c"
         }
       ],
       "licenses": [
@@ -1906,24 +1883,19 @@
       ]
     },
     {
-      "bom-ref": "@noble/hashes@1.8.0",
+      "bom-ref": "@noble/hashes@2.2.0",
       "type": "library",
       "name": "@noble/hashes",
-      "version": "1.8.0",
-      "scope": "optional",
+      "version": "2.2.0",
+      "scope": "required",
       "author": "Paul Miller (https://paulmillr.com)",
       "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt",
-      "purl": "pkg:npm/%40noble/hashes@1.8.0",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
+      "purl": "pkg:npm/%40noble/hashes@2.2.0",
+      "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz"
+          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-2.2.0.tgz"
         },
         {
           "type": "vcs",
@@ -1937,7 +1909,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "8c2b3d95d77b370ce98170c87fa3f7f8dac787dfec0fa0907711f28d023e87feab0cda3cf32a41c71cf8e540ee647cfdaf7b4dcfb37f5489d256855db57108e0"
+          "content": "218a831a24d769be859e20209d2759c2059ba26c69cbd16d62f2cab3bc0252cd9af119084c6f831463b50ccf5cafe137fd18000d1a458eb295689d73eac8ed12"
         }
       ],
       "licenses": [
@@ -2056,6 +2028,49 @@
         {
           "alg": "SHA-512",
           "content": "5ceedc0318674d997462082aea33a08e238785b81c3b836a16ac12990a632b76fa4c413a523fe37d293ac336327a6877f88d2c1e2aca49eb634309f971992d17"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "@noble/hashes@1.8.0",
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "scope": "optional",
+      "author": "Paul Miller (https://paulmillr.com)",
+      "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt",
+      "purl": "pkg:npm/%40noble/hashes@1.8.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/paulmillr/noble-hashes.git"
+        },
+        {
+          "type": "website",
+          "url": "https://paulmillr.com/noble/"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "8c2b3d95d77b370ce98170c87fa3f7f8dac787dfec0fa0907711f28d023e87feab0cda3cf32a41c71cf8e540ee647cfdaf7b4dcfb37f5489d256855db57108e0"
         }
       ],
       "licenses": [
@@ -2945,35 +2960,6 @@
         {
           "alg": "SHA-512",
           "content": "f0f8ace7dc582eb1aee867e4916beb6169123c4be8f2504120bb11ea004719bca636511cd329f29515ea3e6463c2e2df612ee31f3c6a8e33bb72f5c943fcf616"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "ms@3.0.0-canary.1",
-      "type": "library",
-      "name": "ms",
-      "version": "3.0.0-canary.1",
-      "scope": "required",
-      "description": "Tiny millisecond conversion utility",
-      "purl": "pkg:npm/ms@3.0.0-canary.1",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/ms/-/ms-3.0.0-canary.1.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "921f0046387cacc37b0eeda280344ef50267a826f6c584c9c724182bbbc9252e13bcb2e6b1bca188aa525beb7ecb6ea0c8ec8c774ae2a615f419e58a537932e6"
         }
       ],
       "licenses": [
@@ -4549,6 +4535,47 @@
       ]
     },
     {
+      "bom-ref": "@vercel/oidc@3.2.0",
+      "type": "library",
+      "name": "@vercel/oidc",
+      "version": "3.2.0",
+      "scope": "required",
+      "description": "Runtime OIDC helpers intended for use with Vercel Functions",
+      "purl": "pkg:npm/%40vercel/oidc@3.2.0",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@vercel/oidc/-/oidc-3.2.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/vercel/vercel.git"
+        },
+        {
+          "type": "website",
+          "url": "https://vercel.com"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/vercel/vercel/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "532729ac7dd3ea7de31f4938e0d1cc6bba671471aefcdd39323a2362bf8c73a23ba1b9282c826e8d25b08a7d690af772fde3b1ac8fe5dee0cb42c99cace6f8ba"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "@vitejs/plugin-react@6.0.4",
       "type": "library",
       "name": "@vitejs/plugin-react",
@@ -5388,6 +5415,39 @@
       ]
     },
     {
+      "bom-ref": "@workflow/serde@4.1.0",
+      "type": "library",
+      "name": "@workflow/serde",
+      "version": "4.1.0",
+      "scope": "required",
+      "description": "Serialization symbols for custom class serialization in Workflow SDK",
+      "purl": "pkg:npm/%40workflow/serde@4.1.0",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@workflow/serde/-/serde-4.1.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/vercel/workflow.git"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "a5abf81760688ab102591ecd7f54cab7ed9e1137018fb8e3e1c05e7d0f155d0080e8d3e468a78b7e3ff33208bedf3615e592014f81ae522a61b23d3f6fd84f41"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "@xmldom/xmldom@0.8.13",
       "type": "library",
       "name": "@xmldom/xmldom",
@@ -5647,6 +5707,47 @@
       ]
     },
     {
+      "bom-ref": "ai@7.0.49",
+      "type": "library",
+      "name": "ai",
+      "version": "7.0.49",
+      "scope": "required",
+      "description": "AI SDK by Vercel - build apps like ChatGPT, Claude, Gemini, and more with a single interface for any model using the Vercel AI Gateway or go direct to OpenAI, Anthropic, Google, or any other model provider.",
+      "purl": "pkg:npm/ai@7.0.49",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ai/-/ai-7.0.49.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/vercel/ai"
+        },
+        {
+          "type": "website",
+          "url": "https://ai-sdk.dev/docs"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/vercel/ai/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "32c930f0ffa94b6dcde41916b5d735ab3ad6af6fff0633b42c90ef09cedc8333d4fdb28e661b2615cd6c085012bc0fbadb31db33f049408ec3d502814480d22f"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "ajv@8.20.0",
       "type": "library",
       "name": "ajv",
@@ -5765,25 +5866,30 @@
       ]
     },
     {
-      "bom-ref": "ansi-regex@5.0.1",
+      "bom-ref": "ansi-regex@6.2.2",
       "type": "library",
       "name": "ansi-regex",
-      "version": "5.0.1",
-      "scope": "required",
+      "version": "6.2.2",
+      "scope": "optional",
       "author": "Sindre Sorhus",
       "description": "Regular expression for matching ANSI escape codes",
-      "purl": "pkg:npm/ansi-regex@5.0.1",
-      "properties": [],
+      "purl": "pkg:npm/ansi-regex@6.2.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/ansi-regex/-/ansi-regex-5.0.1.tgz"
+          "url": "https://registry.npmjs.org/ansi-regex/-/ansi-regex-6.2.2.tgz"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "aae2505e54d25062f62c7f52517a3c570b18e2ca1a9e1828e8b3529bce04d4b05c13cb373b4c29762473c91f73fd9649325316bf7eea38e6fda5d26531410a15"
+          "content": "06add2992a721476968cf93c21ff7273ab2f33c739e9d079040b56e106f0e631d3c305d77132e844c9290c9a7a54bd17ce559a0874d7ae415444c6260f4b0baa"
         }
       ],
       "licenses": [
@@ -5998,30 +6104,119 @@
       ]
     },
     {
-      "bom-ref": "argparse@1.0.10",
+      "bom-ref": "safe-buffer@5.2.1",
       "type": "library",
-      "name": "argparse",
-      "version": "1.0.10",
-      "scope": "required",
-      "description": "Very powerful CLI arguments parser. Native port of argparse - python's options parsing library",
-      "purl": "pkg:npm/argparse@1.0.10",
-      "properties": [],
+      "name": "safe-buffer",
+      "version": "5.2.1",
+      "scope": "optional",
+      "author": "Feross Aboukhadijeh",
+      "description": "Safer Node.js Buffer API",
+      "purl": "pkg:npm/safe-buffer@5.2.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/argparse/-/argparse-1.0.10.tgz"
+          "url": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.2.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/feross/safe-buffer.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/feross/safe-buffer"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/feross/safe-buffer/issues"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "a39468cbab4d1b848bfc53a408037a4738e26a4652db944b605adc32db49a9b75df015ab9c0f9f1b3e7b88de4f6f4ea9bc11af979810d01e3c74996c957be84e"
+          "content": "ae9dd2a34eca71d9a629b1af81a37141226bedb1954959394bd12ad45fa9a5b468ef4f9879a0f1930e4377c34f37e183e9b8e7626d95b8fb825e6a6e62f9825d"
         }
       ],
       "licenses": [
         {
           "license": {
             "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "string_decoder@1.3.0",
+      "type": "library",
+      "name": "string_decoder",
+      "version": "1.3.0",
+      "scope": "optional",
+      "description": "The string_decoder module from Node core",
+      "purl": "pkg:npm/string_decoder@1.3.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/string_decoder/-/string_decoder-1.3.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/nodejs/string_decoder.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/nodejs/string_decoder"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "864457f14d568c915df0bb03276c90ff0596c5aa2912c0015355df90cf00fa3d3ef392401a9a6dd7a72bd56860e8a21b6f8a2453a32a97a04e8febaea7fc0a78"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "argparse@2.0.1",
+      "type": "library",
+      "name": "argparse",
+      "version": "2.0.1",
+      "scope": "required",
+      "description": "CLI arguments parser. Native port of python's argparse.",
+      "purl": "pkg:npm/argparse@2.0.1",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/argparse/-/argparse-2.0.1.tgz"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f3ef56a9e6db173a57f4e47e59ae8edbd6ac22881e44ccdc1ad00835da4c1c7c80835d1fd3969215505b704a867ff3d7c35123019faadbf6c4060dc3beeacadd"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Python-2.0"
           }
         }
       ]
@@ -6690,18 +6885,18 @@
       ]
     },
     {
-      "bom-ref": "baseline-browser-mapping@2.11.4",
+      "bom-ref": "baseline-browser-mapping@2.11.5",
       "type": "library",
       "name": "baseline-browser-mapping",
-      "version": "2.11.4",
+      "version": "2.11.5",
       "scope": "required",
       "description": "A library for obtaining browser versions with their maximum supported Baseline feature set and Widely Available status.",
-      "purl": "pkg:npm/baseline-browser-mapping@2.11.4",
+      "purl": "pkg:npm/baseline-browser-mapping@2.11.5",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/baseline-browser-mapping/-/baseline-browser-mapping-2.11.4.tgz"
+          "url": "https://registry.npmjs.org/baseline-browser-mapping/-/baseline-browser-mapping-2.11.5.tgz"
         },
         {
           "type": "vcs",
@@ -6711,7 +6906,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "b38fac2ebf6667f0b2a9e46b8ad15e615fd9c7bdce02d99a1e7ea49014b55d1a099f586b837c480d472989c0045faf2d91c20dd2204282d8b7d42f33c6d921b1"
+          "content": "c49a3a6ba6199f065f9f21a640a58c6d539c8a2ed74626e33ac91187e589f541d0a17d7ac6b42b7088003103b37efb3c5e22ccc7a8a1fdfb0b3c5ef7898d83d4"
         }
       ],
       "licenses": [
@@ -6761,18 +6956,18 @@
       ]
     },
     {
-      "bom-ref": "better-auth@1.6.24",
+      "bom-ref": "better-auth@1.6.25",
       "type": "library",
       "name": "better-auth",
-      "version": "1.6.24",
+      "version": "1.6.25",
       "scope": "required",
       "description": "The most comprehensive authentication framework for TypeScript.",
-      "purl": "pkg:npm/better-auth@1.6.24",
+      "purl": "pkg:npm/better-auth@1.6.25",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/better-auth/-/better-auth-1.6.24.tgz"
+          "url": "https://registry.npmjs.org/better-auth/-/better-auth-1.6.25.tgz"
         },
         {
           "type": "vcs",
@@ -6786,7 +6981,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "32d07150a236cb98570412d4d4c01791403fc5310f276964cd62ca0934321bf20a35043cbdeded64ad2ebeae0022ff6238b647294a41381b03a2a4c41da45bf5"
+          "content": "7efa2afa808ef851797e93f75df53bce7472185a4707bed41b6132c6c28dcbe09a93b439a442eef9abafbc3bde41b590c5ca0aba067b8d84103c540ba544c63b"
         }
       ],
       "licenses": [
@@ -6798,18 +6993,18 @@
       ]
     },
     {
-      "bom-ref": "@better-auth/core@1.6.24",
+      "bom-ref": "@better-auth/core@1.6.25",
       "type": "library",
       "name": "@better-auth/core",
-      "version": "1.6.24",
+      "version": "1.6.25",
       "scope": "required",
       "description": "The most comprehensive authentication framework for TypeScript.",
-      "purl": "pkg:npm/%40better-auth/core@1.6.24",
+      "purl": "pkg:npm/%40better-auth/core@1.6.25",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@better-auth/core/-/core-1.6.24.tgz"
+          "url": "https://registry.npmjs.org/@better-auth/core/-/core-1.6.25.tgz"
         },
         {
           "type": "vcs",
@@ -6823,7 +7018,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "cd0b98660c06bd472742dfeac8b619bfe778504c0cce0de628a3e26036681b1e238513918d5f36d786f712989e61f88501e058fc4009a35cc68592c9fbb54579"
+          "content": "94c4e586dc322b836963d90f17edab40244a629835dfa77780cdb197c7acc53d4f8c9c79361e58c19bf17180888c3b8eef9f6cc7a4c2968253bb0719186e9907"
         }
       ],
       "licenses": [
@@ -6835,18 +7030,18 @@
       ]
     },
     {
-      "bom-ref": "@better-auth/drizzle-adapter@1.6.24",
+      "bom-ref": "@better-auth/drizzle-adapter@1.6.25",
       "type": "library",
       "name": "@better-auth/drizzle-adapter",
-      "version": "1.6.24",
+      "version": "1.6.25",
       "scope": "required",
       "description": "Drizzle adapter for Better Auth",
-      "purl": "pkg:npm/%40better-auth/drizzle-adapter@1.6.24",
+      "purl": "pkg:npm/%40better-auth/drizzle-adapter@1.6.25",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@better-auth/drizzle-adapter/-/drizzle-adapter-1.6.24.tgz"
+          "url": "https://registry.npmjs.org/@better-auth/drizzle-adapter/-/drizzle-adapter-1.6.25.tgz"
         },
         {
           "type": "vcs",
@@ -6864,7 +7059,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "b1dcd27a01960c7fa98d23182e9b97e75b00380b423a90de5cec8562841b014b95d2a38dbd583985a4bd51ecee97671f5f10b94b91cf41e636957a7e073649e5"
+          "content": "aeefc378a8c53d051578a93117f49c6b398fa8863b9707e4015e58b788f6e309a7d58f2f170a223d19c781751e66a06cd74fa7b9b691c04a8b177f423fa12147"
         }
       ],
       "licenses": [
@@ -6876,18 +7071,18 @@
       ]
     },
     {
-      "bom-ref": "@better-auth/kysely-adapter@1.6.24",
+      "bom-ref": "@better-auth/kysely-adapter@1.6.25",
       "type": "library",
       "name": "@better-auth/kysely-adapter",
-      "version": "1.6.24",
+      "version": "1.6.25",
       "scope": "required",
       "description": "Kysely adapter for Better Auth",
-      "purl": "pkg:npm/%40better-auth/kysely-adapter@1.6.24",
+      "purl": "pkg:npm/%40better-auth/kysely-adapter@1.6.25",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@better-auth/kysely-adapter/-/kysely-adapter-1.6.24.tgz"
+          "url": "https://registry.npmjs.org/@better-auth/kysely-adapter/-/kysely-adapter-1.6.25.tgz"
         },
         {
           "type": "vcs",
@@ -6901,7 +7096,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "763dc3b0231d5bac9b39e012666419c32464698610efa321ce8ff04b1708ee2d65972a5bbd14b7e42af56307199cde087a4153cb0f638555b14fec81cdf41164"
+          "content": "cf189e3e1b4dd580a54b58ab2983d5c167cdea4629f90a18973d6175050e8fc857ca8d9a13f9f2e113406fabf7df66f4f94e95bbcf0485821344f766bc2a3ab8"
         }
       ],
       "licenses": [
@@ -6913,18 +7108,18 @@
       ]
     },
     {
-      "bom-ref": "@better-auth/memory-adapter@1.6.24",
+      "bom-ref": "@better-auth/memory-adapter@1.6.25",
       "type": "library",
       "name": "@better-auth/memory-adapter",
-      "version": "1.6.24",
+      "version": "1.6.25",
       "scope": "required",
       "description": "Memory adapter for Better Auth",
-      "purl": "pkg:npm/%40better-auth/memory-adapter@1.6.24",
+      "purl": "pkg:npm/%40better-auth/memory-adapter@1.6.25",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@better-auth/memory-adapter/-/memory-adapter-1.6.24.tgz"
+          "url": "https://registry.npmjs.org/@better-auth/memory-adapter/-/memory-adapter-1.6.25.tgz"
         },
         {
           "type": "vcs",
@@ -6938,7 +7133,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "a40a78f54597137dac5bfe3badaf529494d462bcef07ff236b287a40cf430f78afb354e03dbab5d22c3024e79c2488b95a41d6c3ae2ea7b83c661843a40aaa22"
+          "content": "1a11334ee99cf327d3cfe399ea9320d3a040e3dc686f8f71d5b5fed66125fc54ad0c9a1217eea64df239336cad1716a237cf77dfafda523916f2efaa4722dec7"
         }
       ],
       "licenses": [
@@ -6950,18 +7145,18 @@
       ]
     },
     {
-      "bom-ref": "@better-auth/mongo-adapter@1.6.24",
+      "bom-ref": "@better-auth/mongo-adapter@1.6.25",
       "type": "library",
       "name": "@better-auth/mongo-adapter",
-      "version": "1.6.24",
+      "version": "1.6.25",
       "scope": "required",
       "description": "Mongo adapter for Better Auth",
-      "purl": "pkg:npm/%40better-auth/mongo-adapter@1.6.24",
+      "purl": "pkg:npm/%40better-auth/mongo-adapter@1.6.25",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@better-auth/mongo-adapter/-/mongo-adapter-1.6.24.tgz"
+          "url": "https://registry.npmjs.org/@better-auth/mongo-adapter/-/mongo-adapter-1.6.25.tgz"
         },
         {
           "type": "vcs",
@@ -6975,7 +7170,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "d929dbbf6bff8093461c61d180011f2921f0a03610fa6a9c18edac8a1f8a60ae74016e8b417f7739764fb70914399026c8def4833e3f1a0336c963c2f9d3e2a3"
+          "content": "66d3268dc39d5d1d998aac79cbca6d4ce68da5ed2c9cd7c02db0543d726c81ec9e4640c90d8cf22d9f0ca6ebcd05336594d7881436e25d600ae64fa910166b51"
         }
       ],
       "licenses": [
@@ -6987,18 +7182,18 @@
       ]
     },
     {
-      "bom-ref": "@better-auth/prisma-adapter@1.6.24",
+      "bom-ref": "@better-auth/prisma-adapter@1.6.25",
       "type": "library",
       "name": "@better-auth/prisma-adapter",
-      "version": "1.6.24",
+      "version": "1.6.25",
       "scope": "required",
       "description": "Prisma adapter for Better Auth",
-      "purl": "pkg:npm/%40better-auth/prisma-adapter@1.6.24",
+      "purl": "pkg:npm/%40better-auth/prisma-adapter@1.6.25",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@better-auth/prisma-adapter/-/prisma-adapter-1.6.24.tgz"
+          "url": "https://registry.npmjs.org/@better-auth/prisma-adapter/-/prisma-adapter-1.6.25.tgz"
         },
         {
           "type": "vcs",
@@ -7012,7 +7207,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "4d9461504cd5e81856338fe5db2b2d65a639f4cb8da1aaaa629ec826b4931d3de5dfadcb58b0fd65850134f659efe865a4c0b4a1b3e07d1ee76d143eb6b9e21e"
+          "content": "ca6ec1e88a9caf2fbfe1a427629170a8ffc6048897be3ae6ff907afb4aa6c7c9a44d8fdaa47153a47b86cd461835fe2f3d3b73177798636facd863aca2629a46"
         }
       ],
       "licenses": [
@@ -7024,18 +7219,18 @@
       ]
     },
     {
-      "bom-ref": "@better-auth/telemetry@1.6.24",
+      "bom-ref": "@better-auth/telemetry@1.6.25",
       "type": "library",
       "name": "@better-auth/telemetry",
-      "version": "1.6.24",
+      "version": "1.6.25",
       "scope": "required",
       "description": "Telemetry package for Better Auth",
-      "purl": "pkg:npm/%40better-auth/telemetry@1.6.24",
+      "purl": "pkg:npm/%40better-auth/telemetry@1.6.25",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@better-auth/telemetry/-/telemetry-1.6.24.tgz"
+          "url": "https://registry.npmjs.org/@better-auth/telemetry/-/telemetry-1.6.25.tgz"
         },
         {
           "type": "vcs",
@@ -7049,7 +7244,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "ab835e4832cf28c408862a7be8e43d3978145d4ffb5e842ee5d02aa6d5f6571b4fa10367fdc6e0c6cf9d698b194b02504f5f994b3e5f52f6da70a96de89e8bbb"
+          "content": "d997c2f65a7bb54e89c3fab62f3fdb29f42a18c74cc1cfc84034d874186fb468b6e2a2276159e1a766425b9ee11ccf63f9fab550b3adc6083a3374f52c46a287"
         }
       ],
       "licenses": [
@@ -7213,6 +7408,44 @@
         {
           "alg": "SHA-512",
           "content": "10773220f050e0148696f8c1d7a9392a0009dbb088b0763fd8906609145ea38f32f6b43731a533597dca56505ae14eccc97d361dd563d0aec2dd6681de3bbb15"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "readable-stream@3.6.2",
+      "type": "library",
+      "name": "readable-stream",
+      "version": "3.6.2",
+      "scope": "optional",
+      "description": "Streams3, a user-land copy of the stream library from Node.js",
+      "purl": "pkg:npm/readable-stream@3.6.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/readable-stream/-/readable-stream-3.6.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git://github.com/nodejs/readable-stream"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f6efec9e20ab6370f959db04447cc71381b66025eaa06e454c7522082e1221bafa5dc2d9058d39c9af442a361e93d3b9c4e0308c6abed497460404bb43d49ca0"
         }
       ],
       "licenses": [
@@ -7975,6 +8208,164 @@
       ]
     },
     {
+      "bom-ref": "ansi-regex@5.0.1",
+      "type": "library",
+      "name": "ansi-regex",
+      "version": "5.0.1",
+      "scope": "required",
+      "author": "Sindre Sorhus",
+      "description": "Regular expression for matching ANSI escape codes",
+      "purl": "pkg:npm/ansi-regex@5.0.1",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ansi-regex/-/ansi-regex-5.0.1.tgz"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "aae2505e54d25062f62c7f52517a3c570b18e2ca1a9e1828e8b3529bce04d4b05c13cb373b4c29762473c91f73fd9649325316bf7eea38e6fda5d26531410a15"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "emoji-regex@8.0.0",
+      "type": "library",
+      "name": "emoji-regex",
+      "version": "8.0.0",
+      "scope": "required",
+      "author": "Mathias Bynens",
+      "description": "A regular expression to match all Emoji-only symbols as per the Unicode Standard.",
+      "purl": "pkg:npm/emoji-regex@8.0.0",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/emoji-regex/-/emoji-regex-8.0.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/mathiasbynens/emoji-regex.git"
+        },
+        {
+          "type": "website",
+          "url": "https://mths.be/emoji-regex"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "3128d8cdc58d380d1ec001e9cf4331a5816fc20eb28f2d4d1b7c6d7a8ab3eb8e150a8fd13e09ebd7f186b7e89cde2253cd0f04bb74dd335e126b09d5526184e8"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "string-width@4.2.3",
+      "type": "library",
+      "name": "string-width",
+      "version": "4.2.3",
+      "scope": "required",
+      "author": "Sindre Sorhus",
+      "description": "Get the visual width of a string - the number of columns required to display it",
+      "purl": "pkg:npm/string-width@4.2.3",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "c0ac90450a63274b08a7ad84ad265d1ac8cc256b1aa79a1136284786ee86ec954effd8c807a5327af2feb57b8eaab9e0f23fdcc4a4d6c96530bd24eb8a2673fe"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "strip-ansi@6.0.1",
+      "type": "library",
+      "name": "strip-ansi",
+      "version": "6.0.1",
+      "scope": "required",
+      "author": "Sindre Sorhus",
+      "description": "Strip ANSI escape codes from a string",
+      "purl": "pkg:npm/strip-ansi@6.0.1",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/strip-ansi/-/strip-ansi-6.0.1.tgz"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "637f153d21dcaa416b0a916743dbee4979aabaebf9a1738aa46793e9a1abaf7a3719cf409556ba2417d448e0a76f1186645fbfd28a08ecaacfb944b3b54754e4"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "wrap-ansi@7.0.0",
+      "type": "library",
+      "name": "wrap-ansi",
+      "version": "7.0.0",
+      "scope": "required",
+      "author": "Sindre Sorhus",
+      "description": "Wordwrap a string with ANSI escape codes",
+      "purl": "pkg:npm/wrap-ansi@7.0.0",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-7.0.0.tgz"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "6151888f691a98b493c70e8db198e80717d2c2c9f4c9c75eb26738a7e436d5ce733ee675a65f8d7f155dc4fb5d1ef98d54e43a5d2606e0052dcadfc58bb0f5e9"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "color-convert@2.0.1",
       "type": "library",
       "name": "color-convert",
@@ -8270,6 +8661,48 @@
         {
           "alg": "SHA-512",
           "content": "4d9d02121cb3bc58e0b40bc74eeb033208fbc0d76284287b2cb2ebcdd50e5c885d9672f624104603d789c51db8aedaa099d8e1dce03786b375ac21e3e8733ca8"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "yargs@17.7.2",
+      "type": "library",
+      "name": "yargs",
+      "version": "17.7.2",
+      "scope": "optional",
+      "description": "yargs the modern, pirate-themed, successor to optimist.",
+      "purl": "pkg:npm/yargs@17.7.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/yargs/-/yargs-17.7.2.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/yargs/yargs.git"
+        },
+        {
+          "type": "website",
+          "url": "https://yargs.js.org/"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "edd4b3cd143ef822a7348fe4aca9d8455ec928a3d45cc121eb5b286872a0f66ad6121cc55a1167c4fc4697eebd703d4ebbadc2d773543c29e621caefa82b8ceb"
         }
       ],
       "licenses": [
@@ -8851,6 +9284,35 @@
       ]
     },
     {
+      "bom-ref": "ms@2.1.3",
+      "type": "library",
+      "name": "ms",
+      "version": "2.1.3",
+      "scope": "required",
+      "description": "Tiny millisecond conversion utility",
+      "purl": "pkg:npm/ms@2.1.3",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e85973b9b4cb646dc9d9afcd542025784863ceae68c601f268253dc985ef70bb2fa1568726afece715c8ebf5d73fab73ed1f7100eb479d23bfb57b45dd645394"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "defu@6.1.7",
       "type": "library",
       "name": "defu",
@@ -9192,6 +9654,53 @@
       ]
     },
     {
+      "bom-ref": "@grpc/proto-loader@0.7.15",
+      "type": "library",
+      "name": "@grpc/proto-loader",
+      "version": "0.7.15",
+      "scope": "optional",
+      "author": "Google Inc.",
+      "description": "gRPC utility library for loading .proto files",
+      "purl": "pkg:npm/%40grpc/proto-loader@0.7.15",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@grpc/proto-loader/-/proto-loader-0.7.15.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/grpc/grpc-node.git"
+        },
+        {
+          "type": "website",
+          "url": "https://grpc.io/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/grpc/grpc-node/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b4c5dd4427d8562c63b852be1e4d10d6cdfc815f730e20c97d62f7875aefe10737f6820b0aed534530edefe7c6508f0ae06d458f5db91f1febbb76b3102593c9"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "tar-fs@2.1.5",
       "type": "library",
       "name": "tar-fs",
@@ -9491,19 +10000,24 @@
       ]
     },
     {
-      "bom-ref": "emoji-regex@8.0.0",
+      "bom-ref": "emoji-regex@9.2.2",
       "type": "library",
       "name": "emoji-regex",
-      "version": "8.0.0",
-      "scope": "required",
+      "version": "9.2.2",
+      "scope": "optional",
       "author": "Mathias Bynens",
       "description": "A regular expression to match all Emoji-only symbols as per the Unicode Standard.",
-      "purl": "pkg:npm/emoji-regex@8.0.0",
-      "properties": [],
+      "purl": "pkg:npm/emoji-regex@9.2.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/emoji-regex/-/emoji-regex-8.0.0.tgz"
+          "url": "https://registry.npmjs.org/emoji-regex/-/emoji-regex-9.2.2.tgz"
         },
         {
           "type": "vcs",
@@ -9517,7 +10031,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "3128d8cdc58d380d1ec001e9cf4331a5816fc20eb28f2d4d1b7c6d7a8ab3eb8e150a8fd13e09ebd7f186b7e89cde2253cd0f04bb74dd335e126b09d5526184e8"
+          "content": "2f5f03689b17494936fb8da9bfc98bb398c94f686a164144e23db5c0e9a06d4aac67684bef636c514efce60f515e0a37b3464d815978d93887a7766d3affd5ca"
         }
       ],
       "licenses": [
@@ -9837,6 +10351,44 @@
         {
           "alg": "SHA-512",
           "content": "8fabd6cdfac655fc97c607be3b4c79b21e9cbf10288346bfe1175dd8adfacc2315e5e27effeb4e0278113bc70e0cc3566d545d5659866502f6612df247c6c850"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "esbuild@0.28.1",
+      "type": "library",
+      "name": "esbuild",
+      "version": "0.28.1",
+      "scope": "optional",
+      "description": "An extremely fast JavaScript and CSS bundler and minifier.",
+      "purl": "pkg:npm/esbuild@0.28.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/esbuild/-/esbuild-0.28.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/evanw/esbuild.git"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1eb26bbd9bf96b2c41ccf7f0a613a837393338822589fce4d0a26b18ad9cf11e3e2caa4cb6960b41e51d8e7c235affcb665907da569993ee30efca62f7d0f857"
         }
       ],
       "licenses": [
@@ -10394,19 +10946,19 @@
       ]
     },
     {
-      "bom-ref": "express-rate-limit@8.6.0",
+      "bom-ref": "express-rate-limit@8.6.1",
       "type": "library",
       "name": "express-rate-limit",
-      "version": "8.6.0",
+      "version": "8.6.1",
       "scope": "required",
       "author": "Nathan Friedly",
       "description": "Basic IP rate-limiting middleware for Express. Use to limit repeated requests to public APIs and/or endpoints such as password reset.",
-      "purl": "pkg:npm/express-rate-limit@8.6.0",
+      "purl": "pkg:npm/express-rate-limit@8.6.1",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.6.0.tgz"
+          "url": "https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.6.1.tgz"
         },
         {
           "type": "vcs",
@@ -10420,7 +10972,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "5ca2570ec01250ea342cbb45c16e6109c4061f437859073f467f3f3efa226be4c914e92414fbebb56f6564e79e35cc5026ca6f3881113308912ec5459611c490"
+          "content": "d03e3ddda3fad70d13276034c32dbbae246c3bb14c43b14af8a50738a0927cfbd8a34479e5a882e9e982560154792847d1fab42023d5ccd720a12f81b1b5d008"
         }
       ],
       "licenses": [
@@ -11963,29 +12515,29 @@
       ]
     },
     {
-      "bom-ref": "ip-address@10.2.0",
+      "bom-ref": "ip-address@10.3.1",
       "type": "library",
       "name": "ip-address",
-      "version": "10.2.0",
+      "version": "10.3.1",
       "scope": "required",
       "author": "Beau Gunderson <beau@beaugunderson.com> (https://beaugunderson.com/)",
       "description": "A library for parsing IPv4 and IPv6 IP addresses in node and the browser.",
-      "purl": "pkg:npm/ip-address@10.2.0",
+      "purl": "pkg:npm/ip-address@10.3.1",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/ip-address/-/ip-address-10.2.0.tgz"
+          "url": "https://registry.npmjs.org/ip-address/-/ip-address-10.3.1.tgz"
         },
         {
           "type": "vcs",
-          "url": "git://github.com/beaugunderson/ip-address.git"
+          "url": "https://github.com/beaugunderson/ip-address.git"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "ffe4ba8f813d007bd6f5258c48463d5dfcbae8ee4f5af544274f0ed32e491b210a429a236f42b418aa73fefe4727f1b4be2dc3dac8c62bbf35d7da1765e134a8"
+          "content": "d5ef5dde46fdecd1c94c8243656f6b2aa5b687af9d15ae740f2d1fa4f48c429d800e37b982f2ac5e67622ba770639b7be93693b79f8fe4dd58fcba13a08c4fea"
         }
       ],
       "licenses": [
@@ -12383,35 +12935,6 @@
       ]
     },
     {
-      "bom-ref": "argparse@2.0.1",
-      "type": "library",
-      "name": "argparse",
-      "version": "2.0.1",
-      "scope": "required",
-      "description": "CLI arguments parser. Native port of python's argparse.",
-      "purl": "pkg:npm/argparse@2.0.1",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/argparse/-/argparse-2.0.1.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "f3ef56a9e6db173a57f4e47e59ae8edbd6ac22881e44ccdc1ad00835da4c1c7c80835d1fd3969215505b704a867ff3d7c35123019faadbf6c4060dc3beeacadd"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "Python-2.0"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "jsep@1.4.0",
       "type": "library",
       "name": "jsep",
@@ -12628,118 +13151,6 @@
       "licenses": [
         {
           "expression": "(MIT OR GPL-3.0-or-later)"
-        }
-      ]
-    },
-    {
-      "bom-ref": "readable-stream@2.3.8",
-      "type": "library",
-      "name": "readable-stream",
-      "version": "2.3.8",
-      "scope": "required",
-      "description": "Streams3, a user-land copy of the stream library from Node.js",
-      "purl": "pkg:npm/readable-stream@2.3.8",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/readable-stream/-/readable-stream-2.3.8.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git://github.com/nodejs/readable-stream"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "f29d00524e173838087b04a2d25f04a63b3e1159d688aecda03204194d07844efe67263c0f520c63ba1dbb9951ac55c683bd4bd79286f10acf9ae9b8e514ed74"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "safe-buffer@5.1.2",
-      "type": "library",
-      "name": "safe-buffer",
-      "version": "5.1.2",
-      "scope": "required",
-      "author": "Feross Aboukhadijeh",
-      "description": "Safer Node.js Buffer API",
-      "purl": "pkg:npm/safe-buffer@5.1.2",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.1.2.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git://github.com/feross/safe-buffer.git"
-        },
-        {
-          "type": "website",
-          "url": "https://github.com/feross/safe-buffer"
-        },
-        {
-          "type": "issue-tracker",
-          "url": "https://github.com/feross/safe-buffer/issues"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "19dd94641243917958ec66c9c5fb04f3f9ef2a45045351b7f1cd6c88de903fa6bd3d3f4c98707c1a7a6c71298c252a05f0b388aedf2e77fc0fb688f2b381bafa"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "string_decoder@1.1.1",
-      "type": "library",
-      "name": "string_decoder",
-      "version": "1.1.1",
-      "scope": "required",
-      "description": "The string_decoder module from Node core",
-      "purl": "pkg:npm/string_decoder@1.1.1",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/string_decoder/-/string_decoder-1.1.1.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git://github.com/nodejs/string_decoder.git"
-        },
-        {
-          "type": "website",
-          "url": "https://github.com/nodejs/string_decoder"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "9ff4a19ef0e2e851db6d57ef8aba3e5a88e2173bfeb3c30f30705ccd578f7d4a4324bc282d3d21b759786300426e2f29240bde104767907c8fc933ff9b345fc2"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
         }
       ]
     },
@@ -13265,6 +13676,35 @@
       ]
     },
     {
+      "bom-ref": "argparse@1.0.10",
+      "type": "library",
+      "name": "argparse",
+      "version": "1.0.10",
+      "scope": "required",
+      "description": "Very powerful CLI arguments parser. Native port of argparse - python's options parsing library",
+      "purl": "pkg:npm/argparse@1.0.10",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/argparse/-/argparse-1.0.10.tgz"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "a39468cbab4d1b848bfc53a408037a4738e26a4652db944b605adc32db49a9b75df015ab9c0f9f1b3e7b88de4f6f4ea9bc11af979810d01e3c74996c957be84e"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "math-intrinsics@1.1.0",
       "type": "library",
       "name": "math-intrinsics",
@@ -13307,25 +13747,25 @@
       ]
     },
     {
-      "bom-ref": "media-typer@1.1.0",
+      "bom-ref": "media-typer@1.1.1",
       "type": "library",
       "name": "media-typer",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "scope": "required",
       "author": "Douglas Christopher Wilson <doug@somethingdoug.com>",
       "description": "Simple RFC 6838 media type parser and formatter",
-      "purl": "pkg:npm/media-typer@1.1.0",
+      "purl": "pkg:npm/media-typer@1.1.1",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/media-typer/-/media-typer-1.1.0.tgz"
+          "url": "https://registry.npmjs.org/media-typer/-/media-typer-1.1.1.tgz"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "6a2b27ac33f818d7b4e9470a1675796df30d3c1530e23b0b19a5b059f9c7defd361a706e5d7d8c0959f945bad6a348f7a5ccd48a561b96aedf43b370dade572b"
+          "content": "cb3df145a1b6d1cebf04ecef6280da1ad3e61ac72ced88af22d64412a7ba19bc0d7c7bb1bbd60d9af9c490ccca95d006638ffcd2945c41165212786aba4f57b9"
         }
       ],
       "licenses": [
@@ -13758,24 +14198,24 @@
       ]
     },
     {
-      "bom-ref": "ms@2.1.3",
+      "bom-ref": "ms@3.0.0-canary.1",
       "type": "library",
       "name": "ms",
-      "version": "2.1.3",
+      "version": "3.0.0-canary.1",
       "scope": "required",
       "description": "Tiny millisecond conversion utility",
-      "purl": "pkg:npm/ms@2.1.3",
+      "purl": "pkg:npm/ms@3.0.0-canary.1",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz"
+          "url": "https://registry.npmjs.org/ms/-/ms-3.0.0-canary.1.tgz"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "e85973b9b4cb646dc9d9afcd542025784863ceae68c601f268253dc985ef70bb2fa1568726afece715c8ebf5d73fab73ed1f7100eb479d23bfb57b45dd645394"
+          "content": "921f0046387cacc37b0eeda280344ef50267a826f6c584c9c724182bbbc9252e13bcb2e6b1bca188aa525beb7ecb6ea0c8ec8c774ae2a615f419e58a537932e6"
         }
       ],
       "licenses": [
@@ -14449,25 +14889,25 @@
       ]
     },
     {
-      "bom-ref": "openai@6.48.0",
+      "bom-ref": "openai@6.49.0",
       "type": "library",
       "name": "openai",
-      "version": "6.48.0",
+      "version": "6.49.0",
       "scope": "required",
       "author": "OpenAI <support@openai.com>",
       "description": "The official TypeScript library for the OpenAI API",
-      "purl": "pkg:npm/openai@6.48.0",
+      "purl": "pkg:npm/openai@6.49.0",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/openai/-/openai-6.48.0.tgz"
+          "url": "https://registry.npmjs.org/openai/-/openai-6.49.0.tgz"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "2a1569f85c95e7442b5cd7b1b6f2fd84853997aa31e4762e2908c6564ee522aa6b809a25f74f9d41758e355e92d65456b0a0356d78eba30f11b144f5e0cd6134"
+          "content": "69809cd02e8bf3ae1e47a592608c101b25eb8b0fe7232671d0e6ef87338456e934ce8043a729e349bae2a27588eeaeb90791fc8c95f40d747db2713333a6df3e"
         }
       ],
       "licenses": [
@@ -15461,19 +15901,19 @@
       ]
     },
     {
-      "bom-ref": "postcss@8.5.22",
+      "bom-ref": "postcss@8.5.23",
       "type": "library",
       "name": "postcss",
-      "version": "8.5.22",
+      "version": "8.5.23",
       "scope": "optional",
       "author": "Andrey Sitnik <andrey@sitnik.es>",
       "description": "Tool for transforming styles with JS plugins",
-      "purl": "pkg:npm/postcss@8.5.22",
+      "purl": "pkg:npm/postcss@8.5.23",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/postcss/-/postcss-8.5.22.tgz"
+          "url": "https://registry.npmjs.org/postcss/-/postcss-8.5.23.tgz"
         },
         {
           "type": "website",
@@ -15487,7 +15927,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "2810c42292ebbe9bf5ea9a772b4170f940a865fa291638e0781fb4b40fda69385f104ef890a0cbae083ad3762f396272837f9662dcaadf162c416b08c9994fa9"
+          "content": "839d39f3acebe1b666c0589395f94cbbc1346c34dbe48e607abb60c002a6b1d5254d022166dba7cd4943d564b3c1c5563e8015a6cac0eaf95f083ee85ef47082"
         }
       ],
       "licenses": [
@@ -16252,18 +16692,18 @@
       ]
     },
     {
-      "bom-ref": "readable-stream@3.6.2",
+      "bom-ref": "readable-stream@2.3.8",
       "type": "library",
       "name": "readable-stream",
-      "version": "3.6.2",
+      "version": "2.3.8",
       "scope": "required",
       "description": "Streams3, a user-land copy of the stream library from Node.js",
-      "purl": "pkg:npm/readable-stream@3.6.2",
+      "purl": "pkg:npm/readable-stream@2.3.8",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/readable-stream/-/readable-stream-3.6.2.tgz"
+          "url": "https://registry.npmjs.org/readable-stream/-/readable-stream-2.3.8.tgz"
         },
         {
           "type": "vcs",
@@ -16273,7 +16713,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "f6efec9e20ab6370f959db04447cc71381b66025eaa06e454c7522082e1221bafa5dc2d9058d39c9af442a361e93d3b9c4e0308c6abed497460404bb43d49ca0"
+          "content": "f29d00524e173838087b04a2d25f04a63b3e1159d688aecda03204194d07844efe67263c0f520c63ba1dbb9951ac55c683bd4bd79286f10acf9ae9b8e514ed74"
         }
       ],
       "licenses": [
@@ -16696,19 +17136,19 @@
       ]
     },
     {
-      "bom-ref": "safe-buffer@5.2.1",
+      "bom-ref": "safe-buffer@5.1.2",
       "type": "library",
       "name": "safe-buffer",
-      "version": "5.2.1",
+      "version": "5.1.2",
       "scope": "required",
       "author": "Feross Aboukhadijeh",
       "description": "Safer Node.js Buffer API",
-      "purl": "pkg:npm/safe-buffer@5.2.1",
+      "purl": "pkg:npm/safe-buffer@5.1.2",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.2.1.tgz"
+          "url": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.1.2.tgz"
         },
         {
           "type": "vcs",
@@ -16726,7 +17166,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "ae9dd2a34eca71d9a629b1af81a37141226bedb1954959394bd12ad45fa9a5b468ef4f9879a0f1930e4377c34f37e183e9b8e7626d95b8fb825e6a6e62f9825d"
+          "content": "19dd94641243917958ec66c9c5fb04f3f9ef2a45045351b7f1cd6c88de903fa6bd3d3f4c98707c1a7a6c71298c252a05f0b388aedf2e77fc0fb688f2b381bafa"
         }
       ],
       "licenses": [
@@ -18301,18 +18741,18 @@
       ]
     },
     {
-      "bom-ref": "string_decoder@1.3.0",
+      "bom-ref": "string_decoder@1.1.1",
       "type": "library",
       "name": "string_decoder",
-      "version": "1.3.0",
+      "version": "1.1.1",
       "scope": "required",
       "description": "The string_decoder module from Node core",
-      "purl": "pkg:npm/string_decoder@1.3.0",
+      "purl": "pkg:npm/string_decoder@1.1.1",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/string_decoder/-/string_decoder-1.3.0.tgz"
+          "url": "https://registry.npmjs.org/string_decoder/-/string_decoder-1.1.1.tgz"
         },
         {
           "type": "vcs",
@@ -18326,7 +18766,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "864457f14d568c915df0bb03276c90ff0596c5aa2912c0015355df90cf00fa3d3ef392401a9a6dd7a72bd56860e8a21b6f8a2453a32a97a04e8febaea7fc0a78"
+          "content": "9ff4a19ef0e2e851db6d57ef8aba3e5a88e2173bfeb3c30f30705ccd578f7d4a4324bc282d3d21b759786300426e2f29240bde104767907c8fc933ff9b345fc2"
         }
       ],
       "licenses": [
@@ -18338,25 +18778,30 @@
       ]
     },
     {
-      "bom-ref": "string-width@4.2.3",
+      "bom-ref": "string-width@5.1.2",
       "type": "library",
       "name": "string-width",
-      "version": "4.2.3",
-      "scope": "required",
+      "version": "5.1.2",
+      "scope": "optional",
       "author": "Sindre Sorhus",
       "description": "Get the visual width of a string - the number of columns required to display it",
-      "purl": "pkg:npm/string-width@4.2.3",
-      "properties": [],
+      "purl": "pkg:npm/string-width@5.1.2",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz"
+          "url": "https://registry.npmjs.org/string-width/-/string-width-5.1.2.tgz"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "c0ac90450a63274b08a7ad84ad265d1ac8cc256b1aa79a1136284786ee86ec954effd8c807a5327af2feb57b8eaab9e0f23fdcc4a4d6c96530bd24eb8a2673fe"
+          "content": "1e72ce091def8dc63c6dea0d2ed723679fe7c67d9a7e6304ea586b0eb79ba24a8c6a9f976de5bc9fd4d7a4f0cea9d18ae6a708de84f418a4d6eb00bb10c895a8"
         }
       ],
       "licenses": [
@@ -18368,25 +18813,30 @@
       ]
     },
     {
-      "bom-ref": "strip-ansi@6.0.1",
+      "bom-ref": "strip-ansi@7.2.0",
       "type": "library",
       "name": "strip-ansi",
-      "version": "6.0.1",
-      "scope": "required",
+      "version": "7.2.0",
+      "scope": "optional",
       "author": "Sindre Sorhus",
       "description": "Strip ANSI escape codes from a string",
-      "purl": "pkg:npm/strip-ansi@6.0.1",
-      "properties": [],
+      "purl": "pkg:npm/strip-ansi@7.2.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/strip-ansi/-/strip-ansi-6.0.1.tgz"
+          "url": "https://registry.npmjs.org/strip-ansi/-/strip-ansi-7.2.0.tgz"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "637f153d21dcaa416b0a916743dbee4979aabaebf9a1738aa46793e9a1abaf7a3719cf409556ba2417d448e0a76f1186645fbfd28a08ecaacfb944b3b54754e4"
+          "content": "c833cc363a785b27d80641e78c844b7dc6b58ba28cc860adb1582829eff3d7eeafba481a10d76018166df9998a3dce206afbc46793a01df1ddadace180dc86ef"
         }
       ],
       "licenses": [
@@ -19014,6 +19464,48 @@
       ]
     },
     {
+      "bom-ref": "tinyexec@1.2.4",
+      "type": "library",
+      "name": "tinyexec",
+      "version": "1.2.4",
+      "scope": "optional",
+      "author": "James Garbutt (https://github.com/43081j)",
+      "description": "A minimal library for executing processes in Node",
+      "purl": "pkg:npm/tinyexec@1.2.4",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/tinyexec/-/tinyexec-1.2.4.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/tinylibs/tinyexec.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/tinylibs/tinyexec#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/tinylibs/tinyexec/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4877ffaf8f1beef3ab8ef7bd3f1268dcc379bf9caeca31ef75472b41f7d3dd65cc51f9c69870d56c2e24dec1c96894e0642c29529948680a3900db4cca9dd81e"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "tinyglobby@0.2.17",
       "type": "library",
       "name": "tinyglobby",
@@ -19370,82 +19862,6 @@
       ]
     },
     {
-      "bom-ref": "@esbuild/linux-x64@0.28.1",
-      "type": "library",
-      "name": "@esbuild/linux-x64",
-      "version": "0.28.1",
-      "scope": "optional",
-      "description": "The Linux 64-bit binary for esbuild, a JavaScript bundler.",
-      "purl": "pkg:npm/%40esbuild/linux-x64@0.28.1",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.28.1.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/evanw/esbuild.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "bbf6a73581769a654e103c0bb67435c0eaf7119f6c4cd18b5abb18198c075b3180dd28bce083a41d795b5930f5341fbdff595c9f079828ee78ba1c59c9d3737c"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "esbuild@0.28.1",
-      "type": "library",
-      "name": "esbuild",
-      "version": "0.28.1",
-      "scope": "optional",
-      "description": "An extremely fast JavaScript and CSS bundler and minifier.",
-      "purl": "pkg:npm/esbuild@0.28.1",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/esbuild/-/esbuild-0.28.1.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/evanw/esbuild.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "1eb26bbd9bf96b2c41ccf7f0a613a837393338822589fce4d0a26b18ad9cf11e3e2caa4cb6960b41e51d8e7c235affcb665907da569993ee30efca62f7d0f857"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "tweetnacl@0.14.5",
       "type": "library",
       "name": "tweetnacl",
@@ -19673,13 +20089,13 @@
       ]
     },
     {
-      "bom-ref": "undici@8.8.0",
+      "bom-ref": "undici@8.9.0",
       "type": "library",
       "name": "undici",
-      "version": "8.8.0",
+      "version": "8.9.0",
       "scope": "optional",
       "description": "An HTTP/1.1 client, written from scratch for Node.js",
-      "purl": "pkg:npm/undici@8.8.0",
+      "purl": "pkg:npm/undici@8.9.0",
       "properties": [
         {
           "name": "cdx:npm:package:development",
@@ -19689,7 +20105,7 @@
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/undici/-/undici-8.8.0.tgz"
+          "url": "https://registry.npmjs.org/undici/-/undici-8.9.0.tgz"
         },
         {
           "type": "vcs",
@@ -19707,7 +20123,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "b9bb215cc5f017731020c175cbf5b165d3419e310a792836c05e6670652d539e584f0df8b67555a4a4652dfeebb835d9e77e382a890f557e11071d70266eb807"
+          "content": "696669523ed7a06a27302971e2074345f8018ea780f85e3bdda0e644e4106ccf67e8f45f2bfbb5abf6b45f8c0c4e07077d3f07e9fa5bb7df0f16e0d4c0583660"
         }
       ],
       "licenses": [
@@ -20035,48 +20451,6 @@
       ]
     },
     {
-      "bom-ref": "tinyexec@1.2.4",
-      "type": "library",
-      "name": "tinyexec",
-      "version": "1.2.4",
-      "scope": "optional",
-      "author": "James Garbutt (https://github.com/43081j)",
-      "description": "A minimal library for executing processes in Node",
-      "purl": "pkg:npm/tinyexec@1.2.4",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/tinyexec/-/tinyexec-1.2.4.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/tinylibs/tinyexec.git"
-        },
-        {
-          "type": "website",
-          "url": "https://github.com/tinylibs/tinyexec#readme"
-        },
-        {
-          "type": "issue-tracker",
-          "url": "https://github.com/tinylibs/tinyexec/issues"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "4877ffaf8f1beef3ab8ef7bd3f1268dcc379bf9caeca31ef75472b41f7d3dd65cc51f9c69870d56c2e24dec1c96894e0642c29529948680a3900db4cca9dd81e"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "watchpack@2.5.2",
       "type": "library",
       "name": "watchpack",
@@ -20334,25 +20708,65 @@
       ]
     },
     {
-      "bom-ref": "wrap-ansi@7.0.0",
+      "bom-ref": "wrap-ansi@8.1.0",
       "type": "library",
       "name": "wrap-ansi",
-      "version": "7.0.0",
-      "scope": "required",
+      "version": "8.1.0",
+      "scope": "optional",
       "author": "Sindre Sorhus",
       "description": "Wordwrap a string with ANSI escape codes",
-      "purl": "pkg:npm/wrap-ansi@7.0.0",
-      "properties": [],
+      "purl": "pkg:npm/wrap-ansi@8.1.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-7.0.0.tgz"
+          "url": "https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-8.1.0.tgz"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "6151888f691a98b493c70e8db198e80717d2c2c9f4c9c75eb26738a7e436d5ce733ee675a65f8d7f155dc4fb5d1ef98d54e43a5d2606e0052dcadfc58bb0f5e9"
+          "content": "b22ed0588eb350cab9e9b11216f6a0b66ccc7463ada317d1f927b3d753286df73bb66f9591472493d6d6d9479f7d319551b3a4b31992c34000da0b3c83bd4d09"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "ansi-styles@6.2.3",
+      "type": "library",
+      "name": "ansi-styles",
+      "version": "6.2.3",
+      "scope": "optional",
+      "author": "Sindre Sorhus",
+      "description": "ANSI escape codes for styling strings in the terminal",
+      "purl": "pkg:npm/ansi-styles@6.2.3",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/ansi-styles/-/ansi-styles-6.2.3.tgz"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e038fa336f0907ea001fc9059132d4a3e6b68f038592ea9bdf2b9c53408035c45151bc52d1c3f49d96021a371cdc1357c1122c5159831a0cdac267bbcef247be"
         }
       ],
       "licenses": [
@@ -20601,18 +21015,18 @@
       ]
     },
     {
-      "bom-ref": "yargs@17.7.2",
+      "bom-ref": "yargs@17.7.3",
       "type": "library",
       "name": "yargs",
-      "version": "17.7.2",
+      "version": "17.7.3",
       "scope": "required",
       "description": "yargs the modern, pirate-themed, successor to optimist.",
-      "purl": "pkg:npm/yargs@17.7.2",
+      "purl": "pkg:npm/yargs@17.7.3",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/yargs/-/yargs-17.7.2.tgz"
+          "url": "https://registry.npmjs.org/yargs/-/yargs-17.7.3.tgz"
         },
         {
           "type": "vcs",
@@ -20626,7 +21040,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "edd4b3cd143ef822a7348fe4aca9d8455ec928a3d45cc121eb5b286872a0f66ad6121cc55a1167c4fc4697eebd703d4ebbadc2d773543c29e621caefa82b8ceb"
+          "content": "199b63c66fc9ff84d2c6e2f714d6230a62e4b414e7230feb56629223229e6006699890768a0f556ae082e71b1af3618d29528302aa4e9f7295ccdb74ce6ad4d2"
         }
       ],
       "licenses": [
@@ -20799,25 +21213,27 @@
     {
       "ref": "trevra@0.1.0",
       "dependsOn": [
+        "@ai-sdk/openai-compatible@3.0.20",
         "@kubernetes/client-node@1.4.0",
-        "@modelcontextprotocol/sdk@1.29.0",
+        "@modelcontextprotocol/sdk@1.30.0",
         "@nangohq/frontend@0.71.2",
         "@nangohq/node@0.71.2",
         "@temporalio/client@1.21.1",
         "@temporalio/worker@1.21.1",
         "@temporalio/workflow@1.21.1",
+        "ai@7.0.49",
         "ajv@8.20.0",
-        "better-auth@1.6.24",
+        "better-auth@1.6.25",
         "cookie-parser@1.4.7",
         "csv-parse@7.0.1",
         "dotenv@17.4.2",
         "express@5.2.1",
-        "express-rate-limit@8.6.0",
+        "express-rate-limit@8.6.1",
         "helmet@8.3.0",
         "lucide-react@0.468.0",
         "mammoth@1.12.0",
         "multer@2.2.0",
-        "openai@6.48.0",
+        "openai@6.49.0",
         "pdf-parse@2.4.5",
         "pg@8.22.0",
         "pino@10.3.1",
@@ -20847,6 +21263,44 @@
       ]
     },
     {
+      "ref": "@ai-sdk/gateway@4.0.38",
+      "dependsOn": [
+        "zod@3.25.76",
+        "@vercel/oidc@3.2.0",
+        "@ai-sdk/provider@4.0.4",
+        "@ai-sdk/provider-utils@5.0.18"
+      ]
+    },
+    {
+      "ref": "@ai-sdk/openai-compatible@3.0.20",
+      "dependsOn": [
+        "zod@3.25.76",
+        "@ai-sdk/provider@4.0.4",
+        "@ai-sdk/provider-utils@5.0.18"
+      ]
+    },
+    {
+      "ref": "@ai-sdk/provider@4.0.4",
+      "dependsOn": [
+        "json-schema@0.4.0"
+      ]
+    },
+    {
+      "ref": "@ai-sdk/provider-utils@5.0.18",
+      "dependsOn": [
+        "zod@3.25.76",
+        "@standard-schema/spec@1.1.0",
+        "@workflow/serde@4.1.0",
+        "eventsource-parser@3.1.0",
+        "undici@7.29.0",
+        "@ai-sdk/provider@4.0.4"
+      ]
+    },
+    {
+      "ref": "undici@7.29.0",
+      "dependsOn": []
+    },
+    {
       "ref": "@balena/dockerignore@1.0.2",
       "dependsOn": []
     },
@@ -20857,11 +21311,17 @@
       ]
     },
     {
-      "ref": "@noble/hashes@2.2.0",
+      "ref": "@better-fetch/fetch@1.3.1",
       "dependsOn": []
     },
     {
-      "ref": "@better-fetch/fetch@1.3.1",
+      "ref": "@emnapi/wasi-threads@1.2.2",
+      "dependsOn": [
+        "tslib@2.8.1"
+      ]
+    },
+    {
+      "ref": "@esbuild/linux-x64@0.28.1",
       "dependsOn": []
     },
     {
@@ -20877,16 +21337,7 @@
         "lodash.camelcase@4.3.0",
         "long@5.3.2",
         "protobufjs@7.6.5",
-        "yargs@17.7.2"
-      ]
-    },
-    {
-      "ref": "@grpc/proto-loader@0.7.15",
-      "dependsOn": [
-        "lodash.camelcase@4.3.0",
-        "long@5.3.2",
-        "protobufjs@7.6.5",
-        "yargs@17.7.2"
+        "yargs@17.7.3"
       ]
     },
     {
@@ -20904,40 +21355,6 @@
         "strip-ansi@6.0.1",
         "wrap-ansi@8.1.0",
         "wrap-ansi@7.0.0"
-      ]
-    },
-    {
-      "ref": "ansi-regex@6.2.2",
-      "dependsOn": []
-    },
-    {
-      "ref": "ansi-styles@6.2.3",
-      "dependsOn": []
-    },
-    {
-      "ref": "emoji-regex@9.2.2",
-      "dependsOn": []
-    },
-    {
-      "ref": "string-width@5.1.2",
-      "dependsOn": [
-        "eastasianwidth@0.2.0",
-        "emoji-regex@9.2.2",
-        "strip-ansi@7.2.0"
-      ]
-    },
-    {
-      "ref": "strip-ansi@7.2.0",
-      "dependsOn": [
-        "ansi-regex@6.2.2"
-      ]
-    },
-    {
-      "ref": "wrap-ansi@8.1.0",
-      "dependsOn": [
-        "ansi-styles@6.2.3",
-        "string-width@5.1.2",
-        "strip-ansi@7.2.0"
       ]
     },
     {
@@ -21181,7 +21598,7 @@
       ]
     },
     {
-      "ref": "@modelcontextprotocol/sdk@1.29.0",
+      "ref": "@modelcontextprotocol/sdk@1.30.0",
       "dependsOn": [
         "@hono/node-server@2.0.12",
         "ajv@8.20.0",
@@ -21192,7 +21609,7 @@
         "eventsource@3.0.7",
         "eventsource-parser@3.1.0",
         "express@5.2.1",
-        "express-rate-limit@8.6.0",
+        "express-rate-limit@8.6.1",
         "hono@4.12.32",
         "jose@6.2.4",
         "json-schema-typed@8.0.2",
@@ -21243,7 +21660,7 @@
       "dependsOn": []
     },
     {
-      "ref": "@noble/hashes@1.8.0",
+      "ref": "@noble/hashes@2.2.0",
       "dependsOn": []
     },
     {
@@ -21259,6 +21676,10 @@
       "dependsOn": [
         "@noble/hashes@1.8.0"
       ]
+    },
+    {
+      "ref": "@noble/hashes@1.8.0",
+      "dependsOn": []
     },
     {
       "ref": "@pinojs/redact@0.4.0",
@@ -21377,10 +21798,6 @@
         "proto3-json-serializer@2.0.2",
         "@temporalio/proto@1.21.1"
       ]
-    },
-    {
-      "ref": "ms@3.0.0-canary.1",
-      "dependsOn": []
     },
     {
       "ref": "@temporalio/core-bridge@1.21.1",
@@ -21636,6 +22053,10 @@
       ]
     },
     {
+      "ref": "@vercel/oidc@3.2.0",
+      "dependsOn": []
+    },
+    {
       "ref": "@vitejs/plugin-react@6.0.4",
       "dependsOn": [
         "vite@8.1.5",
@@ -21803,6 +22224,10 @@
       ]
     },
     {
+      "ref": "@workflow/serde@4.1.0",
+      "dependsOn": []
+    },
+    {
       "ref": "@xmldom/xmldom@0.8.13",
       "dependsOn": []
     },
@@ -21838,6 +22263,15 @@
       ]
     },
     {
+      "ref": "ai@7.0.49",
+      "dependsOn": [
+        "zod@3.25.76",
+        "@ai-sdk/gateway@4.0.38",
+        "@ai-sdk/provider@4.0.4",
+        "@ai-sdk/provider-utils@5.0.18"
+      ]
+    },
+    {
       "ref": "ajv@8.20.0",
       "dependsOn": [
         "fast-deep-equal@3.1.3",
@@ -21860,7 +22294,7 @@
       ]
     },
     {
-      "ref": "ansi-regex@5.0.1",
+      "ref": "ansi-regex@6.2.2",
       "dependsOn": []
     },
     {
@@ -21908,10 +22342,18 @@
       ]
     },
     {
-      "ref": "argparse@1.0.10",
+      "ref": "safe-buffer@5.2.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "string_decoder@1.3.0",
       "dependsOn": [
-        "sprintf-js@1.0.3"
+        "safe-buffer@5.2.1"
       ]
+    },
+    {
+      "ref": "argparse@2.0.1",
+      "dependsOn": []
     },
     {
       "ref": "asap@2.0.6",
@@ -21998,7 +22440,7 @@
       "dependsOn": []
     },
     {
-      "ref": "baseline-browser-mapping@2.11.4",
+      "ref": "baseline-browser-mapping@2.11.5",
       "dependsOn": []
     },
     {
@@ -22008,7 +22450,7 @@
       ]
     },
     {
-      "ref": "better-auth@1.6.24",
+      "ref": "better-auth@1.6.25",
       "dependsOn": [
         "pg@8.22.0",
         "react@19.2.8",
@@ -22024,17 +22466,17 @@
         "kysely@0.29.4",
         "nanostores@1.4.1",
         "zod@4.4.3",
-        "@better-auth/core@1.6.24",
-        "@better-auth/drizzle-adapter@1.6.24",
-        "@better-auth/kysely-adapter@1.6.24",
-        "@better-auth/memory-adapter@1.6.24",
-        "@better-auth/mongo-adapter@1.6.24",
-        "@better-auth/prisma-adapter@1.6.24",
-        "@better-auth/telemetry@1.6.24"
+        "@better-auth/core@1.6.25",
+        "@better-auth/drizzle-adapter@1.6.25",
+        "@better-auth/kysely-adapter@1.6.25",
+        "@better-auth/memory-adapter@1.6.25",
+        "@better-auth/mongo-adapter@1.6.25",
+        "@better-auth/prisma-adapter@1.6.25",
+        "@better-auth/telemetry@1.6.25"
       ]
     },
     {
-      "ref": "@better-auth/core@1.6.24",
+      "ref": "@better-auth/core@1.6.25",
       "dependsOn": [
         "@better-auth/utils@0.4.2",
         "@better-fetch/fetch@1.3.1",
@@ -22048,47 +22490,47 @@
       ]
     },
     {
-      "ref": "@better-auth/drizzle-adapter@1.6.24",
+      "ref": "@better-auth/drizzle-adapter@1.6.25",
       "dependsOn": [
         "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.24"
+        "@better-auth/core@1.6.25"
       ]
     },
     {
-      "ref": "@better-auth/kysely-adapter@1.6.24",
+      "ref": "@better-auth/kysely-adapter@1.6.25",
       "dependsOn": [
         "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.24",
+        "@better-auth/core@1.6.25",
         "kysely@0.29.4"
       ]
     },
     {
-      "ref": "@better-auth/memory-adapter@1.6.24",
+      "ref": "@better-auth/memory-adapter@1.6.25",
       "dependsOn": [
         "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.24"
+        "@better-auth/core@1.6.25"
       ]
     },
     {
-      "ref": "@better-auth/mongo-adapter@1.6.24",
+      "ref": "@better-auth/mongo-adapter@1.6.25",
       "dependsOn": [
         "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.24"
+        "@better-auth/core@1.6.25"
       ]
     },
     {
-      "ref": "@better-auth/prisma-adapter@1.6.24",
+      "ref": "@better-auth/prisma-adapter@1.6.25",
       "dependsOn": [
         "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.24"
+        "@better-auth/core@1.6.25"
       ]
     },
     {
-      "ref": "@better-auth/telemetry@1.6.24",
+      "ref": "@better-auth/telemetry@1.6.25",
       "dependsOn": [
         "@better-auth/utils@0.4.2",
         "@better-fetch/fetch@1.3.1",
-        "@better-auth/core@1.6.24"
+        "@better-auth/core@1.6.25"
       ]
     },
     {
@@ -22118,6 +22560,14 @@
       "dependsOn": [
         "base64-js@1.5.1",
         "ieee754@1.2.1"
+      ]
+    },
+    {
+      "ref": "readable-stream@3.6.2",
+      "dependsOn": [
+        "inherits@2.0.4",
+        "string_decoder@1.1.1",
+        "util-deprecate@1.0.2"
       ]
     },
     {
@@ -22151,7 +22601,7 @@
     {
       "ref": "browserslist@4.28.7",
       "dependsOn": [
-        "baseline-browser-mapping@2.11.4",
+        "baseline-browser-mapping@2.11.5",
         "caniuse-lite@1.0.30001806",
         "electron-to-chromium@1.5.396",
         "node-releases@2.0.51",
@@ -22243,6 +22693,36 @@
       ]
     },
     {
+      "ref": "ansi-regex@5.0.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "emoji-regex@8.0.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "string-width@4.2.3",
+      "dependsOn": [
+        "emoji-regex@8.0.0",
+        "is-fullwidth-code-point@3.0.0",
+        "strip-ansi@6.0.1"
+      ]
+    },
+    {
+      "ref": "strip-ansi@6.0.1",
+      "dependsOn": [
+        "ansi-regex@5.0.1"
+      ]
+    },
+    {
+      "ref": "wrap-ansi@7.0.0",
+      "dependsOn": [
+        "ansi-styles@4.3.0",
+        "string-width@4.2.3",
+        "strip-ansi@6.0.1"
+      ]
+    },
+    {
       "ref": "color-convert@2.0.1",
       "dependsOn": [
         "color-name@1.1.4"
@@ -22294,6 +22774,18 @@
         "supports-color@8.1.1",
         "tree-kill@1.2.2",
         "yargs@17.7.2"
+      ]
+    },
+    {
+      "ref": "yargs@17.7.2",
+      "dependsOn": [
+        "cliui@8.0.1",
+        "escalade@3.2.0",
+        "get-caller-file@2.0.5",
+        "require-directory@2.1.1",
+        "string-width@4.2.3",
+        "y18n@5.0.8",
+        "yargs-parser@21.1.1"
       ]
     },
     {
@@ -22379,6 +22871,10 @@
       ]
     },
     {
+      "ref": "ms@2.1.3",
+      "dependsOn": []
+    },
+    {
       "ref": "defu@6.1.7",
       "dependsOn": []
     },
@@ -22432,6 +22928,15 @@
       ]
     },
     {
+      "ref": "@grpc/proto-loader@0.7.15",
+      "dependsOn": [
+        "lodash.camelcase@4.3.0",
+        "long@5.3.2",
+        "protobufjs@7.6.5",
+        "yargs@17.7.3"
+      ]
+    },
+    {
       "ref": "tar-fs@2.1.5",
       "dependsOn": [
         "chownr@1.1.4",
@@ -22481,7 +22986,7 @@
       "dependsOn": []
     },
     {
-      "ref": "emoji-regex@8.0.0",
+      "ref": "emoji-regex@9.2.2",
       "dependsOn": []
     },
     {
@@ -22526,6 +23031,12 @@
         "get-intrinsic@1.3.0",
         "has-tostringtag@1.0.2",
         "hasown@2.0.4"
+      ]
+    },
+    {
+      "ref": "esbuild@0.28.1",
+      "dependsOn": [
+        "@esbuild/linux-x64@0.28.1"
       ]
     },
     {
@@ -22629,11 +23140,11 @@
       ]
     },
     {
-      "ref": "express-rate-limit@8.6.0",
+      "ref": "express-rate-limit@8.6.1",
       "dependsOn": [
         "express@5.2.1",
         "debug@4.4.3",
-        "ip-address@10.2.0"
+        "ip-address@10.3.1"
       ]
     },
     {
@@ -22863,7 +23374,7 @@
       "dependsOn": []
     },
     {
-      "ref": "ip-address@10.2.0",
+      "ref": "ip-address@10.3.1",
       "dependsOn": []
     },
     {
@@ -22922,10 +23433,6 @@
       ]
     },
     {
-      "ref": "argparse@2.0.1",
-      "dependsOn": []
-    },
-    {
       "ref": "jsep@1.4.0",
       "dependsOn": []
     },
@@ -22956,28 +23463,6 @@
         "pako@1.0.11",
         "readable-stream@2.3.8",
         "setimmediate@1.0.5"
-      ]
-    },
-    {
-      "ref": "readable-stream@2.3.8",
-      "dependsOn": [
-        "core-util-is@1.0.3",
-        "inherits@2.0.4",
-        "isarray@1.0.0",
-        "process-nextick-args@2.0.1",
-        "safe-buffer@5.1.2",
-        "string_decoder@1.1.1",
-        "util-deprecate@1.0.2"
-      ]
-    },
-    {
-      "ref": "safe-buffer@5.1.2",
-      "dependsOn": []
-    },
-    {
-      "ref": "string_decoder@1.1.1",
-      "dependsOn": [
-        "safe-buffer@5.1.2"
       ]
     },
     {
@@ -23064,11 +23549,17 @@
       ]
     },
     {
+      "ref": "argparse@1.0.10",
+      "dependsOn": [
+        "sprintf-js@1.0.3"
+      ]
+    },
+    {
       "ref": "math-intrinsics@1.1.0",
       "dependsOn": []
     },
     {
-      "ref": "media-typer@1.1.0",
+      "ref": "media-typer@1.1.1",
       "dependsOn": []
     },
     {
@@ -23145,7 +23636,7 @@
       "dependsOn": []
     },
     {
-      "ref": "ms@2.1.3",
+      "ref": "ms@3.0.0-canary.1",
       "dependsOn": []
     },
     {
@@ -23239,7 +23730,7 @@
       ]
     },
     {
-      "ref": "openai@6.48.0",
+      "ref": "openai@6.49.0",
       "dependsOn": [
         "ws@8.21.1",
         "zod@3.25.76"
@@ -23401,7 +23892,7 @@
       "dependsOn": []
     },
     {
-      "ref": "postcss@8.5.22",
+      "ref": "postcss@8.5.23",
       "dependsOn": [
         "nanoid@3.3.16",
         "picocolors@1.1.1",
@@ -23533,10 +24024,14 @@
       ]
     },
     {
-      "ref": "readable-stream@3.6.2",
+      "ref": "readable-stream@2.3.8",
       "dependsOn": [
+        "core-util-is@1.0.3",
         "inherits@2.0.4",
-        "string_decoder@1.3.0",
+        "isarray@1.0.0",
+        "process-nextick-args@2.0.1",
+        "safe-buffer@5.1.2",
+        "string_decoder@1.1.1",
         "util-deprecate@1.0.2"
       ]
     },
@@ -23602,7 +24097,7 @@
       ]
     },
     {
-      "ref": "safe-buffer@5.2.1",
+      "ref": "safe-buffer@5.1.2",
       "dependsOn": []
     },
     {
@@ -23734,7 +24229,7 @@
     {
       "ref": "socks@2.8.9",
       "dependsOn": [
-        "ip-address@10.2.0",
+        "ip-address@10.3.1",
         "smart-buffer@4.2.0"
       ]
     },
@@ -23853,23 +24348,23 @@
       ]
     },
     {
-      "ref": "string_decoder@1.3.0",
+      "ref": "string_decoder@1.1.1",
       "dependsOn": [
-        "safe-buffer@5.2.1"
+        "safe-buffer@5.1.2"
       ]
     },
     {
-      "ref": "string-width@4.2.3",
+      "ref": "string-width@5.1.2",
       "dependsOn": [
-        "emoji-regex@8.0.0",
-        "is-fullwidth-code-point@3.0.0",
-        "strip-ansi@6.0.1"
+        "eastasianwidth@0.2.0",
+        "emoji-regex@9.2.2",
+        "strip-ansi@7.2.0"
       ]
     },
     {
-      "ref": "strip-ansi@6.0.1",
+      "ref": "strip-ansi@7.2.0",
       "dependsOn": [
-        "ansi-regex@5.0.1"
+        "ansi-regex@6.2.2"
       ]
     },
     {
@@ -23968,7 +24463,7 @@
         "ssh-remote-port-forward@1.0.4",
         "tar-fs@3.1.3",
         "tmp@0.2.7",
-        "undici@8.8.0"
+        "undici@8.9.0"
       ]
     },
     {
@@ -23995,6 +24490,10 @@
     },
     {
       "ref": "tinybench@2.9.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "tinyexec@1.2.4",
       "dependsOn": []
     },
     {
@@ -24041,16 +24540,6 @@
       ]
     },
     {
-      "ref": "@esbuild/linux-x64@0.28.1",
-      "dependsOn": []
-    },
-    {
-      "ref": "esbuild@0.28.1",
-      "dependsOn": [
-        "@esbuild/linux-x64@0.28.1"
-      ]
-    },
-    {
       "ref": "tweetnacl@0.14.5",
       "dependsOn": []
     },
@@ -24062,7 +24551,7 @@
       "ref": "type-is@2.1.0",
       "dependsOn": [
         "content-type@2.0.0",
-        "media-typer@1.1.0",
+        "media-typer@1.1.1",
         "mime-types@3.0.2"
       ]
     },
@@ -24079,7 +24568,7 @@
       "dependsOn": []
     },
     {
-      "ref": "undici@8.8.0",
+      "ref": "undici@8.9.0",
       "dependsOn": []
     },
     {
@@ -24120,12 +24609,13 @@
       "ref": "vite@8.1.5",
       "dependsOn": [
         "@types/node@24.13.3",
+        "esbuild@0.28.1",
         "terser@5.49.0",
         "tsx@4.23.1",
         "yaml@2.9.0",
         "lightningcss@1.33.0",
         "picomatch@4.0.5",
-        "postcss@8.5.22",
+        "postcss@8.5.23",
         "rolldown@1.1.5",
         "tinyglobby@0.2.17"
       ]
@@ -24155,10 +24645,6 @@
         "@vitest/snapshot@4.1.10",
         "@vitest/utils@4.1.10"
       ]
-    },
-    {
-      "ref": "tinyexec@1.2.4",
-      "dependsOn": []
     },
     {
       "ref": "watchpack@2.5.2",
@@ -24220,12 +24706,16 @@
       ]
     },
     {
-      "ref": "wrap-ansi@7.0.0",
+      "ref": "wrap-ansi@8.1.0",
       "dependsOn": [
-        "ansi-styles@4.3.0",
-        "string-width@4.2.3",
-        "strip-ansi@6.0.1"
+        "ansi-styles@6.2.3",
+        "string-width@5.1.2",
+        "strip-ansi@7.2.0"
       ]
+    },
+    {
+      "ref": "ansi-styles@6.2.3",
+      "dependsOn": []
     },
     {
       "ref": "wrappy@1.0.2",
@@ -24252,7 +24742,7 @@
       "dependsOn": []
     },
     {
-      "ref": "yargs@17.7.2",
+      "ref": "yargs@17.7.3",
       "dependsOn": [
         "cliui@8.0.1",
         "escalade@3.2.0",

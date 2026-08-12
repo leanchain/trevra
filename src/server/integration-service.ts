@@ -63,7 +63,11 @@ export type CanonicalRecord = z.infer<typeof canonicalRecordSchema>;
  * external write in Trevra must go through prepareAction -> approveAction -> executeAction in
  * action-service.ts, where the exact approved payload is hashed and a drifted payload is rejected.
  * Wiring that up needs a new prepared-action type plus its schema, approval UI, and policy surface,
- * which is out of scope here. `executeConnectedAction` has no hubspot/attio branch and falls through
+ * NOTE: CRM write-back now exists, but deliberately NOT here. It lives in
+ * `crm/activity.ts` behind the `crm.log-activity` action type, because it
+ * writes ACTIVITY rather than records and must never share a code path with
+ * the record-owning providers below. `executeConnectedAction` still has no
+ * hubspot/attio branch and falls through
  * to `throw new Error(\`Provider ${provider} cannot execute ${actionType}\`)`, so no ungated write
  * path exists. Do not add one without routing it through the approval gate first.
  *
@@ -77,16 +81,25 @@ export type CanonicalRecord = z.infer<typeof canonicalRecordSchema>;
  */
 const catalog = [
   { key: 'gmail', provider: 'gmail', name: 'Gmail', category: 'communication', description: 'Read client threads and send approved follow-ups.', mode: 'oauth', env: 'NANGO_GMAIL_INTEGRATION', fallback: 'trevra-gmail' },
-  { key: 'google-calendar', provider: 'google-calendar', name: 'Google Calendar', category: 'calendar', description: 'Understand meetings, commitments, and availability.', mode: 'oauth', env: 'NANGO_GOOGLE_CALENDAR_INTEGRATION', fallback: 'trevra-google-calendar' },
+  // Meetings have no canonical record kind, so everything this sync returns is
+  // counted and dropped rather than stored (see `syncNangoRecords`). The
+  // description says so instead of promising what the connection cannot do.
+  { key: 'google-calendar', provider: 'google-calendar', name: 'Google Calendar', category: 'calendar', description: 'Not ready yet — Trevra has nowhere to put meetings, so connecting this brings nothing in.', mode: 'oauth', env: 'NANGO_GOOGLE_CALENDAR_INTEGRATION', fallback: 'trevra-google-calendar' },
   { key: 'microsoft', provider: 'microsoft', name: 'Microsoft 365', category: 'communication', description: 'Connect Outlook mail and calendar through Microsoft Graph.', mode: 'oauth', env: 'NANGO_MICROSOFT_INTEGRATION', fallback: 'trevra-microsoft' },
   { key: 'quickbooks', provider: 'quickbooks', name: 'QuickBooks', category: 'accounting', description: 'Track invoices, customers, and payments.', mode: 'oauth', env: 'NANGO_QUICKBOOKS_INTEGRATION', fallback: 'trevra-quickbooks' },
   { key: 'xero', provider: 'xero', name: 'Xero', category: 'accounting', description: 'Sync invoices and payment status.', mode: 'oauth', env: 'NANGO_XERO_INTEGRATION', fallback: 'trevra-xero' },
   { key: 'stripe', provider: 'stripe', name: 'Stripe', category: 'payments', description: 'Confirm invoices, payments, and failures.', mode: 'oauth', env: 'NANGO_STRIPE_INTEGRATION', fallback: 'trevra-stripe' },
   { key: 'honeybook', provider: 'honeybook', name: 'HoneyBook', category: 'project', description: 'Import client lifecycle and project records.', mode: 'oauth', env: 'NANGO_HONEYBOOK_INTEGRATION', fallback: 'trevra-honeybook' },
   { key: 'bonsai', provider: 'bonsai', name: 'Bonsai', category: 'project', description: 'Import contracts, projects, and invoices.', mode: 'oauth', env: 'NANGO_BONSAI_INTEGRATION', fallback: 'trevra-bonsai' },
-  { key: 'hubspot', provider: 'hubspot', name: 'HubSpot', category: 'crm', description: 'Read contacts, companies, and deals so the revenue ledger sits over your CRM instead of becoming a second one. Read-only: Trevra never writes back to HubSpot.', mode: 'oauth', env: 'NANGO_HUBSPOT_INTEGRATION', fallback: 'trevra-hubspot' },
-  { key: 'attio', provider: 'attio', name: 'Attio', category: 'crm', description: 'Read people, companies, and deal records into the ledger so pipeline stage and evidence stay in one place. Read-only: Trevra never writes back to Attio.', mode: 'oauth', env: 'NANGO_ATTIO_INTEGRATION', fallback: 'trevra-attio' },
-  { key: 'exa', provider: 'exa', name: 'Exa', category: 'data', description: 'Neural web search for company and buying-signal discovery. Authenticates with your Exa API key, entered in the provider connect screen and held there, never by Trevra.', mode: 'apiKey', env: 'NANGO_EXA_INTEGRATION', fallback: 'trevra-exa' },
+  { key: 'hubspot', provider: 'hubspot', name: 'HubSpot', category: 'crm', description: 'Read your contacts, companies, and deals. Trevra adds a note when you approve work — it never creates or edits records.', mode: 'oauth', env: 'NANGO_HUBSPOT_INTEGRATION', fallback: 'trevra-hubspot' },
+  { key: 'attio', provider: 'attio', name: 'Attio', category: 'crm', description: 'Read your people, companies, and deals. Trevra adds a note when you approve work — it never creates or edits records.', mode: 'oauth', env: 'NANGO_ATTIO_INTEGRATION', fallback: 'trevra-attio' },
+  // The key this connection stores in Nango is NOT what the search reads.
+  // `research/providers/exa.ts` takes its key from the server environment
+  // (`EXA_API_KEY`), so connecting here switches nothing on. Wiring the stored
+  // credential through would mean threading the workspace's Nango connection
+  // into the research credential map; until that exists the card says so.
+  { key: 'exa', provider: 'exa', name: 'Exa', category: 'data', description: 'Find companies worth reaching out to. Set up by whoever runs this Trevra — connecting here does not switch it on yet.', mode: 'apiKey', env: 'NANGO_EXA_INTEGRATION', fallback: 'trevra-exa' },
+  { key: 'reddit', provider: 'reddit', name: 'Reddit', category: 'data', description: 'Authorize a Reddit account through Nango, then collect reusable research sources and search the resulting corpus.', mode: 'oauth', env: 'NANGO_REDDIT_INTEGRATION', fallback: 'trevra-reddit' },
   { key: 'upwork', provider: 'upwork', name: 'Upwork', category: 'marketplace', description: 'Import contracts and earnings from an export.', mode: 'import' },
   { key: 'fiverr', provider: 'fiverr', name: 'Fiverr', category: 'marketplace', description: 'Import orders and earnings from an export.', mode: 'import' },
   { key: 'contra', provider: 'contra', name: 'Contra', category: 'marketplace', description: 'Import projects and payments from an export.', mode: 'import' }
@@ -188,15 +201,20 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
       const connection = await db.prepare('SELECT * FROM connections WHERE provider_config_key=? AND external_connection_id=?')
         .get(providerConfigKey, connectionId) as Record<string, unknown> | undefined;
       if (!connection) throw new Error('Unknown Nango connection');
-      const count = await syncNangoRecords(db, {
+      const synced = await syncNangoRecords(db, {
         workspaceId: String(connection.workspace_id), localConnectionId: String(connection.id), provider: String(connection.provider),
         providerConfigKey, externalConnectionId: connectionId, model: String(payload.model),
         modifiedAfter: payload.modifiedAfter ? String(payload.modifiedAfter) : undefined
       });
-      await db.prepare("UPDATE connections SET status='connected',last_synced_at=?,last_error=NULL,updated_at=? WHERE id=?")
-        .run(new Date().toISOString(), new Date().toISOString(), String(connection.id));
+      // A sync that threw records away is not a clean sync, and reporting one
+      // is how a connection that stores nothing goes unnoticed for months.
+      const dropped = synced.skipped > 0
+        ? `${synced.skipped} record${synced.skipped === 1 ? '' : 's'} from '${String(payload.model)}' could not be stored: Trevra has no place to put this kind of record yet.`
+        : null;
+      await db.prepare("UPDATE connections SET status='connected',last_synced_at=?,last_error=?,updated_at=? WHERE id=?")
+        .run(new Date().toISOString(), dropped, new Date().toISOString(), String(connection.id));
       await completeWebhook(db, 'nango', externalEventId, 'processed', null, String(connection.workspace_id));
-      return { duplicate: false, processed: `synced-${count}` };
+      return { duplicate: false, processed: `synced-${synced.ingested}${synced.skipped > 0 ? `-skipped-${synced.skipped}` : ''}` };
     }
 
     await completeWebhook(db, 'nango', externalEventId, 'ignored', null, null);
@@ -268,11 +286,11 @@ export async function executeConnectedAction(db: Db, workspaceId: string, action
   if (actionType === 'invoice_draft' && ['quickbooks', 'xero', 'stripe'].includes(provider)) {
     const envKey = `NANGO_ACTION_CREATE_INVOICE_${provider.toUpperCase().replaceAll('-', '_')}`;
     const actionName = process.env[envKey] ?? process.env.NANGO_ACTION_CREATE_INVOICE ?? 'trevra-create-invoice';
-    const response = await nango.triggerAction<Record<string, unknown>, Record<string, unknown>>(
-      providerConfigKey,
-      connectionId,
-      actionName,
-      { ...structuredPayload, recipient: String(action.recipient), message: String(action.body), idempotencyKey: String(action.payload_hash) }
+    const response = await triggerNangoAction(
+      nango,
+      { providerConfigKey, connectionId, actionName },
+      { ...structuredPayload, recipient: String(action.recipient), message: String(action.body), idempotencyKey: String(action.payload_hash) },
+      'Creating an invoice'
     );
     const externalRef = response.invoiceId ?? response.id ?? response.externalRef;
     if (!externalRef) throw new Error(`${provider} invoice action returned no invoice reference`);
@@ -282,11 +300,11 @@ export async function executeConnectedAction(db: Db, workspaceId: string, action
   if (actionType === 'change_order_draft' && ['honeybook', 'bonsai'].includes(provider)) {
     const envKey = `NANGO_ACTION_CREATE_CHANGE_ORDER_${provider.toUpperCase()}`;
     const actionName = process.env[envKey] ?? process.env.NANGO_ACTION_CREATE_CHANGE_ORDER ?? 'trevra-create-change-order';
-    const response = await nango.triggerAction<Record<string, unknown>, Record<string, unknown>>(
-      providerConfigKey,
-      connectionId,
-      actionName,
-      { ...structuredPayload, recipient: String(action.recipient), subject: String(action.subject), message: String(action.body), idempotencyKey: String(action.payload_hash) }
+    const response = await triggerNangoAction(
+      nango,
+      { providerConfigKey, connectionId, actionName },
+      { ...structuredPayload, recipient: String(action.recipient), subject: String(action.subject), message: String(action.body), idempotencyKey: String(action.payload_hash) },
+      'Creating a change order'
     );
     const externalRef = response.changeOrderId ?? response.id ?? response.externalRef;
     if (!externalRef) throw new Error(`${provider} change-order action returned no reference`);
@@ -375,10 +393,11 @@ export async function processStripeWebhook(db: Db, rawBody: Buffer, signature: s
 export async function syncNangoRecords(db: Db, input: {
   workspaceId: string; localConnectionId: string; provider: string; providerConfigKey: string;
   externalConnectionId: string; model: string; modifiedAfter?: string;
-}): Promise<number> {
+}): Promise<NangoSyncResult> {
   const nango = getNango();
   let cursor: string | null = null;
-  let count = 0;
+  let ingested = 0;
+  let skipped = 0;
   do {
     const result: { records: Array<Record<string, unknown>>; next_cursor: string | null } = await nango.listRecords<Record<string, unknown>>({
       providerConfigKey: input.providerConfigKey, connectionId: input.externalConnectionId,
@@ -386,13 +405,34 @@ export async function syncNangoRecords(db: Db, input: {
     });
     for (const raw of result.records) {
       const normalized = normalizeNangoRecord(input.model, raw as Record<string, unknown>);
-      if (!normalized) continue;
+      if (!normalized) {
+        // COUNTED, NOT SWALLOWED. `normalizeNangoRecord` returns null for any
+        // model it has no canonical kind for -- `trevra-meetings` is the live
+        // example, since there is no `meeting` kind and Calendar therefore
+        // ingests nothing. Dropping those silently made a connection that
+        // stores nothing look identical to one with no new records, which is
+        // the failure mode that makes a quiet account untrustworthy.
+        skipped += 1;
+        continue;
+      }
       await ingestCanonicalRecord(db, input.workspaceId, input.provider, input.localConnectionId, normalized);
-      count += 1;
+      ingested += 1;
     }
     cursor = result.next_cursor;
   } while (cursor);
-  return count;
+  return { ingested, skipped };
+}
+
+/**
+ * What one sync actually did.
+ *
+ * Two numbers rather than one, because "nothing arrived" and "everything that
+ * arrived was thrown away" are different facts and only the second is a bug
+ * the operator can act on.
+ */
+export interface NangoSyncResult {
+  ingested: number;
+  skipped: number;
 }
 
 export async function ingestCanonicalRecord(db: Db, workspaceId: string, provider: string, connectionId: string | null, input: CanonicalRecord): Promise<void> {
@@ -482,7 +522,7 @@ export async function recordOutcome(db: Db, recommendationId: string, outcomeTyp
     .run(id('outcome'), recommendationId, outcomeType, amount, currency, JSON.stringify(details), new Date().toISOString());
 }
 
-function getNango(): Nango {
+export function getNango(): Nango {
   const apiKey = process.env.NANGO_API_KEY;
   if (!apiKey) throw new Error('NANGO_API_KEY is not configured');
   return new Nango({
@@ -490,6 +530,43 @@ function getNango(): Nango {
     webhookSigningKey: process.env.NANGO_WEBHOOK_SIGNING_KEY,
     host: process.env.NANGO_HOST
   });
+}
+
+/**
+ * Call a Nango action script, and say plainly when this deployment has none.
+ *
+ * `trevra-create-invoice` and `trevra-create-change-order` are NOT in this
+ * repository. They are Nango integration code an operator writes and deploys
+ * themselves, and the money half of Trevra is frozen (docs/core-product.md §5),
+ * so they are not going to appear. Without them `triggerAction` fails with a
+ * Nango-shaped error that tells a founder nothing, and the product reads as if
+ * it can raise an invoice it cannot raise.
+ *
+ * Naming the gap is the fix. The original error is kept on the end rather than
+ * swallowed, because a real provider outage and a missing script both land
+ * here and the operator needs to be able to tell them apart.
+ */
+async function triggerNangoAction(
+  nango: Nango,
+  target: { providerConfigKey: string; connectionId: string; actionName: string },
+  input: Record<string, unknown>,
+  humanAction: string
+): Promise<Record<string, unknown>> {
+  try {
+    return await nango.triggerAction<Record<string, unknown>, Record<string, unknown>>(
+      target.providerConfigKey,
+      target.connectionId,
+      target.actionName,
+      input
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${humanAction} needs a Nango action script called '${target.actionName}'. Trevra does not ship one, ` +
+        `so nothing was created and nothing was sent. Deploy that script to your Nango instance, or leave this ` +
+        `action unused. (Underlying error: ${detail})`
+    );
+  }
 }
 
 function syncNamesForProvider(provider: string): string[] {

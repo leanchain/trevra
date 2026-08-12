@@ -6,7 +6,8 @@ import type { Db } from './db.js';
 import { id } from './db.js';
 import { listPublicModulePopularity, listPublicRegistryModules } from './registry/service.js';
 
-const PRODUCT_DESCRIPTION = 'Trevra is the open-source operating system and control plane for agent-run go-to-market. Give Claude Code or Codex a revenue outcome, compose modular skills, record every run with evidence, and gate consequential work behind workspace policy.';
+/** The landing page's own <meta name="description">, verbatim. One product sentence, not four. */
+const PRODUCT_DESCRIPTION = 'Trevra is the open-source runtime for agent-run go-to-market. Claude Code or Codex does the work; Trevra records every run and holds anything with a consequence — a send, an invoice — until you approve it.';
 const PUBLIC_PATHS = ['/', '/how-it-works', '/security', '/privacy', '/terms'] as const;
 
 export type MarketingEventName =
@@ -39,6 +40,8 @@ export interface SiteConfig {
   googleVerification: string;
   bingVerification: string;
   indexNowKey: string;
+  /** Hosted workspace entry point, or '' when this deployment has none. */
+  hostedAppUrl: string;
 }
 
 interface MarketingEventInput {
@@ -96,14 +99,37 @@ export function getSiteConfig(env: NodeJS.ProcessEnv = process.env): SiteConfig 
     origin,
     name: env.PUBLIC_SITE_NAME?.trim() || 'Trevra',
     legalName: env.PUBLIC_LEGAL_NAME?.trim() || 'Trevra',
-    title: env.PUBLIC_SITE_TITLE?.trim() || 'Trevra — Spawn Your Agent-Run GTM Team',
+    title: env.PUBLIC_SITE_TITLE?.trim() || 'Trevra — agent-run go-to-market that stops for your approval',
     description: env.PUBLIC_SITE_DESCRIPTION?.trim() || PRODUCT_DESCRIPTION,
     supportEmail: env.PUBLIC_SUPPORT_EMAIL?.trim() || `support@${hostname}`,
     securityEmail: env.SECURITY_CONTACT_EMAIL?.trim() || env.PUBLIC_SUPPORT_EMAIL?.trim() || `security@${hostname}`,
     googleVerification: env.GOOGLE_SITE_VERIFICATION?.trim() || '',
     bingVerification: env.BING_SITE_VERIFICATION?.trim() || '',
-    indexNowKey: env.INDEXNOW_KEY?.trim() || ''
+    indexNowKey: env.INDEXNOW_KEY?.trim() || '',
+    hostedAppUrl: hostedWorkspaceUrl(env)
   };
+}
+
+/**
+ * Where "Launch hosted workspace" actually goes.
+ *
+ * Read from VITE_HOSTED_APP_URL -- the same variable src/client/App.tsx reads
+ * into MarketingScreen's `hostedAppUrl` prop. Not a second setting: the same
+ * one, read on the server so the shipped href and the React href cannot
+ * disagree.
+ *
+ * Anything that is not http(s) or root-relative is treated as unconfigured.
+ * This value is written straight into an href, and `javascript:` is a scheme.
+ */
+function hostedWorkspaceUrl(env: NodeJS.ProcessEnv): string {
+  const value = env.VITE_HOSTED_APP_URL?.trim();
+  if (!value || value.startsWith('//')) return '';
+  if (value.startsWith('/')) return value;
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol) ? value : '';
+  } catch {
+    return '';
+  }
 }
 
 export function registerPublicSiteRoutes(app: Express, db: Db): void {
@@ -209,71 +235,36 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
     path: '/how-it-works',
     title: 'How Trevra Works | Agentic GTM Ledger and Control Plane',
     description: 'See how Trevra records agent runs, reconstructs the revenue loop from source to paid, builds proof packs, and holds every consequential action at an approval gate.',
-    eyebrow: 'How it works',
     heading: 'Claude runs the loop. Trevra keeps the record.',
     intro: 'Trevra is the memory and the control plane behind agent-operated go-to-market: every run recorded, every action evidenced, every consequential step gated on your approval.',
-    body: `<section class="launch-grid launch-grid-four">
-      ${feature('1', 'Connect the source systems', 'Email, calendar, accounting, payment, and client-management systems remain the systems of record. Trevra normalizes their commercial events into one graph you own.')}
-      ${feature('2', 'Build the revenue memory', 'Leads, proposals, clauses, scope items, client requests, milestones, invoices, and payments become one evidence-linked graph spanning source to paid.')}
-      ${feature('3', 'Let the skills do the work', 'Skills are small, typed, testable units of go-to-market work. Claude calls them; Trevra records the inputs, outputs, evidence, and verdict of every run.')}
-      ${feature('4', 'Approve what leaves the workspace', 'Trevra prepares the message, invoice, or change order and holds it. Consequential work stays approval-gated unless you write a narrow standing instruction with explicit ceilings.')}
-    </section>
-    <section class="launch-copy-section" id="skills"><h2>The skills catalog</h2><p>A skill is a small deterministic unit of go-to-market work with a typed input, a typed output, and recorded evidence — a library function first and an agent second. The catalog covers the founder revenue loop end to end: source, enrich, score, audit, draft, send, reply, ladder, guard, position, publish, measure, close, and collect. Close and collect — proposal follow-up, scope protection, unbilled milestones, and overdue invoices — are shipped in Trevra today. The sourcing and outreach skills are in progress. Every skill is meant to be read, forked, and tested, not trusted blindly.</p></section>
-    <section class="launch-copy-section"><h2>Evidence before automation</h2><p>Every agent action carries a Revenue Proof Pack: why the agent acted, the agreement and scope it relied on, the client request and delivery evidence, the billing obligation, the payment state, and the exact payload you approved. The approved payload is cryptographically hashed before execution, so a modified payload is rejected.</p></section>
-    <section class="launch-copy-section"><h2>Designed to work with the existing stack</h2><p>Trevra supports live integration patterns for Gmail, Microsoft 365, Google Calendar, Stripe, QuickBooks, Xero, HoneyBook, and Bonsai. CSV exports can be imported when a direct API is unavailable. Run the whole thing on your own PostgreSQL and keep the ledger.</p></section>`
+    body: `<div class="launch-faq">
+      ${docRow('1', 'Connect the source systems', 'Email, calendar, accounting, payment, and client-management systems remain the systems of record. Trevra normalizes their commercial events into one graph you own.')}
+      ${docRow('2', 'Build the revenue memory', 'Leads, proposals, clauses, scope items, client requests, milestones, invoices, and payments become one evidence-linked graph spanning source to paid.')}
+      ${docRow('3', 'Let the skills do the work', 'Skills are small, typed, testable units of go-to-market work. Claude calls them; Trevra records the inputs, outputs, evidence, and verdict of every run.')}
+      ${docRow('4', 'Approve what leaves the workspace', 'Trevra prepares the message, invoice, or change order and holds it. Consequential work stays approval-gated unless you write a narrow standing instruction with explicit ceilings.')}
+      <details open id="skills"><summary>The skills catalog</summary><p>A skill is a small deterministic unit of go-to-market work with a typed input, a typed output, and recorded evidence — a library function first and an agent second. The catalog covers the founder revenue loop end to end: source, enrich, score, audit, draft, send, reply, ladder, guard, position, publish, measure, close, and collect. Close and collect — proposal follow-up, scope protection, unbilled milestones, and overdue invoices — are shipped in Trevra today. The sourcing and outreach skills are in progress. Every skill is meant to be read, forked, and tested, not trusted blindly.</p></details>
+      <details open><summary>Evidence before automation</summary><p>Every agent action carries a Revenue Proof Pack: why the agent acted, the agreement and scope it relied on, the client request and delivery evidence, the billing obligation, the payment state, and the exact payload you approved. The approved payload is cryptographically hashed before execution, so a modified payload is rejected.</p></details>
+      <details open><summary>Designed to work with the existing stack</summary><p>Trevra supports live integration patterns for Gmail, Microsoft 365, Google Calendar, Stripe, QuickBooks, Xero, HoneyBook, and Bonsai. CSV exports can be imported when a direct API is unavailable. Run the whole thing on your own PostgreSQL and keep the ledger.</p></details>
+    </div>`
   }));
 
   app.get('/security', (_req, res) => sendPublicPage(res, config, {
     path: '/security',
     title: 'Security and Responsible Disclosure | Trevra',
     description: 'How Trevra protects commercial data, constrains automation, verifies webhooks, isolates workspaces, and receives responsible vulnerability reports.',
-    eyebrow: 'Security',
     heading: 'Commercial automation needs explicit boundaries.',
     intro: 'Trevra is designed around evidence, least privilege, approval integrity, and auditable execution.',
-    body: `<section class="launch-grid">
-      ${feature('01', 'Approval integrity', 'The exact approved payload, including structured financial fields, is hashed before execution. Modified payloads are rejected.')}
-      ${feature('02', 'Workspace isolation', 'Application queries are scoped by workspace, authentication data and commercial records use PostgreSQL, and external credentials are delegated to the integration layer.')}
-      ${feature('03', 'Verified events', 'Stripe and Nango webhooks are signature-verified, deduplicated, and processed idempotently.')}
-    </section>
-    <section class="launch-copy-section"><h2>Responsible disclosure</h2><p>Report a suspected vulnerability to <a href="mailto:${escapeAttr(config.securityEmail)}">${escapeHtml(config.securityEmail)}</a>. Include reproduction steps, affected URLs, and the potential impact. Do not access data that is not yours, disrupt service availability, or use destructive testing.</p><p>The canonical machine-readable disclosure channel is <a href="/.well-known/security.txt">/.well-known/security.txt</a>.</p></section>`
+    body: `<div class="launch-faq">
+      ${docRow('01', 'Approval integrity', 'The exact approved payload, including structured financial fields, is hashed before execution. Modified payloads are rejected.')}
+      ${docRow('02', 'Workspace isolation', 'Application queries are scoped by workspace, authentication data and commercial records use PostgreSQL, and external credentials are delegated to the integration layer.')}
+      ${docRow('03', 'Verified events', 'Stripe and Nango webhooks are signature-verified, deduplicated, and processed idempotently.')}
+      <details open id="disclosure"><summary>Responsible disclosure</summary><p>Report a suspected vulnerability to <a href="mailto:${escapeAttr(config.securityEmail)}">${escapeHtml(config.securityEmail)}</a>. Include reproduction steps, affected URLs, and the potential impact. Do not access data that is not yours, disrupt service availability, or use destructive testing.</p><p>The canonical machine-readable disclosure channel is <a href="/.well-known/security.txt">/.well-known/security.txt</a>.</p></details>
+    </div>`
   }));
 
-  app.get('/privacy', (_req, res) => sendPublicPage(res, config, {
-    path: '/privacy',
-    title: 'Privacy Notice | Trevra',
-    description: 'A plain-language overview of the account, connected-service, commercial, document, audit, and technical data Trevra processes.',
-    eyebrow: 'Privacy notice',
-    heading: 'What Trevra processes and why.',
-    intro: 'This notice explains the information Trevra processes, why it is used, and the controls available to workspace owners.',
-    body: `<section class="launch-legal">
-      <h2>Information processed</h2><p>Trevra processes account identity, workspace settings, connected-account records authorized by the user, uploaded agreements, client and project information, invoices and payment states, prepared actions, approval history, and security or operational logs.</p>
-      <h2>Purposes</h2><p>Data is used to provide the service, reconstruct commercial history, detect revenue work, prepare and execute authorized actions, maintain audit records, secure the service, and measure aggregate product adoption.</p>
-      <h2>Connected services and processors</h2><p>Connected providers remain independent third parties. Depending on deployment configuration, infrastructure and processing may involve cloud hosting, PostgreSQL, Nango, model providers explicitly enabled for document extraction, email or accounting providers, and payment services.</p>
-      <h2>Analytics</h2><p>Trevra’s built-in traction measurement does not store IP addresses. It stores a salted hash of a session-scoped random identifier, the landing path, referral domain, campaign parameters, and product conversion events. Browser Do Not Track and Global Privacy Control signals disable client-side marketing events.</p>
-      <h2>Retention and deletion</h2><p>Commercial records are retained while a workspace is active and as needed for security, dispute, backup, or legal obligations. Workspace owners may request account export or deletion through the support contact below. Backup deletion can follow a delayed rotation schedule.</p>
-      <h2>Data rights and contact</h2><p>Applicable privacy rights vary by location. Requests may be sent to <a href="mailto:${escapeAttr(config.supportEmail)}">${escapeHtml(config.supportEmail)}</a>. Identity verification may be required before fulfilling a request.</p>
-      <p class="launch-updated">Last updated: July 23, 2026.</p>
-    </section>`
-  }));
-
-  app.get('/terms', (_req, res) => sendPublicPage(res, config, {
-    path: '/terms',
-    title: 'Terms of Service | Trevra',
-    description: 'Baseline terms covering account responsibility, authorized automation, third-party integrations, acceptable use, availability, and commercial decisions.',
-    eyebrow: 'Terms of service',
-    heading: 'Use Trevra as an authorized commercial operator.',
-    intro: 'These terms govern access to Trevra and the commercial actions users authorize through the service.',
-    body: `<section class="launch-legal">
-      <h2>Service</h2><p>Trevra analyzes authorized business records and can prepare or execute commercial actions according to user approvals and standing instructions. Users remain responsible for reviewing material commercial, legal, tax, financial, and client-relationship decisions.</p>
-      <h2>Accounts and authorization</h2><p>Users must provide accurate account information, protect credentials, and connect only systems and data they are authorized to access. Workspace owners are responsible for team access and configured automation rules.</p>
-      <h2>Acceptable use</h2><p>The service may not be used to violate law, impersonate others, access unauthorized data, distribute malware, conduct abusive collection activity, evade provider restrictions, or interfere with service security or availability.</p>
-      <h2>Third-party services</h2><p>Integrations are governed by their providers’ terms and availability. Trevra is not responsible for provider outages, changed APIs, revoked permissions, or actions a provider refuses to execute.</p>
-      <h2>No professional advice</h2><p>Trevra provides operational assistance, not legal, tax, accounting, investment, medical, or other regulated professional advice. Contract interpretation and pricing recommendations should be independently reviewed when consequences are material.</p>
-      <h2>Availability and liability</h2><p>The service may change, be interrupted, or contain errors. To the extent permitted by applicable law, ${escapeHtml(config.legalName)} disclaims implied warranties and is not liable for indirect, special, or consequential loss. Mandatory legal rights remain unaffected.</p>
-      <h2>Contact</h2><p>Questions may be sent to <a href="mailto:${escapeAttr(config.supportEmail)}">${escapeHtml(config.supportEmail)}</a>.</p>
-      <p class="launch-updated">Last updated: July 23, 2026.</p>
-    </section>`
-  }));
+  // /privacy and /terms are shipped documents, not routes: public/privacy/index.html
+  // and public/terms/index.html are the single legal surface on every deploy
+  // target, served here by the static middleware in src/server/index.ts.
 
   app.post('/api/marketing/events', publicLimiter, express.json({ limit: '32kb' }), async (req, res) => {
     const fetchSite = req.header('sec-fetch-site');
@@ -362,6 +353,12 @@ export async function getTractionReport(db: Db, days = 90) {
   };
 }
 
+/**
+ * index.html ships three deliberately different descriptions -- one for search,
+ * one for Open Graph, one for Twitter. Only `<meta name="description">` is
+ * overwritten from config; the two social ones are the page's own copy and are
+ * left alone.
+ */
 export function renderAppIndex(template: string, nonce: string): string {
   const config = getSiteConfig();
   const jsonLd = JSON.stringify(structuredData(config)).replaceAll('<', '\\u003c');
@@ -369,16 +366,36 @@ export function renderAppIndex(template: string, nonce: string): string {
     config.googleVerification ? `<meta name="google-site-verification" content="${escapeAttr(config.googleVerification)}" />` : '',
     config.bingVerification ? `<meta name="msvalidate.01" content="${escapeAttr(config.bingVerification)}" />` : ''
   ].filter(Boolean).join('\n    ');
-  return template
+  const html = template
     .replaceAll('http://localhost:43173', config.origin)
     .replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(config.title)}</title>`)
     .replace(/<meta name="description" content="[^"]*" \/>/, `<meta name="description" content="${escapeAttr(config.description)}" />`)
     .replace(/<meta property="og:title" content="[^"]*" \/>/, `<meta property="og:title" content="${escapeAttr(config.title)}" />`)
-    .replace(/<meta property="og:description" content="[^"]*" \/>/, `<meta property="og:description" content="${escapeAttr(config.description)}" />`)
     .replace(/<meta name="twitter:title" content="[^"]*" \/>/, `<meta name="twitter:title" content="${escapeAttr(config.title)}" />`)
-    .replace(/<meta name="twitter:description" content="[^"]*" \/>/, `<meta name="twitter:description" content="${escapeAttr(config.description)}" />`)
     .replace('<!-- TREVRA_VERIFICATION -->', verification)
     .replace('<!-- TREVRA_JSON_LD -->', `<script type="application/ld+json" nonce="${escapeAttr(nonce)}">${jsonLd}</script>`);
+  return withHostedWorkspaceHrefs(html, config.hostedAppUrl);
+}
+
+/**
+ * Point the shipped hosted-workspace CTAs at the real destination.
+ *
+ * index.html marks each one `data-hosted-cta` and keeps `href="#hosted"` as
+ * the degraded fallback. That fallback is what a crawler, a link unfurler and
+ * a pre-JS visitor actually get: src/client/main.tsx calls createRoot().render()
+ * rather than hydrateRoot(), so React discards the static DOM instead of
+ * repairing it, and MarketingScreen's own hostedAppUrl fix never reaches them.
+ *
+ * With no hosted workspace configured the markup is returned untouched, so the
+ * button still scrolls to the deploy card rather than pointing at nothing.
+ */
+function withHostedWorkspaceHrefs(html: string, hostedAppUrl: string): string {
+  if (!hostedAppUrl) return html;
+  const href = `href="${escapeAttr(hostedAppUrl)}"`;
+  return html.replace(
+    /<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi,
+    (tag) => tag.replace(/\bhref\s*=\s*"[^"]*"/i, href)
+  );
 }
 
 export function renderNotFoundPage(nonce: string): string {
@@ -386,7 +403,6 @@ export function renderNotFoundPage(nonce: string): string {
     path: '/404',
     title: 'Page not found | Trevra',
     description: 'The requested Trevra page could not be found.',
-    eyebrow: '404',
     heading: 'That page is not part of the revenue brief.',
     intro: 'Return to Trevra to create a workspace or continue your commercial work.',
     body: '<p><a class="launch-button" href="/">Return to Trevra</a></p>',
@@ -407,7 +423,6 @@ interface PublicPage {
   path: string;
   title: string;
   description: string;
-  eyebrow: string;
   heading: string;
   intro: string;
   body: string;
@@ -436,14 +451,39 @@ function renderPublicDocument(config: SiteConfig, page: PublicPage, nonce: strin
 <meta property="og:type" content="website" /><meta property="og:site_name" content="${escapeAttr(config.name)}" />
 <meta property="og:title" content="${escapeAttr(page.title)}" /><meta property="og:description" content="${escapeAttr(page.description)}" />
 <meta property="og:url" content="${escapeAttr(canonical)}" /><meta property="og:image" content="${escapeAttr(`${config.origin}/og/trevra-social.png`)}" />
-<meta property="og:image:width" content="1200" /><meta property="og:image:height" content="630" /><meta property="og:image:alt" content="Trevra — the open-source ledger and control plane for agentic GTM" />
+<meta property="og:image:width" content="1200" /><meta property="og:image:height" content="630" /><meta property="og:image:alt" content="Trevra — the open-source runtime for agent-run go-to-market" />
 <meta name="twitter:card" content="summary_large_image" /><meta name="twitter:title" content="${escapeAttr(page.title)}" /><meta name="twitter:description" content="${escapeAttr(page.description)}" /><meta name="twitter:image" content="${escapeAttr(`${config.origin}/og/trevra-social.png`)}" />
 <script type="application/ld+json" nonce="${escapeAttr(nonce)}">${jsonLd}</script>
 <script src="/theme.js"></script>
-</head><body class="launch-body">
-<header class="launch-nav"><div class="launch-brand"><a class="launch-logo" href="/"><span>T</span>Trevra</a>${themeToggleHtml()}</div><nav><a href="/how-it-works">How it works</a><a href="/security">Security</a><a class="launch-nav-cta" href="/#get-started">Connect your workspace</a></nav></header><main class="launch-page"><section class="launch-page-hero"><span class="launch-eyebrow">${escapeHtml(page.eyebrow)}</span><h1>${escapeHtml(page.heading)}</h1><p>${escapeHtml(page.intro)}</p></section>${page.body}</main>
+</head><body>
+<a class="skip-link" href="#main">Skip to content</a>
+<main class="static-launch" id="main" tabindex="-1">
+<header class="launch-nav">${brandLink()}<nav aria-label="Primary navigation">${SITE_LINKS}</nav><div class="launch-nav-actions"><details class="launch-nav-menu"><summary aria-label="Open section navigation">${MENU_ICON}</summary><nav aria-label="Sections">${SITE_LINKS}<a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav></details>${themeToggleHtml()}<a class="launch-nav-cta" href="/">Back to Trevra</a></div></header>
+<section class="launch-section"><div class="split-heading"><h1>${escapeHtml(page.heading)}</h1><p>${escapeHtml(page.intro)}</p></div>${page.body}</section>
 ${siteFooter(config)}
+</main>
 </body></html>`;
+}
+
+/**
+ * The landing page's own section links. Anchors rather than routes, so the
+ * same nav works on the static deploy target, where these sections are the
+ * only place `/how-it-works` and `/security` exist.
+ */
+const SITE_LINKS =
+  '<a href="/#how-it-works">How it runs</a><a href="/#approval">The gate</a><a href="/#modules">Catalog</a><a href="/#deploy">Deploy</a>';
+
+/** Below 1050px `.launch-nav > nav` is hidden, so the links live here instead. */
+const MENU_ICON =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg>';
+
+/**
+ * The wordmark, structurally identical to the one index.html and the static
+ * legal documents ship, because `.launch-logo` styles `> span` and `strong`.
+ */
+function brandLink(): string {
+  return '<a class="launch-logo" href="/" aria-label="Trevra home"><span><svg viewBox="0 0 42 34" aria-hidden="true" focusable="false" fill="currentColor"><rect width="11" height="11" rx="3"/><rect x="31" width="11" height="11" rx="3"/><rect x="14.5" width="13" height="34" rx="3.4"/></svg></span><strong>Trevra</strong></a>';
 }
 
 /** The toggle control, identical markup on every server-rendered surface. */
@@ -510,12 +550,29 @@ function faqItems(): Array<[string, string]> {
   ];
 }
 
+/**
+ * The landing page's own footer shape (`.footer-brand`, three link columns,
+ * `.footer-note`). `.launch-footer > div > a` is the only footer-link rule
+ * marketing.css has; the `<nav>` this used to emit matched nothing.
+ */
 function siteFooter(config: SiteConfig): string {
-  return `<footer class="launch-footer"><div><a class="launch-logo" href="/"><span>T</span>Trevra</a><p>Open-source operating system and control plane for agent-run GTM.</p></div><nav><a href="/how-it-works">How it works</a><a href="/security">Security</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:${escapeAttr(config.supportEmail)}">Talk to founder</a></nav></footer>`;
+  return `<footer class="launch-footer">`
+    + `<div class="footer-brand">${brandLink()}<p>The open-source runtime, ledger and approval gate for agent-run go-to-market.</p></div>`
+    + `<div><strong>Product</strong><a href="/#how-it-works">How it runs</a><a href="/#approval">The approval gate</a><a href="/#modules">Module catalog</a><a href="/#deploy">Deploy</a></div>`
+    + `<div><strong>Source</strong><a href="https://github.com/leanchain/trevra" target="_blank" rel="noreferrer">GitHub repository</a><a href="/catalog/modules.json">Catalog JSON</a><a href="/catalog/trevra.sbom.cdx.json">SBOM (CycloneDX)</a><a href="/llms.txt">Context for language models</a></div>`
+    + `<div><strong>Company</strong><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:${escapeAttr(config.supportEmail)}">Talk to the founder</a></div>`
+    + `<p class="footer-note">&copy; ${new Date().getUTCFullYear()} ${escapeHtml(config.name)}. Built in the open.</p>`
+    + `</footer>`;
 }
 
-function feature(number: string, title: string, copy: string): string {
-  return `<article class="launch-feature"><span>${escapeHtml(number)}</span><h2>${escapeHtml(title)}</h2><p>${escapeHtml(copy)}</p></article>`;
+/**
+ * One row of a `.launch-faq` disclosure list -- the long-form pattern the
+ * static /privacy and /terms documents use and the only one marketing.css
+ * actually styles. `.launch-feature`, `.launch-grid` and `.launch-copy-section`
+ * had zero rules behind them.
+ */
+function docRow(number: string, title: string, copy: string): string {
+  return `<details open><summary>${escapeHtml(number)}. ${escapeHtml(title)}</summary><p>${escapeHtml(copy)}</p></details>`;
 }
 
 function setTextResponse(res: Response, seconds: number): void {

@@ -32,7 +32,13 @@ export async function createAgentToken(
   db: Db,
   input: {
     workspaceId: string;
-    userId: string;
+    /**
+     * The human who asked for this token, or `null` when Trevra itself minted
+     * it -- the CLI agent backend does that once per run (`agent/cli.ts`). The
+     * column is nullable and the audit row says 'system' rather than naming a
+     * user who did not click anything.
+     */
+    userId: string | null;
     name: string;
     scopes?: AgentScope[];
     expiresAt?: string | null;
@@ -75,7 +81,7 @@ export async function createAgentToken(
   `).run(
     id('audit'),
     input.workspaceId,
-    'user',
+    input.userId ? 'user' : 'system',
     input.userId,
     'agent_token.created',
     'agent_token',
@@ -110,7 +116,8 @@ export async function listAgentTokens(db: Db, workspaceId: string): Promise<Agen
 export async function revokeAgentToken(
   db: Db,
   workspaceId: string,
-  userId: string,
+  /** `null` when Trevra revokes its own single-run token. */
+  userId: string | null,
   tokenId: string
 ): Promise<boolean> {
   const now = new Date().toISOString();
@@ -125,7 +132,7 @@ export async function revokeAgentToken(
       id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at
     ) VALUES (?,?,?,?,?,?,?,?,?)
   `).run(
-    id('audit'), workspaceId, 'user', userId, 'agent_token.revoked',
+    id('audit'), workspaceId, userId ? 'user' : 'system', userId, 'agent_token.revoked',
     'agent_token', tokenId, '{}', now
   );
   return true;

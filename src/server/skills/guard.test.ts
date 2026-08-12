@@ -164,3 +164,197 @@ describe('createSsrfFetch', () => {
     expect(lookupMock).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * The credential a redirect must not carry off. Walking the chain by hand means
+ * re-issuing `init` per hop, which would otherwise re-attach the `Authorization`
+ * header the platform deliberately drops when the origin changes.
+ */
+describe('createSsrfFetch credentials across redirects', () => {
+  const AUTH = 'Bearer sk-THE-WORKSPACE-KEY';
+
+  /** Redirects the first request to `target`, then answers 200. */
+  function chain(target: string) {
+    const hops: Array<{ url: string; headers: Headers }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      hops.push({ url, headers: new Headers((init?.headers ?? {}) as HeadersInit) });
+      if (hops.length === 1) return new Response(null, { status: 302, headers: { location: target } });
+      return new Response('landed', { status: 200 });
+    });
+    return { hops, fetchImpl };
+  }
+
+  // `init.headers` is three different types in practice, and the SDK passes the
+  // first of them.
+  const shapes: Array<[string, () => HeadersInit]> = [
+    ['a Headers instance', () => new Headers({ authorization: AUTH, cookie: 'session=abc', 'content-type': 'application/json' })],
+    ['a plain object', () => ({ Authorization: AUTH, Cookie: 'session=abc', 'Content-Type': 'application/json' })],
+    ['an array of pairs', () => [['Authorization', AUTH], ['cookie', 'session=abc'], ['content-type', 'application/json']] as Array<[string, string]>]
+  ];
+
+  for (const [label, build] of shapes) {
+    it(`drops authorization and cookie on a cross-origin hop, given ${label}`, async () => {
+      const { hops, fetchImpl } = chain('https://attacker.example/collect');
+      const guarded = createSsrfFetch({ resolve: false, fetchImpl });
+
+      const response = await guarded('https://api.example/v1/chat', { method: 'POST', headers: build() });
+
+      expect(await response.text()).toBe('landed');
+      expect(hops[0].headers.get('authorization')).toBe(AUTH);
+      expect(hops[0].headers.get('cookie')).toBe('session=abc');
+      // The regression: hop 2 reached another origin holding the workspace key.
+      expect(hops[1].url).toBe('https://attacker.example/collect');
+      expect(hops[1].headers.get('authorization')).toBeNull();
+      expect(hops[1].headers.get('cookie')).toBeNull();
+      // Everything else still travels, so the redirect is still usable.
+      expect(hops[1].headers.get('content-type')).toBe('application/json');
+    });
+
+    it(`leaves the caller's headers untouched, given ${label}`, async () => {
+      const { fetchImpl } = chain('https://attacker.example/collect');
+      const headers = build();
+      const before = [...new Headers(headers).entries()];
+
+      await createSsrfFetch({ resolve: false, fetchImpl })('https://api.example/v1/chat', { headers });
+
+      expect([...new Headers(headers).entries()]).toEqual(before);
+    });
+  }
+
+  it('keeps credentials on a same-origin redirect', async () => {
+    const { hops, fetchImpl } = chain('https://api.example/v1/chat/final');
+    const guarded = createSsrfFetch({ resolve: false, fetchImpl });
+
+    await guarded('https://api.example/v1/chat', { headers: { authorization: AUTH } });
+
+    expect(hops[1].headers.get('authorization')).toBe(AUTH);
+  });
+
+  // Origin is scheme + host + port: same host is not the same origin.
+  it.each([
+    ['a port change', 'https://api.example:8443/v1'],
+    ['a scheme change', 'http://api.example/v1'],
+    ['a subdomain change', 'https://logs.api.example/v1']
+  ])('drops credentials on %s', async (_label, target) => {
+    const { hops, fetchImpl } = chain(target);
+    const guarded = createSsrfFetch({ resolve: false, fetchImpl });
+
+    await guarded('https://api.example/v1/chat', { headers: { authorization: AUTH, 'x-trace': 'keep-me' } });
+
+    expect(hops[1].headers.get('authorization')).toBeNull();
+    expect(hops[1].headers.get('x-trace')).toBe('keep-me');
+  });
+
+  it('does not restore credentials on a later hop back to the first origin', async () => {
+    const hops: Array<Headers> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      hops.push(new Headers((init?.headers ?? {}) as HeadersInit));
+      if (hops.length === 1) return new Response(null, { status: 302, headers: { location: 'https://detour.example/x' } });
+      if (hops.length === 2) return new Response(null, { status: 302, headers: { location: 'https://api.example/back' } });
+      return new Response('landed', { status: 200 });
+    });
+
+    await createSsrfFetch({ resolve: false, fetchImpl })('https://api.example/v1', { headers: { authorization: AUTH } });
+
+    expect(hops[2].get('authorization')).toBeNull();
+  });
+
+  it('survives a request with no headers at all', async () => {
+    const { hops, fetchImpl } = chain('https://other.example/x');
+    const response = await createSsrfFetch({ resolve: false, fetchImpl })('https://api.example/v1');
+    expect(response.status).toBe(200);
+    expect([...hops[1].headers.keys()]).toEqual([]);
+  });
+});
+
+/**
+ * The self-host escape hatch. `validatePublicHost` refuses loopback, raw IPs and
+ * explicit ports STRUCTURALLY, before `resolve` is consulted, so opting a
+ * private endpoint in needs its own switch -- and that switch must stay off by
+ * default for every other caller.
+ */
+describe('createSsrfFetch allowPrivateHosts', () => {
+  const privateUrls = [
+    'http://localhost:11434/v1/chat/completions',
+    'http://127.0.0.1:8000/v1',
+    'https://vllm.internal/v1',
+    'http://[::1]:11434/v1',
+    'https://169.254.169.254/latest/meta-data'
+  ];
+
+  it('dials a private endpoint when the operator has opted in', async () => {
+    const reached: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      reached.push(url);
+      return new Response('ok', { status: 200 });
+    });
+    const guarded = createSsrfFetch({ allowPrivateHosts: true, fetchImpl });
+
+    for (const url of privateUrls) await expect(guarded(url)).resolves.toBeDefined();
+
+    expect(reached).toHaveLength(privateUrls.length);
+    // No DNS either: the allow-list is skipped, not merely relaxed.
+    expect(lookupMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses the same endpoints by default', async () => {
+    // `vllm.internal` is structurally fine; only DNS exposes it, so the default
+    // wrapper has to still be resolving.
+    lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+    const fetchImpl = vi.fn(async () => new Response('ok', { status: 200 }));
+    const guarded = createSsrfFetch({ fetchImpl });
+
+    for (const url of privateUrls) await expect(guarded(url)).rejects.toThrow(SsrfError);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('still refuses a non-http scheme and still bounds redirects', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/next' } }));
+    const guarded = createSsrfFetch({ allowPrivateHosts: true, maxRedirects: 2, fetchImpl });
+
+    await expect(guarded('file:///etc/passwd')).rejects.toThrow('unsupported scheme');
+    await expect(guarded('http://127.0.0.1/')).rejects.toThrow('too many redirects');
+  });
+
+  /**
+   * The waiver covers the origin the operator named, and nothing else.
+   *
+   * An earlier version waived the allow-list for every hop, which turned the
+   * self-host flag into an SSRF primitive: a self-hoster on a cloud VM pointed
+   * the agent at their own Ollama, and that endpoint could answer 302 and walk
+   * the guard into the instance metadata service. The operator chose one private
+   * destination; the endpoint does not get to choose the next one.
+   */
+  it('refuses a redirect from the opted-in endpoint to a different private host', async () => {
+    const reached: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      reached.push(url);
+      return url.includes('169.254')
+        ? new Response('instance-credentials', { status: 200 })
+        : new Response(null, { status: 302, headers: { location: 'http://169.254.169.254/latest/meta-data/' } });
+    });
+    const guarded = createSsrfFetch({ allowPrivateHosts: true, fetchImpl });
+
+    await expect(guarded('http://localhost:11434/v1/chat/completions')).rejects.toThrow(SsrfError);
+    // Hop 0 left the process; the metadata service was never asked.
+    expect(reached).toEqual(['http://localhost:11434/v1/chat/completions']);
+  });
+
+  it('follows a redirect that stays on the opted-in origin, so a local proxy still works', async () => {
+    const reached: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      reached.push(url);
+      return url.endsWith('/v1/chat/completions')
+        ? new Response(null, { status: 307, headers: { location: 'http://localhost:11434/v1/completions' } })
+        : new Response('ok', { status: 200 });
+    });
+    const guarded = createSsrfFetch({ allowPrivateHosts: true, fetchImpl });
+
+    await expect(guarded('http://localhost:11434/v1/chat/completions')).resolves.toBeDefined();
+    expect(reached).toEqual([
+      'http://localhost:11434/v1/chat/completions',
+      'http://localhost:11434/v1/completions'
+    ]);
+  });
+});

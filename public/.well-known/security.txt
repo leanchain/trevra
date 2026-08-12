@@ -1,5 +1,5 @@
 Contact: mailto:security@usetrevra.com
 Canonical: https://usetrevra.com/.well-known/security.txt
-Policy: https://usetrevra.com/#security
+Policy: https://usetrevra.com/security
 Preferred-Languages: en
 Expires: 2027-07-26T00:00:00Z

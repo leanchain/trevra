@@ -59,6 +59,14 @@ services:
       NODE_ENV: production
       PORT: 8081
       DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
+    # Overrides the image HEALTHCHECK, which probes /api/health -- an API route.
+    # The worker serves /health instead, so the inherited check always fails.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy

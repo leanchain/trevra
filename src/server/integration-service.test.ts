@@ -26,7 +26,7 @@ function stubDb(connectedKeys: string[] = []): InstanceType<typeof Db> {
 
 const managedEnv = [
   'NANGO_API_KEY', 'NANGO_HOST', 'NANGO_PUBLIC_SERVER_URL',
-  'NANGO_HUBSPOT_INTEGRATION', 'NANGO_ATTIO_INTEGRATION', 'NANGO_EXA_INTEGRATION'
+  'NANGO_HUBSPOT_INTEGRATION', 'NANGO_ATTIO_INTEGRATION', 'NANGO_EXA_INTEGRATION', 'NANGO_REDDIT_INTEGRATION', 'NANGO_REDDIT_INTEGRATION', 'NANGO_REDDIT_INTEGRATION'
 ];
 
 afterEach(() => {
@@ -42,6 +42,9 @@ describe('integration catalog', () => {
     expect(byProvider.get('hubspot')).toMatchObject({ key: 'trevra-hubspot', name: 'HubSpot', category: 'crm', mode: 'oauth', connected: false });
     expect(byProvider.get('attio')).toMatchObject({ key: 'trevra-attio', name: 'Attio', category: 'crm', mode: 'oauth', connected: false });
     expect(byProvider.get('exa')).toMatchObject({ key: 'trevra-exa', name: 'Exa', category: 'data', mode: 'apiKey', connected: false });
+    expect(byProvider.get('reddit')).toMatchObject({ key: 'trevra-reddit', name: 'Reddit', category: 'data', mode: 'oauth', connected: false });
+    expect(byProvider.get('reddit')).toMatchObject({ key: 'trevra-reddit', name: 'Reddit', category: 'data', mode: 'oauth', connected: false });
+    expect(byProvider.get('reddit')).toMatchObject({ key: 'trevra-reddit', name: 'Reddit', category: 'data', mode: 'oauth', connected: false });
   });
 
   // Apollo's terms forbid integrating their API with another product, so the catalog must not offer
@@ -74,7 +77,7 @@ describe('Nango connect sessions', () => {
   it('offers key-based integrations in the default allow-list', async () => {
     const allowed = defaultConnectSessionIntegrations();
 
-    expect(allowed).toEqual(expect.arrayContaining(['trevra-exa', 'trevra-hubspot', 'trevra-attio', 'trevra-gmail']));
+    expect(allowed).toEqual(expect.arrayContaining(['trevra-exa', 'trevra-reddit', 'trevra-hubspot', 'trevra-attio', 'trevra-gmail']));
     expect(allowed).not.toEqual(expect.arrayContaining(['upwork', 'fiverr', 'contra']));
   });
 

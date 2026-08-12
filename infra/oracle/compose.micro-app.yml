@@ -1,0 +1,63 @@
+# API + worker + tunnel on a 1 GB Always Free micro instance.
+#
+# Postgres lives on the sibling instance; DATABASE_URL points at its private IP.
+# Memory limits are explicit so one runaway container cannot take the whole host
+# down with it -- Docker kills the offending container instead.
+
+name: trevra
+
+services:
+  trevra:
+    image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
+    env_file:
+      - .env.oracle
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      # Caps V8's heap below the container limit so Node GCs under pressure
+      # rather than being OOM-killed by the kernel.
+      NODE_OPTIONS: --max-old-space-size=320
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    mem_limit: 400m
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
+    command: ["node", "dist-server/worker/index.js"]
+    env_file:
+      - .env.oracle
+    environment:
+      NODE_ENV: production
+      PORT: 8081
+      NODE_OPTIONS: --max-old-space-size=256
+      # Slower than the 60s default: on 1/8 of an OCPU shared with the API,
+      # a minute-by-minute cycle leaves little CPU for serving requests.
+      AUTOMATION_INTERVAL_MS: ${AUTOMATION_INTERVAL_MS:-300000}
+    # Overrides the image HEALTHCHECK, which probes /api/health -- an API route.
+    # The worker serves /health instead, so the inherited check always fails.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    depends_on:
+      trevra:
+        condition: service_started
+    mem_limit: 320m
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - trevra
+    mem_limit: 96m
+    restart: unless-stopped

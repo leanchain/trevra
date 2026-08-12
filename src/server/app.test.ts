@@ -1,9 +1,12 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
+import { MockLanguageModelV4 } from 'ai/test';
+import type { LanguageModelV4, LanguageModelV4GenerateResult } from '@ai-sdk/provider';
 import Stripe from 'stripe';
 import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { randomBytes } from 'node:crypto';
 import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from './db.js';
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
@@ -23,6 +26,60 @@ registerPlaybook({
   output: { approved: { $ref: '$.steps.approve.output.approved' }, score: { $ref: '$.steps.score.output' } },
   source: { type: 'builtin' }
 });
+
+/**
+ * The hosted agent's transport, faked, and only when a test installs one.
+ *
+ * With nothing installed this falls straight through to the real lookup, so
+ * every test that does not touch the agent behaves exactly as it did before.
+ * No test in this file reaches the network for a model.
+ */
+const hostedModel = vi.hoisted(() => ({ model: null as LanguageModelV4 | null }));
+
+vi.mock('./agent/provider.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./agent/provider.js')>();
+  return {
+    ...actual,
+    resolveWorkspaceModel: async (db: never, workspaceId: string) => {
+      if (!hostedModel.model) return actual.resolveWorkspaceModel(db, workspaceId);
+      return { model: hostedModel.model, modelId: 'gpt-4o-mini', baseUrl: 'https://model.invalid/v1' };
+    }
+  };
+});
+
+function modelAnswer(text: string): LanguageModelV4GenerateResult {
+  return {
+    content: [{ type: 'text', text }],
+    finishReason: { unified: 'stop', raw: 'stop' },
+    usage: {
+      inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 },
+      outputTokens: { total: 200, text: 200, reasoning: 0 }
+    },
+    warnings: []
+  };
+}
+
+/** A promise the test releases by hand, so a run can be held mid-flight. */
+function gate(): { held: Promise<void>; release: () => void } {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  return { held, release: () => release() };
+}
+
+async function waitForAgentRun(
+  agent: Awaited<ReturnType<typeof agentWithSession>>,
+  runId: string
+): Promise<{ status: string; summary: string | null }> {
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const { run } = (await agent.get(`/api/agent-runs/${runId}`).expect(200)).body as {
+      run: { status: string; summary: string | null };
+    };
+    if (run.status !== 'running') return run;
+    if (Date.now() >= deadline) throw new Error(`Agent run ${runId} never finished`);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+}
 
 let db: Db | undefined;
 
@@ -44,6 +101,7 @@ afterEach(async () => {
   delete process.env.MARKETING_HASH_SALT;
   delete process.env.INDEXNOW_KEY;
   delete process.env.TREVRA_AGENT_TOKEN_PEPPER;
+  delete process.env.TREVRA_SECRETS_KEY;
 });
 
 async function agentWithSession() {
@@ -425,5 +483,194 @@ describe('Trevra API on PostgreSQL', () => {
     const invoice = await db!.prepare("SELECT status,paid_at FROM invoices WHERE id='inv_acme_104'").get<{ status: string; paid_at: string | null }>();
     expect(invoice?.status).toBe('paid');
     expect(invoice?.paid_at).not.toBeNull();
+  });
+
+  it('reports BYOK availability and starts a workspace with no key, no endpoint, and the default budget', async () => {
+    delete process.env.TREVRA_SECRETS_KEY;
+    const agent = await agentWithSession();
+    const off = await agent.get('/api/agent-setup').expect(200);
+    expect(off.body.available).toBe(false);
+    expect(off.body.config).toBeNull();
+    expect(off.body.secret).toBeNull();
+    expect(off.body.budget).toMatchObject({ monthlyCapCents: 2000, spentCents: 0, enabled: false });
+
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    expect((await agent.get('/api/agent-setup').expect(200)).body.available).toBe(true);
+  });
+
+  it('stores a model key write-only and never returns it anywhere', async () => {
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    const agent = await agentWithSession();
+    const apiKey = 'trv-model-key-for-tests-3f9d2b7c4a81';
+
+    const stored = await agent.put('/api/agent-setup/key').send({ apiKey, label: 'Anthropic' }).expect(200);
+    expect(stored.body.secret).toMatchObject({ kind: 'model_api_key', last4: '4a81', label: 'Anthropic', keyVersion: 1 });
+    expect(JSON.stringify(stored.body)).not.toContain(apiKey);
+
+    const setup = await agent.get('/api/agent-setup').expect(200);
+    expect(setup.body.secret).toMatchObject({ last4: '4a81', label: 'Anthropic' });
+    expect(JSON.stringify(setup.body)).not.toContain(apiKey);
+
+    const row = await db!.prepare('SELECT ciphertext FROM workspace_secrets WHERE workspace_id=?')
+      .get<{ ciphertext: Buffer }>(DEMO_WORKSPACE_ID);
+    expect(row?.ciphertext.toString('utf8')).not.toContain(apiKey);
+    const audit = await db!.prepare("SELECT metadata_json FROM audit_events WHERE event_type='workspace_secret.updated'")
+      .get<{ metadata_json: string }>();
+    expect(audit?.metadata_json).not.toContain(apiKey);
+  });
+
+  it('refuses to store a model key when the server holds no encryption key', async () => {
+    delete process.env.TREVRA_SECRETS_KEY;
+    const agent = await agentWithSession();
+    // A delta, not an absolute count: every test file in the run shares one
+    // database and several of them legitimately store secrets, so `= 0` was an
+    // assertion about file order rather than about this request.
+    const countSecrets = async () => (await db!
+      .prepare('SELECT COUNT(*)::int AS count FROM workspace_secrets')
+      .get<{ count: number }>())?.count ?? 0;
+    const before = await countSecrets();
+    const response = await agent.put('/api/agent-setup/key').send({ apiKey: 'trv-model-key-never-stored' }).expect(400);
+    expect(response.body.error).toContain('TREVRA_SECRETS_KEY');
+    expect(await countSecrets()).toBe(before);
+  });
+
+  it('deletes a stored model key', async () => {
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    const agent = await agentWithSession();
+    await agent.put('/api/agent-setup/key').send({ apiKey: 'trv-model-key-to-delete-8821' }).expect(200);
+    expect((await agent.delete('/api/agent-setup/key').expect(200)).body.deleted).toBe(true);
+    expect((await agent.get('/api/agent-setup').expect(200)).body.secret).toBeNull();
+    expect((await agent.delete('/api/agent-setup/key').expect(200)).body.deleted).toBe(false);
+  });
+
+  it('refuses a model endpoint that is not HTTPS', async () => {
+    const agent = await agentWithSession();
+    const rejected = await agent.put('/api/agent-setup/config')
+      .send({ baseUrl: 'http://api.example.com/v1', model: 'gpt-4o-mini' })
+      .expect(400);
+    expect(rejected.body.error).toContain('HTTPS');
+
+    const saved = await agent.put('/api/agent-setup/config')
+      .send({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', label: 'OpenAI' })
+      .expect(200);
+    expect(saved.body.config).toMatchObject({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', label: 'OpenAI' });
+    expect((await agent.get('/api/agent-setup').expect(200)).body.config.model).toBe('gpt-4o-mini');
+  });
+
+  it('sets the spend cap and the kill switch, and refuses a cap above the ceiling', async () => {
+    const agent = await agentWithSession();
+    const updated = await agent.put('/api/agent-setup/budget').send({ monthlyCapCents: 5000, enabled: true }).expect(200);
+    expect(updated.body.budget).toMatchObject({ monthlyCapCents: 5000, spentCents: 0, enabled: true });
+    expect((await agent.get('/api/agent-setup').expect(200)).body.budget).toMatchObject({ monthlyCapCents: 5000, enabled: true });
+
+    const rejected = await agent.put('/api/agent-setup/budget').send({ monthlyCapCents: 1_000_001 }).expect(400);
+    expect(JSON.stringify(rejected.body)).toContain('$10,000');
+    expect((await agent.get('/api/agent-setup').expect(200)).body.budget.monthlyCapCents).toBe(5000);
+  });
+
+  it('keeps one workspace out of another workspace BYOK setup', async () => {
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    await resetDemoData(db);
+    const app = createApp(db);
+    const owner = request.agent(app);
+    await owner.post('/api/auth/demo').expect(200);
+    const apiKey = 'trv-model-key-owned-by-demo-9c2f';
+    await owner.put('/api/agent-setup/key').send({ apiKey, label: 'Owner' }).expect(200);
+    await owner.put('/api/agent-setup/config').send({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }).expect(200);
+
+    const intruder = request.agent(app);
+    await intruder.post('/api/auth/sign-up/email')
+      .send({ name: 'Other Founder', email: `other-${Date.now()}@example.com`, password: 'correct-horse-battery-staple' })
+      .expect(200);
+    const theirs = await intruder.get('/api/agent-setup').expect(200);
+    expect(theirs.body.secret).toBeNull();
+    expect(theirs.body.config).toBeNull();
+    expect(JSON.stringify(theirs.body)).not.toContain(apiKey);
+    expect((await intruder.delete('/api/agent-setup/key').expect(200)).body.deleted).toBe(false);
+
+    const still = await owner.get('/api/agent-setup').expect(200);
+    expect(still.body.secret.last4).toBe('9c2f');
+    expect(still.body.config.baseUrl).toBe('https://api.openai.com/v1');
+  });
+
+  it('reads agent runs and stops them whatever the budget says', async () => {
+    const agent = await agentWithSession();
+    expect((await agent.get('/api/agent-runs').expect(200)).body.runs).toEqual([]);
+    await agent.get('/api/agent-runs/run_does_not_exist').expect(404);
+    // The kill switch answers with spending off, which is the default state.
+    expect((await agent.post('/api/agent-runs/stop').expect(200)).body.stopped).toBe(0);
+  });
+
+  it('starts an agent run and answers before the run has finished', async () => {
+    // The model is held here for the whole request. If the route waited for the
+    // run, this test would hang rather than fail -- which is the point: there is
+    // no timing threshold that could pass while the request is still blocked.
+    const model = gate();
+    hostedModel.model = new MockLanguageModelV4({
+      modelId: 'gpt-4o-mini',
+      doGenerate: async () => { await model.held; return modelAnswer('Nothing needs a human right now.'); }
+    });
+
+    const agent = await agentWithSession();
+    await agent.put('/api/agent-setup/budget').send({ enabled: true }).expect(200);
+
+    const goal = 'Check what is waiting for a decision';
+    const startedAt = Date.now();
+    const created = await agent.post('/api/agent-runs').send({ goal }).expect(201);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(created.body.run).toMatchObject({ status: 'running', trigger: 'manual', goal, stepCount: 0 });
+    expect(elapsedMs).toBeLessThan(2_000);
+    // Still going, with the model still blocked: the run really is detached.
+    expect((await agent.get(`/api/agent-runs/${created.body.run.id}`).expect(200)).body.run.status).toBe('running');
+
+    model.release();
+    const finished = await waitForAgentRun(agent, created.body.run.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.summary).toContain('Nothing needs a human');
+
+    hostedModel.model = null;
+  });
+
+  it('refuses to start a run while agent spending is off, and records nothing', async () => {
+    hostedModel.model = null;
+    const agent = await agentWithSession();
+    const refused = await agent.post('/api/agent-runs').send({ goal: 'Spend money nobody agreed to' }).expect(409);
+    expect(refused.body.error).toBe('Agent spending is off. Turn it on in Setup.');
+    expect((await agent.get('/api/agent-runs').expect(200)).body.runs).toEqual([]);
+  });
+
+  it('refuses a run with no goal or an oversized one', async () => {
+    hostedModel.model = null;
+    const agent = await agentWithSession();
+    await agent.put('/api/agent-setup/budget').send({ enabled: true }).expect(200);
+
+    await agent.post('/api/agent-runs').send({}).expect(400);
+    await agent.post('/api/agent-runs').send({ goal: '   ' }).expect(400);
+    await agent.post('/api/agent-runs').send({ goal: 'x'.repeat(2001) }).expect(400);
+    await agent.post('/api/agent-runs').send({ goal: 'fine', maxSteps: 0 }).expect(400);
+
+    expect((await agent.get('/api/agent-runs').expect(200)).body.runs).toEqual([]);
+  });
+
+  it('turns the unattended schedule on, off by default, and refuses a cadence outside the window', async () => {
+    const agent = await agentWithSession();
+    expect((await agent.get('/api/agent-setup').expect(200)).body.schedule).toBeNull();
+
+    const saved = await agent.put('/api/agent-setup/schedule')
+      .send({ enabled: true, goal: 'Review the week', intervalMinutes: 60 })
+      .expect(200);
+    expect(saved.body.schedule).toMatchObject({ enabled: true, goal: 'Review the week', intervalMinutes: 60 });
+    expect((await agent.get('/api/agent-setup').expect(200)).body.schedule)
+      .toMatchObject({ enabled: true, intervalMinutes: 60, lastRunAt: null });
+
+    await agent.put('/api/agent-setup/schedule').send({ intervalMinutes: 14 }).expect(400);
+    await agent.put('/api/agent-setup/schedule').send({ intervalMinutes: 10_081 }).expect(400);
+    await agent.put('/api/agent-setup/schedule').send({}).expect(400);
+    expect((await agent.get('/api/agent-setup').expect(200)).body.schedule.intervalMinutes).toBe(60);
+
+    // Left off, so this file cannot hand a live schedule to another one.
+    await agent.put('/api/agent-setup/schedule').send({ enabled: false }).expect(200);
   });
 });

@@ -1,0 +1,27 @@
+-- The note you will read three weeks from now.
+--
+-- migrations/021 gave `agent_runs` a `stop_requested_at` and nothing else, so
+-- the agent kill switch recorded WHEN a human intervened and never WHY. The
+-- LinkedIn seat kill switch has demanded a typed reason since the day it
+-- shipped -- src/client/LinkedInScreen.tsx:238, "Say why. This is the note you
+-- will read three weeks from now." -- and that argument was never
+-- LinkedIn-specific. One product, one rule.
+--
+-- Deliberately NULLABLE and never back-filled, for two different reasons:
+--
+--   NULL for every run that predates this column, because inventing a reason
+--   for a stop nobody explained would be worse than admitting there is none.
+--
+--   NULL for a future stop where the operator declined to say. The field is
+--   OPTIONAL and is never pre-filled with a placeholder: a default string like
+--   "stopped by user" is indistinguishable from a real note three weeks later,
+--   which is precisely the failure this column exists to prevent.
+--
+-- Written by the same statement that sets `stop_requested_at` (see
+-- src/server/agent/stop-request.ts), so a request can never exist without the
+-- reason that was given with it, nor a reason without a request.
+--
+-- It records the REQUEST, exactly like `stop_requested_at` beside it, and says
+-- nothing about the outcome. `status='stopped'` remains the only claim that
+-- the loop really put the model down, and only the loop writes it.
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS stop_reason TEXT;

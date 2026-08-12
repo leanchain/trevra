@@ -1,0 +1,45 @@
+#cloud-config
+# Postgres host, 1 GB RAM. Swap matters more here than on a larger box: without
+# it a single memory spike gets Postgres OOM-killed rather than slowed down.
+
+package_update: true
+packages: [ca-certificates, curl, gnupg]
+
+runcmd:
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - >
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+    https://download.docker.com/linux/ubuntu jammy stable"
+    > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - usermod -aG docker ubuntu
+
+  # 2 GB swap. vm.swappiness stays low so Postgres pages out only under real
+  # pressure rather than trading its cache away during normal operation.
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  - sysctl -w vm.swappiness=10
+  - echo 'vm.swappiness=10' > /etc/sysctl.d/99-trevra.conf
+
+  # Format only when there is no filesystem, so re-running never wipes data.
+  - test -b /dev/oracleoci/oraclevdb
+  - blkid /dev/oracleoci/oraclevdb || mkfs.ext4 -L trevra-data /dev/oracleoci/oraclevdb
+  - mkdir -p /mnt/data
+  - grep -q '/mnt/data' /etc/fstab || echo 'LABEL=trevra-data /mnt/data ext4 defaults,_netdev,nofail 0 2' >> /etc/fstab
+  - mount -a
+  - mkdir -p /mnt/data/postgres
+
+  # OCI Ubuntu images ship a restrictive iptables INPUT chain that the security
+  # list alone does not override; 5432 has to be opened host-side too. Scoped to
+  # the VCN CIDR, matching the security list rule.
+  - iptables -I INPUT 5 -p tcp -s 10.1.0.0/16 --dport 5432 -j ACCEPT
+  - netfilter-persistent save
+
+  - mkdir -p /opt/trevra
+  - chown ubuntu:ubuntu /opt/trevra

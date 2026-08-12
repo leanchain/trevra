@@ -20,6 +20,8 @@
     "build:marketing": "npm run catalog:build && npm run typecheck && vite build --mode marketing && tsx scripts/build-marketing-headers.ts dist/_headers",
     "deploy:cloudflare": "npm run build:marketing && npx wrangler pages deploy dist",
     "agent": "tsx src/cli/trevra-agent.ts",
+    "linkedin:worker": "tsx src/cli/trevra-linkedin-worker.ts",
+    "reddit:worker": "tsx src/cli/trevra-reddit-worker.ts",
     "mcp": "tsx src/mcp/server.ts",
     "start:mcp": "node dist-server/mcp/server.js",
     "sandbox:dev": "tsx watch src/sandbox-gateway/index.ts",
@@ -29,6 +31,7 @@
     "sbom:build": "npm sbom --sbom-format cyclonedx > public/catalog/trevra.sbom.cdx.json"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.20",
     "@kubernetes/client-node": "^1.4.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@nangohq/frontend": "^0.71.2",
@@ -36,6 +39,7 @@
     "@temporalio/client": "^1.21.1",
     "@temporalio/worker": "^1.21.1",
     "@temporalio/workflow": "^1.21.1",
+    "ai": "^7.0.49",
     "ajv": "^8.20.0",
     "better-auth": "^1.6.24",
     "cookie-parser": "^1.4.7",
@@ -76,6 +80,9 @@
     "typescript": "^5.7.2",
     "vite": "^8.1.5",
     "vitest": "^4.1.10"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.62.1"
   },
   "overrides": {
     "@hono/node-server": "^2.0.5",

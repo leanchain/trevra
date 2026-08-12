@@ -224,18 +224,6 @@ export interface ModulePopularity {
   rank: number;
 }
 
-export interface RegistryPublisher {
-  id: string;
-  slug: string;
-  displayName?: string;
-  name?: string;
-  keyFingerprint: string;
-  verified: boolean;
-  reputationScore: number;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
 export interface PublicRegistryModule {
   id: string;
   name: string;
@@ -298,6 +286,131 @@ export interface PreparedAction {
   scheduledFor?: string | null;
   externalRef?: string | null;
   lastError?: string | null;
+}
+
+/**
+ * The hosted agent's run ledger, as served by `/api/agent-runs`.
+ *
+ * Mirrors `src/server/agent/runs.ts`. The list endpoint returns runs without
+ * steps; only the detail endpoint carries them, which is why the two shapes
+ * are separate rather than one type with an optional array.
+ */
+export type AgentRunStatus = 'running' | 'completed' | 'failed' | 'stopped';
+
+export interface AgentRunStep {
+  seq: number;
+  kind: 'model' | 'tool';
+  toolName: string | null;
+  input: unknown;
+  output: unknown;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface AgentRunSummary {
+  id: string;
+  workspaceId?: string;
+  trigger: 'manual' | 'schedule';
+  status: AgentRunStatus;
+  goal: string;
+  stepCount: number;
+  maxSteps: number;
+  summary: string | null;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  /**
+   * When somebody asked this run to stop, or null if nobody has.
+   *
+   * Separate from `status` because a stop is a REQUEST, not an event: the run
+   * keeps `status: 'running'` until whatever is running it has actually put the
+   * model down. Those seconds in between are what this field lets the UI
+   * describe honestly -- "stopping", never "stopped" (app-spec.md §6 rule 3).
+   *
+   * Optional so a client stays readable against a server that predates it.
+   */
+  stopRequestedAt?: string | null;
+}
+
+export interface AgentRun extends AgentRunSummary {
+  steps: AgentRunStep[];
+}
+
+/**
+ * Setup for Trevra's own agent, as served by `/api/agent-setup`.
+ *
+ * `secret` carries `last4` and nothing else that identifies the key. There is
+ * no plaintext field here because there is no route that returns one, at any
+ * privilege -- so nothing in the UI can offer to show it back.
+ */
+export interface AgentModelConfig {
+  baseUrl: string;
+  model: string;
+  label: string | null;
+  updatedAt: string;
+}
+
+export interface AgentKeySummary {
+  kind: 'model_api_key';
+  label: string | null;
+  last4: string;
+  keyVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Whole cents on the wire; the screen converts, and never says "cents". */
+export interface AgentBudget {
+  monthlyCapCents: number;
+  spentCents: number;
+  periodStart: string;
+  enabled: boolean;
+}
+
+export interface AgentSchedule {
+  enabled: boolean;
+  goal: string;
+  intervalMinutes: number;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+}
+
+/**
+ * `available: false` means this deployment holds no secrets key, so BYOK is
+ * off rather than half-working. `schedule` is optional on purpose: a build
+ * without the schedule route omits the field entirely, and the screen hides
+ * that section instead of failing.
+ */
+export interface AgentSetup {
+  available: boolean;
+  config: AgentModelConfig | null;
+  secret: AgentKeySummary | null;
+  budget: AgentBudget;
+  schedule?: AgentSchedule | null;
+}
+
+/** One row of the skill ledger, as served by `/api/skill-runs/:id`. */
+export type SkillRunStatus = 'ok' | 'error';
+
+export interface SkillEvidence {
+  label: string;
+  detail: string;
+  sourceUrl?: string | null;
+}
+
+export interface SkillRun {
+  id: string;
+  skillId: string;
+  skillVersion: string;
+  workspaceId: string;
+  status: SkillRunStatus;
+  input: unknown;
+  output: unknown;
+  error: string | null;
+  evidence: SkillEvidence[];
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
 }
 
 export interface ClientDetail {

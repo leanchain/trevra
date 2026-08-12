@@ -1,0 +1,22 @@
+-- The brief a campaign was planned from, kept on the campaign.
+--
+-- WHY THIS COLUMN EXISTS. Editing a campaign's sequence RE-PLANS it: the edit
+-- is validated, stored, put back through `planPacing` and the safety gate, and
+-- placed behind a fresh approval. Re-planning needs the campaign's original
+-- inputs -- the target list, the seat, the horizon, the export format, the ICP
+-- and offer the critic measures copy against -- and until now the only copy of
+-- those lived in `playbook_runs.input_json`.
+--
+-- 025 already recorded, about `playbook_run_id`, that "playbook runs are
+-- prunable history and a campaign must outlive the pruning of the run that
+-- made it". That is exactly the problem: a campaign whose run had been pruned
+-- could still be READ, but could no longer be re-planned, so its copy would
+-- become permanently uneditable at whatever moment history was trimmed. An
+-- editor that stops working on a schedule nobody can see is worse than one
+-- that never existed.
+--
+-- NOT exposed on the campaign read model. It carries the full target list, and
+-- `GET /api/linkedin/campaigns` returns up to 500 campaigns; the edit path
+-- reads it by id through `getCampaignBrief`, which is the only caller.
+ALTER TABLE linkedin_campaigns
+  ADD COLUMN IF NOT EXISTS brief_json JSONB NOT NULL DEFAULT '{}'::jsonb;

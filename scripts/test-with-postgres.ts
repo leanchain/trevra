@@ -22,7 +22,10 @@ const env = {
 
 try {
   const exitCode = await new Promise<number>((resolve) => {
-    const child = spawn(process.execPath, ['./node_modules/vitest/vitest.mjs', 'run'], {
+    // Anything after the script name is passed straight to vitest, so a single
+    // file or directory can be run against the same ephemeral Postgres:
+    //   npx tsx scripts/test-with-postgres.ts src/server/secrets
+    const child = spawn(process.execPath, ['./node_modules/vitest/vitest.mjs', 'run', ...process.argv.slice(2)], {
       cwd: process.cwd(),
       env,
       stdio: 'inherit'

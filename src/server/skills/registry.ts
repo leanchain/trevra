@@ -13,6 +13,13 @@ import { copyCritiqueSkill } from './voice.js';
 import { channelPlanSkill } from '../channels/plan.js';
 import { channelPrepareSkill } from '../channels/prepare.js';
 import { sourceLeadsSkill } from '../research/source.js';
+import { scoutThreadsSkill } from '../outreach/scout.js';
+import { scoreThreadsSkill } from '../outreach/scorer.js';
+import { draftReplySkill } from '../outreach/reply.js';
+import { outreachGuardSkill } from '../outreach/safety.js';
+import { linkedinPacingSkill } from '../linkedin/pacing.js';
+import { linkedinGuardSkill } from '../linkedin/guard.js';
+import { linkedinSequenceSkill } from '../linkedin/sequence.js';
 
 /**
  * Skill registry.
@@ -100,7 +107,14 @@ for (const skill of [
   outreachDraftSkill,
   copyCritiqueSkill,
   channelPlanSkill,
-  channelPrepareSkill
+  channelPrepareSkill,
+  scoutThreadsSkill,
+  scoreThreadsSkill,
+  outreachGuardSkill,
+  draftReplySkill,
+  linkedinPacingSkill,
+  linkedinGuardSkill,
+  linkedinSequenceSkill
 ]) {
   registerSkill(skill);
 }

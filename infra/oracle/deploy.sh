@@ -23,6 +23,17 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REMOTE="ubuntu@${HOST}"
 APP_DIR=/opt/trevra
 
+# Terraform authorises a dedicated key rather than a default identity.
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/trevra_oracle}"
+SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new)
+ssh() { command ssh "${SSH_OPTS[@]}" "$@"; }
+scp() { command scp "${SSH_OPTS[@]}" "$@"; }
+
+if [ ! -f "$SSH_KEY" ]; then
+  echo "SSH key not found at ${SSH_KEY}; set SSH_KEY=/path/to/key" >&2
+  exit 1
+fi
+
 if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$REMOTE" true 2>/dev/null; then
   echo "cannot reach ${REMOTE} over SSH" >&2
   exit 1
@@ -47,8 +58,18 @@ echo "==> starting stack"
 ssh "$REMOTE" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.oracle.yml up -d --remove-orphans"
 
 echo "==> waiting for health"
+# --env-file is required even to read status: the compose file uses ${VAR:?}
+# guards, so without it interpolation fails and ps never runs. Silently losing
+# that error made this loop time out against an already-healthy stack.
+PS_CMD="cd ${APP_DIR} && docker compose --env-file .env.oracle -f compose.oracle.yml ps --format json 2>/dev/null"
 for _ in $(seq 1 30); do
-  if ssh "$REMOTE" "cd ${APP_DIR} && docker compose -f compose.oracle.yml ps --format json 2>/dev/null" | grep -q '"Health":"healthy"'; then
+  status="$(ssh "$REMOTE" "$PS_CMD" || true)"
+  # Every container with a healthcheck must be healthy -- not merely one of
+  # them, which a bare grep for "healthy" would accept.
+  if [ -n "$status" ] &&
+     ! grep -q '"Health":"unhealthy"' <<<"$status" &&
+     ! grep -q '"Health":"starting"' <<<"$status" &&
+     grep -q '"Health":"healthy"' <<<"$status"; then
     echo "stack is healthy"
     exit 0
   fi
@@ -56,5 +77,5 @@ for _ in $(seq 1 30); do
 done
 
 echo "stack did not report healthy within 5 minutes; check:" >&2
-echo "  ssh ${REMOTE} 'cd ${APP_DIR} && docker compose logs --tail=100'" >&2
+echo "  ssh ${REMOTE} 'cd ${APP_DIR} && docker compose --env-file .env.oracle -f compose.oracle.yml logs --tail=100'" >&2
 exit 1

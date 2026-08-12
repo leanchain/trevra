@@ -67,12 +67,58 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_EXTRACTION_MODEL: ${OPENAI_EXTRACTION_MODEL:-gpt-5-mini}
       INGEST_API_KEY: ${INGEST_API_KEY:-local-ingest-key-change-me}
+      TREVRA_DEPLOYMENT_MODE: ${TREVRA_DEPLOYMENT_MODE:-local}
+      # LinkedIn automation is ON here.
+      #
+      # This container has a headless Chromium (see Dockerfile.dev) but no
+      # display, so it can drive a browser and cannot show you one. Every seat
+      # signs itself in: save your own LinkedIn email and password once, on the
+      # seat screen. They are AES-256-GCM sealed with TREVRA_SECRETS_KEY below,
+      # and this container signs in headlessly when the stored session has
+      # expired (docs/linkedin-outreach-plan.md 4.9). Nothing to run, nothing on
+      # your machine.
+      #
+      # Set to false to switch the feature off entirely.
+      TREVRA_LINKEDIN_LOCAL: ${TREVRA_LINKEDIN_LOCAL:-true}
+      # Lead sourcing -- walking a people-search page or a post into a list of
+      # people -- is a SECOND opt-in, and off unless this says otherwise.
+      # Sending automates your own seat; harvesting profiles is scraping under
+      # LinkedIn's User Agreement 8.2, and that risk is yours to accept
+      # deliberately rather than inherit from switching sending on.
+      TREVRA_LINKEDIN_LEAD_SOURCING: ${TREVRA_LINKEDIN_LEAD_SOURCING:-false}
+      # Opens every sealed secret: model API keys, and the LinkedIn sign-in when
+      # you choose that path. Without it credential storage refuses outright
+      # rather than writing anything in the clear. Generate one with:
+      #   openssl rand -base64 32
+      TREVRA_SECRETS_KEY: ${TREVRA_SECRETS_KEY:-}
+      TREVRA_SECRETS_KEY_PREVIOUS: ${TREVRA_SECRETS_KEY_PREVIOUS:-}
+      # Run the hosted agent through a subscription CLI instead of a BYOK model
+      # key. Empty means BYOK, which stays the default. The CLIs are installed in
+      # Dockerfile.dev; the token is what signs them in, because this container
+      # has no browser to log in with:
+      #
+      #   claude   `claude setup-token` on your machine, paste the result
+      #   codex    the access token from ~/.codex/auth.json
+      #
+      # Self-hosted only -- the server refuses to start with TREVRA_AGENT_CLI set
+      # and TREVRA_DEPLOYMENT_MODE=hosted, because a personal subscription must
+      # not back other tenants' runs.
+      TREVRA_AGENT_CLI: ${TREVRA_AGENT_CLI:-}
+      TREVRA_AGENT_CLI_MODEL: ${TREVRA_AGENT_CLI_MODEL:-}
+      TREVRA_AGENT_CLI_OAUTH_TOKEN: ${TREVRA_AGENT_CLI_OAUTH_TOKEN:-}
+      TREVRA_AGENT_CLI_BIN: ${TREVRA_AGENT_CLI_BIN:-}
+      TREVRA_AGENT_CLI_HOME: ${TREVRA_AGENT_CLI_HOME:-}
     ports:
       - "${TREVRA_WEB_PORT:-43173}:5173"
       - "${TREVRA_API_PORT:-43887}:8787"
     volumes:
       - ./:/app
       - trevra-node-modules:/app/node_modules
+      # The signed-in LinkedIn profile. A NAMED VOLUME rather than container
+      # filesystem, because a recreate would otherwise throw the session away
+      # and the next tick would sign in from scratch -- a fresh login from a
+      # datacentre IP is exactly the event LinkedIn challenges.
+      - trevra-linkedin-profile:/root/.trevra/linkedin-profile
     depends_on:
       postgres:
         condition: service_healthy
@@ -167,6 +213,7 @@ services:
 volumes:
   trevra-postgres-data:
   trevra-node-modules:
+  trevra-linkedin-profile:
   nango-postgres-data:
   nango-redis-data:
   temporal-data:
