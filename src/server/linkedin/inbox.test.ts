@@ -381,6 +381,23 @@ describe('enqueueReply', () => {
     expect(claimed?.body).toBe('Happy to send it over.');
   });
 
+  // Team workspace access (migration 043): who queued this, for a founder who
+  // wants to know which of two members answered a conversation.
+  it('records queuedByUserId when the caller has one, and leaves it null when it does not', async () => {
+    await steadySeat();
+    await db.prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING')
+      .run('usr_inbox_reply_test', WORKSPACE_ID, 'inbox-reply-test@example.com', 'Inbox Reply Tester', NOW.toISOString());
+
+    const withUser = await enqueueReply(
+      db,
+      { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Happy to send it over.', queuedByUserId: 'usr_inbox_reply_test' },
+      NOW
+    );
+    const withUserRow = await db.prepare('SELECT queued_by_user_id FROM linkedin_actions WHERE id=?')
+      .get<{ queued_by_user_id: string | null }>(withUser.actionId);
+    expect(withUserRow?.queued_by_user_id).toBe('usr_inbox_reply_test');
+  });
+
   it('claims nothing has been sent', async () => {
     await steadySeat();
     await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello' }, NOW);

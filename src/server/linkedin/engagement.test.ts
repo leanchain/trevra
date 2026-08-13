@@ -45,6 +45,25 @@ function log(kind: EngagementKind, target: string, hoursAgo: number) {
   );
 }
 
+describe('recordEngagement', () => {
+  // Team workspace access (migration 043). `recordEngagement` is a thin
+  // pass-through to `recordAction` (whose own threading is exercised
+  // exhaustively in actions.test.ts); this just proves the pass-through
+  // itself does not drop the field.
+  it('threads queuedByUserId through to the ledger row', async () => {
+    await db.prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING')
+      .run('usr_engagement_test', WORKSPACE_ID, 'engagement-test@example.com', 'Engagement Tester', NOW.toISOString());
+    const filed = await recordEngagement(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'like', targetRef: 'https://linkedin.com/in/target', status: 'planned', source: 'manual', queuedByUserId: 'usr_engagement_test' },
+      NOW
+    );
+    const row = await db.prepare('SELECT queued_by_user_id FROM linkedin_actions WHERE id=?')
+      .get<{ queued_by_user_id: string | null }>(filed.id);
+    expect(row?.queued_by_user_id).toBe('usr_engagement_test');
+  });
+});
+
 describe('the ceilings', () => {
   it('covers exactly the three kinds, in both bands', () => {
     expect(ENGAGEMENT_KINDS).toEqual(['follow', 'like', 'endorse']);

@@ -7,14 +7,15 @@ import pino from 'pino';
 import { pinoHttp } from 'pino-http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import { toNodeHandler } from 'better-auth/node';
+import { APIError } from 'better-auth';
+import { fromNodeHeaders, toNodeHandler } from 'better-auth/node';
 import type { Db } from './db.js';
 import { DEMO_USER_ID, DEMO_WORKSPACE_ID, id, resetDemoData } from './db.js';
 import { runRecommendationEngine } from './recommendation-engine.js';
 import { listAutomationRules, listConnections, listRecommendations } from './serializers.js';
 import { approveAction, executeAction, prepareAction } from './action-service.js';
 import { runAutomationCycle } from './automation-service.js';
-import { auth as betterAuth, resolveBetterAuthIdentity } from './auth-service.js';
+import { auth as betterAuth, configureAuthProvisioning, findAuthUserIdByEmail, resolveBetterAuthIdentity } from './auth-service.js';
 import { importCommercialDocument } from './document-service.js';
 import {
   createNangoConnectSession,
@@ -306,10 +307,17 @@ const linkedinTargetsUpload = multer({
   }
 });
 
-type AuthedRequest = Request & { auth?: { userId: string; workspaceId: string; email: string } };
+type AuthedRequest = Request & { auth?: { userId: string; workspaceId: string; email: string; role: 'owner' | 'member' } };
 type AgentRequest = Request & { agent?: AgentIdentity };
 
 export function createApp(db: Db) {
+  // Wires `db` to auth-service.ts's better-auth `afterCreateOrganization` hook
+  // (see the block comment near the top of that file). Idempotent, so calling
+  // it again here is harmless even when index.ts's boot sequence already did --
+  // this is what makes every test that calls `createApp(db)` directly (without
+  // going through index.ts) work without a separate setup step.
+  configureAuthProvisioning(db);
+
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -553,6 +561,52 @@ export function createApp(db: Db) {
   });
 
   app.use('/api', requireSession(db));
+
+  /**
+   * Add a teammate (design doc's Team management section).
+   *
+   * The one bit of bespoke team-management server logic this pass needs:
+   * better-auth's client SDK already talks straight to the auto-mounted
+   * `/api/auth/organization/*` routes for everything else (list/remove members,
+   * list/cancel invitations, switch active workspace) -- see `app.all('/api/
+   * auth/*splat', ...)` above. What it does NOT have is "look up by email and
+   * fall back to invite": `organization.addMember` requires a userId, not an
+   * email, so deciding whether this email already has a Trevra account (join
+   * instantly) or needs a real invitation (no account yet) is application
+   * logic, not something the plugin's own endpoints do for us.
+   *
+   * Owner-only, same carve-out shape as the LinkedIn credential routes: full
+   * workspace parity for members, except who gets to change who is IN the
+   * workspace.
+   */
+  const teamAddMemberSchema = z.object({
+    email: z.string().trim().email().max(320),
+    role: z.enum(['owner', 'member']).default('member')
+  });
+  app.post('/api/team/members', async (req: AuthedRequest, res, next) => {
+    try {
+      if (req.auth!.role !== 'owner') return res.status(403).json({ error: 'Only the workspace owner can add teammates' });
+      const input = teamAddMemberSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const existingUserId = await findAuthUserIdByEmail(input.email);
+      if (existingUserId) {
+        const member = await betterAuth.api.addMember({ body: { userId: existingUserId, organizationId: workspaceId, role: input.role } });
+        return res.status(201).json({ status: 'added', member });
+      }
+      // No account yet: a real invitation (design doc decision #3), not
+      // instant membership -- `createInvitation` requires this request's own
+      // session (the inviter), so it is the one call in this route that needs
+      // headers rather than the userId system-action shortcut.
+      const invitation = await betterAuth.api.createInvitation({
+        headers: fromNodeHeaders(req.headers),
+        body: { email: input.email, organizationId: workspaceId, role: input.role }
+      });
+      res.status(201).json({ status: 'invited', invitation });
+    } catch (error) {
+      if (error instanceof APIError) return res.status(error.statusCode ?? 400).json({ error: error.body?.message ?? error.message });
+      next(error);
+    }
+  });
 
   app.get('/api/skills', async (req: AuthedRequest, res, next) => {
     try { res.json({ skills: await listWorkspaceSkills(db, req.auth!.workspaceId) }); }
@@ -1491,6 +1545,13 @@ export function createApp(db: Db) {
     const input = linkedinCredentialsSchema.parse(req.body ?? {});
     const workspaceId = req.auth!.workspaceId;
 
+    // Credential-management carve-out (design doc "Decisions made during
+    // brainstorming" #2): full workspace parity for any member, EXCEPT this.
+    // Only the workspace owner may replace the stored LinkedIn sign-in.
+    if (req.auth!.role !== 'owner') {
+      throw new LinkedInApiError('Only the workspace owner can manage the stored LinkedIn credentials', 403);
+    }
+
     // The one unconditional gate, read from the one definition of it.
     if (linkedInWorkerConfig().hosted) throw new LinkedInApiError(LINKEDIN_CREDENTIALS_HOSTED_REFUSAL, 409);
     // A deployment with no key would seal nothing, and `sealSecret` would throw
@@ -1527,6 +1588,10 @@ export function createApp(db: Db) {
    */
   app.delete('/api/linkedin/seat/credentials', linkedinRoute(async (req, res) => {
     const workspaceId = req.auth!.workspaceId;
+    // Same owner-only carve-out as the save route above.
+    if (req.auth!.role !== 'owner') {
+      throw new LinkedInApiError('Only the workspace owner can manage the stored LinkedIn credentials', 403);
+    }
     await deleteLinkedInCredentials(db, workspaceId, req.auth!.userId);
     res.json({ hasCredentials: false, maskedEmail: null });
   }));
@@ -2159,7 +2224,8 @@ export function createApp(db: Db) {
         // folded in the way the export route folds it: a queued action has no
         // format, so including one would put a hash on the row that describes a
         // choice nobody made about it.
-        payloadHash: canonicalPayloadHash(approved)
+        payloadHash: canonicalPayloadHash(approved),
+        queuedByUserId: req.auth!.userId
       },
       new Date()
     );
@@ -2381,7 +2447,8 @@ export function createApp(db: Db) {
         workspaceId: req.auth!.workspaceId,
         threadUrn: String(req.params.threadUrn),
         body: input.body,
-        ...(input.plannedFor === undefined ? {} : { plannedFor: input.plannedFor })
+        ...(input.plannedFor === undefined ? {} : { plannedFor: input.plannedFor }),
+        queuedByUserId: req.auth!.userId
       },
       new Date()
     );
@@ -2509,7 +2576,8 @@ export function createApp(db: Db) {
         campaignId: input.campaignId ?? null,
         status: 'planned',
         plannedFor,
-        source: 'manual'
+        source: 'manual',
+        queuedByUserId: req.auth!.userId
       },
       now
     );
@@ -3095,16 +3163,70 @@ function requireSession(db: Db) {
   };
 }
 
-async function readSession(db: Db, req: Request): Promise<{ userId: string; workspaceId: string; email: string } | null> {
+async function readSession(db: Db, req: Request): Promise<{ userId: string; workspaceId: string; email: string; role: 'owner' | 'member' } | null> {
   const token = req.cookies?.[SESSION_COOKIE] as string | undefined;
   if (token) {
     const session = await db.prepare(`
       SELECT s.user_id, u.workspace_id, u.email FROM sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token_hash=? AND s.expires_at > ?
     `).get(hash(token), new Date().toISOString()) as { user_id: string; workspace_id: string; email: string } | undefined;
-    if (session) return { userId: session.user_id, workspaceId: session.workspace_id, email: session.email };
+    // Trevra's own hand-rolled session (demo mode only -- see /api/auth/demo).
+    // It never goes through better-auth's organization plugin, so there is no
+    // membership to check: the demo user is unconditionally the owner of the
+    // one demo workspace this cookie always points at.
+    if (session) return { userId: session.user_id, workspaceId: session.workspace_id, email: session.email, role: 'owner' };
   }
-  return resolveBetterAuthIdentity(db, req.headers);
+  const identity = await resolveBetterAuthIdentity(db, req.headers);
+  if (!identity) return null;
+  return resolveActiveWorkspace(req.headers, identity);
+}
+
+/**
+ * Active-workspace resolution (design doc "Active-workspace resolution").
+ * `resolveBetterAuthIdentity` only proves who the user IS and which workspace
+ * they OWN (their "home" workspace, from `users.workspace_id`); it says
+ * nothing about which workspace they are currently OPERATING IN, which can be
+ * a workspace someone ELSE owns that added them as a member.
+ *
+ * Order:
+ *  1. If the better-auth session has an `activeOrganizationId`, trust it ONLY
+ *     if `getActiveMember` proves current membership -- this is what catches a
+ *     stale session left over after an owner removes this user from that
+ *     workspace: `getActiveMember` throws (caught below, null), and resolution
+ *     falls through to the home-workspace branch.
+ *  2. Otherwise (no active org, or the membership behind it was revoked), fall
+ *     back to the user's own home workspace, and persist that choice via
+ *     `setActiveOrganization` so the fallback sticks for the rest of the
+ *     session instead of being re-derived on every request.
+ *
+ * Role comes from the SAME `getActiveMember` call that proves membership, so
+ * it can never disagree with which workspace was actually resolved. A member
+ * row that is missing entirely (should not happen for a home workspace, whose
+ * owner-at-creation invariant this codebase maintains everywhere it creates
+ * one) resolves to the least-privileged 'member' rather than throwing --
+ * fail-closed, matching this codebase's existing authorization conventions.
+ */
+async function resolveActiveWorkspace(
+  headers: Request['headers'],
+  identity: { userId: string; email: string; homeWorkspaceId: string; activeOrganizationId: string | null }
+): Promise<{ userId: string; workspaceId: string; email: string; role: 'owner' | 'member' }> {
+  const authHeaders = fromNodeHeaders(headers);
+
+  if (identity.activeOrganizationId) {
+    const member = await betterAuth.api.getActiveMember({ headers: authHeaders }).catch(() => null);
+    if (member) {
+      return { userId: identity.userId, workspaceId: identity.activeOrganizationId, email: identity.email, role: member.role === 'owner' ? 'owner' : 'member' };
+    }
+  }
+
+  await betterAuth.api.setActiveOrganization({ headers: authHeaders, body: { organizationId: identity.homeWorkspaceId } }).catch(() => undefined);
+  const homeMember = await betterAuth.api.getActiveMember({ headers: authHeaders }).catch(() => null);
+  return {
+    userId: identity.userId,
+    workspaceId: identity.homeWorkspaceId,
+    email: identity.email,
+    role: homeMember?.role === 'owner' ? 'owner' : 'member'
+  };
 }
 
 async function createSession(db: Db, userId: string): Promise<string> {

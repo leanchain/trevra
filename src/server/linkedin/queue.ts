@@ -66,6 +66,8 @@ export interface CampaignQueueInput {
   campaignId?: string | null;
   /** The approved payload's hash, carried onto every ledger row for the audit trail. */
   payloadHash?: string | null;
+  /** The Trevra user whose live request queued this campaign. Undefined when this runs off the approved-action executor instead of a route -- see `LinkedInActionRecord.queuedByUserId`. */
+  queuedByUserId?: string | null;
 }
 
 export interface CampaignQueued {
@@ -345,7 +347,8 @@ export async function queueCampaign(db: Db, input: CampaignQueueInput, now: Date
           // No `recordedAt`: 'planned' has not happened, so it consumes no
           // rolling budget until `settleSent` dates it at the moment it did.
           source: 'campaign',
-          payloadHash: input.payloadHash ?? null
+          payloadHash: input.payloadHash ?? null,
+          queuedByUserId: input.queuedByUserId ?? null
         },
         now
       );

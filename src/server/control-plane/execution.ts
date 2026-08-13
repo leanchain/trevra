@@ -193,6 +193,13 @@ export async function executePreparedPlaybookAction(
     //
     // Idempotent on (workspace, seat, kind, target), so the engine's retry of an
     // action whose outcome was unknown cannot queue a target twice.
+    //
+    // No `queuedByUserId`: this executor runs an already-approved action, which
+    // can happen outside any live request (an automation rule executing its own
+    // delegated approval), so there is no captured human actor to attribute the
+    // row to here. The route that replays the same approved payload synchronously
+    // (`POST /api/linkedin/campaigns/:id/queue`, app.ts) DOES set it, from
+    // `req.auth.userId` -- see `LinkedInActionRecord.queuedByUserId`.
     const payload = linkedinQueuePayloadSchema.parse(input.payload);
     const result = await queueCampaign(
       db,

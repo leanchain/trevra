@@ -109,6 +109,19 @@ export interface LinkedInActionRecord {
    * without every caller having to remember it.
    */
   recordedAt?: string | null;
+  /**
+   * The Trevra user whose live request queued this row -- migration 043,
+   * team-workspace-access design. Set by every caller that queues a
+   * 'planned' row FOR THIS DEPLOYMENT'S OWN WORKER off a live request
+   * (`queueCampaign`, `enqueueReply`, `recordEngagement`'s app.ts caller):
+   * `req.auth.userId`. Left undefined (stored NULL) for `source: 'export'`
+   * rows -- an export is handed to a tool Trevra does not drive, a different
+   * provenance kind from "queued for this worker" -- and for the
+   * approved-action executor's replay of an already-approved queue action
+   * (`control-plane/execution.ts`), which runs outside a live request with no
+   * captured human actor to attribute the row to.
+   */
+  queuedByUserId?: string | null;
 }
 
 /**
@@ -128,8 +141,8 @@ export async function recordAction(db: Db, record: LinkedInActionRecord, now: Da
   const row = await db.prepare(`
     INSERT INTO linkedin_actions (
       id, workspace_id, seat_key, kind, target_ref, campaign_id,
-      status, planned_for, recorded_at, source, payload_hash, created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      status, planned_for, recorded_at, source, payload_hash, queued_by_user_id, created_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, seat_key, kind, target_ref) WHERE status <> 'skipped' DO NOTHING
     RETURNING id
   `).get<{ id: string }>(
@@ -144,6 +157,7 @@ export async function recordAction(db: Db, record: LinkedInActionRecord, now: Da
     recordedAt,
     record.source,
     record.payloadHash ?? null,
+    record.queuedByUserId ?? null,
     now.toISOString()
   );
 

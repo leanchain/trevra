@@ -99,6 +99,51 @@ describe('recordAction', () => {
     expect((await rowFor('explicit')).recorded_at).toBeNull();
   });
 
+  // Team workspace access (migration 043): every one of `recordAction`'s
+  // callers (queue.ts, inbox.ts, engagement.ts's app.ts caller) funnels
+  // through here, so this is the one place that has to get the column right
+  // for all three to be correct.
+  it('records queuedByUserId when a caller sets it, and leaves it null when a caller does not', async () => {
+    await db.prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING')
+      .run('usr_linkedin_actions_test', WORKSPACE_ID, 'actions-test@example.com', 'Actions Test', NOW.toISOString());
+
+    const withUser = await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'queued-by-target', status: 'planned', source: 'campaign', queuedByUserId: 'usr_linkedin_actions_test' },
+      NOW
+    );
+    // A 'planned' row still consumes no rolling budget, exactly as it does
+    // without queuedByUserId set -- attribution and the existing status/dating
+    // rules are independent of each other.
+    expect((await rowFor('queued-by-target')).status).toBe('planned');
+    const withUserRow = await db.prepare('SELECT queued_by_user_id FROM linkedin_actions WHERE id=?')
+      .get<{ queued_by_user_id: string | null }>(withUser.id);
+    expect(withUserRow?.queued_by_user_id).toBe('usr_linkedin_actions_test');
+
+    const withoutUser = await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'unqueued-by-target', status: 'exported', source: 'export' },
+      NOW
+    );
+    const withoutUserRow = await db.prepare('SELECT queued_by_user_id FROM linkedin_actions WHERE id=?')
+      .get<{ queued_by_user_id: string | null }>(withoutUser.id);
+    expect(withoutUserRow?.queued_by_user_id).toBeNull();
+  });
+
+  it('clears queued_by_user_id, rather than blocking the delete, when the queuing user is later removed', async () => {
+    await db.prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING')
+      .run('usr_linkedin_actions_deleteme', WORKSPACE_ID, 'delete-me@example.com', 'Delete Me', NOW.toISOString());
+    const recorded = await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'delete-me-target', status: 'planned', source: 'manual', queuedByUserId: 'usr_linkedin_actions_deleteme' },
+      NOW
+    );
+    await db.prepare('DELETE FROM users WHERE id=?').run('usr_linkedin_actions_deleteme');
+    const row = await db.prepare('SELECT queued_by_user_id FROM linkedin_actions WHERE id=?')
+      .get<{ queued_by_user_id: string | null }>(recorded.id);
+    expect(row?.queued_by_user_id).toBeNull();
+  });
+
   it('reports a repeat as a duplicate instead of queueing a second invite to the same person', async () => {
     const first = await log({ target: 'https://in/dupe' });
     const second = await log({ target: 'https://in/dupe' });

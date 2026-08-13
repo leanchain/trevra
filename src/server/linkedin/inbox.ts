@@ -652,6 +652,8 @@ export interface ReplyRequest {
   body: string;
   /** ISO-8601 slot the reply is paced into. Defaults to now. */
   plannedFor?: string;
+  /** The Trevra user whose live request queued this reply -- see `LinkedInActionRecord.queuedByUserId`. */
+  queuedByUserId?: string | null;
 }
 
 export interface EnqueuedReply {
@@ -768,7 +770,8 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
         campaignId: thread.campaignId,
         status: 'planned',
         plannedFor,
-        source: 'manual'
+        source: 'manual',
+        queuedByUserId: input.queuedByUserId ?? null
       },
       now
     );

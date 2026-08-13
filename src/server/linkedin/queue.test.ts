@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.js';
+import { DEMO_USER_ID, DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.js';
 import type { LinkedInActionKind } from './actions.js';
 import { postgresLocalWorkerStore } from './local-worker.js';
 import type { PacingPlan, PacingSlot } from './pacing.js';
@@ -97,6 +97,44 @@ async function actionCount(): Promise<number> {
 }
 
 describe('queueCampaign', () => {
+  // Team workspace access (migration 043): who queued this, for a founder who
+  // wants to know which of two members queued a given campaign.
+  it('records queuedByUserId on every row it writes, and leaves it null when a caller omits it', async () => {
+    await queueCampaign(
+      db,
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        plan: plan([slot('invite', MAYA.targetRef, '2026-08-06T08:00:00.000Z')]),
+        sequence: sequenceOf({ id: 'step-1', day: 0, kind: 'invite', template: 'Hi {{firstName}}.' }),
+        contacts: [MAYA],
+        campaignId: 'licmp_queue_by',
+        queuedByUserId: DEMO_USER_ID
+      },
+      NOW
+    );
+    const attributed = await db.prepare('SELECT queued_by_user_id FROM linkedin_actions WHERE workspace_id=? AND campaign_id=?')
+      .get<{ queued_by_user_id: string | null }>(DEMO_WORKSPACE_ID, 'licmp_queue_by');
+    expect(attributed?.queued_by_user_id).toBe(DEMO_USER_ID);
+
+    // The approved-action executor's replay (control-plane/execution.ts) does
+    // not pass one -- it runs outside a live request. Omitting it entirely
+    // must not throw, and must leave the column null rather than some sentinel.
+    await queueCampaign(
+      db,
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        plan: plan([slot('invite', JO.targetRef, '2026-08-06T08:30:00.000Z')]),
+        sequence: sequenceOf({ id: 'step-1', day: 0, kind: 'invite', template: 'Hi {{firstName}}.' }),
+        contacts: [JO],
+        campaignId: 'licmp_queue_unattributed'
+      },
+      NOW
+    );
+    const unattributed = await db.prepare('SELECT queued_by_user_id FROM linkedin_actions WHERE workspace_id=? AND campaign_id=?')
+      .get<{ queued_by_user_id: string | null }>(DEMO_WORKSPACE_ID, 'licmp_queue_unattributed');
+    expect(unattributed?.queued_by_user_id).toBeNull();
+  });
+
   it('writes a planned invite the local worker can actually claim', async () => {
     const result = await queueCampaign(
       db,
