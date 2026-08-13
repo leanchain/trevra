@@ -36,11 +36,11 @@
 
   /* -- neutrals ---------------------------------------------------------- */
   --t-ink:         #142019;
-  --t-muted:       #5c6a61;  /* >= 4.74:1 on every surface in this file */
+  --t-muted:       #5c6a61;  /* >= 5.0:1 on every surface in this file */
   --t-line:        #d8ddd3;
   --t-line-soft:   #e6ebe4;
   --t-line-strong: #b9c2b7;
-  --t-bg:          #f5f7f3;  /* app canvas, cool */
+  --t-bg:          #f4f5f6;  /* app canvas, cool */
   --t-bg-warm:     #f5f5ef;  /* marketing canvas, paper */
   --t-surface:     #ffffff;
   --t-surface-warm:#fffef8;
@@ -85,11 +85,11 @@
   --t-focus-on-fill: #ffffff;
 
   /* -- radius: five steps and the pill. Nothing else. -------------------- */
-  --t-r-xs:   6px;
-  --t-r-sm:  10px;
-  --t-r-md:  14px;
-  --t-r-lg:  20px;
-  --t-r-xl:  26px;
+  --t-r-xs:   4px;
+  --t-r-sm:   6px;
+  --t-r-md:   8px;
+  --t-r-lg:  10px;
+  --t-r-xl:  12px;
   --t-r-pill: 999px;
 
   /* -- type: rem off a 16px base, so the browser font-size preference is
@@ -280,7 +280,7 @@
   --t-line:        #d8ddd3;
   --t-line-soft:   #e6ebe4;
   --t-line-strong: #b9c2b7;
-  --t-bg:          #f5f7f3;
+  --t-bg:          #f4f5f6;
   --t-bg-warm:     #f5f5ef;
   --t-surface:     #ffffff;
   --t-surface-warm:#fffef8;
@@ -437,10 +437,18 @@ h1 { margin-bottom: 0; font-family: var(--t-display); font-size: var(--t-text-2x
 .icon-button { width: var(--t-tap); height: var(--t-tap); border-radius: var(--t-r-sm); border: 1px solid var(--line); background: var(--t-surface); display: grid; place-items: center; cursor: pointer; position: relative; color: var(--ink); }
 .icon-button i { width: 6px; height: 6px; background: var(--red); border-radius: 50%; position: absolute; right: 8px; top: 8px; border: 1px solid var(--t-surface); }
 .icon-button.danger { color: var(--red); }
-.metrics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 20px 0 24px; }
+/* One bordered strip with hairline dividers, not N individually-radiused,
+   individually-shadowed cards -- see craft-floor.md on same-size icon+heading
+   +number+caption cards as page structure. The divider is a border-right on
+   every cell but the last; at the wrap breakpoints below it becomes a
+   border-bottom instead, so a wrapped row never shows an orphaned edge. */
+.metrics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin: 20px 0 24px; border: 1px solid var(--line); border-radius: var(--t-r-md); overflow: hidden; background: var(--panel); }
 .metrics-grid-four { grid-template-columns: repeat(4, 1fr); }
-.metric-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--t-r-md); padding: 17px; display: flex; gap: 13px; align-items: flex-start; }
-.metric-icon { width: 35px; height: 35px; border-radius: var(--t-r-sm); display: grid; place-items: center; background: var(--green-3); color: var(--green); }
+.metric-card { background: transparent; border: 0; border-right: 1px solid var(--line); border-radius: 0; padding: 17px; display: flex; gap: 13px; align-items: flex-start; }
+.metric-card:last-child { border-right: 0; }
+/* Plain, in --muted -- the green wash behind every icon on every card spent
+   the brand colour on decoration. The icon alone still carries the meaning. */
+.metric-icon { width: 35px; height: 35px; display: grid; place-items: center; color: var(--muted); }
 .metric-icon svg { width: 18px; }
 .metric-card p { font-size: var(--t-text-xs); color: var(--muted); margin-bottom: 4px; }
 .metric-card strong { display: block; font-size: var(--t-text-xl); font-weight: var(--t-w-bold); letter-spacing: var(--t-track-heading); font-variant-numeric: tabular-nums; }
@@ -616,6 +624,11 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 
 @media (max-width: 1150px) {
   .metrics-grid-four { grid-template-columns: repeat(2,1fr); }
+  /* Wrapped to more than one row: a right-edge divider on a row-final cell
+     that isn't the strip's last cell reads as an orphaned line, so the
+     divider moves to the bottom edge instead. */
+  .metrics-grid-four .metric-card { border-right: 0; border-bottom: 1px solid var(--line); }
+  .metrics-grid-four .metric-card:last-child { border-bottom: 0; }
   .automation-fields { grid-template-columns: repeat(2,1fr); }
 }
 @media (max-width: 980px) {
@@ -632,6 +645,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   /* Room for the tab bar, plus whatever the device reserves below it. */
   .main { padding: 22px 20px calc(74px + env(safe-area-inset-bottom, 0px)); }
   .metrics-grid, .metrics-grid-four { grid-template-columns: 1fr; }
+  .metrics-grid .metric-card, .metrics-grid-four .metric-card { border-right: 0; border-bottom: 1px solid var(--line); }
+  .metrics-grid .metric-card:last-child, .metrics-grid-four .metric-card:last-child { border-bottom: 0; }
   .topbar h1 { font-size: var(--t-text-xl); }
   .setup-banner { grid-template-columns: auto 1fr; }
   .setup-banner button { grid-column: 1 / -1; }
@@ -706,7 +721,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .agent-token-list article > span { color: var(--muted); font-size: var(--t-text-xs); }
 .agent-token-list article.is-revoked { opacity: .55; }
 .ghost-button.danger { color: var(--red); }
-.empty-copy { color: var(--muted); font-size: var(--t-text-xs); margin: 0; }
+.empty-copy { max-width: var(--t-measure); color: var(--muted); font-size: var(--t-text-xs); margin: 0; }
 @media (max-width: 720px) {
   .agent-token-create { grid-template-columns: 1fr; }
   .agent-token-list article { grid-template-columns: 1fr auto; }
@@ -967,8 +982,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .byok-key-mask { display: inline-flex; align-items: center; gap: 9px; font-size: var(--t-text-sm); font-weight: 700; letter-spacing: .08em; }
 .byok-key-stored > span + span { color: var(--muted); font-size: var(--t-text-xs); letter-spacing: 0; }
 .byok-key-actions { display: flex; gap: 8px; align-items: center; }
-.byok-meter-copy { margin: 13px 0 0; font-size: var(--t-text-xs); font-weight: var(--t-w-bold); font-variant-numeric: tabular-nums; }
-.byok-meter { margin-top: 7px; height: 6px; border-radius: var(--t-r-pill); background: var(--t-line-soft); overflow: hidden; }
+.byok-meter-copy { max-width: var(--t-measure); margin: 13px 0 0; font-size: var(--t-text-xs); font-weight: var(--t-w-bold); font-variant-numeric: tabular-nums; }
+.byok-meter { margin-top: 7px; height: 6px; border-radius: var(--t-r-sm); background: var(--t-line-soft); overflow: hidden; }
 .byok-meter i { display: block; height: 100%; background: var(--t-green-fill); }
 .byok-panel .panel-footer { gap: 16px; }
 .byok-panel .panel-footer span { max-width: var(--t-measure); line-height: 1.5; }
@@ -1020,7 +1035,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-tag { display: inline-flex; align-items: center; gap: 5px; border-radius: var(--t-r-pill); padding: 3px 9px; font-size: var(--t-text-chip); font-weight: 700; letter-spacing: var(--t-track-caps); white-space: nowrap; }
 .li-tag-hard { background: var(--blue-bg); color: var(--blue); }
 .li-tag-reported { background: var(--amber-bg); color: var(--amber); }
-.li-tag small { font-weight: 600; letter-spacing: 0; }
+.li-tag small { font-size: var(--t-text-chip); font-weight: 600; letter-spacing: 0; }
 .li-tag-compact { padding: 2px 8px; font-size: var(--t-text-chip); }
 
 .li-posture { display: inline-flex; align-items: center; gap: 6px; border-radius: var(--t-r-pill); padding: 4px 11px; font-size: var(--t-text-chip); font-weight: 700; text-transform: capitalize; background: var(--t-surface-2); color: var(--muted); white-space: nowrap; }
@@ -1034,8 +1049,12 @@ button:disabled { opacity: .55; cursor: not-allowed; }
    by side and never stack into a column, so there is no column to align, and
    tabular figures at 28px pad the 1 until 121 reads loose. Numbers that DO
    stack -- .cost-row, .li-table, .metric-card -- are tabular. */
-.li-stat-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.li-stat { border: 1px solid var(--line); border-radius: var(--t-r-md); padding: 13px 15px; background: var(--t-field); }
+/* One bordered strip with hairline dividers -- same treatment as .metrics-grid
+   above, for the same reason: this was N cards, each with its own border,
+   radius and shadow, doing the job one strip does. */
+.li-stat-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border: 1px solid var(--line); border-radius: var(--t-r-md); overflow: hidden; background: var(--panel); }
+.li-stat { border: 0; border-right: 1px solid var(--line); border-radius: 0; padding: 13px 15px; background: var(--t-field); }
+.li-stat:last-child { border-right: 0; }
 .li-stat p { margin: 0 0 5px; color: var(--muted); font-size: var(--t-text-xs); }
 .li-stat strong { display: block; font-family: var(--t-display); font-size: var(--t-text-2xl); font-weight: var(--t-w-bold); letter-spacing: var(--t-track-title); line-height: 1.1; }
 .li-stat span { display: block; margin-top: 6px; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.45; }
@@ -1128,7 +1147,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-meter-ok { color: var(--green); }
 .li-meter-danger { color: var(--red); }
 .li-meter-head strong.li-meter-unknown { font-size: var(--t-text-xl); color: var(--muted); }
-.li-meter { position: relative; height: 12px; border-radius: var(--t-r-pill); background: var(--li-track); overflow: hidden; }
+.li-meter { position: relative; height: 12px; border-radius: var(--t-r-sm); background: var(--li-track); overflow: hidden; }
 .li-meter-fill { display: block; height: 100%; background: var(--li-series); }
 .li-meter-fill-danger { background: var(--li-danger); }
 .li-meter-floor { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); }
@@ -1164,13 +1183,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-ceiling-head strong { font-size: var(--t-text-sm); font-variant-numeric: tabular-nums; margin-right: auto; }
 .li-ceiling-head strong b { font-size: var(--t-text-lg); }
 .li-ceiling-spent { color: var(--amber); }
-.li-ceiling-meter { height: 6px; border-radius: var(--t-r-pill); background: var(--green-2); overflow: hidden; }
+.li-ceiling-meter { height: 6px; border-radius: var(--t-r-sm); background: var(--green-2); overflow: hidden; }
 .li-ceiling-fill { display: block; height: 100%; background: var(--t-green-fill); }
 .li-ceiling-fill-spent { background: var(--amber); }
 .li-ceiling p { max-width: var(--t-measure); margin: 9px 0 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.55; }
 .li-ceiling small { display: block; max-width: var(--t-measure); margin-top: 6px; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.45; }
 
-.li-chip { display: inline-flex; align-items: center; border-radius: var(--t-r-pill); padding: 3px 9px; background: var(--t-surface-2); color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; white-space: nowrap; }
+.li-chip { display: inline-flex; align-items: center; border-radius: var(--t-r-sm); padding: 3px 9px; background: var(--t-surface-2); color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; white-space: nowrap; }
 .li-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .li-status-planned { background: var(--blue-bg); color: var(--blue); }
 .li-status-exported { background: var(--t-surface-2); color: var(--muted); }
@@ -1202,7 +1221,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-filter-row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 12px; }
 .li-filter-standalone { margin-bottom: 0; align-items: center; }
 .li-filter-label { color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
-.li-range { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: var(--t-r-pill); padding: 6px 14px; font-size: var(--t-text-xs); font-weight: 700; cursor: pointer; }
+.li-range { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: var(--t-r-sm); padding: 6px 14px; font-size: var(--t-text-xs); font-weight: 700; cursor: pointer; }
 .li-range.is-active { background: var(--green-3); border-color: var(--t-green-200); color: var(--green); }
 .li-block-label { margin-top: 4px; }
 .li-mini-button { border: 1px solid var(--line); background: var(--panel); border-radius: var(--t-r-xs); padding: 4px 10px; font-size: var(--t-text-xs); font-weight: 700; color: var(--muted); cursor: pointer; }
@@ -1287,6 +1306,12 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-merge-legend code { background: var(--green-3); color: var(--green); border-radius: var(--t-r-xs); padding: 2px 6px; font-family: var(--t-mono); font-size: var(--t-text-xs); margin-right: 4px; }
 
 .li-add-step { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; margin-top: 18px; border-top: 1px dashed var(--line); padding-top: 13px; }
+.li-add-step-groups { display: flex; align-items: flex-start; gap: 18px; flex-wrap: wrap; }
+/* Same reset and legend treatment as .condition-group -- a fieldset here for
+   the same reason: it groups related choices under a label a screen reader
+   announces, not a new visual language. */
+.li-add-step-group { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; }
+.li-add-step-group > legend { padding: 0; color: var(--muted); font-size: var(--t-text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
 .li-add-step-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .li-add-step-buttons button { display: inline-flex; align-items: center; gap: 6px; }
 
@@ -1297,7 +1322,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-cal-day header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .li-cal-day header strong { font-size: var(--t-text-xs); }
 .li-cal-day header span { color: var(--green); font-size: var(--t-text-xs); font-weight: 700; font-variant-numeric: tabular-nums; }
-.li-cal-load { display: block; height: 4px; border-radius: var(--t-r-pill); background: var(--t-green-fill); margin: 8px 0 10px; min-width: 4px; }
+.li-cal-load { display: block; height: 4px; border-radius: var(--t-r-sm); background: var(--t-green-fill); margin: 8px 0 10px; min-width: 4px; }
 .li-cal-day ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .li-cal-day li { display: grid; grid-template-columns: auto 1fr; gap: 9px; font-size: var(--t-text-xs); }
 .li-cal-day time { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -1367,7 +1392,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-step-branched { position: relative; margin-left: 26px; border-left: 2px solid var(--t-green-200); }
 .li-step-branched::before {
   content: ""; position: absolute; left: -26px; top: 26px; width: 24px; height: 2px;
-  background: var(--t-green-200); border-radius: var(--t-r-pill);
+  background: var(--t-green-200); border-radius: var(--t-r-sm);
 }
 .li-branch-chip { gap: 5px; background: var(--green-3); color: var(--green); }
 .li-branch-row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 11px; }
@@ -1384,15 +1409,16 @@ button:disabled { opacity: .55; cursor: not-allowed; }
    apart by side, surface and a word, never by hue alone. */
 .li-inbox { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 18px; align-items: start; }
 .li-thread-pane { max-height: 720px; overflow-y: auto; }
-.li-thread-list { list-style: none; margin: 0; padding: 0; display: grid; }
-.li-thread { display: grid; gap: 5px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--t-line-soft); background: transparent; color: var(--ink); padding: 12px 6px; min-height: var(--t-tap); cursor: pointer; }
+.li-thread-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+.li-thread-list > li { min-width: 0; }
+.li-thread { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--t-line-soft); background: transparent; color: var(--ink); padding: 12px 6px; min-height: var(--t-tap); cursor: pointer; }
 .li-thread-list li:first-child .li-thread { border-top: 0; }
 .li-thread.is-open { background: var(--green-3); border-radius: var(--t-r-sm); }
-.li-thread-top { display: flex; align-items: baseline; gap: 8px; }
+.li-thread-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 /* The thread list and the conversation are the reading surfaces on this
    screen -- a real name, a real sentence, a real message -- so they are set at
    reading sizes. The chip step is 11px and belongs to chips. */
-.li-thread-name { flex: 1 1 auto; font-size: var(--t-text-sm); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.li-thread-name { flex: 1 1 auto; min-width: 0; font-size: var(--t-text-sm); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .li-thread-time { flex: none; color: var(--muted); font-size: var(--t-text-xs); }
 .li-unread-dot { flex: none; width: 7px; height: 7px; border-radius: var(--t-r-pill); background: var(--t-green-fill); align-self: center; }
 .li-thread-snippet { color: var(--muted); font-size: var(--t-text-sm); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -1480,8 +1506,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-backlog-head strong { font-family: var(--t-display); font-size: var(--t-text-2xl); font-weight: var(--t-w-bold); line-height: 1.1; color: var(--green); }
 .li-backlog-head .li-backlog-over { color: var(--red); }
 .li-backlog-head span { color: var(--muted); font-size: var(--t-text-xs); }
-.li-backlog-meter { position: relative; height: 8px; border-radius: var(--t-r-pill); background: var(--t-line-soft); overflow: hidden; }
-.li-backlog-fill { display: block; height: 100%; border-radius: var(--t-r-pill); background: var(--t-green-fill); min-width: 2px; }
+.li-backlog-meter { position: relative; height: 8px; border-radius: var(--t-r-sm); background: var(--t-line-soft); overflow: hidden; }
+.li-backlog-fill { display: block; height: 100%; border-radius: var(--t-r-sm); background: var(--t-green-fill); min-width: 2px; }
 .li-backlog-fill-over { background: var(--red); }
 .li-backlog .li-hint { margin: 9px 0 0; }
 
@@ -1520,6 +1546,10 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 }
 @media (max-width: 1100px) {
   .li-stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Wrapped to more than one row -- divider moves from the right edge to the
+     bottom edge, same reasoning as .metrics-grid above. */
+  .li-stat-row .li-stat { border-right: 0; border-bottom: 1px solid var(--line); }
+  .li-stat-row .li-stat:last-child { border-bottom: 0; }
   .li-ceilings, .li-checklist { grid-template-columns: 1fr; }
   .li-seat-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* Below this the thread list and the conversation are each too narrow to
@@ -1562,10 +1592,14 @@ button:disabled { opacity: .55; cursor: not-allowed; }
  * on the canvas -- it can tint an edge but it cannot signal one. So:
  *   .stopbar.is-live / .stopbar-actor   --t-amber   5.75:1 lt / 8.29:1 dk
  *   .stopbar.is-stopped / .is-seat      --t-red     5.02:1 lt / 7.85:1 dk
- *   .loop-stage.is-stuck                --t-amber   5.86:1 lt / 9.77:1 dk
- *   .loop-stage.is-unavailable (dashed) --t-muted   5.28:1 lt / 7.73:1 dk
  *   .cost-note                          --t-amber   6.31:1 lt / 9.13:1 dk
  *   kbd cap edge                        --t-muted   5.69:1 lt / 7.23:1 dk
+ * .loop-stage.is-stuck and .loop-stage.is-unavailable used to be on this list
+ * as their own bordered cards. They are cells in a shared strip now (see
+ * .loop-stages below) and carry state as a fill plus a text colour instead of
+ * a border of their own -- --t-amber on --amber-bg, --t-muted on
+ * --t-surface-2 -- both already covered by --t-amber's own ratio and
+ * --t-muted's file-wide floor at the top of this file.
  * A border that is only the edge of a panel is not an indicator and is left
  * on --t-green-200 with the rest of the app -- .loop-block at 1.46:1 lt /
  * 2.20:1 dk and .ledger-export at 1.57:1 lt / 2.06:1 dk, the same numbers
@@ -1597,7 +1631,11 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   font-size: var(--t-text-md);
   font-weight: var(--t-w-bold);
   text-decoration: none;
-  box-shadow: var(--t-shadow-lg);
+  /* --t-shadow-lg is the floating-card tier (.toast, .auth-card) -- a
+     thin-bordered pill this small read as decoration wearing that much
+     elevation. --t-shadow-md is the same tier .li-tooltip already uses for a
+     small floating element, and still clears every colour beneath it. */
+  box-shadow: var(--t-shadow-md);
 }
 .skip-link:focus-visible { transform: translateY(0); }
 
@@ -1674,24 +1712,37 @@ button:disabled { opacity: .55; cursor: not-allowed; }
    decorative offset circle rendering a number the tiles already carried.
    Exactly one cell is stuck at a time and the block sentence underneath
    names it in words, so the amber is reinforcement, never the only signal. */
+/* One bordered strip with hairline dividers, not six individually-radiused
+   cards -- same treatment as .metrics-grid and .li-stat-row above. Each cell
+   is still its own <button> (or <div> when unavailable); hover and
+   focus-visible are unchanged, see the shared rules earlier in this file.
+   State (is-stuck, is-unavailable) is carried by the cell's own background
+   and text colour rather than a border of its own, since the border a card
+   used to own is now the shared divider between cells. */
 .loop-stages {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
+  gap: 0;
   margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  overflow: hidden;
+  background: var(--panel);
 }
 .loop-stage {
   display: grid;
   align-content: start;
   gap: 3px;
   padding: 14px 15px;
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-md);
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
   background: var(--panel);
   color: var(--ink);
   text-decoration: none;
 }
-.loop-stage:hover { border-color: var(--t-green-200); background: var(--green-3); }
+.loop-stage:last-child { border-right: 0; }
+.loop-stage:hover { border-right-color: var(--t-green-200); background: var(--green-3); }
 .loop-stage > span {
   color: var(--muted);
   font-size: var(--t-text-chip);
@@ -1710,7 +1761,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .loop-stage small { color: var(--muted); font-size: var(--t-text-xs); line-height: 1.4; }
 
 .loop-stage.is-stuck,
-.loop-stage.is-stuck:hover { border-color: var(--t-amber); background: var(--amber-bg); }
+.loop-stage.is-stuck:hover { background: var(--amber-bg); }
 .loop-stage.is-stuck > span,
 .loop-stage.is-stuck strong { color: var(--amber); }
 .loop-stage.is-stuck small { color: var(--t-amber-ink); }
@@ -1718,13 +1769,12 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 /* Not connected is not zero, and it is not the operator's fault. Replies have
    no backend yet; lead sourcing is off on hosted. Neither is a number that
    came back nought, so neither is allowed to look like one: the figure drops
-   out of display type into a short muted sentence, the edge goes dashed to
-   say the cell is not wired rather than not doing well, and the cell never
-   takes amber, never takes red, and never sits under the word "stuck". */
+   out of display type into a short muted sentence, and the cell never takes
+   amber, never takes red, and never sits under the word "stuck". The dashed
+   edge a standalone card used to wear for this state is gone now that the
+   edge is a shared divider; the type change below carries the signal alone. */
 .loop-stage.is-unavailable,
 .loop-stage.is-unavailable:hover {
-  border-style: dashed;
-  border-color: var(--muted);
   background: var(--t-surface-2);
   cursor: default;
 }
@@ -2016,6 +2066,11 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 
 @media (max-width: 1150px) {
   .loop-stages { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* Wrapped to more than one row -- divider moves from the right edge to the
+     bottom edge, same reasoning as .metrics-grid above. This also covers the
+     760px 2-col collapse below, which only changes the column count. */
+  .loop-stage { border-right: 0; border-bottom: 1px solid var(--line); }
+  .loop-stage:last-child { border-bottom: 0; }
 }
 @media (max-width: 900px) {
   /* Both selectors: a media query adds no specificity, so `.cost-row` alone
