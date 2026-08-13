@@ -12,6 +12,7 @@ import { registerManagerAccountRoutes } from './linkedin/manager-account-routes.
 import { requireManagerSession } from './linkedin/manager-auth.js';
 import { registerManagerCampaignRoutes } from './linkedin/manager-campaign-routes.js';
 import { registerManagerListReadRoutes } from './linkedin/manager-list-read-routes.js';
+import { registerManagerReportingRoutes } from './linkedin/manager-reporting-routes.js';
 import { registerManagerWorkflowRoutes } from './linkedin/manager-workflow-routes.js';
 import { getSiteConfig, renderAppIndex, renderNotFoundPage } from './public-site.js';
 
@@ -53,6 +54,7 @@ registerManagerAccountRoutes(app, db);
 registerManagerListReadRoutes(app, db);
 registerManagerWorkflowRoutes(app, db);
 registerManagerCampaignRoutes(app, db);
+registerManagerReportingRoutes(app, db);
 app.use(core);
 
 if (process.env.NODE_ENV === 'production') {
