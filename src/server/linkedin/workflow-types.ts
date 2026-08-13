@@ -11,12 +11,7 @@ const variantSchema = z.object({
   weight: z.number().int().min(1).max(100)
 }).strict();
 
-const messageConfigSchema = z.object({
-  /** Persisted once per member; execution never re-rolls a variant. */
-  variants: z.array(variantSchema).min(1).max(2),
-  /** A campaign message defaults to first-degree connections only. */
-  requireConnection: z.boolean().default(true)
-}).strict().superRefine((value, ctx) => {
+function validateVariants(value: { variants: Array<{ id: string; weight: number }> }, ctx: z.RefinementCtx): void {
   const ids = new Set<string>();
   for (const [index, variant] of value.variants.entries()) {
     if (ids.has(variant.id)) {
@@ -28,7 +23,20 @@ const messageConfigSchema = z.object({
   if (total !== 100) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['variants'], message: `Variant weights must total 100; received ${total}.` });
   }
-});
+}
+
+const messageConfigSchema = z.object({
+  /** Persisted once per member; execution never re-rolls a variant. */
+  variants: z.array(variantSchema).min(1).max(2),
+  /** A campaign message defaults to first-degree connections only. */
+  requireConnection: z.boolean().default(true)
+}).strict().superRefine(validateVariants);
+
+const manualMessageConfigSchema = z.object({
+  variants: z.array(variantSchema).min(1).max(2),
+  requireConnection: z.boolean().default(true),
+  taskTitle: z.string().trim().min(1).max(160).default('Send LinkedIn message manually')
+}).strict().superRefine(validateVariants);
 
 const inviteConfigSchema = z.object({
   note: z.string().trim().max(300).optional().default('')
@@ -40,9 +48,6 @@ const withdrawConfigSchema = z.object({
 }).strict();
 
 const passiveConfigSchema = z.object({}).strict();
-const manualMessageConfigSchema = messageConfigSchema.and(z.object({
-  taskTitle: z.string().trim().min(1).max(160).default('Send LinkedIn message manually')
-}).strict());
 
 const baseStep = {
   id: z.string().trim().min(1).max(80).regex(/^[a-zA-Z0-9_-]+$/, 'Step ids may contain letters, numbers, _ and - only.'),
