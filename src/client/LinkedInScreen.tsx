@@ -67,6 +67,7 @@ import {
   useOutreachRefresh,
   useSeatLimits
 } from './LinkedInSafety';
+import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag, LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 
@@ -995,6 +996,11 @@ const isSkippable = (action: LinkedInActionView) => action.status === 'planned' 
  * that happened on Tuesday has to charge Tuesday's budget.
  */
 export function OutreachQueue({ setToast }: { setToast: (message: string) => void }) {
+  // Who queued each row -- team-workspace-access design goal 5, "Founder can
+  // see which of the two of them queued a given LinkedIn action". The same
+  // member list the workspace switcher and Team settings read, not a second
+  // fetch of who is in this workspace.
+  const { nameFor } = useWorkspaceMembers();
   const [actions, setActions] = useState<LinkedInActionView[]>([]);
   /** For the campaign picker. A filter you have to TYPE an id into is a filter nobody uses twice. */
   const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
@@ -1189,7 +1195,7 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
                   onChange={() => setSelected(allSelected ? new Set() : new Set(skippable.map((action) => action.id)))}
                 />
               </th>
-              <th>Target</th><th>Kind</th><th>Status</th><th>Planned for</th><th>Recorded</th><th>Source</th><th>Mark as</th>
+              <th>Target</th><th>Kind</th><th>Status</th><th>Planned for</th><th>Recorded</th><th>Source</th><th>Queued by</th><th>Mark as</th>
             </tr></thead>
             <tbody>{actions.map((action) => <tr key={action.id}>
               <td>
@@ -1212,6 +1218,7 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
               <td>{action.plannedFor ? new Date(action.plannedFor).toLocaleString() : '—'}</td>
               <td>{action.recordedAt ? new Date(action.recordedAt).toLocaleString() : '—'}</td>
               <td>{action.source}</td>
+              <td>{nameFor(action.queuedByUserId) ?? '—'}</td>
               <td className="li-row-actions">
                 {OUTCOMES.map((outcome) => <button
                   key={outcome}

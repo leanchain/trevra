@@ -24,6 +24,7 @@ import {
 } from './api';
 import { errorMessage, reloadOutreach, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
+import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag } from './LinkedInViz';
 
 /**
@@ -64,6 +65,10 @@ const messageTime = (sentAt: string | null) => {
 };
 
 export function OutreachInbox({ setToast }: { setToast: (message: string) => void }) {
+  // Who queued each outbound message -- team-workspace-access design goal 5.
+  // The same member list the switcher and Team settings read, not a second
+  // fetch of who is in this workspace.
+  const { nameFor } = useWorkspaceMembers();
   const [threads, setThreads] = useState<LinkedInThreadRecord[]>([]);
   const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
   const [filters, setFilters] = useState<InboxFilters>(EMPTY_FILTERS);
@@ -340,14 +345,17 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
             {messages.length === 0
               ? <p className="empty-copy">No message has been stored for this conversation. Sync it to read what LinkedIn shows.</p>
               : <ol className="li-msgs">
-                {messages.map((message) => <li key={message.id} className={`li-msg li-msg-${message.direction}`}>
-                  <span className="li-msg-who">{message.direction === 'in' ? 'Them' : 'You'}</span>
-                  <p>{message.body}</p>
-                  <span className="li-msg-time">
-                    {messageTime(message.sentAt) ?? 'No timestamp was rendered'}
-                    {message.actionId && ' · sent through Trevra'}
-                  </span>
-                </li>)}
+                {messages.map((message) => {
+                  const queuedBy = message.actionId ? nameFor(message.queuedByUserId) : null;
+                  return <li key={message.id} className={`li-msg li-msg-${message.direction}`}>
+                    <span className="li-msg-who">{message.direction === 'in' ? 'Them' : 'You'}</span>
+                    <p>{message.body}</p>
+                    <span className="li-msg-time">
+                      {messageTime(message.sentAt) ?? 'No timestamp was rendered'}
+                      {message.actionId && ` · sent through Trevra${queuedBy ? ` by ${queuedBy}` : ''}`}
+                    </span>
+                  </li>;
+                })}
               </ol>}
 
             <div className="li-composer">

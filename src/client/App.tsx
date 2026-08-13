@@ -87,8 +87,10 @@ import { AccountsScreen } from './AccountsScreen';
 import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
 import { OutreachInbox } from './LinkedInInbox';
 import { OutreachLeads } from './LinkedInLeads';
+import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions, LinkedInSeatSetup, OutreachQueue, OutreachSeat } from './LinkedInScreen';
 import { MarketingScreen } from './MarketingScreen';
+import { TeamSettingsView } from './TeamScreen';
 import { RedditScreen } from './RedditScreen';
 import { ResearchScreen } from './ResearchScreen';
 import { trackEvent, trackPageView } from './analytics';
@@ -436,6 +438,12 @@ export function App() {
           <div className="workspace-avatar">{initials(data.workspace.name)}</div>
           <div><strong>{data.workspace.name}</strong><span>{data.metrics.connectedSources} connected</span></div>
         </div>
+        {/* Only when there is somewhere else to switch TO -- team-workspace-
+            access design's "a dropdown in the app shell, shown only when
+            organization.list returns more than one workspace". A member of
+            exactly one workspace never sees a control for a choice he does
+            not have. */}
+        <WorkspaceSwitcher activeWorkspaceId={data.workspace.id} onSwitched={async () => { await load(); await reloadOutreach(); }} />
       </aside>
 
       <main className="main" id="main" tabIndex={-1}>
@@ -624,7 +632,8 @@ const SETUP_ROUTES: Array<{ sub: string; label: string }> = [
   { sub: 'seat', label: 'LinkedIn seat' },
   { sub: 'reddit', label: 'Reddit account' },
   { sub: 'skills', label: 'Skills' },
-  { sub: 'limits', label: 'Limits' }
+  { sub: 'limits', label: 'Limits' },
+  { sub: 'team', label: 'Team' }
 ];
 
 function SetupView({ route, data, reload, setToast, busyId, setBusyId, onNavigate }: {
@@ -705,6 +714,8 @@ function SetupView({ route, data, reload, setToast, busyId, setBusyId, onNavigat
       <AutopilotView rules={data.automationRules} reload={reload} setToast={setToast} />
       <LinkedInExclusions setToast={setToast} />
     </>}
+
+    {sub === 'team' && <TeamSettingsView route={route} setToast={setToast} reload={reload} onNavigate={onNavigate} />}
   </div>;
 }
 
@@ -2201,6 +2212,48 @@ function ActionDrawer({ action, busy, onChange, onClose, onExecute }: {
       onConfirm={() => { setConfirming(false); onExecute(); }}
     />}
   </>, document.body);
+}
+
+/**
+ * The dropdown out of one workspace and into another (team-workspace-access
+ * design's "Team management surface"). Renders nothing at all -- not even a
+ * collapsed control -- for the common case, one workspace: `useListOrganizations`
+ * for the founder who has never added a teammate and never been added to
+ * anyone else's workspace returns exactly the one he already owns, and a
+ * switcher with one destination, itself, is not a switcher.
+ *
+ * `onSwitched` is the shell's own reload, handed down rather than reimplemented
+ * here: `App()`'s `load()` re-reads the dashboard this new workspace owns, and
+ * `reloadOutreach()` is the same broadcast every other ledger-changing action in
+ * the LinkedIn screens already uses (LinkedInSafety.tsx) -- switching workspaces
+ * changes every one of their reads at once, so it gets the same signal a skip or
+ * a reply does, not a bespoke one.
+ */
+function WorkspaceSwitcher({ activeWorkspaceId, onSwitched }: { activeWorkspaceId: string; onSwitched: () => Promise<void> }) {
+  const { data: organizations } = authClient.useListOrganizations();
+  const [switching, setSwitching] = useState(false);
+
+  if (!organizations || organizations.length <= 1) return null;
+
+  const switchTo = async (organizationId: string) => {
+    if (!organizationId || organizationId === activeWorkspaceId) return;
+    setSwitching(true);
+    try {
+      await authClient.organization.setActive({ organizationId });
+      await onSwitched();
+    } finally { setSwitching(false); }
+  };
+
+  return <select
+    className="workspace-switcher"
+    disabled={switching}
+    value={activeWorkspaceId}
+    onChange={(event) => void switchTo(event.target.value)}
+    aria-label="Switch workspace"
+    title="Switch workspace"
+  >
+    {organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}
+  </select>;
 }
 
 function NavButton({ active, icon, label, badge, onClick }: {

@@ -289,6 +289,15 @@ export interface LinkedInActionView {
   externalRef: string | null;
   claimedAt: string | null;
   createdAt: string;
+  /**
+   * The Trevra user whose live request queued this row -- migration 043,
+   * team-workspace-access design (docs/superpowers/specs/2026-08-13-team-
+   * workspace-access-design.md). Null for rows queued before that column
+   * existed, queued by the approved-action executor outside a live request,
+   * queued by a since-deleted user, or filed with source='export'. The queue
+   * view resolves it against the workspace's member list, not here.
+   */
+  queuedByUserId: string | null;
 }
 
 interface ActionRow {
@@ -306,11 +315,12 @@ interface ActionRow {
   external_ref: string | null;
   claimed_at: string | null;
   created_at: string;
+  queued_by_user_id: string | null;
 }
 
 const ACTION_COLUMNS = `
   id, seat_key, kind, target_ref, campaign_id, status, planned_for, recorded_at,
-  source, payload_hash, failure_kind, external_ref, claimed_at, created_at
+  source, payload_hash, failure_kind, external_ref, claimed_at, created_at, queued_by_user_id
 `;
 
 function toActionView(row: ActionRow): LinkedInActionView {
@@ -328,7 +338,8 @@ function toActionView(row: ActionRow): LinkedInActionView {
     failureKind: row.failure_kind,
     externalRef: row.external_ref,
     claimedAt: row.claimed_at,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    queuedByUserId: row.queued_by_user_id
   };
 }
 

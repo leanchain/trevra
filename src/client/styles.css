@@ -425,6 +425,8 @@ h1,h2,h3,h4,p { margin-top: 0; }
 .sidebar-bottom strong { font-size: var(--t-text-xs); }
 .sidebar-bottom span { color: var(--muted); font-size: var(--t-text-xs); margin-top: 2px; }
 .workspace-avatar { width: 32px; height: 32px; background: var(--t-green-200); color: var(--t-green-800); border-radius: var(--t-r-sm); display: grid; place-items: center; font-size: var(--t-text-chip); font-weight: 700; }
+/* The dropdown out of one workspace and into another (App.tsx's `WorkspaceSwitcher`) -- sits under `.sidebar-bottom`, not inside its grid, so it never fights that row's own `auto 1fr auto` sizing. */
+.workspace-switcher { width: 100%; margin-top: 8px; min-height: 30px; border: 1px solid var(--line); border-radius: var(--t-r-sm); background: var(--t-field); color: var(--ink); font-size: var(--t-text-xs); padding: 5px 8px; }
 .main { width: 100%; max-width: var(--t-page); margin: 0 auto; padding: 31px 44px 60px; }
 .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
 .eyebrow { margin: 0 0 5px; color: var(--muted); font-size: var(--t-text-sm); }

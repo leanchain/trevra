@@ -36,7 +36,7 @@ const SUB_ROUTES: Record<Section, readonly string[]> = {
   outreach: ['', 'campaigns', 'inbox', 'leads', 'plan', 'queue'],
   money: [''],
   ledger: ['', 'run'],
-  setup: ['', 'agent', 'data', 'reddit', 'research', 'seat', 'skills', 'limits', 'spend']
+  setup: ['', 'agent', 'data', 'reddit', 'research', 'seat', 'skills', 'limits', 'spend', 'team']
 };
 
 export interface Route {

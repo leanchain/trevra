@@ -98,6 +98,14 @@ export interface LinkedInMessageRecord {
   /** The ledger row that produced an outbound message, when it is attributable. */
   actionId: string | null;
   createdAt: string;
+  /**
+   * The Trevra user whose live request queued the `linkedin_actions` row
+   * behind this message (migration 043, team-workspace-access design), read
+   * off `action_id`. Null for an inbound message (nothing was queued), a
+   * message with no attributable action, or one queued before that column
+   * existed.
+   */
+  queuedByUserId: string | null;
 }
 
 interface ThreadRow {
@@ -126,6 +134,7 @@ interface MessageRow {
   external_ref: string;
   action_id: string | null;
   created_at: string;
+  queued_by_user_id: string | null;
 }
 
 /**
@@ -150,7 +159,8 @@ const MESSAGE_COLUMNS = `
   id, thread_id, direction, body,
   TO_CHAR(sent_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS sent_at,
   external_ref, action_id,
-  TO_CHAR(created_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS created_at
+  TO_CHAR(created_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS created_at,
+  (SELECT a.queued_by_user_id FROM linkedin_actions a WHERE a.id = linkedin_messages.action_id) AS queued_by_user_id
 `;
 
 function toThread(row: ThreadRow): LinkedInThreadRecord {
@@ -181,7 +191,8 @@ function toMessage(row: MessageRow): LinkedInMessageRecord {
     sentAt: row.sent_at,
     externalRef: row.external_ref,
     actionId: row.action_id,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    queuedByUserId: row.queued_by_user_id
   };
 }
 
