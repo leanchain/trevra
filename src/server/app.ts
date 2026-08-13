@@ -15,7 +15,7 @@ import { runRecommendationEngine } from './recommendation-engine.js';
 import { listAutomationRules, listConnections, listRecommendations } from './serializers.js';
 import { approveAction, executeAction, prepareAction } from './action-service.js';
 import { runAutomationCycle } from './automation-service.js';
-import { auth as betterAuth, configureAuthProvisioning, findAuthUserIdByEmail, resolveBetterAuthIdentity } from './auth-service.js';
+import { auth as betterAuth, configureAuthProvisioning, resolveBetterAuthIdentity } from './auth-service.js';
 import { importCommercialDocument } from './document-service.js';
 import {
   createNangoConnectSession,
@@ -563,17 +563,23 @@ export function createApp(db: Db) {
   app.use('/api', requireSession(db));
 
   /**
-   * Add a teammate (design doc's Team management section).
+   * Add a teammate (design doc's Team management section -- decision #3
+   * superseded: nobody joins a workspace without accepting it themselves,
+   * an existing Trevra account is no longer an instant-join shortcut, only a
+   * real invitation, same as an email with no account at all).
    *
    * The one bit of bespoke team-management server logic this pass needs:
    * better-auth's client SDK already talks straight to the auto-mounted
    * `/api/auth/organization/*` routes for everything else (list/remove members,
-   * list/cancel invitations, switch active workspace) -- see `app.all('/api/
-   * auth/*splat', ...)` above. What it does NOT have is "look up by email and
-   * fall back to invite": `organization.addMember` requires a userId, not an
-   * email, so deciding whether this email already has a Trevra account (join
-   * instantly) or needs a real invitation (no account yet) is application
-   * logic, not something the plugin's own endpoints do for us.
+   * list/cancel invitations, switch active workspace, and -- unchanged by this
+   * route no longer ever granting instant membership -- accepting THIS
+   * route's own invitation via `organization.acceptInvitation`, see
+   * `AcceptInvitationPanel` in TeamScreen.tsx) -- see `app.all('/api/
+   * auth/*splat', ...)` above. `createInvitation` alone covers both an email
+   * with an existing account and one with none: it only ever checks whether
+   * the email is already a member of THIS organization, never whether it has
+   * a Trevra account anywhere else -- so this route has no need to look that
+   * up itself, and the adder never learns it either way.
    *
    * Owner-only, same carve-out shape as the LinkedIn credential routes: full
    * workspace parity for members, except who gets to change who is IN the
@@ -588,15 +594,10 @@ export function createApp(db: Db) {
       if (req.auth!.role !== 'owner') return res.status(403).json({ error: 'Only the workspace owner can add teammates' });
       const input = teamAddMemberSchema.parse(req.body ?? {});
       const workspaceId = req.auth!.workspaceId;
-      const existingUserId = await findAuthUserIdByEmail(input.email);
-      if (existingUserId) {
-        const member = await betterAuth.api.addMember({ body: { userId: existingUserId, organizationId: workspaceId, role: input.role } });
-        return res.status(201).json({ status: 'added', member });
-      }
-      // No account yet: a real invitation (design doc decision #3), not
-      // instant membership -- `createInvitation` requires this request's own
-      // session (the inviter), so it is the one call in this route that needs
-      // headers rather than the userId system-action shortcut.
+      // `createInvitation` requires this request's own session (the inviter),
+      // so it is the one call in this route that needs headers rather than
+      // the userId system-action shortcut the rest of this route's callers
+      // (e.g. the backfill) use elsewhere in this codebase.
       const invitation = await betterAuth.api.createInvitation({
         headers: fromNodeHeaders(req.headers),
         body: { email: input.email, organizationId: workspaceId, role: input.role }

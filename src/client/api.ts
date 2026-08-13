@@ -121,31 +121,27 @@ export async function getDashboard(): Promise<DashboardPayload> {
 
 /**
  * Team workspace access (docs/superpowers/specs/2026-08-13-team-workspace-
- * access-design.md). The one bespoke team-management call: everything else
+ * access-design.md -- decision #3 superseded: no email joins instantly
+ * anymore, existing Trevra account or not, see the doc comment on this
+ * route in app.ts). The one bespoke team-management call: everything else
  * (list workspaces, list members, remove a member, list/accept/cancel
  * invitations, switch the active workspace) rides better-auth's own
  * auto-mounted `/api/auth/organization/*` routes through `authClient.
  * organization.*` (src/client/auth-client.ts) -- NOT this file's `request`
  * wrapper, and NOT declared here. This one route exists because `organization.
- * addMember`/`createInvitation` are server-only in better-auth's own plugin
- * (see auth-client.ts's comment): "look up by email, join instantly or fall
- * back to a real invitation" has to be application logic, and this is the
- * one HTTP call that logic is reached through. Owner-only; the server 403s
- * a member and this simply surfaces that ApiError like every other gated call.
+ * createInvitation` is server-only in better-auth's own plugin (see
+ * auth-client.ts's comment) and needs this request's own session as the
+ * inviter -- there is no client-callable equivalent. Owner-only; the server
+ * 403s a member and this simply surfaces that ApiError like every other
+ * gated call.
  */
-export interface TeamMemberAdded {
-  status: 'added';
-  /** better-auth's own created `member` row -- shape not otherwise typed on the client. */
-  member: { id: string; userId: string; organizationId: string; role: string; createdAt?: string };
-}
 export interface TeamMemberInvited {
   status: 'invited';
   /** better-auth's own created `invitation` row. No email is sent unless the deployment configured one -- see the Team screen's copyable link. */
   invitation: { id: string; email: string; role: string; organizationId: string; status: string; expiresAt: string };
 }
-export type TeamAddMemberResult = TeamMemberAdded | TeamMemberInvited;
 
-export async function addTeamMember(input: { email: string; role?: 'owner' | 'member' }): Promise<TeamAddMemberResult> {
+export async function addTeamMember(input: { email: string; role?: 'owner' | 'member' }): Promise<TeamMemberInvited> {
   return request('/api/team/members', { method: 'POST', body: JSON.stringify(input) });
 }
 

@@ -125,15 +125,15 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
     setAddBusy(true);
     setAddError('');
     try {
-      const result = await addTeamMember({ email: trimmed });
+      // Always a real invitation now -- no email joins instantly, existing
+      // Trevra account or not (design doc decision #3, superseded: see the
+      // doc comment on POST /api/team/members in app.ts). Same response
+      // shape either way, so the adder never learns whether this email
+      // already had an account.
+      await addTeamMember({ email: trimmed });
       setEmail('');
-      if (result.status === 'added') {
-        setToast(`${trimmed} now sees this workspace next time they sign in.`);
-        await refetchOrg();
-      } else {
-        setToast(`${trimmed} has no Trevra account yet -- a real invitation was filed. Copy its link below to send it.`);
-        await loadInvitations();
-      }
+      setToast(`Invitation filed for ${trimmed}. Copy its link below to send it -- they join once they accept it.`);
+      await loadInvitations();
     } catch (err) {
       setAddError(err instanceof ApiError || err instanceof Error ? err.message : 'Unable to add that teammate.');
     } finally {
@@ -223,7 +223,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
       <div className="section-heading">
         <div>
           <h3>Add a teammate</h3>
-          <p>Already has a Trevra account? They join this workspace instantly. First time here? They get a real invitation instead.</p>
+          <p>Files an invitation. They join this workspace only once they accept it -- whether or not they already use Trevra.</p>
         </div>
       </div>
 

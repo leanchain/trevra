@@ -129,8 +129,8 @@ describe('two users, one workspace', () => {
   });
 });
 
-describe('POST /api/team/members (add teammate: email lookup, invite fallback)', () => {
-  it('joins an existing account instantly, and invites an email with no account yet', async () => {
+describe('POST /api/team/members (add teammate: always a real invitation, must be accepted)', () => {
+  it('files a pending invitation for an existing account exactly like one for an email that has never signed in -- neither joins until they accept it themselves', async () => {
     const database = await freshDb();
     const app = createApp(database);
 
@@ -138,16 +138,19 @@ describe('POST /api/team/members (add teammate: email lookup, invite fallback)',
     const ownerAuth = await currentAuth(owner.agent);
     const teammate = await signUp(app, 'team-existing', 'Team Existing');
 
-    // An email with an existing Trevra account joins instantly (decision #3:
-    // no pending-invite step when the account already exists).
-    const added = await owner.agent.post('/api/team/members').send({ email: teammate.email });
-    expect(added.status).toBe(201);
-    expect((added.body as { status: string }).status).toBe('added');
-    const memberRow = await database.prepare('SELECT role FROM member WHERE "organizationId"=? AND "userId"=(SELECT id FROM "user" WHERE lower(email)=?)')
+    // An email with an existing Trevra account gets a pending invitation, not
+    // instant membership (design doc decision #3, superseded: nobody joins a
+    // workspace without accepting it themselves, existing account or not).
+    const invitedExisting = await owner.agent.post('/api/team/members').send({ email: teammate.email });
+    expect(invitedExisting.status).toBe(201);
+    expect((invitedExisting.body as { status: string }).status).toBe('invited');
+    const noMemberYet = await database.prepare('SELECT role FROM member WHERE "organizationId"=? AND "userId"=(SELECT id FROM "user" WHERE lower(email)=?)')
       .get<{ role: string }>(ownerAuth.workspaceId, teammate.email.toLowerCase());
-    expect(memberRow?.role).toBe('member');
+    expect(noMemberYet).toBeUndefined();
+    const invitationId = (invitedExisting.body as { invitation: { id: string } }).invitation.id;
 
-    // An email that has never signed in gets a real invitation instead.
+    // An email that has never signed in still gets a real invitation --
+    // identically shaped, so the adder learns nothing about which case it was.
     const neverSeenEmail = uniqueEmail('never-signed-in');
     const invited = await owner.agent.post('/api/team/members').send({ email: neverSeenEmail });
     expect(invited.status).toBe(201);
@@ -155,6 +158,15 @@ describe('POST /api/team/members (add teammate: email lookup, invite fallback)',
     const invitationRow = await database.prepare('SELECT email,role,status FROM invitation WHERE "organizationId"=? AND email=?')
       .get<{ email: string; role: string; status: string }>(ownerAuth.workspaceId, neverSeenEmail.toLowerCase());
     expect(invitationRow?.status).toBe('pending');
+
+    // The existing-account teammate only joins once THEY accept it, with
+    // their own session -- the same `organization.acceptInvitation` route the
+    // never-seen-before case relies on (TeamScreen.tsx's AcceptInvitationPanel).
+    const accept = await teammate.agent.post('/api/auth/organization/accept-invitation').send({ invitationId }).expect(200);
+    expect((accept.body as { member: { role: string } }).member.role).toBe('member');
+    const memberRow = await database.prepare('SELECT role FROM member WHERE "organizationId"=? AND "userId"=(SELECT id FROM "user" WHERE lower(email)=?)')
+      .get<{ role: string }>(ownerAuth.workspaceId, teammate.email.toLowerCase());
+    expect(memberRow?.role).toBe('member');
   });
 
   it('is owner-only: a member operating in this workspace cannot add teammates to it', async () => {

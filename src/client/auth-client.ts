@@ -11,12 +11,10 @@ import { organizationClient } from 'better-auth/client/plugins';
  * session currently has active -- see `useWorkspaceMembers` in
  * TeamScreen.tsx, the one place this app reads that list).
  *
- * `organization.addMember` and `organization.createInvitation` are NOT
- * called from here: both are server-only endpoints in better-auth's own
- * plugin (see `crud-members.mjs`/`crud-invites.mjs`), which is why
- * `POST /api/team/members` (src/server/app.ts) exists as a bespoke route --
- * it is the one piece of "look up by email, add or invite" logic the plugin
- * does not expose to a browser at all.
+ * `organization.createInvitation` is NOT called from here: it is a
+ * server-only endpoint in better-auth's own plugin (see `crud-invites.mjs`)
+ * that needs the inviter's own session on the server, which is why
+ * `POST /api/team/members` (src/server/app.ts) exists as a bespoke route.
  */
 export const authClient = createAuthClient({
   baseURL: window.location.origin,

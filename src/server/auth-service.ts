@@ -488,23 +488,6 @@ export async function closeAuthDatabase(): Promise<void> {
   await authPool.end();
 }
 
-/**
- * The email-lookup half of "add teammate": does a better-auth account exist
- * for this email already?
- *
- * Read-only, against `user`'s oldest and most stable column (email) -- same
- * justification as the backfill's own email lookup above. Exported for the
- * team-management route in app.ts (spec's Team management section: "tries
- * organization.addMember first ... falls back to organization.inviteMember
- * when the email has no account yet") -- that fallback decision has to be
- * made by application code because better-auth's `addMember` requires a
- * `userId`, not an email; there is no single plugin endpoint that does both.
- */
-export async function findAuthUserIdByEmail(email: string): Promise<string | null> {
-  const result = await authPool.query<{ id: string }>('SELECT id FROM "user" WHERE lower(email)=$1', [email.trim().toLowerCase()]);
-  return result.rows[0]?.id ?? null;
-}
-
 async function createDefaultAutomationRules(db: Db, workspaceId: string, now: string): Promise<void> {
   const defaults = [
     ['stale_proposal', 'prepare', 0.85, 25000, 0, 1],
