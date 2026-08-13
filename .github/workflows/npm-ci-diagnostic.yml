@@ -1,0 +1,31 @@
+name: npm ci diagnostic
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Capture npm ci output
+        shell: bash
+        run: |
+          set +e
+          npm ci > npm-ci.log 2>&1
+          code=$?
+          cat npm-ci.log
+          echo "$code" > npm-ci-exit.txt
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-ci-diagnostic
+          path: |
+            npm-ci.log
+            npm-ci-exit.txt
+          retention-days: 3
