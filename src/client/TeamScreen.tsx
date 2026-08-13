@@ -195,7 +195,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
 
       {isPending
         ? <p className="empty-copy">Reading the member list…</p>
-        : <div className="li-table-scroll">
+        : <div className="li-table-scroll compact">
           <table className="li-table">
             <thead><tr><th>Name</th><th>Email</th><th>Role</th>{isOwner && <th />}</tr></thead>
             <tbody>{members.map((member) => <tr key={member.id}>
@@ -258,7 +258,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
         ? <p className="empty-copy">Reading pending invitations…</p>
         : invitations.length === 0
           ? <p className="empty-copy">Nothing pending.</p>
-          : <div className="li-table-scroll">
+          : <div className="li-table-scroll compact">
             <table className="li-table">
               <thead><tr><th>Email</th><th>Role</th><th /></tr></thead>
               <tbody>{invitations.map((invitation) => <tr key={invitation.id}>

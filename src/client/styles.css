@@ -427,7 +427,7 @@ h1,h2,h3,h4,p { margin-top: 0; }
 .workspace-avatar { width: 32px; height: 32px; background: var(--t-green-200); color: var(--t-green-800); border-radius: var(--t-r-sm); display: grid; place-items: center; font-size: var(--t-text-chip); font-weight: 700; }
 /* The dropdown out of one workspace and into another (App.tsx's `WorkspaceSwitcher`) -- sits under `.sidebar-bottom`, not inside its grid, so it never fights that row's own `auto 1fr auto` sizing. */
 .workspace-switcher { width: 100%; margin-top: 8px; min-height: 30px; border: 1px solid var(--line); border-radius: var(--t-r-sm); background: var(--t-field); color: var(--ink); font-size: var(--t-text-xs); padding: 5px 8px; }
-.main { width: 100%; max-width: var(--t-page); margin: 0 auto; padding: 31px 44px 60px; }
+.main { width: 100%; padding: 31px 44px 60px; }
 .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
 .eyebrow { margin: 0 0 5px; color: var(--muted); font-size: var(--t-text-sm); }
 /* 28px sits exactly on SF Pro's Text/Display switch, so naming --t-display
@@ -522,7 +522,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .import-panel textarea, .import-panel select, .import-panel input, .automation-fields input, .automation-fields select { width: 100%; min-height: var(--t-tap); border: 1px solid var(--line); border-radius: var(--t-r-sm); background: var(--t-field); padding: 10px 11px; color: var(--ink); font-size: var(--t-text-xs); }
 .import-panel textarea { resize: vertical; line-height: 1.45; }
 .import-controls { display: grid; grid-template-columns: minmax(180px,.4fr) 1fr; gap: 12px; align-items: end; margin-bottom: 14px; }
-.document-hints { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin-bottom: 12px; }
+.document-hints { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin-bottom: 12px; max-width: 720px; }
 .document-upload-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
 .file-picker { min-height: var(--t-tap); border: 1px dashed var(--t-green-200); border-radius: var(--t-r-sm); display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 8px; color: var(--green); cursor: pointer; background: var(--green-3); font-size: var(--t-text-xs); font-weight: 700; }
 .file-picker input { display: none; }
@@ -539,7 +539,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .toggle input:checked + span { background: var(--t-green-fill); }
 .toggle input:checked + span::after { transform: translateX(17px); }
 .toggle input:focus-visible + span { outline: 2px solid var(--t-focus); outline-offset: 2px; }
-.automation-fields { display: grid; grid-template-columns: 1.4fr repeat(3,1fr); gap: 10px; margin-top: 15px; }
+.automation-fields { display: grid; grid-template-columns: 1.4fr repeat(3,1fr); gap: 10px; margin-top: 15px; max-width: 720px; }
 .automation-fields label small { position: absolute; right: 10px; bottom: 12px; color: var(--muted); font-size: var(--t-text-xs); }
 .automation-fields label:has(small) input { padding-right: 48px; }
 .rule-note { margin-top: 12px; padding: 9px 11px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: var(--t-r-sm); background: var(--panel); color: var(--green); font-size: var(--t-text-xs); display: flex; gap: 7px; align-items: center; }
@@ -777,14 +777,14 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 
 /* Workspace policy editor. */
 .policy-panel .section-heading h3 { display: flex; align-items: center; gap: 8px; }
-.policy-editor { display: grid; grid-template-columns: minmax(180px,1.1fr) minmax(180px,1fr) minmax(150px,.65fr) 100px; gap: 11px; align-items: end; }
+.policy-editor { display: grid; grid-template-columns: minmax(180px,1.1fr) minmax(180px,1fr) minmax(150px,.65fr) 100px; gap: 11px; align-items: end; max-width: 780px; }
 .policy-editor label { display: grid; gap: 6px; margin: 0; font-size: var(--t-text-xs); font-weight: 700; }
 .policy-editor input, .policy-editor select, .policy-editor textarea { width: 100%; min-height: var(--t-tap); border: 1px solid var(--line); border-radius: var(--t-r-sm); padding: 9px 11px; background: var(--t-field); color: var(--ink); font-size: var(--t-text-xs); }
 .policy-editor label small { color: var(--muted); font-size: var(--t-text-xs); font-weight: 500; }
 .policy-conditions { border: 1px solid var(--line); border-radius: var(--t-r-md); padding: 13px 15px 15px; margin-top: 14px; display: grid; gap: 12px; }
 .policy-conditions > legend { padding: 0 6px; font-size: var(--t-text-xs); font-weight: 700; }
 .condition-hint { max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); }
-.condition-groups, .condition-numbers { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 13px; }
+.condition-groups, .condition-numbers { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 13px; max-width: 720px; }
 .condition-group { border: 0; margin: 0; padding: 0; display: grid; gap: 7px; align-content: start; }
 .condition-group > legend { padding: 0; color: var(--muted); font-size: var(--t-text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
 .condition-group label { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; margin: 0; min-height: 24px; font-size: var(--t-text-xs); font-weight: 500; line-height: 1.35; }
@@ -926,7 +926,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .policy-note p { max-width: var(--t-measure); margin: 0; display: flex; gap: 8px; align-items: flex-start; font-size: var(--t-text-xs); line-height: 1.5; color: var(--green); }
 .policy-note p span { color: var(--ink); }
 .policy-note small { color: var(--muted); font-size: var(--t-text-xs); line-height: 1.5; }
-.signed-note { display: grid; gap: 7px; border: 1px solid var(--t-amber-line); background: var(--amber-bg); border-radius: var(--t-r-sm); padding: 10px 11px; }
+.signed-note { display: grid; gap: 7px; border: 1px solid var(--line); border-left: 3px solid var(--amber); background: var(--panel); border-radius: var(--t-r-sm); padding: 10px 11px; }
 .signed-note > div { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .signed-note code { background: var(--t-surface); border: 1px solid var(--line); border-radius: var(--t-r-xs); padding: 4px 7px; font-family: var(--t-mono); font-size: var(--t-text-xs); }
 .signed-note small { color: var(--t-amber-ink); font-size: var(--t-text-xs); line-height: 1.5; }
@@ -938,7 +938,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .run-node-body .run-open { margin-top: 0; }
 /* Asking the agent to stop. Amber, not red: nothing has gone wrong here, and a
    run still doing what it was asked to do must not be dressed as a failure. */
-.run-stop { display: grid; justify-items: start; gap: 7px; margin-top: 12px; border: 1px solid var(--t-amber-line); background: var(--amber-bg); border-radius: var(--t-r-sm); padding: 10px 11px; }
+.run-stop { display: grid; justify-items: start; gap: 7px; margin-top: 12px; border: 1px solid var(--line); border-left: 3px solid var(--amber); background: var(--panel); border-radius: var(--t-r-sm); padding: 10px 11px; }
 .run-stop p { max-width: var(--t-measure); margin: 0; color: var(--t-amber-ink); font-size: var(--t-text-xs); line-height: 1.55; }
 .run-stop small { color: var(--t-amber-ink); font-size: var(--t-text-xs); line-height: 1.5; }
 .run-stop small.is-error { color: var(--red); }
@@ -969,7 +969,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .byok-block-head { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; }
 .byok-block-head h4 { margin: 0 0 4px; font-size: var(--t-text-sm); }
 .byok-block-head p { margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.55; max-width: var(--t-measure); }
-.byok-fields { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 11px; margin-top: 14px; }
+.byok-fields { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 11px; margin-top: 14px; max-width: 720px; }
 .byok-fields label { display: grid; gap: 6px; font-size: var(--t-text-xs); font-weight: 700; align-content: start; }
 .byok-fields input, .byok-fields select, .byok-fields textarea { width: 100%; min-height: var(--t-tap); border: 1px solid var(--line); border-radius: var(--t-r-sm); background: var(--t-field); padding: 10px 11px; color: var(--ink); font-size: var(--t-text-xs); }
 .byok-fields textarea { resize: vertical; line-height: 1.5; }
@@ -1131,6 +1131,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-table-view { margin-top: 12px; }
 .li-table-view summary { cursor: pointer; min-height: 24px; color: var(--green); font-size: var(--t-text-xs); font-weight: 700; }
 .li-table-scroll { overflow-x: auto; }
+.li-table-scroll.compact .li-table { width: auto; max-width: 620px; }
 .li-table { width: 100%; border-collapse: collapse; font-size: var(--t-text-xs); }
 .li-table th { text-align: left; color: var(--muted); font-size: var(--t-text-xs); text-transform: uppercase; letter-spacing: var(--t-track-caps); font-weight: 700; padding: 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .li-table td { padding: 9px; border-bottom: 1px solid var(--t-line-soft); vertical-align: top; }
@@ -1341,7 +1342,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-blockers { max-width: var(--t-measure); margin: 0 0 15px; padding-left: 19px; color: var(--amber); font-size: var(--t-text-xs); line-height: 1.65; }
 
 /* Sign in with an email and a password, the way every other tool does it. */
-.li-signin { border: 1px solid var(--t-green-200); background: var(--green-3); border-radius: var(--t-r-md); padding: 17px; margin-top: 14px; }
+.li-signin { border: 1px solid var(--line); background: var(--t-field); border-radius: var(--t-r-md); padding: 17px; margin-top: 14px; }
 .li-signin > strong { display: block; font-size: var(--t-text-sm); color: var(--green); margin-bottom: 12px; }
 .li-signin-fields { display: grid; grid-template-columns: 1fr 1fr auto; gap: 11px; align-items: end; }
 .li-signin-fields label { display: grid; gap: 6px; font-size: var(--t-text-xs); font-weight: 700; align-content: start; }
@@ -1356,7 +1357,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-signin-row > span + span { color: var(--muted); font-size: var(--t-text-xs); }
 .li-signin-actions { display: flex; gap: 8px; align-items: center; }
 .li-blocked-message code { background: var(--panel); border-radius: var(--t-r-xs); padding: 2px 6px; font-family: var(--t-mono); font-size: var(--t-text-xs); }
-.li-connect-blocked { border: 1px solid var(--t-amber-line); background: var(--amber-bg); border-radius: var(--t-r-md); padding: 14px 16px; margin-bottom: 14px; }
+.li-connect-blocked { border: 1px solid var(--line); border-left: 3px solid var(--amber); background: var(--panel); border-radius: var(--t-r-md); padding: 14px 16px; margin-bottom: 14px; }
 .li-connect-blocked strong { display: flex; gap: 8px; align-items: center; font-size: var(--t-text-sm); color: var(--amber); margin-bottom: 9px; }
 .li-connect-blocked p { margin: 0 0 9px; color: var(--t-amber-ink); font-size: var(--t-text-xs); line-height: 1.65; max-width: var(--t-measure); }
 .li-connect-blocked p:last-child { margin-bottom: 0; }
@@ -1366,13 +1367,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-seat-head strong { font-size: var(--t-text-lg); }
 .li-seat-vanity { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-size: var(--t-text-xs); font-weight: 700; text-decoration: none; }
 .li-seat-vanity:hover { text-decoration: underline; }
-.li-seat-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.li-seat-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0; max-width: 720px; }
 .li-seat-facts dt { color: var(--muted); font-size: var(--t-text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
 .li-seat-facts dd { margin: 5px 0 0; font-size: var(--t-text-sm); font-weight: 700; font-variant-numeric: tabular-nums; }
 .li-seat-footer { display: flex; justify-content: flex-end; margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--t-line-soft); }
 .li-unknown { color: var(--muted); font-weight: 500; font-style: italic; }
 .li-seat-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.li-degraded { margin-top: 12px; border: 1px solid var(--t-amber-line); background: var(--amber-bg); border-radius: var(--t-r-md); padding: 12px 14px; }
+.li-degraded { margin-top: 12px; border: 1px solid var(--line); border-left: 3px solid var(--amber); background: var(--panel); border-radius: var(--t-r-md); padding: 12px 14px; }
 .li-degraded strong { display: block; font-size: var(--t-text-xs); color: var(--amber); margin-bottom: 7px; }
 .li-degraded ul { max-width: var(--t-measure); margin: 0 0 8px; padding-left: 18px; color: var(--t-amber-ink); font-size: var(--t-text-xs); line-height: 1.6; }
 .li-degraded p { margin: 0; color: var(--t-amber-ink); font-size: var(--t-text-xs); line-height: 1.55; max-width: var(--t-measure); }
@@ -1442,11 +1443,11 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 /* A refusal is a DECISION with a reason, not a fault. Amber, like every other
    "there is one thing to go and do" surface on these screens -- red is kept
    for "LinkedIn would read this as spam". */
-.li-gate-refusal { margin-top: 12px; border: 1px solid var(--t-amber-line); background: var(--amber-bg); border-radius: var(--t-r-md); padding: 13px 15px; }
+.li-gate-refusal { margin-top: 12px; border: 1px solid var(--line); border-left: 3px solid var(--amber); background: var(--panel); border-radius: var(--t-r-md); padding: 13px 15px; }
 .li-gate-refusal strong { display: flex; gap: 8px; align-items: center; font-size: var(--t-text-sm); color: var(--amber); margin-bottom: 8px; }
 .li-gate-refusal p { margin: 0 0 8px; color: var(--t-amber-ink); font-size: var(--t-text-xs); line-height: 1.6; max-width: var(--t-measure); }
 .li-gate-refusal p:last-child { margin-bottom: 0; }
-.li-queued { margin-top: 12px; border: 1px solid var(--t-green-200); background: var(--green-3); border-radius: var(--t-r-md); padding: 13px 15px; }
+.li-queued { margin-top: 12px; border: 1px solid var(--line); border-left: 3px solid var(--green); background: var(--panel); border-radius: var(--t-r-md); padding: 13px 15px; }
 .li-queued strong { display: flex; gap: 8px; align-items: center; font-size: var(--t-text-sm); color: var(--green); margin-bottom: 8px; }
 .li-queued p { margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.6; max-width: var(--t-measure); }
 .li-gate-checks { margin-top: 10px; }
@@ -1512,7 +1513,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-backlog .li-hint { margin: 9px 0 0; }
 
 /* Two steps, and the panel says so in words rather than in layout alone. */
-.li-two-step { display: grid; grid-template-columns: auto 1fr; gap: 13px; align-items: start; border: 1px solid var(--t-amber-line); background: var(--amber-bg); border-radius: var(--t-r-md); padding: 14px 16px; margin-top: 16px; }
+.li-two-step { display: grid; grid-template-columns: auto 1fr; gap: 13px; align-items: start; border: 1px solid var(--line); border-left: 3px solid var(--amber); background: var(--panel); border-radius: var(--t-r-md); padding: 14px 16px; margin-top: 16px; }
 .li-two-step > svg { color: var(--amber); }
 .li-two-step strong { display: block; font-size: var(--t-text-sm); color: var(--amber); margin-bottom: 7px; }
 .li-two-step code { background: var(--panel); border-radius: var(--t-r-xs); padding: 2px 6px; font-family: var(--t-mono); font-size: var(--t-text-xs); }
@@ -1800,16 +1801,17 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   align-items: center;
   margin-bottom: 26px;
   padding: 18px 20px;
-  border: 1px solid var(--t-green-200);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green);
   border-radius: var(--t-r-lg);
-  background: var(--green-3);
+  background: var(--panel);
 }
 .loop-block p { margin: 0; max-width: var(--t-measure); font-size: var(--t-text-lg); line-height: 1.5; }
 .loop-block p + p { margin-top: 7px; color: var(--muted); font-size: var(--t-text-xs); }
 .loop-block strong { font-weight: var(--t-w-bold); }
 .loop-block .primary-button { min-height: 44px; padding: 0 18px; font-size: var(--t-text-md); }
 /* Nothing stuck. The block keeps its shape so the screen does not jump. */
-.loop-block.is-clear { border-color: var(--line); background: var(--panel); }
+.loop-block.is-clear { border-color: var(--line); border-left-color: var(--line); background: var(--panel); }
 
 /* --- What it cost, and what it produced. ---------------------------------
    Three rows -- Spent, Sent, Produced -- one period selector reusing
@@ -1880,9 +1882,10 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   align-items: start;
   margin: 28px 0 0;
   padding: 16px 18px;
-  border: 1px solid var(--t-amber);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--t-amber);
   border-radius: var(--t-r-md);
-  background: var(--amber-bg);
+  background: var(--panel);
   color: var(--amber);
 }
 .cost-note strong { display: block; margin-bottom: 7px; font-size: var(--t-text-sm); font-weight: var(--t-w-bold); }
@@ -1897,9 +1900,9 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   display: grid;
   gap: 17px;
   padding: 20px 22px;
-  border: 1px solid var(--t-green-200);
+  border: 1px solid var(--line);
   border-radius: var(--t-r-lg);
-  background: var(--green-3);
+  background: var(--panel);
 }
 .ledger-export h3 { margin: 0 0 6px; font-size: var(--t-text-lg); font-weight: var(--t-w-bold); letter-spacing: var(--t-track-flat); }
 .ledger-export > div > p { margin: 0; max-width: var(--t-measure); color: var(--muted); font-size: var(--t-text-xs); line-height: 1.6; }
