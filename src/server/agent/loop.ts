@@ -44,7 +44,7 @@ import {
   type AgentRunRecord
 } from './runs.js';
 import { callAgentTool, listAgentTools } from './tools.js';
-import { resolveCliBackend, runHostedAgentViaCli } from './cli.js';
+import { resolveCliBackend, resolveWorkspaceCliBackend, runHostedAgentViaCli } from './cli.js';
 import { describeMissingWorkspaceModel, resolveWorkspaceModel } from './provider.js';
 
 /**
@@ -127,7 +127,7 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
 
   const maxSteps = clampSteps(input.maxSteps);
 
-  // 2. The self-hosted CLI backend, if the operator configured one.
+  // 2. The self-hosted CLI backend, if the OPERATOR configured one globally.
   //
   //    It comes BEFORE the BYOK check because it is an alternative to having a
   //    model key at all: a self-hoster who runs the agent through their own
@@ -135,7 +135,8 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
   //    one would be asking them to buy inference twice. `resolveCliBackend`
   //    throws rather than falling through when the configuration is
   //    contradictory -- notably in hosted mode, where a personal subscription
-  //    must never back other tenants' work. See cli.ts.
+  //    must never back other tenants' work. See cli.ts's module comment,
+  //    "TWO WAYS IN, TWO DIFFERENT TRUST BOUNDARIES".
   //
   //    From here the CLI owns the tool loop, so everything below -- the SDK
   //    loop, the tool table, the step ledger -- belongs to the BYOK path only.
@@ -153,8 +154,32 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
     });
   }
 
-  // 3. BYOK. Missing setup is not a failed run, it is a workspace that never
-  //    opted in, so it also predates the run row.
+  // 3. The self-hosted CLI backend, if THIS WORKSPACE configured its own --
+  //    checked only once the global path above is absent, so an operator's
+  //    deployment-wide choice always wins when both exist. Unlike step 2, this
+  //    one is available on every deployment mode INCLUDING hosted: it is
+  //    scoped to one workspace's own token backing that workspace's own runs,
+  //    which is architecturally BYOK's shape (bring your own credential), not
+  //    the one-subscription-for-every-tenant shape step 2 refuses. See the doc
+  //    comment on `resolveWorkspaceCliBackend` in cli.ts for the full
+  //    reasoning. It resolves to non-null only once the workspace has stored a
+  //    CLI + model, explicitly accepted the risk disclaimer, and stored a
+  //    token -- all three, checked there, not restated here.
+  const workspaceCli = await resolveWorkspaceCliBackend(db, input.workspaceId);
+  if (workspaceCli) {
+    return runHostedAgentViaCli(db, workspaceCli, {
+      workspaceId: input.workspaceId,
+      goal: input.goal,
+      trigger: input.trigger,
+      maxSteps,
+      scopes: HOSTED_AGENT_SCOPES,
+      systemPrompt: HOSTED_AGENT_SYSTEM_PROMPT
+    });
+  }
+
+  // 4. BYOK, checked only once neither CLI path applies. Missing setup is not
+  //    a failed run, it is a workspace that never opted in, so it also
+  //    predates the run row.
   const resolved = await resolveWorkspaceModel(db, input.workspaceId);
   if (!resolved) throw new Error(await describeMissingWorkspaceModel(db, input.workspaceId));
 

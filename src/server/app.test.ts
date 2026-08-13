@@ -594,6 +594,120 @@ describe('Trevra API on PostgreSQL', () => {
     expect(still.body.config.baseUrl).toBe('https://api.openai.com/v1');
   });
 
+  it('reports the CLI subscription setup as unset by default', async () => {
+    const agent = await agentWithSession();
+    const setup = await agent.get('/api/agent-setup').expect(200);
+    expect(setup.body.cli).toEqual({ config: null, tokenStored: false, riskAccepted: false });
+  });
+
+  it('saves the subscription CLI and model, visible before any risk is accepted', async () => {
+    const agent = await agentWithSession();
+    const saved = await agent.put('/api/agent-setup/cli-config').send({ cli: 'codex', model: 'gpt-5-codex' }).expect(200);
+    expect(saved.body.config).toEqual({ cli: 'codex', model: 'gpt-5-codex' });
+
+    const setup = await agent.get('/api/agent-setup').expect(200);
+    expect(setup.body.cli).toEqual({ config: { cli: 'codex', model: 'gpt-5-codex' }, tokenStored: false, riskAccepted: false });
+
+    await agent.put('/api/agent-setup/cli-config').send({ cli: 'gemini', model: 'x' }).expect(400);
+    await agent.put('/api/agent-setup/cli-config').send({ cli: 'claude', model: '' }).expect(400);
+  });
+
+  it('refuses to accept the CLI risk before a CLI and model are saved, then accepts and revokes in one click', async () => {
+    const agent = await agentWithSession();
+
+    const early = await agent.put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(400);
+    expect(early.body.error).toMatch(/CLI and model/i);
+
+    await agent.put('/api/agent-setup/cli-config').send({ cli: 'claude', model: 'sonnet' }).expect(200);
+
+    const accepted = await agent.put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(200);
+    expect(accepted.body.riskAccepted).toBe(true);
+    expect((await agent.get('/api/agent-setup').expect(200)).body.cli.riskAccepted).toBe(true);
+
+    // Revocable in one click: `false` clears it back to unaccepted immediately,
+    // not on the next save of something else.
+    const revoked = await agent.put('/api/agent-setup/cli-risk-accept').send({ accepted: false }).expect(200);
+    expect(revoked.body.riskAccepted).toBe(false);
+    expect((await agent.get('/api/agent-setup').expect(200)).body.cli.riskAccepted).toBe(false);
+
+    // Revoking with nothing to revoke is a harmless no-op, never a 400.
+    await agent.put('/api/agent-setup/cli-risk-accept').send({ accepted: false }).expect(200);
+  });
+
+  it('stores the subscription token write-only behind the secrets-key gate, and never returns it anywhere', async () => {
+    delete process.env.TREVRA_SECRETS_KEY;
+    const agent = await agentWithSession();
+    const refused = await agent.put('/api/agent-setup/cli-token').send({ token: 'sk-ant-oat01-should-not-store' }).expect(400);
+    expect(refused.body.error).toContain('TREVRA_SECRETS_KEY');
+
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    const token = 'sk-ant-oat01-trevra-cli-token-test-9f3c1d2b';
+    const stored = await agent.put('/api/agent-setup/cli-token').send({ token }).expect(200);
+    expect(JSON.stringify(stored.body)).not.toContain(token);
+
+    const setup = await agent.get('/api/agent-setup').expect(200);
+    expect(setup.body.cli.tokenStored).toBe(true);
+    expect(JSON.stringify(setup.body)).not.toContain(token);
+
+    const row = await db!.prepare("SELECT ciphertext FROM workspace_secrets WHERE workspace_id=? AND kind='cli_oauth_token'")
+      .get<{ ciphertext: Buffer }>(DEMO_WORKSPACE_ID);
+    expect(row?.ciphertext.toString('utf8')).not.toContain(token);
+
+    expect((await agent.delete('/api/agent-setup/cli-token').expect(200)).body.deleted).toBe(true);
+    expect((await agent.get('/api/agent-setup').expect(200)).body.cli.tokenStored).toBe(false);
+    expect((await agent.delete('/api/agent-setup/cli-token').expect(200)).body.deleted).toBe(false);
+  });
+
+  it('requires a session for every CLI subscription route', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    await resetDemoData(db);
+    const app = createApp(db);
+    await request(app).get('/api/agent-setup').expect(401);
+    await request(app).put('/api/agent-setup/cli-config').send({ cli: 'claude', model: 'sonnet' }).expect(401);
+    await request(app).put('/api/agent-setup/cli-token').send({ token: 'x' }).expect(401);
+    await request(app).delete('/api/agent-setup/cli-token').expect(401);
+    await request(app).put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(401);
+  });
+
+  // The same limiter as the auth routes and the model-key route: a subscription
+  // token is a credential endpoint too, whatever the session already proves.
+  // The demo sign-in inside `agentWithSession` already spends one of the
+  // limiter's 30 requests for this app instance, so 30 more trips it.
+  it('rate-limits the subscription token route like the other credential endpoints', async () => {
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    const agent = await agentWithSession();
+    let last: { status: number } | undefined;
+    for (let i = 0; i < 30; i += 1) {
+      last = await agent.put('/api/agent-setup/cli-token').send({ token: `trv-cli-token-rate-${i}` });
+    }
+    expect(last?.status).toBe(429);
+  });
+
+  it('keeps one workspace out of another workspace CLI subscription setup', async () => {
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    await resetDemoData(db);
+    const app = createApp(db);
+    const owner = request.agent(app);
+    await owner.post('/api/auth/demo').expect(200);
+    await owner.put('/api/agent-setup/cli-config').send({ cli: 'claude', model: 'sonnet' }).expect(200);
+    await owner.put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(200);
+    const token = 'sk-ant-oat01-owned-by-demo-workspace';
+    await owner.put('/api/agent-setup/cli-token').send({ token }).expect(200);
+
+    const intruder = request.agent(app);
+    await intruder.post('/api/auth/sign-up/email')
+      .send({ name: 'Other Founder', email: `other-cli-${Date.now()}@example.com`, password: 'correct-horse-battery-staple' })
+      .expect(200);
+    const theirs = await intruder.get('/api/agent-setup').expect(200);
+    expect(theirs.body.cli).toEqual({ config: null, tokenStored: false, riskAccepted: false });
+    expect(JSON.stringify(theirs.body)).not.toContain(token);
+    expect((await intruder.delete('/api/agent-setup/cli-token').expect(200)).body.deleted).toBe(false);
+
+    const still = await owner.get('/api/agent-setup').expect(200);
+    expect(still.body.cli).toEqual({ config: { cli: 'claude', model: 'sonnet' }, tokenStored: true, riskAccepted: true });
+  });
+
   it('reads agent runs and stops them whatever the budget says', async () => {
     const agent = await agentWithSession();
     expect((await agent.get('/api/agent-runs').expect(200)).body.runs).toEqual([]);

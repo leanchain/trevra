@@ -51,6 +51,7 @@ import {
   createPolicy,
   createConnectSession,
   ApiError,
+  deleteAgentCliToken,
   disconnectIntegration,
   deleteAgentKey,
   deletePolicy,
@@ -69,9 +70,12 @@ import {
   revokeAgentToken,
   runAutomation,
   saveAgentBudget,
+  saveAgentCliConfig,
+  saveAgentCliToken,
   saveAgentKey,
   saveAgentModelConfig,
   saveAgentSchedule,
+  setAgentCliRiskAccepted,
   snoozeRecommendation,
   startAgentRun,
   startDemoSession,
@@ -1002,6 +1006,13 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
   const [goal, setGoal] = useState('');
   const [every, setEvery] = useState('1440');
   const [confirmRemoveKey, setConfirmRemoveKey] = useState(false);
+  // The third way to run the hosted agent: a workspace's own Claude/Codex
+  // subscription (docs/cli-agent-and-hosted.md). Mirrors the BYOK state above.
+  const [cliKind, setCliKind] = useState<'claude' | 'codex'>('claude');
+  const [cliModel, setCliModel] = useState('');
+  const [cliToken, setCliToken] = useState('');
+  const [replacingCliToken, setReplacingCliToken] = useState(false);
+  const [confirmRemoveCliToken, setConfirmRemoveCliToken] = useState(false);
 
   useEffect(() => {
     void getAgentSetup()
@@ -1015,6 +1026,10 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
         if (next.schedule) {
           setGoal(next.schedule.goal ?? '');
           if (next.schedule.intervalMinutes > 0) setEvery(String(next.schedule.intervalMinutes));
+        }
+        if (next.cli.config) {
+          setCliKind(next.cli.config.cli);
+          setCliModel(next.cli.config.model);
         }
       })
       .catch(() => undefined)
@@ -1033,6 +1048,37 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
     } catch (error) {
       setProblem(agentSetupMessage(error, 'Could not remove the key'));
     } finally { setBusy(''); setConfirmRemoveKey(false); }
+  };
+
+  const removeCliToken = async () => {
+    setBusy('cli-token-remove');
+    setProblem('');
+    try {
+      await deleteAgentCliToken();
+      setSetup((current) => current && { ...current, cli: { ...current.cli, tokenStored: false } });
+      setCliToken('');
+      setReplacingCliToken(false);
+      setToast('Subscription token removed here. If you are unsure why, revoke the session at your provider too.');
+    } catch (error) {
+      setProblem(agentSetupMessage(error, 'Could not remove the subscription token'));
+    } finally { setBusy(''); setConfirmRemoveCliToken(false); }
+  };
+
+  // Its own write, not part of Save, for the same reason the spend and
+  // schedule switches are: revoking consent must take effect in one click, and
+  // must never be a side effect of saving something else.
+  const setCliRisk = async (accepted: boolean) => {
+    setBusy('cli-risk');
+    setProblem('');
+    try {
+      const riskAccepted = await setAgentCliRiskAccepted(accepted);
+      setSetup((current) => current && { ...current, cli: { ...current.cli, riskAccepted } });
+      setToast(accepted
+        ? 'Risk accepted. You can now store a subscription token below.'
+        : 'Risk acceptance withdrawn. The subscription CLI will not run until you accept it again.');
+    } catch (error) {
+      setProblem(agentSetupMessage(error, 'Could not change the risk acceptance'));
+    } finally { setBusy(''); }
   };
 
   // Its own write, not part of Save: an off switch that needs a second click
@@ -1121,13 +1167,28 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
   const dirtyCap = capValid && capCents !== budget.monthlyCapCents;
   const dirtySchedule = hasSchedule && Boolean(schedule)
     && (goal.trim() !== (schedule?.goal ?? '') || Number(every) !== schedule?.intervalMinutes);
-  const dirty = dirtyConfig || dirtyKey || dirtyCap || dirtySchedule;
+
+  const cliSetup = setup.cli;
+  const dirtyCliConfig = cliSetup.config
+    ? cliKind !== cliSetup.config.cli || cliModel.trim() !== cliSetup.config.model
+    : Boolean(cliModel.trim());
+  // Saved and not currently being edited -- the same gate the schedule toggle
+  // below uses on its own goal ("disabled={... || !goal.trim() || dirtySchedule}"):
+  // there is nothing to accept the risk of until a CLI and a model are on
+  // record, and editing them mid-flight should not leave a stale acceptance
+  // pointed at a config that no longer matches what is on screen.
+  const cliConfigSaved = Boolean(cliSetup.config) && !dirtyCliConfig;
+  const dirtyCliToken = cliSetup.riskAccepted && cliToken.trim().length > 0;
+
+  const dirty = dirtyConfig || dirtyKey || dirtyCap || dirtySchedule || dirtyCliConfig || dirtyCliToken;
 
   const pendingLabels = [
     dirtyConfig ? 'the endpoint' : null,
     dirtyKey ? (secret ? 'the replacement key' : 'your key') : null,
     dirtyCap ? 'the cap' : null,
-    dirtySchedule ? 'the standing job' : null
+    dirtySchedule ? 'the standing job' : null,
+    dirtyCliConfig ? 'the subscription CLI' : null,
+    dirtyCliToken ? (cliSetup.tokenStored ? 'the replacement subscription token' : 'your subscription token') : null
   ].filter((entry): entry is string => entry !== null);
 
   /**
@@ -1146,6 +1207,10 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
     }
     if (dirtyConfig && (!baseUrl.trim() || !model.trim())) {
       setProblem('The endpoint needs both an address and a model name. Nothing was saved.');
+      return;
+    }
+    if (dirtyCliConfig && !cliModel.trim()) {
+      setProblem('Name the model your subscription CLI should use. Nothing was saved.');
       return;
     }
     setBusy('save');
@@ -1177,6 +1242,18 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
         setSetup((current) => current && { ...current, schedule: next });
         done.push('the standing job');
       }
+      if (dirtyCliConfig) {
+        const next = await saveAgentCliConfig({ cli: cliKind, model: cliModel.trim() });
+        setSetup((current) => current && { ...current, cli: { ...current.cli, config: next } });
+        done.push('the subscription CLI');
+      }
+      if (dirtyCliToken) {
+        await saveAgentCliToken({ token: cliToken.trim() });
+        setSetup((current) => current && { ...current, cli: { ...current.cli, tokenStored: true } });
+        setCliToken('');
+        setReplacingCliToken(false);
+        done.push('your subscription token');
+      }
       setToast(done.length > 0 ? `Saved ${andList(done)}.` : 'Nothing had changed, so nothing was saved.');
     } catch (error) {
       setProblem(`${agentSetupMessage(error, 'Could not save that')}${done.length > 0
@@ -1197,16 +1274,24 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
       ? `Last ran ${formatMoment(schedule.lastRunAt) ?? 'earlier'}${nextRun ? ` · next ${nextRun}` : ''}.`
       : `On. It has not run yet${nextRun ? ` — first run ${nextRun}` : ''}.`;
 
+  // Two independent ways to be ready to run: a stored key against a configured
+  // endpoint (BYOK), or a fully accepted subscription CLI. Either is enough --
+  // this only asks for both when neither is done.
+  const byokReady = Boolean(config && secret);
+  const cliReady = Boolean(cliSetup.config && cliSetup.riskAccepted && cliSetup.tokenStored);
+
   // Each blocker names the next action, in the order you have to do them. The
   // unsaved case is first, because a run against a half-typed endpoint is a
   // run against the old one and the operator would read the result as the new.
+  // The budget check applies whichever path runs it: a subscription CLI costs
+  // no marginal dollars, but Trevra still charges it a notional amount and
+  // still checks the cap, so a run through it is still gated by spending.
   const runBlocker = dirty ? `Save ${andList(pendingLabels)} first — a run uses what is stored, not what is typed.`
-    : !config ? 'Add the endpoint and model first.'
-      : !secret ? 'Store your key first.'
-        : !budget.enabled ? 'Switch spending on first — a run costs money at your provider.'
-          : capReached ? `This month’s ${usd(budget.monthlyCapCents)} is used up. Raise the cap to run again.`
-            : !goal.trim() ? 'Write what it should work on first.'
-              : null;
+    : (!byokReady && !cliReady) ? 'Add the endpoint and model, or set up your subscription CLI below, first.'
+      : !budget.enabled ? 'Switch spending on first — a run costs money at your provider.'
+        : capReached ? `This month’s ${usd(budget.monthlyCapCents)} is used up. Raise the cap to run again.`
+          : !goal.trim() ? 'Write what it should work on first.'
+            : null;
 
   const goalField = (label: string) => <label>{label}<textarea
     rows={2}
@@ -1300,6 +1385,86 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
         {secret && <div className="byok-key-actions">
           <button className="ghost-button" onClick={() => { setReplacingKey(false); setApiKey(''); }}>Cancel the replacement</button>
         </div>}
+      </>}
+    </div>
+
+    <div className="byok-block">
+      <div className="byok-block-head">
+        <div>
+          <h4 aria-level={3}><Terminal size={15} /> Or run it through your own Claude/Codex subscription</h4>
+          <p>Instead of a metered model key, Trevra can drive this workspace's own Claude Code or Codex subscription. Same limits, same run ledger, same rule that nothing sends itself — this only changes what pays for the tokens.</p>
+        </div>
+        <span className="status-pill">{cliSetup.tokenStored
+          ? `${cliSetup.config?.cli === 'codex' ? 'Codex' : 'Claude'} subscription connected`
+          : cliSetup.riskAccepted ? 'Risk accepted' : cliConfigSaved ? 'Needs risk acceptance' : 'Not set up'}</span>
+      </div>
+
+      <div className="byok-warning">
+        <CircleAlert size={18} />
+        <div>
+          <strong>Read this before you accept it below.</strong>
+          <p>This uses this workspace's own personal Claude or Codex subscription, not a metered API plan. Automated, server-side use of a personal subscription may itself violate that subscription's own consumer terms, independent of anything Trevra does — and the account could be suspended for it. That risk has nothing to do with Trevra and Trevra cannot mitigate it; it is the workspace's own to weigh, for its own subscription.</p>
+        </div>
+      </div>
+
+      <div className="byok-fields byok-fields-schedule">
+        <label>Which subscription<select value={cliKind} onChange={(event) => setCliKind(event.target.value as 'claude' | 'codex')}>
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select></label>
+        <label>Model<input
+          value={cliModel}
+          onChange={(event) => setCliModel(event.target.value)}
+          placeholder="the model name your subscription CLI uses"
+          autoComplete="off"
+          spellCheck={false}
+        /></label>
+      </div>
+      <p className="byok-meter-copy">{cliSetup.config
+        ? `Saved: ${cliSetup.config.cli === 'codex' ? 'Codex' : 'Claude'}, ${cliSetup.config.model}.${dirtyCliConfig ? ' Edited since — Save at the bottom.' : ''}`
+        : 'Choose a CLI and a model, then save at the bottom.'}</p>
+
+      <label className="byok-risk-check">
+        <input
+          type="checkbox"
+          checked={cliSetup.riskAccepted}
+          disabled={busy === 'cli-risk' || !cliConfigSaved}
+          onChange={(event) => void setCliRisk(event.target.checked)}
+        />
+        <span>I understand this uses this workspace's own Claude or Codex subscription, not a metered plan. Automated, server-side use like this may itself violate that subscription's own consumer terms, independent of anything Trevra does, and the account could be suspended for it. This workspace is accepting that risk for its own subscription.</span>
+      </label>
+      {!cliConfigSaved && <p className="byok-meter-copy">Save the subscription CLI and model above first — there is nothing to accept the risk of yet.</p>}
+
+      {cliSetup.riskAccepted && <>
+        {cliSetup.tokenStored && !replacingCliToken ? <div className="byok-key-stored">
+          <span className="byok-key-mask"><KeyRound size={16} /> Subscription token stored</span>
+          <span />
+          <div className="byok-key-actions">
+            <button className="secondary-button" onClick={() => setReplacingCliToken(true)}>Replace</button>
+            {/* Removal is destructive and irreversible, so it is its own act with
+                its own confirmation, same as the model key above. Not folded into Save. */}
+            <button className="ghost-button danger" disabled={busy === 'cli-token-remove'} onClick={() => setConfirmRemoveCliToken(true)}>
+              {busy === 'cli-token-remove' ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />} Remove
+            </button>
+          </div>
+        </div> : <>
+          <div className="byok-fields byok-fields-one">
+            <label>{cliSetup.tokenStored ? 'New subscription token' : 'Paste your subscription token'}<input
+              type="password"
+              value={cliToken}
+              onChange={(event) => setCliToken(event.target.value)}
+              placeholder="Paste it here"
+              autoComplete="off"
+              spellCheck={false}
+            /></label>
+          </div>
+          <p className="byok-meter-copy">{cliSetup.tokenStored
+            ? 'This replaces the stored token here when you save. The old session keeps working at your provider until you sign it out there.'
+            : 'Trevra stores it encrypted and keeps it out of every log, error and transcript. There is no screen anywhere that can display it back to you.'}</p>
+          {cliSetup.tokenStored && <div className="byok-key-actions">
+            <button className="ghost-button" onClick={() => { setReplacingCliToken(false); setCliToken(''); }}>Cancel the replacement</button>
+          </div>}
+        </>}
       </>}
     </div>
 
@@ -1403,6 +1568,20 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
       busy={busy === 'key-remove'}
       onCancel={() => setConfirmRemoveKey(false)}
       onConfirm={() => void removeKey()}
+    />}
+
+    {confirmRemoveCliToken && <ConfirmDrawer
+      title="Remove this subscription token from Trevra?"
+      tone="danger"
+      body={<>
+        <p>Trevra deletes its encrypted copy of the token. Nothing here can read a token back out, so there is nothing to restore — you would have to create and paste a new one.</p>
+        <p>The subscription CLI stops running this workspace's agent at its next step. Your own agent above and Trevra's key-based agent, if either is set up, are unaffected.</p>
+        <p><strong>This does not sign the session out at Claude or OpenAI.</strong> If it may have leaked, revoke it there as well.</p>
+      </>}
+      confirmLabel="Remove this token"
+      busy={busy === 'cli-token-remove'}
+      onCancel={() => setConfirmRemoveCliToken(false)}
+      onConfirm={() => void removeCliToken()}
     />}
   </section>;
 }

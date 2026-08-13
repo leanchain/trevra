@@ -91,11 +91,18 @@ import { secretsConfigured } from './secrets/crypto.js';
 // readWorkspaceSecretPlaintext is deliberately NOT imported here. Section 3 of
 // docs/byok-and-hosted-agent.md: no API route returns plaintext, and there is
 // no reveal endpoint, for anyone. The HTTP layer only ever sees last4/label.
+// The same discipline applies to 'cli_oauth_token' -- it is a third kind in
+// the same table, sealed by the same crypto path, and readWorkspaceSecretPlaintext
+// stays unimported for it too.
 import {
   deleteWorkspaceSecret,
+  describeWorkspaceSecret,
   getWorkspaceAgentSetup,
+  getWorkspaceCliAgentConfig,
   putWorkspaceAgentConfig,
-  putWorkspaceSecret
+  putWorkspaceCliAgentConfig,
+  putWorkspaceSecret,
+  setWorkspaceCliRiskAccepted
 } from './secrets/store.js';
 import {
   LINKEDIN_CREDENTIALS_HOSTED_REFUSAL,
@@ -789,15 +796,32 @@ export function createApp(db: Db) {
   // instead of letting the crypto layer throw a 500 at the operator.
   app.get('/api/agent-setup', async (req: AuthedRequest, res, next) => {
     try {
-      const [setup, budget, schedule] = await Promise.all([
+      const [setup, budget, schedule, cliConfig, cliToken] = await Promise.all([
         getWorkspaceAgentSetup(db, req.auth!.workspaceId),
         getAgentBudget(db, req.auth!.workspaceId),
-        getAgentSchedule(db, req.auth!.workspaceId)
+        getAgentSchedule(db, req.auth!.workspaceId),
+        getWorkspaceCliAgentConfig(db, req.auth!.workspaceId),
+        describeWorkspaceSecret(db, req.auth!.workspaceId, 'cli_oauth_token')
       ]);
       res.setHeader('Cache-Control', 'no-store');
       // `schedule` is null for a workspace that never configured one, which is
       // the same shape `config` and `secret` use for "never opted in".
-      res.json({ available: secretsConfigured(), config: setup.config, secret: setup.secret, budget, schedule });
+      //
+      // `cli` never carries the token itself, same discipline as `secret`
+      // above -- `tokenStored` and `riskAccepted` are booleans a screen can act
+      // on, not anything decrypted.
+      res.json({
+        available: secretsConfigured(),
+        config: setup.config,
+        secret: setup.secret,
+        budget,
+        schedule,
+        cli: {
+          config: cliConfig ? { cli: cliConfig.cli, model: cliConfig.model } : null,
+          tokenStored: cliToken !== null,
+          riskAccepted: cliConfig?.riskAcceptedAt != null
+        }
+      });
     } catch (error) { next(error); }
   });
 
@@ -848,6 +872,70 @@ export function createApp(db: Db) {
     try {
       const deleted = await deleteWorkspaceSecret(db, req.auth!.workspaceId, 'model_api_key', req.auth!.userId);
       res.json({ deleted });
+    } catch (error) { next(error); }
+  });
+
+  // The third way to run the hosted agent: a workspace's own Claude/Codex
+  // subscription, opted into per workspace (docs/cli-agent-and-hosted.md).
+  // Mirrors the BYOK routes just above in every discipline that applies --
+  // write-only token, no reveal, Cache-Control: no-store on anything
+  // secret-adjacent -- and adds one more: the risk disclaimer gate, which is
+  // its own route so it is revocable in one click and never implied by saving
+  // config or a token.
+  app.put('/api/agent-setup/cli-config', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = agentCliConfigSchema.parse(req.body ?? {});
+      const config = await putWorkspaceCliAgentConfig(db, {
+        workspaceId: req.auth!.workspaceId,
+        cli: input.cli,
+        model: input.model
+      });
+      res.json({ config: { cli: config.cli, model: config.model } });
+    } catch (error) { next(error); }
+  });
+
+  // Rate-limited and gated the same as /api/agent-setup/key: a subscription
+  // token is a credential endpoint too, whatever the session already proves,
+  // and this deployment must be able to encrypt it before it accepts one.
+  app.put('/api/agent-setup/cli-token', authLimiter, async (req: AuthedRequest, res, next) => {
+    try {
+      if (!secretsConfigured()) {
+        return res.status(400).json({
+          error: 'This server has no TREVRA_SECRETS_KEY configured, so it cannot encrypt a CLI subscription token. '
+            + 'Generate one with `openssl rand -base64 32`, set it in the environment, and restart.'
+        });
+      }
+      const input = agentCliTokenSchema.parse(req.body ?? {});
+      await putWorkspaceSecret(db, {
+        workspaceId: req.auth!.workspaceId,
+        kind: 'cli_oauth_token',
+        plaintext: input.token,
+        actorUserId: req.auth!.userId
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ tokenStored: true });
+    } catch (error) { next(error); }
+  });
+
+  app.delete('/api/agent-setup/cli-token', async (req: AuthedRequest, res, next) => {
+    try {
+      const deleted = await deleteWorkspaceSecret(db, req.auth!.workspaceId, 'cli_oauth_token', req.auth!.userId);
+      res.json({ deleted });
+    } catch (error) { next(error); }
+  });
+
+  // Its own isolated write, deliberately -- see the doc comment on
+  // `setWorkspaceCliRiskAccepted`. `accepted: true` 400s when there is no CLI
+  // + model saved yet (nothing to accept the risk of); `accepted: false` is
+  // always a harmless no-op, so revoking consent is never blocked by anything.
+  app.put('/api/agent-setup/cli-risk-accept', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = agentCliRiskAcceptSchema.parse(req.body ?? {});
+      const config = await setWorkspaceCliRiskAccepted(db, req.auth!.workspaceId, input.accepted);
+      if (!config && input.accepted) {
+        return res.status(400).json({ error: 'Save your CLI and model first, then accept the risk.' });
+      }
+      res.json({ riskAccepted: config?.riskAcceptedAt != null });
     } catch (error) { next(error); }
   });
 
@@ -2815,6 +2903,29 @@ const AGENT_CONFIG_INPUT_ERROR = /^(baseUrl |model is required)/;
 const agentKeySchema = z.object({
   apiKey: z.string().trim().min(1).max(500),
   label: z.string().trim().max(120).optional()
+});
+
+/** The workspace's choice of subscription CLI and model -- docs/cli-agent-and-hosted.md. */
+const agentCliConfigSchema = z.object({
+  cli: z.enum(['claude', 'codex']),
+  model: z.string().trim().min(1).max(200)
+});
+
+/**
+ * The pasted subscription OAuth token.
+ *
+ * Same bounds-only discipline as `agentKeySchema`, for the same reason:
+ * section 3 of docs/byok-and-hosted-agent.md applies to this table's second
+ * kind exactly as it did to the first, and a `.regex()`/`.refine()` is one
+ * more place the value could be echoed back in a validation error.
+ */
+const agentCliTokenSchema = z.object({
+  token: z.string().trim().min(1).max(2000)
+});
+
+/** The risk disclaimer toggle. Both directions are always well-formed: accepting and revoking are equally valid requests. */
+const agentCliRiskAcceptSchema = z.object({
+  accepted: z.boolean()
 });
 
 /** Section 5: $10,000/month ceiling, so a typo cannot become a real bill. */

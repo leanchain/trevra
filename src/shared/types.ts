@@ -376,6 +376,24 @@ export interface AgentSchedule {
 }
 
 /**
+ * A workspace's own Claude/Codex subscription, opted into per workspace as a
+ * third way to run the hosted agent alongside BYOK. `config` is null until the
+ * workspace has chosen a CLI and a model; `tokenStored`/`riskAccepted` are
+ * booleans a screen can act on, never the token or a reveal of it -- see
+ * docs/cli-agent-and-hosted.md.
+ */
+export interface AgentCliConfig {
+  cli: 'claude' | 'codex';
+  model: string;
+}
+
+export interface AgentCliSetup {
+  config: AgentCliConfig | null;
+  tokenStored: boolean;
+  riskAccepted: boolean;
+}
+
+/**
  * `available: false` means this deployment holds no secrets key, so BYOK is
  * off rather than half-working. `schedule` is optional on purpose: a build
  * without the schedule route omits the field entirely, and the screen hides
@@ -387,6 +405,7 @@ export interface AgentSetup {
   secret: AgentKeySummary | null;
   budget: AgentBudget;
   schedule?: AgentSchedule | null;
+  cli: AgentCliSetup;
 }
 
 /** One row of the skill ledger, as served by `/api/skill-runs/:id`. */

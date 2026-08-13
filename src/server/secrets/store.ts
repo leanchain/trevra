@@ -36,9 +36,20 @@ import { openSecret, sealSecret } from './crypto.js';
  * The hosted gate that decides whether the LinkedIn kinds may be written at all
  * lives in `secrets/linkedin.ts`, not here: this module seals bytes, it does
  * not hold deployment policy.
+ *
+ * `cli_oauth_token` is a THIRD widening, and also deliberate and once: a
+ * workspace's own Claude/Codex subscription OAuth token, opted into per
+ * workspace so the hosted agent can run through it instead of a model key.
+ * This is a new decision with a new threat model, same as the LinkedIn pair
+ * was -- see the doc comment on `resolveWorkspaceCliBackend` in
+ * `agent/cli.ts` for what it is and why per-workspace scoping is what makes it
+ * acceptable where the global-env CLI path is not. The gate that decides
+ * whether this kind may be USED lives there and in
+ * `workspace_cli_agent_config.risk_accepted_at` (migration 042), not here.
  */
 export type WorkspaceSecretKind =
   | 'model_api_key'
+  | 'cli_oauth_token'
   | 'linkedin.email'
   | 'linkedin.password'
   | 'reddit.username'
@@ -63,6 +74,10 @@ export type WorkspaceSecretKind =
  */
 const KIND_DISPLAY: Record<WorkspaceSecretKind, 'last4' | 'opaque'> = {
   model_api_key: 'last4',
+  // A subscription OAuth token is structurally the same kind of value as an
+  // API key for this purpose: long, opaque, and safely nicknamed by its last
+  // four characters without guessing anything about the rest of it.
+  cli_oauth_token: 'last4',
   'linkedin.email': 'opaque',
   'linkedin.password': 'opaque',
   // The Reddit pair, added for the same reason and under the same gate as the
@@ -90,6 +105,15 @@ export interface WorkspaceAgentConfig {
   updatedAt: string;
 }
 
+/** A workspace's own Claude/Codex subscription config -- see migration 042. */
+export interface WorkspaceCliAgentConfig {
+  cli: 'claude' | 'codex';
+  model: string;
+  /** Null until the workspace has explicitly accepted the risk disclaimer. */
+  riskAcceptedAt: string | null;
+  updatedAt: string;
+}
+
 export interface WorkspaceAgentSetup {
   config: WorkspaceAgentConfig | null;
   secret: WorkspaceSecretSummary | null;
@@ -104,6 +128,11 @@ const SECRET_COLUMNS = `
 `;
 const CONFIG_COLUMNS = `
   base_url, model, label,
+  TO_CHAR(updated_at AT TIME ZONE 'UTC', ${ISO}) AS updated_at
+`;
+const CLI_CONFIG_COLUMNS = `
+  cli, model,
+  TO_CHAR(risk_accepted_at AT TIME ZONE 'UTC', ${ISO}) AS risk_accepted_at,
   TO_CHAR(updated_at AT TIME ZONE 'UTC', ${ISO}) AS updated_at
 `;
 
@@ -253,6 +282,69 @@ export async function getWorkspaceAgentConfig(db: Db, workspaceId: string): Prom
   return row ? serializeConfig(row) : null;
 }
 
+/**
+ * Save the workspace's chosen CLI + model. Deliberately does NOT touch
+ * `risk_accepted_at` -- an upsert here is config, not consent, and consent
+ * must never be a side effect of saving something else (see
+ * `setWorkspaceCliRiskAccepted`).
+ */
+export async function putWorkspaceCliAgentConfig(
+  db: Db,
+  input: { workspaceId: string; cli: 'claude' | 'codex'; model: string }
+): Promise<WorkspaceCliAgentConfig> {
+  const model = typeof input.model === 'string' ? input.model.trim() : '';
+  if (!model) throw new Error('model is required');
+  const now = new Date().toISOString();
+
+  const row = await db.prepare(`
+    INSERT INTO workspace_cli_agent_config (workspace_id,cli,model,updated_at)
+    VALUES (?,?,?,?)
+    ON CONFLICT (workspace_id) DO UPDATE SET
+      cli=EXCLUDED.cli,
+      model=EXCLUDED.model,
+      updated_at=EXCLUDED.updated_at
+    RETURNING ${CLI_CONFIG_COLUMNS}
+  `).get<Record<string, unknown>>(input.workspaceId, input.cli, model, now);
+  if (!row) throw new Error('Failed to store the workspace CLI agent configuration');
+  return serializeCliConfig(row);
+}
+
+export async function getWorkspaceCliAgentConfig(db: Db, workspaceId: string): Promise<WorkspaceCliAgentConfig | null> {
+  const row = await db
+    .prepare(`SELECT ${CLI_CONFIG_COLUMNS} FROM workspace_cli_agent_config WHERE workspace_id=?`)
+    .get<Record<string, unknown>>(workspaceId);
+  return row ? serializeCliConfig(row) : null;
+}
+
+/**
+ * Accept or revoke the CLI risk disclaimer. Its own write, on purpose -- same
+ * reasoning as the spend and schedule toggles: "an off switch that needs a
+ * second click to take effect is not an off switch", and the same logic
+ * applies to consent in the other direction. `accepted: false` clears
+ * `risk_accepted_at` back to NULL rather than leaving a stale timestamp next
+ * to a boolean, so re-accepting always means seeing the disclaimer again, not
+ * flipping a switch back.
+ *
+ * There must be a config row (a CLI and a model already chosen) before there
+ * is anything to accept the risk OF. Returns null when there is no row; the
+ * route turns that into a 400 for `accepted: true` and a harmless no-op 200
+ * for `accepted: false`.
+ */
+export async function setWorkspaceCliRiskAccepted(
+  db: Db,
+  workspaceId: string,
+  accepted: boolean
+): Promise<WorkspaceCliAgentConfig | null> {
+  const now = new Date().toISOString();
+  const row = await db.prepare(`
+    UPDATE workspace_cli_agent_config
+    SET risk_accepted_at=?, updated_at=?
+    WHERE workspace_id=?
+    RETURNING ${CLI_CONFIG_COLUMNS}
+  `).get<Record<string, unknown>>(accepted ? now : null, now, workspaceId);
+  return row ? serializeCliConfig(row) : null;
+}
+
 /** Everything the UI may know about a workspace's BYOK setup, and nothing more. */
 export async function getWorkspaceAgentSetup(db: Db, workspaceId: string): Promise<WorkspaceAgentSetup> {
   const [config, secret] = await Promise.all([
@@ -370,6 +462,15 @@ function serializeConfig(row: Record<string, unknown>): WorkspaceAgentConfig {
     baseUrl: String(row.base_url),
     model: String(row.model),
     label: row.label == null ? null : String(row.label),
+    updatedAt: String(row.updated_at)
+  };
+}
+
+function serializeCliConfig(row: Record<string, unknown>): WorkspaceCliAgentConfig {
+  return {
+    cli: String(row.cli) as 'claude' | 'codex',
+    model: String(row.model),
+    riskAcceptedAt: row.risk_accepted_at == null ? null : String(row.risk_accepted_at),
     updatedAt: String(row.updated_at)
   };
 }

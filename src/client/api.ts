@@ -1,5 +1,7 @@
 import type {
   AgentBudget,
+  AgentCliConfig,
+  AgentCliSetup,
   AgentKeySummary,
   AgentModelConfig,
   AgentRun,
@@ -350,6 +352,35 @@ export async function saveAgentSchedule(input: { enabled?: boolean; goal?: strin
     method: 'PUT', body: JSON.stringify(input)
   });
   return result.schedule;
+}
+
+/**
+ * The third way to run the hosted agent: a workspace's own Claude/Codex
+ * subscription (docs/cli-agent-and-hosted.md). Mirrors the BYOK functions
+ * above in the same discipline -- the token is write-only, and there is no
+ * companion read function because there is no route that returns one.
+ */
+export async function saveAgentCliConfig(input: { cli: 'claude' | 'codex'; model: string }): Promise<AgentCliConfig> {
+  const result = await request<{ config: AgentCliConfig }>('/api/agent-setup/cli-config', {
+    method: 'PUT', body: JSON.stringify(input)
+  });
+  return result.config;
+}
+
+export async function saveAgentCliToken(input: { token: string }): Promise<void> {
+  await request('/api/agent-setup/cli-token', { method: 'PUT', body: JSON.stringify(input) });
+}
+
+export async function deleteAgentCliToken(): Promise<void> {
+  await request('/api/agent-setup/cli-token', { method: 'DELETE' });
+}
+
+/** Its own immediate-effect call, like {@link saveAgentBudget}'s `enabled` flip -- see the server-side doc comment on `setWorkspaceCliRiskAccepted`. */
+export async function setAgentCliRiskAccepted(accepted: boolean): Promise<AgentCliSetup['riskAccepted']> {
+  const result = await request<{ riskAccepted: boolean }>('/api/agent-setup/cli-risk-accept', {
+    method: 'PUT', body: JSON.stringify({ accepted })
+  });
+  return result.riskAccepted;
 }
 
 export async function startAgentRun(input: { goal: string; maxSteps?: number }): Promise<AgentRunSummary> {

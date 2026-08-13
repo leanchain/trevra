@@ -7,6 +7,7 @@ import { openDatabase, type Db } from '../db.js';
 import { setAgentBudget, unreportedUsageFloorCents } from './budget.js';
 import { listAgentTools } from './tools.js';
 import { putWorkspaceAgentConfig, putWorkspaceSecret } from '../secrets/store.js';
+import { resolveWorkspaceCliBackend, runHostedAgentViaCli, type CliBackend } from './cli.js';
 import { HOSTED_AGENT_SCOPES, runHostedAgent } from './loop.js';
 import { getAgentRun, stopRunningAgentRuns } from './runs.js';
 
@@ -55,6 +56,32 @@ vi.mock('./runs.js', async (importOriginal) => {
       if (stepWrite.failWith) throw stepWrite.failWith;
       return actual.appendAgentRunStep(...args);
     }
+  };
+});
+
+/**
+ * The dispatch tests below care about ORDER, not about actually spawning a
+ * CLI child process (which `resolveCliBackend`'s own env-based tests in
+ * cli.test.ts never do either). `resolveCliBackend` -- the global env path --
+ * stays real: it reads `process.env.TREVRA_AGENT_CLI`, which no test in this
+ * file sets, so it is null exactly like it always was and every existing test
+ * below is unaffected. Only the workspace-scoped half is swapped for a
+ * controllable double.
+ */
+const workspaceCli = vi.hoisted(() => ({
+  backend: null as unknown,
+  runResult: null as unknown
+}));
+
+vi.mock('./cli.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./cli.js')>();
+  return {
+    ...actual,
+    resolveWorkspaceCliBackend: vi.fn(async () => workspaceCli.backend),
+    runHostedAgentViaCli: vi.fn(async () => {
+      if (!workspaceCli.runResult) throw new Error('This test resolved a workspace CLI backend but installed no run-result double');
+      return workspaceCli.runResult;
+    })
   };
 });
 
@@ -218,6 +245,76 @@ describe('refusing before a run exists', () => {
     await expect(runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' }))
       .rejects.toThrow('The hosted agent is not set up: add a model API key in Setup.');
     expect(await runRowCount()).toBe(0);
+  });
+});
+
+/**
+ * Dispatch order (loop.ts step 2/3/4): the global env CLI path first (unchanged,
+ * and never exercised here since no test sets `TREVRA_AGENT_CLI`), then a
+ * workspace's own CLI backend, then BYOK last. See `resolveWorkspaceCliBackend`
+ * in cli.ts for why the workspace path is a different trust boundary from the
+ * global one and is checked before BYOK rather than after.
+ */
+describe('the workspace CLI backend', () => {
+  const FAKE_BACKEND: CliBackend = {
+    kind: 'claude',
+    bin: 'claude',
+    model: 'sonnet',
+    mcpCommand: ['node', '/srv/trevra/mcp.js'],
+    apiUrl: 'http://127.0.0.1:43887',
+    oauthToken: 'trv-workspace-cli-token-test',
+    home: null
+  };
+
+  beforeEach(async () => {
+    await setAgentBudget(db, WORKSPACE_ID, { enabled: true });
+    workspaceCli.backend = null;
+    workspaceCli.runResult = null;
+    vi.mocked(resolveWorkspaceCliBackend).mockClear();
+    vi.mocked(runHostedAgentViaCli).mockClear();
+  });
+
+  it('is used instead of BYOK when configured, and BYOK is never even checked', async () => {
+    // BYOK is deliberately left unconfigured for this workspace. If dispatch
+    // fell through to it instead of using the workspace CLI backend, this
+    // would throw "The hosted agent is not set up" instead of returning.
+    workspaceCli.backend = FAKE_BACKEND;
+    const fakeRecord = {
+      id: 'run_fake_workspace_cli', workspaceId: WORKSPACE_ID, status: 'completed' as const,
+      trigger: 'manual' as const, goal: 'anything', summary: 'done via the workspace subscription',
+      error: null, maxSteps: 12, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
+    };
+    workspaceCli.runResult = fakeRecord;
+
+    const result = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' });
+
+    expect(result).toEqual(fakeRecord);
+    expect(resolveWorkspaceCliBackend).toHaveBeenCalledWith(db, WORKSPACE_ID);
+    expect(runHostedAgentViaCli).toHaveBeenCalledWith(db, FAKE_BACKEND, expect.objectContaining({
+      workspaceId: WORKSPACE_ID,
+      goal: 'anything',
+      trigger: 'manual',
+      scopes: HOSTED_AGENT_SCOPES
+    }));
+    // No SDK loop ran, so no run row and no model call landed for this path --
+    // `runHostedAgentViaCli` (mocked here) owns that ledger, exactly as it does
+    // for the global env path.
+    expect(await runRowCount()).toBe(0);
+  });
+
+  it('falls through to BYOK when the workspace has none configured, same as before', async () => {
+    // workspaceCli.backend stays null (the default): resolveWorkspaceCliBackend
+    // resolves "not configured" exactly like it does for real.
+    await configureByok();
+    installModel([answer('handled by BYOK, as always')]);
+
+    const result = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' });
+
+    expect(result.status).toBe('completed');
+    expect(resolveWorkspaceCliBackend).toHaveBeenCalledWith(db, WORKSPACE_ID);
+    expect(runHostedAgentViaCli).not.toHaveBeenCalled();
+    // The real run row this time -- proof BYOK actually ran, not the double.
+    expect(await runRowCount()).toBe(1);
   });
 });
 

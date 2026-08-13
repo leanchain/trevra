@@ -226,6 +226,15 @@ no key at all. **That is the default, and it should stay the default.**
   widening it is a new decision with a new threat model.
 - Any path where an agent approves its own work. See app-spec §11.
 
+**Cross-reference, not a widening of this document's scope.** `workspace_secrets`
+now also holds `kind: 'cli_oauth_token'` — a workspace's own Claude/Codex
+subscription token, for the opt-in third way to run the hosted agent alongside
+BYOK. That *is* the new decision the line above warns about, made once and
+deliberately; it is written up in
+[docs/cli-agent-and-hosted.md](./cli-agent-and-hosted.md) and in the doc
+comment on `resolveWorkspaceCliBackend` in `src/server/agent/cli.ts`, not here
+— this document stays about the model-key secret specifically.
+
 ---
 
 ## 9. Build order — done

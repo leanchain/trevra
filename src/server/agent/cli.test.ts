@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { buildCliArgs, resolveCliBackend, type CliAgentRunInput } from './cli.js';
+import { randomBytes } from 'node:crypto';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { openDatabase, type Db } from '../db.js';
+import { deleteWorkspaceSecret, putWorkspaceCliAgentConfig, putWorkspaceSecret, setWorkspaceCliRiskAccepted } from '../secrets/store.js';
+import { buildCliArgs, resolveCliBackend, resolveWorkspaceCliBackend, type CliAgentRunInput } from './cli.js';
 
 const RUN: CliAgentRunInput = {
   workspaceId: 'ws_1',
@@ -113,5 +116,110 @@ describe('buildCliArgs', () => {
     }
     expect(buildCliArgs(claude, RUN, PATHS)).toContain(PATHS.mcpPath);
     expect(buildCliArgs(codex, RUN, PATHS).join(' ')).toContain(PATHS.tokenPath);
+  });
+});
+
+/**
+ * The workspace-scoped path: a per-workspace token, gated on explicit risk
+ * acceptance, usable on every deployment mode. Separate trust boundary from
+ * `resolveCliBackend` above -- see cli.ts's module comment and the doc
+ * comment on `resolveWorkspaceCliBackend` itself.
+ */
+describe('resolveWorkspaceCliBackend', () => {
+  const WORKSPACE_ID = 'ws_cli_workspace_backend_test';
+  const TOKEN = 'sk-ant-oat01-workspace-test-token';
+
+  let db: Db;
+  let previousSecretsKey: string | undefined;
+
+  beforeAll(async () => {
+    previousSecretsKey = process.env.TREVRA_SECRETS_KEY;
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    await db
+      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+      .run(WORKSPACE_ID, 'CLI workspace backend test', new Date().toISOString());
+  });
+
+  beforeEach(async () => {
+    await db.prepare('DELETE FROM workspace_secrets WHERE workspace_id=?').run(WORKSPACE_ID);
+    await db.prepare('DELETE FROM workspace_cli_agent_config WHERE workspace_id=?').run(WORKSPACE_ID);
+  });
+
+  afterAll(async () => {
+    await db?.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+    await db?.close();
+    if (previousSecretsKey === undefined) delete process.env.TREVRA_SECRETS_KEY;
+    else process.env.TREVRA_SECRETS_KEY = previousSecretsKey;
+  });
+
+  afterEach(() => {
+    delete process.env.TREVRA_DEPLOYMENT_MODE;
+  });
+
+  it('is null with no config at all', async () => {
+    expect(await resolveWorkspaceCliBackend(db, WORKSPACE_ID)).toBeNull();
+  });
+
+  it('is null with a config but no risk acceptance', async () => {
+    await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'claude', model: 'sonnet' });
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'cli_oauth_token', plaintext: TOKEN });
+    expect(await resolveWorkspaceCliBackend(db, WORKSPACE_ID)).toBeNull();
+  });
+
+  it('is null with risk accepted but no token stored', async () => {
+    await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'claude', model: 'sonnet' });
+    await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, true);
+    expect(await resolveWorkspaceCliBackend(db, WORKSPACE_ID)).toBeNull();
+  });
+
+  it('resolves once config, risk acceptance and a token are all present', async () => {
+    await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'codex', model: 'gpt-5-codex' });
+    await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, true);
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'cli_oauth_token', plaintext: TOKEN });
+
+    const backend = await resolveWorkspaceCliBackend(db, WORKSPACE_ID);
+    expect(backend).toMatchObject({ kind: 'codex', bin: 'codex', model: 'gpt-5-codex', oauthToken: TOKEN, home: null });
+    // The one property that matters most: nothing in the resolved shape leaks
+    // into a string an operator would see, and callers downstream (driveCli,
+    // childEnv) treat it exactly like the env path's backend.
+    expect(JSON.stringify({ kind: backend?.kind, model: backend?.model })).not.toContain(TOKEN);
+  });
+
+  it('goes null again once risk acceptance is revoked, token stored or not', async () => {
+    await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'claude', model: 'sonnet' });
+    await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, true);
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'cli_oauth_token', plaintext: TOKEN });
+    expect(await resolveWorkspaceCliBackend(db, WORKSPACE_ID)).not.toBeNull();
+
+    await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, false);
+    expect(await resolveWorkspaceCliBackend(db, WORKSPACE_ID)).toBeNull();
+  });
+
+  it('goes null once the token is deleted, even with risk still accepted', async () => {
+    await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'claude', model: 'sonnet' });
+    await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, true);
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'cli_oauth_token', plaintext: TOKEN });
+    expect(await resolveWorkspaceCliBackend(db, WORKSPACE_ID)).not.toBeNull();
+
+    await deleteWorkspaceSecret(db, WORKSPACE_ID, 'cli_oauth_token');
+    expect(await resolveWorkspaceCliBackend(db, WORKSPACE_ID)).toBeNull();
+  });
+
+  // The regression that matters most for this function: unlike the global env
+  // path (which THROWS in hosted mode), this one must resolve identically on
+  // every deployment mode, because a per-workspace token is not the thing the
+  // hosted refusal exists to stop.
+  it('resolves identically regardless of TREVRA_DEPLOYMENT_MODE', async () => {
+    await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'claude', model: 'sonnet' });
+    await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, true);
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'cli_oauth_token', plaintext: TOKEN });
+
+    for (const mode of [undefined, 'local', 'hosted']) {
+      if (mode === undefined) delete process.env.TREVRA_DEPLOYMENT_MODE;
+      else process.env.TREVRA_DEPLOYMENT_MODE = mode;
+      const backend = await resolveWorkspaceCliBackend(db, WORKSPACE_ID);
+      expect(backend).toMatchObject({ kind: 'claude', model: 'sonnet', oauthToken: TOKEN });
+    }
   });
 });

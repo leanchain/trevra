@@ -7,14 +7,36 @@
  * Trevra on their own machine had to buy inference twice.
  *
  * ---------------------------------------------------------------------------
- * SELF-HOSTED ONLY, AND THAT IS A LICENCE BOUNDARY, NOT A PREFERENCE.
+ * TWO WAYS IN, TWO DIFFERENT TRUST BOUNDARIES.
  *
- * A subscription CLI is authenticated as ONE HUMAN, under consumer terms that
- * cover that human's own use. Pointing a multi-tenant service at it so other
- * people's work is billed to one person's subscription breaches those terms
- * and gets the account terminated. `TREVRA_DEPLOYMENT_MODE=hosted` therefore
- * refuses this backend outright -- the same unconditional shape the LinkedIn
- * worker uses in `config.ts` -- and no other variable turns it back on.
+ * `resolveCliBackend()` reads GLOBAL env vars
+ * (`TREVRA_AGENT_CLI`/`TREVRA_AGENT_CLI_OAUTH_TOKEN`/...) set once by whoever
+ * runs this server process. That one credential would then drive every
+ * workspace's runs -- so on `TREVRA_DEPLOYMENT_MODE=hosted` it refuses
+ * outright, the same unconditional shape the LinkedIn worker uses in
+ * `config.ts`, and NO OTHER VARIABLE TURNS THIS PATH BACK ON. The reason is a
+ * licence boundary, not a preference: a subscription CLI is authenticated as
+ * ONE HUMAN, under consumer terms that cover that human's own use. Pointing a
+ * multi-tenant service at it so other people's work is billed to one person's
+ * subscription breaches those terms and gets the account terminated.
+ *
+ * `resolveWorkspaceCliBackend()` is a SEPARATE path added later: a workspace
+ * stores its OWN token in `workspace_cli_agent_config` /
+ * `workspace_secrets(kind='cli_oauth_token')` and explicitly accepts a risk
+ * disclaimer (`risk_accepted_at`) before it is usable. That is a different
+ * shape, not a loosening of the rule above -- it backs only that workspace's
+ * own runs with that workspace's own credential, which is architecturally the
+ * same thing BYOK already is (bring your own credential), not the
+ * one-subscription-for-every-tenant shape the hosted refusal above exists to
+ * stop. It therefore works on every deployment mode, hosted included, gated
+ * instead on the workspace's own explicit consent. See the doc comment on
+ * `resolveWorkspaceCliBackend` for the fuller threat model and
+ * docs/cli-agent-and-hosted.md for the write-up.
+ *
+ * A subscription pasted into ANY automated context can still brush against
+ * that subscription's own consumer terms independent of multi-tenancy --
+ * that residual risk is real, is the workspace's own to take, and is exactly
+ * what the risk disclaimer must say plainly before a token is ever pasted.
  * ---------------------------------------------------------------------------
  *
  * WHAT IS DIFFERENT FROM `loop.ts`. There, the AI SDK owns the tool-calling
@@ -61,6 +83,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { createAgentToken, revokeAgentToken, type AgentScope } from '../agent-access.js';
 import type { Db } from '../db.js';
+import { getWorkspaceCliAgentConfig, readWorkspaceSecretPlaintext } from '../secrets/store.js';
 import { AgentBudgetError, assertAgentBudgetAvailable, recordAgentModelCall } from './budget.js';
 import {
   appendAgentRunStep,
@@ -180,6 +203,86 @@ export function resolveCliBackend(env: NodeJS.ProcessEnv = process.env): CliBack
     apiUrl: (env.TREVRA_API_URL?.trim() || `http://127.0.0.1:${env.PORT?.trim() || '43887'}`).replace(/\/$/, ''),
     oauthToken: env.TREVRA_AGENT_CLI_OAUTH_TOKEN?.trim() || null,
     home: env.TREVRA_AGENT_CLI_HOME?.trim() || null
+  };
+}
+
+/**
+ * The workspace-scoped CLI backend -- the opt-in third way to run the hosted
+ * agent, alongside BYOK (`provider.ts`) and the operator's global env vars
+ * above. See the module comment ("TWO WAYS IN, TWO DIFFERENT TRUST
+ * BOUNDARIES") for the short version; this is the fuller one, and
+ * docs/cli-agent-and-hosted.md has the write-up.
+ *
+ * THE THREAT MODEL, IN BRIEF. What a compromise of this token gets an
+ * attacker: the ability to run the hosted agent AS THIS ONE WORKSPACE'S
+ * subscription, bounded by the same budget, ledger, scopes and kill switch
+ * every other backend is bounded by (cli.ts's own driveCli enforces those
+ * identically regardless of where the credential came from). That is exactly
+ * the blast radius a leaked BYOK model key already has -- one workspace's own
+ * credential, spent on one workspace's own runs. It is NOT the global-env
+ * path's blast radius, where a compromise (or just an honest configuration)
+ * lets ONE credential silently bill EVERY tenant on the deployment, which is
+ * the actual licence/ToS problem `resolveCliBackend`'s hosted refusal exists
+ * to stop. Per-workspace scoping is what changes the analysis: the failure
+ * mode collapses from "multi-tenant fleet backed by one stranger's
+ * subscription" to "a workspace member's own subscription, misused within
+ * their own workspace" -- ordinary BYOK-shaped risk, not a new category.
+ *
+ * docs/byok-and-hosted-agent.md section 8 says storing a new kind of secret in
+ * `workspace_secrets` is "a new decision with a new threat model, not a
+ * convenience." `cli_oauth_token` (this function's other half) is exactly
+ * that new decision, made once, here, and for the reason above -- it is
+ * explicitly OUT OF SCOPE for that document, which is about the model-key
+ * secret specifically and should not grow CLI-token content wholesale.
+ *
+ * WHAT STILL MAKES THIS "AT YOUR OWN RISK" EVEN THOUGH SCOPING FIXES THE
+ * MULTI-TENANCY PROBLEM. Pasting a personal subscription's OAuth session into
+ * any automated, server-side context can itself brush against that
+ * subscription's own consumer terms -- a risk that has nothing to do with
+ * multi-tenancy and that per-workspace scoping does not and cannot fix. That
+ * is why `risk_accepted_at` exists as an explicit, revocable, timestamped gate
+ * rather than an implicit consequence of pasting a token: the workspace is
+ * told this plainly before they can, and is accepting it for their own
+ * subscription.
+ *
+ * Returns null (never throws) for a workspace that has not opted in, has not
+ * accepted the risk, or has not stored a token -- this is a normal "not
+ * configured" state, not an error, exactly like `resolveWorkspaceModel`
+ * returning null for BYOK.
+ */
+export async function resolveWorkspaceCliBackend(
+  db: Db,
+  workspaceId: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<CliBackend | null> {
+  const config = await getWorkspaceCliAgentConfig(db, workspaceId);
+  if (!config || !config.riskAcceptedAt) return null;
+
+  const token = await readWorkspaceSecretPlaintext(db, workspaceId, 'cli_oauth_token');
+  if (!token) return null;
+
+  return {
+    kind: config.cli,
+    // Deliberately NOT `TREVRA_AGENT_CLI_BIN`: that override is paired with the
+    // operator's own single global `TREVRA_AGENT_CLI` choice, and reusing it
+    // here could point a workspace's `codex` config at a binary path the
+    // operator meant for `claude`, or vice versa. The kind IS the binary name
+    // on a normal install.
+    bin: config.cli,
+    model: config.model,
+    mcpCommand: resolveMcpCommand(env),
+    apiUrl: (env.TREVRA_API_URL?.trim() || `http://127.0.0.1:${env.PORT?.trim() || '43887'}`).replace(/\/$/, ''),
+    // The one field that differs in kind from the env path: a token read out
+    // of `workspace_secrets` at resolve time rather than out of the
+    // environment. From here it flows through the exact same `childEnv` /
+    // `driveCli` / `buildCliArgs` code the env path uses -- nothing downstream
+    // knows or cares where it came from.
+    oauthToken: token,
+    // No mounted-credential-directory equivalent for a workspace: `home` is a
+    // machine-level escape hatch for an operator who would rather bind-mount
+    // `~/.claude`/`~/.codex` than hold a token, and a workspace has no
+    // filesystem of its own to mount from.
+    home: null
   };
 }
 

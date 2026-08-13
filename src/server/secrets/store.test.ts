@@ -6,9 +6,12 @@ import {
   describeWorkspaceSecret,
   getWorkspaceAgentConfig,
   getWorkspaceAgentSetup,
+  getWorkspaceCliAgentConfig,
   putWorkspaceAgentConfig,
+  putWorkspaceCliAgentConfig,
   putWorkspaceSecret,
-  readWorkspaceSecretPlaintext
+  readWorkspaceSecretPlaintext,
+  setWorkspaceCliRiskAccepted
 } from './store.js';
 
 // Unique to this file so parallel test files cannot collide on fixtures.
@@ -35,6 +38,7 @@ beforeEach(async () => {
   for (const workspaceId of [WORKSPACE_ID, OTHER_WORKSPACE_ID]) {
     await db.prepare('DELETE FROM workspace_secrets WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM workspace_agent_config WHERE workspace_id=?').run(workspaceId);
+    await db.prepare('DELETE FROM workspace_cli_agent_config WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM audit_events WHERE workspace_id=?').run(workspaceId);
   }
 });
@@ -269,5 +273,108 @@ describe('workspace agent config', () => {
     expect(setup.config).toEqual(updated);
     expect(setup.secret?.last4).toBe('8017');
     expect(JSON.stringify(setup)).not.toContain(API_KEY);
+  });
+});
+
+// The third widening (module comment on WorkspaceSecretKind): a workspace's
+// own Claude/Codex subscription token. Same crypto path, same table, same
+// round-trip guarantees as 'model_api_key' -- this is the regression that
+// matters, so it mirrors the first test in this file closely.
+describe('workspace secrets: cli_oauth_token', () => {
+  const TOKEN = 'sk-ant-oat01-example-9f3c1d2b4a6e8017';
+
+  it('stores a subscription token and describes it without ever handing back the value', async () => {
+    const summary = await putWorkspaceSecret(db, {
+      workspaceId: WORKSPACE_ID,
+      kind: 'cli_oauth_token',
+      plaintext: TOKEN,
+      actorUserId: USER_ID
+    });
+
+    expect(summary).toMatchObject({ kind: 'cli_oauth_token', last4: '8017', keyVersion: 1 });
+
+    const described = await describeWorkspaceSecret(db, WORKSPACE_ID, 'cli_oauth_token');
+    expect(described).toEqual(summary);
+    expect(JSON.stringify(described)).not.toContain(TOKEN);
+
+    expect(await readWorkspaceSecretPlaintext(db, WORKSPACE_ID, 'cli_oauth_token')).toBe(TOKEN);
+  });
+
+  it('is a separate row from a model_api_key stored for the same workspace', async () => {
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'model_api_key', plaintext: API_KEY });
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'cli_oauth_token', plaintext: TOKEN });
+
+    expect(await readWorkspaceSecretPlaintext(db, WORKSPACE_ID, 'model_api_key')).toBe(API_KEY);
+    expect(await readWorkspaceSecretPlaintext(db, WORKSPACE_ID, 'cli_oauth_token')).toBe(TOKEN);
+
+    const count = await db
+      .prepare('SELECT COUNT(*)::int AS total FROM workspace_secrets WHERE workspace_id=?')
+      .get<{ total: number }>(WORKSPACE_ID);
+    expect(count?.total).toBe(2);
+  });
+
+  it('deletes independently of the model key, and scopes to its workspace', async () => {
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'cli_oauth_token', plaintext: TOKEN });
+    expect(await describeWorkspaceSecret(db, OTHER_WORKSPACE_ID, 'cli_oauth_token')).toBeNull();
+
+    expect(await deleteWorkspaceSecret(db, WORKSPACE_ID, 'cli_oauth_token', USER_ID)).toBe(true);
+    expect(await describeWorkspaceSecret(db, WORKSPACE_ID, 'cli_oauth_token')).toBeNull();
+    expect(await deleteWorkspaceSecret(db, WORKSPACE_ID, 'cli_oauth_token', USER_ID)).toBe(false);
+  });
+});
+
+describe('workspace CLI agent config', () => {
+  it('is null until a CLI and a model are saved', async () => {
+    expect(await getWorkspaceCliAgentConfig(db, WORKSPACE_ID)).toBeNull();
+  });
+
+  it('saves the CLI and model without touching risk acceptance', async () => {
+    const saved = await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'claude', model: 'sonnet' });
+    expect(saved).toMatchObject({ cli: 'claude', model: 'sonnet', riskAcceptedAt: null });
+
+    // Re-saving (e.g. switching CLI) must not silently imply consent.
+    const resaved = await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'codex', model: 'gpt-5-codex' });
+    expect(resaved).toMatchObject({ cli: 'codex', model: 'gpt-5-codex', riskAcceptedAt: null });
+
+    expect(await getWorkspaceCliAgentConfig(db, WORKSPACE_ID)).toMatchObject({ cli: 'codex', model: 'gpt-5-codex' });
+  });
+
+  it('rejects an empty model', async () => {
+    await expect(
+      putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'claude', model: '  ' })
+    ).rejects.toThrow(/model/i);
+    expect(await getWorkspaceCliAgentConfig(db, WORKSPACE_ID)).toBeNull();
+  });
+
+  it('scopes config to its workspace', async () => {
+    await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'claude', model: 'sonnet' });
+    expect(await getWorkspaceCliAgentConfig(db, OTHER_WORKSPACE_ID)).toBeNull();
+  });
+
+  describe('setWorkspaceCliRiskAccepted', () => {
+    it('returns null -- nothing to accept -- when no config row exists yet', async () => {
+      expect(await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, true)).toBeNull();
+    });
+
+    it('accepts, and clears back to null on revoke, once a config row exists', async () => {
+      await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'claude', model: 'sonnet' });
+
+      const accepted = await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, true);
+      expect(accepted?.riskAcceptedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(await getWorkspaceCliAgentConfig(db, WORKSPACE_ID)).toMatchObject({ riskAcceptedAt: accepted?.riskAcceptedAt });
+
+      // Revoking is a real clear to NULL, not a boolean bolted on next to a
+      // stale timestamp -- re-accepting later must look identical to accepting
+      // the first time.
+      const revoked = await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, false);
+      expect(revoked?.riskAcceptedAt).toBeNull();
+      expect(await getWorkspaceCliAgentConfig(db, WORKSPACE_ID)).toMatchObject({ riskAcceptedAt: null });
+    });
+
+    it('does not touch cli or model', async () => {
+      await putWorkspaceCliAgentConfig(db, { workspaceId: WORKSPACE_ID, cli: 'codex', model: 'gpt-5-codex' });
+      await setWorkspaceCliRiskAccepted(db, WORKSPACE_ID, true);
+      expect(await getWorkspaceCliAgentConfig(db, WORKSPACE_ID)).toMatchObject({ cli: 'codex', model: 'gpt-5-codex' });
+    });
   });
 });
