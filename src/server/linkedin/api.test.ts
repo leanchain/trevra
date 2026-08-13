@@ -1292,8 +1292,11 @@ describe('engagement route (034)', () => {
 
 describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
   it('reports the seat, its posture, its warm-up week and today\'s rolling counts', async () => {
-    await seat(WORKSPACE_A);
-    await recordAction(db, { workspaceId: WORKSPACE_A, kind: 'invite', targetRef: 'in/today', status: 'sent', source: 'manual' }, NOW);
+    // The endpoint derives warm-up from the real request clock. Do not anchor
+    // this test to a calendar date that eventually ages into week 2.
+    const activatedAt = new Date();
+    await upsertSeat(db, WORKSPACE_A, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich' }, activatedAt);
+    await recordAction(db, { workspaceId: WORKSPACE_A, kind: 'invite', targetRef: 'in/today', status: 'sent', source: 'manual' }, new Date());
 
     const body = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as {
       seat: { label: string; activatedAt: string | null; detectedAt: string | null } | null;
@@ -1307,7 +1310,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     expect(body.warmupWeek).toBe(1);
     expect(body.today.invite).toBe(1);
     // The two clocks the setup screen reads instead of asking for a date.
-    expect(body.seat?.activatedAt).toBe(NOW.toISOString());
+    expect(body.seat?.activatedAt).toBe(activatedAt.toISOString());
     expect(body.seat?.detectedAt).toBeNull();
   });
 

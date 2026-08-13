@@ -5,6 +5,7 @@ import type { Skill, SkillContext } from '../skills/types.js';
 import {
   acceptanceRate,
   countActionsInWindow,
+  countActionKindsInWindow,
   countPendingInvites,
   dailyCountsForLastNDays,
   hasTarget,
@@ -168,7 +169,7 @@ export async function evaluateLinkedInSafety(
   const seatRef: SeatRef = { workspaceId: input.workspaceId, seatKey };
   const checks: LinkedInSafetyCheck[] = [];
 
-  const seat = await getSeat(db, input.workspaceId);
+  const seat = await getSeat(db, input.workspaceId, seatKey);
   const posture = seat ? effectivePosture(seat, now) : 'warmup';
   const timezone = seat?.timezone ?? 'UTC';
   const warmupWeek = seat ? warmupWeekOf(seat.activatedAt, now) : 1;
@@ -192,6 +193,20 @@ export async function evaluateLinkedInSafety(
   });
 
   const used24 = await countActionsInWindow(db, seatRef, input.kind, 24, now);
+  const messageKinds = ['dm', 'reply', 'inmail'] as const;
+  const isMessage = messageKinds.includes(input.kind as (typeof messageKinds)[number]);
+  const operatorLimit = seat
+    ? input.kind === 'invite' ? seat.dailyInviteLimit
+      : isMessage ? seat.dailyMessageLimit
+        : input.kind === 'profile_view' ? seat.dailyProfileViewLimit
+          : input.kind === 'follow' ? seat.dailyFollowLimit
+            : null
+    : null;
+  const operatorUsed24 = operatorLimit === null
+    ? used24
+    : isMessage
+      ? await countActionKindsInWindow(db, seatRef, [...messageKinds], 24, now)
+      : used24;
   const used7d = await countActionsInWindow(db, seatRef, input.kind, 24 * 7, now);
   const used30d = await countActionsInWindow(db, seatRef, input.kind, 24 * 30, now);
 
@@ -210,10 +225,13 @@ export async function evaluateLinkedInSafety(
           : `${used24} of ${warmupCeiling} ${input.kind}s used in the last 24h (warm-up week ${warmupWeek}: ${band.perDay}/day x ${multiplier}).`
   });
 
+  const effectiveDailyLimit = operatorLimit === null ? band.perDay : Math.min(band.perDay, operatorLimit);
   checks.push({
     check: 'rolling-24h',
-    passed: used24 + 1 <= band.perDay,
-    detail: `${used24} of ${band.perDay} ${input.kind}s used in the last 24 hours (${posture} band).`
+    passed: used24 + 1 <= band.perDay && operatorUsed24 + 1 <= effectiveDailyLimit,
+    detail: operatorLimit === null
+      ? `${used24} of ${band.perDay} ${input.kind}s used in the last 24 hours (${posture} band).`
+      : `${operatorUsed24} of ${effectiveDailyLimit} account-level ${isMessage ? 'messages' : `${input.kind}s`} used in the last 24 hours; the effective ceiling is the stricter of Trevra's ${band.perDay}/day safety band and the operator setting ${operatorLimit}/day.`
   });
 
   checks.push({
@@ -259,16 +277,23 @@ export async function evaluateLinkedInSafety(
   const parsed = !Number.isNaN(plannedAt.getTime());
   const local = parsed ? localDateOf(plannedAt, timezone) : null;
 
+  const weekday = local === null ? null : weekdayOf(local);
+  const minuteOfDay = local === null ? null : local.hour * 60 + local.minute;
+  const configuredDays = seat?.workingDays ?? [1, 2, 3, 4, 5];
+  const configuredStart = seat?.workStartMinute ?? BUSINESS_HOURS.start * 60;
+  const configuredEnd = seat?.workEndMinute ?? BUSINESS_HOURS.end * 60;
+  const insideConfiguredWindow =
+    local !== null && weekday !== null && configuredDays.includes(weekday)
+    && minuteOfDay !== null && minuteOfDay >= configuredStart && minuteOfDay < configuredEnd;
+  const hhmm = (minute: number): string => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
   checks.push({
     check: 'business-hours',
-    passed: local !== null && local.hour >= BUSINESS_HOURS.start && local.hour < BUSINESS_HOURS.end,
+    passed: insideConfiguredWindow,
     detail:
       local === null
-        ? `'${input.plannedFor}' is not a parseable instant, so it cannot be placed inside a business-hours window.`
-        : `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}; the window is ${BUSINESS_HOURS.start}:00-${BUSINESS_HOURS.end}:00.`
+        ? `'${input.plannedFor}' is not a parseable instant, so it cannot be placed inside a working-hours window.`
+        : `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}; this account works on weekday(s) ${configuredDays.join(',') || 'none'} between ${hhmm(configuredStart)} and ${hhmm(configuredEnd)}.`
   });
-
-  const weekday = local === null ? null : weekdayOf(local);
   const onWeekend = weekday !== null && isWeekend(weekday);
   checks.push({
     check: 'weekend',

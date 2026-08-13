@@ -863,6 +863,7 @@ export async function workspacesWithDueActions(db: Db, now: Date): Promise<strin
     SELECT DISTINCT workspace_id FROM linkedin_actions
     WHERE status='planned' AND claimed_at IS NULL
       AND planned_for IS NOT NULL AND planned_for <= ?
+      AND seat_key='owner'
       AND kind IN (${EXECUTABLE_KIND_LIST})
   `).all<{ workspace_id: string }>(now.toISOString());
   return rows.map((row) => row.workspace_id);

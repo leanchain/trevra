@@ -74,6 +74,16 @@ export interface LinkedInSeat {
   /** As STORED. `effectivePosture` is what pacing and the guard read. */
   posture: SeatPosture;
   pausedReason: string | null;
+  /** JS weekday numbers, Sunday=0. An empty list disables automated activity. */
+  workingDays: number[];
+  /** Minutes after local midnight. */
+  workStartMinute: number;
+  workEndMinute: number;
+  /** Operator ceilings. Trevra's researched safety bands may be lower. */
+  dailyInviteLimit: number;
+  dailyMessageLimit: number;
+  dailyProfileViewLimit: number;
+  dailyFollowLimit: number;
 }
 
 /**
@@ -95,10 +105,18 @@ export interface SeatPatch {
   detectedAt?: string | null;
   /** ISO-8601, written whenever a live session is confirmed. Absent means unchanged. */
   sessionValidAt?: string | null;
+  workingDays?: number[];
+  workStartMinute?: number;
+  workEndMinute?: number;
+  dailyInviteLimit?: number;
+  dailyMessageLimit?: number;
+  dailyProfileViewLimit?: number;
+  dailyFollowLimit?: number;
 }
 
 interface SeatRow {
   workspace_id: string;
+  seat_key: string;
   label: string;
   profile_url: string | null;
   account_opened_on: string | null;
@@ -109,6 +127,13 @@ interface SeatRow {
   session_valid_at: string | null;
   posture: string;
   paused_reason: string | null;
+  working_days: unknown;
+  work_start_minute: number;
+  work_end_minute: number;
+  daily_invite_limit: number;
+  daily_message_limit: number;
+  daily_profile_view_limit: number;
+  daily_follow_limit: number;
 }
 
 /**
@@ -126,6 +151,7 @@ interface SeatRow {
 // follow-up migration to remove it once nothing references migration 028.
 const SEAT_COLUMNS = `
   workspace_id,
+  seat_key,
   label,
   profile_url,
   TO_CHAR(account_opened_on, 'YYYY-MM-DD') AS account_opened_on,
@@ -135,13 +161,26 @@ const SEAT_COLUMNS = `
   TO_CHAR(detected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS detected_at,
   TO_CHAR(session_valid_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS session_valid_at,
   posture,
-  paused_reason
+  paused_reason,
+  working_days,
+  work_start_minute,
+  work_end_minute,
+  daily_invite_limit,
+  daily_message_limit,
+  daily_profile_view_limit,
+  daily_follow_limit
 `;
+
+function parsedWorkingDays(value: unknown): number[] {
+  const raw = typeof value === 'string' ? (() => { try { return JSON.parse(value) as unknown; } catch { return []; } })() : value;
+  if (!Array.isArray(raw)) return [];
+  return raw.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6);
+}
 
 function toSeat(row: SeatRow): LinkedInSeat {
   return {
     workspaceId: row.workspace_id,
-    seatKey: OWNER_SEAT_KEY,
+    seatKey: row.seat_key,
     label: row.label,
     profileUrl: row.profile_url,
     accountOpenedOn: row.account_opened_on,
@@ -151,13 +190,20 @@ function toSeat(row: SeatRow): LinkedInSeat {
     detectedAt: row.detected_at,
     sessionValidAt: row.session_valid_at,
     posture: row.posture as SeatPosture,
-    pausedReason: row.paused_reason
+    pausedReason: row.paused_reason,
+    workingDays: parsedWorkingDays(row.working_days),
+    workStartMinute: Number(row.work_start_minute),
+    workEndMinute: Number(row.work_end_minute),
+    dailyInviteLimit: Number(row.daily_invite_limit),
+    dailyMessageLimit: Number(row.daily_message_limit),
+    dailyProfileViewLimit: Number(row.daily_profile_view_limit),
+    dailyFollowLimit: Number(row.daily_follow_limit)
   };
 }
 
 /** The workspace's seat, or undefined when none is configured. */
-export async function getSeat(db: Db, workspaceId: string): Promise<LinkedInSeat | undefined> {
-  const row = await db.prepare(`SELECT ${SEAT_COLUMNS} FROM linkedin_seats WHERE workspace_id=?`).get<SeatRow>(workspaceId);
+export async function getSeat(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): Promise<LinkedInSeat | undefined> {
+  const row = await db.prepare(`SELECT ${SEAT_COLUMNS} FROM linkedin_seats WHERE workspace_id=? AND seat_key=?`).get<SeatRow>(workspaceId, seatKey);
   return row ? toSeat(row) : undefined;
 }
 
@@ -190,7 +236,7 @@ export async function linkedinWorkspaceIds(db: Db): Promise<string[]> {
 }
 
 export async function listSeats(db: Db, workspaceId: string): Promise<LinkedInSeat[]> {
-  const rows = await db.prepare(`SELECT ${SEAT_COLUMNS} FROM linkedin_seats WHERE workspace_id=?`).all<SeatRow>(workspaceId);
+  const rows = await db.prepare(`SELECT ${SEAT_COLUMNS} FROM linkedin_seats WHERE workspace_id=? ORDER BY created_at ASC, seat_key ASC`).all<SeatRow>(workspaceId);
   return rows.map(toSeat);
 }
 
@@ -233,8 +279,15 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
  * a form again is exactly the property that made `account_opened_on` the wrong
  * signal to pace on.
  */
-export async function upsertSeat(db: Db, workspaceId: string, patch: SeatPatch, now: Date): Promise<LinkedInSeat> {
-  const existing = await getSeat(db, workspaceId);
+export async function upsertSeat(
+  db: Db,
+  workspaceId: string,
+  patch: SeatPatch,
+  now: Date,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<LinkedInSeat> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(seatKey)) throw new Error('seat_key must be 1-64 letters, numbers, underscores or dashes.');
+  const existing = await getSeat(db, workspaceId, seatKey);
 
   const label = patch.label ?? existing?.label;
   if (!label?.trim()) throw new Error('A LinkedIn seat needs a label, e.g. "Pankaj (founder)".');
@@ -253,14 +306,34 @@ export async function upsertSeat(db: Db, workspaceId: string, patch: SeatPatch, 
   const pausedReason = posture === 'paused' ? (existing?.pausedReason ?? null) : null;
   const detectedAt = patch.detectedAt === undefined ? (existing?.detectedAt ?? null) : patch.detectedAt;
   const sessionValidAt = patch.sessionValidAt === undefined ? (existing?.sessionValidAt ?? null) : patch.sessionValidAt;
+  const workingDays = patch.workingDays ?? existing?.workingDays ?? [1, 2, 3, 4, 5];
+  if (!Array.isArray(workingDays) || workingDays.some((day) => !Number.isInteger(day) || day < 0 || day > 6)) {
+    throw new Error('working_days must contain only weekday numbers 0-6.');
+  }
+  const workStartMinute = patch.workStartMinute ?? existing?.workStartMinute ?? 480;
+  const workEndMinute = patch.workEndMinute ?? existing?.workEndMinute ?? 1080;
+  if (!Number.isInteger(workStartMinute) || !Number.isInteger(workEndMinute) || workStartMinute < 0 || workEndMinute > 1440 || workEndMinute <= workStartMinute) {
+    throw new Error('Working hours must be whole minutes in one local day, with the end after the start.');
+  }
+  const resolveLimit = (value: number | undefined, fallback: number, max: number, name: string): number => {
+    const resolved = value ?? fallback;
+    if (!Number.isInteger(resolved) || resolved < 0 || resolved > max) throw new Error(`${name} must be a whole number from 0 to ${max}.`);
+    return resolved;
+  };
+  const dailyInviteLimit = resolveLimit(patch.dailyInviteLimit, existing?.dailyInviteLimit ?? 30, 75, 'daily_invite_limit');
+  const dailyMessageLimit = resolveLimit(patch.dailyMessageLimit, existing?.dailyMessageLimit ?? 25, 75, 'daily_message_limit');
+  const dailyProfileViewLimit = resolveLimit(patch.dailyProfileViewLimit, existing?.dailyProfileViewLimit ?? 25, 100, 'daily_profile_view_limit');
+  const dailyFollowLimit = resolveLimit(patch.dailyFollowLimit, existing?.dailyFollowLimit ?? 20, 50, 'daily_follow_limit');
   const timestamp = now.toISOString();
 
   const row = await db.prepare(`
     INSERT INTO linkedin_seats (
-      workspace_id, label, profile_url, account_opened_on, connections_count,
-      timezone, activated_at, detected_at, session_valid_at, posture, paused_reason, created_at, updated_at
-    ) VALUES (?,?,?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?,?)
-    ON CONFLICT (workspace_id) DO UPDATE SET
+      workspace_id, seat_key, label, profile_url, account_opened_on, connections_count,
+      timezone, activated_at, detected_at, session_valid_at, posture, paused_reason,
+      working_days, work_start_minute, work_end_minute, daily_invite_limit,
+      daily_message_limit, daily_profile_view_limit, daily_follow_limit, created_at, updated_at
+    ) VALUES (?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?)
+    ON CONFLICT (workspace_id, seat_key) DO UPDATE SET
       label = excluded.label,
       profile_url = excluded.profile_url,
       account_opened_on = excluded.account_opened_on,
@@ -273,10 +346,18 @@ export async function upsertSeat(db: Db, workspaceId: string, patch: SeatPatch, 
       session_valid_at = excluded.session_valid_at,
       posture = excluded.posture,
       paused_reason = excluded.paused_reason,
+      working_days = excluded.working_days,
+      work_start_minute = excluded.work_start_minute,
+      work_end_minute = excluded.work_end_minute,
+      daily_invite_limit = excluded.daily_invite_limit,
+      daily_message_limit = excluded.daily_message_limit,
+      daily_profile_view_limit = excluded.daily_profile_view_limit,
+      daily_follow_limit = excluded.daily_follow_limit,
       updated_at = excluded.updated_at
     RETURNING ${SEAT_COLUMNS}
   `).get<SeatRow>(
     workspaceId,
+    seatKey,
     label.trim(),
     patch.profileUrl === undefined ? (existing?.profileUrl ?? null) : patch.profileUrl,
     accountOpenedOn,
@@ -287,6 +368,13 @@ export async function upsertSeat(db: Db, workspaceId: string, patch: SeatPatch, 
     sessionValidAt,
     posture,
     pausedReason,
+    JSON.stringify([...new Set(workingDays)]),
+    workStartMinute,
+    workEndMinute,
+    dailyInviteLimit,
+    dailyMessageLimit,
+    dailyProfileViewLimit,
+    dailyFollowLimit,
     timestamp,
     timestamp
   );
@@ -302,12 +390,12 @@ export async function upsertSeat(db: Db, workspaceId: string, patch: SeatPatch, 
  * column's whole job is to let the next run REUSE a session instead of
  * re-authenticating, and a timestamp written on hope would defeat it.
  */
-export async function stampSeatSessionValid(db: Db, workspaceId: string, now: Date): Promise<LinkedInSeat | undefined> {
+export async function stampSeatSessionValid(db: Db, workspaceId: string, now: Date, seatKey: string = OWNER_SEAT_KEY): Promise<LinkedInSeat | undefined> {
   const row = await db.prepare(`
     UPDATE linkedin_seats SET session_valid_at=?, updated_at=?
-    WHERE workspace_id=?
+    WHERE workspace_id=? AND seat_key=?
     RETURNING ${SEAT_COLUMNS}
-  `).get<SeatRow>(now.toISOString(), now.toISOString(), workspaceId);
+  `).get<SeatRow>(now.toISOString(), now.toISOString(), workspaceId, seatKey);
   return row ? toSeat(row) : undefined;
 }
 
@@ -318,12 +406,12 @@ export async function stampSeatSessionValid(db: Db, workspaceId: string, now: Da
  * restricts an account, and "why is this stopped" three weeks later is the
  * question the column answers.
  */
-export async function pauseSeat(db: Db, workspaceId: string, reason: string, now: Date): Promise<LinkedInSeat | undefined> {
+export async function pauseSeat(db: Db, workspaceId: string, reason: string, now: Date, seatKey: string = OWNER_SEAT_KEY): Promise<LinkedInSeat | undefined> {
   const row = await db.prepare(`
     UPDATE linkedin_seats SET posture='paused', paused_reason=?, updated_at=?
-    WHERE workspace_id=?
+    WHERE workspace_id=? AND seat_key=?
     RETURNING ${SEAT_COLUMNS}
-  `).get<SeatRow>(reason, now.toISOString(), workspaceId);
+  `).get<SeatRow>(reason, now.toISOString(), workspaceId, seatKey);
   return row ? toSeat(row) : undefined;
 }
 
@@ -338,12 +426,12 @@ export async function pauseSeat(db: Db, workspaceId: string, reason: string, now
  * not a reason to restart a ramp, and being able to earn one back by pausing
  * would be an incentive pointing the wrong way.
  */
-export async function resumeSeat(db: Db, workspaceId: string, now: Date): Promise<LinkedInSeat | undefined> {
+export async function resumeSeat(db: Db, workspaceId: string, now: Date, seatKey: string = OWNER_SEAT_KEY): Promise<LinkedInSeat | undefined> {
   const row = await db.prepare(`
     UPDATE linkedin_seats SET posture='warmup', paused_reason=NULL, updated_at=?
-    WHERE workspace_id=?
+    WHERE workspace_id=? AND seat_key=?
     RETURNING ${SEAT_COLUMNS}
-  `).get<SeatRow>(now.toISOString(), workspaceId);
+  `).get<SeatRow>(now.toISOString(), workspaceId, seatKey);
   return row ? toSeat(row) : undefined;
 }
 
@@ -365,8 +453,8 @@ export async function resumeSeat(db: Db, workspaceId: string, now: Date): Promis
  * delete here must not quietly erase send history or a password the operator
  * did not ask to remove.
  */
-export async function deleteSeat(db: Db, workspaceId: string): Promise<boolean> {
-  const result = await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(workspaceId);
+export async function deleteSeat(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): Promise<boolean> {
+  const result = await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=? AND seat_key=?').run(workspaceId, seatKey);
   return result.changes > 0;
 }
 
@@ -403,7 +491,7 @@ export function effectivePosture(seat: LinkedInSeat, now: Date): SeatPosture {
 }
 
 /** The effective posture for the workspace's seat, or null when it has none. */
-export async function getSeatPosture(db: Db, workspaceId: string, now: Date): Promise<SeatPosture | null> {
-  const seat = await getSeat(db, workspaceId);
+export async function getSeatPosture(db: Db, workspaceId: string, now: Date, seatKey: string = OWNER_SEAT_KEY): Promise<SeatPosture | null> {
+  const seat = await getSeat(db, workspaceId, seatKey);
   return seat ? effectivePosture(seat, now) : null;
 }

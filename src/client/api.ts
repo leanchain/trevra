@@ -51,6 +51,9 @@ import type { BranchOn, StepCondition } from '../server/linkedin/branching';
 import type { LinkedInSafetyCheck, LinkedInSafetyVerdict } from '../server/linkedin/guard';
 import type { LinkedInConversation, LinkedInMessageRecord, LinkedInThreadRecord } from '../server/linkedin/inbox';
 import type { LeadSourceKind, LeadSourceStatus, LinkedInLead, LinkedInLeadSource } from '../server/linkedin/leads';
+import type { LinkedInLeadContact, LinkedInLeadList, LeadListSourceKind } from '../server/linkedin/lead-lists';
+import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
+import type { ManagedAnalytics, ManagedCampaign, ManagedCampaignMember, ManualTaskView } from '../server/linkedin/managed-campaigns';
 import type {
   Account,
   AccountImportResult,
@@ -1295,6 +1298,122 @@ export async function addLinkedInExclusions(
 
 export async function getLinkedInAnalytics(days = 30): Promise<LinkedInAnalytics> {
   return request(`/api/linkedin/analytics?days=${days}`);
+}
+
+/* =====================================================================
+ * Outreach manager read/configuration plane (migrations 045-046).
+ * ================================================================== */
+export async function getLinkedInManagerSeats(): Promise<LinkedInSeat[]> {
+  return (await request<{ seats: LinkedInSeat[] }>('/api/linkedin/manager/seats')).seats;
+}
+
+export async function createLinkedInManagerSeat(input: SeatPatch & { seatKey: string; label: string; timezone: string }): Promise<LinkedInSeat> {
+  return (await request<{ seat: LinkedInSeat }>('/api/linkedin/manager/seats', { method: 'POST', body: JSON.stringify(input) })).seat;
+}
+
+export async function updateLinkedInManagerSeat(seatKey: string, input: SeatPatch): Promise<LinkedInSeat> {
+  return (await request<{ seat: LinkedInSeat }>(`/api/linkedin/manager/seats/${encodeURIComponent(seatKey)}`, { method: 'PATCH', body: JSON.stringify(input) })).seat;
+}
+
+export async function getLinkedInManagerLeadLists(): Promise<LinkedInLeadList[]> {
+  return (await request<{ lists: LinkedInLeadList[] }>('/api/linkedin/manager/lead-lists')).lists;
+}
+
+export async function createLinkedInManagerLeadList(input: { name: string; sourceKind?: LeadListSourceKind; sourceRef?: string | null }): Promise<LinkedInLeadList> {
+  return (await request<{ list: LinkedInLeadList }>('/api/linkedin/manager/lead-lists', { method: 'POST', body: JSON.stringify(input) })).list;
+}
+
+export interface LinkedInLeadCsvPreview {
+  headers: string[];
+  mapping: Partial<Record<'firstName' | 'lastName' | 'company' | 'email' | 'phone' | 'country' | 'profileUrl', string>>;
+  accepted: Array<{ firstName: string; lastName: string; company: string; email: string | null; phone: string | null; country: string | null; profileUrl: string | null }>;
+  acceptedCount: number;
+  rejected: Array<{ row: number; reason: string }>;
+  rejectedCount: number;
+}
+
+/** Preview + automap only. The server deliberately writes no lead row on this route. */
+export async function previewLinkedInManagerLeadCsv(
+  file: File,
+  mapping?: LinkedInLeadCsvPreview['mapping']
+): Promise<LinkedInLeadCsvPreview> {
+  const form = new FormData();
+  form.append('file', file);
+  if (mapping) form.append('mapping', JSON.stringify(mapping));
+  const response = await fetch('/api/linkedin/manager/lead-lists/preview', { method: 'POST', body: form, credentials: 'include' });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    throw new ApiError(body.error ?? 'Lead CSV preview failed', response.status);
+  }
+  return response.json();
+}
+
+export async function getLinkedInManagerLeadContacts(listId: string): Promise<{ list: LinkedInLeadList; contacts: LinkedInLeadContact[] }> {
+  return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/contacts`);
+}
+
+export async function updateLinkedInManagerLeadContact(contactId: string, input: {
+  firstName: string; lastName: string; company: string; email?: string | null; phone?: string | null; country?: string | null; profileUrl?: string | null;
+}): Promise<LinkedInLeadContact> {
+  return (await request<{ contact: LinkedInLeadContact }>(`/api/linkedin/manager/contacts/${encodeURIComponent(contactId)}`, { method: 'PATCH', body: JSON.stringify(input) })).contact;
+}
+
+export async function deleteLinkedInManagerLeadContact(contactId: string): Promise<boolean> {
+  return (await request<{ deleted: boolean }>(`/api/linkedin/manager/contacts/${encodeURIComponent(contactId)}`, { method: 'DELETE' })).deleted;
+}
+
+export async function getLinkedInManagerWorkflows(): Promise<LinkedInWorkflow[]> {
+  return (await request<{ workflows: LinkedInWorkflow[] }>('/api/linkedin/manager/workflows')).workflows;
+}
+
+export async function createLinkedInManagerWorkflow(input: { name: string; steps: WorkflowStep[] }): Promise<LinkedInWorkflow> {
+  return (await request<{ workflow: LinkedInWorkflow }>('/api/linkedin/manager/workflows', { method: 'POST', body: JSON.stringify(input) })).workflow;
+}
+
+export async function updateLinkedInManagerWorkflow(id: string, input: { name: string; steps: WorkflowStep[] }): Promise<LinkedInWorkflow> {
+  return (await request<{ workflow: LinkedInWorkflow }>(`/api/linkedin/manager/workflows/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) })).workflow;
+}
+
+export async function deleteLinkedInManagerWorkflow(id: string): Promise<boolean> {
+  return (await request<{ deleted: boolean }>(`/api/linkedin/manager/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' })).deleted;
+}
+
+export async function getLinkedInManagedCampaigns(): Promise<ManagedCampaign[]> {
+  return (await request<{ campaigns: ManagedCampaign[] }>('/api/linkedin/manager/campaigns')).campaigns;
+}
+
+export async function createLinkedInManagedCampaign(input: { name: string; seatKey?: string; leadListId: string; workflowId: string }): Promise<{ campaign: ManagedCampaign; enrolled: number; skippedAlreadyActive: number }> {
+  return request('/api/linkedin/manager/campaigns', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function getLinkedInManagedCampaign(id: string): Promise<{ campaign: ManagedCampaign; members: ManagedCampaignMember[] }> {
+  return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}`);
+}
+
+export async function stopLinkedInManagedCampaign(id: string): Promise<ManagedCampaign> {
+  return (await request<{ campaign: ManagedCampaign }>(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/stop`, { method: 'POST', body: '{}' })).campaign;
+}
+
+export async function pauseLinkedInManagedMember(id: string): Promise<boolean> {
+  return (await request<{ paused: boolean }>(`/api/linkedin/manager/members/${encodeURIComponent(id)}/pause`, { method: 'POST', body: '{}' })).paused;
+}
+
+export async function removeLinkedInManagedMember(id: string): Promise<boolean> {
+  return (await request<{ removed: boolean }>(`/api/linkedin/manager/members/${encodeURIComponent(id)}`, { method: 'DELETE' })).removed;
+}
+
+export async function getLinkedInManualTasks(filters: { seatKey?: string; status?: 'pending' | 'completed' | 'cancelled' } = {}): Promise<ManualTaskView[]> {
+  const query = new URLSearchParams();
+  if (filters.seatKey) query.set('seatKey', filters.seatKey);
+  if (filters.status) query.set('status', filters.status);
+  return (await request<{ tasks: ManualTaskView[] }>(`/api/linkedin/manager/tasks${query.size ? `?${query}` : ''}`)).tasks;
+}
+
+export async function getLinkedInManagedAnalytics(filters: { campaignId?: string; seatKey?: string } = {}): Promise<ManagedAnalytics> {
+  const query = new URLSearchParams();
+  if (filters.campaignId) query.set('campaignId', filters.campaignId);
+  if (filters.seatKey) query.set('seatKey', filters.seatKey);
+  return request(`/api/linkedin/manager/analytics${query.size ? `?${query}` : ''}`);
 }
 
 /** Never throws on the server side: a missing playwright comes back as an honest false. */

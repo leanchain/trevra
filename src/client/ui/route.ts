@@ -33,7 +33,7 @@ export const SECTIONS: readonly Section[] = ['loop', 'outreach', 'money', 'ledge
  */
 const SUB_ROUTES: Record<Section, readonly string[]> = {
   loop: ['', 'cost'],
-  outreach: ['', 'campaigns', 'inbox', 'leads', 'plan', 'queue'],
+  outreach: ['', 'campaigns', 'inbox', 'leads', 'manager', 'plan', 'queue'],
   money: [''],
   ledger: ['', 'run'],
   setup: ['', 'agent', 'data', 'reddit', 'research', 'seat', 'skills', 'limits', 'spend', 'team']

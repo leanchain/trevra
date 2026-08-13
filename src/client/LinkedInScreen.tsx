@@ -499,6 +499,15 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
   </section>;
 }
 
+const minutesToClock = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+const clockToMinutes = (clock: string): number => {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(clock.trim());
+  if (!match) return Number.NaN;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return hour >= 0 && hour <= 24 && minute >= 0 && minute <= 59 && !(hour === 24 && minute !== 0) ? hour * 60 + minute : Number.NaN;
+};
+
 function SetupTab({ seat, worker, limits, setToast, onSaved }: {
   seat: LinkedInSeatResponse | null;
   worker: LinkedInWorkerStatus | null;
@@ -517,6 +526,13 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
   const [profileUrl, setProfileUrl] = useState('');
   const [timezone, setTimezone] = useState(browserZone);
   const [connections, setConnections] = useState('');
+  const [workingDays, setWorkingDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [workStart, setWorkStart] = useState('08:00');
+  const [workEnd, setWorkEnd] = useState('18:00');
+  const [inviteLimit, setInviteLimit] = useState('30');
+  const [messageLimit, setMessageLimit] = useState('25');
+  const [profileViewLimit, setProfileViewLimit] = useState('25');
+  const [followLimit, setFollowLimit] = useState('20');
   const [busy, setBusy] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [failure, setFailure] = useState('');
@@ -552,6 +568,13 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
       setProfileUrl(seat.seat.profileUrl ?? '');
       setTimezone(seat.seat.timezone);
       setConnections(seat.seat.connectionsCount === null ? '' : String(seat.seat.connectionsCount));
+      setWorkingDays(seat.seat.workingDays);
+      setWorkStart(minutesToClock(seat.seat.workStartMinute));
+      setWorkEnd(minutesToClock(seat.seat.workEndMinute));
+      setInviteLimit(String(seat.seat.dailyInviteLimit));
+      setMessageLimit(String(seat.seat.dailyMessageLimit));
+      setProfileViewLimit(String(seat.seat.dailyProfileViewLimit));
+      setFollowLimit(String(seat.seat.dailyFollowLimit));
     }
     setHydrated(true);
   }, [seat, hydrated]);
@@ -673,11 +696,23 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
     setBusy(true);
     setFailure('');
     try {
+      const workStartMinute = clockToMinutes(workStart);
+      const workEndMinute = clockToMinutes(workEnd);
+      if (!Number.isFinite(workStartMinute) || !Number.isFinite(workEndMinute) || workEndMinute <= workStartMinute) {
+        throw new Error('Working hours need a valid start and a later end in the same day.');
+      }
       await saveLinkedInSeat({
         label: label.trim(),
         timezone: timezone.trim(),
         profileUrl: profileUrl.trim() || null,
-        connectionsCount: connections.trim() === '' ? null : Number(connections)
+        connectionsCount: connections.trim() === '' ? null : Number(connections),
+        workingDays,
+        workStartMinute,
+        workEndMinute,
+        dailyInviteLimit: Number(inviteLimit),
+        dailyMessageLimit: Number(messageLimit),
+        dailyProfileViewLimit: Number(profileViewLimit),
+        dailyFollowLimit: Number(followLimit)
       });
       setToast('Seat saved. These values stand until the next read from the session replaces them.');
       onSaved();
@@ -857,8 +892,24 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
           <label>Connections<input type="number" min={0} value={connections} onChange={(event) => setConnections(event.target.value)} placeholder="e.g. 640" /></label>
           <label>Profile URL<input value={profileUrl} onChange={(event) => setProfileUrl(event.target.value)} placeholder="https://www.linkedin.com/in/…" /></label>
         </div>
+        <h4 className="li-subhead" aria-level={3}>Automated activity window</h4>
+        <p className="li-hint">Outside these days and times the execution-time safety gate refuses every automated LinkedIn action. These are extra ceilings; Trevra’s researched safety bands still win when they are lower.</p>
+        <div className="li-filter-row">
+          {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((name, day) => <label className="li-inline-check" key={name}>
+            <input type="checkbox" checked={workingDays.includes(day)} onChange={() => setWorkingDays((current) => current.includes(day) ? current.filter((value) => value !== day) : [...current, day].sort())} />
+            <span>{name}</span>
+          </label>)}
+        </div>
+        <div className="li-form-grid">
+          <label>Start<input type="time" value={workStart} onChange={(event) => setWorkStart(event.target.value)} /></label>
+          <label>End<input type="time" value={workEnd} onChange={(event) => setWorkEnd(event.target.value)} /></label>
+          <label>Connection invites / 24h<input type="number" min={0} max={75} value={inviteLimit} onChange={(event) => setInviteLimit(event.target.value)} /></label>
+          <label>Messages / 24h<input type="number" min={0} max={75} value={messageLimit} onChange={(event) => setMessageLimit(event.target.value)} /></label>
+          <label>Profile views / 24h<input type="number" min={0} max={100} value={profileViewLimit} onChange={(event) => setProfileViewLimit(event.target.value)} /></label>
+          <label>Follows / 24h<input type="number" min={0} max={50} value={followLimit} onChange={(event) => setFollowLimit(event.target.value)} /></label>
+        </div>
         <div className="panel-footer">
-          <span>Leave a field empty to hold it as unknown. Unknown is paced conservatively; zero would not be.</span>
+          <span>Leave identity fields empty to hold them as unknown. Set an activity limit to 0 to disable that action type.</span>
           <button className="primary-button" disabled={busy} onClick={() => void save()}>
             {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save seat
           </button>

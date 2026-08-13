@@ -104,6 +104,12 @@ export interface LinkedInActionRecord {
   source: LinkedInActionSource;
   payloadHash?: string | null;
   /**
+   * Replay identity within one kind+target. Existing callers remain `legacy`;
+   * managed workflows use a stable member+step scope so a later follow-up is
+   * distinct without weakening the default duplicate guard.
+   */
+  replayScope?: string;
+  /**
    * When it actually happened. Defaults to `now` for any counted status and to
    * null for 'planned'/'skipped', which is what makes rule 1 above hold
    * without every caller having to remember it.
@@ -137,13 +143,14 @@ export async function recordAction(db: Db, record: LinkedInActionRecord, now: Da
   const counted = record.status !== 'planned' && record.status !== 'skipped';
   const recordedAt = record.recordedAt === undefined ? (counted ? now.toISOString() : null) : record.recordedAt;
   const actionId = id('lact');
+  const replayScope = record.replayScope?.trim() || 'legacy';
 
   const row = await db.prepare(`
     INSERT INTO linkedin_actions (
       id, workspace_id, seat_key, kind, target_ref, campaign_id,
-      status, planned_for, recorded_at, source, payload_hash, queued_by_user_id, created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT (workspace_id, seat_key, kind, target_ref) WHERE status <> 'skipped' DO NOTHING
+      status, planned_for, recorded_at, source, payload_hash, queued_by_user_id, replay_scope, created_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT (workspace_id, seat_key, kind, target_ref, replay_scope) WHERE status <> 'skipped' DO NOTHING
     RETURNING id
   `).get<{ id: string }>(
     actionId,
@@ -158,6 +165,7 @@ export async function recordAction(db: Db, record: LinkedInActionRecord, now: Da
     record.source,
     record.payloadHash ?? null,
     record.queuedByUserId ?? null,
+    replayScope,
     now.toISOString()
   );
 
@@ -165,9 +173,9 @@ export async function recordAction(db: Db, record: LinkedInActionRecord, now: Da
 
   const existing = await db.prepare(`
     SELECT id FROM linkedin_actions
-    WHERE workspace_id=? AND seat_key=? AND kind=? AND target_ref=? AND status <> 'skipped'
+    WHERE workspace_id=? AND seat_key=? AND kind=? AND target_ref=? AND replay_scope=? AND status <> 'skipped'
     ORDER BY created_at DESC LIMIT 1
-  `).get<{ id: string }>(record.workspaceId, seatKey, record.kind, record.targetRef);
+  `).get<{ id: string }>(record.workspaceId, seatKey, record.kind, record.targetRef, replayScope);
   return { id: existing?.id ?? actionId, duplicate: true };
 }
 
@@ -179,11 +187,23 @@ export async function countActionsInWindow(
   sinceHours: number,
   now: Date
 ): Promise<number> {
+  return countActionKindsInWindow(db, seat, [kind], sinceHours, now);
+}
+
+/** Aggregate account-level ceilings such as "messages/day" across several ledger kinds. */
+export async function countActionKindsInWindow(
+  db: Db,
+  seat: SeatRef,
+  kinds: readonly LinkedInActionKind[],
+  sinceHours: number,
+  now: Date
+): Promise<number> {
+  if (kinds.length === 0) return 0;
   const since = new Date(now.getTime() - sinceHours * 3_600_000).toISOString();
   const row = await db.prepare(`
     SELECT COUNT(*)::int AS total FROM linkedin_actions
-    WHERE workspace_id=? AND seat_key=? AND kind=? AND ${COUNTED} AND recorded_at > ?
-  `).get<{ total: number }>(seat.workspaceId, seat.seatKey, kind, since);
+    WHERE workspace_id=? AND seat_key=? AND kind = ANY(?::text[]) AND ${COUNTED} AND recorded_at > ?
+  `).get<{ total: number }>(seat.workspaceId, seat.seatKey, [...kinds], since);
   return row?.total ?? 0;
 }
 

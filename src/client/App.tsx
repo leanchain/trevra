@@ -87,6 +87,7 @@ import { AccountsScreen } from './AccountsScreen';
 import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
 import { OutreachInbox } from './LinkedInInbox';
 import { OutreachLeads } from './LinkedInLeads';
+import { OutreachManagerRead } from './LinkedInManagerRead';
 import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions, LinkedInSeatSetup, OutreachQueue, OutreachSeat } from './LinkedInScreen';
 import { MarketingScreen } from './MarketingScreen';
@@ -148,6 +149,7 @@ const NAV_ITEMS: Array<{ section: Section; path: string; icon: React.ReactNode; 
 const OUTREACH_ROUTES: Array<{ sub: string; label: string }> = [
   { sub: '', label: 'Seat' },
   { sub: 'leads', label: 'Lead sources' },
+  { sub: 'manager', label: 'Manager' },
   { sub: 'plan', label: 'Plan' },
   { sub: 'campaigns', label: 'Campaigns' },
   { sub: 'queue', label: 'Queue' },
@@ -499,6 +501,7 @@ export function App() {
           {route.sub === 'campaigns' && <OutreachCampaigns setToast={setToast} campaignId={route.id} />}
           {route.sub === 'inbox' && <OutreachInbox setToast={setToast} />}
           {route.sub === 'leads' && <OutreachLeads setToast={setToast} />}
+          {route.sub === 'manager' && <OutreachManagerRead setToast={setToast} />}
           {route.sub === 'plan' && <OutreachPlan setToast={setToast} />}
           {route.sub === 'queue' && <OutreachQueue setToast={setToast} />}
         </div>}

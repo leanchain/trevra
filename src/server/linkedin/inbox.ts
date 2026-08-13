@@ -340,8 +340,8 @@ export async function syncThreads(db: Db, input: ThreadSyncInput, now: Date): Pr
     if (!threadUrn) continue;
 
     const existing = await db.prepare(`
-      SELECT id, profile_url, campaign_id FROM linkedin_threads WHERE workspace_id=? AND thread_urn=?
-    `).get<{ id: string; profile_url: string | null; campaign_id: string | null }>(input.workspaceId, threadUrn);
+      SELECT id, profile_url, campaign_id FROM linkedin_threads WHERE workspace_id=? AND seat_key=? AND thread_urn=?
+    `).get<{ id: string; profile_url: string | null; campaign_id: string | null }>(input.workspaceId, seatKey, threadUrn);
 
     const profileUrl = (summary.profileUrl ? profileUrlFor(summary.profileUrl) : null) ?? existing?.profile_url ?? null;
 
@@ -360,7 +360,7 @@ export async function syncThreads(db: Db, input: ThreadSyncInput, now: Date): Pr
         id, workspace_id, seat_key, thread_urn, profile_url, name,
         last_message_at, unread, snippet, campaign_id, synced_at, created_at
       ) VALUES (?,?,?,?,?,?,?::timestamptz,?,?,?,?::timestamptz,?::timestamptz)
-      ON CONFLICT (workspace_id, thread_urn) DO UPDATE SET
+      ON CONFLICT (workspace_id, seat_key, thread_urn) DO UPDATE SET
         profile_url = COALESCE(excluded.profile_url, linkedin_threads.profile_url),
         name = COALESCE(excluded.name, linkedin_threads.name),
         last_message_at = COALESCE(excluded.last_message_at, linkedin_threads.last_message_at),
@@ -456,7 +456,7 @@ export async function syncThreadMessages(
   now: Date
 ): Promise<ThreadMessageSyncResult> {
   const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
-  const thread = await threadByUrn(db, input.workspaceId, input.threadUrn);
+  const thread = await threadByUrn(db, input.workspaceId, input.threadUrn, seatKey);
   if (!thread) {
     throw new LinkedInApiError(
       `No LinkedIn conversation '${input.threadUrn}' has been synced for this workspace. Conversations are stored by the inbox sync; this call does not create one to hold a message.`,
@@ -620,9 +620,14 @@ async function threadById(db: Db, workspaceId: string, threadId: string): Promis
 }
 
 /** One conversation by LinkedIn's own id, or undefined. */
-export async function threadByUrn(db: Db, workspaceId: string, threadUrn: string): Promise<LinkedInThreadRecord | undefined> {
-  const row = await db.prepare(`SELECT ${THREAD_COLUMNS} FROM linkedin_threads t WHERE t.thread_urn=? AND t.workspace_id=?`)
-    .get<ThreadRow>(threadUrn, workspaceId);
+export async function threadByUrn(
+  db: Db,
+  workspaceId: string,
+  threadUrn: string,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<LinkedInThreadRecord | undefined> {
+  const row = await db.prepare(`SELECT ${THREAD_COLUMNS} FROM linkedin_threads t WHERE t.thread_urn=? AND t.workspace_id=? AND t.seat_key=?`)
+    .get<ThreadRow>(threadUrn, workspaceId, seatKey);
   return row ? toThread(row) : undefined;
 }
 
@@ -640,8 +645,13 @@ export interface LinkedInConversation {
  * a chronologically-rendered thread, which is the real sequence. Migration 031
  * carries the long version.
  */
-export async function readThread(db: Db, workspaceId: string, threadUrn: string): Promise<LinkedInConversation | undefined> {
-  const thread = await threadByUrn(db, workspaceId, threadUrn);
+export async function readThread(
+  db: Db,
+  workspaceId: string,
+  threadUrn: string,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<LinkedInConversation | undefined> {
+  const thread = await threadByUrn(db, workspaceId, threadUrn, seatKey);
   if (!thread) return undefined;
   const rows = await db.prepare(`
     SELECT ${MESSAGE_COLUMNS} FROM linkedin_messages
