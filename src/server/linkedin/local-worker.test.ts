@@ -2760,3 +2760,102 @@ describe('the session rhythm', () => {
     expect(new Set(lengths).size).toBeGreaterThan(1);
   });
 });
+
+/**
+ * ARRIVING FROM THE PAGE THE LEAD WAS FOUND ON.
+ *
+ * The last cold `page.goto` on the action path. A campaign works from a stored
+ * list, so the browser sat on the feed and typed profile URLs -- one cold
+ * document load of a stranger's profile per action, with no referer and
+ * nothing in front of it. Now the sitting opens the source page once and
+ * clicks each card from there.
+ */
+describe('reaching a target from its source page', () => {
+  const SOURCE = 'https://www.linkedin.com/search/results/people/?keywords=founder';
+
+  function navigatingPage(): { page: LinkedInPage; navigations: string[] } {
+    const navigations: string[] = [];
+    let current = 'https://www.linkedin.com/feed/';
+    return {
+      navigations,
+      page: {
+        goto: async (url: string) => {
+          navigations.push(url);
+          current = url;
+          return null;
+        },
+        url: () => current,
+        locator: () => ({
+          count: async () => 0,
+          first() {
+            return this;
+          },
+          click: async () => {},
+          fill: async () => {},
+          textContent: async () => null
+        }),
+        waitForTimeout: async () => {}
+      } as unknown as LinkedInPage
+    };
+  }
+
+  it('opens the source page before the action, and only once for the sitting', async () => {
+    const harness = fakeStore([
+      action({ id: 'lact_src_1', targetRef: 'https://www.linkedin.com/in/one/' }),
+      action({ id: 'lact_src_2', targetRef: 'https://www.linkedin.com/in/two/' })
+    ]);
+    harness.store.sourcePageFor = async () => SOURCE;
+    const { driver, calls } = fakeDriver();
+    const { page, navigations } = navigatingPage();
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(result.executed).toBe(2);
+    expect(calls).toHaveLength(2);
+    // Loaded for the first action; the second is already there, so the whole
+    // sitting costs ONE list load instead of two cold profile loads.
+    expect(navigations).toEqual([SOURCE]);
+  });
+
+  it('says nothing and changes nothing when the lead has no known source', async () => {
+    const harness = fakeStore([action({ id: 'lact_src_3', targetRef: 'https://www.linkedin.com/in/unsourced/' })]);
+    harness.store.sourcePageFor = async () => null;
+    const { driver, calls } = fakeDriver();
+    const { page, navigations } = navigatingPage();
+
+    await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(navigations).toEqual([]);
+  });
+
+  it('never navigates off LinkedIn, whatever the source row says', async () => {
+    const harness = fakeStore([action({ id: 'lact_src_4', targetRef: 'https://www.linkedin.com/in/offsite/' })]);
+    harness.store.sourcePageFor = async () => 'https://example.test/leads.csv';
+    const { driver, calls } = fakeDriver();
+    const { page, navigations } = navigatingPage();
+
+    await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(navigations).toEqual([]);
+  });
+});

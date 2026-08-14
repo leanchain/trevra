@@ -527,14 +527,17 @@ Suite after all of Parts 6-8: **915 passing, `tsc` clean.**
 | 6 | **Tests for the primitives** | done. `human.test.ts` (17) covers typing, hover, scroll variety, the salt, and both defects the review found; `guard.test.ts` gains three for the enforced day shape; `local-worker.test.ts` gains the sitting budget and break. `resetLinkedInSessionRhythm()` exists because sittings are process state and the tests share a process. |
 | 7 | **Leaked fixture profiles** | done. Six removed from the container. `/root/.trevra/linkedin-profile` is the dead pre-fix mount and cannot be removed while the current container holds it; it goes on the next `--force-recreate`. |
 
-**Still open, and it is a product decision rather than a defect.** Reaching a
-cold-list target *from the page that found it* — opening the lead's source
-search page once per sitting and clicking the card — would remove the last cold
-`goto`. It also re-renders a search-results page, which is the surface LinkedIn
-most associates with scraping. One search load per sitting against N cold
-profile loads is a trade worth making deliberately, with the account's history
-in mind, and not silently.
+**The last cold load is gone too.** `LocalWorkerStore.sourcePageFor` looks up
+the page a lead was harvested from (`linkedin_leads` → `linkedin_lead_sources`),
+and the sitting opens it once, reads it, and clicks each person's card from
+there — so `followLinkTo` finally has a page with links on it. The arithmetic is
+better than it first looks: **one** list load per sitting replaces **N** cold
+profile loads, and every action after the first is a client-side route rather
+than a document load. Guarded to `linkedin.com` over https, skipped when the
+browser is already there, and swallowed on any failure — an unopenable source
+page just means the driver navigates the way it always did. A target nobody
+sourced (manual add, import, reply) returns null and is unchanged.
 
 **Unchanged:** the container's WebGL renderer. Run the worker headed on the host.
 
-Suite: **941 passing across 33 files**, `tsc` clean.
+Suite: **944 passing across 33 files**, `tsc` clean.

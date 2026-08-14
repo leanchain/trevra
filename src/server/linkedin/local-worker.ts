@@ -406,6 +406,23 @@ export interface LocalWorkerStore {
   /** Nothing was sent: put the action back in the queue, recording why. */
   releaseClaim(actionId: string, failureKind: LinkedInFailureKind | null): Promise<void>;
   /**
+   * The LinkedIn page this target was FOUND on, when Trevra knows it.
+   *
+   * WHY A QUEUE NEEDS TO KNOW WHERE A LEAD CAME FROM. Every action used to
+   * reach its target by typing the profile URL into the address bar: a cold
+   * document load of `/in/<stranger>/` with no view before it, no referer and
+   * nothing that led to it. That is not how a member reaches a profile and it
+   * is exactly how a script working from a list of URLs does. Handed the
+   * source page, the worker opens it once, reads it, and clicks the person's
+   * card -- which is one page load for a whole sitting instead of one cold
+   * load per action, and every action after the first is a client-side route.
+   *
+   * OPTIONAL, and null is the normal answer for a target nobody sourced
+   * (a manual add, an import, a reply). The caller falls back to the address
+   * bar, which is what it always did.
+   */
+  sourcePageFor?(targetRef: string): Promise<string | null>;
+  /**
    * Does this seat hold an invite to this target that was never accepted?
    *
    * Asked for ONE question and it is a narrow one: a profile with no Message
@@ -605,6 +622,47 @@ export function actionGapSeconds(seed: string): number {
  * as `actionGapSeconds`: randomised means unpredictable to LinkedIn, never
  * unreproducible to us, and there is no `Math.random()` on this path.
  */
+/**
+ * Open the page this lead was found on, so the driver can click their card.
+ *
+ * THE LAST COLD LOAD. `driver.ts` `followLinkTo` already prefers a link on the
+ * page it is already on; the missing half was ever BEING on such a page. A
+ * campaign works from a stored list, so the browser sat on the feed and typed
+ * profile URLs. Now the first action of a sitting opens the search or list page
+ * the lead came from and reads it, and every action after that is already
+ * there -- so the whole sitting costs one list load and N client-side routes,
+ * which is both fewer page loads than before and the shape a person makes.
+ *
+ * ONLY LINKEDIN, ONLY ONCE, NEVER FATAL. The URL is checked against the same
+ * host set the driver enforces, the navigation is skipped when the browser is
+ * already there, and every failure is swallowed: the driver navigates by URL
+ * afterwards exactly as it did before this existed.
+ */
+/** The same host set `driver.ts` enforces. Nothing else is ever navigated to. */
+const LINKEDIN_HOSTS = new Set(['linkedin.com', 'www.linkedin.com']);
+
+async function arriveFromSource(
+  store: LocalWorkerStore,
+  page: LinkedInPage,
+  targetRef: string,
+  seed: string
+): Promise<void> {
+  if (typeof store.sourcePageFor !== 'function') return;
+  try {
+    const via = await store.sourcePageFor(targetRef);
+    if (!via) return;
+    const parsed = new URL(via);
+    if (parsed.protocol !== 'https:' || !LINKEDIN_HOSTS.has(parsed.hostname.toLowerCase())) return;
+    if (page.url() === via) return;
+    await page.goto(via, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await settle(page, `${seed}#source`);
+    await readPage(page, `${seed}#source-read`);
+  } catch {
+    // A source page that will not open says nothing about the profile behind
+    // it, and the action is not about the source page.
+  }
+}
+
 async function execute(deps: LocalBatchDeps, action: DueLinkedInAction, seed: string): Promise<LinkedInDriverResult> {
   switch (action.kind) {
     case 'invite':
@@ -819,6 +877,13 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
     // the deadline is refreshed here, where it is provably still ours, rather
     // than only at claim time.
     await store.heartbeat(batchId, action.id, at);
+
+    // ARRIVE THE WAY A PERSON WOULD, when we know where this lead came from.
+    // No-op when the source is unknown, when the browser is already on that
+    // page (the normal case after the first action of a sitting), or when
+    // anything at all goes wrong -- the driver's own navigation is unchanged
+    // and still runs.
+    await arriveFromSource(store, deps.page, action.targetRef, `${batchId}:${action.id}`);
 
     // One seed per (batch, action), the same string the inter-action gap is
     // drawn from, so the whole of a batch's timing -- between actions and
@@ -1334,6 +1399,30 @@ export function postgresLocalWorkerStore(
         SET claimed_at=NULL, claimed_by=NULL, lease_expires_at=NULL, batch_id=NULL, failure_kind=?
         WHERE id=? AND workspace_id=?
       `).run(failureKind, actionId, workspaceId);
+    },
+
+    /**
+     * The page this profile was harvested from, if this workspace harvested it.
+     *
+     * Newest source wins: a lead re-found by a later search is most likely to
+     * still be on that page, and a card that is no longer there costs nothing
+     * -- `followLinkTo` finds no link and the driver loads the profile the old
+     * way. Scoped to the workspace, like every other read on this store.
+     */
+    async sourcePageFor(targetRef) {
+      const trimmed = targetRef.trim();
+      if (!trimmed) return null;
+      const row = await db
+        .prepare(
+          `SELECT s.url AS url
+             FROM linkedin_leads l
+             JOIN linkedin_lead_sources s ON s.id = l.source_id AND s.workspace_id = l.workspace_id
+            WHERE l.workspace_id = ? AND l.profile_url = ?
+            ORDER BY l.created_at DESC
+            LIMIT 1`
+        )
+        .get<{ url: string | null }>(workspaceId, trimmed);
+      return row?.url ?? null;
     },
 
     async settleSent(actionId, externalRef, now) {
