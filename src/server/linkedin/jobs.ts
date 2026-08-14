@@ -1,6 +1,6 @@
 import { id, type Db } from '../db.js';
 import { ownerSeat, type SeatRef } from './actions.js';
-import { isSeatRead, type LinkedInDriver, type LinkedInPage } from './driver.js';
+import { isSeatRead, type LinkedInDegreeDriver, type LinkedInDriver, type LinkedInPage } from './driver.js';
 // `readThread` names two different things in this subsystem: the browser
 // routine that opens a conversation in Chrome, and the database read that
 // returns the one Trevra has stored. Both are the right word in their own file,
@@ -28,12 +28,23 @@ import {
   type LinkedInLocalWorkerConfig
 } from './local-worker.js';
 import { runManagedCampaigns, type RunnerResult } from './runner.js';
+import type { DayShapeFn } from './pacing.js';
+import { seatRestingUntil } from './seat-events.js';
 import { OWNER_SEAT_KEY, effectivePosture, getSeat } from './seats.js';
 import {
+  dueSideTasks,
+  markSideTaskRun,
+  seatPresence,
+  sideTaskRuns,
+  type SideTaskName
+} from './side-tasks.js';
+import {
   DEFAULT_CANDIDATE_LIMIT,
+  detectAcceptedInvites,
   runWithdrawalBatch,
   sweepStaleInvites,
   syncPendingInvites,
+  type AcceptanceDetectionResult,
   type WithdrawalBatchResult,
   type WithdrawalCandidate,
   type WithdrawalCandidateOptions
@@ -101,6 +112,13 @@ function sameAccount(left: string, right: string): boolean {
  * follows already pays one per thread. Reading somebody else's DMs into an
  * operator's inbox is not a price worth saving it for.
  *
+ * IT USED TO COST TWO, AND THE SECOND ONE WAS THE EXPENSIVE ONE. `readSeat`
+ * defaults to also loading `/mynetwork/invite-connect/connections/` for the
+ * exact connection count -- a surface LinkedIn associates with prospecting --
+ * and this function reads nothing from it. It only ever wanted `profileUrl`.
+ * Called on every side-task tick, that was thousands of connections-page loads
+ * a day for a number nobody here looks at.
+ *
  * A MISMATCH CLEARS THIS SEAT'S CACHE AND READS NOTHING, which is the same
  * decision `detectLinkedInSeat` makes and for the same reason: what is stored
  * belongs to the account that is no longer signed in, and leaving it in place
@@ -121,7 +139,7 @@ async function confirmSeatAccount(
     return 'This workspace has never confirmed which LinkedIn account this seat is, so nothing was read -- an unconfirmed seat is exactly how one account\'s conversations end up stored as another\'s. Connect the account first; detecting it is what records who it is.';
   }
 
-  const read = await session.driver.readSeat(session.page);
+  const read = await session.driver.readSeat(session.page, { skipConnections: true });
   if (!isSeatRead(read)) {
     return `Which LinkedIn account this browser is signed in as could not be confirmed (${read.failureKind ?? 'unknown'}: ${read.detail ?? 'no detail'}), so nothing was read. Conversations are only stored against an account we just verified.`;
   }
@@ -145,6 +163,18 @@ export interface LinkedInJobOptions {
   page?: LinkedInPage;
   driver?: LinkedInDriver;
   log?: (message: string) => void;
+  /**
+   * The caller has ALREADY confirmed, on this page, in this pass, that the
+   * signed-in account is this seat's. Set only by `runLinkedInSideTasks`.
+   *
+   * NOT A WAY TO SKIP THE CHECK -- a way to not repeat it. Every job below
+   * that files another member's data confirms the identity first, and each one
+   * used to do it independently: two jobs in one tick meant two `/in/me/`
+   * loads to answer a question whose answer cannot change between them,
+   * because it is the same browser on the same page seconds apart. An HTTP
+   * route never sets this, so a hand-triggered sync still asks.
+   */
+  accountConfirmed?: boolean;
 }
 
 /* ---------------------------------------------------------------------------
@@ -210,7 +240,9 @@ export async function syncLinkedInInbox(
   if (!session.ok) return { ...empty, blocked: session.blocked };
 
   // Whose inbox this is, before a word of it is stored. See `confirmSeatAccount`.
-  const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
+  const wrongAccount = options.accountConfirmed
+    ? null
+    : await confirmSeatAccount(db, session, options.workspaceId, seatKey);
   if (wrongAccount) return { ...empty, blocked: wrongAccount };
 
   const inbox = options.inboxDriver ?? playwrightInboxDriver;
@@ -398,6 +430,71 @@ export async function syncLinkedInPendingInvites(
 
   const synced = await syncPendingInvites(db, seat, listed, now);
   return { ...synced, blocked: null, degraded: listed.degraded };
+}
+
+export interface AcceptanceDetectionJobResult extends AcceptanceDetectionResult {
+  /** Why no browser work happened, or null when it did. Same distinction as `WithdrawalJobResult`. */
+  blockedReason: string | null;
+}
+
+/**
+ * Find out which of this seat's vanished invites were actually accepted.
+
+ * WHY THE ACCOUNT CHECK IS NOT OPTIONAL HERE, and is in fact more load-bearing
+ * than it is for the inbox sync. A connection degree is not a property of a
+ * profile; it is a property of the RELATIONSHIP between that profile and
+ * WHOEVER IS SIGNED IN. Reading "1st" out of a browser logged into a different
+ * account than the seat this invite belongs to would file that other person's
+ * connection as this seat's acceptance -- a wrong number in the one place a
+ * wrong number changes what the pacing engine does next. So the session's own
+ * identity is confirmed before a single profile is opened, exactly as
+ * `syncLinkedInInbox` confirms it before a single conversation is read.
+ *
+ * Everything else -- the gate, the pacing, the posture, the ledger row for the
+ * page view -- belongs to `detectAcceptedInvites` and is not restated here.
+ * This function's whole job is the browser and the seat.
+ */
+export async function detectLinkedInAcceptances(
+  db: Db,
+  config: LinkedInLocalWorkerConfig,
+  options: LinkedInJobOptions & {
+    maxChecks?: number;
+    degreeDriver?: LinkedInDegreeDriver;
+    sleep?: (ms: number) => Promise<void>;
+  }
+): Promise<AcceptanceDetectionJobResult> {
+  const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
+  const seat = seatOf(options.workspaceId, seatKey);
+  const empty: AcceptanceDetectionJobResult = {
+    workspaceId: seat.workspaceId,
+    seatKey: seat.seatKey,
+    checked: 0,
+    accepted: 0,
+    stillPending: 0,
+    unknown: 0,
+    blocked: 0,
+    halted: false,
+    haltReason: null,
+    blockedReason: null
+  };
+
+  const session = await openLinkedInSession(db, config, options);
+  if (!session.ok) return { ...empty, halted: true, haltReason: session.blocked, blockedReason: session.blocked };
+
+  const wrongAccount = options.accountConfirmed
+    ? null
+    : await confirmSeatAccount(db, session, options.workspaceId, seatKey);
+  if (wrongAccount) return { ...empty, halted: true, haltReason: wrongAccount, blockedReason: wrongAccount };
+
+  const outcome = await detectAcceptedInvites(db, seat, {
+    page: session.page,
+    now: () => options.now ?? new Date(),
+    ...(options.degreeDriver === undefined ? {} : { driver: options.degreeDriver }),
+    ...(options.maxChecks === undefined ? {} : { maxChecks: options.maxChecks }),
+    ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+    ...(options.log === undefined ? {} : { log: options.log })
+  });
+  return { ...outcome, blockedReason: null };
 }
 
 export interface WithdrawalJobResult extends WithdrawalBatchResult {
@@ -721,8 +818,20 @@ export interface LinkedInSideTaskResult {
   workspaceId: string;
   inbox: InboxSyncResult | null;
   pendingInvites: PendingSyncJobResult | null;
+  acceptance: AcceptanceDetectionJobResult | null;
   withdrawals: WithdrawalJobResult | null;
   leads: LeadSourceRunResult[];
+  /**
+   * Which of the five were ATTEMPTED this pass -- a job that ran and failed is
+   * listed, because it went to LinkedIn and that is what this field is for.
+   *
+   * Empty is the NORMAL outcome: on a 60s tick with intervals measured in tens
+   * of minutes to hours, the overwhelming majority of passes do nothing, and
+   * that is the fix rather than a fault.
+   */
+  ran: SideTaskName[];
+  /** Why this pass opened no browser, or null when it did. One sentence. */
+  skipped: string | null;
 }
 
 /**
@@ -737,10 +846,21 @@ export interface LinkedInSideTaskResult {
  * this subsystem.
  *
  * Then the pending-invite sync, so the withdrawal sweep reads LinkedIn's own
- * account of what is still outstanding rather than last week's. Then the
- * withdrawals themselves. Lead sourcing last, because it is the only one that
- * is off by default and the only one that touches nobody's account but the
- * operator's own reading history.
+ * account of what is still outstanding rather than last week's.
+ *
+ * THEN ACCEPTANCE DETECTION, AND IT SITS BETWEEN THOSE TWO AND THE WITHDRAWALS
+ * FOR THE SAME REASON THE INBOX SITS FIRST. It is the second outcome reporter:
+ * it turns "this invite left the pending list" into 'accepted' or into nothing,
+ * by opening the target's profile and reading LinkedIn's own degree badge. It
+ * must run AFTER the sync, because the sync is what tells it which invites left
+ * the list; and it must run BEFORE the withdrawal sweep, because withdrawing a
+ * connection that was accepted an hour ago is the one destructive mistake in
+ * this subsystem, and this pass is the thing most likely to have just learned
+ * that it was.
+ *
+ * Then the withdrawals themselves. Lead sourcing last, because it is the only
+ * one that is off by default and the only one that touches nobody's account but
+ * the operator's own reading history.
  *
  * NEVER THROWS. Each job is caught on its own: a workspace whose inbox will not
  * open must still get its withdrawal queue drained, and none of them may cost
@@ -749,15 +869,24 @@ export interface LinkedInSideTaskResult {
 export async function runLinkedInSideTasks(
   db: Db,
   config: LinkedInLocalWorkerConfig,
-  options: LinkedInJobOptions & { maxThreads?: number; maxWithdrawals?: number; maxSources?: number }
+  options: LinkedInJobOptions & {
+    maxThreads?: number;
+    maxWithdrawals?: number;
+    maxSources?: number;
+    /** The day-shape seam, so a test can assert the cadence without waiting for a Tuesday. */
+    dayShape?: DayShapeFn;
+  }
 ): Promise<LinkedInSideTaskResult> {
   const log = options.log ?? ((message: string) => console.log(message));
   const result: LinkedInSideTaskResult = {
     workspaceId: options.workspaceId,
     inbox: null,
     pendingInvites: null,
+    acceptance: null,
     withdrawals: null,
-    leads: []
+    leads: [],
+    ran: [],
+    skipped: null
   };
 
   if (!config.enabled) return result;
@@ -778,46 +907,123 @@ export async function runLinkedInSideTasks(
   // `linkedinSeatRefs` keeps that listing honest -- it still returns every seat,
   // because other callers need it to -- and puts the refusal at the one place
   // that would otherwise pay for it in an open browser.
-  const seat = await getSeat(db, options.workspaceId, options.seatKey ?? OWNER_SEAT_KEY);
+  const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
+  const now = options.now ?? new Date();
+  const seat = await getSeat(db, options.workspaceId, seatKey);
   if (!seat) return result;
-  if (effectivePosture(seat, options.now ?? new Date()) === 'paused') return result;
+  if (effectivePosture(seat, now) === 'paused') return result;
 
-  const jobs: Array<[string, () => Promise<void>]> = [
+  // WOULD A PERSON BE HERE AT ALL? Asked before the cadence, because a task
+  // that came due at 04:00 is not a task to run at 04:00 -- it waits for the
+  // window, exactly as a sent action does. Same `dayShapeFor` the sender
+  // draws its day from, so the reads and the sends are one presence.
+  const presence = seatPresence(seat, now, options.dayShape === undefined ? {} : { dayShape: options.dayShape });
+  if (!presence.present) return { ...result, skipped: presence.reason };
+
+  // MID-SITTING-BREAK. `local-worker.ts` closes the browser and stands the seat
+  // down for 25-90 minutes after a sitting; a client that stops sending but
+  // keeps polling its inbox through the break has not gone anywhere, and the
+  // break was the point.
+  const resting = await seatRestingUntil(db, options.workspaceId, seatKey);
+  if (resting && resting.getTime() > now.getTime()) {
+    return { ...result, skipped: `This seat is between sittings until ${resting.toISOString()}, so nothing was read.` };
+  }
+
+  // IS ANYTHING ACTUALLY DUE? The cheapest question, and the one nobody was
+  // asking: five jobs x every 60s tick x round the clock. See `side-tasks.ts`
+  // for what that cost in page loads.
+  const runs = await sideTaskRuns(db, options.workspaceId, seatKey);
+  const due = new Set(dueSideTasks(seat, runs, now));
+  if (due.size === 0) return { ...result, skipped: 'Nothing is due for this seat yet.' };
+
+  // ONE SESSION AND ONE IDENTITY CHECK FOR THE WHOLE PASS, rather than one per
+  // job. Each job called `openLinkedInSession` itself and two of them confirmed
+  // the account itself, so a tick that ran all five probed the session five
+  // times and loaded `/in/me/` twice -- to answer, seconds apart, in the same
+  // browser, a question with one answer. The page is threaded down; a job
+  // handed a page opens no browser of its own.
+  const session = await openLinkedInSession(db, config, { ...options, timezone: seat.timezone, now });
+  if (!session.ok) return { ...result, skipped: session.blocked };
+
+  const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
+  if (wrongAccount) return { ...result, skipped: wrongAccount };
+
+  const shared: LinkedInJobOptions & { maxThreads?: number; maxWithdrawals?: number; maxSources?: number } = {
+    ...options,
+    seatKey,
+    now,
+    page: session.page,
+    driver: session.driver,
+    accountConfirmed: true
+  };
+
+  const jobs: Array<[SideTaskName, string, () => Promise<void>]> = [
     [
+      'inbox',
       'inbox sync',
       async () => {
-        result.inbox = await syncLinkedInInbox(db, config, options);
+        result.inbox = await syncLinkedInInbox(db, config, shared);
       }
     ],
     [
+      'pending_invites',
       'pending-invite sync',
       async () => {
-        result.pendingInvites = await syncLinkedInPendingInvites(db, config, options);
+        result.pendingInvites = await syncLinkedInPendingInvites(db, config, shared);
       }
     ],
     [
+      'acceptance',
+      'acceptance detection',
+      async () => {
+        result.acceptance = await detectLinkedInAcceptances(db, config, shared);
+      }
+    ],
+    [
+      'withdrawals',
       'withdrawal queue',
       async () => {
         result.withdrawals = await runLinkedInWithdrawals(db, config, {
-          ...options,
+          ...shared,
           ...(options.maxWithdrawals === undefined ? {} : { maxActions: options.maxWithdrawals })
         });
       }
     ],
     [
+      'lead_sources',
       'lead sourcing',
       async () => {
-        result.leads = (await runLinkedInLeadSources(db, config, options)).results;
+        result.leads = (await runLinkedInLeadSources(db, config, shared)).results;
       }
     ]
   ];
 
-  for (const [name, run] of jobs) {
+  for (const [task, name, run] of jobs) {
+    if (!due.has(task)) continue;
+    result.ran.push(task);
     try {
       await run();
     } catch (cause) {
       log(`LinkedIn ${name} failed for ${options.workspaceId}: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
+    // STAMPED WHATEVER HAPPENED, including a failure. A job that could not read
+    // the inbox does not get to retry sixty seconds later: whatever stopped it
+    // -- a challenge, a limit wall, a selector that moved -- is not a thing
+    // another page load in a minute will fix, and hammering it is the shape
+    // that got the account looked at in the first place.
+    //
+    // STAMPED WITH THE PASS'S OWN CLOCK, not `new Date()`. Every other decision
+    // in this function reads `now`, and a stamp from a different clock is how a
+    // test with an injected date silently exercises the backwards-clock branch
+    // instead of the interval it meant to assert.
+    await markSideTaskRun(db, options.workspaceId, seatKey, task, now);
+  }
+
+  // ONE LINE PER PASS THAT DID SOMETHING, and none for the passes that did not.
+  // An operator asking "is it alive" needs a heartbeat; at 1,440 ticks a day a
+  // line per tick is not a heartbeat, it is the log.
+  if (result.ran.length > 0) {
+    log(`LinkedIn side tasks for ${options.workspaceId}/${seatKey}: ${result.ran.join(', ')}.`);
   }
 
   return result;

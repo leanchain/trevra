@@ -541,3 +541,56 @@ sourced (manual add, import, reply) returns null and is unchanged.
 **Unchanged:** the container's WebGL renderer. Run the worker headed on the host.
 
 Suite: **944 passing across 33 files**, `tsc` clean.
+
+---
+
+# Part 10 — The thing that was actually doing it
+
+Everything in Parts 6–9 made the *actions* look human. None of it touched the
+reason the flag arrived, because the flag did not come from actions. Trevra sent
+nothing between 2026-08-10 and 2026-08-15 and the account was restricted anyway.
+
+## 10.1 Six page loads a minute, forever
+
+`runLinkedInSideTasks` runs once per worker tick — `AUTOMATION_INTERVAL_MS`,
+**60 seconds** — and ran all five of its jobs on every tick, unconditionally.
+Not one of them asked when it last ran. For one seat, with an empty inbox, an
+empty queue and nothing scheduled, a single tick was:
+
+| Navigation | Why |
+|---|---|
+| `/in/me/` | `confirmSeatAccount`, from the inbox sync |
+| `/mynetwork/invite-connect/connections/` | `readSeat` loads it by default |
+| `/messaging/` | the conversation rail |
+| `/mynetwork/invitation-manager/sent/` | the pending-invite list |
+| `/in/me/` | `confirmSeatAccount` **again**, from acceptance detection |
+| `/mynetwork/invite-connect/connections/` | and again |
+
+Six navigations × 1,440 ticks = **~8,600 page loads per day**, round the clock,
+including 03:00. ~2,900 of them the connections page — the single surface
+LinkedIn most associates with prospecting — and ~2,900 more the profile page.
+
+Under the code the restricted account actually ran it was worse: `isLoggedIn`
+navigated to `/in/me/` on *every* call (fixed in `098c13d`), adding one profile
+load per job per tick — about **11 navigations a tick, ~15,800 a day**.
+
+That is precisely "accessing an unusually large amount of LinkedIn profile data
+over time", and it was Trevra, unprompted, with nothing queued and nothing sent.
+
+## 10.2 What changed
+
+| Fix | Effect |
+|---|---|
+| `confirmSeatAccount` passes `skipConnections: true` | It only ever read `profileUrl`. Removes the connections page from the tick entirely — ~2,900 loads/day → 0. |
+| One session and one identity check per pass | Each job called `openLinkedInSession` itself and two confirmed the account themselves. The page is now threaded down; a job handed a page opens no browser and re-asks nothing. `/in/me/` goes from 2 per tick to 1 per *pass*. |
+| Per-task cadence (`linkedin_side_task_runs`, migration 071) | inbox 22–55 min, pending invites 3–7 h, acceptance 5–9 h, withdrawals 11–18 h, lead sourcing 1.5–4 h. Drawn from a band per run, seeded on the previous run instant — unpredictable to LinkedIn, reproducible from the ledger. Stamped even when a job fails, because retrying a challenge in sixty seconds is the shape that got the account looked at. |
+| Presence gate (`seatPresence`) | Side tasks only run inside the seat's own drawn day, from the same `dayShapeFor` the sender uses, and never on a rest day. The reads and the sends are one presence rather than two actors sharing a cookie. |
+| Break gate | `resting_until` now stops the reads too. A client that stops sending but keeps polling its inbox through a 25–90 minute break has not gone anywhere. |
+
+Steady state for an idle seat drops from **~8,600 navigations a day to roughly
+30**, none of them at 03:00 and none of them on the connections page.
+
+## 10.3 What it does not change
+
+Nothing about what is *sent*. Every ceiling, gate, posture and warm-up rule is
+untouched — this is only about how often the browser goes and looks.

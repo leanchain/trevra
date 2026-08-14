@@ -3,8 +3,10 @@ import { id, openDatabase, type Db } from '../db.js';
 import { recordAction, type SeatRef } from './actions.js';
 import type { LinkedInDriver, LinkedInDriverResult, LinkedInPage, LinkedInSeatRead } from './driver.js';
 import type { LinkedInInboxDriver } from './driver-inbox.js';
-import { runLinkedInWithdrawals, syncLinkedInInbox, syncLinkedInThread } from './jobs.js';
+import { runLinkedInSideTasks, runLinkedInWithdrawals, syncLinkedInInbox, syncLinkedInThread } from './jobs.js';
 import { syncThreads } from './inbox.js';
+import { FLAT_DAY_SHAPE } from './pacing.js';
+import { setSeatRestingUntil } from './seat-events.js';
 import { upsertSeat } from './seats.js';
 import { DEFAULT_STALE_AFTER_DAYS } from './withdraw.js';
 
@@ -272,14 +274,17 @@ describe('the account a sync is allowed to read', () => {
   /** Only `readSeat` is reached on these paths; the rest is a trap on purpose. */
   function identityDriver(read: LinkedInSeatRead | LinkedInDriverResult = seatRead) {
     const calls: string[] = [];
+    const readOptions: Array<{ skipConnections?: boolean } | undefined> = [];
     const trap = () => {
       throw new Error('a sync must not act on LinkedIn while it is confirming whose account this is');
     };
     return {
       calls,
+      readOptions,
       driver: {
-        readSeat: async () => {
+        readSeat: async (_page: LinkedInPage, options?: { skipConnections?: boolean }) => {
           calls.push('readSeat');
+          readOptions.push(options);
           return read;
         },
         sendInvite: trap,
@@ -387,5 +392,143 @@ describe('the account a sync is allowed to read', () => {
     expect(result.blocked).toBeNull();
     // Nothing was cleared: this seat's own cache survives its own sync.
     expect(await storedThreads()).toBe(1);
+  });
+});
+
+/**
+ * THE TICK, AND HOW OFTEN IT IS ALLOWED TO GO AND LOOK.
+ *
+ * `runLinkedInSideTasks` is called once per worker tick -- 60 seconds by
+ * default -- and used to run all five of its jobs on every one of them,
+ * forever, at every hour of the day. With an empty inbox and an empty queue
+ * that was ~8,600 LinkedIn page loads a day for one seat, ~2,900 of them on
+ * the connections page. Nothing was sent and the account was restricted for
+ * "accessing an unusually large amount of LinkedIn profile data over time".
+ *
+ * Every test below asserts a refusal to open a browser.
+ */
+describe('how often the side-task tick touches LinkedIn', () => {
+  const CONNECTED = 'https://www.linkedin.com/in/connected/';
+  const seatRead: LinkedInSeatRead = {
+    ok: true,
+    profileUrl: CONNECTED,
+    name: 'Connected Account',
+    connectionsCount: 500,
+    degraded: []
+  };
+
+  function tickDriver() {
+    const calls: string[] = [];
+    const readOptions: Array<{ skipConnections?: boolean } | undefined> = [];
+    return {
+      calls,
+      readOptions,
+      driver: {
+        readSeat: async (_page: LinkedInPage, options?: { skipConnections?: boolean }) => {
+          calls.push('readSeat');
+          readOptions.push(options);
+          return seatRead;
+        },
+        isLoggedIn: async () => true
+      } as unknown as LinkedInDriver
+    };
+  }
+
+  /** Every real driver starts with a navigation, so this fails all five of them fast. */
+  const page = {
+    goto: async () => {
+      throw new Error('this test does not navigate');
+    },
+    url: () => 'https://www.linkedin.com/feed/',
+    locator: () => {
+      throw new Error('this test does not read the page');
+    },
+    waitForTimeout: async () => {}
+  } as unknown as LinkedInPage;
+
+  async function connectedSeat(): Promise<void> {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', profileUrl: CONNECTED }, NOW);
+  }
+
+  function tick(now: Date, driver: LinkedInDriver) {
+    return runLinkedInSideTasks(
+      db,
+      { enabled: true } as unknown as Parameters<typeof runLinkedInSideTasks>[1],
+      { workspaceId: WORKSPACE_ID, seatKey: 'owner', now, page, driver, dayShape: FLAT_DAY_SHAPE, log: () => {} }
+    );
+  }
+
+  it('runs every job on the first pass and none of them a minute later', async () => {
+    await connectedSeat();
+    const { driver } = tickDriver();
+
+    const first = await tick(NOW, driver);
+    expect(first.skipped).toBeNull();
+    expect(first.ran.sort()).toEqual(['acceptance', 'inbox', 'lead_sources', 'pending_invites', 'withdrawals']);
+
+    // The next worker tick, sixty seconds later. THIS is the defect: it used to
+    // do the whole thing again, and again, 1,440 times a day.
+    const second = await tick(new Date(NOW.getTime() + 60_000), tickDriver().driver);
+    expect(second.ran).toEqual([]);
+    expect(second.skipped).toBe('Nothing is due for this seat yet.');
+
+    // The next working morning, inside the window again: every band has
+    // elapsed, so everything is due. Nothing here is "never runs again".
+    const tomorrow = await tick(new Date(NOW.getTime() + 24 * 3_600_000), tickDriver().driver);
+    expect(tomorrow.ran.sort()).toEqual(['acceptance', 'inbox', 'lead_sources', 'pending_invites', 'withdrawals']);
+  });
+
+  it('confirms whose account this is ONCE for the pass, not once per job', async () => {
+    await connectedSeat();
+    const { driver, calls } = tickDriver();
+
+    await tick(NOW, driver);
+
+    // Two jobs confirm identity independently, and each confirmation is a
+    // profile load. They cannot disagree: same browser, same page, seconds
+    // apart.
+    expect(calls.filter((call) => call === 'readSeat')).toHaveLength(1);
+  });
+
+  it('never asks for the connection count, which is a second page load for a number nobody reads', async () => {
+    await connectedSeat();
+    const { driver, readOptions } = tickDriver();
+
+    await tick(NOW, driver);
+
+    expect(readOptions).toEqual([{ skipConnections: true }]);
+  });
+
+  it('opens no browser at 03:00 -- nobody reads their LinkedIn inbox at three in the morning', async () => {
+    await connectedSeat();
+    const { driver, calls } = tickDriver();
+
+    const result = await tick(new Date('2026-08-04T03:00:00.000Z'), driver);
+
+    expect(calls).toEqual([]);
+    expect(result.ran).toEqual([]);
+    expect(result.skipped).toContain('03:00');
+  });
+
+  it('opens no browser while the seat is between sittings', async () => {
+    await connectedSeat();
+    await setSeatRestingUntil(db, WORKSPACE_ID, 'owner', new Date(NOW.getTime() + 30 * 60_000));
+    const { driver, calls } = tickDriver();
+
+    const result = await tick(NOW, driver);
+
+    expect(calls).toEqual([]);
+    expect(result.skipped).toContain('between sittings');
+  });
+
+  it('opens no browser for a paused seat', async () => {
+    await connectedSeat();
+    await upsertSeat(db, WORKSPACE_ID, { posture: 'paused' }, NOW);
+    const { driver, calls } = tickDriver();
+
+    const result = await tick(NOW, driver);
+
+    expect(calls).toEqual([]);
+    expect(result.ran).toEqual([]);
   });
 });
