@@ -583,14 +583,53 @@ over time", and it was Trevra, unprompted, with nothing queued and nothing sent.
 |---|---|
 | `confirmSeatAccount` passes `skipConnections: true` | It only ever read `profileUrl`. Removes the connections page from the tick entirely — ~2,900 loads/day → 0. |
 | One session and one identity check per pass | Each job called `openLinkedInSession` itself and two confirmed the account themselves. The page is now threaded down; a job handed a page opens no browser and re-asks nothing. `/in/me/` goes from 2 per tick to 1 per *pass*. |
-| Per-task cadence (`linkedin_side_task_runs`, migration 071) | inbox 22–55 min, pending invites 3–7 h, acceptance 5–9 h, withdrawals 11–18 h, lead sourcing 1.5–4 h. Drawn from a band per run, seeded on the previous run instant — unpredictable to LinkedIn, reproducible from the ledger. Stamped even when a job fails, because retrying a challenge in sixty seconds is the shape that got the account looked at. |
-| Presence gate (`seatPresence`) | Side tasks only run inside the seat's own drawn day, from the same `dayShapeFor` the sender uses, and never on a rest day. The reads and the sends are one presence rather than two actors sharing a cookie. |
+| **The visit model** (`linkedin_side_task_runs`, migration 071) | See 10.3. This is the one that matters. |
 | Break gate | `resting_until` now stops the reads too. A client that stops sending but keeps polling its inbox through a 25–90 minute break has not gone anywhere. |
 
-Steady state for an idle seat drops from **~8,600 navigations a day to roughly
-30**, none of them at 03:00 and none of them on the connections page.
+## 10.3 A visit, not an interval
 
-## 10.3 What it does not change
+The first attempt at this was a per-task interval — inbox every 22–55 minutes,
+acceptance every 5–9 hours, and so on. That was **still a polling loop**. It
+just polled more slowly, and it produced a perfectly flat access graph that no
+human has ever generated: ~15 inbox reads a day, evenly spaced, forever.
+
+What a person actually does — the operator's own description — is open LinkedIn
+**2–5 times a day for a few minutes**, glance at the feed, look at messages,
+click something, and leave. So that is what the model is now:
+
+| | |
+|---|---|
+| **Visits** | 2–5 per working day, drawn per seat per date. One slot per visit, start jittered inside the first 60% of its slot — which spreads them and guarantees ~48 minutes between consecutive visits. A clump after a long silence is a worse signal than a flat line. |
+| **Length** | 2–5 minutes. Outside a visit the tick costs two SQL reads and stops. |
+| **Arrival** | The feed, via the same `warmUpSession` the sending sittings use — plus notifications or My Network about half the time. A person lands on the feed, not on `/mynetwork/invitation-manager/sent/`. |
+| **Work** | At most **two** of the five jobs per visit, most-overdue first. Three minutes is not enough to walk an inbox, reconcile a sent list, open profiles, drain a queue *and* harvest a source — and an account that appears to is a batch job. |
+| **One pass per visit** | A visit spans 2–5 ticks. Without a marker the second tick finds the first tick's jobs freshly stamped, picks the next two, warms up again and reloads `/in/me/` — and the cap of two per visit silently becomes two per *minute*. The visit's start instant is stamped **before** the browser opens, so a visit that dies half way through is a visit that happened. |
+| **Departure** | `about:blank`. A tab parked on `/messaging/` holds a realtime connection and reports the member present 22 hours a day with four minutes of activity — a stranger shape than the polling it replaced. |
+| **Day shape** | Visits are drawn inside the seat's own drawn window from the same `dayShapeFor` the sender uses, and there are none on a rest day. The reads and the sends are one presence, not two actors sharing a cookie. |
+
+## 10.4 Measured, not asserted
+
+`scripts/linkedin-side-task-load.ts` replays a week of 60-second ticks through
+the real functions:
+
+```
+One idle seat, 7 days of 60s ticks, Mon-Fri 08:00-18:00 UTC
+
+  visits scheduled             : 16  (3.2 per working day)
+  visits that did any work     : 16
+  minutes with LinkedIn open   : 47  (9.4 per working day)
+  /in/me/ identity loads       : 16
+  connections-page loads       : 0
+  TOTAL navigations            : 58  (8.3/day)
+
+  before this change           : 60480 navigations (8640/day)
+  reduction                    : 99.90%
+```
+
+**8,640 → 8.3 navigations a day**, in three short bursts instead of 1,440
+identical ones, none at 03:00, none on the connections page.
+
+## 10.5 What it does not change
 
 Nothing about what is *sent*. Every ceiling, gate, posture and warm-up rule is
 untouched — this is only about how often the browser goes and looks.

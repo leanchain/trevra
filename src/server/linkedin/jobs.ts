@@ -25,6 +25,7 @@ import { leadSourcingConfig, leadSourcingEnabled, runPendingLeadSources, type Le
 import {
   openLinkedInSession,
   stopLinkedInBatches,
+  warmUpSession,
   type LinkedInLocalWorkerConfig
 } from './local-worker.js';
 import { runManagedCampaigns, type RunnerResult } from './runner.js';
@@ -32,10 +33,12 @@ import type { DayShapeFn } from './pacing.js';
 import { seatRestingUntil } from './seat-events.js';
 import { OWNER_SEAT_KEY, effectivePosture, getSeat } from './seats.js';
 import {
+  SIDE_TASKS_NEEDING_IDENTITY,
+  VISIT_MARKER,
   dueSideTasks,
   markSideTaskRun,
-  seatPresence,
   sideTaskRuns,
+  visitAt,
   type SideTaskName
 } from './side-tasks.js';
 import {
@@ -913,12 +916,15 @@ export async function runLinkedInSideTasks(
   if (!seat) return result;
   if (effectivePosture(seat, now) === 'paused') return result;
 
-  // WOULD A PERSON BE HERE AT ALL? Asked before the cadence, because a task
-  // that came due at 04:00 is not a task to run at 04:00 -- it waits for the
-  // window, exactly as a sent action does. Same `dayShapeFor` the sender
-  // draws its day from, so the reads and the sends are one presence.
-  const presence = seatPresence(seat, now, options.dayShape === undefined ? {} : { dayShape: options.dayShape });
-  if (!presence.present) return { ...result, skipped: presence.reason };
+  // IS LINKEDIN EVEN OPEN RIGHT NOW? Two to five times on a working day, for
+  // two to five minutes, inside the seat's own drawn window and never on a
+  // rest day. Asked FIRST, because a job that came due at 04:00 is not a job
+  // to run at 04:00 -- it waits for the next visit, exactly as a sent action
+  // waits for its slot. Same `dayShapeFor` the sender draws its day from, so
+  // the reads and the sends are one presence rather than two actors sharing a
+  // cookie.
+  const { visit, startedAt, reason } = visitAt(seat, now, options.dayShape === undefined ? {} : { dayShape: options.dayShape });
+  if (!visit || !startedAt) return { ...result, skipped: reason };
 
   // MID-SITTING-BREAK. `local-worker.ts` closes the browser and stands the seat
   // down for 25-90 minutes after a sitting; a client that stops sending but
@@ -929,24 +935,59 @@ export async function runLinkedInSideTasks(
     return { ...result, skipped: `This seat is between sittings until ${resting.toISOString()}, so nothing was read.` };
   }
 
-  // IS ANYTHING ACTUALLY DUE? The cheapest question, and the one nobody was
-  // asking: five jobs x every 60s tick x round the clock. See `side-tasks.ts`
-  // for what that cost in page loads.
+  // ONE PASS PER VISIT, NOT ONE PER TICK INSIDE IT. A visit is 2-5 minutes and
+  // a tick is 60 seconds, so every visit is seen 2-5 times. Without this the
+  // second tick would find the first tick's jobs freshly stamped, pick the
+  // next two off the list, warm up again and load `/in/me/` again -- and
+  // `MAX_TASKS_PER_VISIT` would silently mean two per MINUTE.
   const runs = await sideTaskRuns(db, options.workspaceId, seatKey);
-  const due = new Set(dueSideTasks(seat, runs, now));
-  if (due.size === 0) return { ...result, skipped: 'Nothing is due for this seat yet.' };
+  const lastVisit = runs.get(VISIT_MARKER);
+  if (lastVisit && lastVisit.getTime() === startedAt.getTime()) {
+    return { ...result, skipped: 'This visit has already happened; the tab is open and nothing new is being loaded.' };
+  }
 
-  // ONE SESSION AND ONE IDENTITY CHECK FOR THE WHOLE PASS, rather than one per
-  // job. Each job called `openLinkedInSession` itself and two of them confirmed
-  // the account itself, so a tick that ran all five probed the session five
-  // times and loaded `/in/me/` twice -- to answer, seconds apart, in the same
-  // browser, a question with one answer. The page is threaded down; a job
-  // handed a page opens no browser of its own.
+  // WHAT THIS VISIT DOES -- at most two of the five, most overdue first. Three
+  // minutes is not enough time to do all five, and an account that appears to
+  // is a batch job rather than somebody checking their messages.
+  const due = new Set(dueSideTasks(seat, runs, now));
+  if (due.size === 0) {
+    return { ...result, skipped: 'LinkedIn is open, but nothing has gone stale since the last visit.' };
+  }
+
+  // STAMPED BEFORE THE BROWSER OPENS, so a visit that dies half way through --
+  // a challenge, a crash, a browser that will not launch -- is a visit that
+  // HAPPENED. The alternative is a seat that failed at 09:14 retrying at
+  // 09:15, 09:16 and 09:17, which is the polling loop again wearing the visit
+  // model's clothes.
+  await markSideTaskRun(db, options.workspaceId, seatKey, VISIT_MARKER, startedAt);
+
+  // ONE SESSION AND AT MOST ONE IDENTITY CHECK FOR THE WHOLE PASS, rather than
+  // one per job. Each job called `openLinkedInSession` itself and two of them
+  // confirmed the account itself, so a tick that ran all five probed the
+  // session five times and loaded `/in/me/` twice -- to answer, seconds apart,
+  // in the same browser, a question with one answer. The page is threaded
+  // down; a job handed a page opens no browser of its own.
   const session = await openLinkedInSession(db, config, { ...options, timezone: seat.timezone, now });
   if (!session.ok) return { ...result, skipped: session.blocked };
 
-  const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
-  if (wrongAccount) return { ...result, skipped: wrongAccount };
+  // A VISIT STARTS ON THE FEED, because that is where a person lands when they
+  // open LinkedIn -- not on `/mynetwork/invitation-manager/sent/`. Same helper
+  // the sending sittings use, so a read visit and a send visit begin the same
+  // way; it also wanders to notifications or My Network about half the time.
+  // Decoration, never correctness: a page that cannot navigate drops it.
+  await warmUpSession(session.page, `${options.workspaceId}:${seatKey}:visit${visit.index}:${now.toISOString().slice(0, 10)}`, log);
+
+  // AND NOT AT ALL WHEN NOTHING IN THIS PASS NEEDS IT. Only the inbox walk and
+  // acceptance detection file data whose meaning depends on who is signed in;
+  // a pass that is just the withdrawal sweep would otherwise buy a profile load
+  // to answer a question it never asks. Hoisting the check to the pass made
+  // this possible AND made it necessary -- confirming unconditionally here
+  // would have given `/in/me/` to three jobs that never loaded it before.
+  const needsIdentity = [...due].some((task) => SIDE_TASKS_NEEDING_IDENTITY.has(task));
+  if (needsIdentity) {
+    const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
+    if (wrongAccount) return { ...result, skipped: wrongAccount };
+  }
 
   const shared: LinkedInJobOptions & { maxThreads?: number; maxWithdrawals?: number; maxSources?: number } = {
     ...options,
@@ -954,7 +995,10 @@ export async function runLinkedInSideTasks(
     now,
     page: session.page,
     driver: session.driver,
-    accountConfirmed: true
+    // ONLY WHEN IT ACTUALLY WAS. A pass that skipped the check must not tell a
+    // job the check passed -- if a future job starts filing member data, it
+    // confirms for itself rather than inheriting a confirmation nobody made.
+    accountConfirmed: needsIdentity
   };
 
   const jobs: Array<[SideTaskName, string, () => Promise<void>]> = [
@@ -1019,14 +1063,44 @@ export async function runLinkedInSideTasks(
     await markSideTaskRun(db, options.workspaceId, seatKey, task, now);
   }
 
-  // ONE LINE PER PASS THAT DID SOMETHING, and none for the passes that did not.
+  // THE TAB IS CLOSED AT THE END OF THE VISIT, and this is not tidiness.
+  //
+  // A LinkedIn page left open holds a realtime connection and keeps reporting
+  // the member as present. A browser parked on `/messaging/` for twenty-two
+  // hours a day, every day, with no interaction, is an account that is online
+  // permanently and active for four minutes -- which is a stranger shape than
+  // the polling this change removed. Navigating away ends it without fighting
+  // the sending loop for the browser handle, which is why this is a `goto` and
+  // not a `closeLinkedInBrowser`.
+  await leaveLinkedIn(session.page, log);
+
+  // ONE LINE PER VISIT THAT DID SOMETHING, and none for the ticks that did not.
   // An operator asking "is it alive" needs a heartbeat; at 1,440 ticks a day a
   // line per tick is not a heartbeat, it is the log.
   if (result.ran.length > 0) {
-    log(`LinkedIn side tasks for ${options.workspaceId}/${seatKey}: ${result.ran.join(', ')}.`);
+    log(`LinkedIn visit ${visit.index + 1} for ${options.workspaceId}/${seatKey}: ${result.ran.join(', ')}.`);
   }
 
   return result;
+}
+
+/**
+ * Leave LinkedIn at the end of a visit. Never throws, never matters.
+ *
+ * `about:blank` rather than closing the browser: the sending loop owns the
+ * browser handle and its own sitting rhythm, and a side-task pass that closed
+ * it out from under a batch would be a far worse bug than an idle tab.
+ */
+async function leaveLinkedIn(page: LinkedInPage, log: (message: string) => void): Promise<void> {
+  const target = page as unknown as {
+    goto?: (url: string, options?: { waitUntil?: 'domcontentloaded'; timeout?: number }) => Promise<unknown>;
+  };
+  if (typeof target.goto !== 'function') return;
+  try {
+    await target.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 15_000 });
+  } catch (cause) {
+    log(`LinkedIn tab could not be closed after the visit (${cause instanceof Error ? cause.message : String(cause)}). Nothing was read or sent because of it.`);
+  }
 }
 
 /**

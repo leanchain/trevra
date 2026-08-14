@@ -4,7 +4,15 @@ import { createRequire } from 'node:module';
 import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { id, type Db } from '../db.js';
+import {
+  browserProviderSettings,
+  openSeatBrowser,
+  type BrowserStorageState,
+  type ProviderBrowserContext,
+  type ProviderDriver
+} from '../browser/provider.js';
 import { readLinkedInCredentials } from '../secrets/linkedin.js';
+import { clearSeatStorageState, readSeatStorageState, saveSeatStorageState } from './session-state.js';
 import type { LinkedInActionKind, LinkedInActionStatus } from './actions.js';
 import {
   evaluateBranches,
@@ -35,6 +43,7 @@ import {
   deleteSeat,
   getSeat,
   getSeatPosture,
+  seatProxyUrl,
   stampSeatSessionValid,
   upsertSeat,
   type LinkedInSeat,
@@ -98,10 +107,18 @@ import {
  * The kinds this worker will execute.
  *
  * A KIND BELONGS HERE EXACTLY WHEN A DRIVER ROUTINE PERFORMS IT. `inmail` is
- * deliberately absent even though it is paced: `driver.ts` has no InMail
- * routine, and claiming an action nothing can perform would wedge it under a
- * claim forever. `comment` is absent for the same reason and has no band
- * either.
+ * absent because `driver.ts` has no InMail routine, and claiming an action
+ * nothing can perform would wedge it under a claim forever. `comment` is absent
+ * for the same reason and has no band either.
+ *
+ * `inmail`'s ABSENCE IS NOW A DECLARATION RATHER THAN A SIDE EFFECT. It is
+ * named in `UNSUPPORTED_ACTION_KINDS` (actions.ts) and removed from the
+ * campaign builder, the branch vocabulary and every analytics counter, because
+ * a list that quietly omitted it left every OTHER surface in the product
+ * offering, pacing and counting a kind this line had already decided could
+ * never be sent. `withdraw` is absent for a different reason and not a gap: a
+ * withdrawal is performed by `runWithdrawalBatch`, which has its own claim, its
+ * own queue and its own ceiling, and its ledger row is filed after the fact.
  *
  * `reply` and the three engagement kinds joined when `driver-inbox.ts` and
  * `driver-engage.ts` gave them routines. Every one of them still goes through
@@ -1909,10 +1926,34 @@ export async function claimSeatLease(
     FROM linkedin_seat_leases WHERE workspace_id=? AND seat_key=?
   `).get<SeatLeaseRow>(options.workspaceId, options.seatKey);
 
-  if (current && current.host !== options.host && !seatProfilePresent(options.profileDir)) {
+  // WHOSE SESSION IS IT, AND CAN IT TRAVEL? The host pin below exists for one
+  // reason: the Chrome profile IS the session and it sits on ONE host's local
+  // disk, so a second host picking the seat up performs a new-device sign-in.
+  // A REMOTE browser has no profile directory at all -- its session lives in
+  // `linkedin_seat_sessions`, which every worker can read -- so for a seat held
+  // that way the pin is not protecting anything and would instead pin the seat
+  // to whichever hosted pod happened to take it first, forever.
+  //
+  // The distinction is read off the row rather than off this process's own
+  // configuration, and that is the part that makes the two runners safe
+  // together: a seat currently held by a LOCAL worker still refuses a hosted
+  // one (that account's device trust is on that laptop), and a seat held
+  // remotely still refuses a local worker with an empty profile directory. Only
+  // remote-to-remote is portable, which is exactly the case where it is true.
+  //
+  // BOTH ENDS HAVE TO BE PORTABLE, not just the current one. A seat held
+  // remotely and picked up by a LOCAL worker with an empty profile directory is
+  // still a new-device sign-in -- the session is in the database and that
+  // worker is not going to read it into a persistent Chrome profile. Only
+  // remote-to-remote genuinely carries the session with it.
+  const portable = current ? isRemoteSessionHome(current.profile_dir) && isRemoteSessionHome(options.profileDir) : false;
+
+  if (current && !portable && current.host !== options.host && !seatProfilePresent(options.profileDir)) {
     return {
       ok: false,
-      reason: `is pinned to host '${current.host}', which holds its signed-in Chrome profile. This host has nothing at ${options.profileDir}, and running it here would be a brand-new device sign-in on that account -- the loudest challenge signal there is. Bring that host back, or copy ${current.profile_dir} here first.`
+      reason: isRemoteSessionHome(options.profileDir)
+        ? `is pinned to host '${current.host}', which holds its signed-in Chrome profile at ${current.profile_dir}. Running it through a remote browser would start from an empty session and be a brand-new device sign-in on that account -- the loudest challenge signal there is. Stop the worker on that host first if this seat should move to the hosted runner.`
+        : `is pinned to host '${current.host}', which holds its signed-in Chrome profile. This host has nothing at ${options.profileDir}, and running it here would be a brand-new device sign-in on that account -- the loudest challenge signal there is. Bring that host back, or copy ${current.profile_dir} here first.`
     };
   }
 
@@ -1995,6 +2036,44 @@ export async function releaseSeatLease(
  * path on first use, so "it exists" would be true on a host that had merely
  * tried once and failed. What makes it a session is content.
  */
+/**
+ * The value a lease's `profile_dir` takes when the seat's browser is remote.
+ *
+ * A MARKER, NOT A PATH, and it has to be recognisable as one: `claimSeatLease`
+ * decides whether a seat is pinned to a host by asking whether its recorded
+ * home is a directory on somebody's disk. The prefix cannot collide with a real
+ * path, because an absolute path starts with `/` (or a drive letter) and
+ * `resolveProfileDir` resolves every configured value to an absolute one.
+ */
+const REMOTE_SESSION_HOME_PREFIX = 'remote:';
+
+export function remoteSessionHome(provider: string | null): string {
+  return `${REMOTE_SESSION_HOME_PREFIX}${(provider ?? 'browser').replace(/\s+/g, '-')}`;
+}
+
+/** True when a recorded lease home is a remote browser rather than a directory. */
+export function isRemoteSessionHome(profileDir: string): boolean {
+  return profileDir.startsWith(REMOTE_SESSION_HOME_PREFIX);
+}
+
+/**
+ * Where THIS process would keep the seat's session: a directory, or a provider.
+ *
+ * The one place the choice is made, so the lease, the refusal sentences and
+ * the browser all agree about what this worker is.
+ */
+export function seatSessionHome(
+  config: LinkedInLocalWorkerConfig,
+  workspaceId: string,
+  seatKey: string,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const provider = browserProviderSettings(env);
+  return provider.kind === 'remote'
+    ? remoteSessionHome(provider.remote?.label ?? null)
+    : resolveProfileDir(config.profileDir, workspaceId, seatKey);
+}
+
 export function seatProfilePresent(profileDir: string): boolean {
   try {
     return statSync(profileDir).isDirectory() && readdirSync(profileDir).length > 0;
@@ -2311,6 +2390,21 @@ export function linkedInBrowserReadiness(
 
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
+
+  // A REMOTE BROWSER IS NEVER HEADED, AND THAT IS NOT A BLOCKER -- it is what
+  // a cloud browser is. Nobody is at the other end to watch a window, clear a
+  // captcha or close it, so the honest answer to "can this process open a
+  // browser the operator can see" is no, with the reason said plainly rather
+  // than reported as a missing display. The headless probe is the one that
+  // matters in this mode.
+  const remote = browserProviderSettings(env);
+  if (remote.kind === 'remote') {
+    return {
+      canLaunchHeaded: false,
+      reasons: [`This deployment drives a remote browser at ${remote.remote?.label ?? 'the configured provider'}, so there is no window on this machine for anyone to watch.`]
+    };
+  }
+
   const blockers = browserBlockers(env, platform);
 
   // THE DECISIVE SIGNAL ON LINUX. A headed browser needs somewhere to draw,
@@ -2375,8 +2469,41 @@ export function linkedInHeadlessReadiness(
   options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
 ): LinkedInHeadlessReadiness {
   if (!config.enabled) return { canLaunchHeadless: false, reasons: [linkedInOffReason(config)] };
-  const blockers = browserBlockers(options.env ?? process.env, options.platform ?? process.platform);
+  const env = options.env ?? process.env;
+
+  // REMOTE NEEDS THE CLIENT, NOT THE BROWSER. `npx playwright install chromium`
+  // downloads a ~400MB binary this process would never launch: the browser it
+  // drives is somebody else's, already running, and all this image needs is the
+  // library that can speak CDP to it. Asking for a local Chromium here is what
+  // would keep a correctly configured hosted deployment permanently "not
+  // ready", which is precisely the silent dead queue this capability exists to
+  // end.
+  const remote = browserProviderSettings(env);
+  if (remote.kind === 'remote') {
+    return driverResolvable()
+      ? { canLaunchHeadless: true, reasons: [] }
+      : {
+          canLaunchHeadless: false,
+          reasons: ['No browser driver is installed here, so this process cannot attach to a remote browser; run `npm i patchright` (or playwright) in the image that runs the worker.']
+        };
+  }
+  if (remote.problem) return { canLaunchHeadless: false, reasons: [remote.problem] };
+
+  const blockers = browserBlockers(env, options.platform ?? process.platform);
   return blockers.length === 0 ? { canLaunchHeadless: true, reasons: [] } : { canLaunchHeadless: false, reasons: blockers };
+}
+
+/** Is the driver LIBRARY here? The only local requirement a remote browser has. */
+function driverResolvable(): boolean {
+  for (const specifier of DRIVER_SPECIFIERS) {
+    try {
+      localWorkerRequire.resolve(specifier);
+      return true;
+    } catch {
+      // Try the next one; both are optional and either will do.
+    }
+  }
+  return false;
 }
 
 /**
@@ -2400,11 +2527,38 @@ export interface LinkedInBrowserContext {
   on(event: 'close', handler: () => void): void;
   close(): Promise<void>;
   newCDPSession?(page: unknown): Promise<LinkedInCdpSession>;
+  /**
+   * The cookies-and-origins bundle, for the contexts that have no disk.
+   *
+   * OPTIONAL BECAUSE A PERSISTENT CONTEXT DOES NOT NEED IT and because every
+   * test fake in this repository is a hand-written object. Its absence degrades
+   * the remote path to "this run's session could not be saved", which is
+   * logged; it never fails a run.
+   */
+  storageState?(options?: Record<string, unknown>): Promise<BrowserStorageState>;
 }
 
+/**
+ * The driver, as this file uses it.
+ *
+ * `connectOverCDP` and `connect` are OPTIONAL rather than required: a driver
+ * too old to have them, or a test fake that implements only a launch, must
+ * produce a refusal with a sentence in it rather than a TypeError three frames
+ * inside a provider. `browser/provider.ts` is what checks.
+ */
 export interface PlaywrightLike {
   chromium: {
     launchPersistentContext(userDataDir: string, options?: Record<string, unknown>): Promise<LinkedInBrowserContext>;
+    connectOverCDP?(endpointURL: string, options?: Record<string, unknown>): Promise<{
+      newContext(options?: Record<string, unknown>): Promise<LinkedInBrowserContext>;
+      contexts?(): LinkedInBrowserContext[];
+      close(): Promise<void>;
+    }>;
+    connect?(wsEndpoint: string, options?: Record<string, unknown>): Promise<{
+      newContext(options?: Record<string, unknown>): Promise<LinkedInBrowserContext>;
+      contexts?(): LinkedInBrowserContext[];
+      close(): Promise<void>;
+    }>;
   };
 }
 
@@ -2426,6 +2580,24 @@ interface BrowserHandle {
    * most.
    */
   usedSeq: number;
+  /**
+   * Where this browser actually is.
+   *
+   * 'local' is this machine's own Chromium at a persistent profile directory --
+   * everything this file did before hosted execution existed. 'remote' is a
+   * cloud browser attached to over CDP, which has no profile directory, which
+   * is why the field exists at all: it decides whether the seat's signed-in
+   * state has to be written back to the database when the run ends.
+   */
+  provider: 'local' | 'remote';
+  /**
+   * Read the signed-in state back out. Null for a local handle, ALWAYS.
+   *
+   * The persistent profile directory IS the local session, so writing a copy of
+   * it into Postgres would give the one fact that must not have two sources of
+   * truth exactly two.
+   */
+  exportStorageState: null | (() => Promise<BrowserStorageState | null>);
   close(): Promise<void>;
 }
 
@@ -2712,7 +2884,7 @@ export function seatContextFingerprint(
  * because it already names the real platform.
  */
 async function alignClientHints(
-  context: LinkedInBrowserContext,
+  context: ProviderBrowserContext,
   page: unknown,
   fingerprint: SeatContextFingerprint,
   log: (message: string) => void
@@ -2815,7 +2987,16 @@ function envSegmentIsLossless(value: string): boolean {
  * the operator who genuinely needs one (a second account on a residential line
  * that is not this machine's), and it is opt-in per seat.
  *
- * TWO WAYS TO CONFIGURE ONE, AND THE FIRST IS THE ONE THAT SCALES:
+ * WHERE IT IS CONFIGURED, IN PRECEDENCE ORDER. The account's own setting
+ * (`linkedin_seats.proxy_url`, migration 062) wins whenever it has one -- it is
+ * a fact about that LinkedIn account, it is editable by the operator who owns
+ * the account rather than by whoever can restart the process, and it is what a
+ * deployment with more than one seat actually needs. The environment below is
+ * unchanged and stays as the fallback for every seat without one, so a
+ * deployment that has always configured proxies that way keeps working exactly
+ * as it did.
+ *
+ * TWO WAYS TO CONFIGURE ONE IN THE ENVIRONMENT, AND THE FIRST IS THE ONE THAT SCALES:
  *
  *   TREVRA_LINKEDIN_PROXIES  a JSON object, keyed by the EXACT pair:
  *                              {"ws_a/sales": "http://user:pw@host:port",
@@ -2847,8 +3028,21 @@ function envSegmentIsLossless(value: string): boolean {
 export function resolveSeatProxy(
   env: NodeJS.ProcessEnv,
   workspaceId: string,
-  seatKey: string
+  seatKey: string,
+  /**
+   * `linkedin_seats.proxy_url` for this seat, as stored. Null or absent means
+   * the account has none and the environment decides.
+   *
+   * PARSED THROUGH THE SAME `parseProxyUrl` AS EVERY OTHER SOURCE, so a value
+   * the launcher could not use is a throw here rather than a null -- the write
+   * path calls this function to validate before storing, and both ends of that
+   * therefore agree by construction rather than by two copies of the rules.
+   */
+  stored?: string | null
 ): SeatProxy | null {
+  const configured = stored?.trim();
+  if (configured) return parseProxyUrl("This account's own proxy setting", configured);
+
   const mapped = proxyFromMap(env, workspaceId, seatKey);
   if (mapped) return parseProxyUrl(mapped.source, mapped.raw);
 
@@ -3172,7 +3366,7 @@ const NOISE_URLS: readonly string[] = [
  * that times out: all of them land here and are dropped. The caller's own
  * first `goto` is the one that matters and it happens either way.
  */
-async function warmUpSession(page: unknown, seed: string, log: (message: string) => void): Promise<void> {
+export async function warmUpSession(page: unknown, seed: string, log: (message: string) => void): Promise<void> {
   const target = page as {
     goto?: (url: string, options?: { waitUntil?: 'domcontentloaded'; timeout?: number }) => Promise<unknown>;
     waitForTimeout?: (ms: number) => Promise<void>;
@@ -3200,10 +3394,175 @@ async function warmUpSession(page: unknown, seed: string, log: (message: string)
   }
 }
 
+/**
+ * The remote half of {@link openBrowser}: a cloud browser, one context per
+ * seat, with that seat's session restored into it.
+ *
+ * THREE THINGS THIS DOES THAT THE LOCAL PATH GETS FOR FREE FROM A DIRECTORY:
+ *
+ *   1. RESTORES THE SESSION. There is no user-data-dir out there, so the
+ *      seat's cookies come from `linkedin_seat_sessions` (sealed, migration
+ *      065) and go into `newContext({ storageState })` before the first
+ *      request leaves the browser. Without this, every run is a brand-new
+ *      device sign-in -- the loudest challenge signal LinkedIn has, and the
+ *      exact thing the local worker's host pin exists to avoid.
+ *   2. REFUSES WITHOUT A PROXY. `openSeatBrowser` will not attach a seat that
+ *      has no proxy, because a cloud browser's shared datacentre address is
+ *      the fastest way to get a LinkedIn account restricted, and "we could not
+ *      honour the proxy" must never resolve to "connect from there anyway".
+ *      The seat's work simply stays due.
+ *   3. DEGRADES TO "NEEDS RE-LOGIN", NEVER TO AN UNAUTHENTICATED RUN. A stored
+ *      state that will not open, has expired, or carries no sign-in cookie is
+ *      reported and dropped, and the seat then signs itself in with the stored
+ *      credential exactly as a first run does.
+ *
+ * NEVER THROWS, same contract as its caller: every failure is a logged
+ * sentence and a null, because both callers are loops.
+ */
+async function openRemoteSeatHandle(input: {
+  settings: ReturnType<typeof browserProviderSettings>;
+  playwright: PlaywrightLike;
+  db: Db | null;
+  workspaceId: string;
+  seatKey: string;
+  handleKey: string;
+  headless: boolean;
+  profileDir: string;
+  fingerprint: SeatContextFingerprint;
+  proxy: SeatProxy | null;
+  env: NodeJS.ProcessEnv;
+  log: (message: string) => void;
+}): Promise<BrowserHandle | null> {
+  // THE SESSION IS READ BEFORE THE BROWSER IS OPENED, so a seat whose stored
+  // state has expired pays a column read rather than a remote attach.
+  let storageState: BrowserStorageState | null = null;
+  if (input.db) {
+    const stored = await readSeatStorageState(input.db, input.workspaceId, input.seatKey, { env: input.env });
+    if (stored.status === 'ok') storageState = stored.state;
+    else if (stored.status === 'needs_login') {
+      logOncePerSeat(
+        input.log,
+        `session:${stored.reason}`,
+        input.workspaceId,
+        input.seatKey,
+        `must sign in again: ${stored.reason}.`,
+        new Date()
+      );
+      // The unusable row goes, so the next pass does not re-read and re-report
+      // the same dead session forever.
+      await clearSeatStorageState(input.db, input.workspaceId, input.seatKey);
+    }
+  }
+
+  const opened = await openSeatBrowser(
+    input.playwright as ProviderDriver,
+    input.settings,
+    {
+      workspaceId: input.workspaceId,
+      seatKey: input.seatKey,
+      headless: input.headless,
+      profileDir: input.profileDir,
+      fingerprint: input.fingerprint,
+      proxy: input.proxy,
+      storageState,
+      args: ['--disable-blink-features=AutomationControlled'],
+      ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
+      channels: BROWSER_CHANNELS
+    },
+    input.log
+  );
+  if ('refused' in opened) {
+    // ONCE PER SEAT PER WINDOW. On a hosted fleet "this seat has no proxy" is a
+    // steady state somebody has to fix, not a per-minute incident.
+    logOncePerSeat(input.log, `remote:${opened.refused}`, input.workspaceId, input.seatKey, opened.refused, new Date());
+    return null;
+  }
+
+  const session = opened.session;
+  try {
+    // BEFORE ANY NAVIGATION, exactly as the local path does it: the context
+    // opens on `about:blank`, so the first request LinkedIn sees already
+    // carries a user agent and a `Sec-CH-UA*` set that agree with each other.
+    await alignClientHints(session.context, session.page, input.fingerprint, input.log);
+    setHumanSessionSalt(`${input.handleKey}:${new Date().toISOString().slice(0, 13)}`);
+    await warmUpSession(session.page, input.handleKey, input.log);
+    browserUseSeq += 1;
+    const handle: BrowserHandle = {
+      page: session.page as LinkedInPage,
+      headless: input.headless,
+      lastUsedAt: Date.now(),
+      usedSeq: browserUseSeq,
+      provider: 'remote',
+      exportStorageState: session.exportStorageState,
+      close: async () => {
+        await session.close();
+      }
+    };
+    await evictSurplusBrowsers(input.handleKey);
+    browsers.set(input.handleKey, handle);
+    return handle;
+  } catch (cause) {
+    // A remote session left open is a metered session left running as well as a
+    // leaked handle, so nothing returns null from here without closing it.
+    try {
+      await session.close();
+    } catch {
+      // Already gone. Not a reason to withhold the answer.
+    }
+    input.log(
+      `LinkedIn seat ${input.workspaceId}/${input.seatKey}: attached a remote browser and then closed it, because it could not be prepared for use (${cause instanceof Error ? cause.message : String(cause)}).`
+    );
+    return null;
+  }
+}
+
+/**
+ * Write this seat's signed-in state back, after a run that used it.
+ *
+ * LOCAL HANDLES ARE A NO-OP, and that is the whole reason this is a function
+ * rather than an inline call: the local path's session lives in its profile
+ * directory and must not acquire a second home.
+ *
+ * NEVER THROWS AND NEVER FAILS A RUN. The work is already done by the time
+ * this is called; losing the session costs the next run a sign-in, which is a
+ * cost worth paying rather than a reason to turn a completed batch into a
+ * failed one.
+ */
+export async function persistSeatSession(
+  db: Db,
+  workspaceId: string,
+  seatKey: string,
+  log: (message: string) => void = () => {},
+  env: NodeJS.ProcessEnv = process.env
+): Promise<boolean> {
+  const handle = browsers.get(seatHandleKey(workspaceId, seatKey));
+  if (!handle || handle.provider !== 'remote' || !handle.exportStorageState) return false;
+  try {
+    const state = await handle.exportStorageState();
+    if (!state) return false;
+    return await saveSeatStorageState(db, { workspaceId, seatKey, state, env });
+  } catch (cause) {
+    log(
+      `LinkedIn seat ${workspaceId}/${seatKey}: could not store this run's browser session (${cause instanceof Error ? cause.message : String(cause)}); the next run will sign in again.`
+    );
+    return false;
+  }
+}
+
 export async function openBrowser(
   config: LinkedInLocalWorkerConfig,
   log: (message: string) => void,
   options: {
+    /**
+     * REQUIRED, and nullable rather than optional ON PURPOSE.
+     *
+     * The seat's own proxy (migration 062) lives in the database, and this
+     * function is what hands Chromium a proxy. A caller that cannot supply a
+     * database has to say so in as many characters as supplying one, so no
+     * call site can omit it by accident and quietly open a direct connection
+     * for a seat that was configured never to have one.
+     */
+    db: Db | null;
     workspaceId: string;
     seatKey?: string;
     headless?: boolean;
@@ -3250,7 +3609,11 @@ export async function openBrowser(
   // address in the meantime.
   let proxy: SeatProxy | null;
   try {
-    proxy = resolveSeatProxy(options.env ?? process.env, options.workspaceId, seatKey);
+    // THE ACCOUNT'S OWN SETTING FIRST, the environment second. A failure to
+    // read the column lands in the same catch as an unusable proxy: "we could
+    // not find out whether this seat has one" is not "it has none".
+    const stored = options.db ? await seatProxyUrl(options.db, options.workspaceId, seatKey) : null;
+    proxy = resolveSeatProxy(options.env ?? process.env, options.workspaceId, seatKey, stored);
   } catch (cause) {
     log(
       `LinkedIn local worker will not open a browser for seat '${seatKey}': ${cause instanceof Error ? cause.message : String(cause)} A seat with a configured proxy is never connected directly.`
@@ -3259,6 +3622,34 @@ export async function openBrowser(
   }
 
   const fingerprint = seatContextFingerprint(options.workspaceId, seatKey, options.timezone ?? null);
+
+  // WHERE THE BROWSER IS, DECIDED HERE AND NOWHERE ELSE.
+  //
+  // Everything above this line -- the handle map, the mode check, the profile
+  // directory, the proxy resolution, the fingerprint -- is identical for both
+  // providers, because all of it is about the SEAT rather than about the
+  // machine. What differs below is only how a context comes into existence:
+  // launched here at a directory on this disk, or attached to over CDP in
+  // somebody else's datacentre. `browser/provider.ts` owns that difference and
+  // the refusals that come with it.
+  const providerSettings = browserProviderSettings(options.env ?? process.env);
+  if (providerSettings.kind === 'remote' || providerSettings.problem) {
+    return openRemoteSeatHandle({
+      settings: providerSettings,
+      playwright,
+      db: options.db,
+      workspaceId: options.workspaceId,
+      seatKey,
+      handleKey,
+      headless,
+      profileDir,
+      fingerprint,
+      proxy,
+      env: options.env ?? process.env,
+      log
+    });
+  }
+
   try {
     const contextOptions = (channel: string): Record<string, unknown> => ({
       headless,
@@ -3361,6 +3752,10 @@ export async function openBrowser(
         headless,
         lastUsedAt: Date.now(),
         usedSeq: browserUseSeq,
+        provider: 'local',
+        // Null on purpose and not an oversight -- see the field's own comment.
+        // The profile directory this context was launched at is the session.
+        exportStorageState: null,
         close: async () => {
           await context.close();
         }
@@ -3569,6 +3964,7 @@ export async function loginLinkedInSeat(
     const mode = seatBrowserMode(config);
     if (mode.blocked) return { status: 'failed', message: mode.blocked };
     const handle = await openBrowser(config, log, {
+      db,
       workspaceId: options.workspaceId,
       seatKey,
       headless: mode.headless,
@@ -3600,6 +3996,11 @@ export async function loginLinkedInSeat(
       },
       now
     );
+    // REFRESHED EVEN THOUGH NOTHING SIGNED IN. LinkedIn rotates its own cookies
+    // as a session is used, so a remote seat that only ever reuses would drift
+    // towards a stored state older than the live one and eventually restore a
+    // session LinkedIn has already retired. A no-op for a local handle.
+    await persistSeatSession(db, options.workspaceId, seatKey, log);
     return { status: 'ok', message: 'That LinkedIn session is still live, so nothing had to be signed in.' };
   }
 
@@ -3658,11 +4059,26 @@ export async function loginLinkedInSeat(
       },
       now
     );
-    return { status: 'ok', message: 'Signed in to LinkedIn; that session is now stored in the browser profile.' };
+    // THE MOMENT WORTH STORING. A remote browser has no profile directory, so
+    // without this line the sign-in that just happened would have to happen
+    // again on the next run -- and a new-device sign-in on every run is the
+    // loudest challenge signal LinkedIn has. A no-op for a local handle, whose
+    // profile directory already holds it.
+    const stored = await persistSeatSession(db, options.workspaceId, seatKey, log);
+    return {
+      status: 'ok',
+      message: stored
+        ? 'Signed in to LinkedIn; that session is now stored for this seat.'
+        : 'Signed in to LinkedIn; that session is now stored in the browser profile.'
+    };
   }
   if (result.failureKind === 'challenge') {
     const message = 'LinkedIn wants a device check that only a person at a browser window can finish; run `npm run linkedin:worker` on a machine with a display, then complete it in that window.';
     challengedSeats.set(seatHandleKey(options.workspaceId, seatKey), { until: now.getTime() + CHALLENGE_RETRY_COOLDOWN_MS, message });
+    // A CHALLENGED SESSION IS NOT A SESSION. Restoring the state that was in
+    // the browser when LinkedIn stopped it would replay the challenge on every
+    // run; the seat starts clean next time and signs in again.
+    await clearSeatStorageState(db, options.workspaceId, seatKey);
     await recordSeatEvent(
       db,
       { workspaceId: options.workspaceId, seatKey, kind: 'challenge', url: typeof page.url === 'function' ? page.url() : null, detail: message },
@@ -3726,6 +4142,7 @@ export async function openLinkedInSession(
   if (mode.blocked) return { ok: false, blocked: mode.blocked };
 
   const handle = await openBrowser(config, log, {
+    db,
     workspaceId: options.workspaceId,
     seatKey,
     headless: mode.headless,
@@ -3919,6 +4336,21 @@ export async function runDueLinkedInActions(
      * seats cannot keep one Chromium per seat alive.
      */
     closeAfterBatch?: boolean;
+    /**
+     * May this worker serve this seat at all? Absent means yes, always.
+     *
+     * THE HOSTED AUTHORISATION GATE, INJECTED RATHER THAN IMPORTED. On a
+     * self-hosted deployment this is absent and the loop is byte-for-byte the
+     * loop it always was -- no extra query per seat, no new failure mode. On a
+     * hosted one it is `hostedSeatFilter`, which answers false for every
+     * workspace that has not authorised Trevra to act on its LinkedIn account
+     * from Trevra's own servers.
+     *
+     * CHECKED BEFORE THE LEASE AND BEFORE THE BROWSER, so an unauthorised
+     * workspace costs one cached lookup rather than a claim it would have to
+     * give back.
+     */
+    allowSeat?: (seat: { workspaceId: string; seatKey: string }) => Promise<boolean> | boolean;
   } = {}
 ): Promise<LocalBatchResult[]> {
   // The gate first, before anything is imported, opened or queried.
@@ -4007,6 +4439,14 @@ export async function runDueLinkedInActions(
     // workspaces it is an unanswerable question.
     const say = seatLogger(log, workspaceId, seatKey);
 
+    // BEFORE THE POSTURE, THE LEASE AND THE BROWSER: may this deployment act on
+    // this workspace's account AT ALL? Absent on every self-hosted install, so
+    // this is a no-op there; on a hosted one it is the recorded authorisation
+    // from that workspace's owner. Silent by design -- a workspace that has not
+    // opted in is not in an error state, and a per-minute line saying so for
+    // every tenant that never asked for hosted execution is noise nobody reads.
+    if (options.allowSeat && !(await options.allowSeat({ workspaceId, seatKey }))) return;
+
     // THE POSTURE IS READ FROM DISCOVERY, BEFORE A BROWSER EXISTS.
     //
     // `runLinkedInLocalBatch` checks it too and always will -- it is re-read
@@ -4066,7 +4506,12 @@ export async function runDueLinkedInActions(
     const sessionSeed = `${handleKey}:session:${sessionIndex}`;
     let restAfterBatch = false;
 
-    const profileDir = resolveProfileDir(config.profileDir, workspaceId, seatKey);
+    // A DIRECTORY ON THIS DISK, OR A PROVIDER'S NAME. Which one decides whether
+    // the lease pins this seat to this host -- see `claimSeatLease`. Passing
+    // the profile directory unconditionally would have pinned every hosted seat
+    // to whichever pod claimed it first, permanently, for a session that is not
+    // on that pod's disk at all.
+    const profileDir = seatSessionHome(config, workspaceId, seatKey);
     let lease: SeatLeaseOutcome;
     try {
       lease = await claimSeatLease(db, { workspaceId, seatKey, workerId, host, profileDir, leaseMs: seatLeaseMs }, now);
@@ -4097,6 +4542,7 @@ export async function runDueLinkedInActions(
     try {
       // Opened lazily and once per SEAT, only after there is one to serve.
       const handle = await openBrowser(config, say, {
+        db,
         workspaceId,
         seatKey,
         headless: headlessOnly,
@@ -4227,6 +4673,12 @@ export async function runDueLinkedInActions(
       // other accounts rather than ending the tick.
       say(`failed: ${cause instanceof Error ? cause.message : String(cause)}`);
     } finally {
+      // THE SESSION IS WRITTEN BACK BEFORE THE BROWSER IS CLOSED, and in the
+      // `finally` rather than on the success path: a batch that failed halfway
+      // still signed in, still has live cookies, and losing them would cost the
+      // next run a fresh sign-in for no reason. A no-op for a local handle,
+      // whose session is its profile directory. Never throws.
+      await persistSeatSession(db, workspaceId, seatKey, say);
       clearInterval(heartbeat);
       // The lease is RELEASED, not deleted: the row is also the record of which
       // host holds this seat's Chrome profile, and that outlives this pass.
@@ -4367,6 +4819,7 @@ export async function detectLinkedInSeat(
     const mode = seatBrowserMode(config);
     if (mode.blocked) return refuse(mode.blocked);
     const handle = await openBrowser(config, log, {
+      db,
       workspaceId: options.workspaceId,
       seatKey,
       headless: mode.headless,

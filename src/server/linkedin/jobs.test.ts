@@ -8,6 +8,7 @@ import { syncThreads } from './inbox.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
 import { setSeatRestingUntil } from './seat-events.js';
 import { upsertSeat } from './seats.js';
+import { MAX_TASKS_PER_VISIT, markSideTaskRun, visitsForDay } from './side-tasks.js';
 import { DEFAULT_STALE_AFTER_DAYS } from './withdraw.js';
 
 /**
@@ -434,6 +435,18 @@ describe('how often the side-task tick touches LinkedIn', () => {
     };
   }
 
+  /**
+   * When this seat opens LinkedIn on the test's Tuesday, and the first of
+   * those visits.
+   *
+   * Derived from the same function the tick uses rather than hardcoded: the
+   * SCHEDULE is asserted in `side-tasks.test.ts`, and what is under test here
+   * is what the tick does with it.
+   */
+  const VISIT_STARTS = visitsForDay(`${WORKSPACE_ID}:owner`, { year: 2026, month: 8, day: 4 }, { startMinute: 480, endMinute: 1080 })
+    .map((visit) => new Date(Date.UTC(2026, 7, 4, Math.floor(visit.startMinute / 60), visit.startMinute % 60)));
+  const VISIT_AT = VISIT_STARTS[0] as Date;
+
   /** Every real driver starts with a navigation, so this fails all five of them fast. */
   const page = {
     goto: async () => {
@@ -458,45 +471,75 @@ describe('how often the side-task tick touches LinkedIn', () => {
     );
   }
 
-  it('runs every job on the first pass and none of them a minute later', async () => {
+  it('does at most two things per visit, and nothing on the ticks in between', async () => {
     await connectedSeat();
-    const { driver } = tickDriver();
 
-    const first = await tick(NOW, driver);
+    const first = await tick(VISIT_AT, tickDriver().driver);
     expect(first.skipped).toBeNull();
-    expect(first.ran.sort()).toEqual(['acceptance', 'inbox', 'lead_sources', 'pending_invites', 'withdrawals']);
+    expect(first.ran).toHaveLength(MAX_TASKS_PER_VISIT);
 
-    // The next worker tick, sixty seconds later. THIS is the defect: it used to
-    // do the whole thing again, and again, 1,440 times a day.
-    const second = await tick(new Date(NOW.getTime() + 60_000), tickDriver().driver);
+    // The next worker tick, sixty seconds later and STILL INSIDE THE SAME
+    // VISIT. This is where the cap silently became "two per minute": the two
+    // jobs just stamped are no longer stale, so the next two would be picked,
+    // warmed up for and identity-checked all over again.
+    const second = await tick(new Date(VISIT_AT.getTime() + 60_000), tickDriver().driver);
     expect(second.ran).toEqual([]);
-    expect(second.skipped).toBe('Nothing is due for this seat yet.');
+    expect(second.skipped).toContain('already happened');
 
-    // The next working morning, inside the window again: every band has
-    // elapsed, so everything is due. Nothing here is "never runs again".
-    const tomorrow = await tick(new Date(NOW.getTime() + 24 * 3_600_000), tickDriver().driver);
-    expect(tomorrow.ran.sort()).toEqual(['acceptance', 'inbox', 'lead_sources', 'pending_invites', 'withdrawals']);
+    // A minute after that, outside every visit: LinkedIn is not open at all.
+    const between = await tick(new Date(VISIT_AT.getTime() + 30 * 60_000), tickDriver().driver);
+    expect(between.ran).toEqual([]);
+    expect(between.skipped).toContain('none of them is now');
   });
 
-  it('confirms whose account this is ONCE for the pass, not once per job', async () => {
+  it('picks up the rest of the list on the next visit, so nothing is starved', async () => {
+    await connectedSeat();
+
+    const done = new Set<string>();
+    for (const at of VISIT_STARTS) {
+      const result = await tick(at, tickDriver().driver);
+      for (const task of result.ran) done.add(task);
+    }
+
+    expect([...done].sort()).toEqual(['acceptance', 'inbox', 'lead_sources', 'pending_invites', 'withdrawals']);
+  });
+
+  it('confirms whose account this is ONCE for the visit, not once per job', async () => {
     await connectedSeat();
     const { driver, calls } = tickDriver();
 
-    await tick(NOW, driver);
+    await tick(VISIT_AT, driver);
 
     // Two jobs confirm identity independently, and each confirmation is a
     // profile load. They cannot disagree: same browser, same page, seconds
     // apart.
-    expect(calls.filter((call) => call === 'readSeat')).toHaveLength(1);
+    expect(calls.filter((call) => call === 'readSeat').length).toBeLessThanOrEqual(1);
   });
 
   it('never asks for the connection count, which is a second page load for a number nobody reads', async () => {
     await connectedSeat();
     const { driver, readOptions } = tickDriver();
 
-    await tick(NOW, driver);
+    await tick(VISIT_AT, driver);
 
-    expect(readOptions).toEqual([{ skipConnections: true }]);
+    for (const options of readOptions) expect(options).toEqual({ skipConnections: true });
+  });
+
+  it('loads no profile for a visit that reads nobody else\'s data', async () => {
+    await connectedSeat();
+    // Everything is freshly run except the pending-invite sync, which reads
+    // this account's OWN sent list and has never needed to know who is signed
+    // in. Hoisting the identity check to the visit would have handed it one.
+    for (const task of ['inbox', 'acceptance', 'withdrawals', 'lead_sources'] as const) {
+      await markSideTaskRun(db, WORKSPACE_ID, 'owner', task, VISIT_AT);
+    }
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', 'pending_invites', new Date(VISIT_AT.getTime() - 8 * 3_600_000));
+    const { driver, calls } = tickDriver();
+
+    const result = await tick(VISIT_AT, driver);
+
+    expect(result.ran).toEqual(['pending_invites']);
+    expect(calls).toEqual([]);
   });
 
   it('opens no browser at 03:00 -- nobody reads their LinkedIn inbox at three in the morning', async () => {
@@ -512,10 +555,10 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
   it('opens no browser while the seat is between sittings', async () => {
     await connectedSeat();
-    await setSeatRestingUntil(db, WORKSPACE_ID, 'owner', new Date(NOW.getTime() + 30 * 60_000));
+    await setSeatRestingUntil(db, WORKSPACE_ID, 'owner', new Date(VISIT_AT.getTime() + 30 * 60_000));
     const { driver, calls } = tickDriver();
 
-    const result = await tick(NOW, driver);
+    const result = await tick(VISIT_AT, driver);
 
     expect(calls).toEqual([]);
     expect(result.skipped).toContain('between sittings');
