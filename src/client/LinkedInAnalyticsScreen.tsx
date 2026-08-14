@@ -12,9 +12,9 @@ import { FunnelBars, LiStat } from './LinkedInViz';
  * funnel, a per-campaign table, and a daily volume chart that the Seat screen
  * already drew from the same route. It is gone as a destination. The funnel is
  * a loop-level question -- how far does what goes out actually get -- so the
- * shell renders `LinkedInFunnel` on `#/loop`; the per-campaign table is a
+ * shell renders `LinkedInFunnel` on `/loop`; the per-campaign table is a
  * campaign question, so `LinkedInCampaignBreakdown` renders under
- * `#/outreach/campaigns`; the chart stayed where it was.
+ * `/outreach/campaigns`; the chart stayed where it was.
  *
  * THE TWO WINDOWS PROBLEM IS SOLVED BY THE SPLIT, NOT HIDDEN BY IT.
  * `linkedinAnalytics` computes `total` and `byCampaign` over every action the
@@ -75,7 +75,7 @@ function ReadFailure({ message, loading, onRetry }: { message: string; loading: 
 /**
  * planned → exported → sent → accepted → replied, for the whole workspace.
  *
- * Rendered by the shell on `#/loop`, where it answers the second stage of the
+ * Rendered by the shell on `/loop`, where it answers the second stage of the
  * loop -- what goes out, and how far does it get -- for somebody who has not
  * opened Outreach and may not know the word “funnel” applies to a LinkedIn
  * seat. It is therefore self-contained: it reads its own numbers, names its
@@ -111,7 +111,7 @@ export function LinkedInFunnel() {
           <TrendingUp size={26} />
           <h4 aria-level={3}>Nothing has gone out yet</h4>
           <p>A slot enters this ledger when an approved plan is exported. Build a campaign and the funnel fills itself in.</p>
-          <a className="primary-button" href="#/outreach/campaigns" style={{ textDecoration: 'none' }}>Build a campaign</a>
+          <a className="primary-button" href="/outreach/campaigns" style={{ textDecoration: 'none' }}>Build a campaign</a>
         </div>
         : <>
           <FunnelBars stages={[
@@ -137,7 +137,7 @@ export function LinkedInFunnel() {
             <b>Planned</b> and <b>exported</b> are facts: Trevra wrote those rows. <b>Sent</b>, <b>accepted</b> and{' '}
             <b>replied</b> are reported — you mark them on the queue, or the local worker files them after it acted.
             Trevra never reads LinkedIn to confirm one, so an outcome nobody reported is missing here rather than wrong.{' '}
-            <a className="li-link" href="#/outreach/queue">Mark outcomes on the queue</a>
+            <a className="li-link" href="/outreach/queue">Mark outcomes on the queue</a>
           </p>
         </>}
   </section>;

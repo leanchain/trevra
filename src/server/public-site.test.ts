@@ -87,10 +87,22 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
     expect(renderAppIndex(markup, 'test-nonce')).not.toContain('javascript:');
   });
 
+  /**
+   * TWO FALLBACKS, AND THEY MEAN DIFFERENT THINGS.
+   *
+   * The hero and closing CTAs say "Launch hosted workspace" and fall back to
+   * `#hosted`, the deploy card -- the honest next step when no hosted
+   * workspace is configured. The NAV button says Login and falls back to
+   * `/login`, the auth screen's own address, because "Login" scrolling the
+   * page is the bug that made a pre-JS visitor think the button was dead.
+   * Both are `data-hosted-cta`: where a hosted workspace IS configured, it is
+   * the better destination for either.
+   */
   it('rewrites every marked CTA the shipped index.html actually carries', () => {
     const shipped = indexHtml.match(/<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi) ?? [];
     expect(shipped.length).toBeGreaterThan(0);
-    for (const tag of shipped) expect(tag).toContain('href="#hosted"');
+    for (const tag of shipped) expect(tag).toMatch(/href="(?:#hosted|\/login)"/);
+    expect(shipped.filter((tag) => tag.includes('href="/login"'))).toHaveLength(1);
 
     process.env.VITE_HOSTED_APP_URL = HOSTED;
     const rendered = renderAppIndex(indexHtml, 'test-nonce');
@@ -102,11 +114,13 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
     expect(rendered).not.toContain('<!-- TREVRA_JSON_LD -->');
   });
 
-  it('leaves the shipped CTAs on their scroll fallback when nothing is configured', () => {
+  it('leaves the shipped CTAs on their own fallback when nothing is configured', () => {
     const rendered = renderAppIndex(indexHtml, 'test-nonce');
     const marked = rendered.match(/<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi) ?? [];
     expect(marked.length).toBeGreaterThan(0);
-    for (const tag of marked) expect(tag).toContain('href="#hosted"');
+    for (const tag of marked) expect(tag).toMatch(/href="(?:#hosted|\/login)"/);
+    // The nav's Login keeps naming the auth screen rather than a scroll target.
+    expect(marked.filter((tag) => tag.includes('href="/login"'))).toHaveLength(1);
   });
 });
 

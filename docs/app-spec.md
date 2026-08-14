@@ -74,11 +74,11 @@ making these fast.
 
 | Screen | Hash | The one question it answers | Default? |
 |---|---|---|---|
-| **Loop** | `#/loop` | What is the loop doing, and where is it stuck? | Yes |
-| **Outreach** | `#/outreach` | What goes out, at what pace, and is the seat safe? | |
-| **Money** | `#/money` | What was agreed, delivered, billed and paid — and what wasn't, and why? | |
-| **Ledger** | `#/ledger` | What did the agent actually do, with the evidence — and can I take it with me? | |
-| **Setup** | `#/setup` | What can reach my workspace, what may it spend, what may it do? | |
+| **Loop** | `/loop` | What is the loop doing, and where is it stuck? | Yes |
+| **Outreach** | `/outreach` | What goes out, at what pace, and is the seat safe? | |
+| **Money** | `/money` | What was agreed, delivered, billed and paid — and what wasn't, and why? | |
+| **Ledger** | `/ledger` | What did the agent actually do, with the evidence — and can I take it with me? | |
+| **Setup** | `/setup` | What can reach my workspace, what may it spend, what may it do? | |
 
 **The rule the number was standing in for:** every item in the nav is a place a
 founder goes *repeatedly*, and nothing else gets in. Sub-routes are not nav
@@ -98,7 +98,7 @@ is not in this table.
 | Modules | **Setup → Skills** | Reference material, plus the two verbs that were missing: Inspect, and Revoke access. |
 | Autopilot | **Setup → Limits** | Set once, edited rarely. |
 | Connections | **Setup → Connections** | Same. |
-| LinkedIn tab strip (7 tabs) | **`#/outreach/*` and `#/setup/*`** | Five are the engine; Setup and Exclusions are configured once and moved to Setup. |
+| LinkedIn tab strip (7 tabs) | **`/outreach/*` and `/setup/*`** | Five are the engine; Setup and Exclusions are configured once and moved to Setup. |
 | Two kill switches | **One `StopBar` in the shell** | Two stop controls in two visual languages, neither admitting the other existed. |
 | Publisher / SBOM / Ed25519 | **Out of the app** | Developer tooling. Belongs in the CLI and docs, not a founder's nav. |
 

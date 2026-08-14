@@ -280,7 +280,7 @@ export interface SeatLimitsRead {
  * the single source of provenance: this hook derives no ceiling of its own,
  * and what it could not read stays null rather than rendering as zero.
  */
-export function useSeatLimits(): SeatLimitsRead {
+export function useSeatLimits(seatKey?: string): SeatLimitsRead {
   const [limits, setLimits] = useState<LinkedInLimitsReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -288,14 +288,18 @@ export function useSeatLimits(): SeatLimitsRead {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      setLimits(await getLinkedInLimits());
+      // WHICH ACCOUNT'S CEILINGS. Omitted, the route answers for the
+      // workspace's first account -- which is the right default for a caller
+      // that has no account in hand, and the wrong answer for a screen sitting
+      // under the account switcher.
+      setLimits(await getLinkedInLimits(seatKey));
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to read this seat’s ceilings. Nothing was changed — try again.'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [seatKey]);
 
   useEffect(() => { void reload(); }, [reload]);
   useOutreachRefresh(reload);
@@ -463,47 +467,114 @@ export interface SeatStop {
  * shell which forgot to render the field still cannot pause without one.
  */
 export function useSeatStop(): SeatStop {
-  const { limits, loading, error, reload } = useSeatLimits();
+  const { limits, loading, error, reload: reloadLimits } = useSeatLimits();
+  /**
+   * EVERY ACCOUNT, NOT THE FIRST ONE.
+   *
+   * `GET /api/linkedin/limits` reports on ONE seat -- the workspace's first --
+   * so a stop built on it alone paused the primary account and left every
+   * secondary one sending. That is the exact failure this bar exists to
+   * prevent, and it is worse than no bar: `AccountPanel` tells the operator of
+   * a secondary account that "the Stop bar at the top of every screen does
+   * both", so the one control they were pointed at silently did nothing for
+   * them. `GET /api/linkedin/manager/seats` is the list of accounts that can
+   * still act; every row it returns is a configured seat.
+   *
+   * Null means the list has not been read (or the read failed), and the
+   * primary-only reading below is the fallback -- degraded, never absent: a
+   * kill switch that renders nothing because a list call failed is a kill
+   * switch that is missing at the one moment it is needed.
+   */
+  const [seats, setSeats] = useState<LinkedInSeat[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState('');
 
-  const seat = limits?.seat ?? null;
+  const reloadSeats = useCallback(async () => {
+    try { setSeats(await getLinkedInManagerSeats()); }
+    catch { /* Falls back to the primary seat below rather than blanking the control. */ }
+  }, []);
+
+  const reload = useCallback(async () => {
+    await Promise.all([reloadLimits(), reloadSeats()]);
+  }, [reloadLimits, reloadSeats]);
+
+  useEffect(() => { void reloadSeats(); }, [reloadSeats]);
+  useOutreachRefresh(reloadSeats);
+
+  const primary = limits?.seat ?? null;
+  const known = seats && seats.length > 0 ? seats : null;
+  const live = known?.filter((row) => row.posture !== 'paused') ?? null;
+  const configured = known ? true : Boolean(primary?.configured);
+  // Paused means NOTHING CAN STILL ACT. With one account still running the bar
+  // must keep offering the stop, which is what `StopBar` derives from this.
+  const paused = live ? live.length === 0 : primary?.posture === 'paused';
+  const pausedReason = known
+    ? known.find((row) => row.posture === 'paused')?.pausedReason ?? null
+    : primary?.pausedReason ?? null;
+
+  /**
+   * One call per account that is not already in the state being asked for, all
+   * at once, and each answer kept.
+   *
+   * `allSettled`, not `all`: a workspace where three accounts paused and the
+   * fourth did not must say which one is still running, not report the whole
+   * stop as failed and not report it as done.
+   */
+  const applyToSeats = useCallback(async (
+    targets: LinkedInSeat[] | null,
+    act: (seatKey: string | undefined) => Promise<unknown>,
+    failedCopy: string
+  ): Promise<boolean> => {
+    const keys: Array<string | undefined> = targets ? targets.map((row) => row.seatKey) : [undefined];
+    if (keys.length === 0) return true;
+    const settled = await Promise.allSettled(keys.map((key) => act(key)));
+    const broken = settled
+      .map((outcome, index) => ({ outcome, label: targets?.[index]?.label ?? targets?.[index]?.seatKey ?? null }))
+      .filter((entry) => entry.outcome.status === 'rejected');
+    if (broken.length === 0) return true;
+    const named = broken.map((entry) => entry.label).filter((label): label is string => Boolean(label));
+    setFailure(named.length > 0 ? `${failedCopy} Still not changed: ${named.join(', ')}.` : failedCopy);
+    return false;
+  }, []);
 
   const pause = useCallback(async (reason: string) => {
     if (!reason.trim()) { setFailure(SEAT_STOP_COPY.reasonRequired); return false; }
     setBusy(true);
     setFailure('');
     try {
-      await pauseLinkedInSeat(reason.trim());
+      const ok = await applyToSeats(live, (seatKey) => pauseLinkedInSeat(reason.trim(), seatKey), SEAT_STOP_COPY.pauseFailed);
       // Every mounted outreach screen is now describing a seat that stopped.
       await reloadOutreach();
-      return true;
+      await reloadSeats();
+      return ok;
     } catch (err) {
       setFailure(errorMessage(err, SEAT_STOP_COPY.pauseFailed));
       return false;
     } finally { setBusy(false); }
-  }, []);
+  }, [applyToSeats, live, reloadSeats]);
 
   const resume = useCallback(async () => {
     setBusy(true);
     setFailure('');
     try {
-      await resumeLinkedInSeat();
+      const stopped = known?.filter((row) => row.posture === 'paused') ?? null;
+      const ok = await applyToSeats(stopped, (seatKey) => resumeLinkedInSeat(seatKey), SEAT_STOP_COPY.resumeFailed);
       await reloadOutreach();
-      return true;
+      await reloadSeats();
+      return ok;
     } catch (err) {
       // The caller keeps its drawer open on a failure: closing it would leave
       // the operator unable to tell whether outreach restarted.
       setFailure(errorMessage(err, SEAT_STOP_COPY.resumeFailed));
       return false;
     } finally { setBusy(false); }
-  }, []);
+  }, [applyToSeats, known, reloadSeats]);
 
   return {
-    configured: Boolean(seat?.configured),
-    paused: seat?.posture === 'paused',
-    posture: seat?.posture ?? null,
-    pausedReason: seat?.pausedReason ?? null,
+    configured,
+    paused,
+    posture: paused ? 'paused' : primary?.posture ?? known?.[0]?.posture ?? null,
+    pausedReason,
     loading,
     busy,
     readError: error,
@@ -886,7 +957,7 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
           </p>
           {/* A real link, not a callback: the account lives on its own route,
               so "go and set one up" is a URL a teammate can be sent. */}
-          <a className="primary-button" href="#/setup/seat" style={{ textDecoration: 'none' }}>
+          <a className="primary-button" href="/setup/seat" style={{ textDecoration: 'none' }}>
             <Settings2 size={15} /> Set up the account
           </a>
         </div>
@@ -1210,7 +1281,7 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
   const hours = config ? hoursStateOf(config, now) : null;
   const throttleFactor = report?.signals.acceptance.throttleFactor ?? null;
   // Naming the account before following the link: the account screen edits
-  // whichever account is currently selected, and `#/setup/seat` carries no key.
+  // whichever account is currently selected, and `/setup/seat` carries no key.
   const [, selectAccount] = useActiveSeatKey();
   const openThisAccount = () => selectAccount(account.key);
 
@@ -1353,7 +1424,7 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
         tone: 'danger' as const,
         title: 'This account can never act: no working days are set.',
         detail: <>Trevra only acts on the days you tick for an account, and none are ticked, so every automated action is refused before any limit is consulted.</>,
-        lifts: <>When you tick at least one day on <a className="li-link" href="#/setup/seat" onClick={openThisAccount}>this account’s screen</a>.</>
+        lifts: <>When you tick at least one day on <a className="li-link" href="/setup/seat" onClick={openThisAccount}>this account’s screen</a>.</>
       };
     }
     if (hours?.state === 'closed' && config) {
@@ -1503,7 +1574,7 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
       Your own numbers and Trevra’s researched band are <b>two ceilings and both have to pass</b>, which is exactly how
       the check immediately before every action composes them. Your messages number is one pool over direct messages,
       replies and InMail together; Trevra’s is per kind. Yours are editable on{' '}
-      <a className="li-link" href="#/setup/seat" onClick={openThisAccount}>this account’s screen</a>:{' '}
+      <a className="li-link" href="/setup/seat" onClick={openThisAccount}>this account’s screen</a>:{' '}
       {caps.map((cap) => `${cap.label.toLowerCase()} ${cap.range.min}–${cap.range.max}`).join(', ')}
       {caps.every((cap) => cap.range.min === 0) ? ', and 0 switches that action off entirely' : ''}. Every window here is
       the last 24 hours, rolling.

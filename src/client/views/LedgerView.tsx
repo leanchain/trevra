@@ -34,7 +34,7 @@ import {
 } from './inspector';
 
 /* --------------------------------------------------------------------------
- * `#/ledger` -- the thing the landing page sells.
+ * `/ledger` -- the thing the landing page sells.
  *
  * "Complete run ledger" and "Exportable ledger and evidence" are two of the
  * headline claims on the marketing site, and until now the app had no screen
@@ -42,7 +42,7 @@ import {
  * under a marketing sentence about autopilot, behind a playbook launcher that
  * `docs/app-spec.md` §4 had already ruled was not the front door.
  *
- * The launcher moved to `#/setup/skills` under "Run one by hand". The hero
+ * The launcher moved to `/setup/skills` under "Run one by hand". The hero
  * went. What is left is the list, its inspector, and the control that earns
  * the export claim.
  * -------------------------------------------------------------------------- */
@@ -74,7 +74,7 @@ const DAY_FILTERS = [7, 30, 90, 365] as const;
 const isFailed = (status: string) => status === 'failed' || status === 'error' || status === 'cancelled';
 
 export function LedgerView({ runId, setToast, onNavigate }: {
-  /** From `#/ledger/run/:id`. The inspector opens on it and Close returns to the list. */
+  /** From `/ledger/run/:id`. The inspector opens on it and Close returns to the list. */
   runId: string | null;
   setToast: (message: string) => void;
   onNavigate: (path: string) => void;

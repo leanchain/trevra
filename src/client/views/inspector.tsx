@@ -253,7 +253,7 @@ export function defaultsFor(schema: SchemaNode): Record<string, string> {
 /**
  * `auto` is for a deep link.
  *
- * `#/ledger/run/:id` names a run and not which of the three ledgers it is in,
+ * `/ledger/run/:id` names a run and not which of the three ledgers it is in,
  * and it has to work before the list behind it has loaded -- a job started by
  * hand navigates straight to its own URL. So `auto` asks the ledgers in turn
  * rather than making the URL carry a fact the person typing it does not have.

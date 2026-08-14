@@ -37,7 +37,7 @@ import {
 } from './inspector';
 
 /* --------------------------------------------------------------------------
- * `#/setup/skills` -- what your agent can do.
+ * `/setup/skills` -- what your agent can do.
  *
  * The old screen was a wall of read-only cards with a run counter. Its one
  * button rendered only when `module.sourceType === 'community'`, and every

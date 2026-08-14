@@ -944,7 +944,7 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
           <h3 aria-level={2}><ClipboardList size={18} className="li-heading-icon" /> Messages to send yourself</h3>
           <p>Some steps are deliberately yours: write the message in the inbox, send it, then mark it done and the sequence carries on from the next step. Ones already sent, and ones cancelled because their campaign was stopped or the lead was taken out of it, stay on the list so the record is complete.</p>
         </div>
-        <a className="secondary-button" href="#/outreach/inbox"><Inbox size={14} /> Open inbox</a>
+        <a className="secondary-button" href="/outreach/inbox"><Inbox size={14} /> Open inbox</a>
       </div>
       {tasks.length === 0
         ? <p className="empty-copy">Nothing is waiting on you. Steps marked &ldquo;a message you write yourself&rdquo; in a workflow show up here when a lead reaches them.</p>
@@ -991,7 +991,7 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
                     : <p className="mgr-tl-note">This step has no suggested wording. Write it yourself.</p>}
                   {task.status !== 'cancelled' && <div className="mgr-actions">
                     {task.suggestedBody && <button className="secondary-button" type="button" onClick={() => void copyBody(task)}><Copy size={14} /> Copy message</button>}
-                    <a className="secondary-button" href="#/outreach/inbox"><Inbox size={14} /> Send it in the inbox</a>
+                    <a className="secondary-button" href="/outreach/inbox"><Inbox size={14} /> Send it in the inbox</a>
                     {task.profileUrl && <a className="li-link" href={task.profileUrl} target="_blank" rel="noreferrer">Open their LinkedIn profile</a>}
                   </div>}
                 </td></tr> : null
@@ -1010,7 +1010,7 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
         ? <div className="mgr-empty">
           <h4 aria-level={3}>No LinkedIn account yet</h4>
           <p>Campaigns send from a real LinkedIn account. Add one, sign it in, and set the hours it is allowed to work.</p>
-          <div className="mgr-actions"><a className="primary-button" href="#/setup/seat">Set up a LinkedIn account</a></div>
+          <div className="mgr-actions"><a className="primary-button" href="/setup/seat">Set up a LinkedIn account</a></div>
         </div>
         : <div className="mgr-wide"><div className="li-table-scroll"><table className="li-table">
           {/*

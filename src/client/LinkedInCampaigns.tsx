@@ -667,7 +667,7 @@ function BindingCeiling({ limits, loading, error, kind }: {
 }
 
 /**
- * `#/outreach/campaigns` -- assemble a campaign, and read how the others did.
+ * `/outreach/campaigns` -- assemble a campaign, and read how the others did.
  *
  * The ceilings are read here rather than handed down: this screen is its own
  * route now, and `BindingCeiling` below is the whole reason it wants them --
@@ -676,7 +676,7 @@ function BindingCeiling({ limits, loading, error, kind }: {
  */
 export function OutreachCampaigns({ setToast, campaignId = null }: {
   setToast: (message: string) => void;
-  /** From `#/outreach/campaigns/:id`. A link to a campaign has to open it. */
+  /** From `/outreach/campaigns/:id`. A link to a campaign has to open it. */
   campaignId?: string | null;
 }) {
   const { limits, loading: limitsLoading, error: limitsError } = useSeatLimits();
@@ -1317,7 +1317,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
           This is the advanced path, and nothing on it goes out on its own. Use it when you want to run the messages in
           another tool, or when Trevra cannot open a browser for you. For everyday outreach — a lead list, a workflow,
           and a Start button that works through it for you — use{' '}
-          <a className="li-link" href="#/outreach/manager">Campaigns</a>.
+          <a className="li-link" href="/outreach/manager">Campaigns</a>.
         </p>
       </div>
     </section>
@@ -1966,6 +1966,27 @@ function SequenceStepCard({ step, index, total, branchOn, anchorsFor, problem, o
    * hands back an empty field to write in.
    */
   const [noNote, setNoNote] = useState(step.kind === 'invite' && step.template.trim().length === 0);
+  /**
+   * SEEDED ONCE IS NOT THE SAME AS TRUE ONCE.
+   *
+   * `key={step.id}` means React REUSES this card when a different template
+   * loads a step carrying the same id, so the seed above ran against the OLD
+   * template and the tick survived into the new one: the checkbox said "send
+   * with no note" and hid the textarea while `step.template` held real copy --
+   * and `orderedSteps()` posts `step.template`, never this flag. The campaign
+   * then went out with a note the screen had shown as having none.
+   *
+   * So a template that arrives from OUTSIDE this card (a load, not a
+   * keystroke) clears the tick, because copy that exists is not "no note".
+   * Typing cannot trip it: the tick is only ever cleared, never set, and
+   * ticking it clears the copy in the same gesture.
+   */
+  const lastTemplate = useRef(step.template);
+  useEffect(() => {
+    if (lastTemplate.current === step.template) return;
+    lastTemplate.current = step.template;
+    if (step.template.trim().length > 0) setNoNote(false);
+  }, [step.template]);
   const bareInvite = step.kind === 'invite' && noNote;
   const carriesCopy = meta.carriesCopy && !bareInvite;
 

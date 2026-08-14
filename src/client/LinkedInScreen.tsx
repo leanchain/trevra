@@ -68,6 +68,10 @@ import {
   useOutreachRefresh,
   useSeatLimits
 } from './LinkedInSafety';
+// WHICH ACCOUNT THIS SCREEN IS LOOKING AT. The account switcher owns it for the
+// whole tab; every read and every write below names it rather than defaulting
+// to the workspace's first account, which is what they all silently did.
+import { useActiveSeatKey } from './LinkedInAccounts';
 import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag, LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
@@ -79,8 +83,8 @@ import { ConfirmDrawer } from './ui/dialog';
  * one of them:
  *
  * 1. EACH ONE STANDS ALONE. There is no LinkedIn tab shell any more: the app
- *    shell routes `#/outreach`, `#/outreach/queue`, `#/setup/seat` and
- *    `#/setup/limits` straight at these components, so each reads what it
+ *    shell routes `/outreach`, `/outreach/queue`, `/setup/seat` and
+ *    `/setup/limits` straight at these components, so each reads what it
  *    needs for itself. Nothing here takes a prop only a parent tab strip could
  *    have supplied, because there is no parent tab strip to supply one.
  * 2. THE STOP IS ALWAYS REACHABLE -- and it is no longer here. The kill switch
@@ -169,13 +173,13 @@ const ACTION_SOURCE_LABELS: Record<string, string> = {
 };
 
 /* -------------------------------------------------------------------------
- * `#/outreach` -- the Seat screen.
+ * `/outreach` -- the Seat screen.
  * ---------------------------------------------------------------------- */
 
 /**
  * What may go out today, why that number, and where the variance is.
  *
- * It is the operating dashboard, which is why it is the root of `#/outreach`
+ * It is the operating dashboard, which is why it is the root of `/outreach`
  * rather than the third item behind a Setup tab. It reads and it writes
  * nothing: `setToast` is taken because the shell hands it to every outreach
  * screen, and this one never has cause to fire it.
@@ -187,7 +191,8 @@ const ACTION_SOURCE_LABELS: Record<string, string> = {
  * ceilings.
  */
 export function OutreachSeat(_props: { setToast: (message: string) => void }) {
-  const { limits, loading, error, reload } = useSeatLimits();
+  const [seatKey] = useActiveSeatKey();
+  const { limits, loading, error, reload } = useSeatLimits(seatKey);
   const [analytics, setAnalytics] = useState<LinkedInAnalytics | null>(null);
   const [days, setDays] = useState(30);
   const [seriesLoading, setSeriesLoading] = useState(true);
@@ -199,11 +204,11 @@ export function OutreachSeat(_props: { setToast: (message: string) => void }) {
     seriesToken.current = token;
     setSeriesLoading(true);
     try {
-      const response = await getLinkedInAnalytics(days);
+      const response = await getLinkedInAnalytics(days, seatKey);
       if (seriesToken.current === token) setAnalytics(response);
     } catch { /* the window selector is not worth an error banner over the ceilings */ }
     finally { if (seriesToken.current === token) setSeriesLoading(false); }
-  }, [days]);
+  }, [days, seatKey]);
 
   useEffect(() => { void loadSeries(); }, [loadSeries]);
   useOutreachRefresh(loadSeries);
@@ -235,7 +240,7 @@ function LoadingPanel({ loading }: { loading: boolean }) {
 }
 
 /* -------------------------------------------------------------------------
- * `#/setup/seat` -- seat identity, credentials, local worker.
+ * `/setup/seat` -- seat identity, credentials, local worker.
  * ---------------------------------------------------------------------- */
 
 /**
@@ -252,23 +257,24 @@ function LoadingPanel({ loading }: { loading: boolean }) {
  * it (`GET /api/linkedin/worker`).
  */
 export function LinkedInSeatSetup({ setToast }: { setToast: (message: string) => void }) {
+  const [seatKey] = useActiveSeatKey();
   const [seat, setSeat] = useState<LinkedInSeatResponse | null>(null);
   const [worker, setWorker] = useState<LinkedInWorkerStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const { limits } = useSeatLimits();
+  const { limits } = useSeatLimits(seatKey);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [seatResponse, workerResponse] = await Promise.all([getLinkedInSeat(), getLinkedInWorkerStatus()]);
+      const [seatResponse, workerResponse] = await Promise.all([getLinkedInSeat(seatKey), getLinkedInWorkerStatus()]);
       setSeat(seatResponse);
       setWorker(workerResponse);
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to read this LinkedIn account. Nothing was changed — try again.'));
     } finally { setLoading(false); }
-  }, []);
+  }, [seatKey]);
 
   useEffect(() => { void load(); }, [load]);
   useOutreachRefresh(load);
@@ -285,7 +291,12 @@ export function LinkedInSeatSetup({ setToast }: { setToast: (message: string) =>
         so the broadcast is the whole point: the ceilings on Seat and the
         binding rule under a campaign's horizon are stale the moment this
         succeeds. */}
-    <SetupTab seat={seat} worker={worker} limits={limits} setToast={setToast} onSaved={() => void reloadOutreach()} />
+    {/* KEYED ON THE ACCOUNT, so switching accounts REMOUNTS the form. Every
+        field below is local state hydrated once from the seat it was mounted
+        for; without the key, switching account would leave the previous
+        account's label, hours and ceilings in the form and save them onto the
+        new one. */}
+    <SetupTab key={seatKey} seatKey={seatKey} seat={seat} worker={worker} limits={limits} setToast={setToast} onSaved={() => void reloadOutreach()} />
 
     {/* The backlog, and the two-step way out of it. It sits here rather than on
         Safety because Safety reads and writes nothing, and both controls below
@@ -575,7 +586,9 @@ const clockToMinutes = (clock: string): number => {
   return hour >= 0 && hour <= 24 && minute >= 0 && minute <= 59 && !(hour === 24 && minute !== 0) ? hour * 60 + minute : Number.NaN;
 };
 
-function SetupTab({ seat, worker, limits, setToast, onSaved }: {
+function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
+  /** The account every write on this form targets. See `useActiveSeatKey`. */
+  seatKey: string;
   seat: LinkedInSeatResponse | null;
   worker: LinkedInWorkerStatus | null;
   limits: LinkedInLimitsReport | null;
@@ -678,7 +691,7 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
     setFailure('');
     setBlocked('');
     try {
-      const result = await detectLinkedInSeat(browserZone);
+      const result = await detectLinkedInSeat(browserZone, seatKey);
       // 202: this process cannot open a browser, so the read was queued for one
       // that can. The server's sentence names what to run; it is not an error.
       if (result.status === 'pending') {
@@ -710,7 +723,7 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
    * error, and all three arrive as one sentence written by the server.
    */
   const runLogin = async (code?: string) => {
-    const result = await loginLinkedInSeat(code);
+    const result = await loginLinkedInSeat(code, seatKey);
     if (result.status === 'otp_required') {
       setStage('otp');
       setNote(null);
@@ -742,7 +755,7 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
     }
     setNote(null);
     try {
-      await saveLinkedInCredentials({ email: address, password });
+      await saveLinkedInCredentials({ email: address, password, seatKey });
     } finally {
       // Out of component state the moment it is on the wire, whatever became of it.
       setPassword('');
@@ -754,7 +767,7 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
     setDisconnecting(true);
     setNote(null);
     try {
-      await deleteLinkedInCredentials();
+      await deleteLinkedInCredentials(seatKey);
       setStage('credentials');
       setEmail('');
       setOtp('');
@@ -769,7 +782,7 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
     setDeletingSeat(true);
     setDeleteError(null);
     try {
-      await deleteLinkedInSeat();
+      await deleteLinkedInSeat(seatKey);
       setConfirmingDelete(false);
       setToast('Account removed. The next account you connect starts its ramp-up at week 1.');
       setHydrated(false);
@@ -811,7 +824,7 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
         dailyMessageLimit: Number(messageLimit),
         dailyProfileViewLimit: Number(profileViewLimit),
         dailyFollowLimit: Number(followLimit)
-      });
+      }, seatKey);
       setToast('Saved. These values stand until the next read from LinkedIn replaces them.');
       onSaved();
     } catch (err) {
@@ -1177,7 +1190,7 @@ function WorkerCheck({ ok, label, detail }: { ok: boolean | null; label: string;
 }
 
 /* -------------------------------------------------------------------------
- * `#/outreach/queue` -- everything scheduled, and what became of it.
+ * `/outreach/queue` -- everything scheduled, and what became of it.
  * ---------------------------------------------------------------------- */
 
 const OUTCOMES = ['sent', 'accepted', 'replied', 'declined'] as const;
@@ -1483,7 +1496,7 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
 }
 
 /* -------------------------------------------------------------------------
- * `#/setup/limits` -- the never-contact list.
+ * `/setup/limits` -- the never-contact list.
  * ---------------------------------------------------------------------- */
 
 /**

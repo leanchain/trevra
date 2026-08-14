@@ -23,7 +23,7 @@ import { errorMessage } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 
 /**
- * `#/leads` -- the ranked list, with its evidence attached.
+ * `/leads` -- the ranked list, with its evidence attached.
  *
  * THIS IS THE ONE SCREEN THAT HAS TO BE BELIEVED. Everything before it is
  * four questions, two of which have defaults (`docs/first-run.md`); this is

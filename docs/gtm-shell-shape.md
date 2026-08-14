@@ -54,14 +54,14 @@ LinkedIn, Setup. Replace with:
 
 | Label | Hash | The one question it answers |
 |---|---|---|
-| **Loop** | `#/loop` | What is the loop doing, and where is it stuck? |
-| **Outreach** | `#/outreach` | What goes out, at what pace, and is the seat safe? |
-| **Money** | `#/money` | What was agreed, delivered, billed and paid — and what wasn't, and why? |
-| **Ledger** | `#/ledger` | What did the agent actually do, with the evidence — and can I take it with me? |
-| **Setup** | `#/setup` | What can reach my workspace, what may it spend, what may it do? |
+| **Loop** | `/loop` | What is the loop doing, and where is it stuck? |
+| **Outreach** | `/outreach` | What goes out, at what pace, and is the seat safe? |
+| **Money** | `/money` | What was agreed, delivered, billed and paid — and what wasn't, and why? |
+| **Ledger** | `/ledger` | What did the agent actually do, with the evidence — and can I take it with me? |
+| **Setup** | `/setup` | What can reach my workspace, what may it spend, what may it do? |
 
 `Loop` is the default (`useState<View>('approvals')` at `src/client/App.tsx:166`
-becomes the `#/loop` route). The `StopBar` (§3.6) is shell chrome on every route
+becomes the `/loop` route). The `StopBar` (§3.6) is shell chrome on every route
 and is never a nav item.
 
 This contradicts `docs/app-spec.md` §4 ("**Three nav items.** Not six."). That
@@ -76,14 +76,14 @@ two move out.
 
 | Today's tab | Becomes | Why |
 |---|---|---|
-| `safety` (default, `:118`) | `#/outreach` — renamed **Seat** | It is the operating dashboard, not a settings page. It is already the first thing an operator sees and should keep that position. |
-| `campaigns` | `#/outreach/campaigns` | Unchanged. |
-| `plan` | `#/outreach/plan` | Unchanged. Keeps its dry-run banner (`src/client/LinkedInCampaigns.tsx:1035`). |
-| `queue` | `#/outreach/queue` | Unchanged. |
-| — | `#/outreach/replies` | **New.** Blocked on backend — see §4, Wave C1. Do not ship as an empty tab. |
-| `analytics` | **deleted as a tab** | Absorbed three ways: the funnel (`FunnelBars`, `src/client/LinkedInAnalyticsScreen.tsx`) moves to `#/loop`; the per-campaign table moves under `#/outreach/campaigns`; the daily volume chart is already drawn on Seat (`src/client/LinkedInSafety.tsx`, "Volume and its variance"). |
-| `setup` | `#/setup/seat` | Seat identity, credentials, worker status. Configured once. Its kill switch does **not** go with it — it goes to the shell (§3.6). |
-| `exclusions` | `#/setup/limits` | A set-once list. Its own copy admits it: *"There is no removal button: removing an entry is a database operation"* (`src/client/LinkedInScreen.tsx:914`). That is not a screen an operator returns to. |
+| `safety` (default, `:118`) | `/outreach` — renamed **Seat** | It is the operating dashboard, not a settings page. It is already the first thing an operator sees and should keep that position. |
+| `campaigns` | `/outreach/campaigns` | Unchanged. |
+| `plan` | `/outreach/plan` | Unchanged. Keeps its dry-run banner (`src/client/LinkedInCampaigns.tsx:1035`). |
+| `queue` | `/outreach/queue` | Unchanged. |
+| — | `/outreach/replies` | **New.** Blocked on backend — see §4, Wave C1. Do not ship as an empty tab. |
+| `analytics` | **deleted as a tab** | Absorbed three ways: the funnel (`FunnelBars`, `src/client/LinkedInAnalyticsScreen.tsx`) moves to `/loop`; the per-campaign table moves under `/outreach/campaigns`; the daily volume chart is already drawn on Seat (`src/client/LinkedInSafety.tsx`, "Volume and its variance"). |
+| `setup` | `/setup/seat` | Seat identity, credentials, worker status. Configured once. Its kill switch does **not** go with it — it goes to the shell (§3.6). |
+| `exclusions` | `/setup/limits` | A set-once list. Its own copy admits it: *"There is no removal button: removing an entry is a database operation"* (`src/client/LinkedInScreen.tsx:914`). That is not a screen an operator returns to. |
 
 Moving `setup` out of `LinkedInScreen` removes the reason its kill switch lived in
 the tab shell. The rationale at `src/client/LinkedInScreen.tsx:60-72` — *"THE KILL
@@ -95,25 +95,25 @@ to the app shell, which is what it was always arguing for.
 
 | Hash | Contents | Moved from |
 |---|---|---|
-| `#/setup/agent` | `AgentAccessPanel` + `HostedAgentPanel` | `src/client/App.tsx:1012` and inside `IntegrationsView` (`:2235`) |
-| `#/setup/data` | Connections, Nango connect, Scope Ledger import, CSV import | rest of `IntegrationsView` (`src/client/App.tsx:2235`) |
-| `#/setup/seat` | LinkedIn seat, credentials, local worker | `SetupTab` (`src/client/LinkedInScreen.tsx:285`) |
-| `#/setup/skills` | Shared skills, private skills, run-one-by-hand | `ModulesView` (`src/client/App.tsx:2164`) + the playbook launcher lifted out of `WorkView` |
-| `#/setup/limits` | Automation rules, hard limits, never-contact list | `AutopilotView` (`src/client/App.tsx:2478`) + `ExclusionsTab` (`src/client/LinkedInScreen.tsx:874`) |
-| `#/setup/spend` | Monthly cap editor and the spending switch | the `byok-block` at `src/client/App.tsx:1310-1340` |
+| `/setup/agent` | `AgentAccessPanel` + `HostedAgentPanel` | `src/client/App.tsx:1012` and inside `IntegrationsView` (`:2235`) |
+| `/setup/data` | Connections, Nango connect, Scope Ledger import, CSV import | rest of `IntegrationsView` (`src/client/App.tsx:2235`) |
+| `/setup/seat` | LinkedIn seat, credentials, local worker | `SetupTab` (`src/client/LinkedInScreen.tsx:285`) |
+| `/setup/skills` | Shared skills, private skills, run-one-by-hand | `ModulesView` (`src/client/App.tsx:2164`) + the playbook launcher lifted out of `WorkView` |
+| `/setup/limits` | Automation rules, hard limits, never-contact list | `AutopilotView` (`src/client/App.tsx:2478`) + `ExclusionsTab` (`src/client/LinkedInScreen.tsx:874`) |
+| `/setup/spend` | Monthly cap editor and the spending switch | the `byok-block` at `src/client/App.tsx:1310-1340` |
 
 ### Loop sub-route
 
 | Hash | Contents |
 |---|---|
-| `#/loop/cost` | **What this cost, and what it produced.** §3.5. |
+| `/loop/cost` | **What this cost, and what it produced.** §3.5. |
 
 ### Deep links to preserve
 
-- `#/ledger/run/:id` — replaces the `inspectAgentRunId` prop threading at
-  `src/client/App.tsx:172` and `:2010`. A run started from `#/setup/agent`
+- `/ledger/run/:id` — replaces the `inspectAgentRunId` prop threading at
+  `src/client/App.tsx:172` and `:2010`. A run started from `/setup/agent`
   navigates to its own URL instead of setting state two components up.
-- `#/outreach/campaigns/:id` — `openCampaign` (`src/client/LinkedInCampaigns.tsx`)
+- `/outreach/campaigns/:id` — `openCampaign` (`src/client/LinkedInCampaigns.tsx`)
   already binds the builder to a campaign; give that binding a URL.
 - `#get-started` — keep. `src/client/App.tsx:194` reads it on mount for the auth
   screen and marketing links to it.
@@ -122,7 +122,7 @@ to the app shell, which is what it was always arguing for.
 
 ## 3. Screen by screen
 
-### 3.1 `#/loop` — the home screen
+### 3.1 `/loop` — the home screen
 
 Replaces `TodayView` (`src/client/App.tsx:539`). Rename the component `LoopView`.
 
@@ -151,7 +151,7 @@ stage that is stuck. One primary per screen (`docs/app-spec.md` §7 rule 3).
    in scope: it now also lists playbook steps in `waiting_approval`
    (`GET /api/playbook-runs`, `src/server/app.ts:519`), which today are only
    visible if you happen to open Activity.
-5. **Cost and yield strip** — three numbers and a link to `#/loop/cost`. §3.5.
+5. **Cost and yield strip** — three numbers and a link to `/loop/cost`. §3.5.
 
 **The four tiles.** `src/client/App.tsx:586-591` renders At risk / Ready to invoice
 / Collected / Connected tools. Every one is a result or a config count; none is a
@@ -167,26 +167,26 @@ exactly as they are:
 | **Waiting to be paid** | `readyToInvoice + revenueAtRisk` | "*€X* billed and unpaid, *€Y* delivered and unbilled" | `src/shared/types.ts:54,57` |
 
 Every tile is a queue someone owns. `revenueCollected` (`src/shared/types.ts:56`)
-demotes to `#/money` — it is a trophy, not a bottleneck. `connectedSources`
-(`:61`) demotes to `#/setup/data`; the workspace already surfaces it twice more, in
+demotes to `/money` — it is a trophy, not a bottleneck. `connectedSources`
+(`:61`) demotes to `/setup/data`; the workspace already surfaces it twice more, in
 `.sidebar-bottom` (`src/client/App.tsx:284`) and the `.setup-banner` (`:594`).
 
 **Deleted.** `.hero-orbit`; the "Your clients" aside (`.client-panel`, already
 hidden under 980px at `src/client/styles.css:196`, which means it was never load-
-bearing) — its content is the whole of `#/money`.
+bearing) — its content is the whole of `/money`.
 
 **Kept verbatim.** `OnboardingChecklist` (`src/client/App.tsx:457`) and its
 derived-from-data mechanism (`:449-455`), rebuilt in §3.7.
 
 ---
 
-### 3.2 `#/outreach` — the engine, promoted
+### 3.2 `/outreach` — the engine, promoted
 
 **Purpose.** Run the seat: what may go out today, why that number, and where the
 variance is.
 
 **Primary action.** None on the Seat screen — it is a read, like Activity
-(`docs/app-spec.md` §5). The primary action lives on `#/outreach/campaigns`.
+(`docs/app-spec.md` §5). The primary action lives on `/outreach/campaigns`.
 
 **Above the fold.** Unchanged from `LinkedInSafetyScreen`
 (`src/client/LinkedInSafety.tsx:32`), which is already right:
@@ -210,12 +210,12 @@ next to the existing Search and Notifications (`src/client/App.tsx:291-293`).
 ramp for `seat.warmupWeek` of a seat that does not exist. Replace: when
 `limits.seat.configured === false`, render one panel — the heading, the sentence
 already written for it (*"No seat is configured, so nothing can be paced."*), and
-a button to `#/setup/seat`. Render nothing else. Delete the `—` fallbacks for that
+a button to `/setup/seat`. Render nothing else. Delete the `—` fallbacks for that
 case.
 
 ---
 
-### 3.3 `#/money` — the paid end, named as part of the loop
+### 3.3 `/money` — the paid end, named as part of the loop
 
 **Purpose.** What was agreed, delivered, billed and paid — and what wasn't, and why.
 
@@ -244,7 +244,7 @@ on screen changes. No rename, no migration, no server change. `iconFor`
 
 ---
 
-### 3.4 `#/ledger` — the thing the landing page sells
+### 3.4 `/ledger` — the thing the landing page sells
 
 **Purpose.** Every run the workspace has performed, with the evidence, and a way
 to take it with you.
@@ -271,7 +271,7 @@ to take it with you.
 unchanged.
 
 **What moves out.** The playbook launcher — the `.playbook-launch-grid` and
-`SchemaForm` block inside `WorkView` — goes to `#/setup/skills` under "Run one by
+`SchemaForm` block inside `WorkView` — goes to `/setup/skills` under "Run one by
 hand." `docs/app-spec.md` §4 already ruled on this: *"The agent starts jobs. A
 human doing it by hand is the exception, not the front door."*
 
@@ -281,7 +281,7 @@ screen, and its `work-hero-count` duplicates the "Waiting on you" tile.
 
 ---
 
-### 3.5 `#/loop/cost` — the one combined spend surface
+### 3.5 `/loop/cost` — the one combined spend surface
 
 The founder's only real question — *what did this cost me and what did it
 produce* — currently has no screen. Two half-surfaces exist:
@@ -308,10 +308,10 @@ Nothing joins them.
 | **Sent** | actions by kind from `analytics.total`; agent runs from `GET /api/agent-runs` (`src/server/app.ts:790`) | plain counts |
 | **Produced** | accepted, replied; then `readyToInvoice` and `revenueCollected` (`src/shared/types.ts:56-57`) | **Labelled not-attributed, in words on screen.** No join exists from a model call or a LinkedIn action to an invoice. Saying "this outreach produced this revenue" would be the exact class of unearned number `src/client/LinkedInSafety.tsx`'s honesty panel exists to forbid. Write: "These are the same period, not the same causal chain. Trevra does not claim one produced the other." |
 
-**Controls stay in Setup.** `#/loop/cost` is a read plus one switch: the spending
+**Controls stay in Setup.** `/loop/cost` is a read plus one switch: the spending
 toggle, because `src/client/App.tsx:1113-1116` already argues that *"an off switch
 that needs a second click to take effect is not an off switch."* The cap editor and
-the Save button stay at `#/setup/spend`.
+the Save button stay at `/setup/spend`.
 
 **Blocked on backend.** Needs `GET /api/loop/cost?window=30` returning the three
 rows in one payload. No new table: `agent_model_calls.run_id → agent_runs.id`
@@ -388,7 +388,7 @@ benefit; repeated verbatim at `index.html:62`.
 (`:1737`, so PII is not cached). Nothing else. No ledger export, no evidence
 export, no CSV, no JSON dump.
 
-**The control that earns it.** A panel on `#/ledger` titled **"Take your ledger
+**The control that earns it.** A panel on `/ledger` titled **"Take your ledger
 with you"**, modelled directly on the LinkedIn export that already works end to
 end:
 
@@ -413,7 +413,7 @@ Recommended: hold. See §4 Wave B2 and open question 7.
 
 ---
 
-### 3.8 `#/setup/skills` — modules are mostly skills
+### 3.8 `/setup/skills` — modules are mostly skills
 
 **What exists.** 20 entries in `public/catalog/modules.json`, every one
 `"sourceType": "builtin"`, `"runtime": "builtin"`, publisher `trevra`. Fields:
@@ -495,12 +495,12 @@ survives intact.
 
 | # | Step | Done when | Lands on |
 |---|---|---|---|
-| 1 | **Name your seat** | `GET /api/linkedin/seat` returns a non-null `seat` | `#/setup/seat` |
-| 2 | **Connect the seat** | `auth.hasCredentials`, or worker `loggedIn` | `#/setup/seat` — `POST /api/linkedin/seat/login` (`src/server/app.ts:1274`) |
-| 3 | **Read what you are betting** | acknowledged once | `#/outreach` — the honesty panel (`src/client/LinkedInSafety.tsx`, `.li-honesty`) is the one thing an operator must read before risking their account, and today nothing puts it in front of them |
-| 4 | **Build one campaign** | `GET /api/linkedin/campaigns` non-empty | `#/outreach/campaigns` |
-| 5 | **Preview the plan** | a `POST /api/linkedin/plan` has returned slots | `#/outreach/plan` — writes nothing (`src/client/LinkedInCampaigns.tsx:1035`) |
-| 6 | **Approve and send** | first `linkedin_actions` row leaves `planned` | `#/outreach/queue` |
+| 1 | **Name your seat** | `GET /api/linkedin/seat` returns a non-null `seat` | `/setup/seat` |
+| 2 | **Connect the seat** | `auth.hasCredentials`, or worker `loggedIn` | `/setup/seat` — `POST /api/linkedin/seat/login` (`src/server/app.ts:1274`) |
+| 3 | **Read what you are betting** | acknowledged once | `/outreach` — the honesty panel (`src/client/LinkedInSafety.tsx`, `.li-honesty`) is the one thing an operator must read before risking their account, and today nothing puts it in front of them |
+| 4 | **Build one campaign** | `GET /api/linkedin/campaigns` non-empty | `/outreach/campaigns` |
+| 5 | **Preview the plan** | a `POST /api/linkedin/plan` has returned slots | `/outreach/plan` — writes nothing (`src/client/LinkedInCampaigns.tsx:1035`) |
+| 6 | **Approve and send** | first `linkedin_actions` row leaves `planned` | `/outreach/queue` |
 
 **The money path** keeps today's four steps unchanged
 (`src/client/App.tsx:466-497`), including its correct ordering rationale: *"the
@@ -511,9 +511,9 @@ agent comes first because nothing else works until one can reach the workspace"*
 outreach; a connection or client exists → money; neither → show both headings with
 outreach first, since the LinkedIn engine is the product. No flag, no column.
 
-**They land on `#/loop`, not `#/outreach`.** A seat-less Seat screen is four `—`
+**They land on `/loop`, not `/outreach`.** A seat-less Seat screen is four `—`
 tiles; the checklist is the only honest content a brand-new workspace has, and
-`#/loop` is where it lives.
+`/loop` is where it lives.
 
 ---
 
@@ -528,19 +528,19 @@ Each item is releasable on its own.
   (`:278-281`); rewrite `viewTitle` (`:2669`). Coordinate with the sibling already
   adding `location.hash`.
 - **A2.** Split `LinkedInScreen` (`src/client/LinkedInScreen.tsx:110`) into
-  `#/outreach/*` sub-routes; move `SetupTab` (`:285`) → `#/setup/seat`;
-  `ExclusionsTab` (`:874`) → `#/setup/limits`; delete `.li-tabs` (`:157-166`);
+  `/outreach/*` sub-routes; move `SetupTab` (`:285`) → `/setup/seat`;
+  `ExclusionsTab` (`:874`) → `/setup/limits`; delete `.li-tabs` (`:157-166`);
   delete the `analytics` tab, distributing its three panels per §2.
 - **A3.** `StopBar`. Delete `KillSwitch` (`src/client/LinkedInScreen.tsx:225-283`)
   and both `AgentStopControl` (`src/client/App.tsx:1892`) render sites.
   *Depends on A1 for the shell slot; the reason-on-agent-stop half is B0 below.*
 - **A4.** `LoopView` replacing `TodayView` (`src/client/App.tsx:539`): stage bar,
   block sentence, four new tiles. Every tile reads a route that already exists.
-- **A5.** `#/ledger`: lift the run list + `RunInspector` (`:1927`) out of `WorkView`
-  (`:2010`); move the launcher to `#/setup/skills`; delete `.work-hero` (`:2094`).
-- **A6.** `#/setup/skills`: shared group only, with Inspect (wired to the unused
+- **A5.** `/ledger`: lift the run list + `RunInspector` (`:1927`) out of `WorkView`
+  (`:2010`); move the launcher to `/setup/skills`; delete `.work-hero` (`:2094`).
+- **A6.** `/setup/skills`: shared group only, with Inspect (wired to the unused
   `GET /api/skill-runs`, `src/server/app.ts:484`) and the Revoke relabel.
-- **A7.** Onboarding branch + the seat-less `#/outreach` empty state.
+- **A7.** Onboarding branch + the seat-less `/outreach` empty state.
 
 Recommended order: A1 → A2 → A3 → A4 → A5 → A6 → A7. A4 reads better once A2 has
 freed the Outreach data; A3 needs A1's shell slot.
@@ -551,12 +551,12 @@ freed the Outreach data; A3 needs A1's shell slot.
   `migrations/021_agent_run_stop.sql`) + `POST /api/agent-runs/stop` accepting it +
   the field in `StopBar`. All three, or the agent stop keeps no note while the seat
   stop demands one.
-- **B1.** `GET /api/loop/cost` + the `#/loop/cost` screen + demoting
+- **B1.** `GET /api/loop/cost` + the `/loop/cost` screen + demoting
   `src/client/App.tsx:1310-1340` to a cap editor. Ship the screen without the route
   and there are two spend surfaces again; ship the route without the screen and
   nothing changed.
 - **B2.** `POST /api/ledger/exports` + `GET /api/ledger/exports/:id` + the
-  `#/ledger` panel. All three. A disabled Export button under a landing page that
+  `/ledger` panel. All three. A disabled Export button under a landing page that
   promises *"Exportable ledger and evidence"* (`src/client/MarketingScreen.tsx:341`)
   is worse than no button.
 
@@ -569,7 +569,7 @@ freed the Outreach data; A3 needs A1's shell slot.
   `GET /api/linkedin/threads/:id`, and a reply path that files an ordinary `dm` into
   `linkedin_actions` — the migration header forbids an outbox in so many words:
   *"an outbox is exactly the shape a 'just send this one quickly' path grows out
-  of."* Until the routes land, `#/outreach/replies` must not exist. The **Answer**
+  of."* Until the routes land, `/outreach/replies` must not exist. The **Answer**
   cell on the stage bar renders as "not connected yet," never as zero.
 - **C2. Private skills.** No `sourceType: 'workspace'`; `SkillManifest`
   (`src/server/skills/types.ts`) has no scope field; `public/catalog/modules.json`
@@ -582,7 +582,7 @@ freed the Outreach data; A3 needs A1's shell slot.
   and CSV import on hosted. Draw the stage; do not draw it as available on a hosted
   workspace.
 - **C4. Cost attribution.** Nothing joins a model call or a LinkedIn action to an
-  invoice. `#/loop/cost`'s Produced row must say so in words rather than imply a
+  invoice. `/loop/cost`'s Produced row must say so in words rather than imply a
   causal chain.
 
 ---
@@ -604,7 +604,7 @@ freed the Outreach data; A3 needs A1's shell slot.
    *Default:* **no.** No enum change, no string change, no migration. `stale_proposal`
    / `scope_creep` / `unbilled_milestone` / `overdue_invoice`
    (`src/client/App.tsx:145-150`) are the paid end of the loop. Only their grouping
-   on `#/money` changes.
+   on `/money` changes.
 
 4. **One stop button or three?**
    *Default:* three — Agent, Seat, Everything. They have different semantics and the

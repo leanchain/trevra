@@ -571,7 +571,7 @@ function OnboardingChecklist({ data, limits, onNavigate }: {
 }
 
 /* --------------------------------------------------------------------------
- * `#/loop/cost` -- what did this cost me, and what did it produce.
+ * `/loop/cost` -- what did this cost me, and what did it produce.
  *
  * Three rows, one period selector, and one rule that outranks the layout:
  * EVERY SPEND LINE CARRIES ITS OWN CONFIDENCE FLAG. `usage_reported = true`

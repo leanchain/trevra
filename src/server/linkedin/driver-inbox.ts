@@ -143,14 +143,29 @@ export const INBOX_SELECTORS = {
   threadProfileLink: 'a.msg-thread__link-to-profile, .msg-entity-lockup a[href*="/in/"], .msg-title-bar a[href*="/in/"]',
   messageList: 'ul.msg-s-message-list-content',
   /**
-   * A class on the message item itself, hence concatenated rather than
-   * descended into. Despite the `--other` name, this marks the ACCOUNT
-   * OWNER'S OWN sent message, not the other party's -- confirmed against live
-   * markup (2026-08-14): the operator's own message carries this modifier and
-   * the other participant's does not, the reverse of what the class name
-   * suggests. See `readThread`.
+   * THE MESSAGE BUBBLE INSIDE ONE `<li>`. Read only to tell "this item is a
+   * message" from "this item is a date separator, a system notice, or drift".
    */
-  messageOwnMarker: '.msg-s-event-listitem--other',
+  messageItem: '.msg-s-event-listitem',
+  /**
+   * THE MODIFIER THE OTHER PARTICIPANT'S MESSAGE CARRIES, exactly as its name
+   * says, and it sits on the bubble INSIDE the `<li>` rather than on the item.
+   *
+   * THAT DISTINCTION IS THE BUG THIS TABLE USED TO CARRY. Scoped with no
+   * separator the selector reads `li:nth-child(3).msg-s-event-listitem--other`,
+   * which matches nothing on any page LinkedIn has ever served, so `present`
+   * answered false for every message and DIRECTION BECAME A CONSTANT --
+   * whichever way the two branches were wired. The stored transcripts of
+   * 2026-08-13 are the evidence: nine conversations, several of them plainly
+   * answered by the other person, and not one inbound row in the database.
+   *
+   * That silent constant is also what the flip of 2026-08-14 mis-read as
+   * "`--other` marks the operator's own message". It does not; the selector
+   * simply never matched, and a class name is not evidence of the reverse of
+   * itself. Matched as item-or-descendant below, so a future move of the class
+   * onto the `<li>` cannot re-open this hole.
+   */
+  messageInboundMarker: '.msg-s-event-listitem--other',
   messageBody: '.msg-s-event-listitem__body',
   messageTimestamp: 'time.msg-s-message-group__timestamp, .msg-s-message-group__timestamp'
 } as const;
@@ -186,10 +201,21 @@ function rowSelector(index: number, suffix?: string, join: ' ' | '' = ' '): stri
   const row = `${INBOX_SELECTORS.conversationList} > li:nth-child(${index + 1})`;
   return suffix ? scoped(row, suffix, join) : row;
 }
-
 function messageSelector(index: number, suffix?: string, join: ' ' | '' = ' '): string {
   const item = `${INBOX_SELECTORS.messageList} > li:nth-child(${index + 1})`;
   return suffix ? scoped(item, suffix, join) : item;
+}
+
+/**
+ * A class on the nth message item OR on anything inside it.
+ *
+ * Both forms, because which of the two LinkedIn uses is exactly the fact this
+ * driver got wrong: the modifier lives on the bubble today and the item is
+ * where the class name reads as though it would live. Asking for one and
+ * silently answering "no" for the other is how a direction became a constant.
+ */
+function messageMarkerSelector(index: number, marker: string): string {
+  return `${messageSelector(index, marker, '')}, ${messageSelector(index, marker, ' ')}`;
 }
 
 /* -------------------------------------------------------------------------
@@ -523,6 +549,29 @@ interface RailRow {
 }
 
 /** Rail names are truncated; a prefix match either way is the same person. */
+/**
+ * A name with LinkedIn's own screen-reader text cut off the end of it.
+ *
+ * BOTH PLACES A NAME IS READ RETURN MORE THAN A NAME. `textContent` collapses
+ * everything inside an element, and LinkedIn renders the presence state --
+ * and, in the thread header, the person's headline -- inside the same lockup
+ * as the name. That is how conversations came to be stored, and shown to an
+ * operator, as "Daryna Radiichuk Status is offline CEO at G-MOS.com | ...".
+ *
+ * THE CUT IS MADE AT LINKEDIN'S OWN PRESENCE PHRASE AND NOWHERE ELSE. A name
+ * that does not carry one comes back byte for byte, and a cut that would leave
+ * nothing behind is refused rather than filed as a nameless conversation --
+ * this trims rendered decoration, it never invents a name.
+ */
+const PRESENCE_TEXT = /\s*\bstatus\b\s*(?:is|ist|:)\s.*$/i;
+
+function displayName(text: string | null): string | null {
+  if (text === null) return null;
+  const cut = text.replace(PRESENCE_TEXT, '').trim();
+  return cut || text;
+}
+
+/** Rail names are truncated; a prefix match either way is the same person. */
 function sameName(left: string, right: string): boolean {
   const a = left.toLowerCase();
   const b = right.toLowerCase();
@@ -581,7 +630,7 @@ export async function listConversations(
   const rows: RailRow[] = [];
   for (let index = 0; index < walked; index += 1) {
     rows.push({
-      name: await textOf(page, rowSelector(index, INBOX_SELECTORS.rowName)),
+      name: displayName(await textOf(page, rowSelector(index, INBOX_SELECTORS.rowName))),
       snippet: (await textOf(page, rowSelector(index, INBOX_SELECTORS.rowSnippet))) ?? '',
       stamp: await textOf(page, rowSelector(index, INBOX_SELECTORS.rowTimestamp)),
       unread: await present(page, rowSelector(index, INBOX_SELECTORS.rowUnreadBadge))
@@ -629,7 +678,7 @@ export async function listConversations(
       continue;
     }
 
-    const headerName = await textOf(page, INBOX_SELECTORS.threadProfileLink);
+    const headerName = displayName(await textOf(page, INBOX_SELECTORS.threadProfileLink));
     if (row.name && headerName && !sameName(row.name, headerName)) {
       degraded.push(
         `Conversation ${index + 1} was listed as '${row.name}' and opened as '${headerName}', so the rail re-ordered mid-walk and this one was skipped rather than filed under the wrong name.`
@@ -722,6 +771,17 @@ export async function readThread(
 
   const messages: LinkedInInboxMessage[] = [];
   let stamp: string | null = null;
+  /**
+   * Whether ANY item on this page carried the message bubble at all.
+   *
+   * The one guard against the failure this routine already shipped once: a
+   * marker selector that matches nothing turns direction into a constant and
+   * says nothing about it, and a transcript in which the operator appears to
+   * have written every word is not a readable conversation. When the bubble
+   * itself cannot be found, the inbound marker inside it cannot be trusted
+   * either, and this run says so instead of quietly filing everything as ours.
+   */
+  let sawBubble = false;
 
   for (let index = start; index < total; index += 1) {
     const own = await textOf(page, messageSelector(index, INBOX_SELECTORS.messageTimestamp));
@@ -735,14 +795,18 @@ export async function readThread(
       continue;
     }
 
-    const isOwnMessage = await present(page, messageSelector(index, INBOX_SELECTORS.messageOwnMarker, ''));
-    messages.push({ at: parseInboxTimestamp(stamp, now()), direction: isOwnMessage ? 'out' : 'in', body });
+    if (!sawBubble) sawBubble = await present(page, messageMarkerSelector(index, INBOX_SELECTORS.messageItem));
+    const inbound = await present(page, messageMarkerSelector(index, INBOX_SELECTORS.messageInboundMarker));
+    messages.push({ at: parseInboxTimestamp(stamp, now()), direction: inbound ? 'in' : 'out', body });
   }
 
   if (messages.length === 0) {
     degraded.push(`${total} message items are on screen at ${url} and none of them carries ${INBOX_SELECTORS.messageBody}, so nothing could be read.`);
+  } else if (!sawBubble) {
+    degraded.push(
+      `No message at ${url} carries ${INBOX_SELECTORS.messageItem}, so nothing they wrote could be told apart from something you sent and every message was filed as outbound. Direction in this conversation is not trustworthy until that selector is repaired.`
+    );
   }
-
   return { ok: true, threadUrn, messages, degraded };
 }
 

@@ -29,9 +29,10 @@ import {
 } from './api';
 import { errorMessage, stageTargets, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
+import { navigate } from './ui/route';
 
 /**
- * `#/outreach/leads` -- a search page or a post, walked into a list of people.
+ * `/outreach/leads` -- a search page or a post, walked into a list of people.
  *
  * THIS FEATURE IS OFF BY DEFAULT AND THAT IS DELIBERATE, which is the only
  * thing about this screen worth writing at length.
@@ -350,7 +351,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
     if (list.length === 0) return;
     stageTargets(list);
     setToast(`${list.length} profile URL(s) staged for the campaign builder. Nothing was created — they land in the targets field.`);
-    window.location.hash = '#/outreach/campaigns';
+    navigate('/outreach/campaigns');
   };
 
   return <div className="page-stack">

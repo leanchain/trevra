@@ -244,7 +244,7 @@ describe('removing a lead', () => {
     const iso = NOW.toISOString();
     const campaignId = id('lcmp');
     const memberId = id('lcmem');
-    await db.prepare(`INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,created_at,updated_at) VALUES (?,?,?,?,?::jsonb,?,?)`)
+    await db.prepare(`INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at) VALUES (?,?,?,?,?::jsonb,'owner',?,?)`)
       .run(campaignId, WORKSPACE_ID, 'Removal test', 'running', '{}', iso, iso);
     await db.prepare(`INSERT INTO linkedin_campaign_members (id,workspace_id,campaign_id,contact_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`)
       .run(memberId, WORKSPACE_ID, campaignId, contactId, 'active', iso, iso);

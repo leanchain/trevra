@@ -1972,16 +1972,23 @@ export async function getLinkedInThreads(filters: {
   return Array.isArray(result.threads) ? result.threads : [];
 }
 
-/** Messages come back OLDEST FIRST, ordered by the position they were read in. */
-export async function getLinkedInThread(threadUrn: string): Promise<LinkedInConversation> {
+/**
+ * Messages come back OLDEST FIRST, ordered by the position they were read in.
+ *
+ * `seatKey` names WHOSE inbox the conversation is in. Omitted, the server
+ * resolves it in the owner's -- so a secondary account's conversation is
+ * reported as not found, which is what this screen used to do to every one of
+ * them.
+ */
+export async function getLinkedInThread(threadUrn: string, seatKey?: string): Promise<LinkedInConversation> {
   const result = await request<{ thread: LinkedInThreadRecord; messages?: LinkedInMessageRecord[] }>(
-    `/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}`
+    `/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
   );
   return { thread: result.thread, messages: Array.isArray(result.messages) ? result.messages : [] };
 }
 
 /** Walks the conversation rail in a real browser. 409 where this process cannot open one. */
-export async function syncLinkedInInbox(input: { maxThreads?: number; maxMessages?: number } = {}): Promise<LinkedInInboxSyncResult> {
+export async function syncLinkedInInbox(input: { maxThreads?: number; maxMessages?: number; seatKey?: string } = {}): Promise<LinkedInInboxSyncResult> {
   const result = await request<Partial<LinkedInInboxSyncResult>>('/api/linkedin/inbox/sync', {
     method: 'POST', body: JSON.stringify(input)
   });
@@ -1998,7 +2005,7 @@ export async function syncLinkedInInbox(input: { maxThreads?: number; maxMessage
   };
 }
 
-export async function syncLinkedInThread(threadUrn: string, input: { maxMessages?: number } = {}): Promise<LinkedInThreadSyncResult> {
+export async function syncLinkedInThread(threadUrn: string, input: { maxMessages?: number; seatKey?: string } = {}): Promise<LinkedInThreadSyncResult> {
   const result = await request<Partial<LinkedInThreadSyncResult>>(
     `/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}/sync`,
     { method: 'POST', body: JSON.stringify(input) }
@@ -2022,11 +2029,12 @@ export async function syncLinkedInThread(threadUrn: string, input: { maxMessages
 export async function replyToLinkedInThread(
   threadUrn: string,
   body: string,
-  plannedFor?: string
+  plannedFor?: string,
+  seatKey?: string
 ): Promise<LinkedInQueuedReply> {
   return request(`/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}/reply`, {
     method: 'POST',
-    body: JSON.stringify({ body, ...(plannedFor ? { plannedFor } : {}) })
+    body: JSON.stringify({ body, ...(plannedFor ? { plannedFor } : {}), ...(seatKey ? { seatKey } : {}) })
   });
 }
 

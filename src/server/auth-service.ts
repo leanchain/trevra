@@ -91,6 +91,29 @@ const PINNED_WORKSPACE_ID_KEY = 'trevraPinnedWorkspaceId';
 const SENDER_NAME_KEY = 'trevraSenderName';
 
 /**
+ * Workspace ids the BACKFILL has explicitly authorised a pin for, for as long
+ * as its own `createOrganization` call is in flight.
+ *
+ * The pin side channel rides on `metadata`, which is part of better-auth's
+ * PUBLIC create schema -- so `POST /api/auth/organization/create` can carry a
+ * `trevraPinnedWorkspaceId` of the caller's choosing and better-auth will
+ * grant that caller `role:'owner'` on whatever organization it creates. The
+ * only thing that stopped an arbitrary workspace being adopted this way was a
+ * primary-key collision on `organization.id`, which protects a workspace only
+ * once it already HAS an organization row -- not a workspace provisioned by
+ * SQL, and not one in the window before the backfill reaches it.
+ *
+ * So the guard is made explicit rather than left to the database: a pin at an
+ * id that already names a `workspaces` row is refused unless it came from the
+ * backfill, which is the one caller whose whole job is to create an
+ * organization for a workspace that already exists. The set is a module
+ * variable rather than a request-scoped value for the same reason the pin
+ * itself is metadata: the hook receives `{ organization, user }` and no caller
+ * context at all.
+ */
+const backfillAuthorisedPins = new Set<string>();
+
+/**
  * The `Db` handle `afterCreateOrganization`/the backfill use to write Trevra's
  * own tables (`workspaces`, `workspace_settings`, `automation_rules`,
  * `audit_events`). Better-auth's plugin config is built once at module load,
@@ -219,6 +242,16 @@ export const auth = betterAuth({
           // rather than throwing keeps that theoretical caller working instead of
           // breaking on a codepath this design never intended to constrain.
           if (!pinnedId) return;
+          // AN EXISTING WORKSPACE MAY ONLY BE PINNED BY THE BACKFILL. See
+          // `backfillAuthorisedPins`: every other caller that reaches here is
+          // an HTTP `/organization/create`, and a request must not be able to
+          // name a workspace somebody else already has.
+          if (!backfillAuthorisedPins.has(pinnedId)) {
+            const existing = await requireProvisioningDb()
+              .prepare('SELECT id FROM workspaces WHERE id=?')
+              .get<{ id: string }>(pinnedId);
+            if (existing) throw new APIError('FORBIDDEN', { message: 'That workspace id is already in use' });
+          }
           // SENDER_NAME_KEY is deliberately NOT stripped here (only the id is):
           // `afterCreateOrganization` below reads it back off the PERSISTED
           // organization's metadata to seed `workspace_settings.sender_name`,
@@ -465,19 +498,27 @@ export async function backfillWorkspaceOrganizations(db: Db): Promise<{ created:
       continue;
     }
 
-    await auth.api.createOrganization({
-      body: {
-        name: candidate.workspace_name,
-        slug: candidate.workspace_id,
-        userId: authUserId,
-        // No live session here (system action, no headers), so better-auth's
-        // own auto-activate side effect never fires regardless -- set
-        // explicitly anyway so this call's intent matches the identical one in
-        // resolveBetterAuthIdentity rather than relying on that being true.
-        keepCurrentActiveOrganization: true,
-        metadata: { [PINNED_WORKSPACE_ID_KEY]: candidate.workspace_id }
-      }
-    });
+    // The one caller allowed to pin at a workspace that already exists, and it
+    // says so for exactly the length of its own call -- see
+    // `backfillAuthorisedPins` and the guard in `beforeCreateOrganization`.
+    backfillAuthorisedPins.add(candidate.workspace_id);
+    try {
+      await auth.api.createOrganization({
+        body: {
+          name: candidate.workspace_name,
+          slug: candidate.workspace_id,
+          userId: authUserId,
+          // No live session here (system action, no headers), so better-auth's
+          // own auto-activate side effect never fires regardless -- set
+          // explicitly anyway so this call's intent matches the identical one in
+          // resolveBetterAuthIdentity rather than relying on that being true.
+          keepCurrentActiveOrganization: true,
+          metadata: { [PINNED_WORKSPACE_ID_KEY]: candidate.workspace_id }
+        }
+      });
+    } finally {
+      backfillAuthorisedPins.delete(candidate.workspace_id);
+    }
     created += 1;
   }
 

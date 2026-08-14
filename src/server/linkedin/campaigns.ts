@@ -224,16 +224,36 @@ export async function createCampaign(db: Db, input: CampaignInsert, now: Date): 
   return toCampaign(row);
 }
 
+/**
+ * WHICH CAMPAIGNS THIS MODULE SPEAKS FOR: the ones built in the sequence
+ * builder, and not the outreach manager's.
+ *
+ * A managed campaign carries a `lead_list_id` AND a `workflow_id` -- exactly
+ * the pair `runner.ts` selects on -- and its `sequence_json` holds
+ * `WorkflowStep`s. The legacy campaign screen reads that snapshot as
+ * `EditableSequenceStep`s, so a manager campaign rendered there is garbled;
+ * and worse, the Stop button beside it calls `stopCampaign` below, which sets
+ * this table's `status` and releases the ledger but does NOT do what
+ * `stopManagedCampaign` also does -- mark `linkedin_campaign_members` removed
+ * and cancel their pending manual tasks. A manager campaign stopped from the
+ * old screen therefore read as fully stopped while its enrolled leads kept
+ * being worked on the next tick.
+ *
+ * The predicate is written once, as the inverse of the runner's own, so the
+ * two ends of "is this campaign managed" cannot drift.
+ */
+const LEGACY_CAMPAIGN_ONLY = 'AND (lead_list_id IS NULL OR workflow_id IS NULL)';
+
 export async function listCampaigns(db: Db, workspaceId: string, limit = 100): Promise<LinkedInCampaign[]> {
   const rows = await db.prepare(`
     SELECT ${CAMPAIGN_COLUMNS} FROM linkedin_campaigns
-    WHERE workspace_id=? ORDER BY created_at DESC LIMIT ?
+    WHERE workspace_id=? ${LEGACY_CAMPAIGN_ONLY} ORDER BY created_at DESC LIMIT ?
   `).all<CampaignRow>(workspaceId, Math.max(1, Math.min(limit, 500)));
   return rows.map(toCampaign);
 }
 
 export async function getCampaign(db: Db, workspaceId: string, campaignId: string): Promise<LinkedInCampaign | undefined> {
-  const row = await db.prepare(`SELECT ${CAMPAIGN_COLUMNS} FROM linkedin_campaigns WHERE id=? AND workspace_id=?`)
+  const row = await db.prepare(`SELECT ${CAMPAIGN_COLUMNS} FROM linkedin_campaigns WHERE id=? AND workspace_id=? ${LEGACY_CAMPAIGN_ONLY}`)
     .get<CampaignRow>(campaignId, workspaceId);
   return row ? toCampaign(row) : undefined;
 }

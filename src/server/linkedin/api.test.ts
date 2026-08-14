@@ -506,8 +506,8 @@ async function seedApprovedCampaign(
   `).run(`pba_${workspaceId}`, workspaceId, runId, stepRunId, `usr_${workspaceId}`, 'approve', payloadHash, null, iso);
 
   await db.prepare(`
-    INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,playbook_run_id,created_at,updated_at)
-    VALUES (?,?,?,?,?::jsonb,?,?,?)
+    INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,playbook_run_id,seat_key,created_at,updated_at)
+    VALUES (?,?,?,?,?::jsonb,?,'owner',?,?)
   `).run(campaignId, workspaceId, name, 'running', JSON.stringify(payload.sequence), runId, iso, iso);
 
   return campaignId;
@@ -586,8 +586,8 @@ describe('campaign exports', () => {
   it('refuses to export a campaign nobody has approved', async () => {
     const iso = NOW.toISOString();
     await db.prepare(`
-      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,created_at,updated_at)
-      VALUES (?,?,?,?,?::jsonb,?,?)
+      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at)
+      VALUES (?,?,?,?,?::jsonb,'owner',?,?)
     `).run('lcmp_unapproved', WORKSPACE_A, 'Unapproved', 'draft', '{}', iso, iso);
     await as(sessionA).post('/api/linkedin/campaigns/lcmp_unapproved/export').send({ format: 'dripify' }).expect(409);
   });
@@ -648,8 +648,8 @@ describe('campaign queue', () => {
   it('refuses to queue a campaign nobody has approved, and one that belongs to somebody else', async () => {
     const iso = NOW.toISOString();
     await db.prepare(`
-      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,created_at,updated_at)
-      VALUES (?,?,?,?,?::jsonb,?,?)
+      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at)
+      VALUES (?,?,?,?,?::jsonb,'owner',?,?)
     `).run('lcmp_unapproved_q', WORKSPACE_A, 'Unapproved', 'draft', '{}', iso, iso);
     await as(sessionA).post('/api/linkedin/campaigns/lcmp_unapproved_q/queue').send({}).expect(409);
 

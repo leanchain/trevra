@@ -56,8 +56,20 @@
                  unfurler and a pre-JS visitor get. src/server/public-site.ts rewrites the
                  href to the configured workspace URL at serve time. The hosted card is the
                  fallback destination and offers a real next step, so the chain terminates
-                 in an action instead of pointing back at another copy of this button. -->
-            <a class="launch-nav-cta" data-hosted-cta href="#hosted">Login <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></a>
+                 in an action instead of pointing back at another copy of this button.
+
+                 THE NAV BUTTON'S FALLBACK IS /login, NOT #hosted, and that is the fix
+                 for a real bug. It says Login and it pointed at an anchor that scrolls to
+                 the deploy card. Everything in #root below is the PRE-JS document: React
+                 replaces it on mount, so this markup is live for exactly as long as the
+                 bundle takes to load, and forever on any build where the bundle fails.
+                 During that window "Login" scrolled the page and the visitor concluded
+                 the button was broken -- correctly. /login is the auth screen's own
+                 address now (src/client/ui/route.ts) and src/server/index.ts answers it
+                 with the app, so this link is right before, during and after hydration.
+                 It keeps data-hosted-cta: where a hosted workspace IS configured, that
+                 URL is still the better destination and the rewrite still applies. -->
+            <a class="launch-nav-cta" data-hosted-cta href="/login">Login <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></a>
           </div>
         </header>
 

@@ -753,9 +753,15 @@ async function readRowLines(card: LinkedInScrapeLocator): Promise<Pick<ScrapedLe
  * WHAT FOLLOWS THE SEPARATOR IS CUT AT THE FIRST DECORATIVE BREAK. LinkedIn
  * headlines run on -- "Head of Eng at Acme | We are hiring | ex-Google" -- and
  * storing the tail as the company name would put the whole slogan into
- * `{{company}}`. The pipe, the bullet and a spaced dash are separators in
- * LinkedIn's own copy, so the employer is whatever sits before the first of
- * them.
+ * `{{company}}`. The pipe, the bullet, a spaced dash and the COMMA are
+ * separators in LinkedIn's own copy, so the employer is whatever sits before
+ * the first of them.
+ *
+ * THE COMMA COSTS A SUFFIX AND BUYS A SENTENCE, and that trade is deliberate:
+ * "at Acme, Inc." stores "Acme" rather than "Acme, Inc.", which is the name a
+ * message should say anyway, while without it "CTO at Acme, previously at
+ * Beta" -- the worked example this doc comment has always carried -- stored
+ * the entire clause into `{{company}}` and put it in front of a real prospect.
  *
  * THE FIRST SEPARATOR WINS, not the last: "CTO at Acme, previously at Beta"
  * is a person who works at Acme. This is the same first-match rule the
@@ -768,7 +774,7 @@ export function companyFromHeadline(headline: string | null | undefined): string
   const line = headline.replace(/\s+/g, ' ').trim();
   const match = /(?:\s+at\s+|\s+bei\s+|\s+chez\s+|\s+@\s*)(.+)$/i.exec(line);
   if (!match) return null;
-  const employer = (match[1] ?? '').split(/[|•·]|\s[-–—]\s/)[0]?.trim() ?? '';
+  const employer = (match[1] ?? '').split(/[|•·,]|\s[-–—]\s/)[0]?.trim() ?? '';
   return employer || null;
 }
 

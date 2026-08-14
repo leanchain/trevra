@@ -16,6 +16,13 @@ Trevra is the evidence-backed ledger and control plane for agent-operated go-to-
 - `docs/integration-contracts.md`: normalized Nango records and actions.
 - `infra/gcp`: Cloud Run, Cloud SQL, Secret Manager, and self-hosted Nango deployment material.
 
+## Client routing
+- **Screens are addressed by PATH, never by hash.** `/outreach/inbox`, not `#/outreach/inbox`. `src/client/ui/route.ts` is the only router; it reads `location.pathname` and moves with `history.pushState`.
+- **`#` means one thing: scroll to an element on the page you are already on.** The marketing page in `index.html` owns those anchors (`#hosted`, `#approval`, `#modules`). No screen may read or write `location.hash`.
+- In-app links are plain `<a href="/outreach/inbox">`. A document-level interceptor in `ui/route.ts` catches them; there is no `<Link>` component and none is needed.
+- Adding a route means adding it in three places that must agree: `SECTIONS`/`SUB_ROUTES`/`SHELL_PATHS` in `src/client/ui/route.ts`, and `APP_PATH_HEADS` in `src/server/index.ts` so a reload of that URL serves the app instead of a 404.
+- `src/client/ui/route.test.ts` fails the suite on any `#/` route literal or `location.hash` use in `src/client`. If it fires, the fix is the code, not the test.
+
 ## Required checks
 Run `npm run check` before committing. Tests use a real PostgreSQL Testcontainer. Also run `npm audit --omit=dev`, `docker compose config`, and `terraform validate` when touching dependencies or infrastructure.
 

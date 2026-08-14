@@ -1214,7 +1214,12 @@ export function postgresLocalWorkerStore(
         SELECT 1 AS unaccepted FROM linkedin_actions
         WHERE workspace_id=? AND seat_key=? AND kind='invite'
           AND target_ref IS NOT NULL AND LOWER(target_ref)=LOWER(?)
-          AND status NOT IN ('accepted', 'replied', 'skipped')
+          -- Every TERMINAL status, and the list is runner.ts's own: a declined
+          -- or withdrawn invite is not still waiting to be accepted, it is
+          -- finished. Leaving those two out parked the DM behind such an
+          -- invite as not-yet-accepted on every pass, forever, on a row that
+          -- can never resolve.
+          AND status NOT IN ('accepted', 'replied', 'declined', 'withdrawn', 'skipped')
         LIMIT 1
       `).get<{ unaccepted: number }>(workspaceId, action.seatKey, action.targetRef);
       return row !== undefined;

@@ -40,7 +40,7 @@ import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag } from './LinkedInViz';
 
 /**
- * `#/outreach/inbox` -- THE ONE PLACE AN OPERATOR ANSWERS A PERSON.
+ * `/outreach/inbox` -- THE ONE PLACE AN OPERATOR ANSWERS A PERSON.
  *
  * Two kinds of thing land here and they are not the same kind of thing. A
  * CONVERSATION is something a human sent; a MANUAL-MESSAGE TASK is a campaign
@@ -432,6 +432,23 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     return replies.find((action) => profileKey(action.targetRef) === key && LIVE_REPLY_STATUSES.has(action.status)) ?? null;
   }, [replies]);
 
+  /**
+   * WHICH ACCOUNT THIS CONVERSATION IS IN, taken off the row that named it.
+   *
+   * Every inbox call behind this screen resolves a thread PER SEAT and defaults
+   * to the owner's, so reading, refreshing or replying to a secondary account's
+   * conversation without saying whose it is either 404s or -- worse -- resolves
+   * a different account's thread of the same URN. The list rows carry
+   * `seatKey`, so it is read from the row that was clicked rather than inferred
+   * from the filter, which may well be "Any account".
+   */
+  const seatForThread = useCallback((threadUrn: string): string | undefined =>
+    threads.find((thread) => thread.threadUrn === threadUrn)?.seatKey
+    ?? taskThreads.find((thread) => thread.threadUrn === threadUrn)?.seatKey
+    ?? (conversation?.thread.threadUrn === threadUrn ? conversation.thread.seatKey : undefined)
+    ?? (filters.seatKey || undefined),
+  [threads, taskThreads, conversation, filters.seatKey]);
+
   const openThread = async (threadUrn: string) => {
     setOpenUrn(threadUrn);
     setOpenTaskId(null);
@@ -440,7 +457,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     setRefusal('');
     setQueued(null);
     try {
-      setConversation(await getLinkedInThread(threadUrn));
+      setConversation(await getLinkedInThread(threadUrn, seatForThread(threadUrn)));
       setError('');
     } catch (err) {
       setConversation(null);
@@ -471,7 +488,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     setError('');
     setDegraded([]);
     try {
-      const result = await syncLinkedInInbox();
+      const result = await syncLinkedInInbox(filters.seatKey ? { seatKey: filters.seatKey } : {});
       setDegraded(result.degraded);
       setToast(`${result.threads} conversation(s) walked · ${result.created} new, ${result.updated} updated, `
         + `${result.inbound} inbound message(s) stored, ${result.linked} matched to a campaign.`);
@@ -490,7 +507,8 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     setError('');
     setDegraded([]);
     try {
-      const result = await syncLinkedInThread(threadUrn);
+      const seatKey = seatForThread(threadUrn);
+      const result = await syncLinkedInThread(threadUrn, seatKey ? { seatKey } : {});
       setDegraded(result.degraded);
       setToast(`${result.inserted} message(s) stored, ${result.inbound} of them inbound.`);
       await openThread(threadUrn);
@@ -518,7 +536,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     setError('');
     setQueued(null);
     try {
-      const result = await replyToLinkedInThread(threadUrn, body);
+      const result = await replyToLinkedInThread(threadUrn, body, undefined, seatForThread(threadUrn));
       setQueued({ plannedFor: result.plannedFor, verdict: result.verdict });
       setBody('');
       setToast('Message queued. Nothing has been sent yet — this screen shows when it is typed into LinkedIn.');
@@ -1033,7 +1051,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
 
     <p className="panel-note">
       <MessageSquare size={13} /> Everything you queue here also shows on the{' '}
-      <a className="li-link" href="#/outreach/queue">queue</a>, and it counts against this account’s daily message
+      <a className="li-link" href="/outreach/queue">queue</a>, and it counts against this account’s daily message
       limit exactly like anything else Trevra sends.
     </p>
   </div>;

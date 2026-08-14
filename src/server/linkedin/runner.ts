@@ -318,7 +318,48 @@ async function repliedProfiles(db: Db, workspaceId: string, profileUrls: readonl
  * The tick
  * ---------------------------------------------------------------------- */
 
+/** The advisory-lock namespace this tick leases a workspace under. */
+const RUNNER_LEASE_NAMESPACE = 'trevra-linkedin-runner';
+
+/**
+ * One planning pass for one workspace, and NEVER TWO AT ONCE.
+ *
+ * Everything below reads a budget and then plans against it: `used` counts the
+ * rows already in the ledger's rolling window, `ledgerFloorFor` reads the last
+ * slot taken so the next one can be gap-spaced after it. Both are READS, and
+ * the writes that answer them land a long way further down -- so two ticks for
+ * the same workspace overlapping (the manual `POST /api/linkedin/manager/tick`
+ * racing the scheduled one, or two schedulers in a hosted deployment) each saw
+ * the same stale snapshot and each planned a full ramp's worth on top of it.
+ * The result is close to double the day's intended volume, un-gap-spaced --
+ * which is the exact account-risk this whole subsystem exists to prevent.
+ *
+ * `pg_try_advisory_lock`, not the blocking form: a tick that finds another
+ * already running for this workspace RETURNS EMPTY rather than queueing behind
+ * it. The work is idempotent per tick and runs again on the next one, so
+ * waiting buys nothing and holding an HTTP request open costs a connection.
+ * The lease is namespaced and taken on a connection of its own, the same shape
+ * `automation-service.ts` uses for the same reason.
+ */
 export async function runManagedCampaigns(db: Db, workspaceId: string, now: Date = new Date()): Promise<RunnerResult> {
+  return db.withConnection('linkedin-runner-lease', async (lease) => {
+    const claimed = await lease.query<{ locked: boolean }>(
+      'SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS locked',
+      [RUNNER_LEASE_NAMESPACE, workspaceId]
+    );
+    if (!claimed.rows[0]?.locked) {
+      return { campaignsTicked: 0, actionsPlanned: 0, manualTasksCreated: 0, membersCompleted: 0, membersBlocked: 0 };
+    }
+    try {
+      return await planManagedCampaigns(db, workspaceId, now);
+    } finally {
+      await lease.query('SELECT pg_advisory_unlock(hashtext($1), hashtext($2))', [RUNNER_LEASE_NAMESPACE, workspaceId])
+        .catch(() => undefined);
+    }
+  });
+}
+
+async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Promise<RunnerResult> {
   const result: RunnerResult = {
     campaignsTicked: 0,
     actionsPlanned: 0,

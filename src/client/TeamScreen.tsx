@@ -7,7 +7,7 @@ import { ConfirmDrawer } from './ui/dialog';
 import type { Route } from './ui/route';
 
 /**
- * `#/setup/team` -- who is in this workspace, and the one owner-only control
+ * `/setup/team` -- who is in this workspace, and the one owner-only control
  * over who joins or leaves it (docs/superpowers/specs/2026-08-13-team-
  * workspace-access-design.md).
  *
@@ -80,7 +80,7 @@ export function TeamSettingsView({ route, setToast, reload, onNavigate }: {
   reload: () => Promise<void>;
   onNavigate: (path: string) => void;
 }) {
-  // `#/setup/team/<invitationId>` -- the copyable link from "Pending
+  // `/setup/team/<invitationId>` -- the copyable link from "Pending
   // invitations" below, opened by the invitee. Not a member of this
   // workspace yet (that is the whole point), so it renders its own small
   // panel instead of the member list, which a non-member's own read of
@@ -170,7 +170,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
   };
 
   const copyInviteLink = async (invitationId: string) => {
-    const link = `${window.location.origin}/#/setup/team/${invitationId}`;
+    const link = `${window.location.origin}/setup/team/${invitationId}`;
     try {
       await navigator.clipboard.writeText(link);
       setToast('Invite link copied. There is no email delivery here -- send it yourself.');

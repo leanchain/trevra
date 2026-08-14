@@ -694,12 +694,14 @@ async function handleCodexEvent(state: CliRunState, event: Record<string, unknow
     if (kind === 'agent_message') {
       const text = String(item.text ?? '');
       if (text.trim()) state.summary = text;
-      state.steps += 1;
+      // The counter is NOT incremented here -- `turn.completed` owns it. See
+      // the note there. `state.steps + 1` is the step this message belongs to,
+      // which is the number this row used to carry.
       await appendAgentRunStep(state.db, {
         runId: state.runId,
         workspaceId: state.workspaceId,
         kind: 'model',
-        input: { step: state.steps, model: state.model },
+        input: { step: state.steps + 1, model: state.model },
         output: { text, finishReason: null, toolCalls: [] },
         durationMs: elapsed(state)
       });
@@ -720,6 +722,15 @@ async function handleCodexEvent(state: CliRunState, event: Record<string, unknow
   }
 
   if (event.type === 'turn.completed') {
+    /*
+     * THE STEP COUNTER MOVES HERE, NOT IN `agent_message`, and that is the
+     * whole point: `afterTurn` checks `state.steps >= state.maxSteps` on every
+     * `turn.completed`, so counting only turns that ended in TEXT meant a
+     * Codex run chaining tool call after tool call never incremented and the
+     * ceiling was silently unenforced for that run. One turn is one step,
+     * which is exactly what `recordModelTurn` does for the Claude backend.
+     */
+    state.steps += 1;
     const usage = asRecord(event.usage);
     await recordAgentModelCall(state.db, {
       workspaceId: state.workspaceId,

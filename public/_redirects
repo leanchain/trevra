@@ -1,2 +1,8 @@
 /catalog /catalog/modules.json 302
 /how-it-works /#how-it-works 302
+# The marketing build has no auth screen -- VITE_MARKETING_ONLY renders the
+# landing page and nothing else -- but index.html's nav Login falls back to
+# /login (see the comment on it). Static hosting has no server-side rewrite to
+# point it at the hosted workspace, so it lands back on the page that offers
+# one rather than on a 404.
+/login / 302

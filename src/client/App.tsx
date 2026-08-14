@@ -99,7 +99,7 @@ import { trackEvent, trackPageView } from './analytics';
 import { ConfirmDrawer, useDialog } from './ui/dialog';
 import { HelpPanel, JumpPalette, ShortcutSheet } from './ui/HelpPanel';
 import { useShortcuts } from './ui/keys';
-import { useHashRoute, type Route, type Section } from './ui/route';
+import { isAccountsPath, isLoginPath, navigate, usePathname, useRoute, type Route, type Section } from './ui/route';
 import { StopBar } from './ui/StopBar';
 import { formatEvery } from './ui/duration';
 import { formatMoment } from './views/inspector';
@@ -137,7 +137,7 @@ const NAV_ITEMS: Array<{ section: Section; path: string; icon: React.ReactNode; 
 ];
 
 /**
- * The six sub-screens of `#/outreach`, in the order the work happens: the seat
+ * The six sub-screens of `/outreach`, in the order the work happens: the seat
  * you are risking, the people you found, what is planned, the campaigns that
  * plan came from, what is queued to leave, and what came back.
  *
@@ -186,34 +186,25 @@ const reducedMotion = () => typeof window !== 'undefined'
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 
 /**
- * `#/leads` -- the account spine's ranked list, addressed beside the sections.
+ * `/leads` -- the account spine's ranked list, addressed beside the sections.
  *
  * It is NOT a `Section` in ui/route.ts, and the seam is deliberate rather than
  * an oversight. The five sections are the shell's own shape (docs/gtm-shell-
  * shape.md) and reorganising them around a spine that has one screen so far
  * would be settling a question the spine has not answered yet -- so the screen
- * ships at its own hash, the router keeps its five, and the day accounts earn
+ * ships at its own path, the router keeps its five, and the day accounts earn
  * a section this hook deletes and a `SECTIONS` entry replaces it.
  *
- * `parseRoute` sends an unknown head to the default route, so this reads the
- * hash directly. Nothing rewrites it: `useHashRoute` only normalises the old
- * parameter-list shape, and `#/leads` is a path.
+ * `parseRoute` sends an unknown head to the default route, so this asks the
+ * pathname directly. `SHELL_PATHS` in ui/route.ts is what stops the click
+ * interceptor and the server treating `/leads` as somebody else's URL.
  *
  * lc-debt: one screen addressed outside the router's Section union; upgrade
  * path is 'accounts' in SECTIONS + SUB_ROUTES, at which point this is an
  * ordinary `route.section === 'accounts'`.
  */
-const isAccountsHash = (hash: string) => hash === '#/leads' || hash.startsWith('#/leads/');
-
 function useAccountsRoute(): boolean {
-  const [open, setOpen] = useState(() => typeof window !== 'undefined' && isAccountsHash(window.location.hash));
-  useEffect(() => {
-    const sync = () => setOpen(isAccountsHash(window.location.hash));
-    sync();
-    window.addEventListener('hashchange', sync);
-    return () => window.removeEventListener('hashchange', sync);
-  }, []);
-  return open;
+  return isAccountsPath(usePathname());
 }
 
 const MARKETING_ONLY = import.meta.env.VITE_MARKETING_ONLY === 'true';
@@ -233,11 +224,21 @@ export function App() {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [error, setError] = useState('');
   const [needsAuth, setNeedsAuth] = useState<boolean | null>(null);
-  const [showAuth, setShowAuth] = useState(false);
+  /**
+   * `/login` -- THE AUTH SCREEN HAS AN ADDRESS, and that is the whole change.
+   *
+   * It used to be a boolean nobody could link to, opened either by clicking
+   * through the marketing page or by the mount-time `#get-started` check. Both
+   * of those made "send me the login page" unanswerable, and the second was a
+   * route wearing an anchor's clothes -- exactly the confusion ui/route.ts's
+   * header is about. A path is bookmarkable, Back-able, typeable, and it is
+   * what `index.html`'s pre-JS Login button can point at and still be right.
+   */
+  const showAuth = isLoginPath(usePathname());
   // Where you are lives in the URL as one path, so every screen is
   // addressable, bookmarkable and Back-able -- and reachable by typing, which
   // is the only escape hatch a phone has when a nav goes missing.
-  const [route, go] = useHashRoute();
+  const [route, go] = useRoute();
   // Read beside the route rather than out of it: see `useAccountsRoute`.
   const accountsOpen = useAccountsRoute();
   const [activeAction, setActiveAction] = useState<PreparedAction | null>(null);
@@ -295,9 +296,6 @@ export function App() {
   useEffect(() => {
     if (MARKETING_ONLY) return;
     void load();
-    // Not a route. `#get-started` is the marketing site's link into the signup
-    // panel, and `parseRoute` leaves it alone precisely so this still sees it.
-    if (window.location.hash === '#get-started') setShowAuth(true);
     return () => { if (loadStallTimer.current !== null) window.clearTimeout(loadStallTimer.current); };
   }, []);
   // Fired per screen, not once per session: page views that cannot see
@@ -394,7 +392,10 @@ export function App() {
     await Promise.allSettled([authClient.signOut(), endDemoSession()]);
     setData(null);
     setNeedsAuth(true);
-    setShowAuth(false);
+    // Back to the front door, not to `/login`: signing out and being handed the
+    // sign-in form is a loop, and the address has to stop naming a screen that
+    // is no longer on it.
+    navigate('/');
   };
 
   const execute = async () => {
@@ -433,8 +434,8 @@ export function App() {
 
   if (needsAuth === null) return loadStalled ? stalledGate : loadingGate;
   if (needsAuth) return showAuth
-    ? <AuthScreen onAuthenticated={load} onBack={() => setShowAuth(false)} />
-    : <MarketingScreen githubUrl={GITHUB_URL} onGetStarted={() => setShowAuth(true)} />;
+    ? <AuthScreen onAuthenticated={load} onBack={() => navigate('/')} />
+    : <MarketingScreen githubUrl={GITHUB_URL} onGetStarted={() => navigate('/login')} />;
   if (!data && !error) return loadStalled ? stalledGate : loadingGate;
   if (error) return <div className="center-state error"><p>{error}</p><button onClick={() => void load()}>Try again</button></div>;
   if (!data) return null;
@@ -521,7 +522,7 @@ export function App() {
             survives below 760px, where the sidebar does not. */}
         <StopBar setToast={setToast} />
 
-        {/* `#/leads` parses to the default section, so it is answered before
+        {/* `/leads` parses to the default section, so it is answered before
             it -- and only the default section has to know that. */}
         {accountsOpen && <AccountsScreen setToast={setToast} />}
 
@@ -683,7 +684,7 @@ const HIDDEN_LIVE_REGION: React.CSSProperties = {
  * are one decision in one order, and a separate screen would ask an operator
  * to set a cap for a key nobody has asked them for yet.
  *
- * So `#/setup/spend` survives as a DEEP LINK -- "Change the cap" on the cost
+ * So `/setup/spend` survives as a DEEP LINK -- "Change the cap" on the cost
  * screen still points at it, and it still lands on the cap -- and stops
  * pretending to be a peer of the six screens that are real.
  */
@@ -707,12 +708,12 @@ function SetupView({ route, data, reload, setToast, busyId, setBusyId, onNavigat
   setBusyId: (id: string | null) => void;
   onNavigate: (path: string) => void;
 }) {
-  // `#/setup` on its own is agent access: nothing else in Trevra works until
+  // `/setup` on its own is agent access: nothing else in Trevra works until
   // an agent can reach the workspace, so it is both the first tab and the
   // default one. See docs/app-spec.md §9.
   const sub = route.sub === '' ? 'agent' : route.sub;
 
-  // `#/setup/spend` is a deep link into the Agent access screen, not a screen.
+  // `/setup/spend` is a deep link into the Agent access screen, not a screen.
   // The strip below underlines Agent access for it, because that is where the
   // reader ends up.
   const navSub = sub === 'spend' ? 'agent' : sub;
@@ -1660,10 +1661,10 @@ function HostedAgentPanel({ setToast, onInspectRun }: {
 }
 
 /* --------------------------------------------------------------------------
- * `#/money` -- the paid end of the loop.
+ * `/money` -- the paid end of the loop.
  *
  * Not a second product and not a legacy screen: it is stages 4 to 6 of the one
- * loop `#/loop` draws. Every recommendation type, every string and every enum
+ * loop `/loop` draws. Every recommendation type, every string and every enum
  * member is untouched -- `stale_proposal`, `scope_creep`,
  * `unbilled_milestone`, `overdue_invoice` are the vocabulary of getting paid
  * and there is nothing wrong with them. What changed is only their GROUPING:

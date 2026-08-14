@@ -600,7 +600,7 @@ export function LinkedInManagerLeadConfig({ onChanged, setToast }: { onChanged: 
           <div><dt>{SOURCE_LABELS.sales_navigator}</dt><dd>The same walk against a Sales Navigator people search.</dd></div>
           <div><dt>{SOURCE_LABELS.post_keyword}</dt><dd>People who reacted to or commented on posts matching your keywords.</dd></div>
         </dl>
-        <a className="li-link" href="#/outreach/leads">Open Lead sources <ArrowRight size={13} /></a>
+        <a className="li-link" href="/outreach/leads">Open Lead sources <ArrowRight size={13} /></a>
       </div>
     </section>
 
@@ -621,7 +621,7 @@ export function LinkedInManagerLeadConfig({ onChanged, setToast }: { onChanged: 
         ? <div className="mgr-empty">
           <h4 aria-level={3}>No lead list yet</h4>
           <p>Import a CSV above, or walk a LinkedIn search on Lead sources and add the people it finds to a list. A campaign enrols from a list — until one has leads in it, there is nobody to reach.</p>
-          <div className="mgr-actions"><a className="secondary-button" href="#/outreach/leads">Open Lead sources <ArrowRight size={14} /></a></div>
+          <div className="mgr-actions"><a className="secondary-button" href="/outreach/leads">Open Lead sources <ArrowRight size={14} /></a></div>
         </div>
         : <>
           <div className="li-filter-row">

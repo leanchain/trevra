@@ -1,6 +1,6 @@
 import { id, type Db } from '../db.js';
 import { ownerSeat, type SeatRef } from './actions.js';
-import type { LinkedInDriver, LinkedInPage } from './driver.js';
+import { isSeatRead, type LinkedInDriver, type LinkedInPage } from './driver.js';
 // `readThread` names two different things in this subsystem: the browser
 // routine that opens a conversation in Chrome, and the database read that
 // returns the one Trevra has stored. Both are the right word in their own file,
@@ -20,7 +20,7 @@ import {
   type LinkedInListPage,
   type LinkedInWithdrawDriver
 } from './driver-withdraw.js';
-import { syncThreadMessages, syncThreads, threadByUrn } from './inbox.js';
+import { clearInboxForSeat, syncThreadMessages, syncThreads, threadByUrn } from './inbox.js';
 import { leadSourcingConfig, leadSourcingEnabled, runPendingLeadSources, type LeadSourceRunResult } from './leads.js';
 import {
   openLinkedInSession,
@@ -72,6 +72,69 @@ import {
 
 function seatOf(workspaceId: string, seatKey?: string): SeatRef {
   return seatKey ? { workspaceId, seatKey } : ownerSeat(workspaceId);
+}
+
+/** Two spellings of one profile URL. A trailing slash and a capital letter are not two people. */
+function sameAccount(left: string, right: string): boolean {
+  const canon = (value: string) => value.trim().toLowerCase().replace(/\/+$/, '');
+  return canon(left) === canon(right);
+}
+
+/**
+ * WHOSE INBOX THIS BROWSER IS SIGNED IN TO, asked BEFORE one conversation is
+ * filed against this seat.
+ *
+ * THE HOLE THIS CLOSES, in the order it actually happened. `linkedin_threads`
+ * and `linkedin_messages` are a read cache keyed by (workspace, seat) and by
+ * nothing else -- no column records WHICH LinkedIn account produced a row. The
+ * sync opened whatever session the seat's browser profile happened to hold,
+ * read that person's rail, and filed it under the seat. `detectLinkedInSeat`
+ * is the only place that ever compared identities, it only fires when a
+ * profile URL was ALREADY confirmed, and it is not part of a sync -- so a
+ * workspace that synced before its first detect kept a stranger's
+ * conversations forever, under the name of the account it later connected.
+ * That is exactly what a real workspace ended up holding on 2026-08-13: nine
+ * conversations read from one account, sitting under a seat confirmed as
+ * another.
+ *
+ * COSTS ONE NAVIGATION PER SYNC RUN, not per conversation, and the walk that
+ * follows already pays one per thread. Reading somebody else's DMs into an
+ * operator's inbox is not a price worth saving it for.
+ *
+ * A MISMATCH CLEARS THIS SEAT'S CACHE AND READS NOTHING, which is the same
+ * decision `detectLinkedInSeat` makes and for the same reason: what is stored
+ * belongs to the account that is no longer signed in, and leaving it in place
+ * shows one human's private messages to another. The ledger is never touched.
+ *
+ * Returns a sentence to block the run with, or null when the seat and the
+ * session are the same person.
+ */
+async function confirmSeatAccount(
+  db: Db,
+  session: { page: LinkedInPage; driver: LinkedInDriver },
+  workspaceId: string,
+  seatKey: string
+): Promise<string | null> {
+  const seat = await getSeat(db, workspaceId, seatKey);
+  const confirmed = seat?.profileUrl ?? null;
+  if (!confirmed) {
+    return 'This workspace has never confirmed which LinkedIn account this seat is, so nothing was read -- an unconfirmed seat is exactly how one account\'s conversations end up stored as another\'s. Connect the account first; detecting it is what records who it is.';
+  }
+
+  const read = await session.driver.readSeat(session.page);
+  if (!isSeatRead(read)) {
+    return `Which LinkedIn account this browser is signed in as could not be confirmed (${read.failureKind ?? 'unknown'}: ${read.detail ?? 'no detail'}), so nothing was read. Conversations are only stored against an account we just verified.`;
+  }
+
+  if (sameAccount(read.profileUrl, confirmed)) return null;
+
+  const cleared = await clearInboxForSeat(db, workspaceId, seatKey);
+  return (
+    `This browser is signed in as ${read.profileUrl}, and this seat is ${confirmed}. Nothing was read. `
+    + `${cleared} stored conversation${cleared === 1 ? '' : 's'} belonging to the account that is no longer signed in `
+    + `${cleared === 1 ? 'was' : 'were'} cleared, because they are not this seat's to show. `
+    + `Sign this browser back into ${confirmed}, or re-connect the seat to keep the account that is signed in now.`
+  );
 }
 
 export interface LinkedInJobOptions {
@@ -145,6 +208,10 @@ export async function syncLinkedInInbox(
 
   const session = await openLinkedInSession(db, config, options);
   if (!session.ok) return { ...empty, blocked: session.blocked };
+
+  // Whose inbox this is, before a word of it is stored. See `confirmSeatAccount`.
+  const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
+  if (wrongAccount) return { ...empty, blocked: wrongAccount };
 
   const inbox = options.inboxDriver ?? playwrightInboxDriver;
   const seed = `inbox:${options.workspaceId}:${now.toISOString().slice(0, 13)}`;
@@ -230,6 +297,12 @@ export async function syncLinkedInThread(
 
   const session = await openLinkedInSession(db, config, options);
   if (!session.ok) return { blocked: session.blocked, inserted: 0, inbound: 0, linkage: null, degraded: [] };
+
+  // Same check as the full walk: a refresh is a read of one conversation, and
+  // a conversation read from the wrong account is the same defect one thread
+  // at a time.
+  const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
+  if (wrongAccount) return { blocked: wrongAccount, inserted: 0, inbound: 0, linkage: null, degraded: [] };
 
   const transcript = await readThreadFromLinkedIn(session.page, threadUrn, {
     ...(options.maxMessages === undefined ? {} : { maxMessages: options.maxMessages }),

@@ -58,6 +58,8 @@ interface World {
   threads: FakeThread[];
   rail: 'ok' | 'empty' | 'missing';
   messageList: 'ok' | 'missing';
+  /** Drift in the bubble itself: the item is there, nothing inside it is classed. */
+  bubbles: 'ok' | 'missing';
   composer: 'ok' | 'missing' | 'no-send';
   /** A wall, and where it appears. */
   wall: 'none' | 'limit' | 'challenge' | 'gone';
@@ -69,6 +71,7 @@ function world(overrides: Partial<World> = {}): World {
     threads: [],
     rail: 'ok',
     messageList: 'ok',
+    bubbles: 'ok',
     composer: 'ok',
     wall: 'none',
     wallAt: 'always',
@@ -172,7 +175,14 @@ class FakePage implements LinkedInPage {
     if (part.includes('msg-entity-lockup') || part.includes('msg-title-bar')) return none;
 
     const nth = /li:nth-child\((\d+)\)/.exec(part);
-    const suffix = nth ? part.slice(part.indexOf(')') + 1).trim() : '';
+    // RAW, then trimmed. The whitespace between `li:nth-child(3)` and what
+    // follows is not formatting: it is the difference between "a class on the
+    // item" and "a class on something inside it", and collapsing the two is how
+    // this fixture used to agree with a driver that could never have matched a
+    // real page -- every message read as ours, and every reply was lost.
+    const rawSuffix = nth ? part.slice(part.indexOf(')') + 1) : '';
+    const suffix = rawSuffix.trim();
+    const descendant = /^\s/.test(rawSuffix);
 
     if (part.includes('msg-conversations-container__conversations-list')) {
       if (!this.onMessaging() || this.state.rail === 'missing') return none;
@@ -203,8 +213,16 @@ class FakePage implements LinkedInPage {
       const message = open.messages[Number(nth[1]) - 1];
       if (!message) return none;
       if (!suffix) return { count: 1, text: null };
-      // Real markup: the OWNER's own message carries `--other`, not the other party's (see driver-inbox.ts).
-      if (suffix.includes('msg-s-event-listitem--other')) return message.direction === 'out' ? { count: 1, text: null } : none;
+      // Real markup: the bubble is a DIV INSIDE the <li>, and `--other` on it
+      // means the other participant wrote this one. A selector that asks for
+      // either class ON the item matches nothing, exactly as on linkedin.com.
+      if (suffix.includes('msg-s-event-listitem--other')) {
+        if (!descendant || this.state.bubbles === 'missing') return none;
+        return message.direction === 'in' ? { count: 1, text: null } : none;
+      }
+      if (suffix === '.msg-s-event-listitem') {
+        return descendant && this.state.bubbles !== 'missing' ? { count: 1, text: null } : none;
+      }
       if (suffix.includes('msg-s-event-listitem__body')) {
         return message.bodyless ? none : { count: 1, text: message.body };
       }
@@ -356,6 +374,28 @@ describe('listConversations', () => {
         unread: false
       }
     ]);
+    expect(listing.degraded).toEqual([]);
+  });
+
+  it('stores the person\'s NAME, not the lockup LinkedIn reads out around it', async () => {
+    // `textContent` collapses the presence text and the headline into the name,
+    // which is how an inbox came to list "Daryna Radiichuk Status is offline
+    // CEO at G-MOS.com | Product & Growth Leader | ..." as somebody's name.
+    const state = world({
+      threads: [
+        thread(0, {
+          name: 'Maya Chen Status is online Active now',
+          headerName: 'Maya Chen Status is online Building developer tools'
+        }),
+        thread(1, { name: 'Jonas Keller Status: online Gerade aktiv', headerName: 'Jonas Keller' })
+      ]
+    });
+
+    const listing = await listConversations(new FakePage(state), { sleep: recorder().sleep, now: clock });
+    if (!isThreadListing(listing)) throw new Error('expected a listing');
+    expect(listing.threads.map((entry) => entry.name)).toEqual(['Maya Chen', 'Jonas Keller']);
+    // The rail and the header still agree, so neither row is dropped as a
+    // mid-walk re-order.
     expect(listing.degraded).toEqual([]);
   });
 
@@ -525,6 +565,43 @@ describe('readThread', () => {
     if (isThreadTranscript(result)) throw new Error('expected a refusal');
     expect(result.failureKind).toBe('not_found');
     expect(page.url()).toBe(before);
+  });
+
+  it('reads THEIR message as inbound, with the class on the bubble inside the item', async () => {
+    // THE REGRESSION THIS FILE MISSED FOR A RELEASE. `--other` sits on the div
+    // inside the <li>, so the marker was scoped with no separator and matched
+    // nothing on any real page: every conversation was stored as though the
+    // operator had written all of it, replies included, and the screen said
+    // "You" above somebody else's words.
+    const state = world({
+      threads: [
+        thread(0, {
+          messages: [
+            { direction: 'out', body: 'Hi Maya, saw your talk.', stamp: 'Aug 3' },
+            { direction: 'in', body: 'Thanks! What do you build?' }
+          ]
+        })
+      ]
+    });
+
+    const transcript = await readThread(new FakePage(state), '2-thread0==', { sleep: recorder().sleep, now: clock });
+    if (!isThreadTranscript(transcript)) throw new Error('expected a transcript');
+    expect(transcript.messages.map((entry) => entry.direction)).toEqual(['out', 'in']);
+    expect(transcript.degraded).toEqual([]);
+  });
+
+  it('SAYS SO when no bubble can be found, instead of filing everything as ours', async () => {
+    const state = world({
+      bubbles: 'missing',
+      threads: [thread(0, { messages: [{ direction: 'out', body: 'mine' }, { direction: 'in', body: 'theirs' }] })]
+    });
+
+    const transcript = await readThread(new FakePage(state), '2-thread0==', { sleep: recorder().sleep, now: clock });
+    if (!isThreadTranscript(transcript)) throw new Error('expected a transcript');
+    // Still outbound -- there is nothing left to read direction off -- but the
+    // run no longer claims that silently.
+    expect(transcript.messages.map((entry) => entry.direction)).toEqual(['out', 'out']);
+    expect(transcript.degraded.join(' ')).toContain('not trustworthy');
   });
 
   it('reports drift when the message list is gone', async () => {

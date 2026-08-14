@@ -65,7 +65,7 @@ the two ends and none of the middle.
    typed audience tags, and campaign targets come from an account selection
    rather than a CSV.
 6. **Demote LinkedIn walking to a source, not the front door.** A lead walk
-   *imports into accounts* like every other source. `#/outreach/leads` stops
+   *imports into accounts* like every other source. `/outreach/leads` stops
    being where lead generation begins.
 
 Order matters: 1 and 2 unblock everything, 3 makes it a product rather than a

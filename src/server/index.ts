@@ -34,6 +34,49 @@ if (process.env.NODE_ENV === 'production') {
     res.send(renderAppIndex(indexTemplate, String(res.locals.cspNonce ?? '')));
   });
   app.get('/index.html', (_req, res) => res.redirect(308, '/'));
+
+  /**
+   * THE APP'S OWN PATHS ANSWER WITH THE APP.
+   *
+   * The shell routes on `location.pathname` (src/client/ui/route.ts), so
+   * `/outreach/inbox` is a real URL that a reload, a bookmark, a pasted link
+   * and a crawler all request from this server directly. Without this it fell
+   * through the static mount to the 404 page, and the only way to reach a
+   * screen would have been to land on `/` and click.
+   *
+   * AN ALLOW-LIST, NOT A CATCH-ALL, and the difference is the whole design.
+   * `app.get('*')` would serve the SPA for `/pricing`, `/blog/post`, and every
+   * typo -- a soft 404 that returns 200, which is the one thing a 404 page
+   * must never do. Only the segments the shell actually claims are answered
+   * here; `/privacy`, `/terms`, `/security` keep their shipped documents
+   * below, and anything else still 404s honestly.
+   *
+   * THE LIST IS DUPLICATED FROM `isAppPath`, deliberately and with this note:
+   * this file cannot import client code (it is not in the server's tsconfig
+   * graph and would drag React in), so the two copies are kept adjacent in
+   * meaning by naming each other. A path one side claims and the other does
+   * not is a broken reload, so they change together.
+   */
+  const APP_PATH_HEADS = new Set([
+    'loop', 'outreach', 'money', 'ledger', 'setup', // SECTIONS in ui/route.ts
+    'leads', 'login'                                // SHELL_PATHS in ui/route.ts
+  ]);
+  app.get(/^\/[^.]*$/, (req, res, next) => {
+    const head = req.path.replace(/^\//, '').split('/')[0] ?? '';
+    if (!APP_PATH_HEADS.has(head)) return next();
+    res.type('html').set({
+      // Never cached: these URLs are the app, and a stale index names asset
+      // hashes that no longer exist.
+      'Cache-Control': 'no-store',
+      'Content-Language': 'en',
+      // NOINDEX, because these are screens behind a sign-in. A crawler that
+      // reaches one gets the shell and no content, and a shell indexed under
+      // seven URLs is seven near-duplicate empty pages.
+      'X-Robots-Tag': 'noindex, nofollow'
+    });
+    res.send(renderAppIndex(indexTemplate, String(res.locals.cspNonce ?? '')));
+  });
+
   /**
    * Serve `dist/<page>/index.html` at `/<page>`, not at `/<page>/`.
    *

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { id, openDatabase, type Db } from '../db.js';
 import { recordAction, type SeatRef } from './actions.js';
-import { runLinkedInWithdrawals, syncLinkedInThread } from './jobs.js';
+import type { LinkedInDriver, LinkedInDriverResult, LinkedInPage, LinkedInSeatRead } from './driver.js';
+import type { LinkedInInboxDriver } from './driver-inbox.js';
+import { runLinkedInWithdrawals, syncLinkedInInbox, syncLinkedInThread } from './jobs.js';
 import { syncThreads } from './inbox.js';
 import { upsertSeat } from './seats.js';
 import { DEFAULT_STALE_AFTER_DAYS } from './withdraw.js';
@@ -241,5 +243,149 @@ describe('the seat a single-thread refresh reads', () => {
     // same rule: from that seat's point of view the conversation does not exist.
     const owner = await syncLinkedInThread(db, OFF, '2-sales==', { workspaceId: WORKSPACE_ID, now: NOW });
     expect(owner.blocked).toBeNull();
+  });
+});
+
+/**
+ * WHOSE CONVERSATIONS THESE ARE.
+ *
+ * The defect, as a real workspace held it. `linkedin_threads` is a read cache
+ * keyed by (workspace, seat) and by nothing else: no column records which
+ * LinkedIn account produced a row. The sync read whatever session the seat's
+ * browser profile happened to hold and filed it under the seat, and the only
+ * identity check in the subsystem lives in `detectLinkedInSeat` -- which fires
+ * only when a profile URL was already confirmed, and is not part of a sync. So
+ * a workspace that synced before its first detect kept nine conversations
+ * belonging to one account under a seat later confirmed as another, and every
+ * one of them stayed on the Inbox screen as if it were the connected
+ * account's own.
+ */
+describe('the account a sync is allowed to read', () => {
+  const seatRead: LinkedInSeatRead = {
+    ok: true,
+    profileUrl: 'https://www.linkedin.com/in/connected/',
+    name: 'Connected Account',
+    connectionsCount: 500,
+    degraded: []
+  };
+
+  /** Only `readSeat` is reached on these paths; the rest is a trap on purpose. */
+  function identityDriver(read: LinkedInSeatRead | LinkedInDriverResult = seatRead) {
+    const calls: string[] = [];
+    const trap = () => {
+      throw new Error('a sync must not act on LinkedIn while it is confirming whose account this is');
+    };
+    return {
+      calls,
+      driver: {
+        readSeat: async () => {
+          calls.push('readSeat');
+          return read;
+        },
+        sendInvite: trap,
+        sendDm: trap,
+        sendReply: trap,
+        viewProfile: trap,
+        followProfile: trap,
+        likeRecentPost: trap,
+        endorseSkills: trap,
+        isLoggedIn: async () => true,
+        loginWithCredentials: trap
+      } as unknown as LinkedInDriver
+    };
+  }
+
+  /** A page nothing here navigates: the walk is refused before the inbox driver is reached. */
+  const page = {
+    goto: async () => undefined,
+    url: () => 'https://www.linkedin.com/feed/',
+    locator: () => {
+      throw new Error('nothing may be read from the page on a refused sync');
+    },
+    waitForTimeout: async () => {}
+  } as unknown as LinkedInPage;
+
+  const inboxDriver = {
+    listConversations: async () => {
+      throw new Error('the rail must not be walked when the signed-in account is not this seat');
+    },
+    readThread: async () => {
+      throw new Error('no conversation may be read when the signed-in account is not this seat');
+    },
+    sendReply: async () => {
+      throw new Error('nothing is ever sent from a sync');
+    }
+  } as unknown as LinkedInInboxDriver;
+
+  async function storedThreads(): Promise<number> {
+    const row = await db.prepare('SELECT COUNT(*)::int AS count FROM linkedin_threads WHERE workspace_id=?')
+      .get<{ count: number }>(WORKSPACE_ID);
+    return row?.count ?? 0;
+  }
+
+  async function cacheOneThread(): Promise<void> {
+    await syncThreads(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'owner',
+        threads: [{
+          threadUrn: '2-somebody-else==',
+          profileUrl: 'https://www.linkedin.com/in/stranger/',
+          name: 'Stranger',
+          lastMessageAt: NOW.toISOString(),
+          snippet: 'read from the account that is no longer signed in',
+          unread: false
+        }]
+      },
+      NOW
+    );
+  }
+
+  it('READS NOTHING and clears the cache when the browser is signed in as somebody else', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/seat-owner/' }, NOW);
+    await cacheOneThread();
+    expect(await storedThreads()).toBe(1);
+
+    const { driver, calls } = identityDriver();
+    const result = await syncLinkedInInbox(db, { enabled: true }, { workspaceId: WORKSPACE_ID, now: NOW, page, driver, inboxDriver });
+
+    expect(calls).toEqual(['readSeat']);
+    expect(result.threads).toBe(0);
+    expect(result.blocked).toContain('https://www.linkedin.com/in/connected/');
+    expect(result.blocked).toContain('https://www.linkedin.com/in/seat-owner/');
+    // The other account's conversations are gone rather than left on screen
+    // under this seat's name. The ledger is untouched -- it is history.
+    expect(await storedThreads()).toBe(0);
+  });
+
+  it('refuses a seat whose account was never confirmed, instead of adopting whoever is signed in', async () => {
+    // `beforeEach` leaves the seat with no profile URL: this is the state the
+    // real workspace synced in, and the state that filed a stranger's inbox.
+    const { driver } = identityDriver();
+    const result = await syncLinkedInInbox(db, { enabled: true }, { workspaceId: WORKSPACE_ID, now: NOW, page, driver, inboxDriver });
+
+    expect(result.threads).toBe(0);
+    expect(result.blocked).toContain('never confirmed');
+  });
+
+  it('walks the rail when the signed-in account IS the seat', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' }, NOW);
+    await cacheOneThread();
+
+    const { driver } = identityDriver();
+    const walked = {
+      listConversations: async () => ({ ok: true as const, threads: [], degraded: [] }),
+      readThread: async () => ({ ok: true as const, threadUrn: '2-x==', messages: [], degraded: [] }),
+      sendReply: async () => {
+        throw new Error('nothing is ever sent from a sync');
+      }
+    } as unknown as LinkedInInboxDriver;
+
+    const result = await syncLinkedInInbox(db, { enabled: true }, { workspaceId: WORKSPACE_ID, now: NOW, page, driver, inboxDriver: walked });
+
+    expect(result.blocked).toBeNull();
+    // Nothing was cleared: this seat's own cache survives its own sync.
+    expect(await storedThreads()).toBe(1);
   });
 });

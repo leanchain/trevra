@@ -1531,22 +1531,25 @@ export function createApp(db: Db) {
       const inventory = await workspaceInventory(db, workspaceId);
       const removed = Object.fromEntries(inventory.filter((entry) => entry.rows > 0).map((entry) => [entry.table, entry.rows]));
 
-      let organizationRemoved = false;
-      try {
-        await betterAuth.api.deleteOrganization({
-          headers: fromNodeHeaders(req.headers),
-          body: { organizationId: workspaceId }
-        });
-        organizationRemoved = true;
-      } catch (error) {
-        // A demo-style session has no better-auth organization behind it at all,
-        // and a workspace whose organization was already removed answers the
-        // same way. Both are 4xx from better-auth and neither is a reason to
-        // abandon the erasure -- the workspace rows still have to go. Anything
-        // that is NOT better-auth saying no is a real fault and is rethrown.
-        if (!(error instanceof APIError)) throw error;
-      }
-
+      /*
+       * TREVRA'S OWN ROWS GO FIRST, AND THE ORDER IS THE WHOLE POINT.
+       *
+       * These two steps are in two different databases and there is no
+       * transaction across them, so one of the two orders has to be chosen for
+       * what its FAILURE leaves behind. Deleting the organization first left
+       * the unrecoverable one: a transient error on the transaction below
+       * 500s with the workspace and all its data still in Postgres, but the
+       * better-auth organization and every member's membership already gone --
+       * and a retry cannot re-run `deleteOrganization` against an organization
+       * that no longer exists, so nothing can finish the erasure.
+       *
+       * This way round, a failing transaction rolls back and deletes NOTHING:
+       * the organization is untouched, the refusal is honest, and the whole
+       * request is retryable. What can still be left over is an organization
+       * whose workspace is gone -- reported as `organizationRemoved:false`
+       * rather than swallowed, holds no tenant data, and is removable on its
+       * own.
+       */
       await db.transaction(async (tx) => {
         await tx.prepare(`
           INSERT INTO workspace_erasures (
@@ -1563,6 +1566,26 @@ export function createApp(db: Db) {
         );
         await tx.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
       });
+
+      let organizationRemoved = false;
+      try {
+        await betterAuth.api.deleteOrganization({
+          headers: fromNodeHeaders(req.headers),
+          body: { organizationId: workspaceId }
+        });
+        organizationRemoved = true;
+      } catch (error) {
+        // A demo-style session has no better-auth organization behind it at all,
+        // and a workspace whose organization was already removed answers the
+        // same way. Both are 4xx from better-auth and neither is a reason to
+        // fail the erasure -- the workspace rows are already gone. Anything
+        // that is NOT better-auth saying no is reported the same way rather
+        // than rethrown: throwing here would answer a completed, irreversible
+        // deletion with a 500, which reads as "nothing happened".
+        if (!(error instanceof APIError)) {
+          console.error(`Workspace ${workspaceId} was erased but its better-auth organization was not removed`, error);
+        }
+      }
 
       /**
        * AND THE CALLER IS SIGNED OUT EVERYWHERE, which is not cosmetic.
@@ -3044,7 +3067,12 @@ export function createApp(db: Db) {
     res.json({ seats: await listSeats(db, req.auth!.workspaceId) });
   }));
 
+  // Owner-only, for the reason PUT /api/linkedin/seat states at length: the
+  // fields these two routes write are the seat's daily ceilings, its working
+  // hours and the band override -- an account-risk decision, not a preference.
+  // They are field-identical to that route and were reachable by any member.
   app.post('/api/linkedin/manager/seats', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, "change a LinkedIn account's limits");
     const input = linkedinManagerSeatCreateSchema.parse(req.body ?? {});
     try {
       const seat = await upsertSeat(db, req.auth!.workspaceId, input, new Date(), input.seatKey);
@@ -3053,6 +3081,7 @@ export function createApp(db: Db) {
   }));
 
   app.patch('/api/linkedin/manager/seats/:seatKey', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, "change a LinkedIn account's limits");
     const seatKey = linkedinSeatKeySchema.parse(String(req.params.seatKey));
     const input = linkedinSeatSchema.parse(req.body ?? {});
     if (!(await getSeat(db, req.auth!.workspaceId, seatKey))) throw new LinkedInApiError('LinkedIn account not found', 404);
@@ -3319,7 +3348,12 @@ export function createApp(db: Db) {
     } catch (error) { rethrowLinkedInManagerError(error); }
   }));
 
+  // Owner-only, and MORE destructive than the lead-list delete three routes
+  // above which already is: deleting a contact cascades it out of every
+  // campaign it is enrolled in and cancels the manual tasks written for it,
+  // where deleting a list only drops memberships.
   app.delete('/api/linkedin/manager/contacts/:id', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, 'delete a lead and its campaign enrolments');
     res.json({ deleted: await removeLeadContact(db, req.auth!.workspaceId, String(req.params.id)) });
   }));
 
@@ -3480,7 +3514,8 @@ export function createApp(db: Db) {
   }));
 
   app.get('/api/linkedin/inbox/threads/:threadUrn', linkedinRoute(async (req, res) => {
-    const conversation = await readStoredThread(db, req.auth!.workspaceId, String(req.params.threadUrn));
+    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+    const conversation = await readStoredThread(db, req.auth!.workspaceId, String(req.params.threadUrn), seatKey);
     if (!conversation) throw new LinkedInApiError('LinkedIn conversation not found', 404);
     res.json(conversation);
   }));
@@ -3490,6 +3525,7 @@ export function createApp(db: Db) {
     const config = linkedinWorkerConfigOrRefuse();
     const result = await syncLinkedInInbox(db, config, {
       workspaceId: req.auth!.workspaceId,
+      seatKey: input.seatKey,
       now: new Date(),
       ...(input.maxThreads === undefined ? {} : { maxThreads: input.maxThreads }),
       ...(input.maxMessages === undefined ? {} : { maxMessages: input.maxMessages }),
@@ -3507,12 +3543,13 @@ export function createApp(db: Db) {
     const threadUrn = String(req.params.threadUrn);
     // Refused here rather than in the browser: navigating to a conversation id
     // somebody typed is not a thing this API does.
-    if (!(await threadByUrn(db, workspaceId, threadUrn))) {
+    if (!(await threadByUrn(db, workspaceId, threadUrn, input.seatKey))) {
       throw new LinkedInApiError('LinkedIn conversation not found', 404);
     }
     const config = linkedinWorkerConfigOrRefuse();
     const result = await syncLinkedInThread(db, config, threadUrn, {
       workspaceId,
+      seatKey: input.seatKey,
       now: new Date(),
       ...(input.maxMessages === undefined ? {} : { maxMessages: input.maxMessages }),
       log: () => {}
@@ -3527,6 +3564,7 @@ export function createApp(db: Db) {
       db,
       {
         workspaceId: req.auth!.workspaceId,
+        seatKey: input.seatKey,
         threadUrn: String(req.params.threadUrn),
         body: input.body,
         ...(input.plannedFor === undefined ? {} : { plannedFor: input.plannedFor }),
@@ -5536,7 +5574,14 @@ const linkedinInboxFiltersSchema = z.object({
  */
 const linkedinInboxSyncSchema = z.object({
   maxThreads: z.number().int().min(1).max(50).optional(),
-  maxMessages: z.number().int().min(1).max(200).optional()
+  maxMessages: z.number().int().min(1).max(200).optional(),
+  // WHOSE INBOX. Every function behind these routes takes a seat and defaults
+  // it to the owner, so a sync or a refresh requested for a SECONDARY account
+  // walked the owner's conversations instead -- the same silent default
+  // `enqueueReply` and `syncLinkedInThread` each carry a paragraph about. The
+  // list route has taken a `seatKey` filter since it was written; these did not
+  // accept one at all.
+  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
 }).strict();
 
 /**
@@ -5549,7 +5594,9 @@ const linkedinInboxSyncSchema = z.object({
  */
 const linkedinReplySchema = z.object({
   body: z.string().min(1).max(8000),
-  plannedFor: z.string().datetime().optional()
+  plannedFor: z.string().datetime().optional(),
+  /** Which account is replying. See `linkedinInboxSyncSchema`. */
+  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
 }).strict();
 
 /** Both the candidate query and the enqueue body: the same two knobs, the same defaults. */

@@ -1270,8 +1270,8 @@ describe('pause is honoured by the legacy campaign routes', () => {
     const campaignId = `cmp_${randomBytes(6).toString('hex')}`;
     const now = new Date().toISOString();
     await db!.prepare(`
-      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,created_at,updated_at)
-      VALUES (?,?,?,'paused','{}'::jsonb,?,?)
+      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at)
+      VALUES (?,?,?,'paused','{}'::jsonb,'owner',?,?)
     `).run(campaignId, DEMO_WORKSPACE_ID, 'Paused outreach', now, now);
 
     const queued = await agent.post(`/api/linkedin/campaigns/${campaignId}/queue`).send({}).expect(409);
@@ -1365,8 +1365,8 @@ describe('export and erasure', () => {
 
     const now = new Date().toISOString();
     await db.prepare(`
-      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,created_at,updated_at)
-      VALUES (?,?,?,'running','{}'::jsonb,?,?)
+      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at)
+      VALUES (?,?,?,'running','{}'::jsonb,'owner',?,?)
     `).run('cmp_inflight', auth.workspaceId, 'Mid-flight', now, now);
 
     const busy = await owner.agent.delete('/api/workspace').send({ confirm: phrase }).expect(409);

@@ -366,7 +366,13 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
           </details>
           <ThemeToggle />
           <a className="nav-source" href={sourceHref} target="_blank" rel="noreferrer" onClick={() => trackEvent('marketing_source_cta')}><Github size={16} /> Source</a>
-          <a className="launch-nav-cta" data-hosted-cta href={primaryHref} onClick={handlePrimary}>Launch workspace <ArrowRight size={16} /></a>
+          {/* The nav button says Login and its fallback is the ADDRESS of the
+              login screen, not `#hosted` -- mirroring index.html's pre-JS copy
+              of this bar exactly, so the button does not change meaning at the
+              moment React replaces the static markup. `handlePrimary` still
+              decides: a configured hosted workspace wins, and on the
+              marketing-only build it scrolls to the deploy card. */}
+          <a className="launch-nav-cta" data-hosted-cta href={hostedAppUrl || '/login'} onClick={handlePrimary}>Login <ArrowRight size={16} /></a>
         </div>
       </header>
 

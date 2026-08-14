@@ -269,6 +269,19 @@ export async function installModuleRelease(
     WHERE r.module_id=? AND r.version=? AND r.status='verified'
   `).get<Record<string, unknown>>(input.moduleId,input.version);
   if (!release) throw new Error('Verified module release not found');
+  // BUILT-INS ARE NOT INSTALLABLE, and this is the server saying so rather than
+  // the screen. `listPublicRegistryModules` lists them (they belong in the
+  // catalogue) and `SkillsView` already refuses to offer Install for them, but
+  // the route behind that button had no matching refusal -- and a builtin's
+  // stored manifest is `{runtime:'builtin'}` with no artifact and no source, so
+  // it does not satisfy `communityModuleManifestSchema`. An installation row
+  // for one therefore broke this workspace's ENTIRE installations list
+  // (`serializeInstalledModule` parses every row) and could never execute
+  // (`loadExecutableRelease` parses it too). Built-ins are shipped by this
+  // deployment and are available without installing anything.
+  if (String(release.source_type) === 'builtin') {
+    throw new Error('Built-in modules ship with Trevra and are always available; there is nothing to install');
+  }
   // Visibility used to be checked only by the public LISTING query, which hid a
   // private package from the catalogue and then installed it for anyone who
   // typed its id -- and module ids are names, so they are guessable. A private
