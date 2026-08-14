@@ -224,6 +224,62 @@ export function weekdayVolumeFactor(window: WorkWindow, weekday: number): number
   return isWeekend(weekday) ? WEEKEND_FACTOR : 0;
 }
 
+/**
+ * HOW ONE DAY DIFFERS FROM THE NEXT, and why a plan is not a cron table.
+ *
+ * The configured window is 08:00-18:00 Mon-Fri and it never moved. A seat that
+ * starts at 08:00:00 sharp, finishes at 18:00:00 sharp, works every configured
+ * day and runs to exactly its ceiling on each of them is not a person with a
+ * job -- it is a scheduler, and the shape of the week says so before any single
+ * action does. Three things vary, all seeded from the seat and the CALENDAR
+ * DAY, so every caller that asks about the same day gets the same answer:
+ *
+ *   the edges   up to 45 minutes later at the start and earlier at the end.
+ *               Always INSIDE the configured window, never outside it, so the
+ *               safety gate can keep enforcing the operator's own hours and can
+ *               never refuse a slot this produced.
+ *   rest days   about one working day in eight is left empty. Nobody prospects
+ *               every single working day, and a seat that does is remarkable in
+ *               a way no per-action realism can fix.
+ *   the draw    a day takes 80-100% of its ceiling instead of all of it. This
+ *               is what every published competitor rulebook does (Waalaxy draws
+ *               80-100% of the configured max) and Trevra was the outlier in
+ *               running to the number.
+ *
+ * SEEDED, NEVER `Math.random()`, like everything else in this file: the same
+ * seat and the same date produce the same day on every machine, which is what
+ * lets a plan be reproduced from the ledger and asserted in a test.
+ */
+export const DAY_EDGE_JITTER_MINUTES = 45;
+export const REST_DAY_ODDS = 0.12;
+export const DAILY_DRAW = { min: 0.8, max: 1 } as const;
+/** The jitter never squeezes a working day below this. */
+const MIN_DAY_SPAN_MINUTES = 180;
+
+export interface DayShape {
+  /** Inside the configured window, always. */
+  startMinute: number;
+  endMinute: number;
+  /** True on a day this seat simply does not work. */
+  resting: boolean;
+  /** 0.8-1.0. What fraction of the day's ceiling to actually use. */
+  draw: number;
+}
+
+export function dayShapeFor(seed: string, day: LocalDate, window: WorkWindow): DayShape {
+  const random = seededRandom(canonicalPayloadHash({ seed, day: isoDate(day) }));
+  const resting = random() < REST_DAY_ODDS;
+  const draw = DAILY_DRAW.min + random() * (DAILY_DRAW.max - DAILY_DRAW.min);
+  const room = Math.max(0, Math.floor((window.endMinute - window.startMinute - MIN_DAY_SPAN_MINUTES) / 2));
+  const jitter = Math.min(DAY_EDGE_JITTER_MINUTES, room);
+  return {
+    startMinute: window.startMinute + Math.round(random() * jitter),
+    endMinute: window.endMinute - Math.round(random() * jitter),
+    resting,
+    draw
+  };
+}
+
 export function addLocalDays(date: LocalDate, days: number): LocalDate {
   const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day) + days * 86_400_000);
   return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() };
@@ -350,7 +406,32 @@ export function previousBusinessDayCount(
  *
  * The seven steps of plan 4-phase-2, in order, each marked below.
  */
-export async function planPacing(db: Db, input: PacingInput, now: Date): Promise<PacingPlan> {
+/**
+ * The day-shaping seam, injected exactly as `sleep` and `driver` are elsewhere.
+ *
+ * Production never passes it: the seeded `dayShapeFor` is the behaviour, and a
+ * plan that did not vary its days is the thing this file was fixed to stop
+ * producing. Tests that are ASSERTING A CEILING pass `FLAT_DAY_SHAPE`, because
+ * "the warm-up band is 5/day" is a statement about the ceiling and would be
+ * unreadable written as "5/day drawn down to 4 on this particular date".
+ */
+export type DayShapeFn = (seed: string, day: LocalDate, window: WorkWindow) => DayShape;
+
+/** Every day identical and full: the pre-2026-08-14 behaviour, for ceiling tests. */
+export const FLAT_DAY_SHAPE: DayShapeFn = (_seed, _day, window) => ({
+  startMinute: window.startMinute,
+  endMinute: window.endMinute,
+  resting: false,
+  draw: 1
+});
+
+export async function planPacing(
+  db: Db,
+  input: PacingInput,
+  now: Date,
+  options: { dayShape?: DayShapeFn } = {}
+): Promise<PacingPlan> {
+  const shapeDay = options.dayShape ?? dayShapeFor;
   const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
   const seatRef: SeatRef = { workspaceId: input.workspaceId, seatKey };
   const reasons: string[] = [];
@@ -535,14 +616,28 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
   let monthlyClamped = false;
   let backlogClamped = false;
   let windowCapacityClamped = false;
+  let restDayTaken = false;
+  let dailyDrawApplied = false;
 
   for (let dayIndex = 0; dayIndex < horizon && assigned < targets.length; dayIndex += 1) {
     const day = addLocalDays(startDate, dayIndex);
     const weekday = weekdayOf(day);
 
+    // --- Step 2b: what KIND of day this is. See `dayShapeFor`. ---
+    //
+    // One seed for the seat and the date, deliberately without the kind: every
+    // kind planned for this seat on this day must agree about when the day
+    // starts, when it ends, and whether it happens at all. A day where invites
+    // rest and profile views do not is not a day off.
+    const shape = shapeDay(`${input.workspaceId}:${seatKey}`, day, window);
+    const dayWindow: WorkWindow = { days: window.days, startMinute: shape.startMinute, endMinute: shape.endMinute };
+    const dayCeiling = shape.resting ? 0 : Math.floor(baseDaily * shape.draw);
+    if (shape.resting) restDayTaken = true;
+    else if (dayCeiling < baseDaily) dailyDrawApplied = true;
+
     // --- Step 3: variance smoothing against the previous day's ACTUAL. ---
     const deltaCeiling = Math.max(previousActual + MIN_RAMP_STEP, Math.floor(previousActual * (1 + MAX_DAY_OVER_DAY_DELTA)));
-    let allowed = Math.min(baseDaily, deltaCeiling);
+    let allowed = Math.min(dayCeiling, deltaCeiling);
     if (deltaCeiling < baseDaily) deltaClamped = true;
 
     // --- Step 4: acceptance-rate throttle. Halves, never zeroes. ---
@@ -597,7 +692,7 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
 
     // --- Step 6: spread inside the working window, seat-local, seeded jitter. ---
     const earliest = dayIndex === 0 && startsToday ? nowSecondOfDay : 0;
-    const secondsOfDay = spreadWithinWorkingHours(count, random, earliest, window);
+    const secondsOfDay = spreadWithinWorkingHours(count, random, earliest, dayWindow);
     // The window itself can hold fewer than `count` slots without crowding
     // (see `spreadWithinWorkingHours`'s own capacity note) -- typically only
     // the first, partial day of a plan generated late in the business-hours
@@ -623,6 +718,16 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
   if (deltaClamped) {
     ceilingsApplied.push('day-over-day-delta');
     reasons.push(`Volume is ramped rather than started at ${baseDaily}/day: no day may exceed the one before it by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%, which is what keeps this seat off the "slide and spike" signature.`);
+  }
+  if (restDayTaken) {
+    reasons.push(
+      `At least one working day in this horizon is left empty on purpose (about ${(REST_DAY_ODDS * 100).toFixed(0)}% of them are). Nobody prospects every single configured day, and a seat that does is a scheduler wearing a person's hours.`
+    );
+  }
+  if (dailyDrawApplied) {
+    reasons.push(
+      `Each day takes ${(DAILY_DRAW.min * 100).toFixed(0)}-100% of its ceiling rather than running to it, and its start and end move by up to ${DAY_EDGE_JITTER_MINUTES} minutes inside the configured window. Both are seeded from the seat and the date, so the same day always plans the same way.`
+    );
   }
   if (weekendSkipped) {
     ceilingsApplied.push('weekend');

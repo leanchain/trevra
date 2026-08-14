@@ -25,6 +25,8 @@ import {
   type LinkedInPage
 } from './driver.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
+import { readPage, setHumanSessionSalt, settle, type HumanPage } from './human.js';
+import { pruneSeatEvents, recordSeatEvent, seatRestingUntil, setSeatRestingUntil } from './seat-events.js';
 import { ACTION_GAP_SECONDS, type PacedKind } from './limits.js';
 import { clearInboxForSeat } from './inbox.js';
 import {
@@ -492,6 +494,52 @@ export interface LocalBatchDeps {
  * already far longer than an automation interval.
  */
 const DEFAULT_MAX_ACTIONS = 25;
+
+/**
+ * HOW LONG ONE SITTING LASTS, AND HOW LONG THE SEAT IS AWAY AFTERWARDS.
+ *
+ * `DEFAULT_MAX_ACTIONS` bounds a tick. It does not describe a person. A seat
+ * that is available to act at a 30-120s gap from the moment its window opens
+ * until the moment it closes -- and does that every working day -- has no
+ * SHAPE to its day: no lunch, no meetings, no afternoon where it did something
+ * else. Nobody uses LinkedIn like that. People use it in sittings: they open
+ * it, do a handful of things, close the tab, and come back later.
+ *
+ * So a session is 3-8 actions, and then the seat is away for 25-90 minutes and
+ * ITS BROWSER IS CLOSED. Closing matters as much as waiting -- a Chromium that
+ * stays open on the feed all day, with a session that never ends, is its own
+ * signal, and re-opening it is what makes the next sitting start on the feed
+ * again like a person arriving.
+ *
+ * Seeded per seat and per session index, so consecutive sittings differ from
+ * each other and from the next seat's, and none of it is `Math.random()`.
+ *
+ * lc-debt: in-process Maps, so a worker restart forgets an in-flight break and
+ * the seat may start its next sitting early; the same trade `challengedSeats`
+ * already makes. Upgrade path: a `resting_until` column on `linkedin_seats`.
+ */
+const SESSION_ACTIONS = { min: 3, max: 8 } as const;
+const SESSION_BREAK_MS = { min: 25 * 60_000, max: 90 * 60_000 } as const;
+/** seat handle key -> epoch ms this seat may next open a browser. */
+const seatBreaks = new Map<string, number>();
+/** seat handle key -> how many sittings this process has served it. */
+const seatSessions = new Map<string, number>();
+
+export function sessionActionBudget(seed: string): number {
+  const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
+  return SESSION_ACTIONS.min + Math.floor(random() * (SESSION_ACTIONS.max - SESSION_ACTIONS.min + 1));
+}
+
+export function sessionBreakMs(seed: string): number {
+  const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
+  return Math.round(SESSION_BREAK_MS.min + random() * (SESSION_BREAK_MS.max - SESSION_BREAK_MS.min));
+}
+
+/** Forget every in-flight sitting. Tests only; a worker never wants this. */
+export function resetLinkedInSessionRhythm(): void {
+  seatBreaks.clear();
+  seatSessions.clear();
+}
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
@@ -2894,6 +2942,8 @@ const DRIVER_SPECIFIERS: readonly string[] = ['patchright', 'playwright'];
  * for the life of the process.
  */
 const loadedDriverLogged = new Set<string>();
+/** Once per process: see where it is set. */
+let swiftShaderWarned = false;
 
 export async function loadLinkedInPlaywright(
   log: (message: string) => void = () => {},
@@ -2950,6 +3000,117 @@ export async function loadLinkedInPlaywright(
  * therefore share nothing -- not a cookie jar, not a fingerprint, not an exit
  * IP if the operator configured one.
  */
+/**
+ * Which browser to be, in order of preference.
+ *
+ * `'chrome'` IS GOOGLE CHROME -- the binary a member actually browses with,
+ * with Widevine, the proprietary codecs, and `window.chrome.runtime` defined.
+ * `'chromium'` is the open-source build: everything above is missing, and a
+ * `window.chrome` object with no `runtime` on it is a documented, one-line
+ * headless-Chromium check. Preferring Chrome costs nothing when it is
+ * installed and falls back silently when it is not, which is what makes this
+ * safe to ship ahead of the image change that installs it
+ * (`npx playwright install chrome`, added to `Dockerfile.dev`).
+ *
+ * NEVER the default (no channel at all): that is how a headless launch
+ * silently became `chrome-headless-shell`, which is the bug the comment inside
+ * `openBrowser` describes at length.
+ */
+const BROWSER_CHANNELS: readonly string[] = ['chrome', 'chromium'];
+let launchChannelLogged = false;
+
+/**
+ * Launch on the best channel this machine actually has.
+ *
+ * A missing channel throws at launch -- there is no way to ask Playwright
+ * whether Google Chrome is installed without trying it -- so the fallback IS
+ * the probe. The last channel's failure is rethrown unchanged, so a genuinely
+ * broken install still reports its own error to `openBrowser`'s catch rather
+ * than a summary of it.
+ */
+async function launchSeatBrowser(
+  playwright: PlaywrightLike,
+  profileDir: string,
+  optionsFor: (channel: string) => Record<string, unknown>,
+  log: (message: string) => void
+): Promise<LinkedInBrowserContext> {
+  let last: unknown;
+  for (let index = 0; index < BROWSER_CHANNELS.length; index += 1) {
+    const channel = BROWSER_CHANNELS[index] as string;
+    try {
+      const context = await playwright.chromium.launchPersistentContext(profileDir, optionsFor(channel));
+      if (!launchChannelLogged) {
+        launchChannelLogged = true;
+        log(
+          channel === 'chrome'
+            ? 'LinkedIn seat browser is Google Chrome, the same binary a member browses with.'
+            : `LinkedIn seat browser is Chromium; Google Chrome is not installed here, so \`window.chrome.runtime\` is undefined where a real Chrome defines it. \`npx playwright install chrome\` closes that gap.`
+        );
+      }
+      return context;
+    } catch (cause) {
+      last = cause;
+    }
+  }
+  throw last;
+}
+
+/** Where a real session starts. Never a target, never a search. */
+const FEED_URL = 'https://www.linkedin.com/feed/';
+
+/**
+ * The pages a person opens for no campaign reason at all.
+ *
+ * AN ACCOUNT THAT ONLY EVER DOES OUTREACH IS A ROBOT WITH A JOB. Every real
+ * member checks who viewed them, clears a notification, looks at My Network.
+ * None of it sends anything, none of it is paced (nothing here consumes a
+ * ceiling -- these are reads of the member's OWN surfaces, not of other
+ * people's profiles), and it is the cheapest possible way for a sitting to
+ * contain something other than the thing that gets accounts flagged.
+ */
+const NOISE_URLS: readonly string[] = [
+  'https://www.linkedin.com/mynetwork/',
+  'https://www.linkedin.com/notifications/',
+  'https://www.linkedin.com/feed/'
+];
+
+/**
+ * Land on the feed and read it before the caller navigates anywhere.
+ *
+ * DECORATION, NEVER CORRECTNESS. A page object that cannot navigate (every
+ * test fake), a feed that redirects to the sign-in page (a signed-out profile
+ * -- which is exactly what a person opening LinkedIn would see), a navigation
+ * that times out: all of them land here and are dropped. The caller's own
+ * first `goto` is the one that matters and it happens either way.
+ */
+async function warmUpSession(page: unknown, seed: string, log: (message: string) => void): Promise<void> {
+  const target = page as {
+    goto?: (url: string, options?: { waitUntil?: 'domcontentloaded'; timeout?: number }) => Promise<unknown>;
+    waitForTimeout?: (ms: number) => Promise<void>;
+  };
+  if (typeof target.goto !== 'function' || typeof target.waitForTimeout !== 'function') return;
+  try {
+    await target.goto(FEED_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await settle(target as HumanPage, `${seed}#feed`);
+    await readPage(target as HumanPage, `${seed}#feed-read`);
+    // AND SOMETIMES SOMETHING ELSE FIRST. Seeded, so a sitting is still
+    // reproducible; about half of them stop at the feed, the rest wander
+    // through one of their own pages the way a person does before getting to
+    // whatever they opened LinkedIn for.
+    const random = seededRandom(createHash('sha256').update(`${seed}#noise`).digest('hex'));
+    if (random() < 0.55) {
+      const noise = NOISE_URLS[Math.floor(random() * NOISE_URLS.length)] ?? FEED_URL;
+      await target.goto(noise, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await settle(target as HumanPage, `${seed}#noise`);
+      await readPage(target as HumanPage, `${seed}#noise-read`);
+    }
+  } catch (cause) {
+    log(
+      `LinkedIn seat browser could not open the feed before its first action (${cause instanceof Error ? cause.message : String(cause)}). The action itself is unaffected.`
+    );
+  }
+}
+
 export async function openBrowser(
   config: LinkedInLocalWorkerConfig,
   log: (message: string) => void,
@@ -3010,8 +3171,9 @@ export async function openBrowser(
 
   const fingerprint = seatContextFingerprint(options.workspaceId, seatKey, options.timezone ?? null);
   try {
-    const context = await playwright.chromium.launchPersistentContext(profileDir, {
+    const contextOptions = (channel: string): Record<string, unknown> => ({
       headless,
+      channel,
       // THE FULL CHROMIUM BUILD, NEVER `chrome-headless-shell`. Omitting this
       // is how a headless launch silently became the headless SHELL binary --
       // a different product from Chrome that ships without the PDF viewer,
@@ -3020,8 +3182,11 @@ export async function openBrowser(
       // announces itself to any fingerprinting script in the first frame, and
       // it was doing so while the user agent claimed to be desktop Chrome.
       // `channel: 'chromium'` is Playwright's opt-in to the real build running
-      // `--headless=new`, which shares the headed browser's surface.
-      channel: 'chromium',
+      // `--headless=new`, which shares the headed browser's surface -- and
+      // `'chrome'`, tried first, is better still: it is GOOGLE Chrome, the
+      // actual consumer binary, with Widevine, the proprietary codecs and the
+      // `chrome.runtime` object that Chromium builds simply do not have. See
+      // {@link BROWSER_CHANNELS}.
       // TWO OF PLAYWRIGHT'S OWN DEFAULTS, REMOVED.
       //
       // `--enable-automation` is Chromium's "this browser is being controlled"
@@ -3055,6 +3220,7 @@ export async function openBrowser(
         ...(headless && inContainer() ? ['--no-sandbox', '--disable-dev-shm-usage'] : [])
       ]
     });
+    const context = await launchSeatBrowser(playwright, profileDir, contextOptions, log);
     // EVERYTHING PAST THE LAUNCH GETS ITS OWN TRY, AND THE CONTEXT IS CLOSED
     // IF ANY OF IT THROWS.
     //
@@ -3076,6 +3242,30 @@ export async function openBrowser(
       // has left the browser yet and the first one LinkedIn sees already carries
       // a user agent and a `Sec-CH-UA*` set that agree with each other.
       await alignClientHints(context, page, fingerprint, log);
+      // NO TWO SITTINGS SHARE A RHYTHM. Seeded by the seat and the hour, so a
+      // run is still reproducible from the ledger while a restart -- or the
+      // same profile opened twice -- never replays the same pauses. See
+      // `setHumanSessionSalt`.
+      setHumanSessionSalt(`${handleKey}:${new Date().toISOString().slice(0, 13)}`);
+      // THE ONE FINGERPRINT NO CODE IN THIS FILE CAN FIX, said once per process
+      // so it is on the operator's screen rather than in a document nobody
+      // re-reads. A GPU-less container renders WebGL through SwiftShader and
+      // says so, by name, to anything that asks -- and no consumer machine on
+      // earth answers that. Everything else about this browser now agrees with
+      // a real one; this does not, and only a real display fixes it.
+      if (headless && inContainer() && !swiftShaderWarned) {
+        swiftShaderWarned = true;
+        log(
+          'LinkedIn seat browser is running headless in a container, so its WebGL renderer reports SwiftShader -- a value no consumer machine reports, and the single strongest automation signal left. Run `npm run linkedin:worker` on a machine with a display to give this seat a real GPU string.'
+        );
+      }
+      // AND ONLY THEN, THE FEED. A session whose very first request is
+      // `/in/some-stranger/` or a search URL -- no feed load before it, no
+      // referer, nothing in front of it -- is not a session a person has. A
+      // person opens LinkedIn, lands on the feed, scrolls it, and goes
+      // somewhere from there. This is the cheapest half of that and it costs
+      // one page load per browser open, not per action.
+      await warmUpSession(page, handleKey, log);
       browserUseSeq += 1;
       const handle: BrowserHandle = {
         page,
@@ -3216,6 +3406,30 @@ export function humanCadencePage(page: LinkedInPage, seed: string): LinkedInPage
 }
 
 /**
+ * How long a `challenge` result holds off the next login attempt, keyed the
+ * same way {@link browsers} is.
+ *
+ * THE BUG THIS EXISTS TO FIX: every worker tick calls `loginLinkedInSeat`
+ * again while a seat is not `isLoggedIn`, and the login path's first move is
+ * `page.goto(LOGIN_URL)` -- so a human mid-way through LinkedIn's own device
+ * check, in the exact window this worker opened for them, was getting
+ * yanked back to a fresh login form every 60s, forever, because nothing
+ * remembered that a challenge was already in flight. That reads as "it just
+ * keeps refreshing" to the person trying to clear it, and repeated
+ * automated-looking login attempts from one IP is itself the risk signal
+ * this whole local-worker design exists to avoid.
+ *
+ * `isLoggedIn` is still checked first, every time, unconditionally: it only
+ * reads the current page and never navigates, so it costs nothing to ask and
+ * is what lets a challenge a human just cleared be picked up on the very next
+ * tick rather than waiting out the cooldown. Only the RE-LOGIN attempt -- the
+ * one that would drag the page away from what the human is looking at -- is
+ * held off.
+ */
+const CHALLENGE_RETRY_COOLDOWN_MS = 10 * 60_000;
+const challengedSeats = new Map<string, { until: number; message: string }>();
+
+/**
  * Make this seat's browser session usable: reuse it if it works, sign in if it
  * does not.
  *
@@ -3281,8 +3495,31 @@ export async function loginLinkedInSeat(
   // Per seat, because each seat has its own profile directory and therefore its
   // own session: one account's live session says nothing about another's.
   if (await driver.isLoggedIn(page)) {
+    challengedSeats.delete(seatHandleKey(options.workspaceId, seatKey));
     await stampSeatSessionValid(db, options.workspaceId, now, seatKey);
+    // THE CHEAPEST LINE IN THE LEDGER AND THE ONE MOST WORTH HAVING: a session
+    // that keeps working, recorded, is what proves later that this seat was NOT
+    // signing in over and over.
+    await recordSeatEvent(
+      db,
+      {
+        workspaceId: options.workspaceId,
+        seatKey,
+        kind: 'session_reused',
+        url: typeof page.url === 'function' ? page.url() : null,
+        detail: 'The stored session was still live; nothing was signed in.'
+      },
+      now
+    );
     return { status: 'ok', message: 'That LinkedIn session is still live, so nothing had to be signed in.' };
+  }
+
+  // A challenge from an earlier tick is still open in this same page. Say so
+  // again, verbatim, rather than re-navigating to LOGIN_URL underneath the
+  // person trying to clear it -- see CHALLENGE_RETRY_COOLDOWN_MS above.
+  const challenged = challengedSeats.get(seatHandleKey(options.workspaceId, seatKey));
+  if (challenged && challenged.until > now.getTime()) {
+    return { status: 'challenge', message: challenged.message };
   }
 
   const credentials = await readLinkedInCredentials(db, options.workspaceId, process.env, seatKey);
@@ -3316,14 +3553,33 @@ export async function loginLinkedInSeat(
     return { status: 'otp_required', message: 'LinkedIn wants a verification code; enter the one it just sent and sign in again.' };
   }
   if (result.ok) {
+    challengedSeats.delete(seatHandleKey(options.workspaceId, seatKey));
     await stampSeatSessionValid(db, options.workspaceId, now, seatKey);
+    // A SIGN-IN IS AN EVENT WORTH COUNTING. A burst of them is one of the
+    // clearest things LinkedIn scores, and until this row existed nothing in
+    // Trevra could have told you how many there had been.
+    await recordSeatEvent(
+      db,
+      {
+        workspaceId: options.workspaceId,
+        seatKey,
+        kind: 'login',
+        url: typeof page.url === 'function' ? page.url() : null,
+        detail: 'Signed in with stored credentials because the session had expired.'
+      },
+      now
+    );
     return { status: 'ok', message: 'Signed in to LinkedIn; that session is now stored in the browser profile.' };
   }
   if (result.failureKind === 'challenge') {
-    return {
-      status: 'challenge',
-      message: 'LinkedIn wants a device check that only a person at a browser window can finish; run `npm run linkedin:worker` on a machine with a display, then complete it in that window.'
-    };
+    const message = 'LinkedIn wants a device check that only a person at a browser window can finish; run `npm run linkedin:worker` on a machine with a display, then complete it in that window.';
+    challengedSeats.set(seatHandleKey(options.workspaceId, seatKey), { until: now.getTime() + CHALLENGE_RETRY_COOLDOWN_MS, message });
+    await recordSeatEvent(
+      db,
+      { workspaceId: options.workspaceId, seatKey, kind: 'challenge', url: typeof page.url === 'function' ? page.url() : null, detail: message },
+      now
+    );
+    return { status: 'challenge', message };
   }
 
   // `detail` is written by driver.ts from constants and the page's own URL, so
@@ -3652,6 +3908,9 @@ export async function runDueLinkedInActions(
     return [];
   }
 
+  // Housekeeping on the event ledger, once a tick. Never throws; see the module.
+  await pruneSeatEvents(db, now);
+
   await runBounded(seats, concurrency, async (seat) => {
     const { workspaceId, seatKey, timezone } = seat;
     // EVERY LINE THIS PASS LOGS NAMES THE TENANT AND THE SEAT. On one laptop
@@ -3685,6 +3944,38 @@ export async function runDueLinkedInActions(
       });
       return;
     }
+
+    // BETWEEN SITTINGS, NOTHING OPENS. Checked here, next to the posture, and
+    // for the same reason it is checked here: a seat that is resting must not
+    // pay a Chromium launch and a LinkedIn navigation to find that out.
+    const handleKey = seatHandleKey(workspaceId, seatKey);
+    // BOTH THE MAP AND THE COLUMN. The Map is this process's memory of a break
+    // it set itself; the column (migration 061) is what survives a restart and
+    // what a second worker in a fleet can see. Whichever is later wins, because
+    // the only wrong answer here is coming back early.
+    const stored = await seatRestingUntil(db, workspaceId, seatKey);
+    const restingUntil = Math.max(seatBreaks.get(handleKey) ?? 0, stored ? stored.getTime() : 0);
+    if (restingUntil > now.getTime()) {
+      const reason = `is between sittings until ${new Date(restingUntil).toISOString()}`;
+      logOncePerSeat(say, 'session-break', workspaceId, seatKey, reason, now);
+      results.push({
+        batchId: null,
+        workspaceId,
+        seatKey,
+        executed: 0,
+        blocked: 0,
+        failed: 0,
+        branchSkipped: 0,
+        branchPending: 0,
+        halted: true,
+        haltReason: reason
+      });
+      return;
+    }
+    const sessionIndex = (seatSessions.get(handleKey) ?? 0) + 1;
+    seatSessions.set(handleKey, sessionIndex);
+    const sessionSeed = `${handleKey}:session:${sessionIndex}`;
+    let restAfterBatch = false;
 
     const profileDir = resolveProfileDir(config.profileDir, workspaceId, seatKey);
     let lease: SeatLeaseOutcome;
@@ -3739,10 +4030,17 @@ export async function runDueLinkedInActions(
         return;
       }
 
+      await recordSeatEvent(
+        db,
+        { workspaceId, seatKey, kind: 'sitting_start', url: FEED_URL, detail: `Sitting ${sessionIndex} opened a browser and landed on the feed.` },
+        new Date()
+      );
       const store = postgresLocalWorkerStore(db, workspaceId, seatKey, { workerId, leaseMs: actionLeaseMs });
       const result = await runLinkedInLocalBatch(store, {
         driver,
         page: handle.page,
+        // ONE SITTING, not "everything that is due". See SESSION_ACTIONS.
+        maxActions: sessionActionBudget(sessionSeed),
         // The gate is called as a FUNCTION, not through the `gtm.linkedin-guard`
         // skill: `excludeActionId` is deliberately absent from the skill's
         // input schema so an approved playbook payload cannot name a row to
@@ -3802,6 +4100,39 @@ export async function runDueLinkedInActions(
       });
       results.push(result);
       if (result.halted && result.haltReason) say(`stopped: ${result.haltReason}`);
+      // A SITTING THAT DID SOMETHING ENDS IN A BREAK. A pass that found nothing
+      // due did not use the account at all, so there is nothing to rest from --
+      // resting on it would just make the queue slower without making anything
+      // look more human.
+      // BLOCKED COUNTS AS A SITTING TOO, and leaving it out was a bug worth
+      // naming: a seat whose work is due but refused by the gate -- over its
+      // daily ceiling, outside its hours, acceptance-throttled -- executed
+      // nothing, so nothing rested it, so the next tick opened the browser,
+      // loaded the feed and was refused again, once a minute, for as long as
+      // the refusal lasted. A feed load every 60 seconds forever is a worse
+      // pattern than the actions it was refusing to send, and every reason the
+      // gate refuses for is one that needs HOURS to change, not a minute.
+      if (result.executed > 0 || result.blocked > 0) {
+        const until = Date.now() + sessionBreakMs(sessionSeed);
+        seatBreaks.set(handleKey, until);
+        await setSeatRestingUntil(db, workspaceId, seatKey, new Date(until));
+        await recordSeatEvent(
+          db,
+          {
+            workspaceId,
+            seatKey,
+            kind: 'sitting_end',
+            detail: `${result.executed} action(s) sent, ${result.blocked} refused by the gate, ${result.failed} failed. Away until ${new Date(until).toISOString()}.`
+          },
+          new Date()
+        );
+        restAfterBatch = true;
+        say(
+          result.executed > 0
+            ? `finished a sitting of ${result.executed} action(s); away until ${new Date(until).toISOString()}`
+            : `had ${result.blocked} action(s) refused by the gate and nothing to send; away until ${new Date(until).toISOString()}`
+        );
+      }
     } catch (cause) {
       // One SEAT's failure is one seat's failure. The pass carries on with the
       // other accounts rather than ending the tick.
@@ -3816,7 +4147,9 @@ export async function runDueLinkedInActions(
         // An unreleased lease expires on its own. Failing here would turn a
         // bookkeeping problem into a lost batch result.
       }
-      if (closeAfterBatch) await closeLinkedInBrowser(workspaceId, seatKey);
+      // `restAfterBatch` closes it too: a sitting that ended is a tab that was
+      // closed, and the next one starts by opening the feed again.
+      if (closeAfterBatch || restAfterBatch) await closeLinkedInBrowser(workspaceId, seatKey);
     }
   });
 
@@ -3971,7 +4304,31 @@ export async function detectLinkedInSeat(
   });
   if (outcome.status !== 'ok') return refuse(outcome.message, outcome.status === 'challenge' ? 'challenge' : null);
 
-  const read = await driver.readSeat(page);
+  // ONE PAGE, NOT TWO, WHEN THE SECOND ONE HAS NOTHING NEW TO SAY. `readSeat`
+  // loads the connections list purely for the exact count -- a surface
+  // LinkedIn associates with prospecting -- on every detect, forever. The
+  // count moves by a handful a week; a week-old one is worth more than a
+  // navigation. When it is skipped the read returns null and `upsertSeat`
+  // leaves the stored number alone.
+  const known = await getSeat(db, options.workspaceId, seatKey);
+  const countIsFresh =
+    known?.connectionsCount != null &&
+    known.detectedAt != null &&
+    now.getTime() - new Date(known.detectedAt).getTime() < 7 * 86_400_000;
+  const read = await driver.readSeat(page, { skipConnections: countIsFresh });
+  await recordSeatEvent(
+    db,
+    {
+      workspaceId: options.workspaceId,
+      seatKey,
+      kind: 'navigate',
+      url: typeof page.url === 'function' ? page.url() : null,
+      detail: countIsFresh
+        ? 'Read the seat from its own profile page; the connections list was skipped because the stored count is less than a week old.'
+        : 'Read the seat from its own profile page and the connections list.'
+    },
+    now
+  );
   if (!isSeatRead(read)) {
     return refuse(
       'LinkedIn did not return a readable profile page; run `npm run linkedin:worker` on a machine with a display to see why.',

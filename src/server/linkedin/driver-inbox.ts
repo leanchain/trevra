@@ -6,6 +6,7 @@ import {
   type LinkedInFailureKind,
   type LinkedInPage
 } from './driver.js';
+import { hoverClick, readPage, settle, typeLike } from './human.js';
 
 /**
  * The Playwright routines for the unified inbox: walk the conversation list,
@@ -54,8 +55,8 @@ const ALLOWED_HOSTS = new Set(['linkedin.com', 'www.linkedin.com']);
 
 const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
-/** Long enough for LinkedIn's client-side render, short enough not to stall a run. */
-const SETTLE_MS = 1_500;
+/* The post-load pause is `settle()` from `human.ts`: a band, seeded per step,
+ * not the 1,500ms constant five driver files used to share. */
 
 function fail(failureKind: LinkedInFailureKind, detail: string): LinkedInDriverResult {
   return { ok: false, failureKind, detail };
@@ -398,7 +399,10 @@ async function openUrl(page: LinkedInPage, walk: Walk, url: string): Promise<Lin
   await pace(walk, url);
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await settle(page, `${url}#open`);
+    // The conversation rail lazy-loads and instruments scroll like every other
+    // LinkedIn surface. Reading it is both cover and correctness.
+    await readPage(page, `${url}#read`);
   } catch (cause) {
     // Navigation failed, so nothing was read and nothing was clicked.
     return fail('selector_drift', `Could not open ${url}: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -657,8 +661,8 @@ export async function listConversations(
 
     await pace(walk, `thread:${index}`);
     try {
-      await page.locator(link).first().click({ timeout: CLICK_TIMEOUT_MS });
-      await page.waitForTimeout(SETTLE_MS);
+      await hoverClick(page, page.locator(link).first(), `${MESSAGING_URL}#thread:${index}`, CLICK_TIMEOUT_MS);
+      await settle(page, `${MESSAGING_URL}#thread-open:${index}`);
     } catch (cause) {
       // Opening a conversation sends nothing, so an interrupted click is
       // reported and skipped rather than held: there is no ambiguity to settle.
@@ -693,9 +697,14 @@ export async function listConversations(
       } else {
         await pace(walk, `profile:${index}`);
         try {
-          await page.locator(INBOX_SELECTORS.threadProfileLink).first().click({ timeout: CLICK_TIMEOUT_MS });
+          await hoverClick(
+            page,
+            page.locator(INBOX_SELECTORS.threadProfileLink).first(),
+            `${MESSAGING_URL}#profile:${index}`,
+            CLICK_TIMEOUT_MS
+          );
           onRail = false;
-          await page.waitForTimeout(SETTLE_MS);
+          await settle(page, `${MESSAGING_URL}#profile-open:${index}`);
           const profileWall = await detectWall(page);
           if (profileWall) return fail(profileWall, wallDetail(profileWall, `the profile behind conversation ${index + 1}`));
           profileUrl = normalisedProfileUrl(page.url());
@@ -851,9 +860,9 @@ export async function sendReply(page: LinkedInPage, threadUrn: string, body: str
   }
 
   try {
-    await compose.first().fill(body, { timeout: CLICK_TIMEOUT_MS });
-    await page.locator(SELECTORS.messageSendButton).first().click({ timeout: CLICK_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await typeLike(page, compose.first(), body, `${url}#reply`, CLICK_TIMEOUT_MS);
+    await hoverClick(page, page.locator(SELECTORS.messageSendButton).first(), `${url}#reply-send`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#after-reply`);
   } catch (cause) {
     return fail(
       'unknown',

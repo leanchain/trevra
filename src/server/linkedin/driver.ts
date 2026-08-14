@@ -53,6 +53,7 @@
 // of cycles resolves before either module body needs a binding from the other.
 import { endorseSkills, followProfile, likeRecentPost } from './driver-engage.js';
 import { sendReply } from './driver-inbox.js';
+import { hoverClick, readPage, settle, typeLike } from './human.js';
 
 /** The six outcomes a routine may report. Ordered as in plan 4.5. */
 export type LinkedInFailureKind =
@@ -95,6 +96,18 @@ export interface LinkedInLocator {
    * submit control rather than as a failure.
    */
   press?(key: string, options?: { timeout?: number }): Promise<void>;
+  /**
+   * OPTIONAL, and absent on every fake here for the same reason `press` is.
+   *
+   * `hover` walks the pointer to the control before it is clicked, and
+   * `pressSequentially` puts text in a field one keystroke at a time. Both are
+   * BEHAVIOUR, never correctness -- see `human.ts` for why a click with no
+   * preceding pointer movement and a note that materialises in one `input`
+   * event are two of the loudest automation signals a page can emit. A locator
+   * without them does exactly what this file did before they existed.
+   */
+  hover?(options?: { timeout?: number }): Promise<void>;
+  pressSequentially?(text: string, options?: { delay?: number; timeout?: number }): Promise<void>;
   textContent(options?: { timeout?: number }): Promise<string | null>;
 }
 
@@ -103,6 +116,22 @@ export interface LinkedInPage {
   url(): string;
   locator(selector: string): LinkedInLocator;
   waitForTimeout(ms: number): Promise<void>;
+  /**
+   * OPTIONAL. Real Playwright has both; no fake in this repo does.
+   *
+   * `mouse` is what makes a page that was READ look different from a page that
+   * was HARVESTED (`readPage`), and `keyboard` is only ever used to put a line
+   * break in a composer with `Shift+Enter` instead of an Enter that would send
+   * the message half-written. Absent either one, the driver behaves exactly as
+   * it did before.
+   */
+  mouse?: {
+    move(x: number, y: number, options?: { steps?: number }): Promise<void>;
+    wheel(deltaX: number, deltaY: number): Promise<void>;
+  };
+  keyboard?: {
+    press(key: string, options?: { delay?: number }): Promise<void>;
+  };
 }
 
 /**
@@ -168,7 +197,7 @@ export interface LinkedInDriver {
   /** `seed` is the batch-scoped seed for the deterministic in-action click jitter. */
   likeRecentPost(page: LinkedInPage, target: string, options?: { seed?: string }): Promise<LinkedInDriverResult>;
   endorseSkills(page: LinkedInPage, target: string, options?: { seed?: string }): Promise<LinkedInDriverResult>;
-  readSeat(page: LinkedInPage): Promise<LinkedInSeatRead | LinkedInDriverResult>;
+  readSeat(page: LinkedInPage, options?: { skipConnections?: boolean }): Promise<LinkedInSeatRead | LinkedInDriverResult>;
   /** Is this profile already signed in? Asked BEFORE any sign-in is attempted. */
   isLoggedIn(page: LinkedInPage): Promise<boolean>;
   loginWithCredentials(
@@ -282,13 +311,22 @@ const ALLOWED_HOSTS = new Set(['linkedin.com', 'www.linkedin.com']);
 
 const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
-/** Long enough for LinkedIn's client-side render, short enough not to stall a batch. */
-const SETTLE_MS = 1_500;
+/**
+ * THERE IS NO `SETTLE_MS` HERE ANY MORE, and its absence is the point.
+ *
+ * It was `1_500` in this file, in `driver-engage.ts`, in `driver-inbox.ts`, in
+ * `driver-withdraw.ts` and in `driver-scrape.ts`. Five files agreeing on a
+ * millisecond value is a timer, and a page that loads, waits exactly 1.500s
+ * and then clicks is a timer LinkedIn can read in telemetry it already keeps
+ * per member. Every pause is now `settle()` from `human.ts`: drawn from a
+ * band, seeded from the URL and the step so it stays reproducible, and never
+ * the same twice in one session.
+ */
 /**
  * A recognised device shows "We're logging you in" -- an interstitial with NO
  * form on it at all -- before it redirects to either the feed or a checkpoint.
  * Observed real-world redirects land ~4s after DOMContentLoaded, so a single
- * `SETTLE_MS` read lands mid-interstitial and misreports a live redirect as
+ * settle-and-read lands mid-interstitial and misreports a live redirect as
  * `selector_drift`. This is the outer budget the poll below is allowed to
  * spend waiting that redirect out; the common case (the form is already there)
  * never uses more than one iteration of it.
@@ -328,6 +366,46 @@ export function profileUrlFor(target: string): string | null {
   return `https://www.linkedin.com/in/${encodeURIComponent(handle)}/`;
 }
 
+/**
+ * Reach a profile by CLICKING A LINK TO IT, when the page already shows one.
+ *
+ * WHY THIS IS NOT COSMETIC, and why it is the last structural difference
+ * between this driver and a person. LinkedIn is a single-page app: when a
+ * member clicks a profile link, the router handles it client-side -- no
+ * document load, a `pageInstance` chain that ties the new view to the one it
+ * came from, and a referer. When this driver calls `page.goto`, LinkedIn gets
+ * a COLD DOCUMENT LOAD of `/in/<stranger>/` with no view before it and nothing
+ * that led to it, which is what a scraper working from a list of URLs looks
+ * like -- because that is exactly what it is.
+ *
+ * So: if a link to the target is already on screen -- a search result, a feed
+ * card, a connections row, a notification -- click it and let the SPA route.
+ * The click goes through `hoverClick`, so it carries pointer movement too.
+ *
+ * FALSE MEANS "NOTHING HAPPENED, USE THE ADDRESS BAR", and every failure path
+ * returns it: no link, a click that threw, or a click that landed somewhere
+ * other than the profile asked for. The caller's `goto` then runs exactly as
+ * it did before, so this can only ever be an improvement on the load it
+ * replaces -- never a way to end up on the wrong profile, because the landing
+ * URL is checked against the requested one before this claims success.
+ */
+async function followLinkTo(page: LinkedInPage, url: string): Promise<boolean> {
+  if (!onLinkedIn(page.url())) return false;
+  const handle = /\/in\/([^/?#]+)/.exec(url)?.[1];
+  if (!handle) return false;
+  try {
+    const link = page.locator(`a[href*="/in/${handle}"]`);
+    if ((await link.count()) === 0) return false;
+    await hoverClick(page, link.first(), `${url}#link`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#route`);
+    return normalisedProfileUrl(page.url()) === url;
+  } catch {
+    // A link that would not be clicked says nothing about the profile behind
+    // it. The caller loads it the old way.
+    return false;
+  }
+}
+
 async function present(page: LinkedInPage, selector: string): Promise<boolean> {
   try {
     return (await page.locator(selector).count()) > 0;
@@ -364,8 +442,16 @@ async function openProfile(page: LinkedInPage, target: string): Promise<{ url: s
     );
   }
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    // A LINK IF THERE IS ONE, THE ADDRESS BAR ONLY IF THERE IS NOT.
+    if (!(await followLinkTo(page, url))) {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+    }
+    await settle(page, `${url}#open`);
+    // A profile that is opened and acted on inside two seconds, with no pointer
+    // movement and no scroll in between, is the exact shape the 2026-08-14
+    // investigation found LinkedIn scoring. Read it first, the way the person
+    // about to click Connect would read it. Decoration only: never throws.
+    await readPage(page, `${url}#read`);
   } catch (cause) {
     // Navigation failed, so no action was taken. Definite, and reported as
     // drift rather than `unknown`: nothing was clicked.
@@ -418,8 +504,8 @@ export async function sendInvite(page: LinkedInPage, target: string, note?: stri
       return fail('selector_drift', `Neither ${SELECTORS.connectButton} nor ${SELECTORS.moreActionsButton} matched on ${url}. Nothing was clicked.`);
     }
     try {
-      await more.first().click({ timeout: CLICK_TIMEOUT_MS });
-      await page.waitForTimeout(SETTLE_MS);
+      await hoverClick(page, more.first(), `${url}#more`, CLICK_TIMEOUT_MS);
+      await settle(page, `${url}#more-open`);
     } catch (cause) {
       return fail('selector_drift', `Opening the More menu on ${url} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
@@ -433,8 +519,8 @@ export async function sendInvite(page: LinkedInPage, target: string, note?: stri
   // prove the invite did not go out, so it reports `unknown` and the worker
   // holds the claim instead of retrying it into a duplicate.
   try {
-    await connect.first().click({ timeout: CLICK_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await hoverClick(page, connect.first(), `${url}#connect`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#connect-modal`);
 
     const wall = await detectWall(page);
     if (wall) {
@@ -447,8 +533,8 @@ export async function sendInvite(page: LinkedInPage, target: string, note?: stri
     if (note && note.trim()) {
       const addNote = page.locator(SELECTORS.addNoteButton);
       if ((await addNote.count()) > 0) {
-        await addNote.first().click({ timeout: CLICK_TIMEOUT_MS });
-        await page.waitForTimeout(SETTLE_MS);
+        await hoverClick(page, addNote.first(), `${url}#add-note`, CLICK_TIMEOUT_MS);
+        await settle(page, `${url}#note-modal`);
       }
       const textarea = page.locator(SELECTORS.noteTextarea);
       if ((await textarea.count()) === 0) {
@@ -457,10 +543,11 @@ export async function sendInvite(page: LinkedInPage, target: string, note?: stri
         // `unknown` because the modal is open and its state is ours to settle.
         return fail('unknown', `The invite modal for ${url} is open but ${SELECTORS.noteTextarea} did not match, so the approved note could not be typed. Settle this invite by hand.`);
       }
-      await textarea.first().fill(note, { timeout: CLICK_TIMEOUT_MS });
+      // Typed, not pasted -- and byte for byte either way. See `typeLike`.
+      await typeLike(page, textarea.first(), note, `${url}#note`, CLICK_TIMEOUT_MS);
       const send = page.locator(SELECTORS.sendInviteButton);
       if ((await send.count()) === 0) return fail('unknown', `No send control matched in the open invite modal for ${url}. Settle it by hand.`);
-      await send.first().click({ timeout: CLICK_TIMEOUT_MS });
+      await hoverClick(page, send.first(), `${url}#send-note`, CLICK_TIMEOUT_MS);
     } else {
       const withoutNote = page.locator(SELECTORS.sendWithoutNoteButton);
       const send = (await withoutNote.count()) > 0 ? withoutNote : page.locator(SELECTORS.sendInviteButton);
@@ -472,10 +559,10 @@ export async function sendInvite(page: LinkedInPage, target: string, note?: stri
         }
         return fail('unknown', `An invite modal is open for ${url} with no send control matched. Settle it by hand.`);
       }
-      await send.first().click({ timeout: CLICK_TIMEOUT_MS });
+      await hoverClick(page, send.first(), `${url}#send`, CLICK_TIMEOUT_MS);
     }
 
-    await page.waitForTimeout(SETTLE_MS);
+    await settle(page, `${url}#after-send`);
     const afterSend = await detectWall(page);
     if (afterSend) {
       return fail(afterSend, `LinkedIn answered the send for ${url} with a ${afterSend === 'challenge' ? 'challenge' : 'limit wall'}.`);
@@ -504,8 +591,8 @@ export async function sendDm(page: LinkedInPage, target: string, body: string): 
   }
 
   try {
-    await message.first().click({ timeout: CLICK_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await hoverClick(page, message.first(), `${url}#message`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#composer`);
 
     const wall = await detectWall(page);
     if (wall) return fail(wall, `LinkedIn answered the Message click on ${url} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}.`);
@@ -514,14 +601,14 @@ export async function sendDm(page: LinkedInPage, target: string, body: string): 
     if ((await compose.count()) === 0) {
       return fail('unknown', `The composer for ${url} did not appear as ${SELECTORS.messageComposeBox}; a draft may be open. Check it by hand.`);
     }
-    await compose.first().fill(body, { timeout: CLICK_TIMEOUT_MS });
+    await typeLike(page, compose.first(), body, `${url}#dm`, CLICK_TIMEOUT_MS);
 
     const send = page.locator(SELECTORS.messageSendButton);
     if ((await send.count()) === 0) {
       return fail('unknown', `The composer for ${url} holds the approved body but no send control matched. Send or discard it by hand.`);
     }
-    await send.first().click({ timeout: CLICK_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await hoverClick(page, send.first(), `${url}#dm-send`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#after-dm`);
 
     const afterSend = await detectWall(page);
     if (afterSend) return fail(afterSend, `LinkedIn answered the message send for ${url} with a ${afterSend === 'challenge' ? 'challenge' : 'limit wall'}.`);
@@ -548,6 +635,18 @@ export async function viewProfile(page: LinkedInPage, target: string): Promise<L
 
 /** LinkedIn redirects this to the signed-in member's own vanity URL. */
 const ME_URL = 'https://www.linkedin.com/in/me/';
+
+/** Where a signed-in member lands, and the only page a session probe may load. */
+const FEED_URL = 'https://www.linkedin.com/feed/';
+
+/** Is this URL a LinkedIn page at all? `about:blank` and a dead tab are not. */
+function onLinkedIn(url: string): boolean {
+  try {
+    return ALLOWED_HOSTS.has(new URL(url).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The connections list, and the ONLY place the exact count is readable.
@@ -633,12 +732,15 @@ async function readText(page: LinkedInPage, selector: string): Promise<string | 
  * go and log in. Storing a seat read through a half-authenticated session
  * would be recording a guess as a fact.
  */
-export async function readSeat(page: LinkedInPage): Promise<LinkedInSeatRead | LinkedInDriverResult> {
+export async function readSeat(
+  page: LinkedInPage,
+  options: { skipConnections?: boolean } = {}
+): Promise<LinkedInSeatRead | LinkedInDriverResult> {
   const degraded: string[] = [];
 
   try {
     await page.goto(ME_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await settle(page, `${ME_URL}#seat`);
   } catch (cause) {
     return fail('selector_drift', `Could not open ${ME_URL}: ${cause instanceof Error ? cause.message : String(cause)}. Nothing was read.`);
   }
@@ -672,9 +774,21 @@ export async function readSeat(page: LinkedInPage): Promise<LinkedInSeatRead | L
     degraded.push(`The profile page at ${profileUrl} has no readable heading, so the display name could not be read.`);
   }
 
+  // A SECOND PAGE LOAD FOR ONE NUMBER, AND ONLY WHEN THE NUMBER IS MISSING.
+  //
+  // The connection count is the one fact the profile page will not give
+  // honestly (its badge caps at "500+"), so reading it means loading
+  // `/mynetwork/invite-connect/connections/` -- a second navigation on a
+  // surface LinkedIn associates with prospecting, every single time anything
+  // re-detected this seat. It moves by a handful a week. The caller says when
+  // it already has a recent one, and then this does not go and look.
+  if (options.skipConnections) {
+    return { ok: true, profileUrl, name, connectionsCount: null, degraded };
+  }
+
   try {
     await page.goto(CONNECTIONS_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await settle(page, `${CONNECTIONS_URL}#seat`);
   } catch (cause) {
     degraded.push(
       `The connections page could not be opened (${cause instanceof Error ? cause.message : String(cause)}), so the connection count is unknown and is left unset.`
@@ -727,25 +841,52 @@ const LOGIN_URL = 'https://www.linkedin.com/login';
  * working (plan 1.3). The cheapest safe automation is the automation that logs
  * in least.
  *
- * `/in/me/` is the probe rather than a selector on `/feed/`, because it is the
- * same signal `readSeat` already trusts: LinkedIn redirects it to the signed-in
- * member's own vanity URL and nowhere useful otherwise, so the ANSWER IS THE
- * URL and no markup has to hold still for it. The global-nav check is a second
- * chance for a signed-in page that landed somewhere unexpected, never the first.
+ * IT DOES NOT NAVIGATE WHEN IT DOES NOT HAVE TO, and when it does it loads the
+ * FEED. `/in/me/` used to be the probe -- LinkedIn redirects it to the member's
+ * own vanity URL, so the answer was the URL and no markup had to hold still.
+ * That was a good way to read a boolean and a terrible way to browse: it made
+ * every tick a profile fetch, from a client that did nothing else. The signed-in
+ * global nav is now the signal, read off whatever page is already open, and
+ * `/feed/` is the fallback because that is where a person who just opened
+ * LinkedIn is sitting.
  *
  * NEVER THROWS. Anything it could not determine is `false`, which costs a
  * sign-in attempt that was probably unnecessary -- the cheap wrong answer.
  */
 export async function isLoggedIn(page: LinkedInPage): Promise<boolean> {
+  // ANSWERED FROM THE PAGE THAT IS ALREADY OPEN, WHENEVER THERE IS ONE.
+  //
+  // THIS USED TO LOAD `/in/me/` EVERY SINGLE TIME IT WAS ASKED, and it is asked
+  // on every worker tick, before every batch, and by every UI poll that reaches
+  // `loginLinkedInSeat`. From LinkedIn's side that is a client which opens a
+  // PROFILE PAGE every minute or two, forever, and never scrolls a feed,
+  // never opens a conversation, never clicks a link to get there. Nobody
+  // browses like that, `/in/me/` is a profile fetch like any other, and the
+  // pattern is both the loudest automation tell this driver still emitted and
+  // a steady drip against exactly the counter LinkedIn cites when it says an
+  // account has been "accessing an unusually large amount of profile data".
+  //
+  // The doc comment above always claimed this only read the current page. Now
+  // it does: the browser opens on the feed (`warmUpSession` in
+  // `local-worker.ts`), so the common case is answered with NO navigation at
+  // all, and the fallback loads the FEED rather than a profile -- the page a
+  // person who just opened LinkedIn would be looking at.
+  const current = page.url();
+  if (onLinkedIn(current)) {
+    if (CHECKPOINT_PATH.test(current)) return false;
+    if (normalisedProfileUrl(current)) return true;
+    return present(page, SELECTORS.globalNav);
+  }
+
   try {
-    await page.goto(ME_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await page.goto(FEED_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+    await settle(page, `${FEED_URL}#probe`);
   } catch {
     return false;
   }
   if (CHECKPOINT_PATH.test(page.url())) return false;
-  if (normalisedProfileUrl(page.url())) return true;
-  return present(page, SELECTORS.globalNav);
+  if (await present(page, SELECTORS.globalNav)) return true;
+  return normalisedProfileUrl(page.url()) !== null;
 }
 
 /**
@@ -791,7 +932,7 @@ export async function loginWithCredentials(
 
   try {
     await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await settle(page, `${LOGIN_URL}#form`);
   } catch (cause) {
     return fail('selector_drift', `Could not open the LinkedIn sign-in page: ${cause instanceof Error ? cause.message : String(cause)}. Nothing was typed.`);
   }
@@ -846,15 +987,23 @@ export async function loginWithCredentials(
 
   try {
     await email.first().fill(credentials.email, { timeout: CLICK_TIMEOUT_MS });
+    // A beat between the two fields, and NEITHER IS TYPED CHARACTER BY
+    // CHARACTER. That is deliberate: `typeLike` is the more human shape, but
+    // the standing guarantee of this file is that no failure path can echo a
+    // credential, and `fill` is the call whose error text has been audited for
+    // it. A sign-in is one form on one page -- the pauses buy most of what the
+    // keystrokes would, and the guarantee is worth more than the remainder.
+    await settle(page, `${LOGIN_URL}#between-fields`, 0.5);
     // The one moment the password exists outside the vault. `cause.message`
     // below is Playwright's own text about a timeout or a detached node and
     // never contains what was typed -- `fill` does not echo its argument.
     await passwordField.fill(credentials.password, { timeout: CLICK_TIMEOUT_MS });
-    if (submitByClick) await submit.first().click({ timeout: CLICK_TIMEOUT_MS });
+    await settle(page, `${LOGIN_URL}#before-submit`, 0.5);
+    if (submitByClick) await hoverClick(page, submit.first(), `${LOGIN_URL}#submit`, CLICK_TIMEOUT_MS);
     else await passwordField.press!('Enter', { timeout: CLICK_TIMEOUT_MS });
     // Twice the usual settle: this navigation is a full page load plus a
     // redirect, and reading the standing early reads the page we just left.
-    await page.waitForTimeout(SETTLE_MS * 2);
+    await settle(page, `${LOGIN_URL}#after-submit`, 2);
   } catch (cause) {
     return fail('unknown', `The sign-in was interrupted after submit: ${cause instanceof Error ? cause.message : String(cause)}. Whether the session opened is unknown.`);
   }
@@ -914,9 +1063,12 @@ async function submitOtp(page: LinkedInPage, otp: string): Promise<LinkedInLogin
   }
 
   try {
-    await field.first().fill(otp, { timeout: CLICK_TIMEOUT_MS });
-    await submit.first().click({ timeout: CLICK_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS * 2);
+    // A code IS typed: six digits are not a stored credential, and a code box
+    // filled in one event at a checkpoint is the worst possible place to look
+    // like a machine.
+    await typeLike(page, field.first(), otp, `${LOGIN_URL}#otp`, CLICK_TIMEOUT_MS);
+    await hoverClick(page, submit.first(), `${LOGIN_URL}#otp-submit`, CLICK_TIMEOUT_MS);
+    await settle(page, `${LOGIN_URL}#after-otp`, 2);
   } catch (cause) {
     return fail('unknown', `The verification code was interrupted after submit: ${cause instanceof Error ? cause.message : String(cause)}. Whether the session opened is unknown.`);
   }

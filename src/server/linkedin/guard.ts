@@ -22,7 +22,18 @@ import {
   type PacedKind
 } from './limits.js';
 import { campaignActionLimit, campaignWarmupFraction } from './managed-campaigns.js';
-import { formatMinuteOfDay, isWeekend, localDateOf, previousBusinessDayCount, resolveSkillSeatKey, weekdayOf, weekdayVolumeFactor, workWindowOf } from './pacing.js';
+import {
+  dayShapeFor,
+  formatMinuteOfDay,
+  isWeekend,
+  localDateOf,
+  previousBusinessDayCount,
+  resolveSkillSeatKey,
+  weekdayOf,
+  weekdayVolumeFactor,
+  workWindowOf,
+  type DayShapeFn
+} from './pacing.js';
 import { OWNER_SEAT_KEY, effectivePosture, getSeat, warmupWeekOf } from './seats.js';
 
 /**
@@ -186,6 +197,23 @@ export interface LinkedInSafetyOptions {
    * approved playbook payload cannot name a row to excuse.
    */
   excludeActionId?: string | null;
+
+  /**
+   * How this seat's day is shaped, injected exactly as `planPacing` takes it.
+   *
+   * THE GATE HAS TO AGREE WITH THE PLANNER OR ONE OF THEM IS DECORATION. The
+   * planner rests ~12% of working days, draws 80-100% of a day's ceiling and
+   * moves the day's edges inside the configured window -- and none of that
+   * bound anything queued by another route (a manual send, an ad-hoc API call,
+   * a reply). The gate is the only thing every path goes through, so the shape
+   * is enforced here too and the planner's version becomes the polite version
+   * of the same rule.
+   *
+   * Production never passes it. Tests asserting a CEILING pass
+   * `FLAT_DAY_SHAPE`, because "the band is 18/day" is a statement about the
+   * ceiling and not about what a particular Tuesday drew from it.
+   */
+  dayShape?: DayShapeFn;
 }
 
 function automationOfLinkedIn(): Pick<LinkedInSafetyVerdict, 'automationMode' | 'automationReason'> {
@@ -484,7 +512,18 @@ export async function evaluateLinkedInSafety(
   const used7d = ledger.used7d;
   const used30d = ledger.used30d;
 
-  const effectiveDailyLimit = effectiveDailyCeiling(band.perDay, operatorLimit, overrideBands);
+  const ceilingBeforeDraw = effectiveDailyCeiling(band.perDay, operatorLimit, overrideBands);
+  /**
+   * TODAY'S share of that ceiling. See `LinkedInSafetyOptions.dayShape`.
+   *
+   * Keyed to the instant the action is about to happen, in the seat's own
+   * timezone, so it is the same number the planner used when it placed the
+   * slot -- and the same number for every other action this seat attempts
+   * today, whichever route queued it.
+   */
+  const shapeDay = options.dayShape ?? dayShapeFor;
+  const todayShape = shapeDay(`${input.workspaceId}:${seatKey}`, localDateOf(now, timezone), window);
+  const effectiveDailyLimit = todayShape.resting ? 0 : Math.floor(ceilingBeforeDraw * todayShape.draw);
 
   /**
    * WHERE THE PER-KIND CEILING CAME FROM, in the operator's words.
@@ -658,16 +697,21 @@ export async function evaluateLinkedInSafety(
   // configured scores 1 whether or not it is a weekend; an unconfigured
   // weekend scores WEEKEND_FACTOR; anything else scores 0.
   const dayFactor = weekday === null ? 0 : weekdayVolumeFactor(window, weekday);
+  // THE DAY THIS ACTION FALLS ON, which is not always the day the ceiling was
+  // drawn for: a slot placed for tomorrow is judged against tomorrow's shape.
+  const plannedShape = local === null ? todayShape : shapeDay(`${input.workspaceId}:${seatKey}`, local, window);
   const insideConfiguredWindow =
-    local !== null && dayFactor > 0
-    && minuteOfDay !== null && minuteOfDay >= window.startMinute && minuteOfDay < window.endMinute;
+    local !== null && dayFactor > 0 && !plannedShape.resting
+    && minuteOfDay !== null && minuteOfDay >= plannedShape.startMinute && minuteOfDay < plannedShape.endMinute;
   checks.push({
     check: 'business-hours',
     passed: insideConfiguredWindow,
     detail:
       local === null
         ? `'${input.plannedFor}' is not a parseable instant, so it cannot be placed inside a working-hours window.`
-        : `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}; this account works on weekday(s) ${window.days.join(',') || 'none'} between ${formatMinuteOfDay(window.startMinute)} and ${formatMinuteOfDay(window.endMinute)}.`
+        : plannedShape.resting
+          ? `This seat is not working that day. About one configured working day in eight is left empty on purpose -- an account that works every single day it is allowed to is a scheduler, not a person -- and which days those are is fixed for this seat and this date, not redrawn per attempt.`
+          : `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}; this account works on weekday(s) ${window.days.join(',') || 'none'} between ${formatMinuteOfDay(window.startMinute)} and ${formatMinuteOfDay(window.endMinute)}, and today between ${formatMinuteOfDay(plannedShape.startMinute)} and ${formatMinuteOfDay(plannedShape.endMinute)}.`
   });
   const onWeekend = weekday !== null && isWeekend(weekday);
   const configuredDay = weekday !== null && window.days.includes(weekday);

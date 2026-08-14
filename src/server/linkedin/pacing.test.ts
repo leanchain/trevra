@@ -3,7 +3,7 @@ import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
 import { evaluateLinkedInSafety } from './guard.js';
 import { ACTION_GAP_SECONDS, BUSINESS_HOURS } from './limits.js';
-import { planPacing, resolveSkillSeatKey, type PacingPlan } from './pacing.js';
+import { FLAT_DAY_SHAPE, addLocalDays, dayShapeFor, planPacing, resolveSkillSeatKey, type PacingPlan } from './pacing.js';
 import { upsertSeat } from './seats.js';
 
 // Real ephemeral Postgres, per the repo's test harness: the smoothing IS the
@@ -79,7 +79,7 @@ describe('warm-up ramp', () => {
 
   it('lifts the ceiling week by week: 0.4 of the band in week 2, 0.7 in week 3', async () => {
     await seat('2026-07-27');
-    const week2 = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 5 }, NOW);
+    const week2 = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 5 }, NOW, { dayShape: FLAT_DAY_SHAPE });
     // Warm-up band is 5/day; x0.4 = 2. The ramp still starts at 1 because the
     // ledger is empty and no day may be a jump from the one before it.
     expect(perDay(week2)).toEqual([1, 2, 0, 0, 2, 0, 0]);
@@ -89,14 +89,14 @@ describe('warm-up ramp', () => {
     // which is exactly the property `account_opened_on` did not have.
     await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
     await seat('2026-07-20');
-    const week3 = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 6 }, NOW);
+    const week3 = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 6 }, NOW, { dayShape: FLAT_DAY_SHAPE });
     // 5/day x0.7 = 3.
     expect(perDay(week3)).toEqual([1, 2, 0, 0, 3, 3, 0]);
   });
 
   it('uses the steady band once the account is past the ramp', async () => {
     await seat('2026-01-01');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 7 }, NOW);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 7 }, NOW, { dayShape: FLAT_DAY_SHAPE });
     expect(perDay(plan)).toEqual([1, 2, 0, 0, 3, 4, 5]);
     expect(plan.reasons.join(' ')).toContain('18 invite/day');
   });
@@ -111,7 +111,7 @@ describe('warm-up ramp', () => {
     const invites = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 }, NOW);
     expect(invites.slots).toHaveLength(0);
 
-    const views = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'profile_view', targets: targets(20), horizonDays: 7 }, NOW);
+    const views = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'profile_view', targets: targets(20), horizonDays: 7 }, NOW, { dayShape: FLAT_DAY_SHAPE });
     expect(views.slots.length).toBeGreaterThan(0);
     // Full warm-up band (15/day), un-multiplied -- but every OTHER ceiling
     // still binds, so it is the variance clamp that shapes the week.
@@ -175,7 +175,7 @@ describe('the operator\'s configured daily limit', () => {
     // Real volume yesterday, so the day-over-day ramp is not what binds.
     for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW, { dayShape: FLAT_DAY_SHAPE });
     // The steady band is 18/day and the smoothing clamp would allow 24. Five
     // is what the operator asked for and five is what the gate will pass.
     expect(perDay(plan)[0]).toBe(5);
@@ -189,7 +189,7 @@ describe('the operator\'s configured daily limit', () => {
     await upsertSeat(db, WORKSPACE_ID, { dailyInviteLimit: 30 }, NOW);
     for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 1 }, NOW);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 1 }, NOW, { dayShape: FLAT_DAY_SHAPE });
     expect(perDay(plan)[0]).toBe(18);
     expect(plan.ceilingsApplied).toContain('safety-band');
     expect(plan.reasons.join(' ')).toContain('You have set 30 invite(s)/day');
@@ -200,7 +200,7 @@ describe('the operator\'s configured daily limit', () => {
     await upsertSeat(db, WORKSPACE_ID, { dailyInviteLimit: 30, safetyBandOverride: true }, NOW);
     for (let index = 0; index < 30; index += 1) await log('invite', 'sent', 30);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(60), horizonDays: 1 }, NOW);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(60), horizonDays: 1 }, NOW, { dayShape: FLAT_DAY_SHAPE });
     expect(perDay(plan)[0]).toBe(30);
     expect(plan.ceilingsApplied).toContain('operator-daily-limit');
     expect(plan.reasons.join(' ')).toContain('use your own daily limits');
@@ -223,7 +223,7 @@ describe('variance smoothing', () => {
     // for 20 invites does not get 20 invites on Thursday, whatever the band
     // ceiling says.
     await seat('2026-01-01');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 }, NOW);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 }, NOW, { dayShape: FLAT_DAY_SHAPE });
 
     const days = perDay(plan);
     expect(Math.max(...days)).toBe(5);
@@ -424,7 +424,7 @@ describe('seat state', () => {
   it('falls back to the conservative band in cooldown', async () => {
     await upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC', posture: 'cooldown' }, new Date('2026-01-01T09:00:00.000Z'));
     for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 30);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW, { dayShape: FLAT_DAY_SHAPE });
     // Warm-up band is 5/day, so smoothing's 13 does not apply.
     expect(perDay(plan)[0]).toBe(5);
     expect(plan.ceilingsApplied).toContain('cooldown-band');
@@ -454,7 +454,7 @@ describe('spreading inside a short business-hours window', () => {
     // Eighteen invites are allowed today; the window has room for only a few
     // of them at ACTION_GAP_SECONDS.max spacing.
     const lateNow = new Date('2026-08-06T17:55:00.000Z');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(18), horizonDays: 3 }, lateNow);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(18), horizonDays: 3 }, lateNow, { dayShape: FLAT_DAY_SHAPE });
 
     const today = plan.slots.filter((slot) => slot.plannedFor.startsWith('2026-08-06'));
     // 300s of window left, ACTION_GAP_SECONDS.max = 120s: room for 3, not 18.
@@ -630,5 +630,62 @@ describe('resolving the seat a skill call meant', () => {
     // and the gate's honest no-seat answers rather than an error about a
     // choice that did not exist.
     expect(await resolveSkillSeatKey(db, WORKSPACE_ID, undefined)).toBe('owner');
+  });
+});
+
+/**
+ * WHAT MAKES A WEEK LOOK LIKE A PERSON'S WEEK rather than a scheduler's.
+ *
+ * The per-action realism (`human.ts`) is about one click. This is about the
+ * shape of a month: days that start and finish at slightly different times,
+ * days that are simply skipped, and days that stop short of the ceiling. All
+ * three are seeded, so they are assertable rather than merely hoped for.
+ */
+describe('day shaping', () => {
+  const WINDOW = { days: [1, 2, 3, 4, 5], startMinute: BUSINESS_HOURS.start * 60, endMinute: BUSINESS_HOURS.end * 60 };
+
+  it('is deterministic, and never places a day outside the configured window', () => {
+    const first = dayShapeFor('ws:owner', { year: 2026, month: 8, day: 17 }, WINDOW);
+    const second = dayShapeFor('ws:owner', { year: 2026, month: 8, day: 17 }, WINDOW);
+    expect(first).toEqual(second);
+    expect(first.startMinute).toBeGreaterThanOrEqual(WINDOW.startMinute);
+    expect(first.endMinute).toBeLessThanOrEqual(WINDOW.endMinute);
+    expect(first.draw).toBeGreaterThanOrEqual(0.8);
+    expect(first.draw).toBeLessThanOrEqual(1);
+  });
+
+  it('rests some days, shortens others, and rarely runs a day to its ceiling', () => {
+    const shapes = Array.from({ length: 60 }, (_, index) =>
+      dayShapeFor('ws:owner', addLocalDays({ year: 2026, month: 8, day: 17 }, index), WINDOW)
+    );
+    expect(shapes.some((shape) => shape.resting)).toBe(true);
+    expect(shapes.some((shape) => shape.draw < 1)).toBe(true);
+    expect(shapes.some((shape) => shape.startMinute > WINDOW.startMinute)).toBe(true);
+    expect(shapes.some((shape) => shape.endMinute < WINDOW.endMinute)).toBe(true);
+    // Two different seats do not share a calendar.
+    const other = dayShapeFor('ws:sales', { year: 2026, month: 8, day: 17 }, WINDOW);
+    expect(other).not.toEqual(shapes[0]);
+  });
+
+  it('keeps every planned slot inside the operator\'s configured hours', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(120), horizonDays: 21 }, NOW);
+    expect(plan.slots.length).toBeGreaterThan(0);
+    for (const slot of plan.slots) {
+      const at = new Date(slot.plannedFor);
+      const minute = at.getUTCHours() * 60 + at.getUTCMinutes();
+      expect(minute).toBeGreaterThanOrEqual(WINDOW.startMinute);
+      expect(minute).toBeLessThan(WINDOW.endMinute);
+    }
+    // The gate would refuse anything outside the window, so a plan that fits
+    // inside a jittered day also fits inside the configured one. And no day
+    // ever exceeds the seat's 18/day ceiling.
+    const perDate = new Map<string, number>();
+    for (const slot of plan.slots) {
+      const date = slot.plannedFor.slice(0, 10);
+      perDate.set(date, (perDate.get(date) ?? 0) + 1);
+    }
+    expect(Math.max(...perDate.values())).toBeLessThanOrEqual(18);
   });
 });

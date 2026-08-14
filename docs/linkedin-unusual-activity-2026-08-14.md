@@ -357,10 +357,61 @@ position this investigation started from.
 
 ### 5.4 Interleaved noise and acceptance-rate throttle
 
-`limits.ts` already has `MIN_ACCEPTANCE_RATE = 0.3` and the guard checks it. Still
-missing: the HeyReach-style pre-connect sequence (view → dwell → optional like →
-hours of delay → invite), and randomizing the daily quota to 80–100% of the
-ceiling rather than running to it.
+`limits.ts` already has `MIN_ACCEPTANCE_RATE = 0.3` and the guard checks it.
+The *within-action* half of this is now done — see Part 6. Still missing, and
+both are scheduling decisions rather than driver behaviour:
+
+- the multi-day HeyReach-style pre-connect sequence (view today → optional like
+  → invite hours or a day later), which is `sequence.ts` and `campaigns.ts`,
+  not the driver;
+- randomizing the daily quota to 80–100% of the ceiling rather than running to
+  it. `effectiveDailyCeiling` returns the cap; nothing draws below it.
+
+---
+
+# Part 6 — What an action LOOKS like, second pass (same day)
+
+Part 3 fixed the CLIENT. This fixes the BEHAVIOUR, which was still machine-shaped
+everywhere except the search walk.
+
+**New file: `src/server/linkedin/human.ts`.** Four primitives, all seeded (no
+`Math.random()` anywhere), all degrading to the previous behaviour when the page
+object lacks the capability — which is why none of the 858 driver tests changed.
+
+| primitive | replaces | why it matters |
+|---|---|---|
+| `settle(page, seed)` | `SETTLE_MS = 1_500` in **five** driver files | Five files agreeing on a millisecond value is a timer. Now a 900–4,200 ms band, seeded per URL+step, and never the same twice in one session. |
+| `readPage(page, seed)` | nothing — pages were never scrolled outside the search walk | Pointer move + 3–6 wheel passes + a scroll-back-up. Also fixes lazy-loaded rows. |
+| `hoverClick(page, locator, …)` | every `locator.click()` | Playwright's click *teleports*: `mousedown` fires on a control the pointer never travelled to. Now hover → pause 120–640 ms → click. LinkedIn listens for exactly those events. |
+| `typeLike(page, locator, text, …)` | `fill()` for the invite note, the DM body, the inbox reply, the OTP | `fill()` sets `value` and fires **one** `input` event: no keydown, no per-character timing, in a stream (`li/track`) that batches typing events precisely because it collects them. Now typed in 3–10 char bursts, 45–160 ms/key, one pause in eight long, then a 0.4–2.3 s reread before Send. |
+
+**Byte-exactness is preserved.** `typeLike` appends the caller's characters and
+nothing else; any mid-way failure falls back to `fill(text)`, which sets the
+approved string whole. There is no path that sends a partial note.
+
+**The newline hazard is handled explicitly.** Enter can *send* in LinkedIn's
+composer, so multi-line text is typed a line at a time with `Shift+Enter`
+between lines. Text containing `\r`, or a page with no keyboard, takes the
+`fill` path instead.
+
+**Credentials deliberately still use `fill`.** `driver.ts`'s standing guarantee
+is that no failure path can echo a password, and `fill` is the call whose error
+text has been audited for it. The sign-in gets the human *pauses* (between
+fields, before submit) but not the keystrokes. The OTP box does get typed —
+six digits are not a stored credential, and a code box filled in one event at a
+checkpoint is the worst possible place to look like a machine.
+
+**Sessions now start on the feed.** `openBrowser` navigates to `/feed/`, settles
+and scrolls it before the caller's first `goto`. Every session used to open with
+a deep link to a stranger's profile or a search URL — no feed load in front of
+it, no referer. One page load per browser open, not per action.
+
+**Profiles are read before they are acted on.** `openProfile` (invite, DM, view),
+`openAt` (follow, like, endorse), the inbox rail and the sent-invites list all
+run `readPage` after the load. The invite path therefore now does: land → dwell
+→ scroll → hover Connect → click → dwell → hover Add note → type the note like a
+person → reread → hover Send. It used to be: land → wait exactly 1.500 s → click
+→ wait exactly 1.500 s → paste → click.
 
 ### 5.5 The account itself
 
@@ -368,3 +419,122 @@ Keep the seat `paused` 7–14 days. Sign in by hand from normal Chrome on the sa
 residential IP, complete the profile, then rewarm from week-1 numbers (5/day) —
 treat a reinstated account as brand new, which is the one piece of advice every
 source agrees on.
+
+---
+
+# Part 7 — The shape of a day, and a critique of Part 6
+
+## 7.1 What shipped
+
+**`isLoggedIn` stopped fetching a profile page on every call.** It loaded
+`/in/me/` on every worker tick, every batch and every UI sign-in check —
+a client that opens a *profile* every minute or two and never scrolls a feed,
+never opens a thread, never clicks a link to get there. It now reads the
+signed-in nav off whatever page is open (the browser opens on the feed, so the
+common case navigates nowhere) and falls back to `/feed/`, never a profile.
+Pre-existing since `4e81c29`; the doc comment above it always claimed it did
+not navigate.
+
+**Sittings, not shifts** (`local-worker.ts`). A session is 3–8 actions, then the
+seat is away 25–90 min and **its browser is closed**. Seeded per seat and
+session index.
+
+**Days differ** (`pacing.ts` `dayShapeFor`). Seeded from the seat and the
+calendar date: edges move up to 45 min *inside* the configured window (so the
+gate can never refuse a slot the planner made), ~12% of working days are left
+empty, and each day draws 80–100% of its ceiling instead of running to it.
+`FLAT_DAY_SHAPE` is injected by the tests that assert a ceiling.
+
+## 7.2 Five defects found by challenging Part 6
+
+1. **The `fill` fallback in `typeLike` pasted and sent with no pause.** Every
+   page object without `pressSequentially` took that branch — the loudest
+   composer signal survived for exactly the callers that could not type. Fixed:
+   0.9–4.3 s before it returns.
+2. **`hoverClick`'s pause lived inside the hover branch.** A control that could
+   not be hovered went from "found it" to `mousedown` in the same frame — the
+   teleporting click the function exists to prevent. Fixed: the pause is
+   unconditional.
+3. **`readPage` read every page identically** — one pointer move, then 3–6
+   wheel ticks, forever. Varied enough to beat a constant, uniform enough to be
+   its own signature. Fixed: glance / read / long-read drawn per page, the
+   pointer drifts between passes, the correcting scroll-up is not every time.
+4. **A gate-refused seat re-opened the browser every tick.** `executed > 0` set
+   the break, so a seat whose work was due but refused (over ceiling, outside
+   hours, throttled) loaded the feed once a minute for as long as the refusal
+   lasted — worse than the actions it was refusing. Fixed: `blocked > 0` rests
+   it too, and every reason the gate refuses for needs hours to change.
+5. **Same seed → same millisecond, forever.** Opening a profile twice drew the
+   same dwell twice; a restart replayed the morning's rhythm. Fixed with a
+   session salt (seat + hour) mixed into every behavioural draw. Two counter
+   designs were tried and reverted first — a global one makes every draw depend
+   on program order, a per-seed one breaks the determinism `listPendingInvites`
+   asserts. Recorded in `human.ts` so they are not tried a third time.
+
+## 7.3 The biggest thing still wrong
+
+**Every target is a full document load typed into the address bar.** A person
+on LinkedIn clicks a link and the SPA routes client-side — no document load,
+a `pageInstance` chain, a referer. Trevra `goto`s `/in/<handle>/` cold for
+every action. Feed-first and scrolling narrow the gap; they do not close it.
+The real fix is to reach profiles by clicking the search-result card that
+already exists in the walk, which is a change to how a target is *addressed*,
+not to how it is browsed. Nothing else on this list is close to it in size.
+
+Unchanged and still #1 overall: the container reports `SwiftShader` as its
+WebGL renderer. Run the worker headed on the host.
+
+---
+
+# Part 8 — Closing the list
+
+**A link, not the address bar** (`driver.ts` `followLinkTo`). If the page the
+browser is already on shows a link to the target — a search result, a feed
+card, a connections row, an inbox thread's participant — the driver hovers and
+clicks it and lets LinkedIn's SPA route: no document load, a referer, a view
+chain. `page.goto` is now the fallback, and it is still what happens for a
+target reached cold from a stored lead list. Honest limit: a cold list is the
+common case for a campaign, so this fires on the inbox and search paths far
+more often than on the invite path. Closing that properly means addressing
+targets *from the page that found them*, which is a change to the campaign
+model, not to the driver. `driver.test.ts` is new and covers all three
+branches — the first page-level test the action driver has ever had.
+
+**Noise** (`warmUpSession`). About 55% of sittings open My Network,
+notifications or the feed again — the member's own surfaces, so nothing here
+touches another member's profile or consumes a ceiling — and scroll them before
+the sitting does what it came for. An account that only ever does outreach is a
+robot with a job.
+
+**The GPU is now said out loud.** Running headless in a container logs, once per
+process, that WebGL reports SwiftShader and that only a real display fixes it.
+It was true before and buried in this document; now it is on the operator's
+screen at the moment it starts mattering.
+
+Suite after all of Parts 6-8: **915 passing, `tsc` clean.**
+
+---
+
+# Part 9 — The rest of the list
+
+| # | Item | State |
+|---|---|---|
+| 1 | **Event ledger** — `linkedin_seat_events` (migration 061) | done. Browser opens, sittings, sign-ins, session reuse, challenges and detects are recorded, with 45-day retention swept once a tick. This is what was missing when the flag arrived: the timeline had to be rebuilt from Chrome's history DB and cookie timestamps because Trevra recorded only *actions*. |
+| 2 | **Breaks survive a restart** — `linkedin_seats.resting_until` | done. Was an in-process Map, forgotten exactly when a restart was most likely: right after something went wrong. Both are consulted; the later wins. |
+| 3 | **The gate enforces the day shape** | done. Rest days, the 80–100% draw and the moved window edges bound only the *planner*, so a manual send, an ad-hoc API call or a reply bypassed all three. `LinkedInSafetyOptions.dayShape` puts it on the one path every route goes through. |
+| 4 | **Google Chrome preferred over Chromium** | done. `BROWSER_CHANNELS = ['chrome', 'chromium']`, silent fallback when Chrome is absent; `Dockerfile.dev` installs it. Chromium's `window.chrome` has no `runtime` — a one-line headless check — and no Widevine or proprietary codecs. |
+| 5 | **`readSeat` stops loading the connections list** | done. It loaded `/mynetwork/invite-connect/connections/` on *every* detect for one number that moves by a handful a week. Skipped when the stored count is under a week old; the read returns null and the stored number is left alone. |
+| 6 | **Tests for the primitives** | done. `human.test.ts` (17) covers typing, hover, scroll variety, the salt, and both defects the review found; `guard.test.ts` gains three for the enforced day shape; `local-worker.test.ts` gains the sitting budget and break. `resetLinkedInSessionRhythm()` exists because sittings are process state and the tests share a process. |
+| 7 | **Leaked fixture profiles** | done. Six removed from the container. `/root/.trevra/linkedin-profile` is the dead pre-fix mount and cannot be removed while the current container holds it; it goes on the next `--force-recreate`. |
+
+**Still open, and it is a product decision rather than a defect.** Reaching a
+cold-list target *from the page that found it* — opening the lead's source
+search page once per sitting and clicking the card — would remove the last cold
+`goto`. It also re-renders a search-results page, which is the surface LinkedIn
+most associates with scraping. One search load per sitting against N cold
+profile loads is a trade worth making deliberately, with the account's history
+in mind, and not silently.
+
+**Unchanged:** the container's WebGL renderer. Run the worker headed on the host.
+
+Suite: **941 passing across 33 files**, `tsc` clean.

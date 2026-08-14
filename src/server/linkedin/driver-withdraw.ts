@@ -8,6 +8,7 @@ import {
   type LinkedInLocator,
   type LinkedInPage
 } from './driver.js';
+import { hoverClick, readPage, settle } from './human.js';
 
 /**
  * The Playwright routines for LinkedIn's sent-invitations manager.
@@ -207,7 +208,8 @@ export const SENT_INVITES_URL = 'https://www.linkedin.com/mynetwork/invitation-m
 const CHECKPOINT_PATH = /\/(checkpoint|uas\/login)\//i;
 const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
-const SETTLE_MS = 1_500;
+/* The post-load pause is `settle()` from `human.ts`: a band, seeded per step,
+ * not the 1,500ms constant five driver files used to share. */
 
 /**
  * The bounds. Not pacing -- the ceiling and the gaps between WITHDRAWALS are
@@ -299,7 +301,8 @@ async function detectWall(page: LinkedInListPage): Promise<LinkedInFailureKind |
 async function openSentInvites(page: LinkedInListPage): Promise<LinkedInDriverResult | null> {
   try {
     await page.goto(SENT_INVITES_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await settle(page, `${SENT_INVITES_URL}#open`);
+    await readPage(page, `${SENT_INVITES_URL}#read`);
   } catch (cause) {
     // Navigation failed, so nothing was read and nothing was clicked.
     return fail(
@@ -363,8 +366,8 @@ async function expandList(page: LinkedInListPage, pageIndex: number, seed: strin
   try {
     if ((await more.count()) === 0) return false;
     await page.waitForTimeout(Math.round(pageGapSeconds(`${seed}:${pageIndex}`) * 1000));
-    await more.first().click({ timeout: CLICK_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await hoverClick(page, more.first(), `${seed}:${pageIndex}#more`, CLICK_TIMEOUT_MS);
+    await settle(page, `${seed}:${pageIndex}#more-open`);
     return true;
   } catch {
     // Expanding failed. Not a failure of the read: what is already on screen is
@@ -613,8 +616,8 @@ export async function withdrawInvite(page: LinkedInListPage, profileUrl: string)
   // prove the invite is still standing, so it reports `unknown` and the caller
   // holds the claim rather than deciding either way about the ledger row.
   try {
-    await withdraw.first().click({ timeout: CLICK_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await hoverClick(page, withdraw.first(), `${url}#withdraw`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#after-withdraw`);
 
     const wall = await detectWall(page);
     if (wall) {
@@ -636,8 +639,8 @@ export async function withdrawInvite(page: LinkedInListPage, profileUrl: string)
           `A confirmation dialog is open for ${url} and ${WITHDRAW_SELECTORS.confirmWithdrawButton} did not match it, so whether the invite was withdrawn is unknown. Settle it by hand.`
         );
       }
-      await confirm.first().click({ timeout: CLICK_TIMEOUT_MS });
-      await page.waitForTimeout(SETTLE_MS);
+      await hoverClick(page, confirm.first(), `${url}#confirm-withdraw`, CLICK_TIMEOUT_MS);
+      await settle(page, `${url}#after-confirm`);
     }
 
     const after = await detectWall(page);

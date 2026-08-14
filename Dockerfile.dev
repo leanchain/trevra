@@ -23,6 +23,17 @@ RUN npm ci
 # to start is harder to diagnose than one that was never installed.
 RUN npx playwright install --with-deps chromium
 
+# GOOGLE CHROME, and not as a duplicate of the line above.
+#
+# `chromium` is the open-source build: no Widevine, no proprietary codecs, and
+# -- the one that shows -- `window.chrome` with no `runtime` on it, which is a
+# one-line headless-Chromium check that every detection writeup lists. `chrome`
+# is the consumer binary a member actually browses with. `openBrowser` prefers
+# it (`BROWSER_CHANNELS`) and falls back to chromium when it is absent, so this
+# line is what turns that preference on.
+RUN npx playwright install --with-deps chrome || \
+    echo 'Google Chrome unavailable for this platform; the seat browser falls back to Chromium.'
+
 # Patchright's own copy of the same Chromium.
 #
 # Patchright is a patched Playwright: it never calls `Runtime.enable`, which is

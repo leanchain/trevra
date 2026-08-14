@@ -6,6 +6,7 @@ import { openDatabase, type Db } from '../db.js';
 import { SELECTORS, type LinkedInDriver, type LinkedInDriverResult, type LinkedInPage, type LinkedInSeatRead } from './driver.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyCheck, type LinkedInSafetyVerdict } from './guard.js';
 import { ACTION_GAP_SECONDS } from './limits.js';
+import { FLAT_DAY_SHAPE } from './pacing.js';
 import { getSeat, upsertSeat, type SeatPosture } from './seats.js';
 import {
   actionGapSeconds,
@@ -33,8 +34,11 @@ import {
   runDueLinkedInActions,
   runLinkedInLocalBatch,
   runPendingSeatDetectRequests,
+  resetLinkedInSessionRhythm,
   seatContextFingerprint,
   seatProfilePresent,
+  sessionActionBudget,
+  sessionBreakMs,
   seatRefsForShard,
   seatsWithDueActions,
   shouldLogOnce,
@@ -294,6 +298,18 @@ const threeActions = [
 ];
 
 const noSleep = async () => {};
+
+/**
+ * A SITTING IS PROCESS STATE, AND THESE TESTS SHARE A PROCESS.
+ *
+ * `runDueLinkedInActions` remembers that a seat is on a break between sittings
+ * in a module-level Map, so without this one test's break silently refuses the
+ * next test's seat and the failure reads as "nothing was executed" three
+ * describes away from the cause.
+ */
+beforeEach(() => {
+  resetLinkedInSessionRhythm();
+});
 
 describe('dispatch is exhaustive', () => {
   /**
@@ -1139,7 +1155,11 @@ describe.skipIf(!databaseUrl)('the gate judges the real send instant, not a stal
             plannedFor: candidate.plannedFor // the bug: the stale slot, not `at`
           },
           at,
-          { excludeActionId: candidate.id }
+          // FLAT, so this test isolates the one thing it is about. The gate now
+          // also shapes the day (rest days, drawn ceilings, moved edges), and a
+          // historical-bug reproduction that failed because a Tuesday happened
+          // to be a rest day would prove nothing about `plannedFor` vs `at`.
+          { excludeActionId: candidate.id, dayShape: FLAT_DAY_SHAPE }
         )
     });
 
@@ -2703,5 +2723,40 @@ describe('workerShard', () => {
     expect(() => workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '0' })).toThrow(/1 or more/);
     expect(() => workerShard({ TREVRA_LINKEDIN_WORKER_INDEX: '-1', TREVRA_LINKEDIN_WORKER_COUNT: '2' })).toThrow();
     expect(workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '4', TREVRA_LINKEDIN_WORKER_INDEX: '2' })).toEqual({ index: 2, total: 4 });
+  });
+});
+
+/**
+ * SITTINGS. A seat that is available to act from the minute its window opens
+ * until the minute it closes has no shape to its day, and nobody uses LinkedIn
+ * like that. The budget and the break are what give it one.
+ */
+describe('the session rhythm', () => {
+  it('draws a sitting of 3-8 actions, deterministically', () => {
+    for (let index = 0; index < 24; index += 1) {
+      const budget = sessionActionBudget(`ws:owner:session:${index}`);
+      expect(budget).toBeGreaterThanOrEqual(3);
+      expect(budget).toBeLessThanOrEqual(8);
+      expect(Number.isInteger(budget)).toBe(true);
+    }
+    expect(sessionActionBudget('same')).toBe(sessionActionBudget('same'));
+    const drawn = new Set(Array.from({ length: 24 }, (_, index) => sessionActionBudget(`s${index}`)));
+    expect(drawn.size).toBeGreaterThan(1);
+  });
+
+  it('draws a break of 25-90 minutes, deterministically', () => {
+    for (let index = 0; index < 24; index += 1) {
+      const away = sessionBreakMs(`ws:owner:session:${index}`);
+      expect(away).toBeGreaterThanOrEqual(25 * 60_000);
+      expect(away).toBeLessThanOrEqual(90 * 60_000);
+    }
+    expect(sessionBreakMs('same')).toBe(sessionBreakMs('same'));
+    const drawn = new Set(Array.from({ length: 24 }, (_, index) => sessionBreakMs(`s${index}`)));
+    expect(drawn.size).toBeGreaterThan(1);
+  });
+
+  it('gives consecutive sittings different lengths', () => {
+    const lengths = Array.from({ length: 6 }, (_, index) => sessionActionBudget(`ws_x:owner:session:${index + 1}`));
+    expect(new Set(lengths).size).toBeGreaterThan(1);
   });
 });

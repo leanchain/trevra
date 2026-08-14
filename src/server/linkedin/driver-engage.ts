@@ -7,6 +7,7 @@ import {
   type LinkedInFailureKind,
   type LinkedInPage
 } from './driver.js';
+import { hoverClick, readPage, settle } from './human.js';
 
 /**
  * The three ENGAGEMENT routines: follow a profile, like their most recent
@@ -61,8 +62,12 @@ import {
  */
 const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
-/** Long enough for LinkedIn's client-side render, short enough not to stall a batch. */
-const SETTLE_MS = 1_500;
+/**
+ * The post-load and post-click pause is `settle()` from `human.ts`, drawn from
+ * a band and seeded per step. It was `1_500` here and in four sibling files --
+ * see the note where `driver.ts` used to declare it for why five files
+ * agreeing on a millisecond value was the problem.
+ */
 
 /**
  * The post container on a profile's activity feed, and the anchor for
@@ -269,7 +274,11 @@ function canonicalProfileFor(target: string): string | null {
 async function openAt(page: LinkedInPage, url: string): Promise<LinkedInDriverResult | null> {
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await settle(page, `${url}#open`);
+    // Follows, likes and endorsements all land here first, and all three are
+    // "a person was looking at this page and reacted to it". Reading it before
+    // reacting is what makes that true. Decoration only: never throws.
+    await readPage(page, `${url}#read`);
   } catch (cause) {
     // Navigation failed, so no action was taken. Definite, and reported as
     // drift rather than `unknown`: nothing was clicked.
@@ -338,8 +347,8 @@ export async function followProfile(page: LinkedInPage, target: string): Promise
       );
     }
     try {
-      await more.first().click({ timeout: CLICK_TIMEOUT_MS });
-      await page.waitForTimeout(SETTLE_MS);
+      await hoverClick(page, more.first(), `${url}#more`, CLICK_TIMEOUT_MS);
+      await settle(page, `${url}#more-open`);
     } catch (cause) {
       return fail('selector_drift', `Opening the More menu on ${url} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
@@ -353,8 +362,8 @@ export async function followProfile(page: LinkedInPage, target: string): Promise
   // prove the follow did not register, so it reports `unknown` and the worker
   // holds the claim rather than retrying it into a second one.
   try {
-    await follow.first().click({ timeout: CLICK_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await hoverClick(page, follow.first(), `${url}#follow`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#after-follow`);
 
     const wall = await detectWall(page);
     if (wall) {
@@ -426,8 +435,8 @@ export async function likeRecentPost(page: LinkedInPage, target: string, opts: E
 
   // EVERYTHING BELOW THIS LINE IS POST-CLICK.
   try {
-    await like.first().click({ timeout: CLICK_TIMEOUT_MS });
-    await page.waitForTimeout(SETTLE_MS);
+    await hoverClick(page, like.first(), `${feed}#like`, CLICK_TIMEOUT_MS);
+    await settle(page, `${feed}#after-like`);
 
     const wall = await detectWall(page);
     if (wall) {
@@ -504,8 +513,8 @@ export async function endorseSkills(page: LinkedInPage, target: string, opts: En
 
     // EVERYTHING BELOW THIS LINE IS POST-CLICK, for this iteration.
     try {
-      await buttons.first().click({ timeout: CLICK_TIMEOUT_MS });
-      await page.waitForTimeout(SETTLE_MS);
+      await hoverClick(page, buttons.first(), `${skillsUrl}#endorse:${index}`, CLICK_TIMEOUT_MS);
+      await settle(page, `${skillsUrl}#after-endorse:${index}`);
     } catch (cause) {
       return fail(
         'unknown',
@@ -526,8 +535,8 @@ export async function endorseSkills(page: LinkedInPage, target: string, opts: En
     const dismiss = page.locator(ENGAGE_SELECTORS.endorseDialogDismiss);
     if ((await dismiss.count()) > 0) {
       try {
-        await dismiss.first().click({ timeout: CLICK_TIMEOUT_MS });
-        await page.waitForTimeout(SETTLE_MS);
+        await hoverClick(page, dismiss.first(), `${skillsUrl}#dismiss:${index}`, CLICK_TIMEOUT_MS);
+        await settle(page, `${skillsUrl}#after-dismiss:${index}`);
       } catch {
         // An undismissable modal blocks the next click but says nothing about
         // the endorsement behind it, which the count check below settles.

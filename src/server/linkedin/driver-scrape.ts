@@ -8,6 +8,7 @@ import {
   type LinkedInLocator,
   type LinkedInPage
 } from './driver.js';
+import { hoverClick, readPage, settleMs } from './human.js';
 import { splitAndScrubName } from './lead-import.js';
 import { ACTION_GAP_SECONDS } from './limits.js';
 
@@ -238,61 +239,21 @@ const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
 
 /**
- * The pause after a page load, DRAWN AND NOT FIXED.
+ * The pause after a page load, and the scroll that a read looks like.
  *
- * This was a constant 1,500ms, and a constant is the problem: ten page loads
- * that each settle for exactly 1.500s, then read every card and navigate again,
- * describe a machine with a timer -- and they do it in a telemetry stream that
- * LinkedIn already keeps per member. The band is what a person spends looking
- * at a page of search results before deciding to page on.
+ * BOTH MOVED TO `human.ts` and are re-exported under their original names so
+ * the call sites below read the same. They started here -- a constant 1,500ms
+ * settle and no scroll at all was what a search walk emitted -- and then every
+ * other driver turned out to need exactly the same two things: LinkedIn does
+ * not score a search page differently from a profile page, and a client that
+ * loads either one on a timer and never moves a pointer over it has said the
+ * same thing about itself on both.
  *
- * Seeded like everything else here, so a run is reproducible and a test can
- * assert the cadence instead of tolerating it. NO `Math.random()` in this file.
+ * `settleMs` stays exported because the scrape tests assert its determinism
+ * directly, and that is worth keeping assertable.
  */
-const SETTLE_MS_RANGE = { min: 900, max: 4_200 } as const;
-
-export function settleMs(seed: string): number {
-  const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
-  return Math.round(SETTLE_MS_RANGE.min + random() * (SETTLE_MS_RANGE.max - SETTLE_MS_RANGE.min));
-}
-
-/**
- * Read the page the way a person reads it: scroll down it.
- *
- * WHY THIS IS NOT COSMETIC. Three separate things depend on it. LinkedIn
- * lazy-loads result rows, so an unscrolled page can legitimately hold fewer
- * cards than the walk thinks it does. LinkedIn's client-side tracking reports
- * viewport and engagement events, and a session with none is an outlier in a
- * stream it scores. And a wheel event is the cheapest possible evidence that
- * something with a pointing device is on the other end.
- *
- * A FEW PASSES, NOT A FULL SWEEP. The point is to look like reading, not to
- * reach the bottom -- and the cards are read by selector afterwards regardless
- * of where the viewport ended up.
- *
- * NEVER THROWS. A page with no mouse (every test fake) and a wheel call that
- * fails both land in the same place: the walk carries on and reads the cards.
- */
-export async function browseList(page: LinkedInScrapePage, seed: string): Promise<void> {
-  const mouse = page.mouse;
-  if (!mouse) return;
-  const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
-  try {
-    await mouse.move(Math.round(320 + random() * 640), Math.round(220 + random() * 420), { steps: 8 });
-    const passes = 3 + Math.floor(random() * 4);
-    for (let pass = 0; pass < passes; pass += 1) {
-      await mouse.wheel(0, Math.round(260 + random() * 540));
-      await page.waitForTimeout(Math.round(170 + random() * 680));
-    }
-    // A short scroll back up. People overshoot and correct; a strictly
-    // monotonic downward scroll is its own small tell.
-    await mouse.wheel(0, -Math.round(90 + random() * 240));
-    await page.waitForTimeout(Math.round(200 + random() * 500));
-  } catch {
-    // Reading the page is the job. Looking human while doing it is not worth
-    // failing the walk over.
-  }
-}
+export { settleMs };
+export const browseList = readPage;
 
 function fail(failureKind: LinkedInFailureKind, detail: string, partial: Partial<ScrapeResult> = {}): ScrapeResult {
   return {
@@ -1199,7 +1160,7 @@ export async function scrapePostEngagers(
     );
   } else {
     try {
-      await entry.first().click({ timeout: CLICK_TIMEOUT_MS });
+      await hoverClick(page, entry.first(), `${seed}:reactions:open`, CLICK_TIMEOUT_MS);
       await page.waitForTimeout(settleMs(`${seed}:reactions:open`));
     } catch (cause) {
       harvest.degraded.push(
@@ -1228,7 +1189,7 @@ export async function scrapePostEngagers(
         if ((await count(more)) === 0) break;
         await sleep(Math.round(scrapeGapSeconds(`${seed}:reactors:${step}`) * 1000));
         try {
-          await more.first().click({ timeout: CLICK_TIMEOUT_MS });
+          await hoverClick(page, more.first(), `${seed}:reactors:${step}`, CLICK_TIMEOUT_MS);
           await page.waitForTimeout(settleMs(`${seed}:reactors:${step}`));
         } catch {
           break;
@@ -1262,7 +1223,7 @@ export async function scrapePostEngagers(
     if ((await count(more)) === 0) break;
     await sleep(Math.round(scrapeGapSeconds(`${seed}:comments:${step}`) * 1000));
     try {
-      await more.first().click({ timeout: CLICK_TIMEOUT_MS });
+      await hoverClick(page, more.first(), `${seed}:comments:${step}`, CLICK_TIMEOUT_MS);
       await page.waitForTimeout(settleMs(`${seed}:comments:${step}`));
     } catch {
       break;

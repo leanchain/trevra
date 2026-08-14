@@ -3,6 +3,7 @@ import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
 import { LINKEDIN_CHECK_NAMES, evaluateLinkedInSafety, linkedinGuardSkill, type LinkedInCheckName, type LinkedInSafetyVerdict } from './guard.js';
 import { MAX_OUTSTANDING_INVITES } from './limits.js';
+import { FLAT_DAY_SHAPE } from './pacing.js';
 import { upsertSeat } from './seats.js';
 
 let db: Db;
@@ -52,11 +53,21 @@ async function log(kind: LinkedInActionKind, status: LinkedInActionStatus, hours
   );
 }
 
-function guard(overrides: Partial<Parameters<typeof evaluateLinkedInSafety>[1]> = {}): Promise<LinkedInSafetyVerdict> {
+/**
+ * `options` defaults to EMPTY, so the gate runs with its real day shaping and
+ * every test here exercises it. A test asserting a CEILING passes
+ * `{ dayShape: FLAT_DAY_SHAPE }`, because "the band is 18/day" is a claim about
+ * the ceiling and not about what this particular Thursday drew from it.
+ */
+function guard(
+  overrides: Partial<Parameters<typeof evaluateLinkedInSafety>[1]> = {},
+  options: Parameters<typeof evaluateLinkedInSafety>[3] = {}
+): Promise<LinkedInSafetyVerdict> {
   return evaluateLinkedInSafety(
     db,
     { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/fresh', plannedFor: SLOT, ...overrides },
-    NOW
+    NOW,
+    options
   );
 }
 
@@ -138,7 +149,7 @@ describe('volume ceilings', () => {
   it('blocks the invite that would exceed the rolling 24h band', async () => {
     await seat('2026-01-01');
     for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 1);
-    const verdict = await guard();
+    const verdict = await guard({}, { dayShape: FLAT_DAY_SHAPE });
     expect(check(verdict, 'rolling-24h').passed).toBe(false);
     expect(check(verdict, 'rolling-24h').detail).toContain('18 of 18');
   });
@@ -173,7 +184,7 @@ describe('volume ceilings', () => {
     await seat('2026-01-01');
     for (let index = 0; index < 18; index += 1) await log('invite', 'planned', 1);
     for (let index = 0; index < 18; index += 1) await log('invite', 'skipped', 1);
-    const verdict = await guard();
+    const verdict = await guard({}, { dayShape: FLAT_DAY_SHAPE });
     expect(check(verdict, 'rolling-24h').passed).toBe(true);
     expect(check(verdict, 'rolling-24h').detail).toContain('0 of 18');
   });
@@ -492,13 +503,13 @@ describe('campaign warm-up', () => {
     const campaignId = await campaignRow(NOW.toISOString());
 
     // Day 1 is 20% of the seat's effective 10/day ceiling: two invites.
-    const fresh = await guard({ campaignId });
+    const fresh = await guard({ campaignId }, { dayShape: FLAT_DAY_SHAPE });
     expect(check(fresh, 'campaign-warmup').passed).toBe(true);
     expect(check(fresh, 'campaign-warmup').detail).toContain('0 of 2');
     expect(check(fresh, 'campaign-warmup').detail).toContain('campaign day 1');
 
     await logCampaignInvites(campaignId, 2);
-    const third = await guard({ campaignId });
+    const third = await guard({ campaignId }, { dayShape: FLAT_DAY_SHAPE });
     expect(check(third, 'campaign-warmup').passed).toBe(false);
     expect(check(third, 'campaign-warmup').detail).toContain('2 of 2');
     expect(third.reason).toContain('campaign-warmup');
@@ -512,7 +523,7 @@ describe('campaign warm-up', () => {
     await seatWithInviteLimit(10);
     const campaignId = await campaignRow(new Date(NOW.getTime() - 2 * 86_400_000).toISOString());
     await logCampaignInvites(campaignId, 2);
-    const verdict = await guard({ campaignId });
+    const verdict = await guard({ campaignId }, { dayShape: FLAT_DAY_SHAPE });
     expect(check(verdict, 'campaign-warmup').passed).toBe(true);
     expect(check(verdict, 'campaign-warmup').detail).toContain('2 of 6');
     expect(check(verdict, 'campaign-warmup').detail).toContain('campaign day 3');
@@ -523,7 +534,7 @@ describe('campaign warm-up', () => {
     // No workflow and never started: a 025-era campaign folder whose actions a
     // human exports by hand. Never silently absent -- reported as not ramped.
     const campaignId = await campaignRow(null, { workflow: false });
-    const verdict = await guard({ campaignId });
+    const verdict = await guard({ campaignId }, { dayShape: FLAT_DAY_SHAPE });
     expect(check(verdict, 'campaign-warmup').passed).toBe(true);
     expect(check(verdict, 'campaign-warmup').detail).toContain('not a managed campaign');
     expect(verdict.allowed).toBe(true);
@@ -544,7 +555,7 @@ describe('campaign warm-up', () => {
 
     // One seat runs several campaigns and their ramps are independent -- the
     // seat-level ceilings above are what stop the total running away.
-    const verdict = await guard({ campaignId: second });
+    const verdict = await guard({ campaignId: second }, { dayShape: FLAT_DAY_SHAPE });
     expect(check(verdict, 'campaign-warmup').passed).toBe(true);
     expect(check(verdict, 'campaign-warmup').detail).toContain('0 of 2');
   });
@@ -795,5 +806,54 @@ describe('the guard skill and the seat it is asked about', () => {
       NOW
     );
     expect(sales.checks.find((entry) => entry.check === 'rolling-24h')?.detail).toMatch(/^0 of /);
+  });
+});
+
+/**
+ * THE PLANNER'S DAY SHAPE IS POLITE; THIS IS THE ENFORCED VERSION.
+ *
+ * Rest days, the 80-100% daily draw and the moved window edges shape a plan --
+ * and a plan is only one of the routes an action can arrive by. A manual send,
+ * an ad-hoc API call and a reply all reach LinkedIn without going anywhere near
+ * `planPacing`, and every one of them goes through this gate.
+ */
+describe('the day shape binds at the gate, not only in the plan', () => {
+  it('refuses everything on a day this seat does not work', async () => {
+    await seat('2026-01-01');
+    const verdict = await guard(
+      {},
+      { dayShape: (_seed, _day, window) => ({ startMinute: window.startMinute, endMinute: window.endMinute, resting: true, draw: 1 }) }
+    );
+    expect(check(verdict, 'business-hours').passed).toBe(false);
+    expect(check(verdict, 'business-hours').detail).toContain('not working that day');
+    expect(verdict.allowed).toBe(false);
+  });
+
+  it('applies the daily draw to the ceiling, not just to the schedule', async () => {
+    await seat('2026-01-01');
+    // 15 sent against an 18/day band: allowed at full ceiling, refused once the
+    // day has drawn 80% of it (14).
+    for (let index = 0; index < 15; index += 1) await log('invite', 'sent', 1);
+
+    const full = await guard({}, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(full, 'rolling-24h').passed).toBe(true);
+
+    const drawn = await guard(
+      {},
+      { dayShape: (_seed, _day, window) => ({ startMinute: window.startMinute, endMinute: window.endMinute, resting: false, draw: 0.8 }) }
+    );
+    expect(check(drawn, 'rolling-24h').passed).toBe(false);
+    expect(check(drawn, 'rolling-24h').detail).toContain('of 14');
+  });
+
+  it('refuses an instant inside the configured window but outside the day\'s own hours', async () => {
+    await seat('2026-01-01');
+    // The slot is 10:00. A day that started at 11:00 has not started yet.
+    const verdict = await guard(
+      {},
+      { dayShape: (_seed, _day, window) => ({ startMinute: 11 * 60, endMinute: window.endMinute, resting: false, draw: 1 }) }
+    );
+    expect(check(verdict, 'business-hours').passed).toBe(false);
+    expect(check(verdict, 'business-hours').detail).toContain('today between 11:00');
   });
 });
