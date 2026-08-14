@@ -2,15 +2,7 @@ import { z } from 'zod';
 import { getChannel } from '../channels/registry.js';
 import type { Db } from '../db.js';
 import type { Skill, SkillContext } from '../skills/types.js';
-import {
-  acceptanceRate,
-  countActionsInWindow,
-  countActionKindsInWindow,
-  countPendingInvites,
-  dailyCountsForLastNDays,
-  hasTarget,
-  type SeatRef
-} from './actions.js';
+import type { SeatRef } from './actions.js';
 import {
   ACCEPTANCE_WINDOW_DAYS,
   ENFORCEMENT_SCAN_WEEKDAYS,
@@ -30,7 +22,7 @@ import {
   type PacedKind
 } from './limits.js';
 import { campaignActionLimit, campaignWarmupFraction } from './managed-campaigns.js';
-import { formatMinuteOfDay, isWeekend, localDateOf, previousBusinessDayCount, weekdayOf, weekdayVolumeFactor, workWindowOf } from './pacing.js';
+import { formatMinuteOfDay, isWeekend, localDateOf, previousBusinessDayCount, resolveSkillSeatKey, weekdayOf, weekdayVolumeFactor, workWindowOf } from './pacing.js';
 import { OWNER_SEAT_KEY, effectivePosture, getSeat, warmupWeekOf } from './seats.js';
 
 /**
@@ -228,30 +220,172 @@ async function managedCampaignRamp(db: Db, workspaceId: string, campaignId: stri
 }
 
 /**
- * This campaign's non-skipped actions of one kind in the rolling window.
+ * EVERY LEDGER NUMBER THIS GATE NEEDS, IN ONE ROUND TRIP.
  *
- * Deliberately NOT `actions.ts`'s seat-scoped counters: every ceiling there
- * asks "what has this SEAT done", and the campaign ramp asks "what has this
- * CAMPAIGN done" -- one seat legitimately runs several campaigns and their
- * ramps are independent. Same two rules as every other window in the ledger:
- * `recorded_at`, and rolling rather than calendar.
+ * The campaign counter this replaced said, correctly, that it was deliberately
+ * NOT `actions.ts`'s seat-scoped counters: every ceiling there asks "what has
+ * this SEAT done", and the campaign ramp asks "what has this CAMPAIGN done" --
+ * one seat legitimately runs several campaigns and their ramps are
+ * independent. That is still true and it is still expressed below, as its own
+ * scalar subquery with no `seat_key` in it. Same two rules as every other
+ * window in the ledger: `recorded_at`, and rolling rather than calendar.
+ *
+ * It used to be eleven separate `await`s -- `countActionsInWindow` three
+ * This used to be eleven separate `await`s -- `countActionsInWindow` three
+ * times, `countActionKindsInWindow`, `dailyCountsForLastNDays(30)`,
+ * `acceptanceRate`, `countPendingInvites`, `hasTarget`, the campaign counter
+ * above, and `getSeat`/`managedCampaignRamp` on top -- each one a full
+ * request/response through the connection pool. The gate runs once per action
+ * and the worker re-runs it immediately before executing each one, so at 25
+ * actions a tick across 5,000 seats that is ~1.4M round trips per tick through
+ * a pool of ten connections. The pool, not Postgres, was the ceiling.
+ *
+ * WHAT IS DELIBERATELY UNCHANGED IS EVERY PREDICATE. Each `COUNT(*) FILTER`
+ * below is the WHERE clause of the function it replaces, character for
+ * character, because a faster query that moves a ceiling is not an
+ * optimisation -- it is a silent change to what Trevra will let an account do.
+ * In particular:
+ *
+ *   - the window counts keep `status NOT IN ('planned','skipped')`
+ *     (`actions.ts` COUNTED): planned and skipped never happened;
+ *   - the acceptance numbers do NOT carry that filter, because `acceptanceRate`
+ *     does not: its denominator is DECIDED invites, and it selects them by
+ *     status inside the FILTER instead;
+ *   - the daily buckets keep their upper bound `recorded_at <= now` while the
+ *     30-day count does not have one, which is the (small, real) difference
+ *     between `dailyCountsForLastNDays` and `countActionsInWindow(30d)`;
+ *   - the campaign counter keeps `status <> 'skipped'` and is NOT seat-scoped,
+ *     because one seat runs several campaigns and their ramps are independent;
+ *   - `pending_invites` has NO window at all, for the reason
+ *     `countPendingInvites` documents: "pending" is a backlog, not a rate.
+ *
+ * THE SCAN IS BOUNDED BY `kind = ANY(...)`, which is what lets
+ * `idx_linkedin_actions_window` (022) serve it: the index leads
+ * (workspace_id, seat_key, kind, recorded_at), so naming the three or four
+ * kinds this call actually asks about turns a whole-seat scan into that many
+ * short range scans. The backlog, campaign and duplicate questions are
+ * separate index lookups in the same statement -- one round trip, several
+ * cheap probes, rather than several round trips.
  */
-async function countCampaignActionsInWindow(
+interface SeatLedgerFacts {
+  used24: number;
+  /** dm+reply+inmail in the same window: the operator's ONE message pool. */
+  messagePool24: number;
+  used7d: number;
+  used30d: number;
+  /** Rolling 24h buckets, OLDEST FIRST, exactly as `dailyCountsForLastNDays` returns them. */
+  dailyCounts: number[];
+  acceptanceDecided: number;
+  acceptanceAccepted: number;
+  pendingInvites: number;
+  /** 0 when no campaign was named; only read when the campaign is a managed one. */
+  campaignUsed24: number;
+  duplicate: boolean;
+}
+
+/** The three kinds that share the operator's account-level message ceiling. */
+const MESSAGE_KINDS = ['dm', 'reply', 'inmail'] as const;
+
+async function seatLedgerFacts(
   db: Db,
-  workspaceId: string,
-  campaignId: string,
-  kind: PacedKind,
-  sinceHours: number,
+  seat: SeatRef,
+  input: { kind: PacedKind; targetRef: string; campaignId: string | null; replayScope: string; excludeActionId: string | null },
   now: Date
-): Promise<number> {
-  const since = new Date(now.getTime() - sinceHours * 3_600_000).toISOString();
+): Promise<SeatLedgerFacts> {
+  const nowIso = now.toISOString();
+  const at = (days: number) => new Date(now.getTime() - days * 86_400_000).toISOString();
+  const since24 = new Date(now.getTime() - 24 * 3_600_000).toISOString();
+  const since7d = new Date(now.getTime() - 24 * 7 * 3_600_000).toISOString();
+  const since30d = new Date(now.getTime() - 24 * 30 * 3_600_000).toISOString();
+  const sinceHistory = at(HISTORY_DAYS);
+  const sinceAcceptance = at(ACCEPTANCE_WINDOW_DAYS);
+  // The oldest instant any filter below asks about. Everything newer than this
+  // is fetched once and counted many ways; nothing older is read at all.
+  const widestSince = at(Math.max(HISTORY_DAYS, 30, 7, 1, ACCEPTANCE_WINDOW_DAYS));
+  // 'invite' is always in the scan because the acceptance rate is about invites
+  // whatever kind is under evaluation; the message kinds are always in it
+  // because the operator's pool ceiling is about all three.
+  const scanKinds = [...new Set<string>([input.kind, ...MESSAGE_KINDS, 'invite'])];
+
   const row = await db
     .prepare(`
-      SELECT COUNT(*)::int AS total FROM linkedin_actions
-      WHERE workspace_id=? AND campaign_id=? AND kind=? AND status <> 'skipped' AND recorded_at > ?
+      WITH windowed AS (
+        SELECT kind, status, recorded_at FROM linkedin_actions
+        WHERE workspace_id=? AND seat_key=? AND kind = ANY(?::text[]) AND recorded_at > ?::timestamptz
+      ),
+      buckets AS (
+        SELECT FLOOR(EXTRACT(EPOCH FROM (?::timestamptz - recorded_at)) / 86400)::int AS bucket, COUNT(*)::int AS total
+        FROM windowed
+        WHERE kind=? AND status NOT IN ('planned', 'skipped')
+          AND recorded_at > ?::timestamptz AND recorded_at <= ?::timestamptz
+        GROUP BY 1
+      )
+      SELECT
+        COUNT(*) FILTER (WHERE kind=? AND status NOT IN ('planned', 'skipped') AND recorded_at > ?::timestamptz)::int AS used_24,
+        COUNT(*) FILTER (WHERE kind = ANY(?::text[]) AND status NOT IN ('planned', 'skipped') AND recorded_at > ?::timestamptz)::int AS pool_24,
+        COUNT(*) FILTER (WHERE kind=? AND status NOT IN ('planned', 'skipped') AND recorded_at > ?::timestamptz)::int AS used_7d,
+        COUNT(*) FILTER (WHERE kind=? AND status NOT IN ('planned', 'skipped') AND recorded_at > ?::timestamptz)::int AS used_30d,
+        COUNT(*) FILTER (WHERE kind='invite' AND recorded_at > ?::timestamptz AND status IN ('accepted', 'replied', 'declined'))::int AS decided,
+        COUNT(*) FILTER (WHERE kind='invite' AND recorded_at > ?::timestamptz AND status IN ('accepted', 'replied'))::int AS accepted,
+        (SELECT COALESCE(jsonb_object_agg(bucket::text, total), '{}'::jsonb) FROM buckets) AS daily,
+        (SELECT COUNT(*)::int FROM linkedin_actions
+           WHERE workspace_id=? AND seat_key=? AND kind='invite' AND status IN ('sent', 'exported')) AS pending_invites,
+        (SELECT COUNT(*)::int FROM linkedin_actions
+           WHERE ?::text IS NOT NULL AND workspace_id=? AND campaign_id=?::text AND kind=?
+             AND status <> 'skipped' AND recorded_at > ?::timestamptz) AS campaign_used_24,
+        EXISTS (SELECT 1 FROM linkedin_actions
+           WHERE workspace_id=? AND seat_key=? AND kind=? AND target_ref=? AND replay_scope=?
+             AND status <> 'skipped' AND id IS DISTINCT FROM ?::text) AS duplicate
+      FROM windowed
     `)
-    .get<{ total: number }>(workspaceId, campaignId, kind, since);
-  return row?.total ?? 0;
+    .get<{
+      used_24: number;
+      pool_24: number;
+      used_7d: number;
+      used_30d: number;
+      decided: number;
+      accepted: number;
+      daily: Record<string, number> | string;
+      pending_invites: number;
+      campaign_used_24: number;
+      duplicate: boolean;
+    }>(
+      seat.workspaceId, seat.seatKey, scanKinds, widestSince,
+      nowIso, input.kind, sinceHistory, nowIso,
+      input.kind, since24,
+      [...MESSAGE_KINDS], since24,
+      input.kind, since7d,
+      input.kind, since30d,
+      sinceAcceptance,
+      sinceAcceptance,
+      seat.workspaceId, seat.seatKey,
+      input.campaignId, seat.workspaceId, input.campaignId, input.kind, since24,
+      seat.workspaceId, seat.seatKey, input.kind, input.targetRef, input.replayScope, input.excludeActionId
+    );
+
+  // bucket 0 is the newest 24h and the array is oldest-first, so it lands last
+  // -- the same mapping `dailyCountsForLastNDays` does, kept here rather than
+  // in SQL so the two cannot drift.
+  const dailyCounts = new Array<number>(HISTORY_DAYS).fill(0);
+  const rawDaily = row?.daily ?? {};
+  const daily = (typeof rawDaily === 'string' ? JSON.parse(rawDaily) : rawDaily) as Record<string, number>;
+  for (const [bucket, total] of Object.entries(daily)) {
+    const index = HISTORY_DAYS - 1 - Number(bucket);
+    if (index >= 0 && index < HISTORY_DAYS) dailyCounts[index] = Number(total);
+  }
+
+  return {
+    used24: row?.used_24 ?? 0,
+    messagePool24: row?.pool_24 ?? 0,
+    used7d: row?.used_7d ?? 0,
+    used30d: row?.used_30d ?? 0,
+    dailyCounts,
+    acceptanceDecided: row?.decided ?? 0,
+    acceptanceAccepted: row?.accepted ?? 0,
+    pendingInvites: row?.pending_invites ?? 0,
+    campaignUsed24: row?.campaign_used_24 ?? 0,
+    duplicate: row?.duplicate === true
+  };
 }
 
 /** 1-based campaign day, for the sentence the operator reads. */
@@ -280,7 +414,31 @@ export async function evaluateLinkedInSafety(
   const seatRef: SeatRef = { workspaceId: input.workspaceId, seatKey };
   const checks: LinkedInSafetyCheck[] = [];
 
-  const seat = await getSeat(db, input.workspaceId, seatKey);
+  const campaignId = input.campaignId?.trim() || null;
+  const excludeActionId = options.excludeActionId ?? null;
+  const replayScope = input.replayScope?.trim() || 'legacy';
+
+  /*
+   * THREE ROUND TRIPS, NOT ELEVEN, AND NONE OF THEM WAITS ON ANOTHER.
+   *
+   * The seat row, the campaign's ramp clock and the whole ledger picture are
+   * three independent questions against three different access paths, and none
+   * of them is an input to either of the others -- the seat key and the kind
+   * are both known before the first byte leaves. Issuing them together turns
+   * the gate's database time from the SUM of eleven latencies into the MAX of
+   * three, which is the difference that matters when the pool has ten
+   * connections and the tick has 125,000 gate calls in it.
+   *
+   * `Promise.all` is safe on a transaction handle as well as on the pool: pg
+   * queues statements per client, so a handle inside `db.transaction` runs
+   * these one after another on its own connection rather than interleaving
+   * them.
+   */
+  const [seat, campaign, ledger] = await Promise.all([
+    getSeat(db, input.workspaceId, seatKey),
+    campaignId === null ? Promise.resolve(undefined) : managedCampaignRamp(db, input.workspaceId, campaignId),
+    seatLedgerFacts(db, seatRef, { kind: input.kind, targetRef: input.targetRef, campaignId, replayScope, excludeActionId }, now)
+  ]);
   const posture = seat ? effectivePosture(seat, now) : 'warmup';
   const timezone = seat?.timezone ?? 'UTC';
   const warmupWeek = seat ? warmupWeekOf(seat.activatedAt, now) : 1;
@@ -306,9 +464,8 @@ export async function evaluateLinkedInSafety(
         : `Seat posture is ${posture}, not paused.`
   });
 
-  const used24 = await countActionsInWindow(db, seatRef, input.kind, 24, now);
-  const messageKinds = ['dm', 'reply', 'inmail'] as const;
-  const isMessage = messageKinds.includes(input.kind as (typeof messageKinds)[number]);
+  const used24 = ledger.used24;
+  const isMessage = MESSAGE_KINDS.includes(input.kind as (typeof MESSAGE_KINDS)[number]);
   // The operator's own number for this kind, and whether the seat says it wins
   // over Trevra's researched band. Both live in `limits.ts` -- the mapping from
   // eight paced kinds onto four settings fields, and the three-case rule for
@@ -316,13 +473,16 @@ export async function evaluateLinkedInSafety(
   // that carries the evidence for it rather than restated in the gate.
   const operatorLimit = seatOperatorLimit(seat, input.kind);
   const overrideBands = seat?.safetyBandOverride ?? false;
+  // The pool count is always fetched and read only when it is the number the
+  // operator's ceiling is a ceiling ON -- exactly the three-case rule the old
+  // conditional `await` expressed, minus the round trip it cost.
   const operatorUsed24 = operatorLimit === null
     ? used24
     : isMessage
-      ? await countActionKindsInWindow(db, seatRef, [...messageKinds], 24, now)
+      ? ledger.messagePool24
       : used24;
-  const used7d = await countActionsInWindow(db, seatRef, input.kind, 24 * 7, now);
-  const used30d = await countActionsInWindow(db, seatRef, input.kind, 24 * 30, now);
+  const used7d = ledger.used7d;
+  const used30d = ledger.used30d;
 
   const effectiveDailyLimit = effectiveDailyCeiling(band.perDay, operatorLimit, overrideBands);
 
@@ -384,11 +544,12 @@ export async function evaluateLinkedInSafety(
   // at full seat capacity; a campaign it started this morning still gets 20%
   // of that capacity, because the risk the campaign ramp answers is a NEW
   // burst of near-identical outreach, not a new account.
-  const campaignId = input.campaignId?.trim() || null;
-  const campaign = campaignId === null ? undefined : await managedCampaignRamp(db, input.workspaceId, campaignId);
   const campaignLimit = campaign === undefined ? null : campaignActionLimit(effectiveDailyLimit, campaign.startedAt, now);
-  const campaignUsed24 =
-    campaign === undefined || campaignId === null ? 0 : await countCampaignActionsInWindow(db, input.workspaceId, campaignId, input.kind, 24, now);
+  // Counted in the same statement as everything else and read only when the
+  // campaign turned out to be a managed one, which is what the old conditional
+  // `await` decided. An unmanaged campaign's count is fetched and discarded;
+  // the ramp it feeds still does not apply to it.
+  const campaignUsed24 = campaign === undefined || campaignId === null ? 0 : ledger.campaignUsed24;
   checks.push({
     check: 'campaign-warmup',
     passed: campaignLimit === null || campaignUsed24 + 1 <= campaignLimit,
@@ -456,7 +617,7 @@ export async function evaluateLinkedInSafety(
 
   // The anti-"slide and spike" check, and the reason this module exists at all
   // (plan 1.3): a day-over-day jump is the signal, not the daily total.
-  const history = await dailyCountsForLastNDays(db, seatRef, input.kind, HISTORY_DAYS, now);
+  const history = ledger.dailyCounts;
   const previous = previousBusinessDayCount(history, localDateOf(now, timezone), window);
   const deltaCeiling = Math.max(previous + MIN_RAMP_STEP, Math.floor(previous * (1 + MAX_DAY_OVER_DAY_DELTA)));
   checks.push({
@@ -465,7 +626,14 @@ export async function evaluateLinkedInSafety(
     detail: `Previous business day carried ${previous} ${input.kind}(s), so today's ceiling is ${deltaCeiling} (+${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%); ${used24} used so far.`
   });
 
-  const acceptance = await acceptanceRate(db, seatRef, ACCEPTANCE_WINDOW_DAYS, now);
+  const acceptance = {
+    decided: ledger.acceptanceDecided,
+    accepted: ledger.acceptanceAccepted,
+    // null when nothing has been decided yet, exactly as `acceptanceRate`
+    // returns it: an absent signal is not a bad one, and callers do NOT
+    // throttle on it.
+    rate: ledger.acceptanceDecided === 0 ? null : ledger.acceptanceAccepted / ledger.acceptanceDecided
+  };
   checks.push({
     check: 'acceptance-rate',
     passed: acceptance.rate === null || acceptance.rate >= MIN_ACCEPTANCE_RATE,
@@ -549,7 +717,7 @@ export async function evaluateLinkedInSafety(
   //
   // Scoped to invites because that is the only kind that can be outstanding.
   // Nobody leaves a profile view pending.
-  const pendingInvites = await countPendingInvites(db, seatRef);
+  const pendingInvites = ledger.pendingInvites;
   checks.push({
     check: 'pending-invite-backlog',
     passed: input.kind !== 'invite' || pendingInvites + 1 <= MAX_OUTSTANDING_INVITES,
@@ -571,9 +739,12 @@ export async function evaluateLinkedInSafety(
   // scope -- including the legacy/unscoped default every existing caller uses --
   // still does, which is what keeps a genuine repeat of one step for one member,
   // and a replayed export, refused.
-  const excludeActionId = options.excludeActionId ?? null;
-  const replayScope = input.replayScope?.trim() || 'legacy';
-  const duplicate = await hasTarget(db, seatRef, input.kind, input.targetRef, excludeActionId, replayScope);
+  // The predicate is `hasTarget`'s, verbatim, asked in the same statement as
+  // every window count above: `excludeActionId` still drops exactly one row by
+  // primary key, and `replayScope` -- resolved to 'legacy' the same way
+  // `recordAction` resolves it -- is still part of the key, so the gate and
+  // the ledger's unique index ask one question between them.
+  const duplicate = ledger.duplicate;
   const subject = excludeActionId ? ' besides the one being evaluated' : '';
   const scoped = replayScope === 'legacy' ? '' : ` in replay scope '${replayScope}'`;
   checks.push({
@@ -594,7 +765,13 @@ export async function evaluateLinkedInSafety(
 }
 
 const inputSchema = z.object({
-  seatKey: z.string().min(1).max(64).default(OWNER_SEAT_KEY),
+  /**
+   * WHICH ACCOUNT THIS ACTION IS FOR. Absent means "the caller did not say",
+   * never "the owner seat": see {@link resolveSkillSeatKey}. Every ceiling
+   * below is a fact about ONE LinkedIn identity, and a silent owner default
+   * in a multi-account workspace prices them against an account nobody chose.
+   */
+  seatKey: z.string().min(1).max(64).optional(),
   kind: z.enum(PACED_KIND_VALUES),
   targetRef: z.string().min(1).max(500),
   plannedFor: z.string().min(1),
@@ -642,7 +819,7 @@ export const linkedinGuardSkill: Skill<LinkedInGuardInput, LinkedInSafetyVerdict
       ctx.db,
       {
         workspaceId: ctx.workspaceId,
-        seatKey: input.seatKey,
+        seatKey: await resolveSkillSeatKey(ctx.db, ctx.workspaceId, input.seatKey),
         kind: input.kind as PacedKind,
         targetRef: input.targetRef,
         plannedFor: input.plannedFor,

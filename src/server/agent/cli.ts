@@ -62,9 +62,30 @@
  * here. They are still charged, because the cap is also the runaway guard --
  * see the note on TREVRA_AGENT_CLI_MODEL in `.env.example`.
  *
- * THE CHILD GETS NO API KEY. `ANTHROPIC_API_KEY` and friends are stripped from
- * its environment: the entire point is to spend the subscription, and a stray
- * key in the operator's shell would silently bill the thing they asked to avoid.
+ * THE CHILD GETS NO API KEY -- AND NOTHING ELSE OUT OF THE SERVER'S
+ * ENVIRONMENT EITHER. `ANTHROPIC_API_KEY` and friends never reach it: the
+ * entire point is to spend the subscription, and a stray key in the operator's
+ * shell would silently bill the thing they asked to avoid.
+ *
+ * That used to be a DENY list -- a copy of `process.env` with nine names
+ * deleted -- which is the wrong shape the moment more than one tenant shares
+ * this process. A deny list removes the secrets somebody remembered; every
+ * secret nobody thought of was inherited by a child whose prompt a tenant
+ * steers and whose context ingests scraped Reddit and LinkedIn text (the
+ * prompt-injection surface `loop.ts` names). What that actually handed over:
+ * `BETTER_AUTH_SECRET` (forge a session for any user in any workspace),
+ * `TREVRA_SECRETS_KEY_PREVIOUS` (the rotation-window sibling of the one key
+ * name that WAS denied -- it decrypts every tenant's stored LinkedIn/Reddit
+ * passwords and model keys), the Stripe, Nango, Temporal and admin tokens.
+ * `INHERITED_ENV` below inverts it: the child's environment is BUILT from an
+ * allowlist, so the next secret added to the deployment is invisible to it
+ * until someone decides otherwise in writing.
+ *
+ * AND THE CHILD GETS ITS OWN HOME. A run that brings its own subscription
+ * token is given a scratch HOME (Claude) / CODEX_HOME (Codex) inside the run's
+ * scratch directory, so one tenant's session, credentials and history cannot
+ * be read by the next tenant's child, and a poisoned config cannot be left
+ * behind for it to load. See `childEnv` and `claudeHomeForRun`.
  *
  * KNOWN LIMIT: a tool result over ~100k characters is written to a file by the
  * CLI, which then wants its own `read` tool to open it -- and `read` is blocked
@@ -122,16 +143,67 @@ const CLAUDE_BLOCKED_TOOLS = [
   'EnterWorktree', 'ExitWorktree', 'SlashCommand'
 ];
 
-/** Credentials scrubbed from the child's environment. See the module comment. */
-const STRIPPED_ENV = [
-  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
-  'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'TREVRA_AGENT_TOKEN', 'TREVRA_SECRETS_KEY',
-  'DATABASE_URL',
-  // Trevra's own name for the subscription token. The child receives it under
-  // the name its CLI expects and has no use for this one.
-  'TREVRA_AGENT_CLI_OAUTH_TOKEN'
+/**
+ * The ONLY environment variables copied from this server process into the
+ * child. Everything else is absent by construction.
+ *
+ * WHY AN ALLOWLIST AND NOT A DENY LIST. `CLAUDE_BLOCKED_TOOLS` above is a soft
+ * boundary and says so itself: it is a list of tool NAMES, and a CLI release
+ * that ships a new built-in ships it enabled until this file learns the name.
+ * The environment has to be the hard boundary, and a deny list cannot be one.
+ * Its failure mode is silent and it lives in the future: the next
+ * `STRIPE_SECRET_KEY`-shaped variable added to the deployment is readable by
+ * every tenant's child from the moment it is set, and nothing announces it.
+ * Inverted, the failure mode is loud, immediate and cheap -- a run that needs
+ * a variable it cannot see fails visibly, and the fix is one line here.
+ *
+ * ADDING A NAME TO THIS LIST IS A SECURITY DECISION, not a configuration
+ * convenience. The question to answer first is what a hostile child holding
+ * that value could do to another tenant, to the deployment, or to the
+ * operator -- and the child must be assumed hostile, because its prompt is
+ * tenant-steered and its context ingests scraped text. Per-run credentials are
+ * NOT added here: they are set on the object `childEnv` returns, for exactly
+ * one run.
+ *
+ * Deliberately absent even though the CLI would use them: `XDG_CONFIG_HOME`
+ * and its siblings (they point the child back at the server user's shared
+ * config directory, which is precisely the sharing `claudeHomeForRun` exists
+ * to end), `NODE_ENV`, `DATABASE_URL`, and every `TREVRA_*` name but the one
+ * tuning knob below.
+ *
+ * POSIX only, as the rest of this file already assumes (HOME, 0600/0700 file
+ * modes). A Windows host would need `SystemRoot`/`PATHEXT`/`ComSpec` here
+ * before `spawn` worked at all.
+ */
+const INHERITED_ENV = [
+  // Find the CLI itself; the CLI's own child processes need it too.
+  'PATH',
+  // The credential of last resort: on a host where the CLI is already signed
+  // in as the user running Trevra, HOME *is* the subscription. `childEnv`
+  // REPLACES this with a per-run scratch directory whenever the run carries
+  // its own token, so the inherited value survives only for that self-hoster.
+  'HOME',
+  // Text handling. A child that decodes its own output as ASCII mangles every
+  // non-English name the agent reads back into the ledger.
+  'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+  // Scratch space: `os.tmpdir()` reads TMPDIR, and both CLIs stage large tool
+  // results through it.
+  'TMPDIR',
+  // Egress. In the container this backend usually runs in, an outbound proxy
+  // and a corporate CA bundle are the difference between a working run and a
+  // run that cannot reach the model at all. Both spellings, because both are
+  // conventional and neither CLI promises which it reads.
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+  'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+  // Read by the MCP bridge (`src/mcp/server.ts`), which the CLI spawns as its
+  // own child and which therefore inherits exactly this environment. The
+  // bridge's two REQUIRED variables (TREVRA_API_URL, TREVRA_AGENT_TOKEN_FILE)
+  // are injected per run by `mcpConfig`; this optional timeout is the only one
+  // an operator sets globally, and dropping it would silently undo their
+  // tuning rather than fail.
+  'TREVRA_AGENT_TIMEOUT_MS'
 ];
-
 /** The run summary is a human's first look at the run, not a transcript. */
 const SUMMARY_LIMIT = 2000;
 
@@ -838,8 +910,13 @@ function codexArgs(backend: CliBackend, input: CliAgentRunInput, tokenPath: stri
 }
 
 /**
- * The child's environment: the server's, minus every credential it must not
- * have, plus the one credential it must.
+ * The child's environment: BUILT from `INHERITED_ENV`, plus the one credential
+ * this run must have and nothing else.
+ *
+ * The direction matters more than the contents. Nothing reaches the child
+ * because it happened to be set on the server -- a name is either in
+ * `INHERITED_ENV` (a decision, with a comment) or it is set right here, for
+ * this run. See `INHERITED_ENV` for why the previous deny list could not hold.
  *
  * TWO WAYS TO GIVE IT A SUBSCRIPTION, and the first is the one that works in a
  * container -- which is where this backend usually runs, so it is the default
@@ -860,20 +937,82 @@ function codexArgs(backend: CliBackend, input: CliAgentRunInput, tokenPath: stri
  * Codex has no auth environment variable, so a token is materialised into a
  * per-run CODEX_HOME by `codex login --with-access-token`, which reads STDIN.
  * The token never reaches argv, and the directory dies with the run.
+ *
+ * A TOKEN ALSO BUYS A PRIVATE HOME, on both backends and for the same reason:
+ * a token-carrying run is the multi-tenant shape (`resolveWorkspaceCliBackend`
+ * mints one per workspace), so it must not read or write the server user's
+ * `~/.claude`. Codex already had this; `claudeHomeForRun` is Claude's half.
+ * When an operator sets BOTH a token and TREVRA_AGENT_CLI_HOME, the token wins
+ * and the mounted directory is left alone: the token is the credential in use,
+ * and the mount would only reintroduce the shared state.
+ *
+ * Exported for the tests, which assert the property that matters -- a
+ * representative deployment secret is ABSENT from what the child gets, while
+ * the run still has what it needs to work.
  */
-async function childEnv(backend: CliBackend, workDir: string): Promise<NodeJS.ProcessEnv> {
-  const copy: NodeJS.ProcessEnv = { ...process.env };
-  for (const key of STRIPPED_ENV) delete copy[key];
+export async function childEnv(backend: CliBackend, workDir: string): Promise<NodeJS.ProcessEnv> {
+  const copy: NodeJS.ProcessEnv = {};
+  for (const key of INHERITED_ENV) {
+    const value = process.env[key];
+    if (value !== undefined) copy[key] = value;
+  }
   if (backend.home) copy.HOME = backend.home;
 
   if (backend.kind === 'claude') {
-    if (backend.oauthToken) copy.CLAUDE_CODE_OAUTH_TOKEN = backend.oauthToken;
+    if (backend.oauthToken) {
+      copy.CLAUDE_CODE_OAUTH_TOKEN = backend.oauthToken;
+      copy.HOME = await claudeHomeForRun(workDir);
+      // Belt and braces: recent CLI versions relocate the config directory with
+      // CLAUDE_CONFIG_DIR independently of HOME, and the whole point here is
+      // that neither can land in the server user's home.
+      copy.CLAUDE_CONFIG_DIR = join(copy.HOME, '.claude');
+    }
     return copy;
   }
 
   if (backend.home) copy.CODEX_HOME = join(backend.home, '.codex');
   if (backend.oauthToken) copy.CODEX_HOME = await codexHomeFromToken(backend, workDir, copy);
   return copy;
+}
+
+/**
+ * A scratch HOME for one Claude run, and the second half of the isolation
+ * `INHERITED_ENV` begins.
+ *
+ * WHY. `--no-session-persistence` stops a run from RESUMING another run's
+ * session; it does not stop the CLI from reading and writing the single
+ * `~/.claude` it finds. On a self-hoster's machine that directory is the
+ * operator's own and sharing it is the point -- which is why an inherited HOME
+ * stays inherited when there is no token to isolate. In a deployment where
+ * every workspace arrives with its own subscription token, sharing it means
+ * one tenant's child can read the previous tenant's credentials, session store
+ * and history, and -- worse, because it outlives the run -- can WRITE a
+ * config or instruction file that the next tenant's run loads. That turns a
+ * shared directory into a prompt-injection channel between tenants, which is
+ * the one thing the scratch cwd in `driveCli` was already careful about.
+ *
+ * So a run that brings its own token gets its own HOME, 0700, inside the run's
+ * scratch directory, deleted with it by `runHostedAgentViaCli`'s `finally` --
+ * the same lifecycle Codex's scratch CODEX_HOME has always had.
+ *
+ * SEEDED WITH ONLY WHAT THE RUN NEEDS: the directory, and the one flag that
+ * keeps a first-run CLI from stopping to onboard a human who is not there. The
+ * credential itself never lands on disk; it is passed as
+ * CLAUDE_CODE_OAUTH_TOKEN.
+ */
+async function claudeHomeForRun(workDir: string): Promise<string> {
+  const home = join(workDir, 'claude-home');
+  await mkdir(join(home, '.claude'), { mode: 0o700, recursive: true });
+
+  // Written to both places the CLI has kept this file across versions; the
+  // version that does not read one simply ignores an unknown file, and being
+  // wrong here costs a stray 47-byte file in a directory that is about to be
+  // deleted.
+  const seed = JSON.stringify({ hasCompletedOnboarding: true });
+  await writeFile(join(home, '.claude.json'), seed, { mode: 0o600 });
+  await writeFile(join(home, '.claude', '.claude.json'), seed, { mode: 0o600 });
+
+  return home;
 }
 
 /** Log a scratch CODEX_HOME in with the operator's token, and return its path. */

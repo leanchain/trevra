@@ -6,6 +6,53 @@ const optionalUrl = z.preprocess(
   z.string().url().optional()
 );
 
+/**
+ * The one value Trevra refuses to guess in production.
+ *
+ * WHY THIS IS NOT SIMPLY A DEFAULT. `TREVRA_DEPLOYMENT_MODE` is the
+ * multi-tenancy gate, and 'hosted' is the only value that removes anything:
+ * it switches off the local LinkedIn and Reddit workers (each of which drives
+ * a browser signed into ONE human's account), keeps the shared browser-profile
+ * paths shut, and makes `src/server/agent/cli.ts` refuse to back every
+ * tenant's agent run with one operator's personal subscription. Left unset,
+ * all three go live -- quietly, and in the permissive direction.
+ *
+ * The schemas below still DEFAULT to 'local', and that default is still right
+ * where it applies: `npm run dev`, or a self-hoster running
+ * `npm run linkedin:worker` on their own laptop. What is not right is letting
+ * the default stand in PRODUCTION, where it is not a considered choice but a
+ * guess about who else can reach this deployment.
+ *
+ * AND 'LOCAL' IS ALREADY MULTI-TENANT IN PRACTICE: a fresh workspace and
+ * organization are minted for every new email that signs in, so "there is only
+ * me on this machine" stops being true the moment a second person can reach
+ * the URL. An operator who means 'local' in production should have to say so
+ * out loud, having thought about that sentence.
+ *
+ * So: fail to boot. An operator reading a startup error fixes this in a
+ * minute; every other way of finding out is an incident.
+ */
+const DEPLOYMENT_MODE_REQUIRED =
+  'TREVRA_DEPLOYMENT_MODE must be set explicitly when NODE_ENV=production; Trevra will not guess it. '
+  + 'Set TREVRA_DEPLOYMENT_MODE=hosted if this deployment serves workspaces belonging to anyone but you '
+  + '(a fresh workspace is created for every email that signs in, so this is true of any deployment strangers can reach), '
+  + 'or TREVRA_DEPLOYMENT_MODE=local if you are self-hosting for yourself alone. '
+  + 'Unset, it would fall back to local, which enables the LinkedIn and Reddit local workers (each driving a browser '
+  + "signed into one human's account), the shared browser-profile paths, and the operator-wide subscription CLI agent "
+  + 'backend: capabilities that are fine for one self-hoster and are not fine for a deployment with tenants';
+
+/**
+ * Enforced in all three places the mode is read, so no entry point can boot on
+ * the guess -- the server (`validateEnvironment`) and both worker CLIs, which
+ * deliberately read their own slice of the environment rather than the whole
+ * of it.
+ */
+function requireExplicitDeploymentMode(env: NodeJS.ProcessEnv): void {
+  if (env.NODE_ENV !== 'production') return;
+  if ((env.TREVRA_DEPLOYMENT_MODE ?? '').trim()) return;
+  throw new Error(DEPLOYMENT_MODE_REQUIRED);
+}
+
 export interface RuntimeConfig {
   production: boolean;
   port: number;
@@ -55,6 +102,7 @@ export interface RuntimeConfig {
  * gate, read from two places.
  */
 export function linkedInWorkerConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig['linkedinLocalWorker'] {
+  requireExplicitDeploymentMode(env);
   const parsed = z.object({
     TREVRA_LINKEDIN_LOCAL: booleanString.optional(),
     TREVRA_DEPLOYMENT_MODE: z.enum(['local', 'hosted']).default('local'),
@@ -78,6 +126,7 @@ export function linkedInWorkerConfig(env: NodeJS.ProcessEnv = process.env): Runt
  * trying to do. ONE definition of the gate, read from two places.
  */
 export function redditWorkerConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig['redditLocalWorker'] {
+  requireExplicitDeploymentMode(env);
   const parsed = z.object({
     TREVRA_REDDIT_LOCAL: booleanString.optional(),
     TREVRA_DEPLOYMENT_MODE: z.enum(['local', 'hosted']).default('local'),
@@ -149,6 +198,13 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     // what a self-hoster running `npm start` has, and because the only thing
     // this value can do is REMOVE a capability -- defaulting it wrong in the
     // permissive direction is the mistake that matters.
+    //
+    // Which is exactly why the default is NOT allowed to stand in production:
+    // see DEPLOYMENT_MODE_REQUIRED at the top of this file. The default is for
+    // a developer and a self-hoster; a production deployment must say which it
+    // is, because 'local' is already multi-tenant in practice (one workspace
+    // and organization per email that signs in) and the guess only ever errs
+    // towards more capability.
     TREVRA_DEPLOYMENT_MODE: z.enum(['local','hosted']).default('local'),
     // Chrome profile the operator logged into LinkedIn with by hand. Absent
     // means ~/.trevra/linkedin-profile, resolved by the worker rather than
@@ -179,6 +235,13 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
 
   if (production) {
     const problems: string[] = [];
+    // First, because it decides what the rest of this list even means: the
+    // guards below fire on TREVRA_*_LOCAL === 'true' being EXPLICIT, which an
+    // unset mode never is, so an operator who set nothing got the permissive
+    // path and no complaint. `base.TREVRA_DEPLOYMENT_MODE` cannot answer this
+    // -- zod has already replaced the absence with the default -- so the raw
+    // environment is what gets checked.
+    if (!(env.TREVRA_DEPLOYMENT_MODE ?? '').trim()) problems.push(DEPLOYMENT_MODE_REQUIRED);
     if (!base.BETTER_AUTH_SECRET || base.BETTER_AUTH_SECRET.length < 32) problems.push('BETTER_AUTH_SECRET must contain at least 32 characters');
     if (!base.BETTER_AUTH_URL) problems.push('BETTER_AUTH_URL is required');
     if (!base.PUBLIC_SITE_URL?.startsWith('https://')) problems.push('PUBLIC_SITE_URL is required and must use HTTPS');
@@ -188,6 +251,28 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     if (!base.TRACTION_ADMIN_TOKEN || base.TRACTION_ADMIN_TOKEN.length < 32) problems.push('TRACTION_ADMIN_TOKEN must contain at least 32 characters');
     if (!base.TREVRA_AGENT_TOKEN_PEPPER || base.TREVRA_AGENT_TOKEN_PEPPER.length < 32) problems.push('TREVRA_AGENT_TOKEN_PEPPER must contain at least 32 characters');
     if (!base.INDEXNOW_KEY) problems.push('INDEXNOW_KEY is required');
+    // REQUIRED ON HOSTED, optional otherwise -- two rules, deliberately, and
+    // two separate failures so the message tells the operator which mistake
+    // they made.
+    //
+    // Absent on a hosted box, nothing looks broken: the app boots, the setup
+    // screen reads green, and every attempt to store a credential fails deep
+    // in `secrets/crypto.ts` where no operator is watching. What is actually
+    // off is CUSTODY -- no workspace can save a LinkedIn or Reddit password or
+    // a BYOK model key, on the one kind of deployment where those belong to
+    // other people. `infra/oracle/gen-secrets.sh` did not generate this key,
+    // so that is the state a hosted box came up in. Refusing to boot is the
+    // only version of this an operator finds out about in time.
+    //
+    // Still optional on 'local', and that is the current contract rather than
+    // an oversight: a self-hoster automating their own accounts stores nothing
+    // (the local workers drive a browser profile they logged into by hand) and
+    // may run BYOK-less on their own subscription, so requiring a key would
+    // break every existing self-host install on upgrade to buy them nothing.
+    // The comment below is the older half of the same rule.
+    if (base.TREVRA_DEPLOYMENT_MODE === 'hosted' && !base.TREVRA_SECRETS_KEY) {
+      problems.push('TREVRA_SECRETS_KEY is required when TREVRA_DEPLOYMENT_MODE=hosted: without it no workspace can store a LinkedIn or Reddit credential or a BYOK model key, and every save fails at runtime while the setup screen still reads green. Generate one with `openssl rand -base64 32`');
+    }
     // Optional: absent means BYOK is off, which is a legitimate deployment. Present and malformed is not.
     if (base.TREVRA_SECRETS_KEY && (!/^[A-Za-z0-9+/]+={0,2}$/.test(base.TREVRA_SECRETS_KEY) || Buffer.from(base.TREVRA_SECRETS_KEY, 'base64').byteLength !== 32)) problems.push('TREVRA_SECRETS_KEY must be 32 random bytes, base64 encoded (openssl rand -base64 32)');
     if (base.COOKIE_SECURE !== 'true') problems.push('COOKIE_SECURE must be true');

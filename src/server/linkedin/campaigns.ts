@@ -1,5 +1,14 @@
 import { id, type Db } from '../db.js';
-import type { LinkedInActionKind, LinkedInActionStatus } from './actions.js';
+import { isCountedStatus, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
+// The seat key is NAMED on every insert now, never defaulted by the column --
+// see `CampaignInsert.seatKey`. seats.ts imports db and limits and nothing
+// from here.
+import { OWNER_SEAT_KEY } from './seats.js';
+// The seat's own clock, from the module that owns it. `pacing.ts` imports
+// actions, limits and seats and nothing from here, so this direction closes no
+// cycle -- and reimplementing zone arithmetic in a second place is exactly how
+// a chart comes to disagree with the ceiling it is charting.
+import { localDateOf, zonedToUtc, type LocalDate } from './pacing.js';
 
 /**
  * Campaigns, the action queue read model, and the one choke point through
@@ -50,7 +59,31 @@ export function isWorkerOnlyStatus(status: string): boolean {
 /** Who is asking. 'outcome-ingest' is POST /api/linkedin/actions/outcome, and nothing else. */
 export type StatusWriter = 'api' | 'outcome-ingest';
 
-export type CampaignStatus = 'draft' | 'running' | 'completed' | 'stopped';
+/**
+ * Every status `linkedin_campaigns.status` holds -- ONE UNION FOR ONE COLUMN.
+ *
+ * 'paused' USED TO BE MISSING FROM THIS ONE AND PRESENT IN THE OTHER. There
+ * were two unions over a single column: this one, without 'paused', and
+ * `ManagedCampaignStatus` in managed-campaigns.ts, with it. Both files then
+ * cast the SAME rows from the same table onto their own -- so this file's
+ * `toCampaign` was casting a value it had just declared impossible, and the
+ * compiler could not object because a cast is precisely the instruction not
+ * to.
+ *
+ * WHAT THAT COST, CONCRETELY. `pauseManagedCampaign` is a real writer:
+ * `linkedin_campaigns.status='paused'` is a row this function returns every
+ * day. But an HTTP handler that wanted to refuse a paused campaign could not
+ * write `campaign.status === 'paused'` -- TypeScript rejects a comparison
+ * against a literal the union does not contain -- so the guards in `app.ts`
+ * that stop a paused campaign being queued, exported or deleted had to widen
+ * to `const status: string = campaign.status` first. The one check standing
+ * between a paused campaign and a fresh batch of invites was stringly typed,
+ * and a typo in it would have compiled.
+ *
+ * `ManagedCampaignStatus` is now an alias of this type rather than a second
+ * copy of it, so there is nothing left to drift.
+ */
+export type CampaignStatus = 'draft' | 'running' | 'paused' | 'completed' | 'stopped';
 
 export interface LinkedInCampaign {
   id: string;
@@ -69,7 +102,20 @@ interface CampaignRow {
   id: string;
   workspace_id: string;
   name: string;
-  status: string;
+  /**
+   * THE ONE PLACE THE COLUMN IS NARROWED, and it is a row type rather than a
+   * cast on purpose.
+   *
+   * `linkedin_campaigns.status` carries no CHECK constraint -- the same call
+   * migration 032 makes about `linkedin_actions.status` -- so this is a claim
+   * this module makes about the writers, not a guarantee the database offers.
+   * Making it the SHAPE OF THE ROW rather than an `as` at the mapper means the
+   * claim is stated once, where a reader looking for "what can this column
+   * be" will find it, instead of being re-asserted at every read; and it means
+   * the mappers below carry no cast at all, so widening the union is enough to
+   * make every one of them honest.
+   */
+  status: CampaignStatus;
   sequence_json: unknown;
   playbook_run_id: string | null;
   stop_requested_at: string | null;
@@ -87,7 +133,7 @@ function toCampaign(row: CampaignRow): LinkedInCampaign {
     id: row.id,
     workspaceId: row.workspace_id,
     name: row.name,
-    status: row.status as CampaignStatus,
+    status: row.status,
     sequence: parseJson(row.sequence_json),
     playbookRunId: row.playbook_run_id,
     stopRequestedAt: row.stop_requested_at,
@@ -116,6 +162,28 @@ export interface CampaignInsert {
    * depending on the run that produced it still existing.
    */
   brief?: unknown;
+  /**
+   * WHICH LINKEDIN ACCOUNT THIS CAMPAIGN IS FOR, named rather than defaulted.
+   *
+   * `linkedin_campaigns.seat_key` was added by migration 046 with
+   * `NOT NULL DEFAULT 'owner'`, and this insert relied on that default. In a
+   * single-seat product that was invisible; in a multi-account one it is the
+   * dangerous kind of convenience -- a caller that forgets the seat does not
+   * fail, it silently files the campaign against the owner's LinkedIn account,
+   * and the first symptom is somebody else's outreach going out of the wrong
+   * profile. Migration 058 removes that default across the LinkedIn tables for
+   * exactly that reason: a forgotten column should raise, not guess.
+   *
+   * The default therefore moves UP HERE, where it is a TypeScript default with
+   * a name on it that a reader and a grep can both find, rather than a
+   * property of the column that no call site mentions. The legacy playbook
+   * campaigns this function files have no seat of their own and are the owner's
+   * by construction, so `OWNER_SEAT_KEY` remains the right value for them --
+   * it is now a stated one. Managed campaigns take their seat from the
+   * operator's choice and are inserted by `createManagedCampaign`, which has
+   * always named the column.
+   */
+  seatKey?: string;
 }
 
 /**
@@ -130,8 +198,8 @@ export async function createCampaign(db: Db, input: CampaignInsert, now: Date): 
   const timestamp = now.toISOString();
   const row = await db.prepare(`
     INSERT INTO linkedin_campaigns (
-      id, workspace_id, name, status, sequence_json, brief_json, playbook_run_id, created_at, updated_at
-    ) VALUES (?,?,?,?,?::jsonb,?::jsonb,?,?,?)
+      id, workspace_id, name, status, sequence_json, brief_json, playbook_run_id, seat_key, created_at, updated_at
+    ) VALUES (?,?,?,?,?::jsonb,?::jsonb,?,?,?,?)
     ON CONFLICT DO NOTHING
     RETURNING ${CAMPAIGN_COLUMNS}
   `).get<CampaignRow>(
@@ -142,6 +210,7 @@ export async function createCampaign(db: Db, input: CampaignInsert, now: Date): 
     JSON.stringify(input.sequence ?? {}),
     JSON.stringify(input.brief ?? {}),
     input.playbookRunId ?? null,
+    input.seatKey ?? OWNER_SEAT_KEY,
     timestamp,
     timestamp
   );
@@ -180,6 +249,27 @@ export async function getCampaign(db: Db, workspaceId: string, campaignId: strin
  * budget (actions.ts `COUNTED`) and it releases the replay guard, so those
  * targets can be approached again in a later campaign.
  *
+ * 'held' IS RELEASED TOO, AND LEAVING IT OUT STRANDED PEOPLE PERMANENTLY.
+ * This function predates migration 051, so it stopped only 'planned' rows --
+ * and a campaign stopped while it was PAUSED has its entire queue parked in
+ * 'held' by `pauseManagedCampaign`. Those rows then survived the stop in a
+ * state with no exit at all:
+ *
+ *   * the worker cannot claim them (it claims 'planned'), so they never send;
+ *   * `startManagedCampaign` cannot restore them, because it refuses to start
+ *     a stopped campaign at all;
+ *   * `skipAction` refused them with a 409 for the same reason it refuses a
+ *     sent one, so nobody could clear them by hand either;
+ *   * and they still occupied `idx_linkedin_actions_target`, which is partial
+ *     on `status <> 'skipped'` (migration 047) -- so the replay guard went on
+ *     holding a claim on those prospects FOREVER. A later campaign from the
+ *     same seat could never plan an invite to any of them, and nothing on any
+ *     screen said why: the queue was empty, the campaign was stopped, and the
+ *     people simply could not be reached again.
+ *
+ * `stopManagedCampaign` in managed-campaigns.ts already had this right. Two
+ * stop paths, one rule: stopping releases everything a pause could have parked.
+ *
  * `claimed_at IS NULL` is the boundary between the two writers. A claimed row
  * is already in a browser somewhere and its outcome belongs to the worker that
  * holds it; overwriting it here would file an action as never-happened while
@@ -204,8 +294,8 @@ export async function stopCampaign(
   if (!row) return undefined;
 
   const released = await db.prepare(`
-    UPDATE linkedin_actions SET status='skipped', recorded_at=NULL
-    WHERE workspace_id=? AND campaign_id=? AND status='planned' AND claimed_at IS NULL
+    UPDATE linkedin_actions SET status='skipped', recorded_at=NULL, claimed_at=NULL
+    WHERE workspace_id=? AND campaign_id=? AND status IN ('planned','held') AND claimed_at IS NULL
   `).run(workspaceId, campaignId);
 
   return { campaign: toCampaign(row), released: released.changes };
@@ -424,7 +514,10 @@ export async function writeActionStatus(db: Db, input: StatusWrite, now: Date): 
     );
   }
 
-  const counted = input.status !== 'planned' && input.status !== 'skipped';
+  // `isCountedStatus` rather than a second copy of the rule: 'held' is the
+  // status this file's own funnel forgot about once already, and the one place
+  // it is allowed to be spelled out is `UNCOUNTED_STATUSES` in actions.ts.
+  const counted = isCountedStatus(input.status);
   const recordedAt = counted ? (input.recordedAt ?? now.toISOString()) : null;
 
   const row = await db.prepare(`
@@ -445,8 +538,19 @@ export async function writeActionStatus(db: Db, input: StatusWrite, now: Date): 
  * frees the target for a second invite to somebody who has already had one --
  * and LinkedIn counts that, whatever the ledger says afterwards. Only work
  * that has not left the building can be dropped.
+ *
+ * 'held' QUALIFIES ON EXACTLY THAT TEST and was missing only because this list
+ * predates migration 051. A held row is a planned row a pause parked: it has
+ * never been claimed and never been sent, so releasing its target releases
+ * nothing that ever reached a stranger. Refusing it meant the one paused
+ * invite an operator wanted to drop -- 'do not write to this person, resume
+ * everyone else' -- came back a 409 saying the action had already gone out,
+ * which was not true of a single one of them.
+ *
+ * 'skipped' stays on the list so a double-click is idempotent rather than a
+ * 409 about a row that is already in the state being asked for.
  */
-const SKIPPABLE: readonly string[] = ['planned', 'skipped'];
+const SKIPPABLE: readonly string[] = ['planned', 'held', 'skipped'];
 
 export async function skipAction(db: Db, workspaceId: string, actionId: string, now: Date): Promise<LinkedInActionView> {
   const existing = await getAction(db, workspaceId, actionId);
@@ -540,6 +644,17 @@ async function findActionByTarget(db: Db, input: OutcomeIngest): Promise<LinkedI
 
 export interface LinkedInFunnel {
   planned: number;
+  /**
+   * Migration 051's status: scheduled, unclaimed, and parked by a pause.
+   *
+   * A COLUMN OF ITS OWN, NOT FOLDED INTO `planned`, even though the two are
+   * the same work in two states. The operator's question when they look at a
+   * paused campaign is "is my queue still there", and an answer that merged
+   * held into planned would say yes while making pause and resume invisible --
+   * the operator could no longer tell a campaign whose sending they stopped
+   * from one that is about to send forty invites tonight.
+   */
+  held: number;
   exported: number;
   sent: number;
   /** Includes replies: somebody who answered necessarily accepted first. Same rule as actions.ts. */
@@ -570,22 +685,147 @@ export interface CampaignFunnel extends LinkedInFunnel {
 }
 
 export interface FunnelDay extends Pick<LinkedInFunnel, 'planned' | 'exported' | 'sent' | 'accepted' | 'replied'> {
-  /** 'YYYY-MM-DD', UTC. */
+  /**
+   * 'YYYY-MM-DD' -- the calendar date IN `LinkedInAnalytics.timezone`, which
+   * is not necessarily UTC and not necessarily the viewer's zone either.
+   *
+   * Read it together with `startsAt`/`endsAt`: those are what make the label
+   * checkable rather than trusted.
+   */
   date: string;
+  /**
+   * The instant this bucket opens, inclusive, and the instant it closes,
+   * exclusive -- local midnight to local midnight in `timezone`.
+   *
+   * SHIPPED RATHER THAN DERIVED, for two reasons. A client cannot recompute
+   * them without knowing the zone's DST history: the day a zone springs
+   * forward is 23 hours long and the day it falls back is 25, so
+   * `date + 24h` is wrong twice a year and wrong by an hour's worth of
+   * outreach when it is. And a screen that wants to say "Tuesday, 00:00-24:00
+   * Australia/Sydney" has to be able to say it in the viewer's own words,
+   * which means it needs the instants, not a formatted string we chose.
+   */
+  startsAt: string;
+  endsAt: string;
 }
 
 export interface LinkedInAnalytics {
   windowDays: number;
+  /**
+   * The IANA zone every bucket in `series` was cut in.
+   *
+   * THE CHART'S DAY AND THE CEILING'S DAY MUST BE THE SAME DAY. Every limit in
+   * this product is enforced in the SEAT's zone -- `linkedin_seats.timezone`,
+   * which is what `pacing.ts` plans slots against and `guard.ts` checks them
+   * against. The series used to bucket on UTC calendar days regardless, so for
+   * a Sydney seat (UTC+10/+11) the chart's Tuesday held ten hours of the
+   * ceiling's Monday: a column near a boundary showed a number that was never
+   * any day's total, and the day an operator was told they had sent 18 invites
+   * on was not the day the limit of 20 had been applied to.
+   *
+   * Re-labelling on the client cannot fix that, which is the reason this moved
+   * server-side: renaming a column does not move the rows that were summed
+   * into it.
+   *
+   * The zone is the one the workspace's seats are in. With no seat at all it
+   * is 'UTC', which is honest -- there is no seat clock to borrow.
+   */
+  timezone: string;
+  /**
+   * True when the workspace's seats do NOT all share `timezone`.
+   *
+   * A workspace-wide series legitimately spans seats, and seats legitimately
+   * sit in different zones -- an agency running one account from Berlin and
+   * one from Los Angeles has no single correct day boundary, because there
+   * genuinely is not one. Rather than pick silently, the series is cut in the
+   * zone MOST of the seats are in and this flag says that some seat's own days
+   * are not the days below. A screen that shows this must say so; a caller
+   * that needs one seat's true days should ask for that seat's zone through
+   * `options.timezone`.
+   */
+  timezoneSpansSeats: boolean;
   total: LinkedInFunnel;
   byCampaign: CampaignFunnel[];
   series: FunnelDay[];
 }
 
-/** The funnel aggregate, qualified so it can sit in a join without an ambiguous `status`. */
+/** Same calendar date, `days` later or earlier. Plain date arithmetic, no zone involved. */
+function shiftLocalDate(date: LocalDate, days: number): LocalDate {
+  const at = new Date(Date.UTC(date.year, date.month - 1, date.day) + days * 86_400_000);
+  return { year: at.getUTCFullYear(), month: at.getUTCMonth() + 1, day: at.getUTCDate() };
+}
+
+/** 'YYYY-MM-DD' for a local date, matching what Postgres `TO_CHAR` produces. */
+function localDateKey(date: LocalDate): string {
+  return `${String(date.year).padStart(4, '0')}-${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}`;
+}
+
+/**
+ * The zone this workspace's days are measured in, and whether that is every
+ * seat's own.
+ *
+ * MAJORITY, NOT ALPHABETICAL AND NOT ARBITRARY: when seats disagree, the
+ * chart is right for the most seats it can be right for, and
+ * `timezoneSpansSeats` reports that it is not right for all of them. Ties
+ * break on the zone name so the same workspace does not get a different chart
+ * on two consecutive loads.
+ *
+ * VALIDATED BEFORE IT REACHES SQL. `AT TIME ZONE` raises on an unknown zone
+ * name and would take the whole analytics screen down with it; `upsertSeat`
+ * validates on write, but a row written before it did, or restored from
+ * elsewhere, must degrade to UTC rather than 500.
+ */
+async function seriesTimezone(db: Db, workspaceId: string, requested?: string): Promise<{ timezone: string; spansSeats: boolean }> {
+  const rows = await db.prepare(`
+    SELECT timezone, COUNT(*)::int AS seats FROM linkedin_seats
+    WHERE workspace_id=? AND COALESCE(timezone,'') <> ''
+    GROUP BY timezone ORDER BY COUNT(*) DESC, timezone
+  `).all<{ timezone: string; seats: number }>(workspaceId);
+  const spansSeats = rows.length > 1;
+  const chosen = requested?.trim() || rows[0]?.timezone || 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: chosen });
+    return { timezone: chosen, spansSeats };
+  } catch {
+    return { timezone: 'UTC', spansSeats };
+  }
+}
+
+/**
+ * The funnel aggregate, qualified so it can sit in a join without an ambiguous
+ * `status`.
+ *
+ * EVERY STATUS THE LEDGER WRITES HAS A COLUMN HERE, and that is worth stating
+ * because it quietly stopped being true. Migration 051 added 'held' -- where a
+ * paused campaign parks its entire queue -- and not one of the eight FILTERs
+ * below matched it. So pausing a campaign did not move its numbers, it DELETED
+ * them: forty scheduled invites became zero planned, zero sent, zero
+ * everything, while the rows sat untouched in `linkedin_actions`. The analytics
+ * screen showed a campaign that had finished, which is the single most
+ * expensive thing it could have shown -- an operator reading "0 planned" three
+ * days after pausing concludes the work went out.
+ *
+ * THE COLUMNS PARTITION THE ROWS, WITH ONE NAMED EXCEPTION:
+ *
+ *   planned + held + exported + sent + accepted + declined + skipped
+ *     + withdrawn = COUNT(*)
+ *
+ * exactly, for any set of rows. `replied` is deliberately NOT a term in that
+ * sum: a reply implies an acceptance, so a replied row is counted inside
+ * `accepted` (see that field's own note, and `acceptanceRate` in actions.ts,
+ * which uses the same rule for the same reason) and reported again on its own
+ * line as the subset it is.
+ *
+ * That identity is the reason to add a column rather than a special case: any
+ * future status must arrive here with a FILTER of its own or the arithmetic
+ * stops closing, and a total that no longer sums to `COUNT(*)` is how this bug
+ * would be caught next time instead of read as a finished campaign.
+ */
 function funnelSelect(prefix = ''): string {
   const status = `${prefix}status`;
   return `
     COUNT(*) FILTER (WHERE ${status}='planned')::int AS planned,
+    COUNT(*) FILTER (WHERE ${status}='held')::int AS held,
     COUNT(*) FILTER (WHERE ${status}='exported')::int AS exported,
     COUNT(*) FILTER (WHERE ${status}='sent')::int AS sent,
     COUNT(*) FILTER (WHERE ${status} IN ('accepted','replied'))::int AS accepted,
@@ -599,7 +839,8 @@ function funnelSelect(prefix = ''): string {
 interface CampaignFunnelRow extends LinkedInFunnel {
   campaign_id: string;
   name: string | null;
-  campaign_status: string | null;
+  /** Null for an action whose campaign row is gone; otherwise the same column `CampaignRow.status` narrows. */
+  campaign_status: CampaignStatus | null;
   decided_invites: number;
   accepted_invites: number;
 }
@@ -607,20 +848,71 @@ interface CampaignFunnelRow extends LinkedInFunnel {
 /**
  * The funnel, by campaign, plus a daily series.
  *
- * The series buckets on `COALESCE(recorded_at, planned_for, created_at)` in
- * UTC: an action that happened is dated when it happened, one that is merely
- * planned is dated at its slot, and one with neither falls back to when it was
- * filed. Calendar days here and rolling 24h windows in actions.ts are not an
- * inconsistency -- a chart is read by a human in a timezone, a ceiling is
- * enforced against a clock nobody told us.
+ * The series buckets on `COALESCE(recorded_at, planned_for, created_at)`: an
+ * action that happened is dated when it happened, one that is merely planned
+ * is dated at its slot, and one with neither falls back to when it was filed.
+ * Calendar days here and rolling 24h windows in actions.ts are not an
+ * inconsistency -- a chart is read by a human in a timezone, and a rolling
+ * ceiling is enforced against a clock nobody told us.
+ *
+ * THE CALENDAR IS THE SEAT'S, NOT THE SERVER'S. See
+ * `LinkedInAnalytics.timezone`: the daily ceiling this chart is read against
+ * is enforced in `linkedin_seats.timezone`, so a chart cut on UTC days told a
+ * Sydney operator about days that never existed. The window bound, the GROUP
+ * BY and the labels below all come from the same zone, and each bucket ships
+ * the instants it spans so the screen can state which day it means instead of
+ * implying one.
+ *
+ * ALL THREE QUERIES HONOUR `windowDays`, AND FOR A WHILE ONLY ONE DID. The
+ * daily series has always been bounded; the totals and the per-campaign
+ * breakdown took the same parameter and then applied no time predicate at all.
+ * Two things were wrong with that, and the smaller one is the scan:
+ *
+ *   1. THE NUMBERS DISAGREED WITH THE CHART UNDER THEM. A screen headed "Last
+ *      30 days" reported a lifetime total and a lifetime per-campaign funnel
+ *      above a 30-day series -- so a workspace's first month looked identical
+ *      to its twelfth, and no filter the operator touched changed the figure
+ *      they were reading.
+ *   2. IT SCANNED THE WHOLE LEDGER, TWICE, ON EVERY LOAD. `linkedin_actions`
+ *      is the append-only record of every action a workspace ever took: it
+ *      only grows, it is the busiest table in this subsystem, and the
+ *      analytics screen is one an operator refreshes. An unbounded aggregate
+ *      over it is a cost that rises forever for an answer nobody asked for.
+ *
+ * The bound is the SAME expression the series buckets on, so a row appears in
+ * the total exactly when it appears in the chart. `windowDays` is clamped to
+ * [1, 365] above, which is what stops a caller from asking for the unbounded
+ * scan back by passing a large enough number.
+ *
+ * lc-debt: the window is a filter, not an index seek -- there is no index on
+ * COALESCE(recorded_at, planned_for, created_at), so a large workspace still
+ * reads every row and discards the old ones. Upgrade path: an expression index
+ * on (workspace_id, COALESCE(recorded_at, planned_for, created_at)), built
+ * CONCURRENTLY outside the migration runner's single transaction.
  */
-export async function linkedinAnalytics(db: Db, workspaceId: string, windowDays: number, now: Date): Promise<LinkedInAnalytics> {
+export async function linkedinAnalytics(
+  db: Db,
+  workspaceId: string,
+  windowDays: number,
+  now: Date,
+  options: { timezone?: string } = {}
+): Promise<LinkedInAnalytics> {
   const days = Math.max(1, Math.min(Math.trunc(windowDays), 365));
-  const since = new Date(now.getTime() - (days - 1) * 86_400_000);
-  const sinceIso = new Date(Date.UTC(since.getUTCFullYear(), since.getUTCMonth(), since.getUTCDate())).toISOString();
+  const { timezone, spansSeats } = await seriesTimezone(db, workspaceId, options.timezone);
 
-  const total = await db.prepare(`SELECT ${funnelSelect()} FROM linkedin_actions WHERE workspace_id=?`)
-    .get<LinkedInFunnel>(workspaceId);
+  // The first bucket is local midnight `days - 1` calendar days before the
+  // local date `now` falls on. Computed through `zonedToUtc` rather than by
+  // subtracting milliseconds, because a window that crosses a DST boundary is
+  // not a whole number of 24h days and the bound has to land on midnight
+  // whichever side of it we are.
+  const today: LocalDate = localDateOf(now, timezone);
+  const firstDay = shiftLocalDate(today, -(days - 1));
+  const sinceIso = zonedToUtc(firstDay, 0, timezone).toISOString();
+
+  const total = await db.prepare(`
+    SELECT ${funnelSelect()} FROM linkedin_actions
+    WHERE workspace_id=? AND COALESCE(recorded_at, planned_for, created_at) >= ?
+  `).get<LinkedInFunnel>(workspaceId, sinceIso);
 
   const campaignRows = await db.prepare(`
     SELECT a.campaign_id AS campaign_id, c.name AS name, c.status AS campaign_status, ${funnelSelect('a.')},
@@ -629,26 +921,35 @@ export async function linkedinAnalytics(db: Db, workspaceId: string, windowDays:
     FROM linkedin_actions a
     LEFT JOIN linkedin_campaigns c ON c.id=a.campaign_id AND c.workspace_id=a.workspace_id
     WHERE a.workspace_id=? AND a.campaign_id IS NOT NULL
+      AND COALESCE(a.recorded_at, a.planned_for, a.created_at) >= ?
     GROUP BY a.campaign_id, c.name, c.status
     ORDER BY a.campaign_id
-  `).all<CampaignFunnelRow>(workspaceId);
+  `).all<CampaignFunnelRow>(workspaceId, sinceIso);
 
+  // `AT TIME ZONE ?` -- the same zone the bound and the labels use. Postgres
+  // reads a timestamptz into the zone's wall clock, DATE_TRUNC cuts the day on
+  // that clock, and DST is the database's problem rather than ours.
   const seriesRows = await db.prepare(`
-    SELECT TO_CHAR(DATE_TRUNC('day', COALESCE(recorded_at, planned_for, created_at) AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+    SELECT TO_CHAR(DATE_TRUNC('day', COALESCE(recorded_at, planned_for, created_at) AT TIME ZONE ?), 'YYYY-MM-DD') AS day,
       ${funnelSelect()}
     FROM linkedin_actions
     WHERE workspace_id=? AND COALESCE(recorded_at, planned_for, created_at) >= ?
     GROUP BY 1
-  `).all<LinkedInFunnel & { day: string }>(workspaceId, sinceIso);
+  `).all<LinkedInFunnel & { day: string }>(timezone, workspaceId, sinceIso);
 
   const byDay = new Map(seriesRows.map((row) => [row.day, row]));
   const series: FunnelDay[] = [];
   for (let offset = days - 1; offset >= 0; offset -= 1) {
-    const at = new Date(now.getTime() - offset * 86_400_000);
-    const date = at.toISOString().slice(0, 10);
+    // Walked as CALENDAR DATES, not as `now` minus N times 86,400,000: over a
+    // DST boundary the millisecond walk skips or repeats a local date, which
+    // is how a chart grows two Sundays or loses a Monday.
+    const local = shiftLocalDate(today, -offset);
+    const date = localDateKey(local);
     const row = byDay.get(date);
     series.push({
       date,
+      startsAt: zonedToUtc(local, 0, timezone).toISOString(),
+      endsAt: zonedToUtc(shiftLocalDate(local, 1), 0, timezone).toISOString(),
       planned: row?.planned ?? 0,
       exported: row?.exported ?? 0,
       sent: row?.sent ?? 0,
@@ -659,12 +960,15 @@ export async function linkedinAnalytics(db: Db, workspaceId: string, windowDays:
 
   return {
     windowDays: days,
-    total: total ?? { planned: 0, exported: 0, sent: 0, accepted: 0, replied: 0, declined: 0, skipped: 0, withdrawn: 0 },
+    timezone,
+    timezoneSpansSeats: spansSeats,
+    total: total ?? { planned: 0, held: 0, exported: 0, sent: 0, accepted: 0, replied: 0, declined: 0, skipped: 0, withdrawn: 0 },
     byCampaign: campaignRows.map((row) => ({
       campaignId: row.campaign_id,
       name: row.name ?? null,
-      status: (row.campaign_status as CampaignStatus | null) ?? null,
+      status: row.campaign_status ?? null,
       planned: row.planned,
+      held: row.held,
       exported: row.exported,
       sent: row.sent,
       accepted: row.accepted,

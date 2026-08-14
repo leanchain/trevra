@@ -51,7 +51,59 @@ export const ACTION_KIND_VALUES = [
 
 export type LinkedInActionKind = (typeof ACTION_KIND_VALUES)[number];
 
-export type LinkedInActionStatus = 'planned' | 'exported' | 'sent' | 'accepted' | 'replied' | 'declined' | 'skipped' | 'withdrawn';
+/**
+ * Every status a ledger row can hold.
+ *
+ * 'held' IS FIRST-CLASS HERE, and it took two migrations to become so.
+ * Migration 051 introduced it as the status `pauseManagedCampaign` parks a
+ * scheduled-but-unclaimed row in, and for a while it lived only in that
+ * migration's prose and in three WHERE clauses: `campaigns.ts` casts a raw
+ * `status` column straight onto this union, so every held row arrived at every
+ * reader typed as something it demonstrably was not. That is not a cosmetic
+ * gap -- it is why the funnel had no column for it, why `SKIPPABLE` refused
+ * it, and why `stopCampaign` could strand it, all three without a single
+ * compiler complaint. A status the ledger WRITES is a status this union NAMES.
+ *
+ * 'withdrawn' is the same story one migration earlier (032) and was widened in
+ * for the same reason. The rule the two of them establish: adding a value to
+ * `linkedin_actions.status` -- which carries no CHECK constraint by design,
+ * see migration 032 -- means adding it here in the same change, so the places
+ * that must learn about it are a typecheck rather than an audit.
+ *
+ * The order below is the ledger's own lifecycle: never-happened-yet, then
+ * out-the-door, then decided, then the two terminal cancellations.
+ *
+ * PUBLISHED AS VALUES, NOT ONLY AS A TYPE, for the reason `ACTION_KIND_VALUES`
+ * above already is. A type cannot be handed to `z.enum`, so the HTTP layer had
+ * to restate this list by hand -- and `app.ts` says in its own comment that a
+ * hand-copied vocabulary is how `linkedinPacedKind` came to refuse a kind
+ * `limits.ts` was already pacing. That is not hypothetical here: the route
+ * enum was missing BOTH 'held' and 'withdrawn', so
+ * `GET /api/linkedin/actions?status=held` answered 400 and the rows a pause
+ * parks were unreadable through the only API that lists the queue. It was
+ * later given a `satisfies` plus an `Exclude` guard, which does turn drift
+ * into a build failure -- but only after somebody hand-copied the list
+ * correctly one more time, and only in the one file that remembered to write
+ * the guard. The client's copy has no guard at all.
+ *
+ * One importable constant removes the copying rather than checking it: the
+ * route enum is `z.enum(ACTION_STATUS_VALUES)` and the client's filter list is
+ * the same array, so a status added here reaches both without anybody being
+ * asked to remember.
+ */
+export const ACTION_STATUS_VALUES = [
+  'planned',
+  'held',
+  'exported',
+  'sent',
+  'accepted',
+  'replied',
+  'declined',
+  'skipped',
+  'withdrawn'
+] as const;
+
+export type LinkedInActionStatus = (typeof ACTION_STATUS_VALUES)[number];
 
 /**
  * Who put the row here.
@@ -81,6 +133,21 @@ export function ownerSeat(workspaceId: string): SeatRef {
 }
 
 /**
+ * Statuses that assert nothing left the building, as values.
+ *
+ * The value form of `COUNTED` below, so the one rule has one home: three
+ * separate functions across two modules had each spelled it out as their own
+ * `status !== 'planned' && status !== 'skipped'`, which is exactly how 'held'
+ * came to be missing from some of them and not others.
+ */
+export const UNCOUNTED_STATUSES: readonly LinkedInActionStatus[] = ['planned', 'held', 'skipped'];
+
+/** True when this status is a claim that something reached the outside world. */
+export function isCountedStatus(status: LinkedInActionStatus): boolean {
+  return !(UNCOUNTED_STATUSES as readonly string[]).includes(status);
+}
+
+/**
  * Statuses that consume budget.
  *
  * 'exported' counts even though nobody has confirmed it went out. From
@@ -88,8 +155,24 @@ export function ownerSeat(workspaceId: string): SeatRef {
  * ceiling that only counted CONFIRMED sends would let a workspace export three
  * campaigns in a morning and discover the problem from a restriction notice.
  * 'planned' and 'skipped' never happened, so neither counts.
+ *
+ * NEITHER DOES 'held', AND UNTIL NOW THAT WAS AN ACCIDENT RATHER THAN A RULE.
+ * A held row is a planned row a pause parked (migration 051): never claimed,
+ * never sent, and `startManagedCampaign` hands the identical slot back. Billing
+ * it as delivered would charge a seat's daily, weekly and monthly ceilings for
+ * work a human explicitly stopped -- so pressing Pause on one campaign would
+ * SHRINK the headroom of every other campaign on that seat, which is the
+ * opposite of what the button means.
+ *
+ * It was excluded in practice only because every caller of this predicate also
+ * carries an `AND recorded_at > ?` bound and a held row's `recorded_at` is
+ * NULL. Nothing enforced that pairing -- it is a convention held together by
+ * two lines happening to sit next to each other -- and the next window query
+ * written without the bound would have silently billed a paused campaign. The
+ * predicate now states the rule itself, and the `recorded_at` bound is back to
+ * meaning only what it says.
  */
-const COUNTED = `status NOT IN ('planned', 'skipped')`;
+const COUNTED = `status NOT IN ('planned', 'held', 'skipped')`;
 
 export interface LinkedInActionRecord {
   workspaceId: string;
@@ -111,8 +194,9 @@ export interface LinkedInActionRecord {
   replayScope?: string;
   /**
    * When it actually happened. Defaults to `now` for any counted status and to
-   * null for 'planned'/'skipped', which is what makes rule 1 above hold
-   * without every caller having to remember it.
+   * null for the three that never happened -- 'planned', 'held' and 'skipped'
+   * (`UNCOUNTED_STATUSES`) -- which is what makes rule 1 above hold without
+   * every caller having to remember it.
    */
   recordedAt?: string | null;
   /**
@@ -140,7 +224,7 @@ export interface LinkedInActionRecord {
  */
 export async function recordAction(db: Db, record: LinkedInActionRecord, now: Date): Promise<{ id: string; duplicate: boolean }> {
   const seatKey = record.seatKey ?? OWNER_SEAT_KEY;
-  const counted = record.status !== 'planned' && record.status !== 'skipped';
+  const counted = isCountedStatus(record.status);
   const recordedAt = record.recordedAt === undefined ? (counted ? now.toISOString() : null) : record.recordedAt;
   const actionId = id('lact');
   const replayScope = record.replayScope?.trim() || 'legacy';

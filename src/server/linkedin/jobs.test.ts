@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { openDatabase, type Db } from '../db.js';
+import { id, openDatabase, type Db } from '../db.js';
 import { recordAction, type SeatRef } from './actions.js';
-import { runLinkedInWithdrawals } from './jobs.js';
+import { runLinkedInWithdrawals, syncLinkedInThread } from './jobs.js';
+import { syncThreads } from './inbox.js';
 import { upsertSeat } from './seats.js';
 import { DEFAULT_STALE_AFTER_DAYS } from './withdraw.js';
 
@@ -169,5 +170,76 @@ describe('the unattended withdrawal sweep', () => {
     expect(result.candidates).toBe(0);
     expect(await queuedWithdrawals()).toEqual([]);
     expect(SEAT.seatKey).toBe('owner');
+  });
+});
+
+/**
+ * THE BATCH ID A WITHDRAWAL PASS STAMPS ON ITS ROWS.
+ *
+ * It was `lwbatch_${now.getTime().toString(36)}` -- a function of the wall
+ * clock and nothing else. On a single-tenant box that is unique enough; on a
+ * hosted one, where a tick fans out across thousands of seats, two passes
+ * starting in the same millisecond were handed the SAME
+ * `linkedin_withdrawals.batch_id`. Reading a pass back to what it did then
+ * returned another tenant's withdrawals as well.
+ */
+describe('the withdrawal batch id', () => {
+  it('differs between two passes started at the same instant', async () => {
+    await pendingInvite('one', DEFAULT_STALE_AFTER_DAYS + 1);
+    // Both passes are given the SAME `now`, which is exactly the case the old
+    // millisecond-derived id could not distinguish.
+    const first = await runLinkedInWithdrawals(db, OFF, { workspaceId: WORKSPACE_ID, now: NOW });
+    const second = await runLinkedInWithdrawals(db, OFF, { workspaceId: WORKSPACE_ID, now: NOW });
+    // The browser half is off, so neither pass reaches `runWithdrawalBatch`
+    // and both report an empty batch id. The id is asserted where it is
+    // actually minted instead: two calls at one instant must not collide.
+    expect(first.batchId).toBe('');
+    expect(second.batchId).toBe('');
+    const minted = new Set([id('lwbatch'), id('lwbatch'), id('lwbatch')]);
+    expect(minted.size).toBe(3);
+  });
+});
+
+/**
+ * WHOSE INBOX A SINGLE-THREAD REFRESH LOOKS IN.
+ *
+ * `syncLinkedInThread` computes `seatKey` from the job options and hands it to
+ * `syncThreadMessages` -- but looked the conversation up with `threadByUrn`
+ * and no seat key at all, so the existence check ran against the OWNER seat's
+ * inbox. A refresh requested for a second account therefore reported that
+ * account's own conversation as unknown, and would have accepted an owner-seat
+ * conversation the caller never asked about.
+ */
+describe('the seat a single-thread refresh reads', () => {
+  it('finds a conversation belonging to the seat the job names', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales (SDR)', timezone: 'UTC' }, NOW, 'sales');
+    await syncThreads(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'sales',
+        threads: [{
+          threadUrn: '2-sales==',
+          profileUrl: 'https://www.linkedin.com/in/sales-lead/',
+          name: 'Sales Lead',
+          lastMessageAt: NOW.toISOString(),
+          snippet: 'hello',
+          unread: false
+        }]
+      },
+      NOW
+    );
+
+    // Automation is off, so the call gets as far as the lookup and then stops
+    // at the session it cannot open. `blocked` being non-null is therefore the
+    // proof that the conversation WAS found: an unknown thread returns early
+    // with `blocked: null` and never asks for a browser.
+    const found = await syncLinkedInThread(db, OFF, '2-sales==', { workspaceId: WORKSPACE_ID, seatKey: 'sales', now: NOW });
+    expect(found.blocked).not.toBeNull();
+
+    // And the owner seat still does not see it, which is the other half of the
+    // same rule: from that seat's point of view the conversation does not exist.
+    const owner = await syncLinkedInThread(db, OFF, '2-sales==', { workspaceId: WORKSPACE_ID, now: NOW });
+    expect(owner.blocked).toBeNull();
   });
 });

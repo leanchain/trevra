@@ -24,7 +24,7 @@ import {
   warmupMultiplierFor,
   type PacedKind
 } from './limits.js';
-import { OWNER_SEAT_KEY, effectivePosture, getSeat, warmupWeekOf } from './seats.js';
+import { OWNER_SEAT_KEY, effectivePosture, getSeat, listSeats, warmupWeekOf } from './seats.js';
 
 /**
  * The pacing engine.
@@ -673,10 +673,51 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
   return { seatKey, slots, reasons, ceilingsApplied };
 }
 
+/**
+ * The seat an MCP/skill call meant, when it did not say.
+ *
+ * WHY THE OLD `.default(OWNER_SEAT_KEY)` WAS A BUG AND NOT A CONVENIENCE.
+ * Every function in `seats.ts` defaults its `seatKey` argument to the owner
+ * seat, and that default is right THERE: it keeps a single-seat workspace's
+ * pre-multi-seat call sites resolving the row they always did. On a SKILL
+ * INPUT SCHEMA it is a different thing entirely. An agent calling
+ * `gtm.linkedin-pace` or `gtm.linkedin-guard` without naming a seat is not
+ * asking for the owner account -- it has simply not said which account it
+ * means, and zod filling in 'owner' turns "unspecified" into a confident
+ * answer about one particular LinkedIn identity. In a workspace running three
+ * accounts that prices ceilings against the wrong one, and the plan or verdict
+ * that comes back names a seat nobody chose. The failure mode of a defaulted
+ * seat key is never a missing row; it is the wrong account acting.
+ *
+ * So the resolution is explicit and it fails loud in the one case that is
+ * genuinely ambiguous:
+ *
+ *   - a seat key was supplied  -> use it, unchanged;
+ *   - the workspace has ONE seat -> use it, whatever it is called. A
+ *     single-account workspace has no ambiguity to resolve, and this is what
+ *     keeps every existing single-seat caller working;
+ *   - the workspace has SEVERAL -> refuse, naming them. Guessing here is the
+ *     wrong-account action this exists to prevent;
+ *   - the workspace has NONE -> the owner key, so the caller gets the gate's
+ *     honest `seat-configured: false` verdict (or the planner's no-seat path)
+ *     rather than an error about a choice there was nothing to choose from.
+ */
+export async function resolveSkillSeatKey(db: Db, workspaceId: string, seatKey: string | undefined): Promise<string> {
+  const named = seatKey?.trim();
+  if (named) return named;
+  const seats = await listSeats(db, workspaceId);
+  if (seats.length === 1) return seats[0].seatKey;
+  if (seats.length === 0) return OWNER_SEAT_KEY;
+  throw new Error(
+    `This workspace has ${seats.length} LinkedIn seats (${seats.map((seat) => seat.seatKey).join(', ')}), so 'seatKey' is required: every ceiling, every window and every plan below is a fact about ONE account, and picking one for you would price this against an account nobody chose.`
+  );
+}
+
 const kindSchema = z.enum(PACED_KIND_VALUES);
 
 const inputSchema = z.object({
-  seatKey: z.string().min(1).max(64).default(OWNER_SEAT_KEY),
+  /** Absent means "unspecified", never "the owner seat" -- see {@link resolveSkillSeatKey}. */
+  seatKey: z.string().min(1).max(64).optional(),
   /**
    * Only the kinds with a band. `comment` is recordable in the ledger and
    * refused here, because no pacing number was researched for it and no driver
@@ -714,7 +755,7 @@ export const linkedinPacingSkill: Skill<PacingSkillInput, PacingPlan> = {
       ctx.db,
       {
         workspaceId: ctx.workspaceId,
-        seatKey: input.seatKey,
+        seatKey: await resolveSkillSeatKey(ctx.db, ctx.workspaceId, input.seatKey),
         kind: input.kind as PacedKind,
         targets: input.targets,
         horizonDays: input.horizonDays

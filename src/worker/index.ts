@@ -8,12 +8,29 @@ import { runDueAgentSchedules } from '../server/agent/schedule.js';
 import { reapStaleAgentRuns } from '../server/agent/runs.js';
 import { orchestrationMode } from '../server/orchestration/client.js';
 import { validateEnvironment } from '../server/config.js';
-import { closeLinkedInBrowser, runDueLinkedInActions, runPendingSeatDetectRequests } from '../server/linkedin/local-worker.js';
+import {
+  closeLinkedInBrowser,
+  defaultSeatConcurrency,
+  linkedInWorkerHealth,
+  linkedinWorkspaceIdsForShard,
+  runBounded,
+  runDueLinkedInActions,
+  runPendingSeatDetectRequests,
+  seatRefsForShard,
+  workerIdentity,
+  workerShard
+} from '../server/linkedin/local-worker.js';
 import { runLinkedInCampaignTick, runLinkedInSideTasks } from '../server/linkedin/jobs.js';
-import { linkedinSeatRefs, linkedinWorkspaceIds } from '../server/linkedin/seats.js';
 import { runDueResearchSources } from '../server/research/service.js';
 
 const runtime=validateEnvironment();
+// READ AND VALIDATED AT STARTUP, NEVER PER TICK. A shard that is not a
+// partition -- index 5 of 3, a total of 0 -- means this process serves either a
+// slice nobody serves or one somebody else is already serving, and both fail
+// silently as a queue that half drains. `workerShard` throws; here is where an
+// operator is watching.
+const linkedinShard=workerShard();
+const linkedinWorkerId=workerIdentity();
 const db=await openDatabase();
 const temporalWorker=orchestrationMode()==='temporal'
   ? await (await import('../server/orchestration/worker.js')).startTemporalWorker(db)
@@ -21,8 +38,16 @@ const temporalWorker=orchestrationMode()==='temporal'
 const app=express();
 app.disable('x-powered-by');
 app.get('/health',async(_req,res)=>{
-  try{await db.prepare('SELECT 1 AS ok').get();res.json({ok:true,service:'trevra-worker',orchestrator:orchestrationMode()});}
-  catch{res.status(503).json({ok:false,service:'trevra-worker'});}
+  // THE LINKEDIN QUEUE IS PART OF "HEALTHY", and it was not reportable at all.
+  // A discovery read that fails returns the same empty list as a queue with
+  // nothing due, so the one failure that stops EVERY tenant's automation used
+  // to look exactly like the ordinary quiet case. It does not fail the probe --
+  // a worker that cannot read the LinkedIn queue is still serving playbooks,
+  // schedules and projections, and restarting it would fix nothing -- but it is
+  // now a fact a monitor can alert on.
+  const linkedin=linkedInWorkerHealth();
+  try{await db.prepare('SELECT 1 AS ok').get();res.json({ok:true,service:'trevra-worker',orchestrator:orchestrationMode(),worker:linkedinWorkerId,linkedinShard:`${linkedinShard.index+1}/${linkedinShard.total}`,linkedin});}
+  catch{res.status(503).json({ok:false,service:'trevra-worker',linkedin});}
 });
 const server=app.listen(runtime.port,()=>console.log(`Trevra worker health listening on http://localhost:${runtime.port}`));
 
@@ -61,6 +86,20 @@ async function cycle():Promise<void>{
 // container -- no display, no browser binaries -- returns immediately and,
 // crucially, claims no detect request away from the operator's own
 // `npm run linkedin:worker` on the host (plan 4.9).
+//
+// EVERYTHING BELOW IS SHARDED, BOUNDED AND ROTATED, AND NONE OF THAT WAS TRUE.
+// The three loops in this function used to walk EVERY seat and EVERY workspace
+// on the deployment, serially, on every tick, in the same order in every
+// worker process. At a thousand workspaces that is thousands of round trips
+// before a browser opens, the same thousands repeated in every worker, and an
+// alphabetical head that gets served every minute in front of a tail that is
+// never reached at all. Sharding splits the fleet, the per-tick bounds keep one
+// tick finite, and the cursors are what stop the bound from meaning "the first
+// N forever".
+const SIDE_TASK_SEATS_PER_TICK=50;
+const CAMPAIGN_WORKSPACES_PER_TICK=50;
+let seatCursor:{workspaceId:string;seatKey:string}|null=null;
+let workspaceCursor:string|null=null;
 let linkedinRunning=false;
 async function linkedinCycle():Promise<void>{
   if(linkedinRunning||draining||!runtime.linkedinLocalWorker.enabled)return;
@@ -69,8 +108,8 @@ async function linkedinCycle():Promise<void>{
   // not open and a halted batch are all outcomes they report. This catch is
   // for the case they are wrong about that.
   try{
-    await runPendingSeatDetectRequests(db,runtime.linkedinLocalWorker);
-    await runDueLinkedInActions(db,runtime.linkedinLocalWorker);
+    await runPendingSeatDetectRequests(db,runtime.linkedinLocalWorker,{shard:linkedinShard});
+    await runDueLinkedInActions(db,runtime.linkedinLocalWorker,{shard:linkedinShard,workerId:linkedinWorkerId});
     // THE SEND QUEUE FIRST, THE REST AFTER, and the order is the point: the
     // invite/DM/reply/engagement queue is the only work with a paced SLOT
     // attached, so it must not sit behind an inbox walk that can take minutes.
@@ -87,11 +126,23 @@ async function linkedinCycle():Promise<void>{
     // PER SEAT, not per workspace: each connected LinkedIn account has its own
     // inbox to read, its own pending-invite list to reconcile and its own
     // withdrawal queue, and none of them are the owner account's.
-    for(const seat of await linkedinSeatRefs(db)){
+    //
+    // BOUNDED AND ROTATED. `linkedinSeatRefs` (every seat on the deployment,
+    // serially, every tick) was replaced by this worker's own shard, fifty at a
+    // time, continuing where the last tick stopped. A short page means the end
+    // of the shard, so the cursor goes back to the start.
+    const seats=await seatRefsForShard(db,{shard:linkedinShard,limit:SIDE_TASK_SEATS_PER_TICK,after:seatCursor});
+    seatCursor=seats.length<SIDE_TASK_SEATS_PER_TICK?null:seats[seats.length-1]??null;
+    await runBounded(seats,defaultSeatConcurrency(true),async(seat)=>{
       await runLinkedInSideTasks(db,runtime.linkedinLocalWorker,{workspaceId:seat.workspaceId,seatKey:seat.seatKey});
-    }
+    });
     // Once per workspace, AFTER the side tasks -- see `runLinkedInCampaignTick`.
-    for(const workspaceId of await linkedinWorkspaceIds(db)){
+    // Sharded on the workspace alone: a campaign tick is a per-workspace act,
+    // and hashing it per seat would have two workers advancing one tenant's
+    // campaigns at the same time.
+    const workspaces=await linkedinWorkspaceIdsForShard(db,{shard:linkedinShard,limit:CAMPAIGN_WORKSPACES_PER_TICK,after:workspaceCursor});
+    workspaceCursor=workspaces.length<CAMPAIGN_WORKSPACES_PER_TICK?null:workspaces[workspaces.length-1]??null;
+    for(const workspaceId of workspaces){
       await runLinkedInCampaignTick(db,workspaceId);
     }
   }
@@ -115,7 +166,9 @@ async function shutdown(signal:string){
   await temporalWorker?.shutdown();
   // Before the pool closes: a browser left open outlives this process and
   // holds the operator's profile directory locked, so the next worker cannot
-  // attach to it.
+  // attach to it. A seat lease left behind expires on its own, and the row
+  // keeps saying which host holds that seat's profile -- which is exactly what
+  // the next worker on this host needs it to say.
   await closeLinkedInBrowser();
   await db.close();
   process.exit(0);

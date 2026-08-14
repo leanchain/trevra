@@ -1,4 +1,4 @@
-import type { Db } from '../db.js';
+import { id, type Db } from '../db.js';
 import { ownerSeat, type SeatRef } from './actions.js';
 import type { LinkedInDriver, LinkedInPage } from './driver.js';
 // `readThread` names two different things in this subsystem: the browser
@@ -28,7 +28,7 @@ import {
   type LinkedInLocalWorkerConfig
 } from './local-worker.js';
 import { runManagedCampaigns, type RunnerResult } from './runner.js';
-import { OWNER_SEAT_KEY } from './seats.js';
+import { OWNER_SEAT_KEY, effectivePosture, getSeat } from './seats.js';
 import {
   DEFAULT_CANDIDATE_LIMIT,
   runWithdrawalBatch,
@@ -215,7 +215,17 @@ export async function syncLinkedInThread(
   // Refuses a conversation this workspace has never synced, rather than
   // navigating to an id somebody typed. `syncThreadMessages` would refuse it
   // too; asking here means the answer is a 404 and not a browser session.
-  const known = await threadByUrn(db, options.workspaceId, threadUrn);
+  //
+  // PER SEAT, AND THE ARGUMENT IS LOAD-BEARING -- exactly the case
+  // `enqueueReply` carries its own paragraph about. `threadByUrn` defaults its
+  // last parameter to the owner seat, and omitting it here meant a refresh
+  // requested for a SECONDARY account looked the URN up in the OWNER's inbox:
+  // a thread that belongs to this seat was reported as unknown, and a thread
+  // that belongs to the owner was accepted and then handed to
+  // `syncThreadMessages` WITH `seatKey` -- which resolves the other seat's
+  // conversation, or refuses. The seat key is already computed on the line
+  // above and was simply not passed.
+  const known = await threadByUrn(db, options.workspaceId, threadUrn, seatKey);
   if (!known) return { blocked: null, inserted: 0, inbound: 0, linkage: null, degraded: [] };
 
   const session = await openLinkedInSession(db, config, options);
@@ -335,6 +345,20 @@ export interface WithdrawalJobResult extends WithdrawalBatchResult {
 }
 
 /**
+ * How many managed pending invites one staleness scan will read.
+ *
+ * Twenty times `DEFAULT_CANDIDATE_LIMIT`, because the scan feeds a pass that
+ * queues at most that many withdrawals and the extra headroom is what keeps
+ * the EXCLUSION half of the sweep honest: everything this list names is
+ * withheld from the account-default sweep so it is not withdrawn a week early,
+ * and a bound far above the budget means the invites the pass could actually
+ * reach are all inside it. See {@link managedInviteStaleness} for why ordering
+ * by the sweep's own clock is what makes truncation safe rather than merely
+ * unlikely.
+ */
+const MANAGED_STALENESS_SCAN_LIMIT = DEFAULT_CANDIDATE_LIMIT * 20;
+
+/**
  * The staleness a managed workflow declared for one seat's invites.
  *
  * Every pending invite this seat holds that belongs to a campaign member whose
@@ -343,7 +367,6 @@ export interface WithdrawalJobResult extends WithdrawalBatchResult {
  * the same one `runner.ts` reads when it ticks the step, rather than the
  * snapshot in `linkedin_campaigns.sequence_json`, so editing a workflow changes
  * the sweep exactly as it changes the runner.
- *
  * ONE STATEMENT RATHER THAN A LOOP OVER CAMPAIGNS: a seat can carry a dozen
  * campaigns and a lead list can carry thousands of members, and the answer is
  * one join away.
@@ -352,28 +375,66 @@ export interface WithdrawalJobResult extends WithdrawalBatchResult {
  * choice and the conservative one is not available: a workflow with two
  * withdraw steps has two answers and no way to say which invite belongs to
  * which, and the FIRST one is the earliest deadline the operator wrote down.
+ *
+ * THE `jsonb_array_elements` LATERAL RUNS ONCE PER WORKFLOW, NOT ONCE PER
+ * INVITE. It used to sit in the SELECT list of the invite query, so a seat
+ * with 5,000 pending invites across three campaigns unpacked and scanned the
+ * same three `steps_json` documents 5,000 times. Lifting it into its own CTE
+ * over `linkedin_workflows` asks the question once per workflow and joins the
+ * answer on, and moving the null test into the WHERE clause means the
+ * workflows that said nothing about staleness are dropped by Postgres rather
+ * than by a JS loop over rows that were shipped anyway.
+ *
+ * AND IT IS BOUNDED, WHICH IT WAS NOT. The whole pending backlog came back --
+ * every row, no limit -- for a caller whose budget is at most
+ * `DEFAULT_CANDIDATE_LIMIT` (100) invites per pass. The bound is
+ * {@link MANAGED_STALENESS_SCAN_LIMIT} and the ORDER BY is what makes
+ * truncating it safe: the sweep withdraws OLDEST FIRST, and the second half of
+ * the sweep excludes these invites so they are not swept at the account
+ * default instead of at the workflow's own number. Ordering by the same clock
+ * the sweep selects on -- COALESCE(pending_since, recorded_at) -- means the
+ * invites that could actually be reached by this pass are exactly the ones at
+ * the head of the list, so a truncated tail is a tail this pass was never
+ * going to touch. A seat holding more than the bound in managed pending
+ * invites still sweeps correctly; it simply learns about the oldest 2,000 of
+ * them per pass.
  */
 async function managedInviteStaleness(db: Db, seat: SeatRef): Promise<Array<{ actionId: string; afterDays: number }>> {
   const rows = await db.prepare(`
-    SELECT a.id AS action_id, (
-      SELECT (step->'config'->>'afterDays')::int
-      FROM jsonb_array_elements(w.steps_json) AS step
-      WHERE step->>'action' = 'withdraw_pending'
-      LIMIT 1
-    ) AS after_days
+    WITH workflow_staleness AS (
+      SELECT w.id AS workflow_id, (
+        SELECT (step->'config'->>'afterDays')::int
+        FROM jsonb_array_elements(w.steps_json) AS step
+        WHERE step->>'action' = 'withdraw_pending'
+        LIMIT 1
+      ) AS after_days
+      FROM linkedin_workflows w
+      WHERE w.workspace_id=?
+    )
+    SELECT a.id AS action_id, s.after_days
     FROM linkedin_actions a
     JOIN linkedin_campaign_members m ON m.id = a.campaign_member_id AND m.workspace_id = a.workspace_id
     JOIN linkedin_campaigns c ON c.id = m.campaign_id AND c.workspace_id = m.workspace_id
-    JOIN linkedin_workflows w ON w.id = c.workflow_id AND w.workspace_id = c.workspace_id
+    JOIN workflow_staleness s ON s.workflow_id = c.workflow_id
     WHERE a.workspace_id=? AND a.seat_key=? AND a.kind='invite'
       AND a.status IN ('sent', 'exported')
       AND a.campaign_member_id IS NOT NULL
-  `).all<{ action_id: string; after_days: number | null }>(seat.workspaceId, seat.seatKey);
+      AND s.after_days IS NOT NULL AND s.after_days > 0
+    ORDER BY COALESCE(a.pending_since, a.recorded_at) ASC NULLS LAST, a.id ASC
+    LIMIT ?
+  `).all<{ action_id: string; after_days: number | null }>(
+    seat.workspaceId,
+    seat.workspaceId,
+    seat.seatKey,
+    MANAGED_STALENESS_SCAN_LIMIT
+  );
 
   const out: Array<{ actionId: string; afterDays: number }> = [];
   for (const row of rows) {
     // A workflow with no withdraw step said nothing about staleness, so its
-    // invites fall through to the account default with everything else.
+    // invites fall through to the account default with everything else. The
+    // predicate above already dropped those; this is the belt on the braces,
+    // because `afterDays` arrives from operator-supplied JSON.
     if (row.after_days === null) continue;
     const afterDays = Number(row.after_days);
     if (!Number.isFinite(afterDays) || afterDays <= 0) continue;
@@ -512,7 +573,15 @@ export async function runLinkedInWithdrawals(
   }
 
   const withdrawDriver = options.withdrawDriver ?? playwrightWithdrawDriver;
-  const batchId = `lwbatch_${now.getTime().toString(36)}`;
+  // UNIQUE PER PASS, NOT PER MILLISECOND. This was
+  // `lwbatch_${now.getTime().toString(36)}`, which is a function of the clock
+  // and nothing else: two workspaces -- or two seats in one workspace --
+  // sweeping in the same millisecond were handed the SAME
+  // `linkedin_withdrawals.batch_id`, so reading a pass back to the withdrawals
+  // it performed returned another tenant's as well, and `stopLinkedInBatches`
+  // aimed at one of them would have named both. A random id is the same shape
+  // every other identifier in this schema uses and cannot collide by timing.
+  const batchId = id('lwbatch');
 
   const outcome = await runWithdrawalBatch(db, seat, {
     driver: withdrawDriver,
@@ -559,6 +628,9 @@ export async function runLinkedInLeadSources(
     {
       page: session.page as unknown as LinkedInScrapePage,
       config: leadConfig,
+      // Whose session this page is signed into, so the posture that may refuse
+      // a page fetch is that account's and not the owner seat's by default.
+      seatKey: options.seatKey ?? OWNER_SEAT_KEY,
       ...(options.scraper === undefined ? {} : { scraper: options.scraper }),
       now: () => options.now ?? new Date(),
       ...(options.log === undefined ? {} : { log: options.log })
@@ -616,6 +688,26 @@ export async function runLinkedInSideTasks(
   };
 
   if (!config.enabled) return result;
+
+  // NO SEAT ROW, OR A PAUSED ONE, AND NO BROWSER OPENS. NOT ONE.
+  //
+  // This runs once per row in `linkedin_seats`, every tick, and each of the
+  // four jobs below opens that seat's Chrome before it reads its own posture
+  // and refuses. The refusals were all correct and every one of them came too
+  // late: the browser was already open, already signed in, and already talking
+  // to LinkedIn from this machine's IP. On the machine this was found on that
+  // meant SEVEN live Chromium processes on every tick -- six of them for
+  // test-fixture workspaces that had leaked into the database and name no real
+  // account at all.
+  //
+  // A paused seat is a seat an operator or a safety rule has switched off, and
+  // "switched off" has to include the sign-in. Checking here rather than in
+  // `linkedinSeatRefs` keeps that listing honest -- it still returns every seat,
+  // because other callers need it to -- and puts the refusal at the one place
+  // that would otherwise pay for it in an open browser.
+  const seat = await getSeat(db, options.workspaceId, options.seatKey ?? OWNER_SEAT_KEY);
+  if (!seat) return result;
+  if (effectivePosture(seat, options.now ?? new Date()) === 'paused') return result;
 
   const jobs: Array<[string, () => Promise<void>]> = [
     [

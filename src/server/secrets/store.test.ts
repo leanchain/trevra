@@ -1,6 +1,7 @@
-import { randomBytes } from 'node:crypto';
+import { createCipheriv, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
+import { ENVELOPE_V1, ENVELOPE_V2, configuredKeyIds } from './crypto.js';
 import {
   deleteWorkspaceSecret,
   describeWorkspaceSecret,
@@ -56,12 +57,43 @@ async function auditRows(workspaceId = WORKSPACE_ID): Promise<Array<{ event_type
     .all<{ event_type: string; actor_type: string; actor_id: string | null; metadata_json: string }>(workspaceId);
 }
 
-async function storedRow(): Promise<{ ciphertext: Buffer; iv: Buffer; auth_tag: Buffer }> {
+async function storedRow(workspaceId = WORKSPACE_ID): Promise<{
+  id: string; ciphertext: Buffer; iv: Buffer; auth_tag: Buffer; key_version: number; key_id: string | null;
+}> {
   const row = await db
-    .prepare('SELECT ciphertext, iv, auth_tag FROM workspace_secrets WHERE workspace_id=? AND kind=?')
-    .get<{ ciphertext: Buffer; iv: Buffer; auth_tag: Buffer }>(WORKSPACE_ID, 'model_api_key');
+    .prepare('SELECT id, ciphertext, iv, auth_tag, key_version, key_id FROM workspace_secrets WHERE workspace_id=? AND kind=?')
+    .get<{ id: string; ciphertext: Buffer; iv: Buffer; auth_tag: Buffer; key_version: number; key_id: string | null }>(workspaceId, 'model_api_key');
   if (!row) throw new Error('expected a stored secret');
   return row;
+}
+
+/**
+ * Write a row in the PRE-AUDIT envelope: master key raw, no AAD, no recorded
+ * key -- byte for byte what a deployment upgrading to this build already has
+ * in its table. Straight SQL, because no code path may produce one any more.
+ */
+async function insertLegacyRow(workspaceId: string, kind: string, plaintext: string): Promise<void> {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', Buffer.from(String(process.env.TREVRA_SECRETS_KEY), 'base64'), iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const now = new Date().toISOString();
+  await db.prepare(`
+    INSERT INTO workspace_secrets (id,workspace_id,kind,ciphertext,iv,auth_tag,key_version,key_id,last4,label,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    `wsec_legacy_${kind.replace(/\W/g, '_')}`,
+    workspaceId,
+    kind,
+    ciphertext,
+    iv,
+    cipher.getAuthTag(),
+    ENVELOPE_V1,
+    null,
+    '',
+    null,
+    now,
+    now
+  );
 }
 
 describe('workspace secrets', () => {
@@ -74,7 +106,15 @@ describe('workspace secrets', () => {
       actorUserId: USER_ID
     });
 
-    expect(summary).toMatchObject({ kind: 'model_api_key', label: 'Anthropic', last4: '8017', keyVersion: 1 });
+    expect(summary).toMatchObject({
+      kind: 'model_api_key',
+      label: 'Anthropic',
+      last4: '8017',
+      // The row-bound envelope, sealed by the key this deployment writes with.
+      keyVersion: ENVELOPE_V2,
+      keyId: configuredKeyIds().current,
+      custody: 'current'
+    });
     expect(summary.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
     const described = await describeWorkspaceSecret(db, WORKSPACE_ID, 'model_api_key');
@@ -198,6 +238,134 @@ describe('workspace secrets', () => {
   });
 });
 
+/**
+ * THE AUDIT FINDING, AT THE STORE LEVEL.
+ *
+ * `WHERE workspace_id=?` is a query, not a custody boundary. Everything below
+ * moves BYTES between rows the way a mis-scoped UPDATE, a restore of the wrong
+ * dump or a SQL injection would, and checks that the database can no longer be
+ * talked into handing one tenant's credential to another.
+ */
+describe('cross-tenant portability', () => {
+  it('refuses a ciphertext transplanted from another workspace', async () => {
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'model_api_key', plaintext: API_KEY });
+    const victim = await storedRow(WORKSPACE_ID);
+
+    // The attack: tenant B's row, tenant A's sealed bytes. Tag, IV and key
+    // version all valid and self-consistent -- this used to decrypt cleanly
+    // and then ride in tenant B's Authorization header.
+    await putWorkspaceSecret(db, { workspaceId: OTHER_WORKSPACE_ID, kind: 'model_api_key', plaintext: 'sk-live-000000000000beef' });
+    await db
+      .prepare('UPDATE workspace_secrets SET ciphertext=?, iv=?, auth_tag=?, key_version=?, key_id=? WHERE workspace_id=? AND kind=?')
+      .run(victim.ciphertext, victim.iv, victim.auth_tag, victim.key_version, victim.key_id, OTHER_WORKSPACE_ID, 'model_api_key');
+
+    await expect(readWorkspaceSecretPlaintext(db, OTHER_WORKSPACE_ID, 'model_api_key'))
+      .rejects.toThrow(/sealed for a DIFFERENT row/);
+    // And the error names the row that was asked for, so the operator can tell
+    // a transplant from an ordinary key problem.
+    await expect(readWorkspaceSecretPlaintext(db, OTHER_WORKSPACE_ID, 'model_api_key'))
+      .rejects.toThrow(new RegExp(OTHER_WORKSPACE_ID));
+
+    // The victim's own row is untouched and still opens.
+    expect(await readWorkspaceSecretPlaintext(db, WORKSPACE_ID, 'model_api_key')).toBe(API_KEY);
+  });
+
+  it('refuses a ciphertext relabelled as another kind in the same workspace', async () => {
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'model_api_key', plaintext: API_KEY });
+    const source = await storedRow();
+
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'cli_oauth_token', plaintext: 'sk-ant-oat01-placeholder' });
+    await db
+      .prepare("UPDATE workspace_secrets SET ciphertext=?, iv=?, auth_tag=?, key_version=?, key_id=? WHERE workspace_id=? AND kind='cli_oauth_token'")
+      .run(source.ciphertext, source.iv, source.auth_tag, source.key_version, source.key_id, WORKSPACE_ID);
+
+    await expect(readWorkspaceSecretPlaintext(db, WORKSPACE_ID, 'cli_oauth_token'))
+      .rejects.toThrow(/sealed for a DIFFERENT row/);
+  });
+});
+
+/**
+ * Backwards compatibility is mandatory: a deployment that upgrades keeps
+ * reading its secrets on the first request after the deploy, with no data step
+ * -- and "re-seal on next write" is what converts them.
+ */
+describe('rows sealed before the binding existed', () => {
+  it('still opens, and reports as legacy rather than as fine', async () => {
+    await insertLegacyRow(WORKSPACE_ID, 'model_api_key', API_KEY);
+
+    expect(await readWorkspaceSecretPlaintext(db, WORKSPACE_ID, 'model_api_key')).toBe(API_KEY);
+
+    const described = await describeWorkspaceSecret(db, WORKSPACE_ID, 'model_api_key');
+    expect(described).toMatchObject({ keyVersion: ENVELOPE_V1, keyId: null, custody: 'legacy' });
+  });
+
+  it('is re-sealed and bound by the next write', async () => {
+    await insertLegacyRow(WORKSPACE_ID, 'model_api_key', API_KEY);
+    const before = await storedRow();
+    expect(before.key_version).toBe(ENVELOPE_V1);
+
+    const summary = await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'model_api_key', plaintext: API_KEY });
+    expect(summary).toMatchObject({ keyVersion: ENVELOPE_V2, custody: 'current' });
+
+    const after = await storedRow();
+    expect(after.key_id).toBe(configuredKeyIds().current);
+    // The bytes are now bound: transplanting them no longer works.
+    await putWorkspaceSecret(db, { workspaceId: OTHER_WORKSPACE_ID, kind: 'model_api_key', plaintext: 'sk-live-000000000000beef' });
+    await db
+      .prepare('UPDATE workspace_secrets SET ciphertext=?, iv=?, auth_tag=?, key_version=?, key_id=? WHERE workspace_id=? AND kind=?')
+      .run(after.ciphertext, after.iv, after.auth_tag, after.key_version, after.key_id, OTHER_WORKSPACE_ID, 'model_api_key');
+    await expect(readWorkspaceSecretPlaintext(db, OTHER_WORKSPACE_ID, 'model_api_key')).rejects.toThrow(/DIFFERENT row/);
+  });
+});
+
+/**
+ * The other half of the audit finding: `openSecret` threw at USE time when the
+ * key was wrong, while `describeWorkspaceSecret` -- metadata only -- kept
+ * reporting the secret as configured. A green setup screen over a deployment
+ * whose next agent run would 500.
+ */
+describe('a wrong server key is visible before anything is run', () => {
+  it('reports the secret as unopenable without decrypting it', async () => {
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'model_api_key', plaintext: API_KEY });
+    const stranger = { ...process.env, TREVRA_SECRETS_KEY: randomBytes(32).toString('base64') } as NodeJS.ProcessEnv;
+    delete stranger.TREVRA_SECRETS_KEY_PREVIOUS;
+
+    const described = await describeWorkspaceSecret(db, WORKSPACE_ID, 'model_api_key', stranger);
+    // Used to be indistinguishable from a healthy row. Now it says so.
+    expect(described).toMatchObject({ custody: 'unknown', last4: '8017' });
+
+    // And the metadata read still WORKS -- no decryption happened, so a status
+    // screen can render this instead of a 500.
+    expect(described?.keyId).toBeTruthy();
+    await expect(readWorkspaceSecretPlaintext(db, WORKSPACE_ID, 'model_api_key', stranger))
+      .rejects.toThrow(/does not hold/);
+  });
+
+  it('reports every row as unsealed when the deployment holds no key at all', async () => {
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'model_api_key', plaintext: API_KEY });
+    const keyless = { ...process.env } as NodeJS.ProcessEnv;
+    delete keyless.TREVRA_SECRETS_KEY;
+    delete keyless.TREVRA_SECRETS_KEY_PREVIOUS;
+
+    expect(await describeWorkspaceSecret(db, WORKSPACE_ID, 'model_api_key', keyless))
+      .toMatchObject({ custody: 'unsealed' });
+  });
+
+  it('reports the outgoing key during a rotation, so the window is visible', async () => {
+    await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'model_api_key', plaintext: API_KEY });
+    const rotating = {
+      ...process.env,
+      TREVRA_SECRETS_KEY: randomBytes(32).toString('base64'),
+      TREVRA_SECRETS_KEY_PREVIOUS: String(process.env.TREVRA_SECRETS_KEY)
+    } as NodeJS.ProcessEnv;
+
+    expect(await describeWorkspaceSecret(db, WORKSPACE_ID, 'model_api_key', rotating))
+      .toMatchObject({ custody: 'previous' });
+    // Still readable -- 'previous' is "not finished", not "broken".
+    expect(await readWorkspaceSecretPlaintext(db, WORKSPACE_ID, 'model_api_key', rotating)).toBe(API_KEY);
+  });
+});
+
 describe('workspace agent config', () => {
   it('refuses to send a key over plain HTTP to a remote host', async () => {
     for (const baseUrl of ['http://evil.example', 'http://evil.example/v1', 'ftp://api.example.com', 'api.openai.com/v1', '']) {
@@ -291,7 +459,11 @@ describe('workspace secrets: cli_oauth_token', () => {
       actorUserId: USER_ID
     });
 
-    expect(summary).toMatchObject({ kind: 'cli_oauth_token', last4: '8017', keyVersion: 1 });
+    // NO last4. Four characters of a live subscription credential in every
+    // backup and every replica bought nothing: there is one token per
+    // workspace, it is never compared with another, and the only thing the
+    // product shows about it is a boolean.
+    expect(summary).toMatchObject({ kind: 'cli_oauth_token', last4: '', keyVersion: ENVELOPE_V2, custody: 'current' });
 
     const described = await describeWorkspaceSecret(db, WORKSPACE_ID, 'cli_oauth_token');
     expect(described).toEqual(summary);

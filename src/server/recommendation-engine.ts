@@ -67,39 +67,76 @@ export async function runRecommendationEngine(db: Db, workspaceId: string, now =
         timestamp, timestamp
       );
 
-      await tx.prepare('DELETE FROM recommendation_evidence WHERE recommendation_id=?').run(recommendationId);
+      // 058 gave `recommendation_evidence`, `proof_packs` and `proof_pack_items`
+      // a `workspace_id`, so this rewrite no longer trusts the parent id on its
+      // own. `recommendation_id` alone is a cross-tenant predicate: if a row's
+      // parent id ever points at another workspace's recommendation -- an import
+      // bug, a restored backup, a hand-written UPDATE -- this DELETE would
+      // silently destroy that tenant's evidence, and the INSERT that follows
+      // would graft this tenant's evidence onto their recommendation.
+      //
+      // WHY `workspace_id IS NULL` IS STILL ACCEPTED. 058 deliberately stopped
+      // short of `SET NOT NULL`, so rows written between that migration and
+      // this change carry no attribution at all. Excluding them would leave the
+      // old evidence undeleted and the engine would accumulate a duplicate set
+      // on every run. The predicate collapses to a plain `AND workspace_id=?`
+      // the day the NOT NULL migration lands; nothing else here has to change.
+      await tx.prepare('DELETE FROM recommendation_evidence WHERE recommendation_id=? AND (workspace_id IS NULL OR workspace_id=?)')
+        .run(recommendationId, workspaceId);
       for (const evidence of candidate.evidence) {
+        // The workspace written here is the RECOMMENDATION's, not an ambient
+        // default: `workspaceId` is the same value the upsert above stored on
+        // `recommendations.workspace_id`, and the `SELECT ... WHERE
+        // workspace_id=? AND source_key=?` that found `existing` proved an
+        // existing recommendation carries it too.
         await tx.prepare(`
           INSERT INTO recommendation_evidence
-            (id,recommendation_id,source_type,source_id,label,category,external_url,excerpt,created_at)
-          VALUES (?,?,?,?,?,?,?,?,?)
+            (id,workspace_id,recommendation_id,source_type,source_id,label,category,external_url,excerpt,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?)
         `).run(
-          id('ev'), recommendationId, evidence.sourceType, evidence.sourceId, evidence.label,
+          id('ev'), workspaceId, recommendationId, evidence.sourceType, evidence.sourceId, evidence.label,
           evidence.category, evidence.externalUrl ?? null, evidence.excerpt, timestamp
         );
       }
-      await upsertProofPack(tx, recommendationId, candidate.proofSummary, candidate.evidence, timestamp);
+      await upsertProofPack(tx, workspaceId, recommendationId, candidate.proofSummary, candidate.evidence, timestamp);
     }
   });
   return candidates.length;
 }
 
-async function upsertProofPack(db: Db, recommendationId: string, summary: string, evidence: CandidateEvidence[], timestamp: string): Promise<void> {
-  const existing = await db.prepare('SELECT id FROM proof_packs WHERE recommendation_id=?').get<{ id: string }>(recommendationId);
+/**
+ * `workspaceId` is the recommendation's own tenant, threaded down rather than
+ * re-derived: the caller located (or created) the recommendation under
+ * `workspace_id=?`, so passing it here is the same fact, not a second guess.
+ * Re-reading it from `recommendations` would be one more round trip inside the
+ * transaction for a value the caller already holds.
+ */
+async function upsertProofPack(db: Db, workspaceId: string, recommendationId: string, summary: string, evidence: CandidateEvidence[], timestamp: string): Promise<void> {
+  // Scoped for the same reason as the evidence rewrite: an existing pack whose
+  // `recommendation_id` disagrees with its `workspace_id` must not hand this
+  // run another tenant's pack id, because every `proof_pack_items` row below
+  // would then be written under it.
+  const existing = await db.prepare('SELECT id FROM proof_packs WHERE recommendation_id=? AND (workspace_id IS NULL OR workspace_id=?)')
+    .get<{ id: string }>(recommendationId, workspaceId);
   const proofPackId = existing?.id ?? id('proof');
+  // `workspace_id=excluded.workspace_id` in the DO UPDATE is not a no-op: it
+  // repairs the NULL left on any pack written between 058 and this change,
+  // using the only defensible value -- the workspace of the recommendation this
+  // pack is unique on.
   await db.prepare(`
-    INSERT INTO proof_packs (id,recommendation_id,summary,status,created_at,updated_at)
-    VALUES (?,?,?,?,?,?)
-    ON CONFLICT(recommendation_id) DO UPDATE SET summary=excluded.summary,status='ready',updated_at=excluded.updated_at
-  `).run(proofPackId, recommendationId, summary, 'ready', timestamp, timestamp);
-  await db.prepare('DELETE FROM proof_pack_items WHERE proof_pack_id=?').run(proofPackId);
+    INSERT INTO proof_packs (id,workspace_id,recommendation_id,summary,status,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT(recommendation_id) DO UPDATE SET workspace_id=excluded.workspace_id,summary=excluded.summary,status='ready',updated_at=excluded.updated_at
+  `).run(proofPackId, workspaceId, recommendationId, summary, 'ready', timestamp, timestamp);
+  await db.prepare('DELETE FROM proof_pack_items WHERE proof_pack_id=? AND (workspace_id IS NULL OR workspace_id=?)')
+    .run(proofPackId, workspaceId);
   for (const [index, item] of evidence.entries()) {
     await db.prepare(`
       INSERT INTO proof_pack_items
-        (id,proof_pack_id,category,label,excerpt,source_type,source_id,external_url,sequence,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
+        (id,workspace_id,proof_pack_id,category,label,excerpt,source_type,source_id,external_url,sequence,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
     `).run(
-      id('proofitem'), proofPackId, item.category, item.label, item.excerpt,
+      id('proofitem'), workspaceId, proofPackId, item.category, item.label, item.excerpt,
       item.sourceType, item.sourceId, item.externalUrl ?? null, index, timestamp
     );
   }
@@ -140,15 +177,31 @@ async function detectStaleProposals(db: Db, workspaceId: string, now: Date): Pro
 }
 
 async function detectScopeCreep(db: Db, workspaceId: string): Promise<Candidate[]> {
+  // Every correlated subquery below used to reach `scope_items` and
+  // `contract_clauses` through a PROJECT ID ALONE. `m` is workspace-scoped by
+  // the outer WHERE, so the join looked safe -- but the tenant of a scope item
+  // was never checked, only the tenant of the message that pointed at the same
+  // project. A scope item or clause whose own workspace disagrees with its
+  // project's would be read here and then quoted back to this tenant as
+  // "agreed deliverables" and "your change-order clause" -- another customer's
+  // contract text, pasted into an outgoing email.
+  //
+  // The guards compare against `m.workspace_id` rather than a new `?` on
+  // purpose: it adds no parameter, so the single positional placeholder at the
+  // bottom of this statement keeps its meaning (`normalizeSql` numbers `?` by
+  // TEXT ORDER, and a placeholder added above the WHERE would renumber it).
+  // `IS NULL` is the same transition allowance as the writers above: 058 left
+  // the column nullable, and hiding un-backfilled rows would make the demo and
+  // any mid-upgrade deployment stop detecting scope creep entirely.
   const rows = await db.prepare(`
     SELECT m.id, m.client_id, m.project_id, m.body, m.subject, c.name AS client_name, p.currency,
-      (SELECT s.id FROM scope_items s WHERE s.project_id=m.project_id AND s.included=1 ORDER BY s.created_at LIMIT 1) AS included_scope_id,
-      (SELECT s.description FROM scope_items s WHERE s.project_id=m.project_id AND s.included=1 ORDER BY s.created_at LIMIT 1) AS included_scope,
-      (SELECT s.id FROM scope_items s WHERE s.project_id=m.project_id AND s.included=0 ORDER BY s.unit_price DESC LIMIT 1) AS excluded_scope_id,
-      (SELECT s.description FROM scope_items s WHERE s.project_id=m.project_id AND s.included=0 ORDER BY s.unit_price DESC LIMIT 1) AS excluded_scope,
-      COALESCE((SELECT MAX(unit_price) FROM scope_items s WHERE s.project_id=m.project_id AND s.included=0), 500) AS unit_price,
-      (SELECT cc.id FROM contract_clauses cc JOIN contracts ct ON ct.id=cc.contract_id WHERE ct.project_id=m.project_id AND cc.clause_type='change_order' LIMIT 1) AS clause_id,
-      (SELECT cc.content FROM contract_clauses cc JOIN contracts ct ON ct.id=cc.contract_id WHERE ct.project_id=m.project_id AND cc.clause_type='change_order' LIMIT 1) AS clause_content
+      (SELECT s.id FROM scope_items s WHERE s.project_id=m.project_id AND (s.workspace_id IS NULL OR s.workspace_id=m.workspace_id) AND s.included=1 ORDER BY s.created_at LIMIT 1) AS included_scope_id,
+      (SELECT s.description FROM scope_items s WHERE s.project_id=m.project_id AND (s.workspace_id IS NULL OR s.workspace_id=m.workspace_id) AND s.included=1 ORDER BY s.created_at LIMIT 1) AS included_scope,
+      (SELECT s.id FROM scope_items s WHERE s.project_id=m.project_id AND (s.workspace_id IS NULL OR s.workspace_id=m.workspace_id) AND s.included=0 ORDER BY s.unit_price DESC LIMIT 1) AS excluded_scope_id,
+      (SELECT s.description FROM scope_items s WHERE s.project_id=m.project_id AND (s.workspace_id IS NULL OR s.workspace_id=m.workspace_id) AND s.included=0 ORDER BY s.unit_price DESC LIMIT 1) AS excluded_scope,
+      COALESCE((SELECT MAX(unit_price) FROM scope_items s WHERE s.project_id=m.project_id AND (s.workspace_id IS NULL OR s.workspace_id=m.workspace_id) AND s.included=0), 500) AS unit_price,
+      (SELECT cc.id FROM contract_clauses cc JOIN contracts ct ON ct.id=cc.contract_id AND ct.workspace_id=m.workspace_id WHERE ct.project_id=m.project_id AND (cc.workspace_id IS NULL OR cc.workspace_id=m.workspace_id) AND cc.clause_type='change_order' LIMIT 1) AS clause_id,
+      (SELECT cc.content FROM contract_clauses cc JOIN contracts ct ON ct.id=cc.contract_id AND ct.workspace_id=m.workspace_id WHERE ct.project_id=m.project_id AND (cc.workspace_id IS NULL OR cc.workspace_id=m.workspace_id) AND cc.clause_type='change_order' LIMIT 1) AS clause_content
     FROM messages m
     JOIN clients c ON c.id=m.client_id
     JOIN projects p ON p.id=m.project_id
@@ -181,6 +234,13 @@ async function detectScopeCreep(db: Db, workspaceId: string): Promise<Candidate[
 }
 
 async function detectUnbilledMilestones(db: Db, workspaceId: string): Promise<Candidate[]> {
+  // The tenant filter here was `p.workspace_id=?` -- the PROJECT's workspace,
+  // never the milestone's, because until 058 the milestone had none. A
+  // milestone that disagrees with its project would be turned into an
+  // "invoice this now" recommendation for the wrong customer, carrying the
+  // wrong amount. `m.workspace_id=p.workspace_id` states the invariant the
+  // composite `(workspace_id, id)` FK will enforce once the column is NOT
+  // NULL; the `IS NULL` arm is the transition allowance, and disappears with it.
   const rows = await db.prepare(`
     SELECT m.*, p.client_id, c.name AS client_name,
       (SELECT msg.id FROM messages msg WHERE msg.project_id=p.id AND msg.direction='outbound' AND msg.occurred_at >= m.delivered_at ORDER BY msg.occurred_at LIMIT 1) AS delivery_message_id,
@@ -188,7 +248,8 @@ async function detectUnbilledMilestones(db: Db, workspaceId: string): Promise<Ca
     FROM milestones m
     JOIN projects p ON p.id=m.project_id
     JOIN clients c ON c.id=p.client_id
-    WHERE p.workspace_id=? AND m.status='delivered' AND m.invoiced_at IS NULL
+    WHERE p.workspace_id=? AND (m.workspace_id IS NULL OR m.workspace_id=p.workspace_id)
+      AND m.status='delivered' AND m.invoiced_at IS NULL
   `).all<Record<string, unknown>>(workspaceId);
   return rows.map((row) => {
     const evidence: CandidateEvidence[] = [{

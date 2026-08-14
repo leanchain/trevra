@@ -108,6 +108,15 @@ export const ACTION_KIND_LABELS_ONE: Record<LinkedInActionKind, string> = {
 
 export const ACTION_STATUS_LABELS: Record<LinkedInActionStatus, string> = {
   planned: 'Planned',
+  /* NAMED AFTER WHAT PUT IT THERE, because 'Held' alone is the wrong word
+     twice over. This subsystem already says "held back" about an action a
+     safety check refused -- a thing that will never happen -- and a held row
+     is the opposite of that: it is intact, in order, and waiting on a human.
+     And a reader meeting this chip has almost always just pressed Pause, so
+     the label has to connect to the button they pressed.
+     `pauseManagedCampaign` (migration 051) is the only writer of this status
+     and resuming is the only thing that clears it back to 'planned'. */
+  held: 'Held by pause',
   exported: 'Exported',
   sent: 'Sent',
   accepted: 'Accepted',
@@ -120,13 +129,22 @@ export const ACTION_STATUS_LABELS: Record<LinkedInActionStatus, string> = {
 /**
  * A status the ledger holds and this map does not, spelled rather than blanked.
  *
- * `withdrawn` is the live case: migration 032 writes it into
- * `linkedin_actions.status` when the worker takes an invite back, and
- * `campaigns.ts` counts it, but `LinkedInActionStatus` in
- * src/server/linkedin/actions.ts was never widened to include it. Until it is,
- * an action row can arrive carrying a status this table has no entry for, and
- * a table cell reading `undefined` beside an invite is worse than one reading
- * the raw word.
+ * THE TWO CASES THIS FALLBACK WAS WRITTEN FOR ARE BOTH CLOSED NOW, and the
+ * history is why it stays. `withdrawn` (migration 032) and then `held` (051)
+ * each spent a release being written into `linkedin_actions.status` and
+ * counted by `campaigns.ts` while `LinkedInActionStatus` in
+ * src/server/linkedin/actions.ts named neither -- so each arrived at every
+ * reader typed as something it demonstrably was not, and this table had no
+ * entry for it. `held` was the more expensive of the two: the operator meeting
+ * it has just paused a campaign and is looking straight at these rows to find
+ * out what the pause did.
+ *
+ * The union names both today, so this map is exhaustive and the compiler is
+ * what keeps it that way -- the next status is a type error here rather than
+ * an audit. What the fallback still covers is the window between the ledger
+ * writing a value and a deployed client having learned it, and there a table
+ * cell reading `undefined` beside an invite is worse than one reading the raw
+ * word.
  */
 export const actionStatusLabel = (status: LinkedInActionStatus): string =>
   ACTION_STATUS_LABELS[status] ?? String(status).replaceAll('_', ' ');
@@ -688,8 +706,24 @@ const fallbackWindowLabel = (rhythm: LinkedInLimitsReport['signals']['rhythm']) 
  * The per-account read.
  * ---------------------------------------------------------------------- */
 
-/** Statuses that never happened, so never consume a ceiling. Mirrors `COUNTED` in src/server/linkedin/actions.ts. */
-const UNCOUNTED_STATUSES: readonly LinkedInActionStatus[] = ['planned', 'skipped'];
+/**
+ * Statuses that never happened, so never consume a ceiling. Mirrors
+ * `UNCOUNTED_STATUSES` in src/server/linkedin/actions.ts -- the value form of
+ * the `COUNTED` predicate every window query in the engine bills against.
+ *
+ * 'held' WAS MISSING HERE AND THAT MADE THIS SCREEN OVERCOUNT. A held row is a
+ * planned row a pause parked (migration 051): never claimed, never sent, and
+ * excluded server-side by `status NOT IN ('planned','held','skipped')`. Read
+ * as spent, it would tell an operator "18 of 20 used" about an account whose
+ * campaigns are all paused -- on the one screen whose entire job is to be the
+ * number that is actually enforced.
+ *
+ * `countLast24h` below also demands a `recordedAt`, which a held row does not
+ * carry, so the omission was covered by two lines happening to sit next to
+ * each other. actions.ts records at length why that is a coincidence and not a
+ * rule; this list states the rule instead of leaning on it.
+ */
+const UNCOUNTED_STATUSES: readonly LinkedInActionStatus[] = ['planned', 'held', 'skipped'];
 
 /**
  * The most rows `GET /api/linkedin/actions` will hand back, mirroring the
@@ -968,7 +1002,17 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
             true. It is a real figure and it lives in exactly one place, the
             server's own rule sentence, which carries the caveat with it. That
             sentence is rendered instead of a literal restating half of it. */}
-        {signals.dayOverDay.rule}
+        {signals.dayOverDay.rule}{' '}
+        {/* WHICH DAY EACH COLUMN IS, said rather than assumed. `linkedinAnalytics`
+            in src/server/linkedin/campaigns.ts groups this series into UTC
+            calendar days and hands back one total per day, so the client holds
+            buckets and not the moments inside them — see `dayLabel` in
+            LinkedInViz for why the labels are pinned to UTC to match. For an
+            account working a long way from UTC that is not the account's own
+            day, and the honest fix for a chart that cannot re-bucket what it
+            was given is to name the bucket it is drawing. */}
+        Each column is a UTC day, which is how this series is grouped — an account working a long way from UTC will see
+        its late-evening actions land in the next column along.
       </p>
     </section>
 

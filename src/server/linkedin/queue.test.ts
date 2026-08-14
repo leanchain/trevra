@@ -314,7 +314,7 @@ describe('queueCampaign', () => {
         },
         NOW
       )
-    ).rejects.toThrow(/No LinkedIn seat is configured for this workspace/);
+    ).rejects.toThrow(/No LinkedIn seat 'owner' is configured for this workspace/);
     expect(await actionCount()).toBe(0);
   });
 
@@ -376,5 +376,54 @@ describe('queueCampaign', () => {
       )
     ).rejects.toThrow(/message with no approved words/);
     expect(await actionCount()).toBe(0);
+  });
+});
+
+/**
+ * WHICH SEAT'S EXISTENCE IS ACTUALLY CHECKED.
+ *
+ * `queueCampaign` computes `seatKey` from the approved plan, files every row
+ * under it -- and then asked whether the OWNER seat existed, because `getSeat`
+ * defaults its third argument. So a plan for a second account was queued as
+ * long as the FIRST account was configured, producing rows keyed to a seat
+ * that does not exist: `claimNextDueAction` is per (workspace_id, seat_key),
+ * so nothing ever claims them and the campaign silently never drains. And when
+ * the check did fire, its sentence named a seat key it had never looked up.
+ */
+describe('the seat a campaign is queued for', () => {
+  it('refuses by name when the plan\'s seat is missing, even though the owner seat exists', async () => {
+    await expect(
+      queueCampaign(
+        db,
+        {
+          workspaceId: DEMO_WORKSPACE_ID,
+          plan: plan([slot('invite', MAYA.targetRef, '2026-08-06T08:00:00.000Z')], 'sales'),
+          sequence: sequenceOf({ id: 'step-1', day: 0, kind: 'invite', template: 'Hi {{firstName}}.' }),
+          contacts: [MAYA]
+        },
+        NOW
+      )
+    ).rejects.toThrow(/No LinkedIn seat 'sales' is configured/);
+    // Nothing was written: the refusal happens before the first insert, which
+    // is the promise the whole ordering of this function exists to keep.
+    expect(await actionCount()).toBe(0);
+  });
+
+  it('queues for a second seat once that seat exists, and files the rows under it', async () => {
+    await upsertSeat(db, DEMO_WORKSPACE_ID, { label: 'Sales (SDR)', timezone: 'Europe/Berlin' }, ACTIVATED, 'sales');
+    const queued = await queueCampaign(
+      db,
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        plan: plan([slot('invite', MAYA.targetRef, '2026-08-06T08:00:00.000Z')], 'sales'),
+        sequence: sequenceOf({ id: 'step-1', day: 0, kind: 'invite', template: 'Hi {{firstName}}.' }),
+        contacts: [MAYA]
+      },
+      NOW
+    );
+    expect(queued.seatKey).toBe('sales');
+    const rows = await db.prepare('SELECT seat_key FROM linkedin_actions WHERE workspace_id=?')
+      .all<{ seat_key: string }>(DEMO_WORKSPACE_ID);
+    expect(rows.map((row) => row.seat_key)).toEqual(['sales']);
   });
 });

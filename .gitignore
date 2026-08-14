@@ -13,6 +13,10 @@ __pycache__/
 *.pyc
 .vitest-postgres-url
 .lemoncrow/
+.claude/
+.impeccable/
+.mcp.json
+.playwright-mcp/
 terraform.tfstate
 terraform.tfstate.*
 .terraform/

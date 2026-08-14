@@ -262,9 +262,19 @@ export async function queueCampaign(db: Db, input: CampaignQueueInput, now: Date
   }
 
   // --- Refusal 3: no seat. Fail closed, exactly as `exportCampaign` does. ---
-  const seat = await getSeat(db, input.workspaceId);
+  //
+  // THE SEAT THE PLAN NAMES, NOT THE OWNER SEAT. `getSeat` defaults its third
+  // argument to `owner`, and omitting it here asked whether the OWNER account
+  // existed while queueing for whichever seat the approved plan chose: a
+  // workspace whose owner seat was configured and whose second seat was not
+  // queued a campaign for an account that does not exist -- rows the worker can
+  // never claim -- and the refusal, when it did fire, named a seat key it had
+  // never looked up. The same silent default `enqueueReply` and
+  // `exportCampaign` carry their own paragraphs about; the failure mode is
+  // never a missing row, it is the wrong account.
+  const seat = await getSeat(db, input.workspaceId, seatKey);
   if (!seat) {
-    throw new Error(`No LinkedIn seat is configured for this workspace; nothing can be queued for seat ${seatKey}.`);
+    throw new Error(`No LinkedIn seat '${seatKey}' is configured for this workspace; nothing can be queued for it.`);
   }
 
   const contacts = new Map<string, ExportContact>();

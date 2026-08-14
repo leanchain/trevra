@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.js';
+import { DEMO_WORKSPACE_ID, id, openDatabase, resetDemoData, type Db } from '../db.js';
 import { getSkill, listSkills, registerSkill, seedSkills } from './registry.js';
 import { redactForLedger, runSkill } from './runner.js';
 import type { Skill, SkillContext } from './types.js';
@@ -136,9 +136,12 @@ describe('runSkill', () => {
   it('records a ledger row on success', async () => {
     const database = await openTestDatabase();
     await seedSkills(database);
-    // `skills` is not workspace-scoped, so the counter survives resetDemoData
-    // and any earlier run against this database; assert the delta, not the value.
-    const before = await database.prepare('SELECT run_count FROM skills WHERE id=?').get<{ run_count: number }>('gtm.score-lead');
+    // Usage now lives in `workspace_skill_usage`, keyed by the workspace that
+    // ran the skill. `resetDemoData` drops and reseeds the demo workspace, so
+    // the row starts from nothing -- which is itself the point: this counter
+    // belongs to one tenant and nobody else can have moved it.
+    const before = await database.prepare('SELECT run_count FROM workspace_skill_usage WHERE workspace_id=? AND skill_id=?')
+      .get<{ run_count: number }>(DEMO_WORKSPACE_ID, 'gtm.score-lead');
     const run = await runSkill('gtm.score-lead', { lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } }, contextFor(database));
 
     expect(run.status).toBe('ok');
@@ -154,10 +157,39 @@ describe('runSkill', () => {
     expect(row?.error).toBeNull();
     expect((row?.output_json as { wedge: string }).wedge).toBe('sizing');
 
-    const counter = await database.prepare('SELECT run_count,last_run_at FROM skills WHERE id=?')
-      .get<{ run_count: number; last_run_at: string | null }>('gtm.score-lead');
-    expect(counter?.run_count).toBe((before?.run_count ?? 0) + 1);
+    const counter = await database.prepare('SELECT run_count,last_run_at FROM workspace_skill_usage WHERE workspace_id=? AND skill_id=?')
+      .get<{ run_count: number; last_run_at: string | null }>(DEMO_WORKSPACE_ID, 'gtm.score-lead');
+    expect(Number(counter?.run_count)).toBe(Number(before?.run_count ?? 0) + 1);
     expect(counter?.last_run_at).not.toBeNull();
+  });
+
+  // `skills` used to carry `run_count` and `last_run_at` with no workspace
+  // column: one counter for the whole deployment that every tenant incremented,
+  // and a `last_run_at` that told each of them when another had run the skill.
+  it('keeps one tenant usage out of another tenant counters', async () => {
+    const database = await openTestDatabase();
+    await seedSkills(database);
+    const neighbour = id('ws');
+    await database.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(neighbour, 'Neighbour', new Date().toISOString());
+    try {
+      const lead = { lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } };
+      await runSkill('gtm.score-lead', lead, contextFor(database));
+      await runSkill('gtm.score-lead', lead, contextFor(database));
+      await runSkill('gtm.score-lead', lead, { db: database, workspaceId: neighbour, now: () => new Date() });
+
+      const rows = await database.prepare('SELECT workspace_id,run_count FROM workspace_skill_usage WHERE skill_id=? ORDER BY run_count DESC')
+        .all<{ workspace_id: string; run_count: number }>('gtm.score-lead');
+      const byWorkspace = new Map(rows.map((row) => [row.workspace_id, Number(row.run_count)]));
+      expect(byWorkspace.get(DEMO_WORKSPACE_ID)).toBe(2);
+      expect(byWorkspace.get(neighbour)).toBe(1);
+
+      // And the global catalogue no longer holds a per-tenant number at all.
+      const columns = await database.prepare("SELECT column_name FROM information_schema.columns WHERE table_name='skills'")
+        .all<{ column_name: string }>();
+      expect(columns.map((row) => row.column_name)).not.toEqual(expect.arrayContaining(['run_count', 'last_run_at']));
+    } finally {
+      await database.prepare('DELETE FROM workspaces WHERE id=?').run(neighbour);
+    }
   });
 
   it('records a ledger row on skill failure without throwing', async () => {

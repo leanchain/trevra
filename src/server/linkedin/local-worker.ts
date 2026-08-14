@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { id, type Db } from '../db.js';
 import { readLinkedInCredentials } from '../secrets/linkedin.js';
@@ -118,6 +118,172 @@ export const EXECUTABLE_KINDS: readonly ExecutableKind[] = [
   'endorse'
 ];
 
+// ---------------------------------------------------------------------------
+// Who this worker is, which slice of the fleet it serves, and for how long it
+// may hold what it takes
+// ---------------------------------------------------------------------------
+
+/**
+ * This process's identity, written onto everything it claims.
+ *
+ * IT USED TO BE UNNECESSARY AND NOW IT IS LOAD-BEARING. With one worker on one
+ * machine, "who claimed this row" had exactly one answer and nobody had to
+ * write it down. With many worker hosts, a claim with no owner is a claim
+ * nothing can reason about: it cannot be reclaimed safely (whose was it?), it
+ * cannot be recognised after a restart (was it mine?), and a lease cannot be
+ * extended by the only process entitled to extend it.
+ *
+ * `TREVRA_WORKER_ID` when the deployment sets one -- a StatefulSet pod name, a
+ * machine id, whatever the operator can look up -- and `<hostname>:<pid>`
+ * otherwise, which is unique in practice and self-explanatory in a log.
+ */
+export function workerIdentity(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.TREVRA_WORKER_ID?.trim();
+  return configured || `${workerHost(env)}:${process.pid}`;
+}
+
+/**
+ * WHICH MACHINE this process is on, separately from which process it is.
+ *
+ * The distinction is the whole of the seat-affinity rule: a restarted worker
+ * is a new identity on the SAME disk, and that disk is where the seat's Chrome
+ * profile -- which is to say the seat's LinkedIn session -- lives. See
+ * {@link claimSeatLease}.
+ */
+export function workerHost(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.TREVRA_WORKER_HOST?.trim();
+  return configured || hostname();
+}
+
+/**
+ * Which slice of the fleet this worker serves: `index` of `total`.
+ *
+ * WHY A SHARD AT ALL. Every worker used to run the identical discovery query
+ * in the identical order, so they all reached for the same seat and
+ * `launchPersistentContext` gave the profile directory's exclusive lock to
+ * whichever arrived first; the rest failed and raced on to the next one
+ * together. Adding a worker added contention and no throughput. A static
+ * partition on (workspace, seat) means two workers cannot WANT the same seat,
+ * so the leases below are a correctness backstop rather than the mechanism.
+ *
+ * Hashed rather than assigned, because assignment needs a coordinator and
+ * hashing needs nothing. `hashtext` is Postgres's own, evaluated in the query,
+ * so the partition is identical in every statement that uses it -- which is
+ * what keeps a seat's actions, its side tasks and its browser profile on ONE
+ * host.
+ *
+ * THROWS on a value that is not a partition. A worker that silently rounded
+ * `TREVRA_LINKEDIN_WORKER_INDEX=5` of 3 down to something workable would serve
+ * a slice nobody else serves or a slice somebody else already serves, and both
+ * are silent. The entry points validate at startup, where an operator is
+ * watching.
+ */
+export interface WorkerShard {
+  index: number;
+  total: number;
+}
+
+/** Everything, which is what one worker on one machine has always meant. */
+export const SINGLE_WORKER_SHARD: WorkerShard = { index: 0, total: 1 };
+
+export function workerShard(env: NodeJS.ProcessEnv = process.env): WorkerShard {
+  const rawTotal = env.TREVRA_LINKEDIN_WORKER_COUNT?.trim();
+  const rawIndex = env.TREVRA_LINKEDIN_WORKER_INDEX?.trim();
+  if (!rawTotal && !rawIndex) return SINGLE_WORKER_SHARD;
+  const total = Number.parseInt(rawTotal ?? '1', 10);
+  const index = Number.parseInt(rawIndex ?? '0', 10);
+  if (!Number.isFinite(total) || total < 1) {
+    throw new Error('TREVRA_LINKEDIN_WORKER_COUNT must be a whole number of workers, 1 or more.');
+  }
+  if (!Number.isFinite(index) || index < 0 || index >= total) {
+    throw new Error(`TREVRA_LINKEDIN_WORKER_INDEX must be between 0 and ${total - 1} when TREVRA_LINKEDIN_WORKER_COUNT is ${total}.`);
+  }
+  return { index, total };
+}
+
+/**
+ * The shard test, as SQL, spelled in exactly one place.
+ *
+ * `hashtext` can return the most negative int32, and `abs()` of that raises
+ * `integer out of range` -- a query that works for every seat until it does not
+ * and then takes the whole discovery read down. `((h % t) + t) % t` is
+ * non-negative for every input without ever negating anything.
+ *
+ * `total <= 1` short-circuits to true so an unsharded deployment does not pay
+ * a hash per row, and so this expression is a no-op everywhere it is not
+ * configured.
+ */
+function shardPredicate(expression: string): string {
+  return `(?::int <= 1 OR (((hashtext(${expression}) % ?::int) + ?::int) % ?::int) = ?::int)`;
+}
+
+/** The five parameters {@link shardPredicate} consumes, in order. */
+function shardParams(shard: WorkerShard): [number, number, number, number, number] {
+  return [shard.total, shard.total, shard.total, shard.total, shard.index];
+}
+
+/**
+ * How long a claim on ONE action is believed without a heartbeat.
+ *
+ * Generous on purpose. The cost of a lease that is too SHORT is a duplicate
+ * invite (a second worker reclaims a row the first is mid-way through sending,
+ * and a duplicate cannot be withdrawn from somebody's notifications); the cost
+ * of one that is too LONG is that a genuinely dead worker's rows wait a few
+ * more minutes. Those are not comparable, so this is minutes rather than
+ * seconds, and it is refreshed immediately before every action.
+ */
+export const ACTION_LEASE_MS = 15 * 60_000;
+
+/**
+ * How long a claim on a SEAT is believed without a heartbeat.
+ *
+ * Longer than an action's, because a batch legitimately runs for tens of
+ * minutes (up to 25 actions behind 30-120s gaps), and heartbeated while it
+ * does.
+ */
+export const SEAT_LEASE_MS = 45 * 60_000;
+
+/**
+ * When a batch left 'running' is presumed abandoned.
+ *
+ * A full batch is ~50 minutes at the maximum gap, so this is comfortably past
+ * anything a live worker can still be doing -- the same reasoning as
+ * `STALE_RUN_MINUTES` in `agent/runs.ts`, and for the same reason: what the
+ * drain cannot finish, the next worker writes off rather than leaving it to
+ * wedge that seat's ledger forever.
+ */
+export const STALE_BATCH_MS = 2 * 60 * 60_000;
+
+/**
+ * How long a claim written BEFORE leases existed is left alone.
+ *
+ * A day, because these rows are unrecoverably ambiguous in only one direction:
+ * a pre-lease claim with no `failure_kind` cannot be a deliberate hold (the
+ * hold path always records one), so it is a crash-strand -- but there is no
+ * deadline on it to compare against, so the only evidence available is that it
+ * has been sitting there far longer than any batch runs.
+ */
+export const LEGACY_CLAIM_GRACE_MS = 24 * 60 * 60_000;
+
+/**
+ * How many seats one worker may drive at once.
+ *
+ * ONE WHERE A HUMAN IS WATCHING, SEVERAL WHERE NOBODY IS. Headed means the
+ * operator's own laptop and their own Chrome windows: two of those fighting
+ * over the foreground is worse than two batches in a row, which is the
+ * argument `trevra-linkedin-worker.ts` has always made and it is still right.
+ * Headless means a container serving other people's seats, where strictly
+ * serial is not a preference but a queue that never drains -- a batch is ~31
+ * minutes, so a hundred due seats is two days of work per tick.
+ *
+ * Bounded rather than unbounded because each in-flight seat is a whole
+ * Chromium at ~350-500MB; the ceiling is memory, not patience.
+ */
+export function defaultSeatConcurrency(headless: boolean, env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number.parseInt(env.TREVRA_LINKEDIN_SEAT_CONCURRENCY ?? '', 10);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  return headless ? 3 : 1;
+}
 /** One claimed row, as the loop needs it. */
 export interface DueLinkedInAction {
   id: string;
@@ -282,8 +448,26 @@ export interface LocalWorkerStore {
    * that could not be evaluated.
    */
   branchDecision(action: DueLinkedInAction, now: Date): Promise<BranchGateDecision | null>;
-  /** Outcome unknown: KEEP the claim so no retry can duplicate it. */
+  /**
+   * Outcome unknown: KEEP the claim so no retry can duplicate it, and MARK it
+   * so nothing can mistake it for a worker that died.
+   *
+   * The two used to look identical in the database -- 'planned' with a
+   * `claimed_at` -- which is why there was no reaper at all: anything able to
+   * recover a crashed worker's claims would also have re-queued an action that
+   * may already have reached somebody's notifications. See migration 054.
+   */
   holdClaim(actionId: string, failureKind: LinkedInFailureKind): Promise<void>;
+  /**
+   * Push the claimed row's lease forward while this batch is still working on
+   * it.
+   *
+   * Called immediately before the driver acts -- after the paced gap, which is
+   * the long wait -- so "the lease expired" can only ever mean "the worker is
+   * gone" and never "the worker is slow". Everything about the reaper's safety
+   * rests on that being true.
+   */
+  heartbeat(batchId: string, actionId: string | null, now: Date): Promise<void>;
   enterCooldown(now: Date): Promise<void>;
 }
 
@@ -577,6 +761,16 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
       log(`LinkedIn local worker skipped action ${action.id}: ${verdict.reason ?? 'the safety gate refused it'}`);
       continue;
     }
+
+    // THE LAST THING BEFORE THE DRIVER TOUCHES LINKEDIN: push the lease out.
+    //
+    // An action can take a while (a page load, a composer, a send), and the gap
+    // in front of it can be two minutes. A reaper comparing `lease_expires_at`
+    // to now must never conclude that a worker in the middle of THIS is gone,
+    // because reclaiming this row means somebody may get a second invite. So
+    // the deadline is refreshed here, where it is provably still ours, rather
+    // than only at claim time.
+    await store.heartbeat(batchId, action.id, at);
 
     // One seed per (batch, action), the same string the inter-action gap is
     // drawn from, so the whole of a batch's timing -- between actions and
@@ -878,7 +1072,23 @@ function safeJson(value: string): unknown {
   }
 }
 
-export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): LocalWorkerStore {
+/**
+ * The real store.
+ *
+ * `workerId` and `leaseMs` are what turn a claim from "somebody took this" into
+ * "this process took this, until then" -- see `claimNextDueAction` and
+ * migration 054. They default to the environment's own identity and the
+ * standard lease, so every existing caller keeps working unchanged and a test
+ * can pin both.
+ */
+export function postgresLocalWorkerStore(
+  db: Db,
+  workspaceId: string,
+  seatKey: string = OWNER_SEAT_KEY,
+  options: { workerId?: string; leaseMs?: number } = {}
+): LocalWorkerStore {
+  const workerId = options.workerId ?? workerIdentity();
+  const leaseMs = Math.max(60_000, Math.trunc(options.leaseMs ?? ACTION_LEASE_MS));
   return {
     workspaceId,
     seatKey,
@@ -925,8 +1135,18 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
       // workers on the same box take different rows instead of the same one,
       // and `claimed_at IS NULL` means a held row (unknown outcome) is never
       // handed out again.
+      //
+      // THE CLAIM NOW CARRIES A NAME AND A DEADLINE. `claimed_at` alone said
+      // only "somebody took this", which on one machine was enough and on a
+      // fleet is the strandable state: nothing could say WHICH worker took it,
+      // and nothing could say when the claim stopped being believable. So the
+      // row records `claimed_by` (this process) and `lease_expires_at` (now +
+      // the lease), the running batch pushes that deadline forward before every
+      // action, and `reapExpiredActionLeases` releases what a dead worker left
+      // behind. Nothing about the deliberate hold changes: it is marked with
+      // `settlement_hold_at` and no reaper can see it.
       const row = await db.prepare(`
-        UPDATE linkedin_actions SET claimed_at=?, batch_id=?
+        UPDATE linkedin_actions SET claimed_at=?, batch_id=?, claimed_by=?, lease_expires_at=?
         WHERE id = (
           SELECT id FROM linkedin_actions
           WHERE workspace_id=? AND seat_key=? AND status='planned' AND claimed_at IS NULL
@@ -959,7 +1179,16 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
         RETURNING id, workspace_id, seat_key, kind, target_ref,
                   TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS planned_for,
                   body, thread_urn, campaign_id, replay_scope, override_warmup_ceiling
-      `).get<DueActionRow>(now.toISOString(), batchId, workspaceId, seatKey, now.toISOString(), [...exclude]);
+      `).get<DueActionRow>(
+        now.toISOString(),
+        batchId,
+        workerId,
+        new Date(now.getTime() + leaseMs).toISOString(),
+        workspaceId,
+        seatKey,
+        now.toISOString(),
+        [...exclude]
+      );
       if (!row) return null;
       return {
         id: row.id,
@@ -1048,7 +1277,8 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
 
     async releaseClaim(actionId, failureKind) {
       await db.prepare(`
-        UPDATE linkedin_actions SET claimed_at=NULL, batch_id=NULL, failure_kind=?
+        UPDATE linkedin_actions
+        SET claimed_at=NULL, claimed_by=NULL, lease_expires_at=NULL, batch_id=NULL, failure_kind=?
         WHERE id=? AND workspace_id=?
       `).run(failureKind, actionId, workspaceId);
     },
@@ -1056,9 +1286,14 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
     async settleSent(actionId, externalRef, now) {
       // `recorded_at` is what every rolling window counts, so it is written
       // here and nowhere else: the moment the action actually happened.
+      //
+      // The lease is dropped with it. A settled row is not in flight, and a
+      // deadline left behind on one would have a reaper reasoning about work
+      // that is finished.
       await db.prepare(`
         UPDATE linkedin_actions
-        SET status='sent', recorded_at=?, external_ref=?, failure_kind=NULL
+        SET status='sent', recorded_at=?, external_ref=?, failure_kind=NULL,
+            claimed_by=NULL, lease_expires_at=NULL
         WHERE id=? AND workspace_id=?
       `).run(now.toISOString(), externalRef, actionId, workspaceId);
     },
@@ -1066,7 +1301,8 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
     async settleSkipped(actionId, failureKind) {
       await db.prepare(`
         UPDATE linkedin_actions
-        SET status='skipped', recorded_at=NULL, claimed_at=NULL, failure_kind=?
+        SET status='skipped', recorded_at=NULL, claimed_at=NULL, claimed_by=NULL,
+            lease_expires_at=NULL, failure_kind=?
         WHERE id=? AND workspace_id=?
       `).run(failureKind, actionId, workspaceId);
     },
@@ -1079,17 +1315,56 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
     async settleBranchSkipped(actionId, _reason) {
       await db.prepare(`
         UPDATE linkedin_actions
-        SET status='skipped', recorded_at=NULL, claimed_at=NULL, failure_kind=NULL
+        SET status='skipped', recorded_at=NULL, claimed_at=NULL, claimed_by=NULL,
+            lease_expires_at=NULL, failure_kind=NULL
         WHERE id=? AND workspace_id=?
       `).run(actionId, workspaceId);
     },
 
     async holdClaim(actionId, failureKind) {
-      // `claimed_at` is left exactly as it is. That is the hold.
+      // `claimed_at` is left exactly as it is. That is the hold -- and
+      // `settlement_hold_at` is what makes it legible to everything else.
+      //
+      // WHY THE COLUMN EXISTS (migration 054). Until it did, this row and a row
+      // whose worker was killed mid-claim were indistinguishable: both were
+      // 'planned' with a `claimed_at` and nothing more. That meant a reaper
+      // able to recover the second would also have re-queued the first -- and
+      // the first is an action that MAY ALREADY HAVE HAPPENED. We clicked and
+      // lost the thread; a retry can put a second invite in somebody's
+      // notifications, which cannot be withdrawn. The reaper's predicate is
+      // `settlement_hold_at IS NULL`, so it cannot reach this row however long
+      // the hold lasts, which is exactly as long as it takes a human to settle
+      // it.
+      //
+      // The lease is CLEARED rather than extended: a hold is not work in
+      // flight, and leaving a deadline on it would say a worker is still
+      // coming back for it.
       await db.prepare(`
-        UPDATE linkedin_actions SET failure_kind=?
+        UPDATE linkedin_actions
+        SET failure_kind=?, claimed_by=?, lease_expires_at=NULL,
+            settlement_hold_at=COALESCE(settlement_hold_at, CURRENT_TIMESTAMP)
         WHERE id=? AND workspace_id=?
-      `).run(failureKind, actionId, workspaceId);
+      `).run(failureKind, workerId, actionId, workspaceId);
+    },
+
+    async heartbeat(batchId, actionId, now) {
+      // THE LEASE MOVES ONLY WHILE SOMETHING IS ACTUALLY HAPPENING TO THE ROW.
+      //
+      // Called immediately before the driver touches LinkedIn -- after the
+      // 30-120s paced gap, which is the long wait -- so the deadline a reaper
+      // compares against is never more than one action old. That is what makes an expired lease
+      // mean "this worker is gone" rather than "this worker is slow" -- and
+      // the whole safety of reclaiming a claim rests on that distinction, since
+      // reclaiming a row somebody is mid-way through sending is a duplicate
+      // invite.
+      //
+      // `claimed_by` and `batch_id` are in the predicate: a worker whose claim
+      // was already reaped and re-granted must not be able to extend a lease it
+      // no longer holds.
+      await db.prepare(`
+        UPDATE linkedin_actions SET lease_expires_at=?
+        WHERE id=? AND workspace_id=? AND batch_id=? AND claimed_by=?
+      `).run(new Date(now.getTime() + leaseMs).toISOString(), actionId, workspaceId, batchId, workerId);
     },
 
     async enterCooldown(now) {
@@ -1137,31 +1412,570 @@ export interface DueSeat {
 }
 
 /**
- * Every SEAT with at least one claimable action due now.
+ * One LinkedIn account this worker may serve, with everything the decision to
+ * open a browser for it needs.
+ */
+export interface DueSeatForWorker extends DueSeat {
+  /**
+   * The seat's STORED posture, or null when the seat row is missing entirely.
+   *
+   * Joined into discovery rather than read per seat afterwards, and that is a
+   * fix rather than an optimisation: a paused or cooling seat used to pay a
+   * full Chromium launch, a stored sign-in and a LinkedIn navigation before
+   * anything asked whether it was allowed to act. `jobs.ts` already made this
+   * exact correction for the side tasks and left the send queue paying it.
+   */
+  posture: SeatPosture | null;
+  /** ISO-8601: the oldest claimable slot on this seat. What tenants are ordered by. */
+  oldestDue: string;
+}
+
+/** The most seats one pass will serve, and the most any one tenant may take of them. */
+const DEFAULT_MAX_DUE_SEATS = 200;
+const DEFAULT_MAX_SEATS_PER_WORKSPACE = 5;
+/** How deep the orphan sweep below reads before giving up for this pass. */
+const ORPHAN_SCAN_LIMIT = 2_000;
+
+/**
+ * The seats this worker should serve THIS PASS, in the order it should serve
+ * them.
  *
- * THE `AND seat_key='owner'` THIS REPLACES WAS THE BUG THAT MADE MULTI-SEAT
+ * THREE THINGS WERE WRONG WITH ASKING `linkedin_actions` DIRECTLY, and all
+ * three only appear past one tenant on one machine:
+ *
+ * 1. IT WAS THE SAME QUERY FOR EVERY WORKER. No workspace predicate, no shard,
+ *    ordered `workspace_id, seat_key` -- so every process on the deployment
+ *    produced the identical list in the identical order and every one of them
+ *    reached for the same seat first. Chromium's user-data-dir lock then gave
+ *    it to whoever got there first and the rest failed and raced on to the next
+ *    one together: adding workers added contention, not throughput.
+ * 2. IT HAD NO LIMIT AND NO FAIRNESS. A tenant with a 50,000-action backlog
+ *    sorted first was served first, to completion, on every single tick, and
+ *    the tenant whose id sorted last was never reached at all.
+ * 3. IT SCANNED. Every index on `linkedin_actions` leads with `workspace_id`
+ *    and this query had no `workspace_id` to give, so it read the whole table
+ *    and sorted it -- against a 30s `statement_timeout`, which it eventually
+ *    lost. The caller turned that into an empty list, which is
+ *    indistinguishable from "nothing is due", which is how a deployment's
+ *    entire LinkedIn queue can stop with nothing in the log to say so.
+ *
+ * SO THE QUESTION IS ASKED FROM THE SEAT SIDE INSTEAD. One index probe per
+ * seat into `idx_linkedin_actions_due_by_seat` (migration 049, which leads
+ * with exactly the columns this needs), so the cost is proportional to how many
+ * SEATS this worker's shard owns and NOT to how big anybody's backlog is. A
+ * tenant with 50,000 due rows costs precisely one probe, the same as a tenant
+ * with one. Ordering the result by each seat's OLDEST due slot then means the
+ * account that has been waiting longest is served first, and the per-workspace
+ * rank caps what any one tenant can take out of a single pass.
+ *
+ * Paused and cooling seats are excluded in SQL. They cannot become workable
+ * without a human, and letting them consume the pass's seat budget is how a
+ * tenant with 500 paused seats starves everybody else. The batch re-reads the
+ * posture anyway, between every action, and remains the authority.
+ */
+export async function dueSeatsForWorker(
+  db: Db,
+  now: Date,
+  options: {
+    shard?: WorkerShard;
+    seatKey?: string;
+    maxSeats?: number;
+    maxSeatsPerWorkspace?: number;
+  } = {}
+): Promise<DueSeatForWorker[]> {
+  const shard = options.shard ?? SINGLE_WORKER_SHARD;
+  const maxSeats = Math.max(1, Math.trunc(options.maxSeats ?? DEFAULT_MAX_DUE_SEATS));
+  const perWorkspace = Math.max(1, Math.trunc(options.maxSeatsPerWorkspace ?? DEFAULT_MAX_SEATS_PER_WORKSPACE));
+  const seatKey = options.seatKey ?? null;
+
+  const rows = await db.prepare(`
+    SELECT ranked.workspace_id, ranked.seat_key, ranked.timezone, ranked.posture, ranked.oldest_due
+    FROM (
+      SELECT s.workspace_id, s.seat_key, s.timezone, s.posture,
+             TO_CHAR(due.oldest_due AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS oldest_due,
+             ROW_NUMBER() OVER (PARTITION BY s.workspace_id ORDER BY due.oldest_due ASC, s.seat_key ASC) AS seat_rank
+      FROM linkedin_seats s
+      CROSS JOIN LATERAL (
+        SELECT a.planned_for AS oldest_due
+        FROM linkedin_actions a
+        WHERE a.workspace_id = s.workspace_id AND a.seat_key = s.seat_key
+          AND a.status='planned' AND a.claimed_at IS NULL
+          AND a.planned_for IS NOT NULL AND a.planned_for <= ?
+          AND a.kind IN (${EXECUTABLE_KIND_LIST})
+        ORDER BY a.planned_for ASC
+        LIMIT 1
+      ) due
+      WHERE s.posture NOT IN ('paused', 'cooldown')
+        AND (?::text IS NULL OR s.seat_key = ?::text)
+        AND ${shardPredicate("s.workspace_id || '/' || s.seat_key")}
+    ) ranked
+    WHERE ranked.seat_rank <= ?::int
+    ORDER BY ranked.oldest_due ASC, ranked.workspace_id ASC, ranked.seat_key ASC
+    LIMIT ?::int
+  `).all<{ workspace_id: string; seat_key: string; timezone: string | null; posture: string | null; oldest_due: string }>(
+    now.toISOString(),
+    seatKey,
+    seatKey,
+    ...shardParams(shard),
+    perWorkspace,
+    maxSeats
+  );
+
+  const seats: DueSeatForWorker[] = rows.map((row) => ({
+    workspaceId: row.workspace_id,
+    seatKey: row.seat_key,
+    timezone: row.timezone,
+    posture: (row.posture as SeatPosture | null) ?? null,
+    oldestDue: row.oldest_due
+  }));
+
+  // THE SEATLESS QUEUE STILL HAS TO SURFACE, and driving discovery off
+  // `linkedin_seats` is exactly how it would stop doing so. A due action whose
+  // seat row is missing is a real state (the row was written before the seat
+  // was connected, or the seat was deleted underneath it), and the batch has a
+  // sentence for it -- 'No LinkedIn seat is configured...' -- that an operator
+  // can act on. Dropping it here would leave a queue that quietly never moves,
+  // which is the failure this whole discovery path exists to have stopped.
+  //
+  // Bounded on purpose: the anti-join is read over the oldest ORPHAN_SCAN_LIMIT
+  // due rows rather than over the table, so its cost is fixed whatever the
+  // backlog. An orphan newer than that many due rows is found on a later pass,
+  // once the rows in front of it have drained.
+  if (seats.length < maxSeats) {
+    const orphans = await db.prepare(`
+      WITH candidate AS (
+        SELECT a.workspace_id, a.seat_key, a.planned_for
+        FROM linkedin_actions a
+        WHERE a.status='planned' AND a.claimed_at IS NULL
+          AND a.planned_for IS NOT NULL AND a.planned_for <= ?
+          AND a.kind IN (${EXECUTABLE_KIND_LIST})
+          AND (?::text IS NULL OR a.seat_key = ?::text)
+          AND ${shardPredicate("a.workspace_id || '/' || a.seat_key")}
+        ORDER BY a.planned_for ASC
+        LIMIT ${ORPHAN_SCAN_LIMIT}
+      )
+      SELECT c.workspace_id, c.seat_key,
+             TO_CHAR(MIN(c.planned_for) AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS oldest_due
+      FROM candidate c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM linkedin_seats s
+        WHERE s.workspace_id = c.workspace_id AND s.seat_key = c.seat_key
+      )
+      GROUP BY c.workspace_id, c.seat_key
+      ORDER BY MIN(c.planned_for) ASC
+      LIMIT ?::int
+    `).all<{ workspace_id: string; seat_key: string; oldest_due: string }>(
+      now.toISOString(),
+      seatKey,
+      seatKey,
+      ...shardParams(shard),
+      maxSeats - seats.length
+    );
+    for (const row of orphans) {
+      seats.push({
+        workspaceId: row.workspace_id,
+        seatKey: row.seat_key,
+        timezone: null,
+        posture: null,
+        oldestDue: row.oldest_due
+      });
+    }
+    seats.sort((left, right) => left.oldestDue.localeCompare(right.oldestDue));
+  }
+
+  return seats;
+}
+
+/**
+ * Every SEAT with at least one claimable action due now, in workspace order.
+ *
+ * THE `AND seat_key='owner'` THIS REPLACED WAS THE BUG THAT MADE MULTI-SEAT
  * COSMETIC. Actions were planned, filed and paced per seat all the way down
  * the queue, and then the one query that decides what a worker picks up threw
  * every non-owner row away -- so a second account's queue filled up and never
  * drained, silently, with no error anywhere to notice.
  *
- * LEFT JOIN, so a due action whose seat row is missing still surfaces: the
- * batch refuses it with 'No LinkedIn seat is configured...', which is a
- * sentence an operator can act on, where dropping it here would be a queue
- * that quietly never moves -- the exact failure this function just stopped
- * having.
+ * NOW A THIN VIEW OVER {@link dueSeatsForWorker}, which is what the worker
+ * itself uses: one implementation of "what is due", so a discovery rule can
+ * never be true of the listing and false of the loop. Unsharded and unbounded
+ * by tenant here, because its callers are asking a question about the whole
+ * deployment rather than about one worker's slice of it.
  */
 export async function seatsWithDueActions(db: Db, now: Date): Promise<DueSeat[]> {
+  const seats = await dueSeatsForWorker(db, now, { maxSeats: 10_000, maxSeatsPerWorkspace: 10_000 });
+  return seats
+    .map((seat) => ({ workspaceId: seat.workspaceId, seatKey: seat.seatKey, timezone: seat.timezone }))
+    .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId) || left.seatKey.localeCompare(right.seatKey));
+}
+
+// ---------------------------------------------------------------------------
+// Reapers: what a worker that stopped existing leaves behind
+// ---------------------------------------------------------------------------
+
+/**
+ * Release claims whose lease has expired, and return how many.
+ *
+ * WHY THE ROWS WERE STRANDED FOREVER. `claimNextDueAction` set `claimed_at`
+ * and every discovery and claim predicate tested `claimed_at IS NULL`. Nothing
+ * anywhere compared that timestamp to a deadline -- there was no reason to,
+ * with one worker on one machine that an operator could see. Kill that worker
+ * between the claim and the settle (a deploy, an OOM, a laptop lid) and the
+ * row was permanently invisible: not sent, not skipped, not claimable, and not
+ * reported. On a fleet that is not an edge case, it is what every rolling
+ * deploy does to whatever was in flight.
+ *
+ * WHAT IT WILL NOT TOUCH, WHICH IS THE HARD PART:
+ *
+ *   * `settlement_hold_at IS NOT NULL` -- the deliberate hold. The loop keeps
+ *     the claim on an UNKNOWN outcome because a retry could put a second
+ *     invite in somebody's notifications, and that cannot be withdrawn. A
+ *     reaper that could not tell a hold from a crash would turn the single
+ *     most dangerous failure mode in this subsystem into a routine one.
+ *   * a live lease -- by definition, since the predicate is that it expired.
+ *     The worker driving a batch pushes its lease forward before every action,
+ *     so an expired lease means the process is gone, not slow.
+ *   * a pre-lease claim that carries a `failure_kind` -- those are holds taken
+ *     before this migration existed, recognisable because the hold path always
+ *     records one and the claim path never does. They are left for a human.
+ *
+ * Bounded per call and `SKIP LOCKED`, so two workers reaping at once do
+ * different rows and neither holds a long transaction open.
+ */
+export async function reapExpiredActionLeases(
+  db: Db,
+  options: { now?: Date; limit?: number; legacyGraceMs?: number } = {}
+): Promise<number> {
+  const now = options.now ?? new Date();
+  const limit = Math.max(1, Math.trunc(options.limit ?? 500));
+  const legacyBefore = new Date(now.getTime() - Math.max(60_000, options.legacyGraceMs ?? LEGACY_CLAIM_GRACE_MS));
+  const result = await db.prepare(`
+    UPDATE linkedin_actions
+    SET claimed_at=NULL, claimed_by=NULL, lease_expires_at=NULL, batch_id=NULL
+    WHERE id IN (
+      SELECT id FROM linkedin_actions
+      WHERE status='planned' AND claimed_at IS NOT NULL AND settlement_hold_at IS NULL
+        AND (
+          (lease_expires_at IS NOT NULL AND lease_expires_at < ?)
+          -- Claimed before leases existed: no deadline to compare, so the
+          -- evidence has to be the absence of a hold's own fingerprint.
+          OR (lease_expires_at IS NULL AND failure_kind IS NULL AND claimed_at < ?)
+        )
+      ORDER BY claimed_at ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT ${limit}
+    )
+  `).run(now.toISOString(), legacyBefore.toISOString());
+  return result.changes;
+}
+
+/**
+ * Close batches left 'running' by a worker that is gone, and return how many.
+ *
+ * The `linkedin_batches` half of the same problem, and it had no reaper at all.
+ * A row stuck in 'running' is not merely untidy: `stopLinkedInBatches` counts
+ * it, the operator's Stop button reports batches that nothing is driving, and
+ * the ledger cannot say what happened during a deploy. Same shape and same
+ * reasoning as `reapStaleAgentRuns` (`agent/runs.ts`), including the wording
+ * rule: the batch was ABANDONED, not failed, and saying otherwise would invent
+ * a cause.
+ *
+ * It is also a second kill switch by accident, and a welcome one: the loop
+ * treats a batch row that is no longer 'running' as a stop request, so a
+ * reaped batch whose worker turns out to be alive stops itself at its next
+ * action rather than continuing under a closed row.
+ */
+export async function reapStaleLinkedInBatches(
+  db: Db,
+  options: { now?: Date; olderThanMs?: number; limit?: number } = {}
+): Promise<number> {
+  const now = options.now ?? new Date();
+  const limit = Math.max(1, Math.trunc(options.limit ?? 200));
+  const before = new Date(now.getTime() - Math.max(60_000, options.olderThanMs ?? STALE_BATCH_MS));
+  const result = await db.prepare(`
+    UPDATE linkedin_batches
+    SET status='halted', halt_reason=?, finished_at=?
+    WHERE id IN (
+      SELECT id FROM linkedin_batches
+      WHERE status='running' AND started_at < ?
+      ORDER BY started_at ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT ${limit}
+    )
+  `).run(STALE_BATCH_REASON, now.toISOString(), before.toISOString());
+  return result.changes;
+}
+
+const STALE_BATCH_REASON =
+  'The worker driving this batch stopped without closing it, so a later worker wrote it off. Nothing about the actions it had already settled changed; anything it had claimed and not settled was released back to the queue.';
+
+// ---------------------------------------------------------------------------
+// Seat leases: one driver per account, pinned to the host that has its session
+// ---------------------------------------------------------------------------
+
+export type SeatLeaseOutcome = { ok: true; expiresAt: string } | { ok: false; reason: string };
+
+interface SeatLeaseRow {
+  worker_id: string;
+  host: string;
+  profile_dir: string;
+  lease_expires_at: string;
+}
+
+/**
+ * Take this seat for this worker, or say why it may not be taken.
+ *
+ * TWO DIFFERENT QUESTIONS, AND CONFLATING THEM IS WHY THIS IS NOT JUST A LOCK.
+ *
+ * The first is mutual exclusion: two processes must not drive one LinkedIn
+ * account at the same time. The shard already makes that rare, but a static
+ * partition overlaps during a rolling deploy (the old pod and the new one hold
+ * the same index for a few seconds), and Chromium's own user-data-dir lock
+ * turns the overlap into a launch failure rather than a queue.
+ *
+ * The second is SESSION PORTABILITY, and it is the one that costs an account.
+ * The Chrome profile directory IS the LinkedIn session -- its cookies, its
+ * "remember this browser" device trust -- and it lives on ONE host's local
+ * disk (`resolveProfileDir`). A different host picking up the same seat finds
+ * an empty directory and signs in from scratch: a new device, a new IP, on an
+ * account LinkedIn already trusts a specific browser for. That is the single
+ * loudest challenge signal available to us, and we would be generating it
+ * ourselves, on every seat, every time a pod moved.
+ *
+ * So a lease is refused when ANOTHER host holds this seat's affinity and this
+ * host has no profile for it. Not "until the lease expires" -- forever, until
+ * either that host comes back or a human moves the profile. A seat that cannot
+ * run here is a seat that waits; a seat that re-authenticates here is a seat
+ * that may be gone.
+ *
+ * WHAT IS DELIBERATELY ALLOWED: the same host, always (a restarted worker is a
+ * new pid and the same disk); any host when nobody holds the seat; and any
+ * host when the profile is present here too (an operator who has copied or
+ * shared the profile directory has said, by doing so, that this host is a home
+ * for this seat).
+ */
+export async function claimSeatLease(
+  db: Db,
+  options: { workspaceId: string; seatKey: string; workerId: string; host: string; profileDir: string; leaseMs?: number },
+  now: Date = new Date()
+): Promise<SeatLeaseOutcome> {
+  const leaseMs = Math.max(60_000, Math.trunc(options.leaseMs ?? SEAT_LEASE_MS));
+  const expiresAt = new Date(now.getTime() + leaseMs).toISOString();
+
+  const current = await db.prepare(`
+    SELECT worker_id, host, profile_dir,
+           TO_CHAR(lease_expires_at AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS lease_expires_at
+    FROM linkedin_seat_leases WHERE workspace_id=? AND seat_key=?
+  `).get<SeatLeaseRow>(options.workspaceId, options.seatKey);
+
+  if (current && current.host !== options.host && !seatProfilePresent(options.profileDir)) {
+    return {
+      ok: false,
+      reason: `is pinned to host '${current.host}', which holds its signed-in Chrome profile. This host has nothing at ${options.profileDir}, and running it here would be a brand-new device sign-in on that account -- the loudest challenge signal there is. Bring that host back, or copy ${current.profile_dir} here first.`
+    };
+  }
+
+  // ATOMIC, AND THE `WHERE` IS THE WHOLE LOCK. A conflicting row is updated
+  // only when it is ours already or its term has run out; otherwise the
+  // statement writes nothing and returns nothing, which is a refusal with no
+  // race window between the read above and this write.
+  const taken = await db.prepare(`
+    INSERT INTO linkedin_seat_leases (workspace_id, seat_key, worker_id, host, profile_dir, leased_at, lease_expires_at, released_at)
+    VALUES (?,?,?,?,?,?,?,NULL)
+    ON CONFLICT (workspace_id, seat_key) DO UPDATE
+    SET worker_id=EXCLUDED.worker_id, host=EXCLUDED.host, profile_dir=EXCLUDED.profile_dir,
+        leased_at=EXCLUDED.leased_at, lease_expires_at=EXCLUDED.lease_expires_at, released_at=NULL
+    WHERE linkedin_seat_leases.worker_id = EXCLUDED.worker_id
+       OR linkedin_seat_leases.released_at IS NOT NULL
+       OR linkedin_seat_leases.lease_expires_at <= EXCLUDED.leased_at
+    RETURNING TO_CHAR(lease_expires_at AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS lease_expires_at
+  `).get<{ lease_expires_at: string }>(
+    options.workspaceId,
+    options.seatKey,
+    options.workerId,
+    options.host,
+    options.profileDir,
+    now.toISOString(),
+    expiresAt
+  );
+
+  if (!taken) {
+    return {
+      ok: false,
+      reason: `is already being driven by worker '${current?.worker_id ?? 'another worker'}' until ${current?.lease_expires_at ?? 'its lease expires'}; this pass left it alone.`
+    };
+  }
+  return { ok: true, expiresAt: taken.lease_expires_at };
+}
+
+/**
+ * Push this worker's lease forward. False when it no longer holds it.
+ *
+ * `worker_id` is in the predicate on purpose: a worker whose lease was reaped
+ * and re-granted elsewhere must NOT be able to extend it back into existence.
+ */
+export async function heartbeatSeatLease(
+  db: Db,
+  options: { workspaceId: string; seatKey: string; workerId: string; leaseMs?: number },
+  now: Date = new Date()
+): Promise<boolean> {
+  const leaseMs = Math.max(60_000, Math.trunc(options.leaseMs ?? SEAT_LEASE_MS));
+  const result = await db.prepare(`
+    UPDATE linkedin_seat_leases SET lease_expires_at=?
+    WHERE workspace_id=? AND seat_key=? AND worker_id=? AND released_at IS NULL
+  `).run(new Date(now.getTime() + leaseMs).toISOString(), options.workspaceId, options.seatKey, options.workerId);
+  return result.changes > 0;
+}
+
+/**
+ * Give the seat back, keeping the affinity.
+ *
+ * THE ROW IS NOT DELETED. `released_at` says "nobody is driving this right
+ * now"; `host` and `profile_dir` go on saying "and this machine is where its
+ * session lives", which is the fact another host has to respect tomorrow.
+ * Deleting the row on release would throw that away every time a pass ended
+ * cleanly -- which is to say, always.
+ */
+export async function releaseSeatLease(
+  db: Db,
+  options: { workspaceId: string; seatKey: string; workerId: string },
+  now: Date = new Date()
+): Promise<void> {
+  await db.prepare(`
+    UPDATE linkedin_seat_leases SET released_at=?, lease_expires_at=?
+    WHERE workspace_id=? AND seat_key=? AND worker_id=?
+  `).run(now.toISOString(), now.toISOString(), options.workspaceId, options.seatKey, options.workerId);
+}
+
+/**
+ * Does this host actually hold a usable Chrome profile for the seat?
+ *
+ * An EMPTY directory is not a profile: `launchPersistentContext` creates the
+ * path on first use, so "it exists" would be true on a host that had merely
+ * tried once and failed. What makes it a session is content.
+ */
+export function seatProfilePresent(profileDir: string): boolean {
+  try {
+    return statSync(profileDir).isDirectory() && readdirSync(profileDir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The fleet, sliced: which seats and which workspaces are this worker's
+// ---------------------------------------------------------------------------
+
+/**
+ * The seats in this worker's shard, for the periodic per-seat work.
+ *
+ * `linkedinSeatRefs` returns EVERY seat on the deployment, which is right for
+ * the listing it is and wrong as the thing a worker iterates: the side-task
+ * loop walked all of them, serially, on every tick -- 5,000 round trips before
+ * a single browser opened, and every worker made the same 5,000. Sharded here
+ * so each worker walks its own slice, and bounded so one tick cannot become
+ * unbounded work.
+ *
+ * `after` is a cursor over (workspace_id, seat_key), so successive ticks cover
+ * different seats instead of restarting at the same alphabetical head every
+ * minute and never reaching the tail.
+ */
+export async function seatRefsForShard(
+  db: Db,
+  options: { shard?: WorkerShard; limit?: number; after?: { workspaceId: string; seatKey: string } | null } = {}
+): Promise<Array<{ workspaceId: string; seatKey: string }>> {
+  const shard = options.shard ?? SINGLE_WORKER_SHARD;
+  const limit = Math.max(1, Math.trunc(options.limit ?? 200));
+  const after = options.after ?? null;
   const rows = await db.prepare(`
-    SELECT DISTINCT a.workspace_id, a.seat_key, s.timezone
-    FROM linkedin_actions a
-    LEFT JOIN linkedin_seats s ON s.workspace_id = a.workspace_id AND s.seat_key = a.seat_key
-    WHERE a.status='planned' AND a.claimed_at IS NULL
-      AND a.planned_for IS NOT NULL AND a.planned_for <= ?
-      AND a.kind IN (${EXECUTABLE_KIND_LIST})
-    ORDER BY a.workspace_id, a.seat_key
-  `).all<{ workspace_id: string; seat_key: string; timezone: string | null }>(now.toISOString());
-  return rows.map((row) => ({ workspaceId: row.workspace_id, seatKey: row.seat_key, timezone: row.timezone }));
+    SELECT workspace_id, seat_key FROM linkedin_seats
+    WHERE (?::text IS NULL OR (workspace_id, seat_key) > (?::text, ?::text))
+      AND ${shardPredicate("workspace_id || '/' || seat_key")}
+    ORDER BY workspace_id ASC, seat_key ASC
+    LIMIT ${limit}
+  `).all<{ workspace_id: string; seat_key: string }>(
+    after?.workspaceId ?? null,
+    after?.workspaceId ?? null,
+    after?.seatKey ?? null,
+    ...shardParams(shard)
+  );
+  return rows.map((row) => ({ workspaceId: row.workspace_id, seatKey: row.seat_key }));
+}
+
+/**
+ * The workspaces in this worker's shard, for the once-per-workspace campaign
+ * tick. Same cursor and the same reasoning as {@link seatRefsForShard}.
+ *
+ * Sharded on the WORKSPACE alone rather than on (workspace, seat): a campaign
+ * tick is per workspace, and hashing it any other way would have two workers
+ * both advancing one tenant's campaigns.
+ */
+export async function linkedinWorkspaceIdsForShard(
+  db: Db,
+  options: { shard?: WorkerShard; limit?: number; after?: string | null } = {}
+): Promise<string[]> {
+  const shard = options.shard ?? SINGLE_WORKER_SHARD;
+  const limit = Math.max(1, Math.trunc(options.limit ?? 200));
+  const after = options.after ?? null;
+  const rows = await db.prepare(`
+    SELECT DISTINCT workspace_id FROM linkedin_seats
+    WHERE (?::text IS NULL OR workspace_id > ?::text)
+      AND ${shardPredicate('workspace_id')}
+    ORDER BY workspace_id ASC
+    LIMIT ${limit}
+  `).all<{ workspace_id: string }>(after, after, ...shardParams(shard));
+  return rows.map((row) => row.workspace_id);
+}
+
+// ---------------------------------------------------------------------------
+// Is the queue actually being served? A question /health has to be able to ask
+// ---------------------------------------------------------------------------
+
+export interface LinkedInWorkerHealth {
+  /** False once a discovery read has failed and not yet succeeded again. */
+  discoveryHealthy: boolean;
+  /** How many passes in a row could not read the queue. */
+  consecutiveDiscoveryFailures: number;
+  lastDiscoveryError: string | null;
+  lastDiscoveryFailureAt: string | null;
+  lastDiscoveryOkAt: string | null;
+}
+
+const discoveryState: LinkedInWorkerHealth = {
+  discoveryHealthy: true,
+  consecutiveDiscoveryFailures: 0,
+  lastDiscoveryError: null,
+  lastDiscoveryFailureAt: null,
+  lastDiscoveryOkAt: null
+};
+
+/**
+ * Record whether this pass could read the queue at all.
+ *
+ * THE FAILURE THAT LOOKED EXACTLY LIKE SUCCESS. A discovery error was caught,
+ * logged at the same level as everything else, and turned into `[]` -- which is
+ * byte-for-byte what "no seat has work due" returns. So the single most
+ * consequential failure in this subsystem (nobody's queue is being served, on
+ * any tenant) presented as its most ordinary state, and the only way to notice
+ * was to read the log and know which line mattered. This is what makes it
+ * answerable from outside the process.
+ */
+function recordDiscoveryOutcome(cause: unknown | null, now: Date): void {
+  if (cause === null) {
+    discoveryState.discoveryHealthy = true;
+    discoveryState.consecutiveDiscoveryFailures = 0;
+    discoveryState.lastDiscoveryError = null;
+    discoveryState.lastDiscoveryOkAt = now.toISOString();
+    return;
+  }
+  discoveryState.discoveryHealthy = false;
+  discoveryState.consecutiveDiscoveryFailures += 1;
+  discoveryState.lastDiscoveryError = cause instanceof Error ? cause.message : String(cause);
+  discoveryState.lastDiscoveryFailureAt = now.toISOString();
+}
+
+/** What this process knows about whether the LinkedIn queue is moving. */
+export function linkedInWorkerHealth(): LinkedInWorkerHealth {
+  return { ...discoveryState };
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,6 +2270,20 @@ interface BrowserHandle {
   page: LinkedInPage;
   /** Which mode this handle was opened in, so a reuse cannot silently be the wrong one. */
   headless: boolean;
+  /**
+   * `Date.now()` at the last open or reuse. What makes the idle sweep possible
+   * at all -- a handle nobody can date is a handle nobody can retire.
+   */
+  lastUsedAt: number;
+  /**
+   * A monotonic use counter, and NOT the timestamp above, because eviction
+   * order has to be a total order. Several seats opened inside one millisecond
+   * share a `lastUsedAt`, and "least recently used" then degenerates into
+   * whatever the map's insertion order happens to be -- which is the opposite
+   * of the intent, since the seat opened first is usually the one being reused
+   * most.
+   */
+  usedSeq: number;
   close(): Promise<void>;
 }
 
@@ -1468,9 +2296,127 @@ interface BrowserHandle {
  * directories, a lone `browser` variable would still hand the second seat's
  * call the first seat's already-open page -- same session, same cookies, wrong
  * account. Keyed by (workspace, seat), exactly as the profile directory now is.
+ *
+ * BOUNDED, WHICH IT WAS NOT. Nothing on any success path ever removed an entry,
+ * so this map retained one LIVE Chromium for every seat this process had ever
+ * touched -- at ~350-500MB each, a 16GB host fell over somewhere between 25 and
+ * 40 seats, and on a hosted worker serving hundreds of seats that is not an
+ * edge case, it is Tuesday. Two mechanisms bound it now and they answer two
+ * different questions: {@link closeIdleBrowsers} retires contexts nobody is
+ * using, and {@link evictSurplusBrowsers} retires the least recently used one
+ * when every context IS being used and there are simply too many.
+ *
+ * Insertion order is LRU order: `browsers.set` on a fresh open appends, and a
+ * reuse updates `lastUsedAt` in place, so eviction sorts on the timestamp
+ * rather than trusting the Map's order.
  */
 const browsers = new Map<string, BrowserHandle>();
-let missingPlaywrightLogged = false;
+let browserUseSeq = 0;
+
+/** How many Chromium contexts this worker may hold open at once. */
+const DEFAULT_MAX_OPEN_BROWSERS = 4;
+/** How long a context may sit unused before the next pass closes it. */
+const DEFAULT_BROWSER_IDLE_MS = 10 * 60_000;
+
+function maxOpenBrowsers(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number.parseInt(env.TREVRA_LINKEDIN_MAX_BROWSERS ?? '', 10);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_MAX_OPEN_BROWSERS;
+}
+
+function browserIdleMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number.parseInt(env.TREVRA_LINKEDIN_BROWSER_IDLE_MS ?? '', 10);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_BROWSER_IDLE_MS;
+}
+
+/**
+ * Close least-recently-used contexts until there is room for one more.
+ *
+ * `keep` is the handle about to be inserted, excluded so a cap of 1 still
+ * works. Closing rather than merely forgetting: a forgotten context is a live
+ * Chromium nothing can ever close, holding its profile directory's exclusive
+ * lock, which strands that seat for every worker on this host.
+ */
+async function evictSurplusBrowsers(keep: string): Promise<void> {
+  const cap = maxOpenBrowsers();
+  const victims = [...browsers.entries()]
+    .filter(([key]) => key !== keep)
+    .sort((left, right) => left[1].usedSeq - right[1].usedSeq)
+    .slice(0, Math.max(0, browsers.size + (browsers.has(keep) ? 0 : 1) - cap));
+  for (const [key] of victims) browsers.delete(key);
+  await Promise.all(
+    victims.map(async ([, handle]) => {
+      try {
+        await handle.close();
+      } catch {
+        // Same as everywhere else: a context we cannot close must not take the
+        // pass down with it.
+      }
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Log suppression that is per tenant, not per process
+// ---------------------------------------------------------------------------
+
+/**
+ * How long one key stays quiet after it has spoken, and how many keys are kept.
+ *
+ * A WINDOW RATHER THAN A BOOLEAN, and per key rather than per process. The
+ * three flags this replaces (`missingPlaywrightLogged`, `unreadyLogged`,
+ * `loadedDriverLogged`) were module-level and permanent, which is right for one
+ * operator on one laptop and wrong in exactly the way that matters on a fleet:
+ * the FIRST tenant to hit a condition printed the line, and every other
+ * tenant's identical condition -- a different account, a different queue, a
+ * different person waiting for it -- was silent for the life of the process.
+ * An hour is long enough that a per-minute tick does not flood the log and
+ * short enough that a condition still present tomorrow says so again.
+ *
+ * The map is capped because its keys are tenant-derived and a hosted worker
+ * sees thousands of them: an unbounded suppression table is a memory leak
+ * wearing a log-hygiene costume. Oldest entries go first.
+ */
+const LOG_SUPPRESSION_MS = 60 * 60_000;
+const MAX_LOG_KEYS = 2_000;
+const loggedRecently = new Map<string, number>();
+
+export function shouldLogOnce(key: string, now: Date, windowMs: number = LOG_SUPPRESSION_MS): boolean {
+  const at = now.getTime();
+  const last = loggedRecently.get(key);
+  if (last !== undefined && at - last < windowMs) return false;
+  if (loggedRecently.size >= MAX_LOG_KEYS) {
+    for (const oldest of [...loggedRecently.entries()].sort((left, right) => left[1] - right[1]).slice(0, MAX_LOG_KEYS / 4)) {
+      loggedRecently.delete(oldest[0]);
+    }
+  }
+  loggedRecently.set(key, at);
+  return true;
+}
+
+/**
+ * The same log, with the tenant and the seat in front of every line.
+ *
+ * WHOSE RUN FAILED IS A QUESTION A HOSTED OPERATOR HAS TO BE ABLE TO ANSWER.
+ * "LinkedIn local worker could not open a browser" is a complete sentence when
+ * there is one account on one laptop and an unanswerable one across thousands
+ * of workspaces, which is what every line in this pass used to be.
+ */
+function seatLogger(log: (message: string) => void, workspaceId: string, seatKey: string): (message: string) => void {
+  return (message: string) => log(`LinkedIn seat ${workspaceId}/${seatKey}: ${message}`);
+}
+
+/** A seat-scoped line said at most once per suppression window. */
+function logOncePerSeat(
+  say: (message: string) => void,
+  reasonKey: string,
+  workspaceId: string,
+  seatKey: string,
+  message: string,
+  now: Date
+): void {
+  if (!shouldLogOnce(`${workspaceId}/${seatKey}:${reasonKey}`, now)) return;
+  say(message);
+}
 
 // ---------------------------------------------------------------------------
 // Per-seat browser identity: stable, non-default, and derived, never drawn
@@ -1642,7 +2588,11 @@ async function alignClientHints(
       // `HeadlessChrome` is the whole reason an override is still needed once
       // the browser is the full Chromium build rather than the headless shell.
       userAgent: reported.replace('HeadlessChrome', 'Chrome'),
-      acceptLanguage: `${language},${language.split('-')[0]};q=0.9`,
+      // NO q-VALUES HERE. Chromium appends its own `;q=` weights to whatever
+      // this string ends with, so writing them out produced the malformed
+      // `de-CH,de;q=0.9;q=0.9` on the wire -- a header no browser emits and a
+      // free anomaly. The bare list is what a real de-CH Chrome starts from.
+      acceptLanguage: `${language},${language.split('-')[0]}`,
       platform: 'Linux x86_64',
       userAgentMetadata: {
         // The GREASE entry is part of what a real Chrome sends; a brand list
@@ -1667,6 +2617,14 @@ async function alignClientHints(
         wow64: false
       }
     });
+    // SCROLLBARS BACK ON, AND THIS IS NOT WHAT `ignoreDefaultArgs` DID.
+    //
+    // Dropping `--hide-scrollbars` from the command line was not enough: the
+    // driver hides them over CDP as well, and a probe of the launched browser
+    // still had `innerWidth === documentElement.clientWidth`, which is the
+    // one-line check for it. Only this call actually gives the page the ~15px
+    // gutter every desktop Chrome has.
+    await cdp.send('Emulation.setScrollbarsHidden', { hidden: false });
   } catch (cause) {
     log(
       `LinkedIn seat browser kept its launch-time user agent: the client-hint override failed (${cause instanceof Error ? cause.message : String(cause)}).`
@@ -1686,10 +2644,23 @@ export interface SeatProxy {
 }
 
 const PROXY_ENV_PREFIX = 'TREVRA_LINKEDIN_PROXY';
+const PROXY_MAP_ENV = 'TREVRA_LINKEDIN_PROXIES';
 
 /** Whatever an id or a seat key is, this is what it may contribute to an env var name. */
 function envSafe(value: string): string {
   return value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '_');
+}
+
+/**
+ * True when {@link envSafe} loses nothing about this value.
+ *
+ * The composed variable names below join their parts with `_`, and `_` is a
+ * legal character in both a workspace id and a seat key -- so a name built
+ * from a value containing one cannot be parsed back into the pair it came
+ * from. Alphanumerics survive; everything else does not.
+ */
+function envSegmentIsLossless(value: string): boolean {
+  return /^[A-Za-z0-9]+$/.test(value.trim());
 }
 
 /**
@@ -1702,16 +2673,27 @@ function envSafe(value: string): string {
  * the operator who genuinely needs one (a second account on a residential line
  * that is not this machine's), and it is opt-in per seat.
  *
- * THREE KEYS, MOST SPECIFIC WINS:
+ * TWO WAYS TO CONFIGURE ONE, AND THE FIRST IS THE ONE THAT SCALES:
  *
- *   TREVRA_LINKEDIN_PROXY_<WORKSPACE>_<SEAT>  one seat in one workspace
- *   TREVRA_LINKEDIN_PROXY_<SEAT>              that seat key, in any workspace
- *   TREVRA_LINKEDIN_PROXY                     every seat on this machine
+ *   TREVRA_LINKEDIN_PROXIES  a JSON object, keyed by the EXACT pair:
+ *                              {"ws_a/sales": "http://user:pw@host:port",
+ *                               "*\/sales":    "...",   // that seat key anywhere
+ *                               "ws_a/*":     "...",   // every seat of one tenant
+ *                               "*":          "..."}   // every seat here
+ *   TREVRA_LINKEDIN_PROXY_<SEAT>  that seat key, in any workspace
+ *   TREVRA_LINKEDIN_PROXY         every seat on this machine
  *
- * lc-debt: the two-part key is built by flattening both ids to `[A-Z0-9_]`, so
- * workspace `ws` + seat `a_sales` and workspace `ws_a` + seat `sales` produce
- * the same variable name; upgrade path is a single
- * `TREVRA_LINKEDIN_PROXIES` JSON map keyed by the exact pair.
+ * THE TWO-PART ENV VAR IS GONE, AND THIS IS WHY. `TREVRA_LINKEDIN_PROXY_<WS>_<SEAT>`
+ * was built by flattening both ids to `[A-Z0-9_]` and joining them with `_` --
+ * which is also a legal character inside both. So workspace `ws` + seat
+ * `a_sales` and workspace `ws_a` + seat `sales` resolved to the SAME variable
+ * name, and two unrelated tenants silently shared one exit IP: the single
+ * outcome the whole fail-closed discipline below exists to prevent, arrived at
+ * by a naming accident rather than by a misconfiguration anybody could see.
+ * A name that cannot be parsed back into the pair it was built from cannot be
+ * trusted, so an ambiguous one is REFUSED rather than guessed at, and the
+ * refusal names the exact JSON key to use instead. The JSON map has no
+ * separator to be ambiguous about: its keys are compared as whole strings.
  *
  * THROWS RATHER THAN RETURNING NULL FOR ANYTHING IT CANNOT PARSE, and that is
  * the entire safety property. "A proxy was configured and we could not use it"
@@ -1725,34 +2707,103 @@ export function resolveSeatProxy(
   workspaceId: string,
   seatKey: string
 ): SeatProxy | null {
+  const mapped = proxyFromMap(env, workspaceId, seatKey);
+  if (mapped) return parseProxyUrl(mapped.source, mapped.raw);
+
+  // A composed name is usable only when every id it was built from survives
+  // the flattening unchanged. `sales` does; `a_sales` does not, because the
+  // `_` it contributes is indistinguishable from the separator.
+  const seatIsUnambiguous = envSegmentIsLossless(seatKey);
+  const workspaceIsUnambiguous = envSegmentIsLossless(workspaceId);
+
+  const pairName = `${PROXY_ENV_PREFIX}_${envSafe(workspaceId)}_${envSafe(seatKey)}`;
+  const seatName = `${PROXY_ENV_PREFIX}_${envSafe(seatKey)}`;
+
+  // SET BUT UNUSABLE IS AN ERROR, NOT A MISS. Ignoring it would fall through
+  // to a broader key or to null, and null means "connect directly" -- from the
+  // very machine this seat was configured not to be seen from.
+  if (env[pairName]?.trim() && !(workspaceIsUnambiguous && seatIsUnambiguous)) {
+    throw new Error(
+      `${pairName} cannot be matched to exactly one workspace and seat, because '${workspaceId}' or '${seatKey}' contains a character that flattens into the same '_' the name uses as its separator -- another tenant's pair can produce this very name. Set TREVRA_LINKEDIN_PROXIES instead, with the exact key "${workspaceId}/${seatKey}".`
+    );
+  }
+  if (env[seatName]?.trim() && !seatIsUnambiguous) {
+    throw new Error(
+      `${seatName} cannot be matched to exactly one seat key, because '${seatKey}' contains a character that flattens into the same '_' the name uses as its separator. Set TREVRA_LINKEDIN_PROXIES instead, with the exact key "*/${seatKey}".`
+    );
+  }
+
   const candidates = [
-    `${PROXY_ENV_PREFIX}_${envSafe(workspaceId)}_${envSafe(seatKey)}`,
-    `${PROXY_ENV_PREFIX}_${envSafe(seatKey)}`,
+    ...(workspaceIsUnambiguous && seatIsUnambiguous ? [pairName] : []),
+    ...(seatIsUnambiguous ? [seatName] : []),
     PROXY_ENV_PREFIX
   ];
   const name = candidates.find((candidate) => env[candidate]?.trim());
   if (!name) return null;
-  const raw = env[name]!.trim();
+  return parseProxyUrl(name, env[name]!.trim());
+}
 
+/**
+ * The JSON map, or null when it names nothing for this seat.
+ *
+ * MOST SPECIFIC WINS, and every key is compared whole: there is no separator
+ * to mis-parse, so `{"ws/a_sales": ...}` and `{"ws_a/sales": ...}` are two
+ * different entries that can hold two different proxies, which is exactly what
+ * the env-var form could not express.
+ *
+ * A map that will not parse THROWS. A typo in the JSON must not degrade to "no
+ * proxy configured", for the same reason a malformed URL must not.
+ */
+function proxyFromMap(
+  env: NodeJS.ProcessEnv,
+  workspaceId: string,
+  seatKey: string
+): { source: string; raw: string } | null {
+  const raw = env[PROXY_MAP_ENV]?.trim();
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // The VALUE is never quoted back: this object is full of passwords.
+    throw new Error(`${PROXY_MAP_ENV} is not valid JSON. It is an object keyed by "<workspace>/<seat>", with "*" allowed on either side.`);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${PROXY_MAP_ENV} must be a JSON object keyed by "<workspace>/<seat>", with "*" allowed on either side.`);
+  }
+  const table = parsed as Record<string, unknown>;
+  for (const key of [`${workspaceId}/${seatKey}`, `*/${seatKey}`, `${workspaceId}/*`, '*']) {
+    const value = table[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error(`${PROXY_MAP_ENV} entry "${key}" is not a proxy URL. Use http://user:pass@host:port, https://... or socks5://host:port.`);
+    }
+    return { source: `${PROXY_MAP_ENV} entry "${key}"`, raw: value.trim() };
+  }
+  return null;
+}
+
+/** One proxy URL, validated the same way whichever configuration named it. */
+function parseProxyUrl(source: string, raw: string): SeatProxy {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     // The VALUE is never quoted back: a proxy URL routinely carries a password.
-    throw new Error(`${name} is not a URL. Use http://user:pass@host:port, https://... or socks5://host:port.`);
+    throw new Error(`${source} is not a URL. Use http://user:pass@host:port, https://... or socks5://host:port.`);
   }
   const scheme = url.protocol.replace(':', '');
   if (!['http', 'https', 'socks5'].includes(scheme)) {
-    throw new Error(`${name} uses an unsupported proxy scheme '${scheme}'. Chromium accepts http, https and socks5.`);
+    throw new Error(`${source} uses an unsupported proxy scheme '${scheme}'. Chromium accepts http, https and socks5.`);
   }
-  if (!url.hostname) throw new Error(`${name} names no proxy host.`);
+  if (!url.hostname) throw new Error(`${source} names no proxy host.`);
   const username = decodeURIComponent(url.username);
   const password = decodeURIComponent(url.password);
   if (scheme === 'socks5' && (username || password)) {
     // Chromium cannot authenticate a SOCKS proxy. Accepting it would mean
     // launching with credentials that are silently dropped, which is a direct
     // connection wearing a proxy's clothes.
-    throw new Error(`${name} is a SOCKS proxy with credentials, which Chromium cannot authenticate. Use an http proxy, or a SOCKS proxy that authorises this machine by IP.`);
+    throw new Error(`${source} is a SOCKS proxy with credentials, which Chromium cannot authenticate. Use an http proxy, or a SOCKS proxy that authorises this machine by IP.`);
   }
   return {
     server: `${scheme}://${url.host}`,
@@ -1762,54 +2813,110 @@ export function resolveSeatProxy(
 }
 
 /**
- * The one actionable line, logged once (plan 4.4).
+ * The one actionable line, logged once PER SCOPE (plan 4.4).
  *
- * Once, because this runs on every worker tick and a per-minute repetition of
- * the same install instruction is how a log stops being read.
+ * Not once per process, which is what it was. `missingPlaywrightLogged` was a
+ * module-level boolean, so the first seat that could not find a browser driver
+ * printed the install instruction and every seat after it -- in every other
+ * workspace, for the life of the worker -- printed nothing at all. On one
+ * laptop that is the correct behaviour (a repeated per-minute line is a line
+ * nobody reads). Across thousands of tenants it means the ONE symptom a
+ * tenant's dead queue has is suppressed by an unrelated tenant's failure, and
+ * the operator has no way to tell whose run failed. Keyed and time-boxed
+ * instead: see {@link shouldLogOnce}.
  */
-function reportMissingPlaywright(log: (message: string) => void, cause: unknown): void {
-  if (missingPlaywrightLogged) return;
-  missingPlaywrightLogged = true;
+function reportMissingPlaywright(log: (message: string) => void, cause: unknown, scope = 'process'): void {
+  if (!shouldLogOnce(`playwright-missing:${scope}`, new Date())) return;
   log(
-    `LinkedIn local worker is enabled but stays off: playwright not installed; run npm i playwright && npx playwright install chromium (${cause instanceof Error ? cause.message : String(cause)})`
+    `LinkedIn local worker is enabled but stays off: no browser driver installed; run npm i patchright && npx patchright install chromium (${cause instanceof Error ? cause.message : String(cause)})`
   );
 }
 
-let unreadyLogged = '';
-
 /**
- * Say once, per distinct set of reasons, that this process cannot drive a
- * browser. Same discipline as {@link reportMissingPlaywright}: this is on a
- * per-minute tick, and a repeated line is a line nobody reads.
+ * Say, once per distinct set of reasons per scope, that this process cannot
+ * drive a browser. Same discipline as {@link reportMissingPlaywright}, and it
+ * used to have the same defect: a single module-level string, so one scope's
+ * message silenced every other scope's identical one forever.
  */
-function reportUnready(log: (message: string) => void, readiness: LinkedInBrowserReadiness): void {
+function reportUnready(log: (message: string) => void, readiness: LinkedInBrowserReadiness, scope = 'process'): void {
   const summary = readiness.reasons.join(' ');
-  if (unreadyLogged === summary) return;
-  unreadyLogged = summary;
+  if (!shouldLogOnce(`unready:${scope}:${summary}`, new Date())) return;
   log(`LinkedIn local worker stays off here: ${summary}`);
 }
 
 /**
- * Load Playwright, or report its absence and stay off.
+ * PATCHRIGHT FIRST, STOCK PLAYWRIGHT SECOND.
  *
- * The specifier is typed as `string` rather than written as a literal so that
- * neither `tsc` nor the Vite marketing build tries to resolve a package that
- * is deliberately optional. A HARD dependency would add ~400MB to the Oracle
- * image and break the Cloudflare build (plan 4.4) -- for a feature that is off
- * on every deployment except a self-hoster who asked for it.
+ * They are the same API -- Patchright is Playwright with the automation tells
+ * patched out at the driver level -- so this is a swap of the import and
+ * nothing else. What it buys is the one class of signal no launch option can
+ * reach:
+ *
+ *   - Playwright calls `Runtime.enable` to get an execution-context id. That
+ *     makes Chromium emit `Runtime.consoleAPICalled`, and because V8 only
+ *     formats `Error.stack` on first access, a page detects an attached CDP
+ *     client in five lines. It is the technique DataDome published and says
+ *     every major anti-bot vendor now runs. Patchright uses isolated worlds
+ *     instead and never enables the domain.
+ *   - Stock Playwright injects `window.__pwInitScripts` and
+ *     `window.__playwright__binding__` into every page. Patchright does not.
+ *   - It also drops `--enable-automation` and friends from the default args,
+ *     which is belt and braces with the `ignoreDefaultArgs` in `openBrowser`.
+ *
+ * THE FALLBACK IS DELIBERATE AND IS NOT A SILENT DOWNGRADE. Patchright pins its
+ * own Chromium revision; an install that has playwright's browsers but not
+ * Patchright's should keep working, because a seat that cannot open a browser
+ * at all is worse than one that opens a more detectable browser. Which one was
+ * loaded is logged once, so "why is this account getting challenged" has an
+ * answer that does not require reading this file.
+ *
+ * The specifiers are typed as `string` rather than written as literals so that
+ * neither `tsc` nor the Vite marketing build tries to resolve a package that is
+ * deliberately optional. A HARD dependency would add ~400MB to the Oracle image
+ * and break the Cloudflare build (plan 4.4) -- for a feature that is off on
+ * every deployment except a self-hoster who asked for it.
  *
  * ABSENCE IS NEVER FATAL. This returns null; it does not throw. A worker
  * process that crashed because an optional browser was missing would take the
  * automation cycle, the playbook engine and the schedule sweep down with it.
  */
-export async function loadLinkedInPlaywright(log: (message: string) => void = () => {}): Promise<PlaywrightLike | null> {
-  const specifier: string = 'playwright';
-  try {
-    return (await import(specifier)) as PlaywrightLike;
-  } catch (cause) {
-    reportMissingPlaywright(log, cause);
-    return null;
+const DRIVER_SPECIFIERS: readonly string[] = ['patchright', 'playwright'];
+/**
+ * Which driver was loaded, said once per SCOPE rather than once per process.
+ *
+ * See {@link shouldLogOnce}: on a fleet, "once ever" means the first tenant to
+ * hit a problem silences that problem's only symptom for every other tenant
+ * for the life of the process.
+ */
+const loadedDriverLogged = new Set<string>();
+
+export async function loadLinkedInPlaywright(
+  log: (message: string) => void = () => {},
+  scope = 'process'
+): Promise<PlaywrightLike | null> {
+  let last: unknown;
+  for (const specifier of DRIVER_SPECIFIERS) {
+    try {
+      const driver = (await import(specifier)) as PlaywrightLike;
+      // WHICH driver is a fact about the process, not about a seat, so this
+      // one really is once -- but it is keyed all the same, so a caller that
+      // wants it per seat gets it per seat.
+      if (!loadedDriverLogged.has(scope)) {
+        if (loadedDriverLogged.size > MAX_LOG_KEYS) loadedDriverLogged.clear();
+        loadedDriverLogged.add(scope);
+        log(
+          specifier === 'patchright'
+            ? 'LinkedIn seats are driven by patchright (the patched Playwright: no Runtime.enable, no __pwInitScripts).'
+            : 'LinkedIn seats are driven by stock playwright: patchright is not installed, so this browser answers an attached-CDP probe. Run npm i patchright && npx patchright install chromium.'
+        );
+      }
+      return driver;
+    } catch (cause) {
+      last = cause;
+    }
   }
+  reportMissingPlaywright(log, last, scope);
+  return null;
 }
 
 /**
@@ -1838,7 +2945,7 @@ export async function loadLinkedInPlaywright(log: (message: string) => void = ()
  * therefore share nothing -- not a cookie jar, not a fingerprint, not an exit
  * IP if the operator configured one.
  */
-async function openBrowser(
+export async function openBrowser(
   config: LinkedInLocalWorkerConfig,
   log: (message: string) => void,
   options: {
@@ -1849,16 +2956,35 @@ async function openBrowser(
     timezone?: string | null;
     /** Overridable so a test can drive the proxy rules without touching process.env. */
     env?: NodeJS.ProcessEnv;
+    /**
+     * The driver, injected.
+     *
+     * THE SAME SEAM `LocalWorkerStore` IS, AND FOR THE SAME REASON. What this
+     * function has to get right -- close the context if anything after the
+     * launch throws, keep the number of live contexts bounded, evict the least
+     * recently used one -- is exactly the part no test could reach while the
+     * only way in was a real 400MB Chromium. A leak that permanently strands a
+     * seat is not something to verify by hand.
+     */
+    playwright?: PlaywrightLike;
   }
 ): Promise<BrowserHandle | null> {
   const headless = options.headless ?? false;
   const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
   const handleKey = seatHandleKey(options.workspaceId, seatKey);
   const existing = browsers.get(handleKey);
-  if (existing && existing.headless === headless) return existing;
+  if (existing && existing.headless === headless) {
+    // Touched on every reuse, which is what makes the eviction order an LRU
+    // rather than "whichever seat this process happened to serve first".
+    existing.lastUsedAt = Date.now();
+    browserUseSeq += 1;
+    existing.usedSeq = browserUseSeq;
+    return existing;
+  }
   if (existing) await closeLinkedInBrowser(options.workspaceId, seatKey);
 
-  const playwright = await loadLinkedInPlaywright(log);
+  const playwright = options.playwright ?? (await loadLinkedInPlaywright(log, handleKey));
+  if (!playwright) return null;
   if (!playwright) return null;
   const profileDir = resolveProfileDir(config.profileDir, options.workspaceId, seatKey);
 
@@ -1924,21 +3050,54 @@ async function openBrowser(
         ...(headless && inContainer() ? ['--no-sandbox', '--disable-dev-shm-usage'] : [])
       ]
     });
-    const existingPage = context.pages()[0];
-    const page = (existingPage ?? (await context.newPage())) as LinkedInPage;
-    // BEFORE ANY NAVIGATION. The context opens on `about:blank`, so no request
-    // has left the browser yet and the first one LinkedIn sees already carries
-    // a user agent and a `Sec-CH-UA*` set that agree with each other.
-    await alignClientHints(context, page, fingerprint, log);
-    const handle: BrowserHandle = {
-      page,
-      headless,
-      close: async () => {
+    // EVERYTHING PAST THE LAUNCH GETS ITS OWN TRY, AND THE CONTEXT IS CLOSED
+    // IF ANY OF IT THROWS.
+    //
+    // This used to be one try around the whole block, with a catch that logged
+    // and returned null -- and the launch is only the FIRST await in it.
+    // `newPage`, `alignClientHints` and its CDP calls all come after, so any
+    // failure there returned null while the context stayed open: a leaked
+    // Chromium with nothing holding a handle to it, and -- much worse -- a
+    // persistent user-data-dir whose exclusive lock that process now holds
+    // forever. The seat it belonged to could not be opened again by anybody,
+    // on this worker or any other, until a human killed the process. A leak
+    // that permanently strands one tenant's account is not a leak, it is an
+    // outage, and the fix is that nothing may return null from here without
+    // closing what it opened.
+    try {
+      const existingPage = context.pages()[0];
+      const page = (existingPage ?? (await context.newPage())) as LinkedInPage;
+      // BEFORE ANY NAVIGATION. The context opens on `about:blank`, so no request
+      // has left the browser yet and the first one LinkedIn sees already carries
+      // a user agent and a `Sec-CH-UA*` set that agree with each other.
+      await alignClientHints(context, page, fingerprint, log);
+      browserUseSeq += 1;
+      const handle: BrowserHandle = {
+        page,
+        headless,
+        lastUsedAt: Date.now(),
+        usedSeq: browserUseSeq,
+        close: async () => {
+          await context.close();
+        }
+      };
+      // The cap is enforced BEFORE the insert, so the number of live Chromium
+      // processes this worker owns never exceeds it even momentarily.
+      await evictSurplusBrowsers(handleKey);
+      browsers.set(handleKey, handle);
+      return handle;
+    } catch (cause) {
+      try {
         await context.close();
+      } catch {
+        // Already closing, already dead, or already gone. Nothing here is a
+        // reason to leave the caller without an answer.
       }
-    };
-    browsers.set(handleKey, handle);
-    return handle;
+      log(
+        `LinkedIn local worker opened and then closed the browser profile at ${profileDir}: it could not be prepared for use (${cause instanceof Error ? cause.message : String(cause)}). Nothing was left holding the profile lock.`
+      );
+      return null;
+    }
   } catch (cause) {
     // NO RETRY WITHOUT THE PROXY, here or anywhere else. There is exactly one
     // launch attempt, and if it carried a proxy then every attempt for this
@@ -2256,7 +3415,7 @@ export async function closeLinkedInBrowser(workspaceId?: string, seatKey?: strin
         // A seat key names exactly one handle; without one, every seat under
         // this workspace, which is what "close this workspace's browser" has
         // to mean now that a workspace can have several.
-        const prefix = `${workspaceId} `;
+        const prefix = `${workspaceId}`;
         const keys = seatKey
           ? [seatHandleKey(workspaceId, seatKey)]
           : [...browsers.keys()].filter((key) => key.startsWith(prefix));
@@ -2282,7 +3441,41 @@ export async function closeLinkedInBrowser(workspaceId?: string, seatKey?: strin
 }
 
 /**
- * The worker's entry point: one pass over every SEAT with work due.
+ * Close every context nobody has touched for `idleMs`.
+ *
+ * THE MAP USED TO BE APPEND-ONLY. Nothing on any success path ever removed a
+ * handle, so this process retained one live Chromium per seat it had EVER
+ * served -- at ~350-500MB each, a 16GB host died somewhere around 25-40 seats
+ * and the only symptom was the OOM killer. Keeping a context open is a real
+ * optimisation (a launch is seconds and a warm profile skips a sign-in), so
+ * the answer is an expiry rather than closing everything after every batch:
+ * a seat served every tick keeps its browser, a seat served once does not keep
+ * it forever.
+ *
+ * {@link MAX_OPEN_BROWSERS} is the other half -- see `openBrowser`, which
+ * evicts the least recently used context when the cap is reached, so memory is
+ * bounded even when every seat is busy and nothing is idle.
+ */
+export async function closeIdleBrowsers(now: Date = new Date(), idleMs: number = browserIdleMs()): Promise<number> {
+  const deadline = now.getTime() - Math.max(60_000, idleMs);
+  const stale = [...browsers.entries()].filter(([, handle]) => handle.lastUsedAt <= deadline);
+  for (const [key] of stale) browsers.delete(key);
+  await Promise.all(
+    stale.map(async ([, handle]) => {
+      try {
+        await handle.close();
+      } catch {
+        // Same reasoning as the shutdown path: a context we cannot close is
+        // not a reason to fail the pass that was tidying up after it.
+      }
+    })
+  );
+  return stale.length;
+}
+
+/**
+ * The worker's entry point: one pass over the seats with work due THAT THIS
+ * WORKER SERVES.
  *
  * ONE BATCH PER ACCOUNT, DRAINED INDEPENDENTLY. Each seat gets its own browser
  * (its own profile directory, its own session, its own fingerprint and its own
@@ -2292,9 +3485,49 @@ export async function closeLinkedInBrowser(workspaceId?: string, seatKey?: strin
  * seat -- a checkpoint on one LinkedIn account must not stop the others, which
  * is the whole reason an operator runs more than one.
  *
- * Sequential rather than parallel, deliberately: two headed Chrome windows
- * racing on one laptop is a worse experience than two batches in a row, and
- * the per-action gaps mean a batch is mostly sleeping anyway.
+ * WHAT CHANGED WHEN "THE WORKER" BECAME "THE WORKERS", and every line of it is
+ * about a failure that only exists past one machine:
+ *
+ *   1. SHARDED. Discovery used to be the identical query, in the identical
+ *      order, with no workspace predicate, run by every process on the
+ *      deployment -- so N workers all reached for the same seat,
+ *      `launchPersistentContext` handed the profile directory's exclusive lock
+ *      to whichever got there first, and workers 2..N failed and raced each
+ *      other to the next seat together. Adding a worker added contention and
+ *      no throughput. Now each worker serves
+ *      `hashtext(workspace||'/'||seat) % total = index` and two workers cannot
+ *      want the same seat at all.
+ *   2. LEASED, PER SEAT. The shard is a static partition and static partitions
+ *      overlap during a rolling deploy (the old pod and the new one are the
+ *      same index for a few seconds). `claimSeatLease` is what makes that safe
+ *      AND what pins a seat to the HOST that holds its Chrome profile -- see
+ *      that function for why moving a seat between hosts is a new-device login
+ *      and therefore the loudest challenge signal available to us.
+ *   3. CONCURRENT, BOUNDED. This loop was strictly serial: open a browser, sign
+ *      in, drain up to 25 actions at a 30-120s gap each, then the next seat.
+ *      That is ~31 minutes per seat, so a worker with 100 due seats needed ~52
+ *      hours to finish a pass that the tick timer expected to take under a
+ *      minute -- and `linkedinRunning` no-opped every later tick, so the queue
+ *      drained at about two seats an hour whatever the hardware. The limit is
+ *      bounded rather than absent because each in-flight seat is a whole
+ *      Chromium (~350-500MB): unbounded parallelism is an OOM, not a speedup.
+ *      It defaults to 1 where a human is watching (headed, one laptop, two
+ *      Chrome windows fighting for the foreground is worse than two batches in
+ *      a row) and to several where nobody is (headless, a container).
+ *   4. FAIR. Discovery ordered by `workspace_id, seat_key` with no limit, so a
+ *      tenant with a 50k backlog was served first, to completion, on every
+ *      tick, and the tenant sorting last was never reached at all.
+ *      `dueSeatsForWorker` bounds the share any one tenant gets per pass and
+ *      orders tenants by how long they have been waiting.
+ *   5. REAPED FIRST. A worker that died holding claims stranded those rows
+ *      forever; nothing compared `claimed_at` to a deadline because there was
+ *      never a second worker to compare it for. The pass now begins by
+ *      releasing expired leases and closing batches whose worker is gone.
+ *   6. LOUD WHEN DISCOVERY FAILS. It used to log one line and return `[]`,
+ *      which is indistinguishable from "nothing is due" -- so a statement
+ *      timeout on the unindexed discovery query stopped the entire
+ *      deployment's LinkedIn queue with no alert anywhere. See
+ *      {@link linkedInWorkerHealth}.
  *
  * NEVER THROWS. It is called from the worker cycle alongside the automation
  * sweep and the playbook engine, and a LinkedIn failure must not cost any of
@@ -2314,6 +3547,28 @@ export async function runDueLinkedInActions(
      * --seat=sales`).
      */
     seatKey?: string;
+    /** Which slice of the fleet this process serves. Defaults to the environment's. */
+    shard?: WorkerShard;
+    /** Who this process is, for the claim and the lease. Defaults to the environment's. */
+    workerId?: string;
+    /** Which machine this process is on, for the profile pin. Defaults to this host's name. */
+    host?: string;
+    /** How many seats may be mid-batch at once. */
+    concurrency?: number;
+    /** The most seats one pass will touch. */
+    maxSeats?: number;
+    /** The most seats one TENANT may take from one pass. */
+    maxSeatsPerWorkspace?: number;
+    seatLeaseMs?: number;
+    actionLeaseMs?: number;
+    /** False in tests that want to observe a strand rather than have it repaired. */
+    reap?: boolean;
+    /**
+     * Close each seat's browser when its batch ends. Defaults to true where
+     * nobody is watching (headless): a hosted worker touching hundreds of
+     * seats cannot keep one Chromium per seat alive.
+     */
+    closeAfterBatch?: boolean;
   } = {}
 ): Promise<LocalBatchResult[]> {
   // The gate first, before anything is imported, opened or queried.
@@ -2331,45 +3586,155 @@ export async function runDueLinkedInActions(
     reportUnready(log, headed);
     return [];
   }
+  const headlessOnly = !headed.canLaunchHeaded;
+
+  const shard = options.shard ?? workerShard();
+  const workerId = options.workerId ?? workerIdentity();
+  const host = options.host ?? workerHost();
+  const seatLeaseMs = Math.max(60_000, Math.trunc(options.seatLeaseMs ?? SEAT_LEASE_MS));
+  const actionLeaseMs = Math.max(60_000, Math.trunc(options.actionLeaseMs ?? ACTION_LEASE_MS));
+  const concurrency = Math.max(1, Math.trunc(options.concurrency ?? defaultSeatConcurrency(headlessOnly)));
+  const closeAfterBatch = options.closeAfterBatch ?? headlessOnly;
+
+  // BEFORE DISCOVERY, ALWAYS. A row still claimed by a worker that no longer
+  // exists is invisible to the discovery query (`claimed_at IS NULL`), so a
+  // seat whose only due rows are stranded looks like a seat with no work --
+  // forever. Reaping first is what lets this very pass see them. Each reaper
+  // gets its own try: a failed reap must not cost the pass its actual work.
+  if (options.reap !== false) {
+    try {
+      const released = await reapExpiredActionLeases(db, { now });
+      if (released > 0) log(`LinkedIn local worker released ${released} action${released === 1 ? '' : 's'} whose worker stopped mid-claim; they are due again.`);
+    } catch (cause) {
+      log(`LinkedIn local worker could not release expired claims: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+    try {
+      const halted = await reapStaleLinkedInBatches(db, { now });
+      if (halted > 0) log(`LinkedIn local worker closed ${halted} batch${halted === 1 ? '' : 'es'} left running by a worker that is gone.`);
+    } catch (cause) {
+      log(`LinkedIn local worker could not close abandoned batches: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }
+
+  // Contexts nobody has used for a while, closed before this pass opens more.
+  // A Chromium is ~350-500MB and the map used to be append-only for the life of
+  // the process, so a host would die at a few dozen seats ever touched.
+  await closeIdleBrowsers(now);
 
   const driver = options.driver ?? playwrightDriver;
   const results: LocalBatchResult[] = [];
-  let seats: DueSeat[];
+  let seats: DueSeatForWorker[];
   try {
-    seats = await seatsWithDueActions(db, now);
+    seats = await dueSeatsForWorker(db, now, {
+      shard,
+      ...(options.seatKey ? { seatKey: options.seatKey } : {}),
+      ...(options.maxSeats === undefined ? {} : { maxSeats: options.maxSeats }),
+      ...(options.maxSeatsPerWorkspace === undefined ? {} : { maxSeatsPerWorkspace: options.maxSeatsPerWorkspace })
+    });
+    recordDiscoveryOutcome(null, now);
   } catch (cause) {
-    log(`LinkedIn local worker could not list due actions: ${cause instanceof Error ? cause.message : String(cause)}`);
+    // NOT A QUIET LOG AND AN EMPTY LIST. This read is the only thing standing
+    // between a queued action and a worker, and the commonest way it fails --
+    // a statement timeout against an unindexed scan -- produces exactly the
+    // same `[]` as a genuinely empty queue. That equivalence is how an entire
+    // deployment's LinkedIn automation stopped for hours with a single
+    // debug-level line to show for it. It is recorded, so /health can report
+    // it, and it goes to console.error rather than the caller's log.
+    recordDiscoveryOutcome(cause, now);
+    console.error(
+      `LINKEDIN QUEUE STOPPED: the worker could not list due actions, so NO seat was served this tick (worker ${workerId}, shard ${shard.index + 1}/${shard.total}): ${cause instanceof Error ? cause.message : String(cause)}`
+    );
     return [];
   }
-  if (options.seatKey) seats = seats.filter((seat) => seat.seatKey === options.seatKey);
 
-  for (const { workspaceId, seatKey, timezone } of seats) {
-    // Opened lazily and once per SEAT, only after there is one to serve.
-    const handle = await openBrowser(config, log, {
-      workspaceId,
-      seatKey,
-      headless: !headed.canLaunchHeaded,
-      timezone
-    });
-    if (!handle) {
-      // `continue`, not `return`. A browser this seat cannot open -- a proxy it
-      // refused to skip, a profile directory another process holds -- says
-      // nothing about the next seat, and returning here used to abandon every
-      // remaining workspace's work for one workspace's problem.
-      log(`LinkedIn local worker could not open a browser for ${workspaceId}/${seatKey}; its work stays due.`);
-      continue;
+  await runBounded(seats, concurrency, async (seat) => {
+    const { workspaceId, seatKey, timezone } = seat;
+    // EVERY LINE THIS PASS LOGS NAMES THE TENANT AND THE SEAT. On one laptop
+    // "could not open the browser" was a complete sentence; across thousands of
+    // workspaces it is an unanswerable question.
+    const say = seatLogger(log, workspaceId, seatKey);
+
+    // THE POSTURE IS READ FROM DISCOVERY, BEFORE A BROWSER EXISTS.
+    //
+    // `runLinkedInLocalBatch` checks it too and always will -- it is re-read
+    // between every action so a pause takes effect within one tick. But it used
+    // to be the FIRST check anything made, which meant a paused or cooling seat
+    // paid a full Chromium launch, a sign-in and a LinkedIn navigation before
+    // anything asked whether it was allowed to act. `jobs.ts` fixed exactly
+    // this for the side tasks and left the send queue paying it; joining the
+    // seat's posture into the discovery query is what pays it back here.
+    const refusal = postureRefusal(seat.posture);
+    if (refusal) {
+      logOncePerSeat(say, `posture:${refusal}`, workspaceId, seatKey, refusal, now);
+      results.push({
+        batchId: null,
+        workspaceId,
+        seatKey,
+        executed: 0,
+        blocked: 0,
+        failed: 0,
+        branchSkipped: 0,
+        branchPending: 0,
+        halted: true,
+        haltReason: refusal
+      });
+      return;
     }
 
-    // Every seat signs itself in: the session is made usable before the batch
-    // opens, reused when it still works and signed in when it does not.
-    const outcome = await loginLinkedInSeat(db, config, { workspaceId, seatKey, timezone, now, driver, page: handle.page, log });
-    if (outcome.status !== 'ok') {
-      log(`LinkedIn local worker cannot use seat ${workspaceId}/${seatKey}: ${outcome.message}`);
-      continue;
-    }
-
-    const store = postgresLocalWorkerStore(db, workspaceId, seatKey);
+    const profileDir = resolveProfileDir(config.profileDir, workspaceId, seatKey);
+    let lease: SeatLeaseOutcome;
     try {
+      lease = await claimSeatLease(db, { workspaceId, seatKey, workerId, host, profileDir, leaseMs: seatLeaseMs }, now);
+    } catch (cause) {
+      say(`could not be leased, so nothing was attempted for it: ${cause instanceof Error ? cause.message : String(cause)}`);
+      return;
+    }
+    if (!lease.ok) {
+      // Once per seat per suppression window: on a fleet this is the normal
+      // steady state (somebody else holds the seat), not an incident.
+      logOncePerSeat(say, `lease:${lease.reason}`, workspaceId, seatKey, lease.reason, now);
+      return;
+    }
+
+    // WHILE THE BATCH RUNS, THE LEASE IS PUSHED FORWARD. A batch legitimately
+    // takes tens of minutes (25 actions behind 30-120s gaps), and a lease that
+    // expired underneath a live worker would let a second worker open a second
+    // Chrome on the same profile directory. Unref'd: a heartbeat must never be
+    // the reason a process will not exit.
+    const heartbeat = setInterval(() => {
+      void heartbeatSeatLease(db, { workspaceId, seatKey, workerId, leaseMs: seatLeaseMs }, new Date()).catch(() => {
+        // A missed heartbeat is not fatal on its own: the lease still has
+        // whatever is left of its term, and the next one may well land.
+      });
+    }, Math.max(15_000, Math.floor(seatLeaseMs / 3)));
+    heartbeat.unref?.();
+
+    try {
+      // Opened lazily and once per SEAT, only after there is one to serve.
+      const handle = await openBrowser(config, say, {
+        workspaceId,
+        seatKey,
+        headless: headlessOnly,
+        timezone
+      });
+      if (!handle) {
+        // `continue`, not `return`. A browser this seat cannot open -- a proxy it
+        // refused to skip, a profile directory another process holds -- says
+        // nothing about the next seat, and returning here used to abandon every
+        // remaining workspace's work for one workspace's problem.
+        say('could not open a browser; its work stays due.');
+        return;
+      }
+
+      // Every seat signs itself in: the session is made usable before the batch
+      // opens, reused when it still works and signed in when it does not.
+      const outcome = await loginLinkedInSeat(db, config, { workspaceId, seatKey, timezone, now, driver, page: handle.page, log: say });
+      if (outcome.status !== 'ok') {
+        say(`cannot be used: ${outcome.message}`);
+        return;
+      }
+
+      const store = postgresLocalWorkerStore(db, workspaceId, seatKey, { workerId, leaseMs: actionLeaseMs });
       const result = await runLinkedInLocalBatch(store, {
         driver,
         page: handle.page,
@@ -2428,17 +3793,55 @@ export async function runDueLinkedInActions(
             { excludeActionId: action.id }
           ),
         now: () => new Date(),
-        log
+        log: say
       });
       results.push(result);
-      if (result.halted && result.haltReason) log(`LinkedIn local worker stopped for ${workspaceId}/${seatKey}: ${result.haltReason}`);
+      if (result.halted && result.haltReason) say(`stopped: ${result.haltReason}`);
     } catch (cause) {
-      // One SEAT's failure is one seat's failure. The loop carries on to the
-      // next account rather than ending the tick.
-      log(`LinkedIn local worker failed for ${workspaceId}/${seatKey}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      // One SEAT's failure is one seat's failure. The pass carries on with the
+      // other accounts rather than ending the tick.
+      say(`failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      clearInterval(heartbeat);
+      // The lease is RELEASED, not deleted: the row is also the record of which
+      // host holds this seat's Chrome profile, and that outlives this pass.
+      try {
+        await releaseSeatLease(db, { workspaceId, seatKey, workerId }, new Date());
+      } catch {
+        // An unreleased lease expires on its own. Failing here would turn a
+        // bookkeeping problem into a lost batch result.
+      }
+      if (closeAfterBatch) await closeLinkedInBrowser(workspaceId, seatKey);
     }
-  }
+  });
+
   return results;
+}
+
+/**
+ * Run `work` over `items` with at most `limit` in flight.
+ *
+ * Deliberately not `Promise.all` and deliberately not a library. `Promise.all`
+ * over a thousand due seats is a thousand simultaneous Chromium launches,
+ * which is an OOM rather than a fast pass; a serial loop is what this code did
+ * before and it could not finish. `limit` lanes pulling from one cursor is the
+ * whole of the middle ground, and the cursor is safe without a mutex because
+ * `cursor++` cannot be interleaved: JavaScript only switches lanes at an await.
+ */
+export async function runBounded<T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
+  if (limit <= 1) {
+    for (const item of items) await work(item);
+    return;
+  }
+  let cursor = 0;
+  const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const item = items[cursor];
+      cursor += 1;
+      if (item !== undefined) await work(item);
+    }
+  });
+  await Promise.all(lanes);
 }
 
 // ---------------------------------------------------------------------------
@@ -2759,19 +4162,47 @@ export async function latestSeatDetectRequest(
   return row ? toSeatDetectRequest(row) : null;
 }
 
-async function claimSeatDetectRequest(db: Db, now: Date, staleClaimMs: number): Promise<SeatDetectRequest | null> {
+/**
+ * Take the oldest pending detect request THIS WORKER MAY SERVE, or null.
+ *
+ * THREE PREDICATES, AND EVERY ONE OF THEM IS ABOUT A FLEET RATHER THAN A
+ * LAPTOP:
+ *
+ *   * the stale-claim window (the original, 027): a detect is a pure READ, so
+ *     a worker killed mid-flight must not wedge a workspace's setup forever;
+ *   * `excludeWorkspaces`: the tenants this pass has already served, which is
+ *     what stops one workspace's 5,000-seat onboarding from being a global
+ *     FIFO that every other tenant's Connect button queues behind;
+ *   * the shard: two workers on the same Postgres took the same row here,
+ *     raced for the same profile directory, and the loser did nothing but
+ *     burn a tick. Sharding on (workspace, seat) means adding a worker adds
+ *     throughput instead of adding contention.
+ *
+ * `FOR UPDATE SKIP LOCKED` still guards the case the shard cannot: two
+ * processes configured as the SAME shard index (a rolling deploy with an old
+ * and a new pod overlapping) take different rows rather than the same one.
+ */
+async function claimSeatDetectRequest(
+  db: Db,
+  now: Date,
+  staleClaimMs: number,
+  excludeWorkspaces: readonly string[] = [],
+  shard: WorkerShard = SINGLE_WORKER_SHARD
+): Promise<SeatDetectRequest | null> {
   const staleBefore = new Date(now.getTime() - staleClaimMs).toISOString();
   const row = await db.prepare(`
     UPDATE linkedin_seat_detect_requests SET claimed_at=?
     WHERE id = (
       SELECT id FROM linkedin_seat_detect_requests
       WHERE status='pending' AND (claimed_at IS NULL OR claimed_at < ?)
+        AND NOT (workspace_id = ANY(?::text[]))
+        AND ${shardPredicate("workspace_id || '/' || seat_key")}
       ORDER BY requested_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
     )
     RETURNING ${SEAT_DETECT_COLUMNS}
-  `).get<SeatDetectRow>(now.toISOString(), staleBefore);
+  `).get<SeatDetectRow>(now.toISOString(), staleBefore, [...excludeWorkspaces], ...shardParams(shard));
   return row ? toSeatDetectRequest(row) : null;
 }
 
@@ -2814,6 +4245,12 @@ export async function runPendingSeatDetectRequests(
     log?: (message: string) => void;
     maxRequests?: number;
     staleClaimMs?: number;
+    /**
+     * Which slice of the fleet this process serves. Defaults to the
+     * environment's own (see {@link workerShard}); a single worker is
+     * `{ index: 0, total: 1 }`, which selects everything.
+     */
+    shard?: WorkerShard;
   } = {}
 ): Promise<SeatDetectRequest[]> {
   if (!config.enabled) return [];
@@ -2835,18 +4272,32 @@ export async function runPendingSeatDetectRequests(
 
   const maxRequests = Math.max(1, Math.trunc(options.maxRequests ?? 5));
   const staleClaimMs = options.staleClaimMs ?? SEAT_DETECT_STALE_CLAIM_MS;
+  const shard = options.shard ?? workerShard();
   const settled: SeatDetectRequest[] = [];
+  /**
+   * The tenants this pass has already served, and the whole of the fairness.
+   *
+   * ONE REQUEST PER WORKSPACE PER PASS. The claim below is a global FIFO --
+   * correctly, because a detect is somebody standing at the Connect button --
+   * and a global FIFO with no per-tenant bound is exactly how one workspace
+   * onboarding 5,000 seats holds every other workspace's Connect button for
+   * hours. Excluding the tenants already served this pass means five pending
+   * requests are five DIFFERENT tenants, oldest first, and the big onboarding
+   * still drains at five per tick per worker rather than all at once.
+   */
+  const servedWorkspaces: string[] = [];
 
   for (let index = 0; index < maxRequests; index += 1) {
     const now = options.now ?? new Date();
     let request: SeatDetectRequest | null;
     try {
-      request = await claimSeatDetectRequest(db, now, staleClaimMs);
+      request = await claimSeatDetectRequest(db, now, staleClaimMs, servedWorkspaces, shard);
     } catch (cause) {
       log(`LinkedIn detect queue could not be read: ${cause instanceof Error ? cause.message : String(cause)}`);
       return settled;
     }
     if (!request) break;
+    servedWorkspaces.push(request.workspaceId);
 
     let failureReason: string | null;
     try {

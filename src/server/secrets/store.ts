@@ -1,5 +1,11 @@
 /**
- * Workspace secret store: the only module that reads or writes ciphertext.
+ * Workspace secret store: `workspace_secrets`, and the only module that reads
+ * or writes ciphertext in that table.
+ *
+ * (Two siblings hold the rest of the custody boundary and no one else may
+ * join them: `secrets/linkedin.ts` owns `linkedin_seat_credentials`, the
+ * non-owner seats' second home, and `secrets/custody.ts` re-seals rows in both
+ * tables during a key rotation. Both go through the same `crypto.ts` envelope.)
  *
  * Access rules (docs/byok-and-hosted-agent.md section 3), enforced here:
  *  1. `readWorkspaceSecretPlaintext` is the ONLY function that returns
@@ -19,7 +25,16 @@
  */
 import { id, type Db } from '../db.js';
 import { validatePublicHost } from '../skills/guard.js';
-import { openSecret, sealSecret } from './crypto.js';
+import {
+  configuredKeyIds,
+  openSecret,
+  sealSecret,
+  secretCustody,
+  OWNER_SEAT_COMPONENT,
+  type ConfiguredKeyIds,
+  type SecretContext,
+  type SecretCustody
+} from './crypto.js';
 
 /**
  * What may be sealed here.
@@ -74,10 +89,26 @@ export type WorkspaceSecretKind =
  */
 const KIND_DISPLAY: Record<WorkspaceSecretKind, 'last4' | 'opaque'> = {
   model_api_key: 'last4',
-  // A subscription OAuth token is structurally the same kind of value as an
-  // API key for this purpose: long, opaque, and safely nicknamed by its last
-  // four characters without guessing anything about the rest of it.
-  cli_oauth_token: 'last4',
+  // WAS 'last4', ON THE ARGUMENT THAT A SUBSCRIPTION OAUTH TOKEN IS
+  // STRUCTURALLY THE SAME KIND OF VALUE AS AN API KEY -- long, opaque, and
+  // safely nicknamed by its last four characters. The structure argument was
+  // right and the CONCLUSION was wrong, because `last4` is not free: it puts
+  // four characters of the value, unencrypted, in every backup and every
+  // replica, forever. That is a price, and the question is what it buys.
+  //
+  // For `model_api_key` it buys the answer to a real question an operator asks
+  // -- "which of my provider keys is this?" -- because a workspace has several
+  // and they are otherwise indistinguishable without a reveal endpoint that
+  // must never exist.
+  //
+  // For `cli_oauth_token` it buys NOTHING. There is exactly one per workspace,
+  // it is not chosen from a set, the operator never compares two of them, and
+  // nothing in the product displays it: `app.ts` reports `tokenStored` as a
+  // boolean and the screen shows a checkmark. So four characters of a live
+  // subscription credential were sitting in the clear to answer a question
+  // nobody asks. Now 'opaque', and migration 056 scrubs the ones already
+  // written.
+  cli_oauth_token: 'opaque',
   'linkedin.email': 'opaque',
   'linkedin.password': 'opaque',
   // The Reddit pair, added for the same reason and under the same gate as the
@@ -93,7 +124,23 @@ export interface WorkspaceSecretSummary {
   kind: WorkspaceSecretKind;
   label: string | null;
   last4: string;
+  /** The envelope FORMAT this row is stored in -- see crypto.ts. */
   keyVersion: number;
+  /**
+   * Which server key sealed it, as a fingerprint. Null on rows written before
+   * the v2 envelope, which recorded nothing.
+   */
+  keyId: string | null;
+  /**
+   * WHETHER THIS DEPLOYMENT CAN STILL OPEN IT, decided from metadata alone.
+   *
+   * The audit finding this answers: `openSecret` throws at USE time when the
+   * key is wrong, while this function -- metadata only -- kept reporting the
+   * secret as configured. A green setup screen over a deployment whose next
+   * agent run would 500. `custody: 'unknown'` is that deployment, visible on
+   * the screen, before anybody runs anything. See `SecretCustody`.
+   */
+  custody: SecretCustody;
   createdAt: string;
   updatedAt: string;
 }
@@ -122,7 +169,7 @@ export interface WorkspaceAgentSetup {
 /** Postgres timestamps come back raw (see db.ts type parsers), so format to ISO in SQL. */
 const ISO = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;
 const SECRET_COLUMNS = `
-  kind, last4, label, key_version,
+  kind, last4, label, key_version, key_id,
   TO_CHAR(created_at AT TIME ZONE 'UTC', ${ISO}) AS created_at,
   TO_CHAR(updated_at AT TIME ZONE 'UTC', ${ISO}) AS updated_at
 `;
@@ -154,6 +201,19 @@ function privateModelHostsAllowed(env: NodeJS.ProcessEnv = process.env): boolean
   return env[PRIVATE_HOSTS_ENV] === 'true';
 }
 
+/**
+ * The identity a `workspace_secrets` row is sealed against, and the ONE place
+ * it is spelled -- write, read and re-seal all call this, so the three can
+ * never drift into disagreeing about what a row is.
+ *
+ * `seatKey` is the literal owner component: this table has no seat dimension,
+ * and migration 049 defines the owner seat as exactly the rows that live here.
+ * See the AAD section of crypto.ts.
+ */
+export function workspaceSecretContext(workspaceId: string, kind: WorkspaceSecretKind): SecretContext {
+  return { store: 'workspace_secrets', workspaceId, seatKey: OWNER_SEAT_COMPONENT, kind };
+}
+
 export async function putWorkspaceSecret(
   db: Db,
   input: {
@@ -169,20 +229,25 @@ export async function putWorkspaceSecret(
   // place for a secret to leak into a log.
   if (!plaintext) throw new Error('A secret value is required');
 
-  const sealed = sealSecret(plaintext);
+  // Sealed against THIS row's identity, so the bytes cannot be lifted into
+  // another workspace's row and opened there. Every write produces the current
+  // envelope, which is also what makes "re-seal on next write" a real
+  // transition path for rows still on the old one.
+  const sealed = sealSecret(plaintext, workspaceSecretContext(input.workspaceId, input.kind));
   const last4 = deriveLast4(plaintext, input.kind);
   const label = normalizeLabel(input.label);
   const now = new Date().toISOString();
 
   const row = await db.prepare(`
     INSERT INTO workspace_secrets (
-      id,workspace_id,kind,ciphertext,iv,auth_tag,key_version,last4,label,created_at,updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      id,workspace_id,kind,ciphertext,iv,auth_tag,key_version,key_id,last4,label,created_at,updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, kind) DO UPDATE SET
       ciphertext=EXCLUDED.ciphertext,
       iv=EXCLUDED.iv,
       auth_tag=EXCLUDED.auth_tag,
       key_version=EXCLUDED.key_version,
+      key_id=EXCLUDED.key_id,
       last4=EXCLUDED.last4,
       label=EXCLUDED.label,
       updated_at=EXCLUDED.updated_at
@@ -195,6 +260,7 @@ export async function putWorkspaceSecret(
     sealed.iv,
     sealed.authTag,
     sealed.keyVersion,
+    sealed.keyId,
     last4,
     label,
     now,
@@ -214,18 +280,26 @@ export async function putWorkspaceSecret(
     now
   });
 
-  return serializeSecret(row);
+  return serializeSecret(row, configuredKeyIds());
 }
 
+/**
+ * Metadata only, and STILL metadata only: `custody` is decided from the row's
+ * `key_version` and `key_id` against the environment's key fingerprints, with
+ * no decryption and no key use, so this keeps answering on a deployment whose
+ * TREVRA_SECRETS_KEY is absent, malformed or rotated away -- which is exactly
+ * when a status screen matters most.
+ */
 export async function describeWorkspaceSecret(
   db: Db,
   workspaceId: string,
-  kind: WorkspaceSecretKind
+  kind: WorkspaceSecretKind,
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<WorkspaceSecretSummary | null> {
   const row = await db
     .prepare(`SELECT ${SECRET_COLUMNS} FROM workspace_secrets WHERE workspace_id=? AND kind=?`)
     .get<Record<string, unknown>>(workspaceId, kind);
-  return row ? serializeSecret(row) : null;
+  return row ? serializeSecret(row, configuredKeyIds(env)) : null;
 }
 
 export async function deleteWorkspaceSecret(
@@ -369,18 +443,27 @@ export async function getWorkspaceAgentSetup(db: Db, workspaceId: string): Promi
 export async function readWorkspaceSecretPlaintext(
   db: Db,
   workspaceId: string,
-  kind: WorkspaceSecretKind
+  kind: WorkspaceSecretKind,
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<string | null> {
   const row = await db
-    .prepare('SELECT ciphertext, iv, auth_tag, key_version FROM workspace_secrets WHERE workspace_id=? AND kind=?')
-    .get<{ ciphertext: Buffer; iv: Buffer; auth_tag: Buffer; key_version: number }>(workspaceId, kind);
+    .prepare('SELECT ciphertext, iv, auth_tag, key_version, key_id FROM workspace_secrets WHERE workspace_id=? AND kind=?')
+    .get<{ ciphertext: Buffer; iv: Buffer; auth_tag: Buffer; key_version: number; key_id: string | null }>(workspaceId, kind);
   if (!row) return null;
-  return openSecret({
-    ciphertext: row.ciphertext,
-    iv: row.iv,
-    authTag: row.auth_tag,
-    keyVersion: Number(row.key_version)
-  });
+  // The context is built from the arguments this row was FOUND by, so a row
+  // that was moved here from another workspace fails to open instead of
+  // becoming this workspace's credential.
+  return openSecret(
+    {
+      ciphertext: row.ciphertext,
+      iv: row.iv,
+      authTag: row.auth_tag,
+      keyVersion: Number(row.key_version),
+      keyId: row.key_id == null ? null : String(row.key_id)
+    },
+    workspaceSecretContext(workspaceId, kind),
+    env
+  );
 }
 
 /**
@@ -446,12 +529,16 @@ async function assertUsableBaseUrl(baseUrl: string, env: NodeJS.ProcessEnv = pro
   return raw;
 }
 
-function serializeSecret(row: Record<string, unknown>): WorkspaceSecretSummary {
+function serializeSecret(row: Record<string, unknown>, keyIds: ConfiguredKeyIds): WorkspaceSecretSummary {
+  const keyVersion = Number(row.key_version);
+  const keyId = row.key_id == null ? null : String(row.key_id);
   return {
     kind: String(row.kind) as WorkspaceSecretKind,
     label: row.label == null ? null : String(row.label),
     last4: String(row.last4),
-    keyVersion: Number(row.key_version),
+    keyVersion,
+    keyId,
+    custody: secretCustody(keyVersion, keyId, keyIds),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at)
   };

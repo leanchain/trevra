@@ -19,7 +19,8 @@ import {
   type ScrapedLead
 } from './driver-scrape.js';
 import { scrubNameField, splitAndScrubName } from './lead-import.js';
-import { getSeatPosture, type SeatPosture } from './seats.js';
+import { targetRefCandidates } from './inbox.js';
+import { OWNER_SEAT_KEY, getSeatPosture, type SeatPosture } from './seats.js';
 
 /**
  * Lead sourcing: turning a LinkedIn search URL or a post's engagement into a
@@ -507,6 +508,20 @@ export interface DailyLeadAllowance {
 /**
  * Namespaces the daily-cap advisory lock. 'LEAD' in ASCII, so a collision
  * would have to be another subsystem deliberately picking the same class.
+ *
+ * IT IS NOW THE HASH SEED RATHER THAN A SECOND 32-BIT KEY, and that change is
+ * what makes the lock a per-workspace lock again. The two-argument form of
+ * `pg_advisory_xact_lock` takes two INTEGERs, so the workspace half was
+ * `hashtext(workspace)::int` -- 32 bits, and by the birthday bound two
+ * unrelated tenants out of ten thousand collide with probability ~1.1%. A
+ * collision here is not a corruption but it is a real outage shape: two
+ * workspaces that have nothing to do with each other serialise their harvests
+ * end to end, and each one waits on the other's page walks.
+ *
+ * `hashtextextended(text, seed)` returns a BIGINT and takes the namespace as
+ * its seed, so the single-argument 64-bit form of the lock carries both facts
+ * in one key. At ten thousand workspaces the same bound gives a collision
+ * probability around 3e-12.
  */
 const LEAD_CAP_LOCK_CLASS = 0x4c454144;
 
@@ -545,18 +560,67 @@ export async function dailyLeadAllowance(db: Db, workspaceId: string, now: Date)
  * canonical form would silently stop excluding anybody whose row was stored as
  * a profile sub-page.
  *
- * lc-debt: reads the workspace's whole action ledger and exclusion list per
- * run -- fine at a year of paced volume (~7k rows), not at agency scale;
- * upgrade path is a canonical-ref column on both tables plus an ANY() lookup
- * keyed on the harvested URLs.
+ * THE TWO HALVES ARE READ DIFFERENTLY, AND THE ASYMMETRY IS THE POINT.
+ *
+ * `linkedin_exclusions` is still read WHOLE. It is the list of people who
+ * asked us to stop, and it is bounded by that: a workspace does not accumulate
+ * millions of opt-outs the way it accumulates ledger rows. Reading it entire
+ * keeps the match rule exactly as it was -- a stored ref matches through its
+ * literal OR its canonical form, whatever shape it was typed in -- and that is
+ * the half where being wrong means contacting somebody who told us not to.
+ *
+ * `linkedin_actions` is NARROWED TO THE PEOPLE THIS WALK ACTUALLY HARVESTED.
+ * It was read whole too, and that was the self-declared debt this replaces: a
+ * DISTINCT over every non-skipped row in the workspace, two Set entries each,
+ * with no `seat_key` in the predicate so no index applied -- millions of
+ * strings in JS memory to answer a question about at most a few hundred
+ * people. Now the harvested URLs are expanded into the closed set of spellings
+ * a `target_ref` might legitimately hold for the same person (the same
+ * expansion `inbox.ts` matches threads with) and the ledger is asked about
+ * those.
+ *
+ * THE MATCH RULE IS UNCHANGED, AND THAT COSTS ONE EXPRESSION. Inverting a
+ * JS-side canonicalisation into a SQL lookup only works if SQL can undo the
+ * same normalisation, and the one thing `canonicalProfileUrl` does that a list
+ * of spellings cannot enumerate is DROP THE QUERY AND FRAGMENT -- which is not
+ * an edge case here but the normal case, because a harvested href carries
+ * `?miniProfileUrn=...` every single time and the ledger stores whatever was
+ * handed to it. So the comparison is against
+ * `LOWER(SPLIT_PART(SPLIT_PART(target_ref, chr(63), 1), '#', 1))`, which is
+ * what migration 055's `idx_linkedin_actions_workspace_target_ci` indexes, and
+ * `.../in/jonas/?trk=x` still matches the person it names. `chr(63)` is the
+ * question mark, spelled that way because `Db.prepare` rewrites a literal '?'
+ * -- even one inside a string constant -- into a positional placeholder; see
+ * `runner.ts` `targetKey` for the long version.
+ *
+ * lc-debt: the lookup still misses a `target_ref` that needs more than
+ * query-stripping and lower-casing to canonicalise -- a doubled trailing
+ * slash, say; upgrade path is a canonical-ref column on `linkedin_actions`
+ * that `recordAction` maintains, which makes the lookup exact and lets the
+ * exclusion half be narrowed the same way.
  */
-async function suppressionSets(db: Db, workspaceId: string): Promise<{ excluded: Set<string>; contacted: Set<string> }> {
+async function suppressionSets(
+  db: Db,
+  workspaceId: string,
+  profileUrls: readonly string[]
+): Promise<{ excluded: Set<string>; contacted: Set<string> }> {
+  // Every spelling any of the harvested people might be filed under. Empty
+  // means nothing was harvested, and then there is nothing to ask about.
+  const candidates = new Set<string>();
+  for (const profileUrl of profileUrls) {
+    candidates.add(profileUrl.toLowerCase());
+    for (const candidate of targetRefCandidates(profileUrl)) candidates.add(candidate);
+  }
+
   const [exclusionRows, actionRows] = await Promise.all([
     db.prepare('SELECT target_ref FROM linkedin_exclusions WHERE workspace_id=?').all<{ target_ref: string }>(workspaceId),
-    db.prepare(`
-      SELECT DISTINCT target_ref FROM linkedin_actions
-      WHERE workspace_id=? AND target_ref IS NOT NULL AND status <> 'skipped'
-    `).all<{ target_ref: string }>(workspaceId)
+    candidates.size === 0
+      ? Promise.resolve([])
+      : db.prepare(`
+          SELECT DISTINCT target_ref FROM linkedin_actions
+          WHERE workspace_id=? AND target_ref IS NOT NULL AND status <> 'skipped'
+            AND LOWER(SPLIT_PART(SPLIT_PART(target_ref, chr(63), 1), '#', 1)) = ANY(?::text[])
+        `).all<{ target_ref: string }>(workspaceId, [...candidates])
   ]);
   return { excluded: refSet(exclusionRows), contacted: refSet(actionRows) };
 }
@@ -583,6 +647,15 @@ export interface LeadSourceRunDeps {
   config: LeadSourcingConfig;
   /** Defaults to the real Playwright scraper. Injected so tests pass a fake. */
   scraper?: LinkedInScrapeDriver;
+  /**
+   * The seat whose signed-in session `page` belongs to.
+   *
+   * A page fetch is an action performed BY ONE LINKEDIN ACCOUNT, so the
+   * posture that may refuse it is that account's. Absent means the owner seat,
+   * which is what a single-seat workspace has always meant and what every
+   * pre-multi-seat caller was implicitly asking for.
+   */
+  seatKey?: string;
   now?: () => Date;
   /** Defaults to a real timer, via the scraper. */
   sleep?: (ms: number) => Promise<void>;
@@ -685,7 +758,19 @@ export async function runLeadSource(
   // THE SEAT'S POSTURE STILL GOVERNS. A seat cooling down after a limit wall is
   // a seat LinkedIn pushed back on; spending that cooldown on ten search-page
   // fetches would be the same account making the same noise under another name.
-  const posture = await getSeatPosture(db, source.workspaceId, now());
+  //
+  // AND IT IS THIS SEAT'S POSTURE, NOT THE OWNER'S. `getSeatPosture` defaults
+  // its `seatKey` to `owner`, and omitting it meant a walk running through a
+  // SECONDARY account was gated on whether the OWNER account was cooling: a
+  // seat LinkedIn had just pushed back on kept fetching search pages through
+  // the very session that got the pushback, as long as some other account in
+  // the workspace was healthy -- and a paused owner seat blocked every other
+  // account's sourcing for no reason. `linkedin_lead_sources` carries no seat
+  // key of its own (migration 030 predates multi-seat), so the account the
+  // browser is actually signed into is carried down from the job that opened
+  // it; absent, it is still the owner seat, which is what a single-seat
+  // workspace has always meant.
+  const posture = await getSeatPosture(db, source.workspaceId, now(), deps.seatKey ?? OWNER_SEAT_KEY);
   const refusal = postureRefusal(posture);
   if (refusal) {
     await finishLeadSource(db, source.workspaceId, source.id, { status: 'failed', resultCount: 0, failureReason: refusal }, now());
@@ -839,7 +924,7 @@ async function storeLeads(
 ): Promise<{ stored: number; filtered: LeadSourceRunResult['filtered']; capped: number; allowance: DailyLeadAllowance }> {
   const filtered = { duplicate: 0, excluded: 0, contacted: 0 };
 
-  const { excluded, contacted } = await suppressionSets(db, source.workspaceId);
+  const { excluded, contacted } = await suppressionSets(db, source.workspaceId, leads.map((lead) => lead.profileUrl));
   const keep: ScrapedLead[] = [];
   for (const lead of leads) {
     const key = lead.profileUrl.toLowerCase();
@@ -862,8 +947,12 @@ async function storeLeads(
     // cheapest thing that makes count-then-insert one indivisible step, and it
     // releases itself on COMMIT or ROLLBACK -- there is no path out of this
     // transaction that leaks it. The class id namespaces it away from every
-    // other advisory lock a Postgres box might be holding.
-    await tx.prepare('SELECT pg_advisory_xact_lock(?::int, hashtext(?)::int)').get(LEAD_CAP_LOCK_CLASS, source.workspaceId);
+    // other advisory lock a Postgres box might be holding, and it does so as
+    // the hash SEED of a 64-bit key rather than as the upper half of a pair of
+    // 32-bit ones -- see {@link LEAD_CAP_LOCK_CLASS} for why that difference
+    // is the difference between one lock per workspace and one lock per
+    // roughly every hundredth pair of workspaces.
+    await tx.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, ?::bigint))').get(source.workspaceId, LEAD_CAP_LOCK_CLASS);
 
     const limit = await getDailyLeadCap(tx, source.workspaceId);
     const used = await leadsStoredSince(tx, source.workspaceId, since);

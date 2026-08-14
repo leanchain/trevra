@@ -1,9 +1,21 @@
 import { id, type Db } from '../db.js';
+import type { CampaignStatus } from './campaigns.js';
 import { getLeadList } from './lead-lists.js';
 import { getSeat, OWNER_SEAT_KEY } from './seats.js';
 import { delayMilliseconds, getWorkflow, parseWorkflowSteps, type WorkflowStep } from './workflows.js';
 
-export type ManagedCampaignStatus = 'draft' | 'running' | 'paused' | 'completed' | 'stopped';
+/**
+ * AN ALIAS, NOT A SECOND UNION.
+ *
+ * It named the same column as `CampaignStatus` in campaigns.ts and disagreed
+ * with it about whether 'paused' exists -- this file had it, that one did not,
+ * and both cast the same rows onto their own answer. Managed and legacy
+ * campaigns are rows in ONE table with ONE status column; the manager adds a
+ * writer for 'paused', not a second vocabulary. Kept as a name because it is
+ * the one this module's callers read, and because "the status of a managed
+ * campaign" is still a useful thing to say.
+ */
+export type ManagedCampaignStatus = CampaignStatus;
 export type ManagedMemberStatus = 'pending' | 'active' | 'waiting' | 'manual' | 'paused' | 'replied' | 'completed' | 'removed' | 'failed';
 
 export interface ManagedCampaign {
@@ -62,7 +74,9 @@ export interface ManagedCampaignMember {
   profileUrl: string | null;
 }
 
-interface CampaignRow { id: string; workspace_id: string; name: string; status: string; seat_key: string; lead_list_id: string; workflow_id: string; sequence_json: unknown; started_at: string | null; paused_at: string | null; member_count: number; active_count: number; created_at: string; updated_at: string }
+// `status` is `CampaignStatus`, narrowed where campaigns.ts narrows it and for
+// the reason given there -- so `toCampaign` below needs no cast either.
+interface CampaignRow { id: string; workspace_id: string; name: string; status: CampaignStatus; seat_key: string; lead_list_id: string; workflow_id: string; sequence_json: unknown; started_at: string | null; paused_at: string | null; member_count: number; active_count: number; created_at: string; updated_at: string }
 interface MemberRow { id: string; campaign_id: string; contact_id: string; status: string; step_index: number; next_eligible_at: string | null; assigned_variants: unknown; last_action_id: string | null; first_name: string; last_name: string; company: string; profile_url: string | null }
 
 const ACTIVE_MEMBER_STATUSES = ['pending', 'active', 'waiting', 'manual', 'paused'] as const;
@@ -100,7 +114,7 @@ function snapshotVersion(sequenceJson: unknown): number | null {
 }
 
 function toCampaign(row: CampaignRow): ManagedCampaign {
-  return { id: row.id, workspaceId: row.workspace_id, name: row.name, status: row.status as ManagedCampaignStatus, seatKey: row.seat_key, leadListId: row.lead_list_id, workflowId: row.workflow_id, workflowVersion: snapshotVersion(row.sequence_json), steps: campaignSnapshotSteps(row.sequence_json), startedAt: row.started_at, pausedAt: row.paused_at, memberCount: Number(row.member_count), activeCount: Number(row.active_count), createdAt: row.created_at, updatedAt: row.updated_at };
+  return { id: row.id, workspaceId: row.workspace_id, name: row.name, status: row.status, seatKey: row.seat_key, leadListId: row.lead_list_id, workflowId: row.workflow_id, workflowVersion: snapshotVersion(row.sequence_json), steps: campaignSnapshotSteps(row.sequence_json), startedAt: row.started_at, pausedAt: row.paused_at, memberCount: Number(row.member_count), activeCount: Number(row.active_count), createdAt: row.created_at, updatedAt: row.updated_at };
 }
 function parseVariants(value: unknown): Record<string, string> {
   const raw = typeof value === 'string' ? (() => { try { return JSON.parse(value) as unknown; } catch { return {}; } })() : value;
@@ -171,18 +185,56 @@ export async function createManagedCampaign(
     // `list_id` only remembers the first one they were imported into.
     const count = await tx.prepare('SELECT COUNT(*)::int AS total FROM linkedin_lead_list_members WHERE workspace_id=? AND list_id=?').get<{ total: number }>(input.workspaceId, list.id);
     total = count?.total ?? 0;
+    // THE DIGEST IS KEYED ON THE WORKSPACE FIRST -- see `derivedMemberId`.
     const inserted = await tx.prepare(`
       INSERT INTO linkedin_campaign_members (id,workspace_id,campaign_id,contact_id,status,step_index,assigned_variants,created_at,updated_at)
-      SELECT 'limem_' || md5(? || ':' || m.contact_id), ?, ?, m.contact_id, 'pending', 0, '{}'::jsonb, ?, ?
+      SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'pending', 0, '{}'::jsonb, ?, ?
       FROM linkedin_lead_list_members m WHERE m.workspace_id=? AND m.list_id=?
       ON CONFLICT DO NOTHING RETURNING id
-    `).all<{ id: string }>(campaignId, input.workspaceId, campaignId, timestamp, timestamp, input.workspaceId, list.id);
+    `).all<{ id: string }>(input.workspaceId, campaignId, input.workspaceId, campaignId, timestamp, timestamp, input.workspaceId, list.id);
     enrolled = inserted.length;
   });
   const campaign = await getManagedCampaign(db, input.workspaceId, campaignId);
   if (!campaign) throw new Error('Campaign could not be created.');
   return { campaign, enrolled, skippedAlreadyActive: Math.max(0, total - enrolled) };
 }
+/**
+ * The campaign-member primary key, DERIVED rather than minted -- and derived
+ * over the WORKSPACE as well as the campaign.
+ *
+ * WHY IT IS DERIVED AT ALL. Enrolment runs twice by design: once at creation
+ * and again on every runner tick (`enrolNewContacts`), because leads keep
+ * arriving in a list after the campaign was built on it. A generated id would
+ * make the second pass a second membership for the same person, so the id is a
+ * pure function of who-and-where and the insert is `ON CONFLICT DO NOTHING`.
+ * It is also what makes REMOVAL STICK: a removed member still owns this key,
+ * so the next tick's insert is a no-op instead of a quiet re-enrolment.
+ *
+ * WHY THE WORKSPACE IS IN THE DIGEST. It was `md5(campaignId:contactId)`, and
+ * `linkedin_campaign_members` is one table shared by every tenant of a hosted
+ * deployment. Two workspaces that ever derived the same digest would collide
+ * on the primary key -- and because the insert swallows conflicts, THE LOSER
+ * IS SILENTLY NOT ENROLLED. No error, no log, no row: one tenant's campaign
+ * simply never contacts one of their leads, and the count on their screen is
+ * off by one with nothing anywhere to explain it. That is strictly the worse
+ * of the two failure modes; an outright 23505 would at least have surfaced.
+ * Prefixing the digest with the workspace makes the key tenant-scoped, which
+ * is what every other identifier in a multi-tenant table already is.
+ *
+ * CHANGING THE DIGEST DOES NOT RE-ENROL ANYBODY WHO WAS REMOVED UNDER THE OLD
+ * ONE, and that is the migration question worth answering out loud. The
+ * primary key was never the only guard: migration 046's
+ * `idx_linkedin_campaign_members_campaign_contact` is UNIQUE on
+ * (campaign_id, contact_id), so an existing member row -- removed or live --
+ * still makes a fresh insert for that pair a conflict, whatever id the new
+ * insert would have carried. `ON CONFLICT DO NOTHING` covers every unique
+ * index on the table, not just the one the id happens to be in.
+ *
+ * The `?` placeholders are workspace id then campaign id, in that order, at
+ * both call sites.
+ */
+const DERIVED_MEMBER_ID = `'limem_' || md5(? || ':' || ? || ':' || m.contact_id)`;
+
 function firstEligibleAt(steps: readonly WorkflowStep[], now: Date): string | null {
   if (steps.length === 0) return null;
   return new Date(now.getTime() + delayMilliseconds(steps[0].delayBefore)).toISOString();
@@ -220,10 +272,10 @@ function firstEligibleAt(steps: readonly WorkflowStep[], now: Date): string | nu
  * claim creation respects, enforced by the same index rather than by a second
  * copy of the rule.
  *
- * The id is `md5(campaignId:contactId)`, exactly as creation computes it, so a
- * contact REMOVED from this campaign is not silently re-enrolled by the next
- * tick: the removed row still owns that primary key and the insert is a no-op.
- * Removal means removed.
+ * The id is `derivedMemberId`, exactly as creation computes it, so a contact
+ * REMOVED from this campaign is not silently re-enrolled by the next tick: the
+ * removed row still owns that primary key and the insert is a no-op. Removal
+ * means removed.
  */
 export async function enrolNewContacts(
   db: Db,
@@ -239,10 +291,10 @@ export async function enrolNewContacts(
   const eligible = firstEligibleAt(campaign.steps, now);
   const inserted = await db.prepare(`
     INSERT INTO linkedin_campaign_members (id,workspace_id,campaign_id,contact_id,status,step_index,next_eligible_at,assigned_variants,created_at,updated_at)
-    SELECT 'limem_' || md5(? || ':' || m.contact_id), ?, ?, m.contact_id, 'active', 0, ?::timestamptz, '{}'::jsonb, ?, ?
+    SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'active', 0, ?::timestamptz, '{}'::jsonb, ?, ?
     FROM linkedin_lead_list_members m WHERE m.workspace_id=? AND m.list_id=?
     ON CONFLICT DO NOTHING RETURNING id
-  `).all<{ id: string }>(campaign.id, workspaceId, campaign.id, eligible, timestamp, timestamp, workspaceId, campaign.leadListId);
+  `).all<{ id: string }>(workspaceId, campaign.id, workspaceId, campaign.id, eligible, timestamp, timestamp, workspaceId, campaign.leadListId);
   return inserted.length;
 }
 
@@ -368,6 +420,108 @@ export async function setCampaignMemberPaused(db: Db, workspaceId: string, membe
     ? await db.prepare(`UPDATE linkedin_campaign_members SET status='paused',updated_at=? WHERE workspace_id=? AND id=? AND status IN ('pending','active','waiting','manual')`).run(timestamp, workspaceId, memberId)
     : await db.prepare(`UPDATE linkedin_campaign_members SET status='active',updated_at=? WHERE workspace_id=? AND id=? AND status='paused'`).run(timestamp, workspaceId, memberId);
   return result.changes > 0;
+}
+
+/**
+ * Everything a seat still has outstanding, released -- the call that DELETING
+ * OR DISCONNECTING A SEAT MUST MAKE, and did not.
+ *
+ * `deleteSeat` in seats.ts deletes one row out of `linkedin_seats` and says so
+ * in its own comment: the ledger, the detect requests and the stored
+ * credentials are deliberately left alone, because none of those are "the
+ * seat". That is right about HISTORY and wrong about FUTURE WORK, and the
+ * difference is the whole of this function.
+ *
+ * WHAT AN UNRELEASED SEAT LEAVES BEHIND. `linkedin_actions` rows are keyed on
+ * (workspace_id, seat_key) and claimed by a worker running for that seat.
+ * Delete the seat and its planned and held rows stay exactly where they were:
+ *
+ *   * they can never be sent, because no worker will ever run for a seat that
+ *     does not exist -- so the work is not cancelled, it is abandoned;
+ *   * they go on occupying `idx_linkedin_actions_target`, which is partial on
+ *     `status <> 'skipped'` (migration 047), so the replay guard keeps holding
+ *     a claim on every one of those prospects. Reconnecting the SAME account
+ *     under the same seat key later finds them unreachable, for a reason
+ *     nothing on any screen can explain;
+ *   * and if the seat key is reused -- which is the normal case, since 'owner'
+ *     is the key a single-seat workspace always uses -- a NEW account inherits
+ *     the previous one's parked queue, and the first thing it does on being
+ *     resumed is send messages the previous operator planned. On a hosted
+ *     multi-tenant deployment that is somebody else's outreach going out of a
+ *     customer's own LinkedIn account.
+ *
+ * Pending manual tasks are the same story with a human in it: a checkpoint
+ * queued against a seat nobody can act as sits in the operator's task list
+ * forever, because `completeManualTask` will happily complete it and advance a
+ * member into a sequence that has no account left to run it.
+ *
+ * SO: SKIP, DO NOT DELETE, and the choice is the same one every other release
+ * path here makes. 'skipped' is the ledger's word for "never happened" -- it
+ * consumes no budget (actions.ts `COUNTED`), it releases the replay guard so
+ * those people can be approached by another seat, and the row survives to say
+ * that the action was planned and why it never went out. Deleting the rows
+ * would destroy the record of what this seat had been about to do, which is
+ * exactly the history `deleteSeat` is careful to preserve.
+ *
+ * 'held' ALONGSIDE 'planned', because a seat may be disconnected while one of
+ * its campaigns is paused, and a held row outliving its seat is the same
+ * orphan as a planned one with an extra step before it fires.
+ *
+ * `claimed_at IS NULL` IS STILL THE BOUNDARY, and the count of what it left is
+ * REPORTED rather than swallowed. A claimed row is in a browser at this
+ * instant; overwriting it here would file an action as never-happened while it
+ * was happening, which is the rule `stopCampaign`, `pauseManagedCampaign` and
+ * `removeCampaignMember` all draw. But a seat being disconnected is the one
+ * case where nobody is coming back to reconcile those rows, so
+ * `actionsInFlight` exists to let the caller say "3 actions were mid-send and
+ * were left as they are" instead of quietly rounding it to zero.
+ *
+ * NOT SCOPED TO A CAMPAIGN. Every other release in this file is; this one is
+ * per SEAT, across every campaign and every source -- exports, inbox replies
+ * and manual rows included -- because the thing going away is the account, not
+ * the plan.
+ *
+ * Idempotent: running it twice releases nothing the second time, so a
+ * disconnect that retries is safe.
+ */
+export interface SeatWorkRelease {
+  seatKey: string;
+  /** Planned and held ledger rows moved to 'skipped'. */
+  actionsSkipped: number;
+  /** Pending manual tasks moved to 'cancelled'. */
+  tasksCancelled: number;
+  /**
+   * Rows a worker had already claimed and this call deliberately did not
+   * touch. Zero in every ordinary case; non-zero means a batch was in flight
+   * when the seat was disconnected and the caller should say so.
+   */
+  actionsInFlight: number;
+}
+
+export async function releaseSeatWork(db: Db, workspaceId: string, seatKey: string, now: Date = new Date()): Promise<SeatWorkRelease> {
+  const timestamp = now.toISOString();
+  return db.transaction(async (tx) => {
+    const actions = await tx.prepare(`
+      UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL
+      WHERE workspace_id=? AND seat_key=? AND status IN ('planned','held') AND claimed_at IS NULL
+    `).run(workspaceId, seatKey);
+    const tasks = await tx.prepare(`
+      UPDATE linkedin_manual_tasks SET status='cancelled',completed_at=COALESCE(completed_at,?::timestamptz)
+      WHERE workspace_id=? AND seat_key=? AND status='pending'
+    `).run(timestamp, workspaceId, seatKey);
+    // Counted AFTER the skip, so it is exactly the set the skip refused to
+    // touch rather than a number that includes rows this call has just cleared.
+    const inFlight = await tx.prepare(`
+      SELECT COUNT(*)::int AS total FROM linkedin_actions
+      WHERE workspace_id=? AND seat_key=? AND status IN ('planned','held') AND claimed_at IS NOT NULL
+    `).get<{ total: number }>(workspaceId, seatKey);
+    return {
+      seatKey,
+      actionsSkipped: actions.changes,
+      tasksCancelled: tasks.changes,
+      actionsInFlight: Number(inFlight?.total ?? 0)
+    };
+  });
 }
 
 export async function removeCampaignMember(db: Db, workspaceId: string, memberId: string, now: Date = new Date()): Promise<boolean> {

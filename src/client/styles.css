@@ -1193,6 +1193,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-chip { display: inline-flex; align-items: center; border-radius: var(--t-r-sm); padding: 3px 9px; background: var(--t-surface-2); color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; white-space: nowrap; }
 .li-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .li-status-planned { background: var(--blue-bg); color: var(--blue); }
+/* Amber, and the same amber `.li-wd-held` already uses for the withdrawal
+   queue's own hold. A held action is not a failure and not a cancellation --
+   the row is intact and a human pressed Pause -- so red would be a lie and the
+   muted grey worn by `exported`/`skipped` would file it with the states
+   nothing further happens in. Amber is the one tone on this screen that means
+   "stopped, and waiting on you", which is exactly what migration 051 wrote. */
+.li-status-held { background: var(--amber-bg); color: var(--amber); }
 .li-status-exported { background: var(--t-surface-2); color: var(--muted); }
 .li-status-sent { background: var(--green-3); color: var(--green); }
 .li-status-accepted, .li-status-replied { background: var(--green-2); color: var(--green); }
@@ -1576,9 +1583,10 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-wd-stale { background: var(--t-surface-2); color: var(--muted); }
 .li-wd-failed { background: var(--red-bg); color: var(--red); }
 .li-wd-held { background: var(--amber-bg); color: var(--amber); }
-/* The ledger writes this status (migration 032) even though the client's
-   status union does not carry it yet, so the chip exists rather than falling
-   through to an unstyled default beside an invite that really was withdrawn. */
+/* Migration 032's status, styled here when the client's union did not yet
+   carry it. The union names it now, so this is an ordinary chip rule that
+   simply lives away from its siblings at line 1195 -- left where it is because
+   moving a declaration past `.li-chip` is a cascade change, not a tidy-up. */
 .li-status-withdrawn { background: var(--t-surface-2); color: var(--muted); }
 
 /* Interactive floor, continued. A disclosure row and a jump button are controls

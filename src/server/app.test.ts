@@ -9,7 +9,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { randomBytes } from 'node:crypto';
 import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from './db.js';
 import { createApp } from './app.js';
-import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
+import { auth as betterAuth, closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 import { registerPlaybook } from './playbooks/registry.js';
 import { LINKEDIN_LIMITS, PACED_KINDS, effectiveDailyCeiling } from './linkedin/limits.js';
 import { LEAD_CONTACT_READ_LIMIT } from './linkedin/lead-lists.js';
@@ -130,6 +130,43 @@ async function agentWithSession() {
   const agent = request.agent(createApp(db));
   await agent.post('/api/auth/demo').expect(200);
   return agent;
+}
+
+let signUpSeq = 0;
+
+/**
+ * A real better-auth user, signed up through the real route.
+ *
+ * The demo cookie resolves to `role: 'owner'` unconditionally (see
+ * `readSession`), so it can never exercise a member. Every owner-only test
+ * below needs a genuine organization membership, which means genuine sign-ups.
+ */
+async function signUpAgent(app: ReturnType<typeof createApp>, label: string) {
+  signUpSeq += 1;
+  const email = `${label}-${Date.now()}-${signUpSeq}@example.test`;
+  const agent = request.agent(app);
+  const res = await agent.post('/api/auth/sign-up/email')
+    .send({ email, password: 'correct-horse-battery-staple', name: label })
+    .expect(200);
+  return { agent, email, userId: (res.body as { user: { id: string } }).user.id };
+}
+
+async function sessionAuth(agent: ReturnType<typeof request.agent>) {
+  const res = await agent.get('/api/auth/session').expect(200);
+  return (res.body as { auth: { userId: string; workspaceId: string; role: 'owner' | 'member' } }).auth;
+}
+
+/** An owner and a teammate who has accepted into the owner's workspace. */
+async function ownerAndMember(app: ReturnType<typeof createApp>) {
+  const owner = await signUpAgent(app, 'owner');
+  const ownerAuth = await sessionAuth(owner.agent);
+  const member = await signUpAgent(app, 'mate');
+  await betterAuth.api.addMember({ body: { userId: member.userId, organizationId: ownerAuth.workspaceId, role: 'member' } });
+  await member.agent.post('/api/auth/organization/set-active').send({ organizationId: ownerAuth.workspaceId }).expect(200);
+  const memberAuth = await sessionAuth(member.agent);
+  expect(memberAuth.workspaceId).toBe(ownerAuth.workspaceId);
+  expect(memberAuth.role).toBe('member');
+  return { owner, ownerAuth, member };
 }
 
 describe('Trevra API on PostgreSQL', () => {
@@ -524,7 +561,7 @@ describe('Trevra API on PostgreSQL', () => {
     const apiKey = 'trv-model-key-for-tests-3f9d2b7c4a81';
 
     const stored = await agent.put('/api/agent-setup/key').send({ apiKey, label: 'Anthropic' }).expect(200);
-    expect(stored.body.secret).toMatchObject({ kind: 'model_api_key', last4: '4a81', label: 'Anthropic', keyVersion: 1 });
+    expect(stored.body.secret).toMatchObject({ kind: 'model_api_key', last4: '4a81', label: 'Anthropic', keyVersion: 2 });
     expect(JSON.stringify(stored.body)).not.toContain(apiKey);
 
     const setup = await agent.get('/api/agent-setup').expect(200);
@@ -617,7 +654,7 @@ describe('Trevra API on PostgreSQL', () => {
   it('reports the CLI subscription setup as unset by default', async () => {
     const agent = await agentWithSession();
     const setup = await agent.get('/api/agent-setup').expect(200);
-    expect(setup.body.cli).toEqual({ config: null, tokenStored: false, riskAccepted: false });
+    expect(setup.body.cli).toEqual({ config: null, tokenStored: false, tokenCustody: null, tokenKeyId: null, riskAccepted: false });
   });
 
   it('saves the subscription CLI and model, visible before any risk is accepted', async () => {
@@ -626,7 +663,13 @@ describe('Trevra API on PostgreSQL', () => {
     expect(saved.body.config).toEqual({ cli: 'codex', model: 'gpt-5-codex' });
 
     const setup = await agent.get('/api/agent-setup').expect(200);
-    expect(setup.body.cli).toEqual({ config: { cli: 'codex', model: 'gpt-5-codex' }, tokenStored: false, riskAccepted: false });
+    expect(setup.body.cli).toEqual({
+      config: { cli: 'codex', model: 'gpt-5-codex' },
+      tokenStored: false,
+      tokenCustody: null,
+      tokenKeyId: null,
+      riskAccepted: false
+    });
 
     await agent.put('/api/agent-setup/cli-config').send({ cli: 'gemini', model: 'x' }).expect(400);
     await agent.put('/api/agent-setup/cli-config').send({ cli: 'claude', model: '' }).expect(400);
@@ -720,12 +763,16 @@ describe('Trevra API on PostgreSQL', () => {
       .send({ name: 'Other Founder', email: `other-cli-${Date.now()}@example.com`, password: 'correct-horse-battery-staple' })
       .expect(200);
     const theirs = await intruder.get('/api/agent-setup').expect(200);
-    expect(theirs.body.cli).toEqual({ config: null, tokenStored: false, riskAccepted: false });
+    expect(theirs.body.cli).toEqual({ config: null, tokenStored: false, tokenCustody: null, tokenKeyId: null, riskAccepted: false });
     expect(JSON.stringify(theirs.body)).not.toContain(token);
     expect((await intruder.delete('/api/agent-setup/cli-token').expect(200)).body.deleted).toBe(false);
 
     const still = await owner.get('/api/agent-setup').expect(200);
-    expect(still.body.cli).toEqual({ config: { cli: 'claude', model: 'sonnet' }, tokenStored: true, riskAccepted: true });
+    expect(still.body.cli).toMatchObject({ config: { cli: 'claude', model: 'sonnet' }, tokenStored: true, riskAccepted: true });
+    // Custody, not merely presence: a deployment holding the wrong server key
+    // reports the token as stored and then 500s at use time, and this field is
+    // the difference between a green setup screen and an honest one.
+    expect(still.body.cli.tokenCustody).toBe('current');
   });
 
   it('reads agent runs and stops them whatever the budget says', async () => {
@@ -1127,5 +1174,229 @@ describe('Trevra API on PostgreSQL', () => {
     const page = await agent.get(`/api/linkedin/manager/lead-lists/${listId}/contacts`).expect(200);
     expect(page.body.total).toBe(2);
     expect(page.body.contacts).toHaveLength(2);
+  });
+});
+
+/**
+ * The owner carve-out, and the two deliberate holes in it.
+ *
+ * Full workspace parity for an invited teammate is the product's own decision;
+ * these are the acts it does not extend to. Every assertion below is one route
+ * that could not be undone by the owner afterwards -- a published module, a
+ * revoked token, a downloaded file, a deleted workspace -- or one that spends
+ * the owner's money or their LinkedIn account's standing.
+ */
+describe('owner-only acts', () => {
+  it('refuses an invited teammate every privileged and destructive route, and keeps the kill switches open', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    const { member } = await ownerAndMember(app);
+
+    // PARITY IS THE PRODUCT, and this is the line the carve-out must not cross:
+    // the teammate operates the workspace in full.
+    await member.agent.get('/api/skills').expect(200);
+    await member.agent.get('/api/policies').expect(200);
+    await member.agent.get('/api/agent-setup').expect(200);
+    await member.agent.get('/api/linkedin/seat').expect(200);
+    await member.agent.get('/api/linkedin/campaigns').expect(200);
+    await member.agent.get('/api/ledger/exports').expect(200);
+
+    // Control-plane and registry: standing permissions, and code published in
+    // the workspace's name.
+    await member.agent.post('/api/policies')
+      .send({ name: 'wide open', priority: 1, actionPattern: '*', effect: 'allow', conditions: {}, enabled: true })
+      .expect(403);
+    await member.agent.delete('/api/policies/pol_whatever').expect(403);
+    await member.agent.post('/api/registry/publishers')
+      .send({ slug: 'mine', displayName: 'Mine', publicKeyPem: 'x'.repeat(60) })
+      .expect(403);
+    await member.agent.post('/api/registry/modules/gtm.score-lead/install').send({ version: '1.0.0' }).expect(403);
+    await member.agent.post('/api/commercial-projections/rebuild').expect(403);
+
+    // Credentials, money, and the unattended cadence that spends it.
+    await member.agent.delete('/api/agent-tokens/tok_whatever').expect(403);
+    await member.agent.put('/api/agent-setup/key').send({ apiKey: 'sk-nope-1234567890' }).expect(403);
+    await member.agent.put('/api/agent-setup/cli-token').send({ token: 'nope-1234567890' }).expect(403);
+    await member.agent.put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(403);
+    await member.agent.put('/api/agent-setup/budget').send({ monthlyCapCents: 100_000, enabled: true }).expect(403);
+    await member.agent.put('/api/agent-setup/schedule').send({ enabled: true, intervalMinutes: 60 }).expect(403);
+
+    // The two downloads. Both are files of client names and message bodies that
+    // cannot be recalled once they have left.
+    await member.agent.get('/api/ledger/exports/exp_whatever').expect(403);
+    await member.agent.get('/api/linkedin/campaigns/cmp_x/export/exp_x').expect(403);
+
+    // The LinkedIn account itself.
+    await member.agent.put('/api/linkedin/seat').send({ inviteDailyLimit: 75 }).expect(403);
+    await member.agent.post('/api/linkedin/seat/resume').send({}).expect(403);
+    await member.agent.delete('/api/linkedin/seat').expect(403);
+    await member.agent.post('/api/linkedin/seat/login').send({}).expect(403);
+    await member.agent.post('/api/linkedin/seat/detect').send({ timezone: 'Europe/Berlin' }).expect(403);
+    await member.agent.put('/api/linkedin/lead-sources/allowance').send({ cap: 200 }).expect(403);
+
+    // Queueing is the closest an HTTP caller gets to a send; stopping and
+    // deleting do not come back.
+    await member.agent.post('/api/linkedin/campaigns/cmp_x/queue').send({}).expect(403);
+    await member.agent.post('/api/linkedin/campaigns/cmp_x/stop').send({}).expect(403);
+    await member.agent.delete('/api/linkedin/campaigns/cmp_x').expect(403);
+    await member.agent.post('/api/linkedin/manager/campaigns/cmp_x/start').send({}).expect(403);
+    await member.agent.post('/api/linkedin/manager/campaigns/cmp_x/stop').send({}).expect(403);
+    await member.agent.delete('/api/linkedin/manager/lead-lists/lst_x').expect(403);
+
+    // Export and erasure of the whole workspace.
+    await member.agent.get('/api/workspace/export').expect(403);
+    await member.agent.get('/api/workspace/erasure').expect(403);
+    await member.agent.delete('/api/workspace').send({ confirm: 'anything' }).expect(403);
+
+    // AND THE TWO HOLES, WHICH ARE THE POINT OF THE OTHER FIFTY. A 404 rather
+    // than a 403 is the proof: the request reached the handler, found no seat
+    // and no campaign, and was refused for THAT. A teammate who can see
+    // something going wrong can always stop it.
+    await member.agent.post('/api/linkedin/seat/pause').send({ reason: 'this looks wrong' }).expect(404);
+    await member.agent.post('/api/linkedin/manager/campaigns/cmp_x/pause').send({}).expect(404);
+  });
+});
+
+describe('pause is honoured by the legacy campaign routes', () => {
+  /**
+   * The bug this pins: `pauseManagedCampaign` writes `status='paused'` and
+   * parks the queue in 'held', and these three routes gated on 'stopped'
+   * alone -- so queueing a PAUSED campaign wrote fresh 'planned' rows for the
+   * worker to claim and exporting one wrote 'exported' rows that consume
+   * pacing budget. Both reopen exactly what the pause closed.
+   */
+  it('refuses to queue or export a paused campaign', async () => {
+    const agent = await agentWithSession();
+    const campaignId = `cmp_${randomBytes(6).toString('hex')}`;
+    const now = new Date().toISOString();
+    await db!.prepare(`
+      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,created_at,updated_at)
+      VALUES (?,?,?,'paused','{}'::jsonb,?,?)
+    `).run(campaignId, DEMO_WORKSPACE_ID, 'Paused outreach', now, now);
+
+    const queued = await agent.post(`/api/linkedin/campaigns/${campaignId}/queue`).send({}).expect(409);
+    expect(queued.body.error).toMatch(/paused/i);
+    const exported = await agent.post(`/api/linkedin/campaigns/${campaignId}/export`).send({}).expect(409);
+    expect(exported.body.error).toMatch(/paused/i);
+
+    // Nothing was written by either refusal -- the whole point of refusing.
+    const actions = await db!.prepare('SELECT COUNT(*) AS count FROM linkedin_actions WHERE campaign_id=?')
+      .get<{ count: number }>(campaignId);
+    expect(Number(actions?.count ?? 0)).toBe(0);
+
+    // A stopped campaign still says 'stopped', not 'paused'.
+    await db!.prepare("UPDATE linkedin_campaigns SET status='stopped' WHERE id=?").run(campaignId);
+    const stopped = await agent.post(`/api/linkedin/campaigns/${campaignId}/queue`).send({}).expect(409);
+    expect(stopped.body.error).toMatch(/was stopped/i);
+  });
+
+  /** The other half of migration 051: 'held' rows must be READABLE. */
+  it('accepts every ledger status the database can hold as an actions filter', async () => {
+    const agent = await agentWithSession();
+    for (const status of ['planned', 'held', 'exported', 'sent', 'accepted', 'replied', 'declined', 'skipped', 'withdrawn']) {
+      await agent.get(`/api/linkedin/actions?status=${status}`).expect(200);
+    }
+    await agent.get('/api/linkedin/actions?status=invented').expect(400);
+  });
+});
+
+describe('export and erasure', () => {
+  it('exports the whole workspace and withholds sealed credentials', async () => {
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    const agent = await agentWithSession();
+    const apiKey = 'sk-export-test-000000000000000000000000';
+    await agent.put('/api/agent-setup/key').send({ apiKey, label: 'Anthropic' }).expect(200);
+
+    const bundle = (await agent.get('/api/workspace/export').expect(200)).body as {
+      tables: Record<string, unknown[]>;
+      withheld: string[];
+      truncated: string[];
+    };
+
+    // The tables the ledger export does NOT cover -- which is the reason this
+    // route exists at all.
+    expect(bundle.tables.clients.length).toBeGreaterThan(0);
+    expect(bundle.tables.messages.length).toBeGreaterThan(0);
+    expect(bundle.tables.invoices.length).toBeGreaterThan(0);
+    expect(bundle.tables.workspace_settings.length).toBe(1);
+    // Reached through their parents; they carry no workspace_id of their own.
+    expect(bundle.tables.milestones).toBeDefined();
+    expect(bundle.tables.recommendation_outcomes).toBeDefined();
+
+    // The key is named as withheld and its bytes are nowhere in the file.
+    expect(bundle.withheld).toContain('workspace_secrets');
+    expect(bundle.tables.workspace_secrets).toBeUndefined();
+    expect(JSON.stringify(bundle)).not.toContain(apiKey);
+    expect(bundle.truncated).toEqual([]);
+  });
+
+  it('refuses to erase the shared demo workspace at all', async () => {
+    const agent = await agentWithSession();
+    const preview = await agent.get('/api/workspace/erasure').expect(200);
+    expect(preview.body.confirmationPhrase).toBe('Northstar Studio');
+    expect(preview.body.erasable).toBe(false);
+    expect(preview.body.inventory.some((entry: { table: string }) => entry.table === 'clients')).toBe(true);
+    expect(preview.body.totalRows).toBeGreaterThan(0);
+
+    const refused = await agent.delete('/api/workspace').send({ confirm: 'Northstar Studio' }).expect(403);
+    expect(refused.body.error).toMatch(/demo workspace/i);
+    const clients = await db!.prepare('SELECT COUNT(*) AS count FROM clients WHERE workspace_id=?')
+      .get<{ count: number }>(DEMO_WORKSPACE_ID);
+    expect(Number(clients?.count ?? 0)).toBeGreaterThan(0);
+  });
+
+  /**
+   * THE UNSAFE CASES, PROVED TO BE REFUSED -- which for a destructive route
+   * matters more than proving the happy path works. An unconfirmed erasure and
+   * an erasure racing a running campaign must both leave the workspace
+   * completely intact, not partly deleted.
+   */
+  it('refuses an unconfirmed erasure and one racing work in flight, then performs it', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    const owner = await signUpAgent(app, 'erasure');
+    const auth = await sessionAuth(owner.agent);
+    const preview = await owner.agent.get('/api/workspace/erasure').expect(200);
+    const phrase = preview.body.confirmationPhrase as string;
+    expect(preview.body.erasable).toBe(true);
+
+    const wrong = await owner.agent.delete('/api/workspace').send({ confirm: `${phrase} maybe` }).expect(400);
+    expect(wrong.body.error).toMatch(/Nothing was deleted/i);
+
+    const now = new Date().toISOString();
+    await db.prepare(`
+      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,created_at,updated_at)
+      VALUES (?,?,?,'running','{}'::jsonb,?,?)
+    `).run('cmp_inflight', auth.workspaceId, 'Mid-flight', now, now);
+
+    const busy = await owner.agent.delete('/api/workspace').send({ confirm: phrase }).expect(409);
+    expect(busy.body.inFlight.join(' ')).toMatch(/campaign/i);
+
+    // Neither refusal deleted anything.
+    const survived = await db.prepare('SELECT COUNT(*) AS count FROM workspaces WHERE id=?')
+      .get<{ count: number }>(auth.workspaceId);
+    expect(Number(survived?.count ?? 0)).toBe(1);
+
+    await db.prepare("UPDATE linkedin_campaigns SET status='stopped' WHERE id='cmp_inflight'").run();
+    const erased = await owner.agent.delete('/api/workspace').send({ confirm: phrase }).expect(200);
+    expect(erased.body.erased).toBe(true);
+    expect(erased.body.removed.linkedin_campaigns).toBe(1);
+
+    const gone = await db.prepare('SELECT COUNT(*) AS count FROM workspaces WHERE id=?')
+      .get<{ count: number }>(auth.workspaceId);
+    expect(Number(gone?.count ?? 0)).toBe(0);
+    const cascaded = await db.prepare('SELECT COUNT(*) AS count FROM linkedin_campaigns WHERE workspace_id=?')
+      .get<{ count: number }>(auth.workspaceId);
+    expect(Number(cascaded?.count ?? 0)).toBe(0);
+
+    // The record outlives the workspace, which is the only reason it has no
+    // foreign key to it (migration 057).
+    const log = await db.prepare('SELECT workspace_name, rows_removed_json FROM workspace_erasures WHERE workspace_id=?')
+      .get<{ workspace_name: string; rows_removed_json: Record<string, number> }>(auth.workspaceId);
+    expect(log?.workspace_name).toBe(phrase);
+    expect(log?.rows_removed_json.linkedin_campaigns).toBe(1);
+
+    // The session it was made with no longer resolves to anything.
+    await owner.agent.get('/api/dashboard').expect(401);
   });
 });

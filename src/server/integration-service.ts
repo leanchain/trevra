@@ -166,14 +166,42 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
   const payload = JSON.parse(rawBody) as Record<string, unknown>;
   const payloadHash = sha(rawBody);
   const externalEventId = String(payload.id ?? payload.activityLogId ?? `${payload.type}:${payload.operation ?? payload.syncName ?? ''}:${payloadHash}`);
-  const inserted = await recordWebhook(db, 'nango', externalEventId, null, payloadHash);
+
+  // RESOLVE THE TENANT, THEN CLAIM THE EVENT ID -- same ordering, and the same
+  // reason, as `processStripeWebhook`. 058's idempotency key includes the
+  // workspace, so a row recorded unattributed and later updated with its real
+  // tenant vacates the `@unresolved` slot and the provider's next redelivery is
+  // processed again. For a sync webhook that means re-ingesting a tenant's whole
+  // record set; for an auth webhook it means re-upserting a connection.
+  //
+  // A failure to resolve is still recorded, in the sentinel bucket, before the
+  // throw: an event nobody can attribute has no tenant slot to sit in, and
+  // redeliveries of an unattributable event must still dedupe against each
+  // other rather than piling up rows.
+  let workspaceId: string | null = null;
+  let connection: Record<string, unknown> | undefined;
+  try {
+    if (payload.type === 'auth') {
+      const tags = (payload.tags ?? {}) as Record<string, unknown>;
+      workspaceId = String(tags.organization_id ?? '') || null;
+      if (!workspaceId) throw new Error('Nango auth webhook is missing organization_id tag');
+    } else if (payload.type === 'sync' && payload.success === true) {
+      connection = await resolveNangoConnection(db, String(payload.providerConfigKey), String(payload.connectionId));
+      workspaceId = String(connection.workspace_id);
+    }
+  } catch (error) {
+    if (await recordWebhook(db, 'nango', externalEventId, null, payloadHash)) {
+      await completeWebhook(db, 'nango', externalEventId, 'failed', error instanceof Error ? error.message : String(error), null);
+    }
+    throw error;
+  }
+
+  const inserted = await recordWebhook(db, 'nango', externalEventId, workspaceId, payloadHash);
   if (!inserted) return { duplicate: true, processed: 'duplicate' };
 
   try {
     if (payload.type === 'auth') {
       const tags = (payload.tags ?? {}) as Record<string, unknown>;
-      const workspaceId = String(tags.organization_id ?? '');
-      if (!workspaceId) throw new Error('Nango auth webhook is missing organization_id tag');
       const success = payload.success !== false;
       const now = new Date().toISOString();
       const providerConfigKey = String(payload.providerConfigKey);
@@ -195,12 +223,9 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
       return { duplicate: false, processed: success ? 'connection-upserted' : 'connection-needs-reauth' };
     }
 
-    if (payload.type === 'sync' && payload.success === true) {
+    if (payload.type === 'sync' && payload.success === true && connection) {
       const connectionId = String(payload.connectionId);
       const providerConfigKey = String(payload.providerConfigKey);
-      const connection = await db.prepare('SELECT * FROM connections WHERE provider_config_key=? AND external_connection_id=?')
-        .get(providerConfigKey, connectionId) as Record<string, unknown> | undefined;
-      if (!connection) throw new Error('Unknown Nango connection');
       const synced = await syncNangoRecords(db, {
         workspaceId: String(connection.workspace_id), localConnectionId: String(connection.id), provider: String(connection.provider),
         providerConfigKey, externalConnectionId: connectionId, model: String(payload.model),
@@ -217,12 +242,48 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
       return { duplicate: false, processed: `synced-${synced.ingested}${synced.skipped > 0 ? `-skipped-${synced.skipped}` : ''}` };
     }
 
-    await completeWebhook(db, 'nango', externalEventId, 'ignored', null, null);
+    await completeWebhook(db, 'nango', externalEventId, 'ignored', null, workspaceId);
     return { duplicate: false, processed: 'ignored' };
   } catch (error) {
-    await completeWebhook(db, 'nango', externalEventId, 'failed', error instanceof Error ? error.message : String(error), null);
+    await completeWebhook(db, 'nango', externalEventId, 'failed', error instanceof Error ? error.message : String(error), workspaceId);
     throw error;
   }
+}
+
+/**
+ * WHICH TENANT'S RECORDS ARE THESE?
+ *
+ * A Nango sync webhook names an integration and a connection, never a workspace
+ * -- only the auth webhook carries the `organization_id` tag. The workspace
+ * therefore has to come from the `connections` row, and this lookup used to take
+ * whatever row the database returned first: no `workspace_id` in the predicate
+ * and no LIMIT. `connections` is UNIQUE(workspace_id, provider_config_key,
+ * external_connection_id) (001:45), so the same provider/connection pair in two
+ * workspaces is a perfectly legal pair of rows, and the arbitrary winner's
+ * `workspace_id` was then handed to `syncNangoRecords` -- filing one tenant's
+ * clients, messages and invoices into another tenant's account, silently and
+ * permanently.
+ *
+ * Nango's own connection ids are unique per integration, so more than one row
+ * here means the local data is wrong, not that a choice has to be made. Refuse:
+ * a sync that stops is recoverable, a sync that guesses is a cross-tenant data
+ * leak nobody notices. The offending rows are visible with a single query on
+ * `connections`, so the message stays free of workspace ids -- this error is
+ * returned to the webhook caller.
+ *
+ * Not fixed with a UNIQUE index on (provider_config_key, external_connection_id):
+ * an existing deployment may already hold the duplicates this refusal is about,
+ * and a migration that either fails or silently deletes one of a customer's
+ * connections is worse than the refusal.
+ */
+async function resolveNangoConnection(db: Db, providerConfigKey: string, connectionId: string): Promise<Record<string, unknown>> {
+  const candidates = await db.prepare('SELECT * FROM connections WHERE provider_config_key=? AND external_connection_id=? ORDER BY workspace_id ASC')
+    .all<Record<string, unknown>>(providerConfigKey, connectionId);
+  if (candidates.length === 0) throw new Error('Unknown Nango connection');
+  if (candidates.length > 1) {
+    throw new Error(`Nango connection ${providerConfigKey}/${connectionId} is registered in ${candidates.length} workspaces; refusing to guess which tenant these records belong to`);
+  }
+  return candidates[0]!;
 }
 
 export async function triggerConnectionSync(db: Db, workspaceId: string, localConnectionId: string): Promise<void> {
@@ -353,21 +414,78 @@ export async function processStripeWebhook(db: Db, rawBody: Buffer, signature: s
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? 'sk_test_placeholder');
   const event = stripe.webhooks.constructEvent(rawBody, signature, secret);
   const payloadHash = sha(rawBody.toString('utf8'));
-  if (!await recordWebhook(db, 'stripe', event.id, null, payloadHash)) return { duplicate: true, processed: 'duplicate' };
-
   const object = event.data.object as Stripe.Invoice | Stripe.PaymentIntent;
   const metadata = 'metadata' in object ? object.metadata : {};
-  const workspaceId = metadata?.trevra_workspace_id;
-  if (!workspaceId) {
-    await completeWebhook(db, 'stripe', event.id, 'ignored', 'Missing trevra_workspace_id metadata', null);
-    return { duplicate: false, processed: 'ignored' };
+
+  /**
+   * TENANCY IS RESOLVED, NEVER READ OFF THE EVENT.
+   *
+   * This used to be `const workspaceId = metadata?.trevra_workspace_id`, and
+   * everything below ran against it: `UPDATE invoices SET status='paid'`, a
+   * `payments` insert, an outcome recorded against a recommendation. The
+   * signature check above proves one thing only -- that the event came from the
+   * Stripe account this deployment is configured for -- because
+   * `STRIPE_WEBHOOK_SECRET` is a single deployment-wide secret, not a
+   * per-workspace one. It says nothing about who the object belongs to.
+   *
+   * Metadata is writable by anyone who can touch an object in that Stripe
+   * account: a tenant with their own Stripe access under the platform account, a
+   * connected-account operator, anyone able to create a $0 invoice. Setting
+   * `trevra_workspace_id` to a victim's id and `trevra_invoice_id` to one of
+   * their invoices was enough to mark that invoice paid, insert a payment
+   * against it, and clear the collections recommendation watching it. The
+   * attacker never needed the victim's credentials, only their workspace id.
+   *
+   * So the workspace now comes from data the tenant cannot write into a Stripe
+   * object: rows Trevra itself stored when that tenant's own authenticated sync
+   * or import brought the object in. If nothing stored matches, there is nothing
+   * to update and the event is ignored. If matches span more than one workspace,
+   * the mapping is genuinely ambiguous and the event is refused rather than
+   * guessed. And if the metadata names a workspace that disagrees with the
+   * resolved owner, that is an attack or a misconfiguration, and either way the
+   * answer is no.
+   *
+   * A refusal is RECORDED rather than thrown. `webhook_events` is the audit
+   * trail an operator reads, and it keeps the reason permanently; throwing would
+   * hand Stripe a 4xx it retries for days and eventually disables the endpoint
+   * over -- turning one tenant's forged metadata into a billing outage for every
+   * tenant on the deployment.
+   *
+   * AND IT HAPPENS BEFORE THE EVENT ID IS CLAIMED, which is the ordering that
+   * makes redelivery idempotent again. Migration 058 keys idempotency on
+   * (COALESCE(workspace_id,'@unresolved'), provider, external_event_id), so a
+   * row inserted with an unknown tenant and later UPDATEd with its real one
+   * VACATES the `@unresolved` slot -- and the next redelivery of that same
+   * event walks straight back into the empty slot and is processed a second
+   * time. Resolving first and claiming the id under the workspace it belongs to
+   * means the row never moves buckets and a redelivery collides with itself.
+   * Refusals still claim the sentinel bucket, because an event nobody owns has
+   * no tenant slot to sit in, and redeliveries of it must still dedupe.
+   */
+  const claimedWorkspaceId = metadata?.trevra_workspace_id?.trim() || null;
+  const owners = await resolveStripeObjectOwners(db, stripeObjectReferences(object));
+  if (owners.length === 0) {
+    return refuseStripeEvent(db, event.id, payloadHash, 'ignored', 'No stored Stripe record matches this event, so it belongs to no workspace here');
   }
+  if (owners.length > 1) {
+    return refuseStripeEvent(db, event.id, payloadHash, 'rejected', `This Stripe object matches stored records in ${owners.length} workspaces; refusing to guess which one it belongs to`);
+  }
+  const workspaceId = owners[0]!;
+  if (claimedWorkspaceId && claimedWorkspaceId !== workspaceId) {
+    return refuseStripeEvent(db, event.id, payloadHash, 'rejected', `Event metadata claims workspace '${claimedWorkspaceId}' but the stored records for this Stripe object belong to another workspace`);
+  }
+
+  if (!await recordWebhook(db, 'stripe', event.id, workspaceId, payloadHash)) return { duplicate: true, processed: 'duplicate' };
 
   try {
     if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') {
       const invoice = event.data.object as Stripe.Invoice;
       const externalRef = invoice.number ?? invoice.id;
-      const localInvoice = await db.prepare('SELECT * FROM invoices WHERE workspace_id=? AND (external_ref=? OR id=?)').get(workspaceId, externalRef, metadata?.trevra_invoice_id ?? '') as Record<string, unknown> | undefined;
+      // Every predicate here is inside the workspace resolved above, so
+      // `trevra_invoice_id` is now only a hint for picking between rows the
+      // caller's own tenant already owns -- it can no longer reach across one.
+      const localInvoice = await db.prepare('SELECT * FROM invoices WHERE workspace_id=? AND (external_ref=? OR external_ref=? OR id=?)')
+        .get(workspaceId, externalRef, invoice.id ?? '', metadata?.trevra_invoice_id ?? '') as Record<string, unknown> | undefined;
       const amount = Number(invoice.amount_paid ?? 0) / 100;
       if (localInvoice) {
         const paidAt = new Date((invoice.status_transitions?.paid_at ?? event.created) * 1000).toISOString();
@@ -377,7 +495,7 @@ export async function processStripeWebhook(db: Db, rawBody: Buffer, signature: s
           VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,external_id) DO NOTHING
         `).run(id('pay'), workspaceId, String(localInvoice.id), event.id, amount, invoice.currency.toUpperCase(), paidAt, new Date().toISOString());
         const rec = await db.prepare('SELECT id FROM recommendations WHERE workspace_id=? AND source_key=?').get(workspaceId, `invoice:${localInvoice.id}:overdue`) as { id: string } | undefined;
-        if (rec) await recordOutcome(db, rec.id, 'revenue_collected', amount, invoice.currency.toUpperCase(), { stripeEventId: event.id });
+        if (rec) await recordOutcome(db, workspaceId, rec.id, 'revenue_collected', amount, invoice.currency.toUpperCase(), { stripeEventId: event.id });
       }
       await completeWebhook(db, 'stripe', event.id, 'processed', null, workspaceId);
       return { duplicate: false, processed: 'invoice-paid' };
@@ -388,6 +506,72 @@ export async function processStripeWebhook(db: Db, rawBody: Buffer, signature: s
     await completeWebhook(db, 'stripe', event.id, 'failed', error instanceof Error ? error.message : String(error), workspaceId);
     throw error;
   }
+}
+
+/**
+ * Park an event Trevra will not act on, in the unattributed bucket.
+ *
+ * Deliberately NOT recorded under the workspace the resolver named, in the
+ * mismatch case where one is known: the event was refused, not processed for
+ * that tenant, and consuming their (workspace, provider, event id) slot would
+ * let an attacker pre-emptively burn an id the tenant's real event needs.
+ */
+async function refuseStripeEvent(
+  db: Db, eventId: string, payloadHash: string, status: 'ignored' | 'rejected', reason: string
+): Promise<{ duplicate: boolean; processed: string }> {
+  if (!await recordWebhook(db, 'stripe', eventId, null, payloadHash)) return { duplicate: true, processed: 'duplicate' };
+  await completeWebhook(db, 'stripe', eventId, status, reason, null);
+  return { duplicate: false, processed: status === 'ignored' ? 'ignored' : 'rejected' };
+}
+
+/**
+ * Every identifier on a Stripe object that Trevra could plausibly have stored.
+ *
+ * Read off a plain record view rather than the typed shape because which of
+ * `number`, `invoice` and `customer` exist depends on the object type and the
+ * pinned API version, and a resolver that silently reads `undefined` because a
+ * field moved is a resolver that quietly falls back to trusting metadata.
+ */
+function stripeObjectReferences(object: Stripe.Invoice | Stripe.PaymentIntent): string[] {
+  const raw = object as unknown as Record<string, unknown>;
+  const references = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value === 'string' && value.trim()) references.add(value.trim());
+    else if (typeof value === 'object' && value !== null && typeof (value as { id?: unknown }).id === 'string') references.add(String((value as { id: string }).id));
+  };
+  add(raw.id);
+  add(raw.number);
+  add(raw.invoice);
+  return [...references];
+}
+
+/**
+ * Which workspaces hold a stored record for any of these Stripe identifiers.
+ *
+ * Both tables are written only by an authenticated path belonging to the
+ * workspace they name: `source_records` by `upsertSourceRecord` during that
+ * workspace's own Nango sync or CSV import, `invoices` by the same ingest.
+ * Neither can be created by editing a field on a Stripe object, which is exactly
+ * the property the metadata this replaces did not have.
+ *
+ * Returns every distinct match rather than the first, because the interesting
+ * answer is not "who" but "is there exactly one who". Two tenants can legally
+ * end up holding the same `external_ref` -- an invoice number is a string a
+ * customer chooses -- and that case has to refuse, not pick.
+ *
+ * `customer` is deliberately not consulted: Trevra stores no Stripe customer id
+ * anywhere, so a lookup on it would always miss, and a resolver with a branch
+ * that can never match is a resolver nobody maintains.
+ */
+async function resolveStripeObjectOwners(db: Db, references: string[]): Promise<string[]> {
+  if (references.length === 0) return [];
+  const placeholders = references.map(() => '?').join(',');
+  const rows = await db.prepare(`
+    SELECT workspace_id FROM invoices WHERE external_ref IN (${placeholders})
+    UNION
+    SELECT workspace_id FROM source_records WHERE provider='stripe' AND external_id IN (${placeholders})
+  `).all<{ workspace_id: string }>(...references, ...references);
+  return [...new Set(rows.map((row) => String(row.workspace_id)))].sort();
 }
 
 export async function syncNangoRecords(db: Db, input: {
@@ -482,22 +666,47 @@ export async function ingestCanonicalRecord(db: Db, workspaceId: string, provide
         .run(id('inv'), workspaceId, client.id, projectId, record.externalRef, record.amount, record.currency, record.status, record.issuedAt, record.dueAt, record.paidAt ?? null, sourceId, now);
       break;
     }
+    // MILESTONES, SCOPE ITEMS, CONTRACT CLAUSES: `workspace_id` comes off the
+    // parent row, in the same statement, and never from this function's
+    // `workspaceId` argument.
+    //
+    // Migration 058 added a nullable `workspace_id` to these tables precisely
+    // because they were reachable only through a parent id, so no handler could
+    // scope them and every read had to remember a join. It stopped short of
+    // `SET NOT NULL` because writers -- this one included -- were still leaving
+    // the column empty. These writes fill it, which is what lets a later
+    // migration tighten the constraint.
+    //
+    // `INSERT ... SELECT FROM parent` rather than passing the ambient workspace
+    // as a parameter, for two reasons. It is the parent's own value by
+    // construction, so a child can never be stamped with a tenant its parent
+    // does not belong to -- which is exactly the row a mis-scoped webhook would
+    // have written. And it costs no extra round trip: a missing or foreign
+    // parent inserts nothing instead of inserting an orphan.
     case 'milestone': {
       if (!projectId) throw new Error('Milestone requires a project');
       const existing = await db.prepare('SELECT id FROM milestones WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
-      if (existing) await db.prepare('UPDATE milestones SET project_id=?,name=?,amount=?,currency=?,status=?,delivered_at=?,invoiced_at=? WHERE id=?')
-        .run(projectId, record.name, record.amount, record.currency, record.status, record.deliveredAt ?? null, record.invoicedAt ?? null, existing.id);
-      else await db.prepare('INSERT INTO milestones (id,project_id,name,amount,currency,status,delivered_at,invoiced_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-        .run(id('mil'), projectId, record.name, record.amount, record.currency, record.status, record.deliveredAt ?? null, record.invoicedAt ?? null, sourceId, now);
+      if (existing) await db.prepare(`
+        UPDATE milestones m SET workspace_id=p.workspace_id,project_id=p.id,name=?,amount=?,currency=?,status=?,delivered_at=?,invoiced_at=?
+        FROM projects p WHERE p.id=? AND m.id=?
+      `).run(record.name, record.amount, record.currency, record.status, record.deliveredAt ?? null, record.invoicedAt ?? null, projectId, existing.id);
+      else await db.prepare(`
+        INSERT INTO milestones (id,workspace_id,project_id,name,amount,currency,status,delivered_at,invoiced_at,source_record_id,created_at)
+        SELECT ?,p.workspace_id,p.id,?,?,?,?,?,?,?,? FROM projects p WHERE p.id=?
+      `).run(id('mil'), record.name, record.amount, record.currency, record.status, record.deliveredAt ?? null, record.invoicedAt ?? null, sourceId, now, projectId);
       break;
     }
     case 'scope_item': {
       if (!projectId) throw new Error('Scope item requires a project');
       const existing = await db.prepare('SELECT id FROM scope_items WHERE source_record_id=?').get(sourceId) as { id: string } | undefined;
-      if (existing) await db.prepare('UPDATE scope_items SET project_id=?,description=?,included=?,unit_price=? WHERE id=?')
-        .run(projectId, record.description, record.included ? 1 : 0, record.unitPrice ?? null, existing.id);
-      else await db.prepare('INSERT INTO scope_items (id,project_id,description,included,unit_price,source_record_id,created_at) VALUES (?,?,?,?,?,?,?)')
-        .run(id('scope'), projectId, record.description, record.included ? 1 : 0, record.unitPrice ?? null, sourceId, now);
+      if (existing) await db.prepare(`
+        UPDATE scope_items s SET workspace_id=p.workspace_id,project_id=p.id,description=?,included=?,unit_price=?
+        FROM projects p WHERE p.id=? AND s.id=?
+      `).run(record.description, record.included ? 1 : 0, record.unitPrice ?? null, projectId, existing.id);
+      else await db.prepare(`
+        INSERT INTO scope_items (id,workspace_id,project_id,description,included,unit_price,source_record_id,created_at)
+        SELECT ?,p.workspace_id,p.id,?,?,?,?,? FROM projects p WHERE p.id=?
+      `).run(id('scope'), record.description, record.included ? 1 : 0, record.unitPrice ?? null, sourceId, now, projectId);
       break;
     }
     case 'contract': {
@@ -508,18 +717,48 @@ export async function ingestCanonicalRecord(db: Db, workspaceId: string, provide
       else await db.prepare('INSERT INTO contracts (id,workspace_id,client_id,project_id,title,status,signed_at,effective_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
         .run(contractId, workspaceId, client.id, projectId, record.title, record.status, record.signedAt ?? null, record.effectiveAt ?? null, sourceId, now);
       await db.prepare('DELETE FROM contract_clauses WHERE contract_id=?').run(contractId);
-      for (const clause of record.clauses) await db.prepare('INSERT INTO contract_clauses (id,contract_id,clause_type,title,content,value_number,unit,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-        .run(id('clause'), contractId, clause.type, clause.title, clause.content, clause.value ?? null, clause.unit ?? null, sourceId, now);
+      for (const clause of record.clauses) await db.prepare(`
+        INSERT INTO contract_clauses (id,workspace_id,contract_id,clause_type,title,content,value_number,unit,source_record_id,created_at)
+        SELECT ?,c.workspace_id,c.id,?,?,?,?,?,?,? FROM contracts c WHERE c.id=?
+      `).run(id('clause'), clause.type, clause.title, clause.content, clause.value ?? null, clause.unit ?? null, sourceId, now, contractId);
       break;
     }
   }
 }
 
-export async function recordOutcome(db: Db, recommendationId: string, outcomeType: string, amount: number, currency: string, details: Record<string, unknown> = {}): Promise<void> {
+/**
+ * Record an outcome against a recommendation, in that recommendation's tenant.
+ *
+ * The caller must name the workspace, and a recommendation outside it is
+ * refused rather than followed.
+ *
+ * Deriving the workspace from the recommendation alone was not enough. It put
+ * the right value in the column -- the parent's own -- but it also meant any
+ * caller could hand over any recommendation id and have the write silently
+ * attributed to whichever tenant happened to own it. An outcome is money:
+ * `revenue_collected`, `revenue_invoiced`. A mis-scoped caller would have
+ * credited another tenant's ledger with no error and no trace.
+ *
+ * So both. The explicit check refuses a foreign recommendation loudly, and the
+ * INSERT still takes `workspace_id` from the parent row in the same statement,
+ * so the stored column can never disagree with the recommendation it hangs off
+ * even if the two checks were ever to drift apart.
+ *
+ * Deduplication stays keyed on (recommendation_id, outcome_type) with no
+ * workspace: `recommendations.id` is a primary key, so the recommendation
+ * already IS the tenant scope, and adding `workspace_id=?` would let a legacy
+ * row left NULL by 058's backfill be duplicated instead of recognised.
+ */
+export async function recordOutcome(db: Db, workspaceId: string, recommendationId: string, outcomeType: string, amount: number, currency: string, details: Record<string, unknown> = {}): Promise<void> {
+  const recommendation = await db.prepare('SELECT id FROM recommendations WHERE id=? AND workspace_id=?')
+    .get<{ id: string }>(recommendationId, workspaceId);
+  if (!recommendation) throw new Error(`Recommendation ${recommendationId} does not belong to this workspace`);
   const existing = await db.prepare('SELECT id FROM recommendation_outcomes WHERE recommendation_id=? AND outcome_type=?').get(recommendationId, outcomeType) as { id: string } | undefined;
   if (existing) return;
-  await db.prepare('INSERT INTO recommendation_outcomes (id,recommendation_id,outcome_type,amount,currency,details_json,created_at) VALUES (?,?,?,?,?,?,?)')
-    .run(id('outcome'), recommendationId, outcomeType, amount, currency, JSON.stringify(details), new Date().toISOString());
+  await db.prepare(`
+    INSERT INTO recommendation_outcomes (id,workspace_id,recommendation_id,outcome_type,amount,currency,details_json,created_at)
+    SELECT ?,r.workspace_id,r.id,?,?,?,?,? FROM recommendations r WHERE r.id=? AND r.workspace_id=?
+  `).run(id('outcome'), outcomeType, amount, currency, JSON.stringify(details), new Date().toISOString(), recommendationId, workspaceId);
 }
 
 export function getNango(): Nango {
@@ -671,15 +910,49 @@ async function upsertSourceRecord(db: Db, workspaceId: string, connectionId: str
   return sourceId;
 }
 
+/**
+ * Claim an event id, per tenant rather than per deployment.
+ *
+ * The conflict target names migration 058's index verbatim --
+ * `idx_webhook_events_tenant_idempotency` on
+ * (COALESCE(workspace_id,'@unresolved'), provider, external_event_id) -- which
+ * replaced the global UNIQUE(provider, external_event_id) from 001. Providers
+ * allocate event ids per account, not globally, so under the old rule two
+ * tenants handed the same id meant the second one's event was silently
+ * swallowed as a duplicate: one tenant denying another their idempotency, and
+ * an existence oracle into the bargain.
+ *
+ * Every call here inserts with a NULL workspace, because a webhook arrives
+ * before anyone knows whose it is, so unresolved redeliveries still dedupe
+ * against each other in the sentinel bucket. `completeWebhook` moves the row
+ * into its own tenant's bucket once resolution succeeds, which is what frees
+ * the id for the next tenant.
+ */
 async function recordWebhook(db: Db, provider: string, externalEventId: string, workspaceId: string | null, payloadHash: string): Promise<boolean> {
-  const result = await db.prepare('INSERT INTO webhook_events (id,provider,external_event_id,workspace_id,payload_hash,status,received_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(provider,external_event_id) DO NOTHING')
+  const result = await db.prepare("INSERT INTO webhook_events (id,provider,external_event_id,workspace_id,payload_hash,status,received_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT (COALESCE(workspace_id,'@unresolved'),provider,external_event_id) DO NOTHING")
     .run(id('webhook'), provider, externalEventId, workspaceId, payloadHash, 'received', new Date().toISOString());
   return result.changes > 0;
 }
 
+/**
+ * Close out the row this request opened -- and only that row.
+ *
+ * `workspace_id IS NOT DISTINCT FROM ?` addresses the exact row this request
+ * claimed -- the tenant's own row when the event was attributed, the sentinel
+ * row when it was not. Without it, an UPDATE keyed on (provider,
+ * external_event_id) alone would now match every workspace that has ever been
+ * handed that same provider event id and overwrite all of their statuses.
+ *
+ * It no longer MOVES a row between buckets. It used to
+ * (`workspace_id=COALESCE(?,workspace_id)`), and that was the dedupe bug: an
+ * event recorded unattributed and then resolved vacated the `@unresolved` slot,
+ * so the provider's next redelivery of the same event found the slot empty and
+ * was processed all over again -- a paid invoice paid twice. Callers resolve
+ * the tenant before claiming the id, so the row is born in its final bucket.
+ */
 async function completeWebhook(db: Db, provider: string, externalEventId: string, status: string, error: string | null, workspaceId: string | null): Promise<void> {
-  await db.prepare('UPDATE webhook_events SET status=?,error=?,workspace_id=COALESCE(?,workspace_id),processed_at=? WHERE provider=? AND external_event_id=?')
-    .run(status, error, workspaceId, new Date().toISOString(), provider, externalEventId);
+  await db.prepare('UPDATE webhook_events SET status=?,error=?,processed_at=? WHERE provider=? AND external_event_id=? AND workspace_id IS NOT DISTINCT FROM ?')
+    .run(status, error, new Date().toISOString(), provider, externalEventId, workspaceId);
 }
 
 function createMimeMessage(recipient: string, subject: string, body: string, idempotencyKey: string): string {

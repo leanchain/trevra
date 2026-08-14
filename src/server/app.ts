@@ -1,4 +1,4 @@
-import express, { type NextFunction, type Request, type Response } from 'express';
+import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -131,7 +131,6 @@ import { canonicalPayloadHash } from './control-plane/payload.js';
 import {
   REDDIT_CREDENTIALS_HOSTED_REFUSAL,
   REDDIT_CREDENTIALS_UNSEALED_REFUSAL,
-  deleteRedditCredentials,
   describeRedditCredentials,
   putRedditCredentials
 } from './secrets/reddit.js';
@@ -140,6 +139,7 @@ import { RedditApiError } from './reddit/errors.js';
 import { REDDIT_SORTS, MAX_READ_LIMIT as REDDIT_MAX_READ_LIMIT } from './reddit/driver.js';
 import {
   commentOnRedditThread,
+  disconnectRedditWorkspace,
   loginRedditAccount,
   redditOffReason,
   redditWorkerStatus,
@@ -168,7 +168,7 @@ import {
   type LinkedInBand,
   type PacedKind
 } from './linkedin/limits.js';
-import { ACTION_KIND_VALUES, acceptanceRate, countActionsInWindow, hasTarget, ownerSeat } from './linkedin/actions.js';
+import { ACTION_KIND_VALUES, ACTION_STATUS_VALUES, acceptanceRate, countActionsInWindow, hasTarget, ownerSeat, type LinkedInActionStatus } from './linkedin/actions.js';
 import {
   OWNER_SEAT_KEY,
   deleteSeat,
@@ -218,7 +218,8 @@ import {
   stopCampaign,
   storeCampaignExport,
   supersedeCampaignExport,
-  type LinkedInCampaign
+  type LinkedInCampaign,
+  type CampaignStatus
 } from './linkedin/campaigns.js';
 import {
   INVITE_NOTE_MAX_CHARS,
@@ -282,6 +283,7 @@ import {
   LEAD_CONTACT_READ_LIMIT,
   countLeadContacts,
   createLeadList,
+  deleteLeadList,
   getLeadList,
   importLeadCsv,
   importLeadSourceContacts,
@@ -303,6 +305,7 @@ import {
   listManualTasks,
   managedAnalytics,
   pauseManagedCampaign,
+  releaseSeatWork,
   removeCampaignMember,
   setCampaignMemberPaused,
   startManagedCampaign,
@@ -324,6 +327,19 @@ import type { Account, AccountScore, AccountSignal, RankedAccount } from './acco
 
 const SESSION_COOKIE = 'trevra_session';
 const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * One tenant's minute, in requests.
+ *
+ * Deliberately generous against a BROWSER rather than tight against an
+ * attacker: the dashboard fans out, several screens poll a run or a detect
+ * while it is outstanding, and a ceiling that a legitimate afternoon can reach
+ * is a ceiling somebody turns off. What it bounds is a workspace running away
+ * with a shared deployment -- 20 requests a second, sustained, is not a person
+ * at a keyboard. The per-IP bucket still sits underneath it for everything
+ * that has no workspace to bill.
+ */
+const WORKSPACE_REQUESTS_PER_MINUTE = 1_200;
 const documentUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 10 },
@@ -480,7 +496,51 @@ export function createApp(db: Db) {
 
   app.use(express.json({ limit: '6mb' }));
   app.use(enforceAllowedOrigin);
-  app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false }));
+
+  /**
+   * TWO BUCKETS, BECAUSE THERE ARE TWO THINGS TO BOUND.
+   *
+   * The one limiter that used to live here keyed everything on `req.ip`, and
+   * with `trust proxy` set above that is the caller's real address rather than
+   * the load balancer's -- which is the right key for an anonymous request and
+   * the WRONG key for a hosted tenant. Two customers behind one corporate NAT,
+   * or one mobile carrier, arrive from one address and share one bucket, so a
+   * busy afternoon in one workspace 429s the other. On a self-hosted box that
+   * is invisible; on a multi-tenant deployment it is one paying customer
+   * spending another's quota, and neither of them can see why.
+   *
+   * So the key now follows the thing being protected:
+   *
+   *   unattributedLimiter  per IP, for requests with no workspace to bill --
+   *                        sign-in, the demo route, agent-token traffic, and
+   *                        anything presenting a session credential that turns
+   *                        out not to be one.
+   *   workspaceLimiter     per workspace, for every session-authenticated
+   *                        route, mounted the moment `requireSession` has
+   *                        resolved WHICH tenant is asking.
+   *
+   * EVERY REQUEST IS CHARGED TO EXACTLY ONE OF THEM, and that is what makes
+   * the split safe. A request carrying a session cookie skips the IP bucket on
+   * the way in -- otherwise the NAT'd tenant would still be capped by the
+   * address it shares, and nothing would have been fixed -- and if that cookie
+   * does not resolve, `requireSession` charges it to the IP bucket before
+   * answering 401. A forged cookie therefore buys no exemption, which is the
+   * hole a bare skip would have opened.
+   */
+  const unattributedLimiter = rateLimit({ windowMs: 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false });
+  const workspaceLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: WORKSPACE_REQUESTS_PER_MINUTE,
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Never the address: that is the key this limiter exists to stop using. An
+    // unattributed request cannot reach here -- it is mounted after
+    // `requireSession` -- and the fallback is one shared bucket rather than a
+    // crash on the day that stops being true.
+    keyGenerator: (request: Request) => (request as AuthedRequest).auth?.workspaceId ?? 'unattributed',
+    message: { error: 'This workspace has made too many requests in the last minute. Try again shortly.' }
+  });
+  app.use('/api', (req, res, next) => (carriesSessionCredential(req) ? next() : unattributedLimiter(req, res, next)));
 
   app.post('/api/admin/registry/publishers/:id/verification', async (req, res, next) => {
     try {
@@ -605,7 +665,12 @@ export function createApp(db: Db) {
     } catch (error) { next(error); }
   });
 
-  app.use('/api', requireSession(db));
+  app.use('/api', requireSession(db, unattributedLimiter));
+  // Mounted immediately after the session resolves, which is the first moment
+  // there is a tenant to charge. Everything below this line is somebody's
+  // workspace spending its own minute; nothing below it can spend anyone
+  // else's.
+  app.use('/api', workspaceLimiter);
 
   /**
    * Add a teammate (design doc's Team management section -- decision #3
@@ -749,7 +814,13 @@ export function createApp(db: Db) {
     catch (error) { next(error); }
   });
 
-  app.post('/api/policies', async (req: AuthedRequest, res, next) => {
+  // Owner-only, and the `allow` effect is why. These rows are what the control
+  // plane consults before an action runs, so a member who can write one can
+  // write themselves a standing exemption over any `action_pattern` they
+  // choose -- which is a privilege escalation wearing the shape of a settings
+  // form. READING them stays open to everyone: knowing which rules bind you is
+  // not a privilege, and a teammate who cannot see the policy cannot obey it.
+  app.post('/api/policies', ownerOnly("change this workspace's policies"), async (req: AuthedRequest, res, next) => {
     try {
       const input = policyWriteSchema.parse(req.body ?? {});
       const now = new Date().toISOString();
@@ -766,7 +837,9 @@ export function createApp(db: Db) {
     } catch (error) { next(error); }
   });
 
-  app.delete('/api/policies/:id', async (req: AuthedRequest, res, next) => {
+  // Same carve-out as the create route, and for the mirror-image reason:
+  // deleting a `deny` policy is how you turn a refusal off.
+  app.delete('/api/policies/:id', ownerOnly("change this workspace's policies"), async (req: AuthedRequest, res, next) => {
     try {
       const result = await db.prepare('DELETE FROM workspace_policies WHERE id=? AND workspace_id=?')
         .run(String(req.params.id),req.auth!.workspaceId);
@@ -781,7 +854,11 @@ export function createApp(db: Db) {
     catch (error) { next(error); }
   });
 
-  app.post('/api/registry/publishers', async (req: AuthedRequest, res, next) => {
+  // Owner-only: a publisher is this workspace's IDENTITY in a registry other
+  // deployments install from, and it carries a signing key. Anything published
+  // under it is published in the workspace's name, off this deployment, to
+  // strangers -- there is no way to un-say that afterwards.
+  app.post('/api/registry/publishers', ownerOnly('create a module publisher for this workspace'), async (req: AuthedRequest, res, next) => {
     try {
       const input = publisherCreateSchema.parse(req.body ?? {});
       const publisher = await createModulePublisher(db, {
@@ -795,7 +872,10 @@ export function createApp(db: Db) {
     } catch (error) { next(error); }
   });
 
-  app.post('/api/registry/modules/:id/releases', async (req: AuthedRequest, res, next) => {
+  // Owner-only for the same reason as the publisher above, one step closer to
+  // the consequence: this is the act that puts signed bytes under the
+  // workspace's name in front of everybody else's install route.
+  app.post('/api/registry/modules/:id/releases', ownerOnly('publish a module release'), async (req: AuthedRequest, res, next) => {
     try {
       const input = moduleReleaseSchema.parse(req.body ?? {});
       if (typeof input.manifest !== 'object' || input.manifest === null || Array.isArray(input.manifest) ||
@@ -819,7 +899,11 @@ export function createApp(db: Db) {
     catch (error) { next(error); }
   });
 
-  app.post('/api/registry/modules/:id/install', async (req: AuthedRequest, res, next) => {
+  // Owner-only: an installed community module is third-party code this
+  // workspace's runs will execute, chosen from a registry this deployment does
+  // not control. "Which strangers' code runs against our data" is not a
+  // per-teammate decision.
+  app.post('/api/registry/modules/:id/install', ownerOnly('install a community module'), async (req: AuthedRequest, res, next) => {
     try {
       const input = moduleInstallSchema.parse(req.body ?? {});
       const installation = await installModuleRelease(db, {
@@ -833,7 +917,10 @@ export function createApp(db: Db) {
     } catch (error) { next(error); }
   });
 
-  app.delete('/api/registry/modules/:id/install', async (req: AuthedRequest, res, next) => {
+  // The other half of the same decision. Uninstalling is not dangerous the way
+  // installing is, but it silently breaks every playbook step that names the
+  // module, so it belongs with the person who chose it.
+  app.delete('/api/registry/modules/:id/install', ownerOnly('uninstall a community module'), async (req: AuthedRequest, res, next) => {
     try {
       const removed = await uninstallModuleRelease(db, req.auth!.workspaceId, String(req.params.id));
       if (!removed) return res.status(404).json({ error: 'Installed module not found' });
@@ -848,8 +935,21 @@ export function createApp(db: Db) {
     } catch (error) { next(error); }
   });
 
-  app.post('/api/commercial-projections/rebuild', async (_req: AuthedRequest, res, next) => {
-    try { res.status(202).json({ processed: await rebuildCommercialProjections(db) }); }
+  /**
+   * Rebuild THIS workspace's projections, and nobody else's.
+   *
+   * The call used to be `rebuildCommercialProjections(db)` -- no workspace,
+   * because the function had no workspace to take. On a single-tenant box that
+   * reads as a maintenance button. On a hosted one it was a route that any
+   * member of any workspace could press to truncate
+   * `commercial_entity_projections` for EVERY TENANT ON THE DEPLOYMENT and
+   * then replay the whole event log to rebuild it -- one customer's button
+   * blanking another customer's dashboard, and paying for the replay in shared
+   * database load. The workspace argument is what makes the blast radius the
+   * caller's own data; owner-only is what keeps it from being pressed casually.
+   */
+  app.post('/api/commercial-projections/rebuild', ownerOnly("rebuild this workspace's commercial projections"), async (req: AuthedRequest, res, next) => {
+    try { res.status(202).json({ processed: await rebuildCommercialProjections(db, req.auth!.workspaceId) }); }
     catch (error) { next(error); }
   });
 
@@ -879,7 +979,12 @@ export function createApp(db: Db) {
     } catch (error) { next(error); }
   });
 
-  app.delete('/api/agent-tokens/:id', async (req: AuthedRequest, res, next) => {
+  // Owner-only. Revoking is the act that stops somebody's Claude Code or Codex
+  // working mid-session, and it is not reversible -- a revoked token cannot be
+  // un-revoked, only replaced by a new one whose secret the old holder does not
+  // have. Creating one stays open: a teammate provisioning their own client is
+  // ordinary use, and every token it mints is scoped to this workspace anyway.
+  app.delete('/api/agent-tokens/:id', ownerOnly('revoke an agent token'), async (req: AuthedRequest, res, next) => {
     try {
       const revoked = await revokeAgentToken(db, req.auth!.workspaceId, req.auth!.userId, String(req.params.id));
       if (!revoked) return res.status(404).json({ error: 'Active agent token not found' });
@@ -919,6 +1024,24 @@ export function createApp(db: Db) {
         cli: {
           config: cliConfig ? { cli: cliConfig.cli, model: cliConfig.model } : null,
           tokenStored: cliToken !== null,
+          /**
+           * WHETHER THIS DEPLOYMENT CAN STILL OPEN THE TOKEN, not merely
+           * whether a row exists.
+           *
+           * `tokenStored` is a row count and it was the only thing this
+           * payload said, so a deployment holding the WRONG server key -- a
+           * restore onto a box with a different TREVRA_SECRETS_KEY, the usual
+           * way this happens -- rendered a finished setup screen and then 500'd
+           * at the first run, when `openSecret` failed on a ciphertext it could
+           * not authenticate. `custody: 'unknown'` is exactly that deployment,
+           * decided from metadata without decrypting anything, and it belongs
+           * on the screen BEFORE somebody runs a schedule against it. `keyId`
+           * rides along so an operator can tell which key they need to put
+           * back. The model key's summary carries both already, because
+           * `secret` above is the whole `WorkspaceSecretSummary`.
+           */
+          tokenCustody: cliToken?.custody ?? null,
+          tokenKeyId: cliToken?.keyId ?? null,
           riskAccepted: cliConfig?.riskAcceptedAt != null
         }
       });
@@ -947,7 +1070,13 @@ export function createApp(db: Db) {
 
   // Rate-limited with the same limiter as the auth routes: writing a provider
   // credential is a credential endpoint, whatever the session already proves.
-  app.put('/api/agent-setup/key', authLimiter, async (req: AuthedRequest, res, next) => {
+  //
+  // Owner-only as well as rate-limited. The key is the workspace's own billing
+  // relationship with a model provider: whoever replaces it decides who gets
+  // invoiced for every hosted run from that moment on, and the route is
+  // write-only, so a member could swap in their own key and nobody could read
+  // back what had been there before.
+  app.put('/api/agent-setup/key', authLimiter, ownerOnly("store this workspace's model API key"), async (req: AuthedRequest, res, next) => {
     try {
       if (!secretsConfigured()) {
         return res.status(400).json({
@@ -982,7 +1111,7 @@ export function createApp(db: Db) {
   // secret-adjacent -- and adds one more: the risk disclaimer gate, which is
   // its own route so it is revocable in one click and never implied by saving
   // config or a token.
-  app.put('/api/agent-setup/cli-config', async (req: AuthedRequest, res, next) => {
+  app.put('/api/agent-setup/cli-config', ownerOnly('choose which CLI agent this workspace runs'), async (req: AuthedRequest, res, next) => {
     try {
       const input = agentCliConfigSchema.parse(req.body ?? {});
       const config = await putWorkspaceCliAgentConfig(db, {
@@ -997,7 +1126,14 @@ export function createApp(db: Db) {
   // Rate-limited and gated the same as /api/agent-setup/key: a subscription
   // token is a credential endpoint too, whatever the session already proves,
   // and this deployment must be able to encrypt it before it accepts one.
-  app.put('/api/agent-setup/cli-token', authLimiter, async (req: AuthedRequest, res, next) => {
+  //
+  // AND OWNER-ONLY, which matters more here than on the BYOK key above. This
+  // token plus the CLI config plus the risk acceptance are the three switches
+  // that let a workspace steer a CHILD PROCESS on this server -- a real CLI,
+  // with a real subscription, launched with an environment this workspace
+  // chose. Each one is separately harmless and the set is not, so all three are
+  // the owner's to throw (see the config and risk routes either side).
+  app.put('/api/agent-setup/cli-token', authLimiter, ownerOnly("store this workspace's CLI subscription token"), async (req: AuthedRequest, res, next) => {
     try {
       if (!secretsConfigured()) {
         return res.status(400).json({
@@ -1028,7 +1164,12 @@ export function createApp(db: Db) {
   // `setWorkspaceCliRiskAccepted`. `accepted: true` 400s when there is no CLI
   // + model saved yet (nothing to accept the risk of); `accepted: false` is
   // always a harmless no-op, so revoking consent is never blocked by anything.
-  app.put('/api/agent-setup/cli-risk-accept', async (req: AuthedRequest, res, next) => {
+  // Owner-only, and this is the one of the three that most obviously must be:
+  // it is a written acceptance of a named risk, and an acceptance is worth
+  // exactly as much as the authority of whoever gave it. Revoking is owner-only
+  // too, which costs nothing -- the safety-reducing direction is the one being
+  // gated, and a member who wants it off can pause the schedule or the budget.
+  app.put('/api/agent-setup/cli-risk-accept', ownerOnly('accept the CLI agent risk disclaimer'), async (req: AuthedRequest, res, next) => {
     try {
       const input = agentCliRiskAcceptSchema.parse(req.body ?? {});
       const config = await setWorkspaceCliRiskAccepted(db, req.auth!.workspaceId, input.accepted);
@@ -1039,7 +1180,11 @@ export function createApp(db: Db) {
     } catch (error) { next(error); }
   });
 
-  app.put('/api/agent-setup/budget', async (req: AuthedRequest, res, next) => {
+  // Owner-only: the budget is a spending limit on the workspace's own provider
+  // key, so raising it spends somebody else's money and lowering it stops work
+  // the owner scheduled. Reading it stays open -- a teammate has to be able to
+  // see why a run stopped.
+  app.put('/api/agent-setup/budget', ownerOnly('change the agent budget'), async (req: AuthedRequest, res, next) => {
     try {
       const input = agentBudgetSchema.parse(req.body ?? {});
       const budget = await setAgentBudget(db, req.auth!.workspaceId, input, req.auth!.userId);
@@ -1051,7 +1196,10 @@ export function createApp(db: Db) {
   // closed". Deliberately a sibling of the budget rather than part of it: this
   // is the second of the two switches, and both have to be on before anything
   // spends the operator's key with nobody in the room.
-  app.put('/api/agent-setup/schedule', async (req: AuthedRequest, res, next) => {
+  // Owner-only, for the reason the comment above already gives: this is the
+  // second of the two switches that together spend the operator's key with
+  // nobody in the room, and both of them are the owner's.
+  app.put('/api/agent-setup/schedule', ownerOnly('change the unattended agent schedule'), async (req: AuthedRequest, res, next) => {
     try {
       const input = agentScheduleSchema.parse(req.body ?? {});
       const schedule = await setAgentSchedule(db, req.auth!.workspaceId, input, req.auth!.userId);
@@ -1193,7 +1341,14 @@ export function createApp(db: Db) {
    * and a cache that outlives a deletion is a cache that keeps handing back
    * somebody who asked to be forgotten.
    */
-  app.get('/api/ledger/exports/:id', async (req: AuthedRequest, res, next) => {
+  //
+  // Owner-only, and the paragraph above is the argument: the paragraph already
+  // says this archive carries every client name, message body and outreach
+  // target the workspace has recorded. Rendering one and LISTING them stay open
+  // -- those are row counts and filenames, and a teammate assembling evidence
+  // has to be able to do both -- but the bytes themselves leave the building,
+  // and a file that has left cannot be un-downloaded when a membership ends.
+  app.get('/api/ledger/exports/:id', ownerOnly('download a ledger export'), async (req: AuthedRequest, res, next) => {
     try {
       const stored = await readLedgerExport(db, req.auth!.workspaceId, String(req.params.id));
       if (!stored) return res.status(404).json({ error: 'Ledger export not found' });
@@ -1201,6 +1356,233 @@ export function createApp(db: Db) {
       res.setHeader('Content-Disposition', `attachment; filename="${stored.filename}"`);
       res.setHeader('Cache-Control', 'no-store');
       res.send(stored.bytes);
+    } catch (error) { next(error); }
+  });
+
+  /* =====================================================================
+   * EXPORT AND ERASURE (public/privacy/index.html, "Retention and deletion":
+   * "Workspace owners may request account export or deletion through the
+   * support contact below").
+   *
+   * THE PROMISE WAS IN THE PRIVACY POLICY AND NOWHERE IN THE PRODUCT. Before
+   * these routes there was no path -- no endpoint, no script, no admin tool --
+   * that deleted a user, a workspace, a lead list, a campaign, a lead, a
+   * thread, a message or an export. The only `DELETE FROM workspaces` in the
+   * codebase was the demo reset. "Through the support contact" describes a
+   * QUEUE, not an exemption: somebody still has to run something at the end of
+   * it, and the something did not exist.
+   *
+   * THIS EXPORT IS NOT THE LEDGER EXPORT ABOVE, and the two are not merged.
+   * `/api/ledger/exports` renders ten run-and-action tables: it is the evidence
+   * pack a founder shows a client, and it deliberately excludes lead contacts,
+   * lead lists, harvested leads, inbox threads and messages, campaigns, seats,
+   * accounts, clients, audit events and settings. That is the right shape for
+   * "prove what the agent did" and the wrong shape for "give me my data", and
+   * a flag on the first would have made one archive answer two questions
+   * badly.
+   *
+   * NEITHER ROUTE HOLDS A HAND-WRITTEN TABLE LIST -- see
+   * `workspaceScopedTables`. A list is a thing that goes stale one migration
+   * after somebody stops maintaining it, and a stale list here means an export
+   * that silently omits a customer's data and an erasure that silently keeps
+   * it.
+   * ================================================================== */
+
+  /**
+   * Everything this workspace holds, as one file, rendered on demand.
+   *
+   * NOTHING IS STORED. The ledger export writes its bytes to a row because a
+   * manifest publishes a sha256 per file and a re-render would serve different
+   * bytes under a hash already handed out. That reasoning does not transfer:
+   * this archive has no manifest, and a stored copy of EVERYTHING a workspace
+   * holds is a second copy of everything a workspace holds -- sitting in the
+   * same database, surviving the deletion of the rows it was made from, and
+   * downloadable by whoever is owner next. Rendered, sent, forgotten.
+   *
+   * SEALED MATERIAL IS NAMED AND NOT INCLUDED. See
+   * `WORKSPACE_EXPORT_SEALED_TABLES`: a data-subject export is the customer's
+   * information, and their LinkedIn password is not information about them, it
+   * is the key to an account. The manifest lists what was withheld, because
+   * silence would read as "there was no sign-in stored".
+   */
+  app.get('/api/workspace/export', ownerOnly('export this workspace'), async (req: AuthedRequest, res, next) => {
+    try {
+      const workspaceId = req.auth!.workspaceId;
+      const bundle = await exportWorkspaceData(db, workspaceId);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="trevra-workspace-${workspaceId}.json"`);
+      // Same rule as both downloads above, and the sharpest instance of it: a
+      // cache that outlives an erasure keeps handing back the workspace that
+      // asked to be forgotten.
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(JSON.stringify(bundle, null, 2));
+    } catch (error) { next(error); }
+  });
+
+  /**
+   * What erasure would remove, BEFORE anything is removed.
+   *
+   * A destructive route that cannot be previewed is a destructive route nobody
+   * can consent to. This is a pure read: a per-table row count, the exact
+   * phrase the DELETE will require, and the list of reasons it would refuse
+   * right now. An owner who reads this and then calls DELETE has been told the
+   * number of rows in every table it will touch.
+   */
+  app.get('/api/workspace/erasure', ownerOnly('erase this workspace'), async (req: AuthedRequest, res, next) => {
+    try {
+      const workspaceId = req.auth!.workspaceId;
+      const workspace = await db.prepare('SELECT id,name FROM workspaces WHERE id=?').get<{ id: string; name: string }>(workspaceId);
+      if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
+      const [inventory, inFlight] = await Promise.all([
+        workspaceInventory(db, workspaceId),
+        workspaceWorkInFlight(db, workspaceId)
+      ]);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        workspace,
+        /** The DELETE refuses anything else. Published so a client can label its own confirm box. */
+        confirmationPhrase: workspace.name,
+        // Empty tables are omitted from the list and counted in the total, so
+        // the screen reads as a summary of what exists rather than as a census
+        // of the schema.
+        inventory: inventory.filter((entry) => entry.rows > 0),
+        totalRows: inventory.reduce((sum, entry) => sum + entry.rows, 0),
+        inFlight,
+        erasable: inFlight.length === 0 && workspaceId !== DEMO_WORKSPACE_ID,
+        reversible: false
+      });
+    } catch (error) { next(error); }
+  });
+
+  /**
+   * Erase the workspace. Everything, at once, and never half of it.
+   *
+   * FOUR REFUSALS BEFORE A SINGLE ROW GOES, in this order, each answering a
+   * different way this can be the wrong call:
+   *
+   *   403  the demo workspace, which is shared by everyone who ever clicks
+   *        "try it" and is not one customer's to delete.
+   *   404  a workspace that is not there, so a retry of a completed erasure
+   *        reads as "already gone" rather than as a fault.
+   *   400  the confirmation phrase does not match the workspace's own name.
+   *        A boolean `confirm: true` is a checkbox a script ticks; typing the
+   *        name is the smallest gesture that proves somebody read the screen.
+   *   409  work is in flight. A claimed action, an open batch, a running
+   *        agent run or a running campaign means another process is holding
+   *        rows this would delete underneath it -- and a half-deleted
+   *        workspace is worse than an un-deleted one, because nothing is left
+   *        to describe what happened. The blockers come back named so the
+   *        owner can go and stop each one.
+   *
+   * THE CASCADE IS THE DELETION. Seventy-two of the seventy-four foreign keys
+   * pointing at `workspaces` are `ON DELETE CASCADE`, so one statement removes
+   * clients, messages, invoices, campaigns, leads, threads, seats, exclusions,
+   * exports, audit events, settings and the rest -- and does it atomically,
+   * which is the property that makes "never half of it" true. The two that are
+   * not cascades are `module_publishers` and `module_packages`, which are
+   * `ON DELETE SET NULL` on purpose: a module already published to strangers
+   * cannot be recalled from their deployments, so it survives de-attributed
+   * rather than pretending to vanish.
+   *
+   * THE BETTER-AUTH ORGANIZATION GOES TOO. `workspaces.id` and
+   * `organization.id` are the same value by construction (auth-service.ts), but
+   * better-auth's tables have no foreign key into ours, so the cascade cannot
+   * reach the organization, its members or its outstanding invitations.
+   * Deleting the workspace and leaving those behind would leave live
+   * invitations to a workspace that no longer exists.
+   *
+   * THE RECORD OF THE ERASURE OUTLIVES IT. `workspace_erasures` (migration 057)
+   * has no foreign key to `workspaces` for exactly that reason: every audit
+   * trail this product keeps is workspace-scoped and therefore cascades away
+   * with the workspace, so the one question anybody asks afterwards -- was this
+   * deletion actually performed, when, by whom, and how much went -- would have
+   * had no answer anywhere. It stores counts and names, never contents.
+   */
+  app.delete('/api/workspace', ownerOnly('erase this workspace'), async (req: AuthedRequest, res, next) => {
+    try {
+      const input = workspaceErasureSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+
+      if (workspaceId === DEMO_WORKSPACE_ID) {
+        return res.status(403).json({
+          error: 'The demo workspace is shared by everyone trying Trevra and cannot be erased. POST /api/demo/reset restores it instead.'
+        });
+      }
+
+      const workspace = await db.prepare('SELECT id,name FROM workspaces WHERE id=?').get<{ id: string; name: string }>(workspaceId);
+      if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
+
+      if (input.confirm !== workspace.name) {
+        return res.status(400).json({
+          error: `Type the workspace name exactly -- "${workspace.name}" -- to confirm this erasure. Nothing was deleted.`
+        });
+      }
+
+      const inFlight = await workspaceWorkInFlight(db, workspaceId);
+      if (inFlight.length > 0) {
+        return res.status(409).json({
+          error: 'This workspace still has work in flight, so erasing it now would delete rows a running process is holding. Nothing was deleted.',
+          inFlight
+        });
+      }
+
+      // Counted BEFORE the delete, because after it there is nothing to count.
+      // This is what the response reports and what the durable record stores.
+      const inventory = await workspaceInventory(db, workspaceId);
+      const removed = Object.fromEntries(inventory.filter((entry) => entry.rows > 0).map((entry) => [entry.table, entry.rows]));
+
+      let organizationRemoved = false;
+      try {
+        await betterAuth.api.deleteOrganization({
+          headers: fromNodeHeaders(req.headers),
+          body: { organizationId: workspaceId }
+        });
+        organizationRemoved = true;
+      } catch (error) {
+        // A demo-style session has no better-auth organization behind it at all,
+        // and a workspace whose organization was already removed answers the
+        // same way. Both are 4xx from better-auth and neither is a reason to
+        // abandon the erasure -- the workspace rows still have to go. Anything
+        // that is NOT better-auth saying no is a real fault and is rethrown.
+        if (!(error instanceof APIError)) throw error;
+      }
+
+      await db.transaction(async (tx) => {
+        await tx.prepare(`
+          INSERT INTO workspace_erasures (
+            id,workspace_id,workspace_name,requested_by_user_id,requested_by_email,rows_removed_json,created_at
+          ) VALUES (?,?,?,?,?,?::jsonb,?)
+        `).run(
+          id('erasure'),
+          workspaceId,
+          workspace.name,
+          req.auth!.userId,
+          req.auth!.email,
+          JSON.stringify(removed),
+          new Date().toISOString()
+        );
+        await tx.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
+      });
+
+      /**
+       * AND THE CALLER IS SIGNED OUT EVERYWHERE, which is not cosmetic.
+       *
+       * `resolveBetterAuthIdentity` provisions a home workspace for any valid
+       * better-auth session whose Trevra `users` row is missing -- that is what
+       * makes first sign-in work. The erased owner's `users` row has just been
+       * cascaded away while their better-auth session is still perfectly valid,
+       * so their very next request would have PROVISIONED THEM A NEW WORKSPACE:
+       * an erasure that quietly undoes itself one page load later. Revoking the
+       * sessions is what makes the deletion stick.
+       *
+       * Only this user's own sessions. Other members were removed from the
+       * organization above and fall back to their own home workspaces, which is
+       * correct -- their accounts are not this workspace's to end.
+       */
+      await betterAuth.api.revokeSessions({ headers: fromNodeHeaders(req.headers) }).catch(() => undefined);
+      res.clearCookie(SESSION_COOKIE, { path: '/' });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ erased: true, workspaceId, workspaceName: workspace.name, removed, organizationRemoved });
     } catch (error) { next(error); }
   });
 
@@ -1286,8 +1668,22 @@ export function createApp(db: Db) {
     const input = z.object({ reason: z.string().max(500).optional() }).parse(req.body ?? {});
     const recommendation = await db.prepare('SELECT * FROM recommendations WHERE id=? AND workspace_id=?').get(recommendationId, req.auth!.workspaceId) as Record<string, unknown> | undefined;
     if (!recommendation) return res.status(404).json({ error: 'Recommendation not found' });
-    await db.prepare("UPDATE recommendations SET status='dismissed',updated_at=? WHERE id=?").run(new Date().toISOString(), recommendationId);
-    await recordOutcome(db, recommendationId, 'dismissed', 0, String(recommendation.currency), { reason: input.reason ?? null });
+    // SCOPED ON THE WRITE, not only on the read above. The SELECT proved this
+    // recommendation belongs to the caller's workspace and the UPDATE then
+    // addressed it by id alone -- correct today because the id came from a
+    // scoped row, and correct only by that accident. Two statements enforcing
+    // one boundary between them is a boundary that breaks the first time
+    // somebody reorders them, and `WHERE id=?` on a global table is the exact
+    // shape of a cross-tenant write. The snooze route two blocks up already
+    // scopes its UPDATE; this one now matches it.
+    const dismissed = await db.prepare("UPDATE recommendations SET status='dismissed',updated_at=? WHERE id=? AND workspace_id=?")
+      .run(new Date().toISOString(), recommendationId, req.auth!.workspaceId);
+    if (dismissed.changes === 0) return res.status(404).json({ error: 'Recommendation not found' });
+    // `recordOutcome` now takes the workspace explicitly and refuses a
+    // recommendation that does not belong to it -- the id was already proved
+    // to be this workspace's twice over here, but the function no longer
+    // depends on every caller having done that.
+    await recordOutcome(db, req.auth!.workspaceId, recommendationId, 'dismissed', 0, String(recommendation.currency), { reason: input.reason ?? null });
     res.json({ ok: true });
   });
 
@@ -1438,21 +1834,62 @@ export function createApp(db: Db) {
     const workspaceId = req.auth!.workspaceId;
     const client = await db.prepare('SELECT * FROM clients WHERE id=? AND workspace_id=?').get(clientId, workspaceId);
     if (!client) return res.status(404).json({ error: 'Client not found' });
-    const messages = await db.prepare('SELECT id,direction,subject,body,occurred_at,source_record_id FROM messages WHERE client_id=? ORDER BY occurred_at DESC').all(clientId);
-    const invoices = await db.prepare('SELECT id,external_ref,amount,currency,status,issued_at,due_at,paid_at FROM invoices WHERE client_id=? ORDER BY issued_at DESC').all(clientId);
-    const projects = await db.prepare('SELECT id,name,status,total_value,currency FROM projects WHERE client_id=? ORDER BY created_at DESC').all(clientId);
-    const commitments = await db.prepare('SELECT * FROM commitments WHERE client_id=? ORDER BY due_at').all(clientId);
-    const contracts = await db.prepare('SELECT * FROM contracts WHERE client_id=? ORDER BY created_at DESC').all(clientId);
+    // EVERY CHILD READ CARRIES THE WORKSPACE TOO, and not because the parent
+    // read above is insufficient proof of ownership -- it is -- but because
+    // nothing below the application enforces that a child's workspace matches
+    // its parent's. There is not a single composite foreign key in this schema:
+    // `messages.client_id` references `clients(id)` and `messages.workspace_id`
+    // references `workspaces(id)`, and no constraint anywhere says the two must
+    // agree. So a row written with a mismatched pair -- by an importer, a
+    // backfill, a future writer that scopes one and not the other -- is a row
+    // Postgres accepts and this route would have served to the wrong tenant
+    // under a client id it had correctly scoped. `WHERE client_id=?` alone puts
+    // the whole boundary on the caller having got a different query right.
+    //
+    // `recommendation_outcomes` has no `workspace_id` column at all, so it is
+    // scoped through the recommendation it hangs off, which does.
+    const messages = await db.prepare('SELECT id,direction,subject,body,occurred_at,source_record_id FROM messages WHERE client_id=? AND workspace_id=? ORDER BY occurred_at DESC').all(clientId, workspaceId);
+    const invoices = await db.prepare('SELECT id,external_ref,amount,currency,status,issued_at,due_at,paid_at FROM invoices WHERE client_id=? AND workspace_id=? ORDER BY issued_at DESC').all(clientId, workspaceId);
+    const projects = await db.prepare('SELECT id,name,status,total_value,currency FROM projects WHERE client_id=? AND workspace_id=? ORDER BY created_at DESC').all(clientId, workspaceId);
+    const commitments = await db.prepare('SELECT * FROM commitments WHERE client_id=? AND workspace_id=? ORDER BY due_at').all(clientId, workspaceId);
+    const contracts = await db.prepare('SELECT * FROM contracts WHERE client_id=? AND workspace_id=? ORDER BY created_at DESC').all(clientId, workspaceId);
     const outcomes = await db.prepare(`
       SELECT ro.* FROM recommendation_outcomes ro JOIN recommendations r ON r.id=ro.recommendation_id
-      WHERE r.client_id=? ORDER BY ro.created_at DESC
-    `).all(clientId);
+      WHERE r.client_id=? AND r.workspace_id=? ORDER BY ro.created_at DESC
+    `).all(clientId, workspaceId);
     res.json({ client, messages, invoices, projects, commitments, contracts, outcomes });
   });
 
+  /**
+   * Custom record ingestion.
+   *
+   * WHAT `INGEST_API_KEY` IS, AND WHAT IT IS NOT. It is ONE key for the whole
+   * deployment, shared by every tenant on it, and on a hosted install that
+   * means every customer either holds the same secret or none of them can use
+   * this route at all. It is therefore NOT an authorisation: it cannot say
+   * which workspace is asking, so it cannot be the thing that decides which
+   * workspace a record lands in.
+   *
+   * WHAT ACTUALLY SCOPES THIS REQUEST is the session, which is why the route
+   * sits below `requireSession` and writes to `req.auth!.workspaceId` rather
+   * than to a workspace named in the body. A caller holding the deployment key
+   * and no session gets a 401 from the middleware before reaching this line;
+   * a caller holding a session and no key gets one here. The key is a
+   * deployment-level feature switch -- "is custom ingestion turned on at all"
+   * -- layered on top of per-tenant authentication, and it must never become
+   * the only credential: the day this route is reached by a machine with no
+   * browser session, the key has to become a per-workspace secret first,
+   * because a shared one would let any holder write into any tenant.
+   *
+   * Compared in constant time for the same reason the registry admin token is:
+   * a shared secret compared with `!==` leaks its prefix to anybody who can
+   * time a few thousand requests.
+   */
   app.post('/api/events', async (req: AuthedRequest, res) => {
-    const ingestKey = req.header('x-trevra-ingest-key');
-    if (!process.env.INGEST_API_KEY || ingestKey !== process.env.INGEST_API_KEY) return res.status(401).json({ error: 'Invalid ingest key' });
+    const ingestKey = req.header('x-trevra-ingest-key') ?? '';
+    if (!process.env.INGEST_API_KEY || !secureTokenEqual(ingestKey, process.env.INGEST_API_KEY)) {
+      return res.status(401).json({ error: 'Invalid ingest key' });
+    }
     const event = z.object({ provider: z.string().default('custom'), record: z.record(z.unknown()) }).parse(req.body);
     await ingestCanonicalRecord(db, req.auth!.workspaceId, event.provider, null, event.record as never);
     const count = await runRecommendationEngine(db, req.auth!.workspaceId);
@@ -1522,7 +1959,16 @@ export function createApp(db: Db) {
   // the account's age on every read, and the two postures an operator really
   // owns -- paused and cooldown -- have their own routes below, because a kill
   // switch buried in a settings PUT is a kill switch nobody finds.
+  //
+  // Owner-only. The fields this PUT writes are the seat's four daily ceilings
+  // and its working hours -- the numbers the pacing engine schedules against --
+  // so a member could raise the invite ceiling to 75 a day and the plan would
+  // pace to it. The band override in the same payload is stronger still: it
+  // decides whether the researched safety band or the operator's own number
+  // binds. That is an account-risk decision, and the account belongs to the
+  // owner.
   app.put('/api/linkedin/seat', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, "change a LinkedIn account's limits");
     const { seatKey = OWNER_SEAT_KEY, ...input } = linkedinSeatSchema.parse(req.body ?? {});
     const now = new Date();
     let seat;
@@ -1542,6 +1988,18 @@ export function createApp(db: Db) {
   // The kill switch. Consults nothing -- not the plan, not the ledger, not the
   // worker -- for the same reason the agent's stop route does not: the one
   // moment it is needed is the moment something else is already wrong.
+  //
+  // DELIBERATELY NOT OWNER-ONLY, and it is the only seat route on this surface
+  // that is not. The audit that gated its siblings asked for this one too, and
+  // gating it would mean that the person who notices an account misbehaving at
+  // 2am cannot stop it unless they happen to be the owner. A pause is entirely
+  // reversible, reduces risk in every direction, and CANNOT be used to smuggle
+  // sending back on: `POST /api/linkedin/seat/resume` is owner-only, so a
+  // member cannot undo their own pause either. The worst a member can do here
+  // is stop their own workspace's outreach and have to ask the owner to start
+  // it again -- which is a smaller failure than the alternative by a wide
+  // margin. Same reasoning, same shape, at
+  // `POST /api/linkedin/manager/campaigns/:id/pause`.
   app.post('/api/linkedin/seat/pause', linkedinRoute(async (req, res) => {
     const input = linkedinPauseSchema.parse(req.body ?? {});
     const seat = await pauseSeat(db, req.auth!.workspaceId, input.reason, new Date(), input.seatKey);
@@ -1567,6 +2025,12 @@ export function createApp(db: Db) {
    * month later.
    */
   app.post('/api/linkedin/seat/resume', linkedinRoute(async (req, res) => {
+    // Owner-only, and this is the asymmetry that makes the open pause route
+    // above safe: stopping is a member's to do, starting again is not. An
+    // account was paused because somebody thought something was wrong, and
+    // deciding it is fine now is the decision the audit row below records
+    // against a name.
+    assertWorkspaceOwner(req, 'resume a paused LinkedIn account');
     const { seatKey, reason } = linkedinResumeSchema.parse({ ...(req.body ?? {}), ...req.query });
     const workspaceId = req.auth!.workspaceId;
     const now = new Date();
@@ -1616,16 +2080,58 @@ export function createApp(db: Db) {
    * account's current view.
    *
    * The client is expected to confirm before calling this.
+   *
+   * AND IT NOW ACTUALLY DISCONNECTS. `deleteSeat` removes one row. Everything
+   * else the seat produced -- its sealed credentials, its planned and held
+   * actions, its pending manual tasks, its open batches -- used to survive the
+   * disconnect, so "remove this account" left the password on disk and left
+   * rows in the queue that a worker would still try to claim against an account
+   * this workspace had said goodbye to. `releaseSeatWork` is that cleanup, and
+   * it runs FIRST: a failure part-way through leaves the seat row present and
+   * the disconnect visibly unfinished, which is recoverable, rather than
+   * deleting the seat and orphaning the work, which is not.
+   *
+   * Owner-only. This is a delete with a blast radius, and the audit that asked
+   * for the check was right that it is the sharpest one on this surface.
    */
   app.delete('/api/linkedin/seat', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, 'disconnect a LinkedIn account');
     const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+    const workspaceId = req.auth!.workspaceId;
+    // The queue first: planned and held rows to 'skipped', pending manual tasks
+    // to 'cancelled', and a count of anything a worker had already CLAIMED --
+    // which this deliberately leaves alone, because a row a browser is acting
+    // on is not this route's to rewrite. `actionsInFlight` is how the response
+    // says so instead of rounding it to zero.
+    const released = await releaseSeatWork(db, workspaceId, seatKey, new Date());
+    // And the sign-in, which `deleteSeat` never touched: a disconnect that
+    // leaves a sealed password behind is a disconnect that can sign itself back
+    // in the moment somebody re-adds the seat.
+    await deleteLinkedInCredentials(db, workspaceId, req.auth!.userId, seatKey);
     // Scoped to the account being forgotten. Clearing the whole workspace's
     // cache would empty a SECOND account's inbox as a side effect of
     // disconnecting the first, which is the one thing multi-account made
     // possible to get wrong here.
-    const clearedThreads = await clearInboxForSeat(db, req.auth!.workspaceId, seatKey);
-    const deleted = await deleteSeat(db, req.auth!.workspaceId, seatKey);
-    res.json({ deleted, clearedThreads });
+    const clearedThreads = await clearInboxForSeat(db, workspaceId, seatKey);
+    const deleted = await deleteSeat(db, workspaceId, seatKey);
+    res.json({
+      deleted,
+      clearedThreads,
+      released,
+      /**
+       * WHETHER THE DISCONNECT ACTUALLY STOPPED EVERYTHING, as a fact rather
+       * than as an inference the client has to draw from a count.
+       *
+       * Rows a worker had already CLAIMED cannot be pulled back -- a browser is
+       * mid-action on them, and rewriting the row would not close the tab. So a
+       * non-zero `released.actionsInFlight` means this seat is disconnected and
+       * still sending, for up to one more batch. A response that reported that
+       * as a clean disconnect would be the same lie the Reddit route used to
+       * tell, and the screen has to be able to say "3 actions were already in
+       * flight and will finish" rather than "done".
+       */
+      fullyStopped: released.actionsInFlight === 0
+    });
   }));
 
   /* ---------------------------------------------------------------------
@@ -1723,6 +2229,12 @@ export function createApp(db: Db) {
    * rather than a status code.
    */
   app.post('/api/linkedin/seat/login', linkedinRoute(async (req, res) => {
+    // Owner-only, and it belongs with the credential routes above rather than
+    // with the read routes: this is the act that USES the stored sign-in.
+    // Whoever can call it can drive an authentication attempt against the
+    // owner's real LinkedIn account -- and a run of failed ones is exactly the
+    // signal that gets an account challenged or restricted.
+    assertWorkspaceOwner(req, 'sign a LinkedIn account in');
     const input = linkedinSeatLoginSchema.parse(req.body ?? {});
 
     let config: LinkedInLocalWorkerConfig;
@@ -1771,6 +2283,12 @@ export function createApp(db: Db) {
    * GET /api/linkedin/seat, which is what it already does.
    */
   app.post('/api/linkedin/seat/detect', linkedinRoute(async (req, res) => {
+    // Owner-only for the same reason as the login route above: on the
+    // credentials path this signs in to read the profile, so it is a sign-in
+    // wearing a different name -- and on the manual path it re-points the seat
+    // at whichever account the browser happens to be logged into, which is a
+    // change of account, not a refresh.
+    assertWorkspaceOwner(req, 'detect a LinkedIn account');
     const input = linkedinSeatDetectSchema.parse(req.body ?? {});
 
     let config: LinkedInLocalWorkerConfig;
@@ -2124,9 +2642,7 @@ export function createApp(db: Db) {
 
     const campaign = await getCampaign(db, workspaceId, String(req.params.id));
     if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
-    if (campaign.status === 'stopped') {
-      throw new LinkedInApiError('This campaign was stopped, so there is nothing left to edit.', 409);
-    }
+    assertCampaignRunnable(campaign, 'edit');
 
     const delivered = await countDeliveredActions(db, workspaceId, campaign.id);
     if (delivered > 0) {
@@ -2218,6 +2734,13 @@ export function createApp(db: Db) {
    * served forever. See migrations/025 and linkedin/campaigns.ts.
    */
   app.get('/api/linkedin/campaigns/:id/export/:exportId', linkedinRoute(async (req, res) => {
+    // Owner-only. This is the one route on the LinkedIn surface that hands over
+    // a FILE of people: every target's name and profile, and the exact message
+    // body queued against each of them. Listing the exports stays open -- that
+    // is metadata, and a teammate has to be able to see that an export exists
+    // -- but the bytes are the workspace's contact list, and a downloaded file
+    // is a copy nothing here can ever recall.
+    assertWorkspaceOwner(req, 'download a campaign export');
     const stored = await readCampaignExport(db, req.auth!.workspaceId, String(req.params.id), String(req.params.exportId));
     if (!stored) throw new LinkedInApiError('LinkedIn export not found', 404);
     res.setHeader('Content-Type', stored.contentType);
@@ -2245,9 +2768,7 @@ export function createApp(db: Db) {
 
     const campaign = await getCampaign(db, workspaceId, String(req.params.id));
     if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
-    if (campaign.status === 'stopped') {
-      throw new LinkedInApiError('This campaign was stopped, so there is nothing left to export.', 409);
-    }
+    assertCampaignRunnable(campaign, 'export');
 
     const approved = await approvedCampaignPayload(db, workspaceId, campaign, 'export');
 
@@ -2323,13 +2844,17 @@ export function createApp(db: Db) {
    * bypass it by not being a route.
    */
   app.post('/api/linkedin/campaigns/:id/queue', linkedinRoute(async (req, res) => {
+    // Owner-only. Nothing in this file sends, but this is the route that puts
+    // rows in front of the thing that does: the worker claims them on its own
+    // tick and drives a real browser on the owner's real account. It is the
+    // closest an HTTP caller gets to a send, and it is where the account risk
+    // is actually incurred.
+    assertWorkspaceOwner(req, 'queue a campaign for the local worker');
     linkedinQueueRequestSchema.parse(req.body ?? {});
     const workspaceId = req.auth!.workspaceId;
     const campaign = await getCampaign(db, workspaceId, String(req.params.id));
     if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
-    if (campaign.status === 'stopped') {
-      throw new LinkedInApiError('This campaign was stopped, so there is nothing left to queue.', 409);
-    }
+    assertCampaignRunnable(campaign, 'queue');
 
     const approved = await approvedCampaignPayload(db, workspaceId, campaign, 'queue');
     const queued = await queueCampaign(
@@ -2355,7 +2880,82 @@ export function createApp(db: Db) {
   // Stops the campaign and releases the slots it had queued. It does NOT stop
   // the seat: a batch already in a browser belongs to the worker holding it,
   // and the switch for that is POST /api/linkedin/seat/pause.
+  /**
+   * Delete a campaign and the outreach records it produced.
+   *
+   * THE LEDGER IS HISTORY, AND THIS DELETES IT ANYWAY. Every other route in
+   * this section leaves `linkedin_actions` alone on the grounds that it is the
+   * record of what really happened -- `stopCampaign` skips rows rather than
+   * removing them, and the seat delete says so in as many words. That rule is
+   * right for every operational decision and it is exactly wrong for this one:
+   * a data-subject request is a request to stop holding the record, and a
+   * product that answers it by marking rows 'skipped' has not deleted
+   * anything. So this route exists, it is owner-only, and it is the only place
+   * in the file that removes ledger rows.
+   *
+   * EXCLUSIONS ARE DELIBERATELY NOT DELETED. `linkedin_exclusions` is the list
+   * of people who asked to be left alone. Deleting a campaign must not delete
+   * the record that somebody opted out of it -- that would quietly make them
+   * approachable again by the next campaign, which is the one outcome an
+   * erasure route must never produce. The exclusion list is the workspace's
+   * promise to third parties, not the workspace's own data.
+   *
+   * IT REFUSES RATHER THAN RACING. A running or paused campaign has to be
+   * stopped first, so the queued slots are RELEASED through the path that knows
+   * how; and an action a worker is holding right now blocks the whole delete,
+   * because deleting a row mid-flight leaves the browser acting on behalf of a
+   * campaign that no longer exists.
+   */
+  app.delete('/api/linkedin/campaigns/:id', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, 'delete a campaign and its outreach records');
+    const workspaceId = req.auth!.workspaceId;
+    const campaignId = String(req.params.id);
+    const campaign = await getCampaign(db, workspaceId, campaignId);
+    if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
+
+    if (campaign.status === 'running' || campaign.status === 'paused') {
+      const status = campaign.status;
+      throw new LinkedInApiError(
+        `This campaign is ${status}. Stop it first -- POST /api/linkedin/campaigns/${campaignId}/stop -- so its queued slots are released rather than deleted out from under a worker.`,
+        409
+      );
+    }
+
+    const claimed = await db.prepare(
+      "SELECT COUNT(*) AS count FROM linkedin_actions WHERE workspace_id=? AND campaign_id=? AND claimed_at IS NOT NULL AND status IN ('planned','held')"
+    ).get<{ count: number }>(workspaceId, campaignId);
+    const claimedCount = Number(claimed?.count ?? 0);
+    if (claimedCount > 0) {
+      throw new LinkedInApiError(
+        `A worker is holding ${claimedCount} of this campaign's actions right now. Let the batch finish, or pause the seat, and try again.`,
+        409
+      );
+    }
+
+    // One transaction: a campaign whose exports were deleted and whose actions
+    // were not is a workspace that can no longer answer either question.
+    const removed = await db.transaction(async (tx) => {
+      const exports = await tx.prepare('DELETE FROM linkedin_exports WHERE workspace_id=? AND campaign_id=?').run(workspaceId, campaignId);
+      const tasks = await tx.prepare('DELETE FROM linkedin_manual_tasks WHERE workspace_id=? AND campaign_id=?').run(workspaceId, campaignId);
+      const members = await tx.prepare('DELETE FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=?').run(workspaceId, campaignId);
+      // No foreign key on `linkedin_actions.campaign_id` (migration 025 says
+      // why: the file an operator downloaded outlives the campaign row), so
+      // nothing cascades here and the delete has to be explicit.
+      const actions = await tx.prepare('DELETE FROM linkedin_actions WHERE workspace_id=? AND campaign_id=?').run(workspaceId, campaignId);
+      await tx.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=? AND id=?').run(workspaceId, campaignId);
+      return { exports: exports.changes, manualTasks: tasks.changes, members: members.changes, actions: actions.changes };
+    });
+
+    res.json({ deleted: true, campaignId, removed, exclusionsKept: true });
+  }));
+
   app.post('/api/linkedin/campaigns/:id/stop', linkedinRoute(async (req, res) => {
+    // Owner-only, unlike the seat pause above, and the difference is that this
+    // one does not come back. A stopped campaign cannot be edited, exported or
+    // queued ever again, and the slots it had reserved are released -- so it is
+    // a destructive end, not a pause. The reversible control a member should
+    // reach for is POST /api/linkedin/manager/campaigns/:id/pause.
+    assertWorkspaceOwner(req, 'stop a campaign');
     const stopped = await stopCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date());
     if (!stopped) throw new LinkedInApiError('LinkedIn campaign not found', 404);
     res.json({ campaign: stopped.campaign, releasedActions: stopped.released });
@@ -2411,9 +3011,32 @@ export function createApp(db: Db) {
     res.status(201).json(result);
   }));
 
+  /**
+   * The funnel, cut in the zone the ceilings were enforced in.
+   *
+   * `seatKey` is optional and it is not a filter -- the numbers stay
+   * workspace-wide -- it names WHOSE CLOCK the daily buckets are cut on. Every
+   * limit in this product is applied in `linkedin_seats.timezone`, so a series
+   * bucketed on anything else shows columns that were never any day's total
+   * (see `LinkedInAnalytics.timezone`). With no seat named, `campaigns.ts`
+   * picks the zone most of the workspace's seats are in and sets
+   * `timezoneSpansSeats` when they do not agree, which is the honest answer for
+   * an agency running Berlin and Los Angeles from one screen.
+   */
   app.get('/api/linkedin/analytics', linkedinRoute(async (req, res) => {
     const filters = linkedinAnalyticsSchema.parse(req.query);
-    res.json(await linkedinAnalytics(db, req.auth!.workspaceId, filters.days, new Date()));
+    const workspaceId = req.auth!.workspaceId;
+    // Read from the seat rather than taken from the query: a caller must not be
+    // able to re-cut somebody's ledger on a zone no account of theirs is in.
+    const seat = filters.seatKey ? await getSeat(db, workspaceId, filters.seatKey) : undefined;
+    if (filters.seatKey && !seat) throw new LinkedInApiError('That LinkedIn account is not configured for this workspace', 404);
+    res.json(await linkedinAnalytics(
+      db,
+      workspaceId,
+      filters.days,
+      new Date(),
+      seat ? { timezone: seat.timezone } : {}
+    ));
   }));
 
   /* Outreach-manager read models. No route in this block queues or sends. */
@@ -2493,19 +3116,41 @@ export function createApp(db: Db) {
     res.json({ campaign, members: await listCampaignMembers(db, req.auth!.workspaceId, campaignId) });
   }));
 
+  // Owner-only: starting is the act that begins really approaching strangers on
+  // the owner's account, on a cadence nobody has to press a button for again.
   app.post('/api/linkedin/manager/campaigns/:id/start', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, 'start a managed campaign');
     z.object({}).strict().parse(req.body ?? {});
     try { res.json({ campaign: await startManagedCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date()) }); }
     catch (error) { rethrowLinkedInManagerError(error); }
   }));
 
+  // DELIBERATELY NOT OWNER-ONLY -- the second of the two, and the same argument
+  // as POST /api/linkedin/seat/pause. Pausing parks the queue in 'held' and
+  // takes nothing away; the campaign, its members and its copy all survive, and
+  // only the owner can start it again. A teammate who can see a campaign
+  // approaching the wrong people has to be able to stop it approaching them
+  // while they go and find the owner.
   app.post('/api/linkedin/manager/campaigns/:id/pause', linkedinRoute(async (req, res) => {
     z.object({}).strict().parse(req.body ?? {});
-    try { res.json({ campaign: await pauseManagedCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date()) }); }
+    const workspaceId = req.auth!.workspaceId;
+    const campaignId = String(req.params.id);
+    // Read first, exactly as the workflow PUT above does. `pauseManagedCampaign`
+    // refuses a campaign that is not running with one sentence covering both
+    // "already stopped" and "never existed", and a 409 about state is the wrong
+    // answer to an id that is not this workspace's.
+    if (!(await getManagedCampaign(db, workspaceId, campaignId))) {
+      throw new LinkedInApiError('Managed campaign not found', 404);
+    }
+    try { res.json({ campaign: await pauseManagedCampaign(db, workspaceId, campaignId, new Date()) }); }
     catch (error) { rethrowLinkedInManagerError(error); }
   }));
 
+  // Owner-only, for the reason the legacy stop route gives: this one removes
+  // every active member, cancels the pending manual tasks and skips the queue.
+  // It is the irreversible half of the pair above.
   app.post('/api/linkedin/manager/campaigns/:id/stop', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, 'stop a managed campaign');
     z.object({}).strict().parse(req.body ?? {});
     try { res.json({ campaign: await stopManagedCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date()) }); }
     catch (error) { rethrowLinkedInManagerError(error); }
@@ -2635,6 +3280,38 @@ export function createApp(db: Db) {
     } catch (error) { rethrowLinkedInManagerError(error); }
   }));
 
+  /**
+   * Delete a lead list, and everyone on it.
+   *
+   * `deleteLeadList` owns the refusal, not this route: a list a RUNNING
+   * campaign is enrolling from cannot be deleted, because doing so would strand
+   * members mid-workflow against contacts that no longer exist. That check
+   * belongs with the write for the same reason `queueCampaign` owns the
+   * self-hosted gate -- a rule enforced in the route is a rule the next caller
+   * skips.
+   *
+   * Owner-only: this is the delete that removes a workspace's contact data
+   * rather than a row about it.
+   */
+  app.delete('/api/linkedin/manager/lead-lists/:id', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, 'delete a lead list');
+    let deleted;
+    try {
+      // No existence pre-check: `deleteLeadList` takes the row `FOR UPDATE` so
+      // that its refusal and its delete see the same list, and a SELECT out
+      // here would be a third read that a concurrent campaign start could slip
+      // between. `undefined` is its 404.
+      deleted = await deleteLeadList(db, req.auth!.workspaceId, String(req.params.id));
+    } catch (error) { rethrowLinkedInManagerError(error); }
+    if (!deleted) throw new LinkedInApiError('Lead list not found', 404);
+    // The counts are the point. Deleting a list no longer deletes PEOPLE: they
+    // lose this membership and keep every other one (migration 052), so
+    // `membershipsRemoved` and `contactsDetached` are what a confirmation
+    // screen has to be able to show instead of "N leads deleted", which was
+    // both alarming and, since migration 053, untrue.
+    res.json({ deleted });
+  }));
+
   app.patch('/api/linkedin/manager/contacts/:id', linkedinRoute(async (req, res) => {
     const input = linkedinLeadContactUpdateSchema.parse(req.body ?? {});
     try {
@@ -2740,6 +3417,11 @@ export function createApp(db: Db) {
   }));
 
   app.put('/api/linkedin/lead-sources/allowance', linkedinRoute(async (req, res) => {
+    // Owner-only: this is the number that says how much scraping this workspace
+    // is willing to do at all under LinkedIn's User Agreement 8.2, and raising
+    // it raises the account's exposure. Reading it stays open, because a
+    // teammate whose import stopped has to be able to see why.
+    assertWorkspaceOwner(req, "change this workspace's daily lead ceiling");
     const input = linkedinDailyLeadCapSchema.parse(req.body ?? {});
     await setDailyLeadCap(db, req.auth!.workspaceId, input.cap, new Date());
     res.json(await dailyLeadAllowance(db, req.auth!.workspaceId, new Date()));
@@ -3072,9 +3754,54 @@ export function createApp(db: Db) {
    * did would send an operator to re-authenticate something that still works.
    * Nothing can sign this account back in until a new pair is saved.
    */
+  /**
+   * Give the password back to nobody -- AND ACTUALLY DISCONNECT.
+   *
+   * The screen calls this "disconnect". It used to delete two `workspace_secrets`
+   * rows and stop, which is not a disconnect: the `reddit_accounts` row survived
+   * with its username and its `session_valid_at`, and the Chrome profile
+   * directory survived with live cookies in it. So `loginRedditAccount` still
+   * took its reuse branch, found a session that still worked, and
+   * `POST /api/reddit/comment` still posted -- from the account the customer
+   * had just revoked, using a password the server no longer held. Deleting the
+   * credential had removed the ability to sign in AGAIN while leaving the
+   * already-signed-in browser exactly as it was.
+   *
+   * `disconnectRedditWorkspace` is the whole act: close any browser holding the
+   * session, remove the profile directory, wipe the sealed credentials, clear
+   * the account row. It does that job, so this route does not also call
+   * `deleteRedditCredentials` -- two writers of one wipe is how a second one
+   * comes to be forgotten.
+   *
+   * NOT GATED ON WHETHER REDDIT AUTOMATION IS ENABLED, deliberately, and unlike
+   * every other Reddit route below. "We cannot revoke your account because the
+   * feature you are revoking is switched off" has no defensible reading: the
+   * cookies on disk are live whatever the config says, and a deployment that
+   * turned automation off after a session was stored is precisely the case
+   * where the leftover profile matters most.
+   *
+   * A NON-EMPTY `problems` IS NOT A SUCCESS. The function never throws -- it
+   * does as much of the disconnect as it can and reports what it could not do
+   * -- so a route that answered 200 with a cheerful body would turn "the
+   * profile directory is still on disk" into "disconnected". 207 instead, with
+   * the sentences, because part of it DID happen and re-running it is safe.
+   *
+   * Owner-only, same carve-out as every other credential route in this file.
+   */
   app.delete('/api/reddit/credentials', redditRoute(async (req, res) => {
-    await deleteRedditCredentials(db, req.auth!.workspaceId, req.auth!.userId);
-    res.json({ hasCredentials: false, username: null });
+    if (req.auth!.role !== 'owner') {
+      throw new RedditApiError('Only the workspace owner can disconnect the stored Reddit account', 403);
+    }
+    const removed = await disconnectRedditWorkspace(db, req.auth!.workspaceId, { actorUserId: req.auth!.userId });
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(removed.problems.length > 0 ? 207 : 200).json({
+      // The credential is gone from the store either way -- `problems` is about
+      // the browser and the disk, never about the sealed pair.
+      hasCredentials: false,
+      username: null,
+      disconnected: removed.problems.length === 0,
+      removed
+    });
   }));
 
   /**
@@ -3550,11 +4277,18 @@ function requireAgentScope(db: Db, scope: AgentScope) {
   };
 }
 
-function requireSession(db: Db) {
+function requireSession(db: Db, unattributedLimiter: RequestHandler) {
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
     try {
       const identity = await readSession(db, req);
-      if (!identity) return res.status(401).json({ error: 'Session expired' });
+      if (!identity) {
+        // Charged to the IP bucket HERE rather than on the way in. A request
+        // carrying a session cookie skips that bucket so a NAT'd tenant is not
+        // capped by an address it shares with a stranger -- and a cookie that
+        // does not resolve would otherwise have bought an unmetered 401 simply
+        // by presenting one.
+        return unattributedLimiter(req, res, () => { res.status(401).json({ error: 'Session expired' }); });
+      }
       req.auth = identity;
       next();
     } catch (error) {
@@ -3562,6 +4296,251 @@ function requireSession(db: Db) {
     }
   };
 }
+
+/**
+ * Does this request CLAIM a browser session?
+ *
+ * PRESENCE, NOT VALIDITY. Validity is `readSession`'s job and costs a database
+ * round trip, which is not something to spend before deciding whether to rate
+ * limit -- and a limiter that had to authenticate first would be a limiter an
+ * unauthenticated flood could make expensive. Both cookie families are
+ * recognised because there are two: Trevra's own hand-rolled demo cookie, and
+ * better-auth's, whose name that library prefixes and suffixes rather than
+ * this file fixing it.
+ */
+function carriesSessionCredential(req: Request): boolean {
+  const cookies = (req as Request & { cookies?: Record<string, unknown> }).cookies;
+  if (!cookies || typeof cookies !== 'object') return false;
+  return Object.keys(cookies).some((name) => name === SESSION_COOKIE || name.includes('better-auth'));
+}
+
+/**
+ * The owner carve-out, applied to the acts a teammate must not perform alone.
+ *
+ * ONE MECHANISM, TWO CALL SHAPES, AND NOTHING NEW UNDERNEATH. Both read the
+ * same `req.auth!.role` the three original carve-outs read -- adding a
+ * teammate, and saving or wiping the stored LinkedIn sign-in -- because a
+ * second notion of "privileged" is a second thing to keep in step with
+ * better-auth's member roles, and the day the two disagree is the day one of
+ * them is wrong. `resolveActiveWorkspace` fails closed to 'member', so a
+ * membership that cannot be read is refused here rather than waved through.
+ *
+ * `ownerOnly` runs BEFORE a plain route's handler, which is where the check
+ * belongs when the handler's first act is the privileged one.
+ * `assertWorkspaceOwner` throws from INSIDE a `linkedinRoute` handler, because
+ * that wrapper is what turns a typed 4xx into a response and a middleware
+ * would answer that surface in a different shape than every other refusal on
+ * it.
+ *
+ * WHY EACH ACT IS ON THE LIST is written at the route, not here -- and two
+ * that a reader will expect are deliberately NOT on it. See the comments on
+ * `POST /api/linkedin/seat/pause` and
+ * `POST /api/linkedin/manager/campaigns/:id/pause`: a kill switch only an
+ * absent owner can reach is not a kill switch.
+ */
+function ownerOnly(act: string): RequestHandler {
+  return (req, res, next) => {
+    if ((req as AuthedRequest).auth!.role !== 'owner') {
+      return res.status(403).json({ error: `Only the workspace owner can ${act}` });
+    }
+    next();
+  };
+}
+
+function assertWorkspaceOwner(req: AuthedRequest, act: string): void {
+  if (req.auth!.role !== 'owner') throw new LinkedInApiError(`Only the workspace owner can ${act}`, 403);
+}
+
+/* ===========================================================================
+ * Workspace export and erasure: which tables, and how they are found.
+ * ======================================================================== */
+
+/** Catalogue output is still interpolated into SQL, so it is checked first. */
+const SAFE_TABLE_NAME = /^[a-z_][a-z0-9_]*$/;
+
+/**
+ * Tables the catalogue finds that are NOT this workspace's data.
+ *
+ * `workspace_erasures` is the RECORD of an erasure and deliberately carries no
+ * foreign key to `workspaces`, so that it outlives the workspace it describes.
+ * Counting it as something to remove would delete the proof that the deletion
+ * happened -- the one row anybody would ever ask to see afterwards.
+ */
+const WORKSPACE_INVENTORY_EXCLUDED: ReadonlySet<string> = new Set(['workspace_erasures']);
+
+/**
+ * Rows that are the customer's data and do not carry `workspace_id`.
+ *
+ * Ten tables in this schema hang off a workspace-scoped parent and are reached
+ * only through it -- the clauses of a contract, the milestones and scope of a
+ * project, the evidence and outcome of a recommendation. An export that walked
+ * only the `workspace_id` column would hand back contracts with no clauses and
+ * recommendations with no outcomes, and call it "your data". Each entry takes
+ * exactly one bind parameter: the workspace id.
+ *
+ * They do not need to be listed for ERASURE -- every one of them cascades from
+ * its parent -- but they are counted there anyway, because a preview that
+ * under-reports what it is about to delete is a preview nobody can consent to.
+ */
+const WORKSPACE_CHILD_TABLES: ReadonlyArray<{ table: string; where: string }> = [
+  { table: 'approvals', where: 'action_id IN (SELECT id FROM actions WHERE workspace_id=?)' },
+  { table: 'contract_clauses', where: 'contract_id IN (SELECT id FROM contracts WHERE workspace_id=?)' },
+  { table: 'milestones', where: 'project_id IN (SELECT id FROM projects WHERE workspace_id=?)' },
+  { table: 'scope_items', where: 'project_id IN (SELECT id FROM projects WHERE workspace_id=?)' },
+  { table: 'playbook_step_runs', where: 'playbook_run_id IN (SELECT id FROM playbook_runs WHERE workspace_id=?)' },
+  { table: 'recommendation_evidence', where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)' },
+  { table: 'recommendation_outcomes', where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)' },
+  { table: 'proof_packs', where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)' },
+  {
+    table: 'proof_pack_items',
+    where: 'proof_pack_id IN (SELECT id FROM proof_packs WHERE recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?))'
+  },
+  { table: 'research_source_documents', where: 'source_id IN (SELECT id FROM research_sources WHERE workspace_id=?)' }
+];
+
+/**
+ * Tables whose rows are KEYS, not information.
+ *
+ * A data-subject export is a copy of the customer's own data, handed to a
+ * browser and then to wherever they choose to keep it. A sealed LinkedIn
+ * password, a Reddit sign-in, a CLI subscription token and an agent token's
+ * hash are none of those things -- they are the material somebody needs to BE
+ * the customer, and this file cannot decrypt them in any case (see the two
+ * import comments at the top of it, which is the same rule stated for the same
+ * reason). They are NAMED in the manifest as withheld rather than silently
+ * skipped: silence would read as "there was no sign-in stored", which is a
+ * different and false claim.
+ */
+const WORKSPACE_EXPORT_SEALED_TABLES: ReadonlySet<string> = new Set([
+  'workspace_secrets',
+  'linkedin_seat_credentials',
+  'agent_tokens'
+]);
+
+/** The same ceiling `ledger-export.ts` uses, for the same reason: a bounded file. */
+const WORKSPACE_EXPORT_ROW_LIMIT = 50_000;
+
+/**
+ * NOT A HAND-WRITTEN LIST, and that is the whole design.
+ *
+ * The tables holding a workspace's data are read from the CATALOGUE -- every
+ * base table in `public` carrying a `workspace_id` column -- rather than typed
+ * out here. A literal list goes stale one migration after whoever maintained it
+ * moves on, and stale has two failure modes that both look like success: an
+ * export that quietly omits a table the customer asked for, and an erasure that
+ * quietly keeps one. Neither raises anything; both are the sentence in the
+ * privacy policy becoming untrue with nobody noticing. Read from the catalogue,
+ * a table a future migration adds is covered by both on the day it lands.
+ */
+async function workspaceScopedTables(db: Db): Promise<string[]> {
+  const rows = await db.prepare(`
+    SELECT c.table_name FROM information_schema.columns c
+    JOIN information_schema.tables t
+      ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+    WHERE c.table_schema = 'public'
+      AND c.column_name = 'workspace_id'
+      AND t.table_type = 'BASE TABLE'
+    ORDER BY c.table_name
+  `).all<{ table_name: string }>();
+  return rows
+    .map((row) => String(row.table_name))
+    .filter((name) => SAFE_TABLE_NAME.test(name) && !WORKSPACE_INVENTORY_EXCLUDED.has(name));
+}
+
+/** Row counts per table, sealed ones included: the preview must not under-report. */
+async function workspaceInventory(db: Db, workspaceId: string): Promise<Array<{ table: string; rows: number }>> {
+  const inventory: Array<{ table: string; rows: number }> = [];
+  for (const table of await workspaceScopedTables(db)) {
+    const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE workspace_id=?`).get<{ count: number }>(workspaceId);
+    inventory.push({ table, rows: Number(row?.count ?? 0) });
+  }
+  for (const child of WORKSPACE_CHILD_TABLES) {
+    const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${child.table} WHERE ${child.where}`).get<{ count: number }>(workspaceId);
+    inventory.push({ table: child.table, rows: Number(row?.count ?? 0) });
+  }
+  return inventory.sort((left, right) => left.table.localeCompare(right.table));
+}
+
+/** The bundle GET /api/workspace/export sends. Rendered, sent, never stored. */
+async function exportWorkspaceData(db: Db, workspaceId: string): Promise<Record<string, unknown>> {
+  const workspace = await db.prepare('SELECT * FROM workspaces WHERE id=?').get(workspaceId);
+  const tables: Record<string, unknown[]> = {};
+  const truncated: string[] = [];
+  const withheld: string[] = [];
+
+  const read = async (table: string, where: string): Promise<void> => {
+    // One row over the ceiling, so "exactly at the limit" and "more than the
+    // limit" are distinguishable rather than both reported as complete.
+    const rows = await db.prepare(`SELECT * FROM ${table} WHERE ${where} LIMIT ${WORKSPACE_EXPORT_ROW_LIMIT + 1}`).all(workspaceId);
+    if (rows.length > WORKSPACE_EXPORT_ROW_LIMIT) {
+      rows.length = WORKSPACE_EXPORT_ROW_LIMIT;
+      truncated.push(table);
+    }
+    tables[table] = rows;
+  };
+
+  for (const table of await workspaceScopedTables(db)) {
+    if (WORKSPACE_EXPORT_SEALED_TABLES.has(table)) { withheld.push(table); continue; }
+    await read(table, 'workspace_id=?');
+  }
+  for (const child of WORKSPACE_CHILD_TABLES) await read(child.table, child.where);
+
+  return {
+    workspace,
+    generatedAt: new Date().toISOString(),
+    tableCount: Object.keys(tables).length,
+    rowLimitPerTable: WORKSPACE_EXPORT_ROW_LIMIT,
+    /** Named, so a short file is never mistaken for a complete one. */
+    truncated,
+    withheld,
+    withheldReason:
+      'Sealed credentials and token hashes are the key to an account rather than information about it, '
+      + 'and no code path in this server can decrypt them. Row counts for them appear in GET /api/workspace/erasure.',
+    tables
+  };
+}
+
+/**
+ * Reasons an erasure would be a race rather than a deletion.
+ *
+ * Each one is another process holding rows this would remove underneath it, and
+ * each comes back as the sentence naming what to go and stop. "Refuse and say
+ * why" beats "delete and hope": a half-erased workspace has nothing left in it
+ * to explain what happened to the other half.
+ */
+async function workspaceWorkInFlight(db: Db, workspaceId: string): Promise<string[]> {
+  const count = async (sql: string): Promise<number> =>
+    Number((await db.prepare(sql).get<{ count: number }>(workspaceId))?.count ?? 0);
+  const blockers: string[] = [];
+
+  const runs = await count("SELECT COUNT(*) AS count FROM agent_runs WHERE workspace_id=? AND status='running'");
+  if (runs > 0) blockers.push(`${runs} agent run(s) are still running. Stop them first: POST /api/agent-runs/:id/stop.`);
+
+  const batches = await count("SELECT COUNT(*) AS count FROM linkedin_batches WHERE workspace_id=? AND status='running'");
+  if (batches > 0) {
+    blockers.push(`${batches} LinkedIn batch(es) are open in a worker's browser. Pause the seat and let the batch end: POST /api/linkedin/seat/pause.`);
+  }
+
+  const claimed = await count(
+    "SELECT COUNT(*) AS count FROM linkedin_actions WHERE workspace_id=? AND claimed_at IS NOT NULL AND status IN ('planned','held')"
+  );
+  if (claimed > 0) blockers.push(`${claimed} LinkedIn action(s) are claimed by a worker right now. They finish on their own within one tick.`);
+
+  const campaigns = await count("SELECT COUNT(*) AS count FROM linkedin_campaigns WHERE workspace_id=? AND status='running'");
+  if (campaigns > 0) {
+    blockers.push(`${campaigns} LinkedIn campaign(s) are still running. Stop them first: POST /api/linkedin/manager/campaigns/:id/stop.`);
+  }
+
+  return blockers;
+}
+
+/**
+ * TYPE THE NAME. `strict()` so a client that thinks `{ force: true }` is a
+ * thing gets told, and a plain boolean is deliberately not accepted: a
+ * checkbox is something a script ticks, and the smallest gesture that proves a
+ * human read the screen is retyping what is about to be destroyed.
+ */
+const workspaceErasureSchema = z.object({ confirm: z.string().trim().min(1).max(200) }).strict();
 
 async function readSession(db: Db, req: Request): Promise<{ userId: string; workspaceId: string; email: string; role: 'owner' | 'member' } | null> {
   const token = req.cookies?.[SESSION_COOKIE] as string | undefined;
@@ -3715,6 +4694,40 @@ function linkedinRoute(handler: (req: AuthedRequest, res: Response) => Promise<u
   };
 }
 
+/**
+ * Is this campaign in a state that may still produce work?
+ *
+ * TWO HALTED STATES, NOT ONE, AND THE SECOND WAS MISSING FROM EVERY LEGACY
+ * ROUTE. `pauseManagedCampaign` writes `status='paused'` and parks the
+ * campaign's unclaimed queue in 'held' -- that is what migration 051 exists to
+ * do. But the three campaign routes below each gated on `status === 'stopped'`
+ * alone, so a PAUSED campaign could still be queued and still be exported: the
+ * queue wrote fresh 'planned' rows for the worker to claim, and the export
+ * wrote 'exported' rows that consume pacing budget. Both reopen exactly what
+ * the pause closed, against a campaign the operator has been shown as stopped.
+ *
+ * WHY THE PARAMETER IS `{ status: string }` AND NOT `LinkedInCampaign`. There
+ * are two unions over one column: `managed-campaigns.ts` names 'paused' and
+ * `campaigns.ts` does not, and `campaigns.ts` casts the raw column onto its
+ * narrower union on the way out -- so `campaign.status === 'paused'` does not
+ * typecheck against a value the database demonstrably holds, and TypeScript
+ * calls the comparison unsatisfiable rather than catching the bug. Widening
+ * here is the honest reading of a column whose real vocabulary is the wider of
+ * the two. The proper fix is ONE union shared by both files; it belongs in
+ * those files, not in this one.
+ */
+function assertCampaignRunnable(campaign: { status: CampaignStatus }, act: string): void {
+  if (campaign.status === 'stopped') {
+    throw new LinkedInApiError(`This campaign was stopped, so there is nothing left to ${act}.`, 409);
+  }
+  if (campaign.status === 'paused') {
+    throw new LinkedInApiError(
+      `This campaign is paused, so there is nothing to ${act} until it runs again. Start it from the campaign manager first.`,
+      409
+    );
+  }
+}
+
 /** Turn only EXPECTED manager-domain failures into 4xx; database faults still surface as 500. */
 function rethrowLinkedInManagerError(error: unknown): never {
   if (error instanceof LinkedInApiError || error instanceof z.ZodError) throw error;
@@ -3722,6 +4735,12 @@ function rethrowLinkedInManagerError(error: unknown): never {
   if (code === '23505') throw new LinkedInApiError('That LinkedIn manager name or active lead claim already exists.', 409);
   if (code === '23503') throw new LinkedInApiError('That LinkedIn manager record references an item that no longer exists.', 400);
   if (error instanceof Error && /not found/i.test(error.message)) throw new LinkedInApiError(error.message, 404);
+  // "Only a running campaign can be paused." and its siblings: the caller asked
+  // for a transition this row's CURRENT STATE does not allow. That is a 409,
+  // and it used to be a 500 -- the manager module throws these as plain Errors
+  // and nothing here recognised the shape, so pausing an already-paused
+  // campaign told the operator the server had faulted.
+  if (error instanceof Error && /^Only an? .+ can be /i.test(error.message)) throw new LinkedInApiError(error.message, 409);
   if (error instanceof Error && /(required|must |needs |could not map|does not exist in this csv|duplicate|unsupported variable|withdraw-pending|source must|working hours|seat_key)/i.test(error.message)) {
     throw new LinkedInApiError(error.message, 400);
   }
@@ -4002,7 +5021,20 @@ const LINKEDIN_SEAT_INPUT_ERROR = /(needs a label|needs an IANA timezone|is not 
 const linkedinActionKind = z.enum(ACTION_KIND_VALUES);
 const linkedinPacedKind = z.enum(PACED_KIND_VALUES);
 const linkedinEngagementKind = z.enum(['follow', 'like', 'endorse']);
-const linkedinActionStatus = z.enum(['planned', 'exported', 'sent', 'accepted', 'replied', 'declined', 'skipped']);
+/**
+ * Every status the ledger can hold, imported rather than restated.
+ *
+ * This list used to be hand-copied here, and it was wrong in both directions:
+ * 'held' (migration 051) and 'withdrawn' (migration 032) were missing, so
+ * `GET /api/linkedin/actions?status=held` answered 400 -- the rows a pause
+ * parks were unreadable through the only API that lists the queue, which is
+ * precisely the state migration 051 exists to make visible -- while the client
+ * had drifted the other way and offered 'withdrawn', which this enum rejected.
+ * A `satisfies` guard then caught the next drift at build time, which is better
+ * than a promise but still one hand-copied list. `actions.ts` now publishes the
+ * vocabulary as values, so there is nothing left here to get wrong.
+ */
+const linkedinActionStatus = z.enum(ACTION_STATUS_VALUES);
 const linkedinExportFormat = z.enum(['dripify', 'heyreach', 'expandi', 'generic']);
 /** The two copy dials `gtm.linkedin-sequence` owns, spelled once for every route that offers them. */
 const linkedinSequenceTone = z.enum(['direct', 'consultative', 'peer']);
@@ -4429,7 +5461,9 @@ const linkedinExclusionSchema = z.object({
 }));
 
 const linkedinAnalyticsSchema = z.object({
-  days: z.coerce.number().int().min(1).max(365).default(30)
+  days: z.coerce.number().int().min(1).max(365).default(30),
+  /** Whose clock the daily buckets are cut on. Not a filter -- see the route. */
+  seatKey: linkedinSeatKeySchema.optional()
 });
 
 /* ---------------------------------------------------------------------------

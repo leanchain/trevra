@@ -1,4 +1,11 @@
 import { id, type Db } from '../db.js';
+// `LinkedInApiError` and not a bare Error, for `deleteLeadList`'s refusal
+// alone: it is the only thing in this file a route must turn into a 409 rather
+// than a 400, and carrying the status on the error is how every other refusal
+// in this subsystem reaches the response without the route re-deciding it.
+// campaigns.ts imports db and actions and nothing else, so this direction adds
+// no cycle -- the reverse import, from campaigns.ts to here, would.
+import { LinkedInApiError } from './campaigns.js';
 import { normalizeLeadRow, normalizeScrapedLead, parseLeadCsv, type LeadFieldMapping, type NormalizedLeadInput } from './lead-import.js';
 import { LEAD_READ_LIMIT, getLeadSource, listLeads, type LeadSourceKind } from './leads.js';
 
@@ -31,7 +38,23 @@ export interface LinkedInLeadList {
 export interface LinkedInLeadContact {
   id: string;
   workspaceId: string;
-  listId: string;
+  /**
+   * The list this person FIRST arrived in, or null once that list has been
+   * deleted.
+   *
+   * NULLABLE SINCE MIGRATION 053, and the null is the point. Until then this
+   * column was a hard owner -- NOT NULL, ON DELETE CASCADE -- so deleting a
+   * list would have deleted every person who happened to have entered the
+   * workspace through it, INCLUDING the ones sitting in five other lists.
+   * Migration 052 wrote that danger down in so many words and asked whoever
+   * added a delete route to fix the FK first; 053 is that fix and this is the
+   * type catching up with it. A person outlives the list they came in through.
+   *
+   * Reads that go through the membership table (`listLeadContacts`, and
+   * anything using `MEMBER_CONTACT_SELECT`) never see the null: there the
+   * column is the list actually being asked about.
+   */
+  listId: string | null;
   firstName: string;
   lastName: string;
   company: string;
@@ -44,7 +67,7 @@ export interface LinkedInLeadContact {
 }
 
 interface ListRow { id: string; workspace_id: string; name: string; source_kind: string; source_ref: string | null; lead_count: number; created_at: string; updated_at: string }
-interface ContactRow { id: string; workspace_id: string; list_id: string; first_name: string; last_name: string; company: string; email: string | null; phone: string | null; country: string | null; profile_url: string | null; created_at: string; updated_at: string }
+interface ContactRow { id: string; workspace_id: string; list_id: string | null; first_name: string; last_name: string; company: string; email: string | null; phone: string | null; country: string | null; profile_url: string | null; created_at: string; updated_at: string }
 
 // The count comes off the MEMBERSHIP table, not off `linkedin_lead_contacts.
 // list_id`: since migration 051 a person may sit in several lists while still
@@ -389,10 +412,31 @@ function leadClashMessage(edited: NormalizedLeadInput, who: string): string {
  * operator's own account after they told us to stop.
  *
  * SAME THREE RULES AS `removeCampaignMember`, WHICH ALREADY GOT THIS RIGHT --
- * only 'planned', only unclaimed, and 'skipped' rather than deleted, so the
- * ledger still shows that the action existed and why it never went out. A row
- * already claimed by a worker is left alone: it is mid-flight and the ledger,
- * not this function, is what reconciles it.
+ * every status that has not left the building, only unclaimed, and 'skipped'
+ * rather than deleted, so the ledger still shows that the action existed and
+ * why it never went out. A row already claimed by a worker is left alone: it
+ * is mid-flight and the ledger, not this function, is what reconciles it.
+ *
+ * 'held' AS WELL AS 'planned', AND THE OMISSION WAS THE WORST BUG IN THIS FILE.
+ * This function predates migration 051, so it skipped 'planned' alone -- and a
+ * campaign that is PAUSED has parked its entire queue in 'held'. Delete a lead
+ * while the campaign they are in is paused and the sequence was:
+ *
+ *   1. the cascade removes the contact, their campaign membership and their
+ *      manual tasks, and the screen says the person is gone;
+ *   2. their held ledger rows survive it, because 'held' is not 'planned' and
+ *      `campaign_member_id` has no foreign key to cascade through -- they are
+ *      now orphans pointing at a member row that no longer exists;
+ *   3. somebody resumes the campaign, and `startManagedCampaign` moves EVERY
+ *      held row of that campaign back to 'planned' in one statement -- it has
+ *      no way to know which of them lost their person;
+ *   4. the worker claims them and sends.
+ *
+ * The result is an invite or a DM going out from the customer's own LinkedIn
+ * account, to somebody they explicitly deleted, days after they deleted them,
+ * and it cannot be recalled. `removeCampaignMember` and `stopManagedCampaign`
+ * both already say `IN ('planned','held')` for exactly this reason; this was
+ * the third door into the same state and the only one still open.
  *
  * THE SKIP RUNS FIRST. After the DELETE the cascade has taken the member rows
  * with it and there is nothing left to find the actions by.
@@ -401,11 +445,173 @@ export async function removeLeadContact(db: Db, workspaceId: string, contactId: 
   return db.transaction(async (tx) => {
     await tx.prepare(`
       UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL
-      WHERE workspace_id=? AND status='planned' AND claimed_at IS NULL AND campaign_member_id IN (
+      WHERE workspace_id=? AND status IN ('planned','held') AND claimed_at IS NULL AND campaign_member_id IN (
         SELECT id FROM linkedin_campaign_members WHERE workspace_id=? AND contact_id=?
       )
     `).run(workspaceId, workspaceId, contactId);
     const result = await tx.prepare('DELETE FROM linkedin_lead_contacts WHERE workspace_id=? AND id=?').run(workspaceId, contactId);
     return result.changes > 0;
+  });
+}
+
+/**
+ * The member states migration 046's `idx_linkedin_campaign_members_one_active`
+ * is partial on: the five that hold a contact's one-campaign claim.
+ *
+ * Spelled here rather than imported from `managed-campaigns.ts`, which owns the
+ * same list under the name `ACTIVE_MEMBER_STATUSES` -- that module imports THIS
+ * one (`getLeadList`), so importing it back would close a module cycle for a
+ * five-element array. The index in migration 046 is the source of truth for
+ * both copies, and it is the thing that would actually break if they drifted.
+ */
+const CLAIMING_MEMBER_STATUSES = ['pending', 'active', 'waiting', 'manual', 'paused'] as const;
+
+/**
+ * The campaign states that make a list undeletable.
+ *
+ * 'running' is obvious. 'paused' is the one worth arguing: a paused campaign is
+ * not a finished one -- `startManagedCampaign` will resume it, its members
+ * still hold their one-campaign claim, and its queue is sitting in 'held'
+ * waiting to be handed back. Deleting the list under it would leave a campaign
+ * that resumes into an empty list, having already lost the membership rows that
+ * told it who it was for. A pause is a reversible state and this is a
+ * destructive act; the operator stops the campaign first, and then the delete
+ * is a decision they made rather than one they discovered.
+ */
+const LIST_LOCKING_CAMPAIGN_STATUSES = ['running', 'paused'] as const;
+
+/**
+ * What deleting a list did, counted -- so a route can tell an operator what
+ * they just changed instead of returning 204 over the top of it.
+ */
+export interface LeadListDeletion {
+  listId: string;
+  name: string;
+  /**
+   * People taken out of THIS list. Every one of them is still a contact, and
+   * still in every other list they belong to (migration 052).
+   */
+  membershipsRemoved: number;
+  /**
+   * People whose ORIGIN list this was, and whose `list_id` is now null.
+   *
+   * NOT A DELETE COUNT. It is reported because it is the number an operator
+   * would otherwise have to guess at: "these N leads came in through this list
+   * and no longer record where they came from". Before migration 053 this was
+   * the number of people the delete would have DESTROYED.
+   */
+  contactsDetached: number;
+  /** Campaigns built on this list, whose `lead_list_id` the FK has set to null. */
+  campaignsDetached: number;
+  /** Members of those campaigns dropped out of their claiming state. */
+  membersRemoved: number;
+  /** Pending human checkpoints for those campaigns, cancelled. */
+  tasksCancelled: number;
+  /** Planned and held ledger rows for those campaigns, skipped so nothing sends. */
+  actionsSkipped: number;
+}
+
+/**
+ * Delete a lead list without deleting the people in it.
+ *
+ * THERE WAS NO ROUTE FOR THIS, AND THE SCHEMA IS WHY. Migration 046 made
+ * `linkedin_lead_contacts.list_id` NOT NULL with ON DELETE CASCADE, so the
+ * database's answer to "delete this list" was to delete every contact whose
+ * origin list it was -- and after migration 052 split membership into its own
+ * table, that included people sitting in five other lists and enrolled in
+ * other campaigns. Their campaign memberships and manual tasks would have gone
+ * with them by cascade, and their planned and held ledger rows would have
+ * SURVIVED as orphans (`campaign_member_id` carries no foreign key), to be
+ * resumed and sent later at people who no longer existed in the product. 052
+ * wrote that hazard down and asked for the FK to be fixed before this function
+ * was written; migration 053 fixes it, and this is the function it was fixed
+ * for.
+ *
+ * SO THE DELETE IS NOW ADDITIVE-SAFE, AND THIS FUNCTION HANDLES THE REST:
+ *
+ *   * it REFUSES while a running or paused campaign is built on the list, with
+ *     a 409 naming the campaign -- see `LIST_LOCKING_CAMPAIGN_STATUSES`;
+ *   * for every other campaign on the list (draft, completed, stopped) it
+ *     releases the work the way `stopManagedCampaign` does: members out of
+ *     their claiming state, pending manual tasks cancelled, and planned AND
+ *     HELD actions skipped. 'held' is not optional here for the same reason it
+ *     is not optional in `removeLeadContact` -- a held row that outlives the
+ *     thing it belongs to is an unwanted message waiting for somebody to press
+ *     Resume;
+ *   * `claimed_at IS NULL` is the same boundary every other writer draws: a
+ *     claimed row is in a browser right now and belongs to the worker holding
+ *     it;
+ *   * it reports what it did, because "deleted" is not an adequate answer to a
+ *     button that just removed 4,000 people from a list and unhooked two
+ *     campaigns.
+ *
+ * ORDER MATTERS AND IS THE REVERSE OF THE CASCADE. Everything is counted and
+ * released while the rows still exist to be found; the DELETE is last, and
+ * the FKs (`ON DELETE CASCADE` for memberships, `ON DELETE SET NULL` for
+ * contacts and for `linkedin_campaigns.lead_list_id`) finish the job.
+ *
+ * Returns undefined when there is no such list in this workspace, so a route
+ * can answer 404 without a second read.
+ */
+export async function deleteLeadList(db: Db, workspaceId: string, listId: string): Promise<LeadListDeletion | undefined> {
+  return db.transaction(async (tx) => {
+    // FOR UPDATE: the refusal below and the delete at the bottom must see the
+    // same list, and a concurrent campaign start must not slip between them.
+    const list = await tx.prepare('SELECT id,name FROM linkedin_lead_lists WHERE workspace_id=? AND id=? FOR UPDATE')
+      .get<{ id: string; name: string }>(workspaceId, listId);
+    if (!list) return undefined;
+
+    const blocking = await tx.prepare(`
+      SELECT name,status FROM linkedin_campaigns
+      WHERE workspace_id=? AND lead_list_id=? AND status = ANY(?::text[])
+      ORDER BY created_at LIMIT 3
+    `).all<{ name: string; status: string }>(workspaceId, listId, [...LIST_LOCKING_CAMPAIGN_STATUSES]);
+    if (blocking.length > 0) {
+      const named = blocking.map((c) => `'${c.name}' (${c.status})`).join(', ');
+      throw new LinkedInApiError(
+        `This lead list is still driving ${named}. Stop ${blocking.length === 1 ? 'that campaign' : 'those campaigns'} first -- `
+          + 'a paused campaign is one somebody intends to resume, and resuming it into a deleted list would leave it running for nobody.',
+        409
+      );
+    }
+
+    const scope = 'campaign_id IN (SELECT id FROM linkedin_campaigns WHERE workspace_id=? AND lead_list_id=?)';
+
+    const members = await tx.prepare(`
+      UPDATE linkedin_campaign_members SET status='removed',next_eligible_at=NULL,updated_at=CURRENT_TIMESTAMP
+      WHERE workspace_id=? AND status = ANY(?::text[]) AND ${scope}
+    `).run(workspaceId, [...CLAIMING_MEMBER_STATUSES], workspaceId, listId);
+
+    const tasks = await tx.prepare(`
+      UPDATE linkedin_manual_tasks SET status='cancelled'
+      WHERE workspace_id=? AND status='pending' AND ${scope}
+    `).run(workspaceId, workspaceId, listId);
+
+    const actions = await tx.prepare(`
+      UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL
+      WHERE workspace_id=? AND status IN ('planned','held') AND claimed_at IS NULL AND ${scope}
+    `).run(workspaceId, workspaceId, listId);
+
+    // Counted BEFORE the delete, because after it the FKs have already moved
+    // every one of these rows out of reach of the question.
+    const memberships = await tx.prepare('SELECT COUNT(*)::int AS total FROM linkedin_lead_list_members WHERE workspace_id=? AND list_id=?')
+      .get<{ total: number }>(workspaceId, listId);
+    const contacts = await tx.prepare('SELECT COUNT(*)::int AS total FROM linkedin_lead_contacts WHERE workspace_id=? AND list_id=?')
+      .get<{ total: number }>(workspaceId, listId);
+    const campaigns = await tx.prepare('SELECT COUNT(*)::int AS total FROM linkedin_campaigns WHERE workspace_id=? AND lead_list_id=?')
+      .get<{ total: number }>(workspaceId, listId);
+
+    await tx.prepare('DELETE FROM linkedin_lead_lists WHERE workspace_id=? AND id=?').run(workspaceId, listId);
+
+    return {
+      listId: list.id,
+      name: list.name,
+      membershipsRemoved: Number(memberships?.total ?? 0),
+      contactsDetached: Number(contacts?.total ?? 0),
+      campaignsDetached: Number(campaigns?.total ?? 0),
+      membersRemoved: members.changes,
+      tasksCancelled: tasks.changes,
+      actionsSkipped: actions.changes
+    };
   });
 }

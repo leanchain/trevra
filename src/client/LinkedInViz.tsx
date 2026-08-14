@@ -163,7 +163,32 @@ function isWeekendDate(date: string): boolean {
   return day === 0 || day === 6;
 }
 
-const dayLabel = (date: string) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+/**
+ * One bucket of the daily series, named.
+ *
+ * TWO DECISIONS THAT LOOK ALIKE AND ARE NOT. The LOCALE was 'en-GB' -- one
+ * operator's day-before-month order and English month names shipped to every
+ * reader -- and it is now the browser's, which spells and orders the date the
+ * way the person reading the chart writes it.
+ *
+ * `timeZone: 'UTC'` STAYS, AND POINTING IT AT THE SEAT'S ZONE WOULD MAKE THIS
+ * LABEL LIE. `date` is not an instant: it is a UTC CALENDAR BUCKET the server
+ * has already grouped by -- `linkedinAnalytics` in
+ * src/server/linkedin/campaigns.ts buckets on COALESCE(recorded_at,
+ * planned_for, created_at) in UTC -- so what arrives here is one total per day
+ * and not the moments inside it. Re-rendering that bucket in Australia/Sydney
+ * would move the LABEL a day for a far-eastern zone while the NUMBER under it
+ * stayed in the bucket it was counted in: a caption naming the wrong column,
+ * which is worse than a caption naming a zone that is not yours. The noon
+ * anchor is what keeps label and bucket equal for every zone this can be read
+ * in.
+ *
+ * Seat-local buckets would be the real improvement and they are a SERVER
+ * change: the route would have to group in the seat's zone, or hand back the
+ * instants for the client to group itself. Until it does, the chart says which
+ * day it means -- the note under it in LinkedInSafety carries that sentence.
+ */
+const dayLabel = (date: string) => new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' })
   .format(new Date(`${date}T12:00:00Z`));
 
 /* -------------------------------------------------------------------------

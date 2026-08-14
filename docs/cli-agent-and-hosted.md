@@ -133,6 +133,34 @@ key or this token:
    alternative to having a model key at all.
 4. BYOK.
 
+## 6b. What the child process can read (allowlist, not deny list)
+
+The spawned CLI runs a prompt this workspace steers, and that prompt also
+ingests scraped Reddit and LinkedIn text -- the injection surface `loop.ts`
+names. Its environment is therefore **built from an allowlist**, not copied
+from the server's and pruned.
+
+It used to be pruned, and that was the defect: `childEnv` did
+`{ ...process.env }` and deleted nine names, so every secret added to the
+deployment afterwards became readable by a tenant-steered child by default.
+What survived included `BETTER_AUTH_SECRET` (forge a session for any user in
+any workspace), `TREVRA_SECRETS_KEY_PREVIOUS` (the rotation sibling of the one
+name that *was* stripped -- live during any rotation window, and enough to
+decrypt every tenant's stored credentials), the agent token pepper, and the
+Stripe, Nango, Google and admin keys.
+
+What is passed now: `PATH`, `HOME`, locale (`LANG`, `LC_ALL`, `LC_CTYPE`),
+`TZ`, `TMPDIR`, the proxy and CA variables, `TREVRA_AGENT_TIMEOUT_MS` (read by
+the MCP bridge the child spawns), and -- per run only -- that run's own
+credential plus `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. Nothing else. Adding a name
+to that list is a security decision, which is the point of inverting it.
+
+Each run also gets its **own** Claude home under the run's work directory,
+seeded with nothing but the onboarding flag and removed with the run. Codex
+already worked this way; Claude inherited the server's `~/.claude`, so one
+credentials file, one session store and one history were shared by every
+tenant, writable by each of their children.
+
 ## 7. Explicitly out of scope here too
 
 - No reveal, for either the model API key or this token. Two deliberate

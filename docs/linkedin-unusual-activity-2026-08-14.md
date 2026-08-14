@@ -173,8 +173,39 @@ they write real profile dirs under `/root/.trevra`.
 | 6 | `local-worker.ts` `alignClientHints` | New. After launch and before any navigation, reads `Browser.getVersion` over CDP and issues `Emulation.setUserAgentOverride` with a full `userAgentMetadata` block, so UA, `Sec-CH-UA`, `Sec-CH-UA-Platform`, `Sec-CH-UA-Arch`, `Sec-CH-UA-Full-Version-List`, `navigator.userAgentData` and `navigator.platform` all agree, on the binary's real version. Degrades silently on a context with no CDP (every test fake). |
 | 7 | `driver-scrape.ts` `settleMs` | Fixed 1500 ms post-load dwell replaced with a seeded 900–4200 ms draw, at all six call sites. |
 | 8 | `driver-scrape.ts` `browseList` | New. Seeded mouse move + 3–6 wheel scrolls with jittered pauses + one corrective scroll back up, before cards are read. Applied to search walks, content search and post opens. Optional on the page object, so test fakes are unaffected. |
+| 9 | `package.json`, `Dockerfile.dev`, `loadLinkedInPlaywright` | **Patchright** added as an optional dependency and preferred over stock `playwright`, with fallback. Kills the `Runtime.enable` CDP side-channel and the `__pwInitScripts` / `__playwright__binding__` globals — none of which any launch option can reach. Which driver loaded is logged once. |
+| 10 | `local-worker.ts` `alignClientHints` | `Emulation.setScrollbarsHidden({hidden:false})`. Dropping `--hide-scrollbars` from the args was **not** enough — the driver hides them over CDP too, and a probe of the launched browser proved it. |
+| 11 | `jobs.ts` `runLinkedInSideTasks` | Refuses before opening a browser when the seat row is missing or its effective posture is `paused`. This function runs per seat, every tick, and each of its four jobs used to open Chrome *before* reading the posture and refusing. |
+| 12 | dev database | Deleted the six leaked test-fixture workspaces (`ws_li_api_a`, `ws_li_credentials_test`, `ws_linkedin_guard_test`, `ws_linkedin_leads_test`, `ws_linkedin_pacing_test`, `ws_linkedin_withdraw_test`). `linkedin_seats` is now one row: the real account. |
 
-`npx tsc --noEmit` clean. `local-worker.test.ts` + `driver-scrape.test.ts`: 83 passed.
+`npx tsc --noEmit` clean. `npm test src/server/linkedin/ src/server/app.test.ts`: **808 passed**.
+
+## 3.1 Verified against a live browser, not just asserted
+
+A probe launched the real patched stack with the exact options `openBrowser` now
+uses, and read back what a page sees. Before/after on the same machine:
+
+| Signal | Before | After |
+|---|---|---|
+| Binary | `chrome-headless-shell` | full Chromium, `--headless=new` |
+| `User-Agent` | `Windows NT 10.0 … Chrome/139` | `X11; Linux x86_64 … Chrome/149.0.0.0` |
+| `Sec-CH-UA-Platform` | `"Linux"` (contradicting the UA) | `"Linux"` (agreeing) |
+| `Sec-CH-UA` | Chromium brand list empty | `"Not;A=Brand";v="99", "Chromium";v="149", "Google Chrome";v="149"` |
+| `navigator.platform` | `Linux x86_64` (contradicting) | `Linux x86_64` (agreeing) |
+| `navigator.userAgentData.platform` | `Linux` (contradicting) | `Linux` (agreeing) |
+| UA vs binary version | 139 claimed / 151 real | 149 / 149 |
+| `Accept-Language` | absent | `de-CH,de;q=0.9` |
+| `navigator.webdriver` | — | `false` |
+| `navigator.plugins` / `mimeTypes` | 0 / 0 (headless shell) | 5 / 2 |
+| Scrollbar width | 0 px | 15 px |
+| `pointer: fine` / `hover: hover` | — | true / true |
+| Playwright globals on `window` | `__pwInitScripts`, `__playwright__binding__` | **none** |
+| Viewport | 1280×720, same for every seat | 1512×856, seeded per seat |
+
+Two defects in the first cut of this work were caught by that probe and fixed:
+the hand-written `acceptLanguage` produced the malformed `de-CH,de;q=0.9;q=0.9`
+(Chromium appends its own q-values), and `ignoreDefaultArgs: ['--hide-scrollbars']`
+did not actually restore scrollbars without the CDP call.
 
 ## 3.1 Required operator step — do this before recreating the container
 
@@ -291,51 +322,47 @@ acceptance-rate auto-throttle, and per-seat isolation if a second account ever r
 
 # Part 5 — Remaining work, in priority order
 
-### 5.1 The `Runtime.enable` CDP leak — biggest single remaining signal
+### 5.1 Run the worker on the host, headed — the biggest signal left
 
-Playwright calls `Runtime.enable` to get execution-context ids. That makes
-Chromium emit `Runtime.consoleAPICalled`, and because V8 formats `Error.stack`
-lazily, a page detects an attached CDP client in five lines. DataDome published
-the technique and states it is used by all major anti-bot vendors
-([DataDome](https://datadome.co/threat-research/how-new-headless-chrome-the-cdp-signal-are-impacting-bot-detection/)).
-Vanilla Playwright also injects `window.__pwInitScripts` and
-`window.__playwright__binding__` on every page ([Castle](https://blog.castle.io/how-to-detect-headless-chrome-bots-instrumented-with-playwright/)).
+The last hard fingerprint the container cannot fix is the GPU:
 
-**None of this is fixable with launch options.** The fix is a patched driver:
-[`rebrowser-playwright`](https://github.com/rebrowser/rebrowser-patches) (drop-in,
-disables automatic `Runtime.enable`, uses isolated worlds) or
-[Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) (more aggressive:
-also kills the Console API and injects init scripts via network routes).
-**This is a production dependency swap and needs a decision.**
+    webglRenderer: "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)
+                    (0x0000C0DE)), SwiftShader driver)"
+
+No consumer machine reports SwiftShader. It is one of the highest-signal, hardest
+to fake values in browser fingerprinting, and the only fix is a real GPU. The
+codebase already prefers headed and already ships the path: `npm run
+linkedin:worker` on this machine, which has `DISPLAY=:0.0` and Chromium
+installed. Do that and the seat gets a real GPU string, a real window, a real
+display, and the operator can watch it and clear a checkpoint by hand.
+
+The container path stays as the fallback it was designed to be.
 
 ### 5.2 Prefer real Google Chrome over Chromium
 
 `channel: 'chromium'` fixed the headless-shell problem. `channel: 'chrome'` would
-additionally give genuine Widevine, proprietary codecs and a real GPU WebGL vendor
-string instead of SwiftShader — but it needs Google Chrome installed in the image.
-One Dockerfile line; worth doing.
+additionally give genuine Widevine and proprietary codecs — but it needs Google
+Chrome installed in the image. One Dockerfile line.
 
-### 5.3 Never open a browser for a seat that has no work
+Related, still open: `window.chrome` exists but `window.chrome.runtime` is
+`undefined` (confirmed by the probe). Real desktop Chrome defines it. Patchright
+deliberately avoids `addInitScript`, so patching this needs its route-injection
+path rather than the obvious call.
 
-Six test-fixture seats in the dev DB each got a real Chromium. Two things: purge
-the fixture workspaces from the dev database (**destructive — needs your
-confirmation**), and refuse to open a browser for a `paused` seat or one with no
-due work and no pending detect request.
-
-### 5.4 A real activity ledger
+### 5.3 A real activity ledger
 
 Write `audit_events` rows for every navigation, login attempt, checkpoint and
 wall. Without it there is no way to see a flag building, which is exactly the
 position this investigation started from.
 
-### 5.5 Interleaved noise and acceptance-rate throttle
+### 5.4 Interleaved noise and acceptance-rate throttle
 
 `limits.ts` already has `MIN_ACCEPTANCE_RATE = 0.3` and the guard checks it. Still
 missing: the HeyReach-style pre-connect sequence (view → dwell → optional like →
 hours of delay → invite), and randomizing the daily quota to 80–100% of the
 ceiling rather than running to it.
 
-### 5.6 The account itself
+### 5.5 The account itself
 
 Keep the seat `paused` 7–14 days. Sign in by hand from normal Chrome on the same
 residential IP, complete the profile, then rewarm from week-1 numbers (5/day) —

@@ -153,8 +153,15 @@ async function approve(
 
     await tx.prepare('UPDATE actions SET recipient=?,subject=?,body=?,payload_hash=?,status=?,scheduled_for=?,last_error=NULL,updated_at=? WHERE id=?')
       .run(input.recipient, input.subject, input.body, payloadHash, status, scheduledFor, now, actionId);
-    await tx.prepare('INSERT INTO approvals (id,action_id,user_id,automation_rule_id,approval_type,approved_payload_hash,created_at) VALUES (?,?,?,?,?,?,?)')
-      .run(id('apr'), actionId, actor.userId, actor.automationRuleId, actor.type, payloadHash, now);
+    // The approval's workspace is the ACTION's, read off the row this
+    // transaction locked with `WHERE id=? AND workspace_id=?` a few lines up --
+    // not `workspaceId` re-passed from the caller, and emphatically not
+    // anything the approve request body carries. An approval is the record that
+    // a specific tenant authorised a specific payload hash; deriving its tenant
+    // from anywhere but the action it approves would let the record and the
+    // thing it vouches for belong to different customers.
+    await tx.prepare('INSERT INTO approvals (id,workspace_id,action_id,user_id,automation_rule_id,approval_type,approved_payload_hash,created_at) VALUES (?,?,?,?,?,?,?,?)')
+      .run(id('apr'), String(action.workspace_id), actionId, actor.userId, actor.automationRuleId, actor.type, payloadHash, now);
     await tx.prepare("UPDATE recommendations SET status='approved',updated_at=? WHERE id=?")
       .run(now, String(action.recommendation_id));
     await audit(tx, workspaceId, actor.type === 'manual' ? 'user' : 'automation', actor.userId ?? actor.automationRuleId,
@@ -186,8 +193,15 @@ export async function executeAction(db: Db, workspaceId: string, actionId: strin
     if (!row) throw new Error('Action not found');
     if (!['approved', 'scheduled'].includes(String(row.status))) throw new Error('Action requires approval');
     if (row.scheduled_for && new Date(String(row.scheduled_for)).getTime() > Date.now()) throw new Error('Action is scheduled for later');
-    const approval = await tx.prepare('SELECT * FROM approvals WHERE action_id=? ORDER BY created_at DESC LIMIT 1')
-      .get<Record<string, unknown>>(actionId);
+    // This lookup decides whether an external send is allowed to proceed, and
+    // it used to select on `action_id` alone. An approval row mis-parented onto
+    // this action -- one row, from any tenant, whose `approved_payload_hash`
+    // happens to match -- was therefore enough to satisfy the check below. The
+    // tenant guard makes the approval prove it belongs to the same workspace as
+    // the action it releases. (`workspace_id IS NULL` covers approvals written
+    // between 058 and this change; it goes away with the NOT NULL migration.)
+    const approval = await tx.prepare('SELECT * FROM approvals WHERE action_id=? AND (workspace_id IS NULL OR workspace_id=?) ORDER BY created_at DESC LIMIT 1')
+      .get<Record<string, unknown>>(actionId, workspaceId);
     if (!approval || approval.approved_payload_hash !== row.payload_hash) throw new Error('Approved payload no longer matches action payload');
     await tx.prepare("UPDATE actions SET status='executing',updated_at=? WHERE id=?").run(new Date().toISOString(), actionId);
     await appendDomainEvent(tx, {
@@ -225,9 +239,15 @@ export async function executeAction(db: Db, workspaceId: string, actionId: strin
       const recommendationType = String(action.recommendation_type);
       if (recommendationType === 'unbilled_milestone') {
         const milestoneId = String(action.source_key).split(':')[1];
+        // `p.workspace_id=?` proved the PROJECT's tenant; the milestone's own
+        // was unrepresentable before 058. This statement marks a milestone
+        // invoiced and then raises an invoice for its amount, so a milestone
+        // that disagrees with its project is a bill sent on the wrong tenant's
+        // work. Comparing against `p.workspace_id` adds no placeholder and so
+        // leaves the two existing `?` positions untouched.
         const milestone = await tx.prepare(`
           SELECT m.*,p.id AS project_id,p.client_id FROM milestones m JOIN projects p ON p.id=m.project_id
-          WHERE m.id=? AND p.workspace_id=?
+          WHERE m.id=? AND p.workspace_id=? AND (m.workspace_id IS NULL OR m.workspace_id=p.workspace_id)
           FOR UPDATE OF m
         `).get<Record<string, unknown>>(milestoneId, workspaceId);
         if (milestone) {
@@ -243,11 +263,14 @@ export async function executeAction(db: Db, workspaceId: string, actionId: strin
               Number(action.estimated_amount), String(action.currency), 'sent', now, dueAt, null, now);
           }
         }
-        await recordOutcome(tx, String(action.recommendation_id), 'revenue_invoiced', Number(action.estimated_amount), String(action.currency), { actionId, externalRef: delivery.externalRef });
+        // `recordOutcome` now takes the workspace and refuses a recommendation
+        // outside it, so the outcome cannot be credited to another tenant's
+        // ledger even if `action.recommendation_id` were ever wrong.
+        await recordOutcome(tx, workspaceId, String(action.recommendation_id), 'revenue_invoiced', Number(action.estimated_amount), String(action.currency), { actionId, externalRef: delivery.externalRef });
       } else if (recommendationType === 'scope_creep') {
-        await recordOutcome(tx, String(action.recommendation_id), 'change_order_issued', 0, String(action.currency), { actionId, externalRef: delivery.externalRef });
+        await recordOutcome(tx, workspaceId, String(action.recommendation_id), 'change_order_issued', 0, String(action.currency), { actionId, externalRef: delivery.externalRef });
       } else {
-        await recordOutcome(tx, String(action.recommendation_id), 'action_executed', 0, String(action.currency), { actionId, recommendationType, externalRef: delivery.externalRef });
+        await recordOutcome(tx, workspaceId, String(action.recommendation_id), 'action_executed', 0, String(action.currency), { actionId, recommendationType, externalRef: delivery.externalRef });
       }
     });
   } catch (error) {

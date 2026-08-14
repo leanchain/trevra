@@ -864,3 +864,150 @@ describe('a withdrawal pass is bound to its own account', () => {
     expect(verdict.dailyCeiling).toBe(withdrawalCeilingFor('steady'));
   });
 });
+
+/**
+ * THE BATCHED SYNC AND THE BATCHED ENQUEUE, ASSERTED AGAINST THE LOOPS THEY
+ * REPLACED.
+ *
+ * `syncPendingInvites` ran one UPDATE per listed invite -- up to 500 per seat
+ * per sync -- and `enqueueWithdrawals` ran one INSERT per candidate. Both are
+ * now single statements. These pin the counting rules, because a count is
+ * exactly what a set-based rewrite is most likely to change: the old loop
+ * counted PER LIST ENTRY (`updated.changes > 0`), and a naive
+ * `UPDATE ... FROM unnest` would count per ROW instead.
+ */
+describe('the batched pending-invite sync', () => {
+  it('counts one match per list entry when two entries name the same person', async () => {
+    // LinkedIn occasionally lists a profile twice. The loop matched on both
+    // entries -- the second UPDATE hit the same row and still reported a
+    // change -- and the batched form has to agree, which is why the match set
+    // is computed per ENTRY and the rows are updated once each.
+    const actionId = await pendingInvite('maya', 30);
+    const entry = { profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: '2026-07-01T09:00:00.000Z' };
+    const result = await syncPendingInvites(db, SEAT, list([entry, entry]), NOW);
+
+    expect(result).toMatchObject({ listed: 2, matched: 2, unmatched: 0 });
+    const row = await db
+      .prepare('SELECT pending_since FROM linkedin_actions WHERE id=?')
+      .get<{ pending_since: string }>(actionId);
+    expect(new Date(row!.pending_since).toISOString()).toBe('2026-07-01T09:00:00.000Z');
+  });
+
+  it('takes the earliest entry\'s sentAt when two entries reach the same row', async () => {
+    // The loop's COALESCE meant the FIRST entry set `pending_since` and every
+    // later one was a no-op. DISTINCT ON ... ORDER BY entry reproduces that.
+    const actionId = await pendingInvite('maya', 30);
+    const result = await syncPendingInvites(
+      db,
+      SEAT,
+      list([
+        { profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: '2026-07-01T09:00:00.000Z' },
+        { profileUrl: 'https://www.linkedin.com/in/maya', name: null, sentAt: '2026-07-20T09:00:00.000Z' }
+      ]),
+      NOW
+    );
+    expect(result.matched).toBe(2);
+    const row = await db
+      .prepare('SELECT pending_since FROM linkedin_actions WHERE id=?')
+      .get<{ pending_since: string }>(actionId);
+    expect(new Date(row!.pending_since).toISOString()).toBe('2026-07-01T09:00:00.000Z');
+  });
+
+  it('separates matched from unmatched across a mixed page, and stamps every match', async () => {
+    const maya = await pendingInvite('maya', 30);
+    const jonas = await pendingInvite('jonas', 25);
+    const result = await syncPendingInvites(
+      db,
+      SEAT,
+      list([
+        { profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: null },
+        { profileUrl: 'https://www.linkedin.com/in/stranger/', name: null, sentAt: null },
+        { profileUrl: 'https://www.linkedin.com/in/jonas/', name: null, sentAt: null },
+        // Not a LinkedIn profile at all: `targetMatchKeys` returns nothing, so
+        // it can match nothing and is unmatched before any SQL runs.
+        { profileUrl: 'https://evil.example/steal', name: null, sentAt: null }
+      ]),
+      NOW
+    );
+
+    expect(result).toMatchObject({ listed: 4, matched: 2, unmatched: 2 });
+    const stamped = await db
+      .prepare('SELECT id FROM linkedin_actions WHERE workspace_id=? AND pending_seen_at IS NOT NULL ORDER BY id')
+      .all<{ id: string }>(WORKSPACE_ID);
+    expect(stamped.map((row) => row.id).sort()).toEqual([maya, jonas].sort());
+  });
+
+  it('still reports a disappearance only for rows it did not see THIS sync', async () => {
+    // The `disappeared` count reads `pending_seen_at < now`, so folding it into
+    // the same statement as the UPDATE would make it see the pre-update
+    // snapshot and report every invite LinkedIn had just shown us as gone.
+    const seen = await pendingInvite('maya', 30);
+    const unseen = await pendingInvite('jonas', 30);
+    await syncPendingInvites(
+      db,
+      SEAT,
+      list([
+        { profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: null },
+        { profileUrl: 'https://www.linkedin.com/in/jonas/', name: null, sentAt: null }
+      ]),
+      NOW
+    );
+
+    const later = new Date(NOW.getTime() + 86_400_000);
+    const result = await syncPendingInvites(db, SEAT, list([{ profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: null }]), later);
+    expect(result).toMatchObject({ matched: 1, disappeared: 1 });
+    expect(await statusOf(seen)).toBe('sent');
+    expect(await statusOf(unseen)).toBe('sent');
+  });
+
+  it('touches nothing and reports nothing for an empty list', async () => {
+    await pendingInvite('maya', 30);
+    const result = await syncPendingInvites(db, SEAT, list([]), NOW);
+    expect(result).toMatchObject({ listed: 0, matched: 0, unmatched: 0, disappeared: 0 });
+  });
+});
+
+describe('the batched withdrawal enqueue', () => {
+  it('queues every candidate in one statement and reports the ids in candidate order', async () => {
+    const ids = [
+      await pendingInvite('one', 30),
+      await pendingInvite('two', 30),
+      await pendingInvite('three', 30)
+    ];
+    const candidates = await selectWithdrawalCandidates(db, SEAT, NOW);
+    expect(candidates).toHaveLength(3);
+
+    const result = await enqueueWithdrawals(db, SEAT, candidates, NOW);
+    expect(result).toMatchObject({ queued: 3, duplicates: 0 });
+    expect(result.ids).toHaveLength(3);
+
+    const rows = await db
+      .prepare('SELECT action_id FROM linkedin_withdrawals WHERE workspace_id=? ORDER BY action_id')
+      .all<{ action_id: string }>(WORKSPACE_ID);
+    expect(rows.map((row) => row.action_id).sort()).toEqual([...ids].sort());
+  });
+
+  it('reports a re-run as duplicates rather than throwing, exactly as the loop did', async () => {
+    await pendingInvite('one', 30);
+    await pendingInvite('two', 30);
+    const candidates = await selectWithdrawalCandidates(db, SEAT, NOW);
+
+    expect(await enqueueWithdrawals(db, SEAT, candidates, NOW)).toMatchObject({ queued: 2, duplicates: 0 });
+    // The partial unique index does the enforcing; a losing insert is a no-op.
+    expect(await enqueueWithdrawals(db, SEAT, candidates, NOW)).toMatchObject({ queued: 0, duplicates: 2 });
+  });
+
+  it('handles one invite named twice inside a SINGLE batch', async () => {
+    // ON CONFLICT DO NOTHING tolerates an intra-statement collision where a DO
+    // UPDATE would raise; this is the case a multi-row insert introduces and
+    // the loop could not have.
+    await pendingInvite('one', 30);
+    const [candidate] = await selectWithdrawalCandidates(db, SEAT, NOW);
+    const result = await enqueueWithdrawals(db, SEAT, [candidate, candidate], NOW);
+    expect(result).toMatchObject({ queued: 1, duplicates: 1 });
+  });
+
+  it('is a no-op for an empty candidate list', async () => {
+    expect(await enqueueWithdrawals(db, SEAT, [], NOW)).toEqual({ queued: 0, duplicates: 0, ids: [] });
+  });
+});

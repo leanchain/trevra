@@ -1409,14 +1409,23 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     await seat(WORKSPACE_A, '2026-01-01');
     await seat(WORKSPACE_B);
 
-    const deleted = (await as(sessionA).delete('/api/linkedin/seat').expect(200)).body as { deleted: boolean; clearedThreads: number };
-    expect(deleted).toEqual({ deleted: true, clearedThreads: 0 });
+    const deleted = (await as(sessionA).delete('/api/linkedin/seat').expect(200)).body as {
+      deleted: boolean;
+      clearedThreads: number;
+      fullyStopped: boolean;
+      released: { actionsSkipped: number; tasksCancelled: number; actionsInFlight: number };
+    };
+    // `released` and `fullyStopped` are the disconnect actually disconnecting:
+    // the seat row was never the only thing that had to go.
+    expect(deleted).toMatchObject({ deleted: true, clearedThreads: 0, fullyStopped: true });
+    expect(deleted.released).toMatchObject({ actionsSkipped: 0, tasksCancelled: 0, actionsInFlight: 0 });
 
     const after = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as { seat: unknown };
     expect(after.seat).toBeNull();
 
     // A second delete finds nothing left to remove, honestly.
-    expect((await as(sessionA).delete('/api/linkedin/seat').expect(200)).body).toEqual({ deleted: false, clearedThreads: 0 });
+    expect((await as(sessionA).delete('/api/linkedin/seat').expect(200)).body)
+      .toMatchObject({ deleted: false, clearedThreads: 0, fullyStopped: true });
 
     // The other workspace's seat is untouched.
     const other = (await as(sessionB).get('/api/linkedin/seat').expect(200)).body as { seat: unknown };
@@ -1428,20 +1437,20 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     await seat(WORKSPACE_B);
 
     await db.prepare(`
-      INSERT INTO linkedin_threads (id, workspace_id, thread_urn, profile_url, name)
-      VALUES ('lthr_a', ?, '2-a==', 'https://www.linkedin.com/in/stale/', 'Someone from the old account')
+      INSERT INTO linkedin_threads (id, workspace_id, seat_key, thread_urn, profile_url, name)
+      VALUES ('lthr_a', ?, 'owner', '2-a==', 'https://www.linkedin.com/in/stale/', 'Someone from the old account')
     `).run(WORKSPACE_A);
     await db.prepare(`
       INSERT INTO linkedin_messages (id, workspace_id, thread_id, direction, body, external_ref)
       VALUES ('lmsg_a', ?, 'lthr_a', 'in', 'A message from before the reconnect', 'sha256:stale-a')
     `).run(WORKSPACE_A);
     await db.prepare(`
-      INSERT INTO linkedin_threads (id, workspace_id, thread_urn, profile_url, name)
-      VALUES ('lthr_b', ?, '2-b==', 'https://www.linkedin.com/in/other/', 'Someone in the other workspace')
+      INSERT INTO linkedin_threads (id, workspace_id, seat_key, thread_urn, profile_url, name)
+      VALUES ('lthr_b', ?, 'owner', '2-b==', 'https://www.linkedin.com/in/other/', 'Someone in the other workspace')
     `).run(WORKSPACE_B);
 
     const deleted = (await as(sessionA).delete('/api/linkedin/seat').expect(200)).body as { deleted: boolean; clearedThreads: number };
-    expect(deleted).toEqual({ deleted: true, clearedThreads: 1 });
+    expect(deleted).toMatchObject({ deleted: true, clearedThreads: 1 });
 
     expect(await db.prepare('SELECT id FROM linkedin_threads WHERE workspace_id=?').all(WORKSPACE_A)).toEqual([]);
     expect(await db.prepare('SELECT id FROM linkedin_messages WHERE workspace_id=?').all(WORKSPACE_A)).toEqual([]);

@@ -591,3 +591,151 @@ describe('clearInboxForWorkspace', () => {
     expect(await clearInboxForWorkspace(db, WORKSPACE_ID)).toBe(0);
   });
 });
+
+/**
+ * THE BATCHED SYNC, ASSERTED AGAINST THE SHAPE IT REPLACED.
+ *
+ * `syncThreads` ran three or four statements per conversation: a SELECT for
+ * the existing row, a ledger question for the campaign pointer, the upsert,
+ * and then a re-read of the row it had just written. A 5,000-conversation
+ * sync was ~20,000 round trips. It is now four statements for the whole page,
+ * and these tests pin the parts of the contract that a batched rewrite is most
+ * likely to move: the counts, the order, the campaign linkage, and what
+ * happens when one page names the same conversation twice.
+ */
+describe('syncing a page of conversations', () => {
+  function summaryFor(urn: string, handle: string, overrides: Partial<LinkedInThreadSummary> = {}): LinkedInThreadSummary {
+    return {
+      threadUrn: urn,
+      profileUrl: `https://www.linkedin.com/in/${handle}/`,
+      name: handle,
+      lastMessageAt: '2026-08-04T09:30:00.000Z',
+      snippet: `hello from ${handle}`,
+      unread: false,
+      ...overrides
+    };
+  }
+
+  it('returns every conversation in the order the rail listed them', async () => {
+    const threads = ['a', 'b', 'c', 'd'].map((handle, index) => summaryFor(`2-${handle}==`, handle, {
+      // Deliberately NOT in `last_message_at` order, so an accidental
+      // ORDER BY in the read-back would show up here.
+      lastMessageAt: new Date(NOW.getTime() - index * 3_600_000).toISOString()
+    }));
+    const result = await syncThreads(db, { workspaceId: WORKSPACE_ID, threads }, NOW);
+
+    expect(result.created).toBe(4);
+    expect(result.updated).toBe(0);
+    expect(result.threads.map((thread) => thread.threadUrn)).toEqual(['2-a==', '2-b==', '2-c==', '2-d==']);
+  });
+
+  it('counts a second sync as updated, and keeps what the driver could not read this time', async () => {
+    await syncThreads(db, { workspaceId: WORKSPACE_ID, threads: [summaryFor('2-a==', 'maya')] }, NOW);
+    const second = await syncThreads(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        // A failed profile hop: the rail reported the conversation but could
+        // not resolve the person. COALESCE keeps last week's answer.
+        threads: [summaryFor('2-a==', 'maya', { profileUrl: null, name: null, lastMessageAt: null, snippet: 'newer', unread: true })]
+      },
+      NOW
+    );
+
+    expect(second.created).toBe(0);
+    expect(second.updated).toBe(1);
+    expect(second.threads[0]).toMatchObject({
+      profileUrl: 'https://www.linkedin.com/in/maya/',
+      name: 'maya',
+      snippet: 'newer',
+      unread: true
+    });
+    expect(second.threads[0].lastMessageAt).toBe('2026-08-04T09:30:00.000Z');
+  });
+
+  it('collapses a conversation the same page names twice, taking the later entry', async () => {
+    // A batched `ON CONFLICT DO UPDATE` cannot touch one row twice in one
+    // statement, so this case has to be handled explicitly -- and the answer
+    // must be the loop's: the second write won.
+    const result = await syncThreads(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        threads: [
+          summaryFor('2-a==', 'maya', { snippet: 'first', unread: true }),
+          summaryFor('2-a==', 'maya', { snippet: 'second', unread: false })
+        ]
+      },
+      NOW
+    );
+    expect(result.created).toBe(1);
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0]).toMatchObject({ snippet: 'second', unread: false });
+  });
+
+  it('resolves each conversation to its own campaign in one pass', async () => {
+    const alpha = newCampaignId();
+    const beta = newCampaignId();
+    await createCampaign(db, { workspaceId: WORKSPACE_ID, id: alpha, name: 'Alpha' }, NOW);
+    await createCampaign(db, { workspaceId: WORKSPACE_ID, id: beta, name: 'Beta' }, NOW);
+    await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/maya/', campaignId: alpha, status: 'sent', source: 'export' },
+      NOW
+    );
+    await recordAction(
+      db,
+      // A different spelling of the same person, which is what the ledger
+      // actually holds: `target_ref` is whatever a human or a CSV supplied.
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'jonas', campaignId: beta, status: 'sent', source: 'export' },
+      NOW
+    );
+
+    const result = await syncThreads(
+      db,
+      { workspaceId: WORKSPACE_ID, threads: [summaryFor('2-a==', 'maya'), summaryFor('2-b==', 'jonas'), summaryFor('2-c==', 'nobody')] },
+      NOW
+    );
+
+    expect(result.linked).toBe(2);
+    expect(result.threads.map((thread) => thread.campaignId)).toEqual([alpha, beta, null]);
+  });
+
+  it('prefers the invite when one person has both an invite and a DM, exactly as the per-thread query did', async () => {
+    const invited = newCampaignId();
+    const messaged = newCampaignId();
+    await createCampaign(db, { workspaceId: WORKSPACE_ID, id: invited, name: 'Invited' }, NOW);
+    await createCampaign(db, { workspaceId: WORKSPACE_ID, id: messaged, name: 'Messaged' }, NOW);
+    // The DM is the MORE RECENT row, so recency alone would pick it. The
+    // ordering puts invites first because that is the row a reply lands on.
+    await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: MAYA, campaignId: invited, status: 'sent', source: 'export' },
+      new Date(NOW.getTime() - 86_400_000)
+    );
+    await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'dm', targetRef: MAYA, campaignId: messaged, status: 'sent', source: 'export' },
+      NOW
+    );
+
+    const result = await syncThreads(db, { workspaceId: WORKSPACE_ID, threads: [summaryFor('2-a==', 'maya')] }, NOW);
+    expect(result.threads[0].campaignId).toBe(invited);
+  });
+
+  it('counts stored messages per conversation without leaking another conversation\'s', async () => {
+    await syncThreads(db, { workspaceId: WORKSPACE_ID, threads: [summaryFor('2-a==', 'maya'), summaryFor('2-b==', 'jonas')] }, NOW);
+    await syncThreadMessages(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-a==', messages: [inbound('one'), inbound('two')] }, NOW);
+    await syncThreadMessages(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-b==', messages: [inbound('only')] }, NOW);
+
+    const listed = await listThreads(db, WORKSPACE_ID);
+    const counts = Object.fromEntries(listed.map((thread) => [thread.threadUrn, thread.messageCount]));
+    expect(counts).toEqual({ '2-a==': 2, '2-b==': 1 });
+    expect(listed.every((thread) => thread.hasReply)).toBe(true);
+  });
+
+  it('is a no-op for a page whose entries all carry an empty conversation id', async () => {
+    const result = await syncThreads(db, { workspaceId: WORKSPACE_ID, threads: [summaryFor('  ', 'maya')] }, NOW);
+    expect(result).toEqual({ created: 0, updated: 0, linked: 0, threads: [] });
+  });
+});

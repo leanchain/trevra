@@ -9,24 +9,41 @@ import { ACTION_GAP_SECONDS } from './limits.js';
 import { getSeat, upsertSeat, type SeatPosture } from './seats.js';
 import {
   actionGapSeconds,
+  claimSeatLease,
+  closeIdleBrowsers,
+  closeLinkedInBrowser,
   detectLinkedInSeat,
+  dueSeatsForWorker,
+  heartbeatSeatLease,
   humanCadencePage,
   latestSeatDetectRequest,
   linkedInBrowserReadiness,
   linkedInOffReason,
+  linkedInWorkerHealth,
+  linkedinWorkspaceIdsForShard,
+  openBrowser,
   postgresLocalWorkerStore,
+  reapExpiredActionLeases,
+  reapStaleLinkedInBatches,
+  releaseSeatLease,
   requestSeatDetect,
   resolveProfileDir,
   resolveSeatProxy,
+  runBounded,
   runDueLinkedInActions,
   runLinkedInLocalBatch,
   runPendingSeatDetectRequests,
   seatContextFingerprint,
+  seatProfilePresent,
+  seatRefsForShard,
   seatsWithDueActions,
+  shouldLogOnce,
   stopLinkedInBatches,
+  workerShard,
   type BranchGateDecision,
   type DueLinkedInAction,
-  type LocalWorkerStore
+  type LocalWorkerStore,
+  type PlaywrightLike
 } from './local-worker.js';
 import type { LinkedInLocator } from './driver.js';
 import {
@@ -97,6 +114,7 @@ interface StoreHarness {
   skipped: Array<{ id: string; failureKind: string }>;
   branchSkipped: Array<{ id: string; reason: string }>;
   held: Array<{ id: string; failureKind: string }>;
+  heartbeats: Array<{ batchId: string; id: string | null }>;
   cooldowns: number;
   closed: Array<{ status: string; haltReason: string | null; executed: number }>;
   remaining(): number;
@@ -134,6 +152,7 @@ function fakeStore(
     skipped: [],
     branchSkipped: [],
     held: [],
+    heartbeats: [],
     cooldowns: 0,
     closed: [],
     remaining: () => queue.length,
@@ -185,6 +204,14 @@ function fakeStore(
       branchDecision: async (action, now) => (options.branch ? options.branch(action, now) : null),
       holdClaim: async (id, failureKind) => {
         harness.held.push({ id, failureKind });
+      },
+      // THE LEASE, RECORDED RATHER THAN IGNORED. What the loop owes a
+      // multi-worker deployment is that the row it is mid-way through has a
+      // deadline pushed forward before the driver acts -- otherwise a reaper
+      // cannot tell a dead worker from a slow one, and the whole recovery path
+      // becomes a duplicate-invite risk instead of a fix.
+      heartbeat: async (batchId, id) => {
+        harness.heartbeats.push({ batchId, id });
       },
       enterCooldown: async () => {
         harness.cooldowns += 1;
@@ -1500,7 +1527,7 @@ describe('per-seat outbound proxy', () => {
     const env = {
       TREVRA_LINKEDIN_PROXY: 'http://everyone:pw@shared.example:8080',
       TREVRA_LINKEDIN_PROXY_SALES: 'http://seat.example:3128',
-      TREVRA_LINKEDIN_PROXY_WS_A_SALES: 'http://exact.example:3128'
+      TREVRA_LINKEDIN_PROXIES: JSON.stringify({ 'ws_a/sales': 'http://exact.example:3128' })
     } as NodeJS.ProcessEnv;
 
     expect(resolveSeatProxy(env, 'ws_a', 'sales')?.server).toBe('http://exact.example:3128');
@@ -1510,6 +1537,51 @@ describe('per-seat outbound proxy', () => {
       username: 'everyone',
       password: 'pw'
     });
+  });
+
+  /**
+   * THE COLLISION THAT PUT TWO TENANTS ON ONE EXIT IP.
+   *
+   * `TREVRA_LINKEDIN_PROXY_<WS>_<SEAT>` joined two flattened ids with `_`, a
+   * character both ids may contain -- so workspace `ws` + seat `a_sales` and
+   * workspace `ws_a` + seat `sales` produced the SAME variable name. Nothing
+   * anywhere could tell which tenant it belonged to, and both silently used it.
+   */
+  it('keys a per-seat proxy on the exact pair, so two tenants cannot collide', () => {
+    const env = {
+      TREVRA_LINKEDIN_PROXIES: JSON.stringify({
+        'ws_a/sales': 'http://tenant-a.example:3128',
+        'ws/a_sales': 'http://tenant-b.example:3128',
+        'ws_a/*': 'http://tenant-a-default.example:3128',
+        '*/support': 'http://support-anywhere.example:3128'
+      })
+    } as NodeJS.ProcessEnv;
+
+    // The two names that used to be one.
+    expect(resolveSeatProxy(env, 'ws_a', 'sales')?.server).toBe('http://tenant-a.example:3128');
+    expect(resolveSeatProxy(env, 'ws', 'a_sales')?.server).toBe('http://tenant-b.example:3128');
+    // Most specific wins, and the wildcards are compared whole too.
+    expect(resolveSeatProxy(env, 'ws_a', 'owner')?.server).toBe('http://tenant-a-default.example:3128');
+    expect(resolveSeatProxy(env, 'ws_z', 'support')?.server).toBe('http://support-anywhere.example:3128');
+    expect(resolveSeatProxy(env, 'ws_z', 'owner')).toBeNull();
+  });
+
+  it('REFUSES an ambiguous legacy variable instead of guessing whose it is', () => {
+    // Set, and unmatchable to one pair. Ignoring it would fall through to null,
+    // and null means "connect directly" -- from the machine this seat was
+    // configured never to be seen from.
+    expect(() => resolveSeatProxy({ TREVRA_LINKEDIN_PROXY_WS_A_SALES: 'http://exact.example:3128' }, 'ws_a', 'sales'))
+      .toThrow(/TREVRA_LINKEDIN_PROXIES/);
+    // A seat key that flattens losslessly is still served the old way.
+    expect(resolveSeatProxy({ TREVRA_LINKEDIN_PROXY_SALES: 'http://seat.example:3128' }, 'ws_a', 'sales')?.server)
+      .toBe('http://seat.example:3128');
+    // A map that will not parse is a refusal too, and never quotes the value.
+    try {
+      resolveSeatProxy({ TREVRA_LINKEDIN_PROXIES: '{"ws_a/sales": "http://user:hunter2@proxy.example:3128"' }, 'ws_a', 'sales');
+      throw new Error('a malformed proxy map must not resolve');
+    } catch (error) {
+      expect((error as Error).message).not.toContain('hunter2');
+    }
   });
 
   it('REFUSES rather than falling back to a direct connection', () => {
@@ -2044,5 +2116,592 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
     await db.prepare("UPDATE linkedin_actions SET status='declined' WHERE id=?").run('lact_mgr_inv');
     const dead = await store.branchDecision(claimed as DueLinkedInAction, NOW);
     expect(dead?.outcome).toBe('skipped');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What a fleet needs and one laptop never did
+// ---------------------------------------------------------------------------
+
+/**
+ * THE LEASE.
+ *
+ * Every assertion below fails against the code as it was, and each one is a
+ * row that could not come back:
+ *
+ *   * a claim carried no owner and no deadline, so a worker killed between
+ *     claiming and settling stranded the row PERMANENTLY -- invisible to
+ *     discovery (`claimed_at IS NULL`), invisible to the claim, and reported
+ *     nowhere;
+ *   * and the deliberate hold on an UNKNOWN outcome looked identical to that
+ *     strand, so anything able to recover the second would have re-queued the
+ *     first -- an action that may already have reached somebody's
+ *     notifications, which is the one thing this subsystem must never do.
+ */
+describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
+  const WORKSPACE_ID = 'ws_linkedin_lease_test';
+  const NOW = new Date('2026-08-04T10:00:00.000Z');
+  const LONG_AGO = new Date('2025-01-01T10:00:00.000Z');
+  let db: Db;
+
+  const planned = async (id: string, target: string, plannedFor: Date = NOW) => {
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
+      VALUES (?,?,'owner','profile_view',?,'planned',?,'export',?)
+    `).run(id, WORKSPACE_ID, target, plannedFor.toISOString(), LONG_AGO.toISOString());
+  };
+
+  const row = async (id: string) =>
+    db.prepare(`
+      SELECT status, claimed_by, batch_id,
+             claimed_at IS NULL AS unclaimed,
+             lease_expires_at IS NULL AS unleased,
+             settlement_hold_at IS NULL AS unheld
+      FROM linkedin_actions WHERE id=?
+    `).get<{ status: string; claimed_by: string | null; batch_id: string | null; unclaimed: boolean; unleased: boolean; unheld: boolean }>(id);
+
+  beforeEach(async () => {
+    db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
+    await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(WORKSPACE_ID, 'lease test', LONG_AGO.toISOString());
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, LONG_AGO);
+  });
+
+  afterEach(async () => {
+    await db?.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+    await db?.close();
+  });
+
+  it('writes the worker and the deadline onto the row it claims', async () => {
+    await planned('lact_lease_1', 'https://www.linkedin.com/in/one/');
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-a', leaseMs: 60_000 });
+    const batchId = await store.openBatch(NOW);
+
+    expect((await store.claimNextDueAction(batchId, NOW))?.id).toBe('lact_lease_1');
+
+    const claimed = await row('lact_lease_1');
+    expect(claimed?.claimed_by).toBe('worker-a');
+    expect(claimed?.unclaimed).toBe(false);
+    expect(claimed?.unleased).toBe(false);
+  });
+
+  it('leaves a live lease alone and releases an expired one', async () => {
+    await planned('lact_lease_2', 'https://www.linkedin.com/in/two/');
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-a', leaseMs: 60_000 });
+    await store.claimNextDueAction(await store.openBatch(NOW), NOW);
+
+    // Still inside the term: the worker is alive, and stealing the row here is
+    // exactly how a second invite reaches somebody.
+    expect(await reapExpiredActionLeases(db, { now: new Date(NOW.getTime() + 30_000) })).toBe(0);
+    expect((await row('lact_lease_2'))?.unclaimed).toBe(false);
+
+    // Past it: the worker stopped heartbeating, so it stopped existing.
+    expect(await reapExpiredActionLeases(db, { now: new Date(NOW.getTime() + 120_000) })).toBe(1);
+    const released = await row('lact_lease_2');
+    expect(released?.unclaimed).toBe(true);
+    expect(released?.claimed_by).toBeNull();
+    expect(released?.batch_id).toBeNull();
+
+    // And it is due again, which is the entire point of releasing it.
+    // Filtered to this workspace: every test file in this suite shares one
+    // database, and what is being asserted is about this seat.
+    const due = (await seatsWithDueActions(db, NOW)).filter((seat) => seat.workspaceId === WORKSPACE_ID);
+    expect(due.map((seat) => seat.seatKey)).toEqual(['owner']);
+  });
+
+  it('a heartbeat pushes the deadline out, and only the holder may send one', async () => {
+    await planned('lact_lease_3', 'https://www.linkedin.com/in/three/');
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-a', leaseMs: 60_000 });
+    const batchId = await store.openBatch(NOW);
+    await store.claimNextDueAction(batchId, NOW);
+
+    // A worker that is alive at +60s: the lease it renewed there must hold at +90s.
+    await store.heartbeat(batchId, 'lact_lease_3', new Date(NOW.getTime() + 60_000));
+    expect(await reapExpiredActionLeases(db, { now: new Date(NOW.getTime() + 90_000) })).toBe(0);
+
+    // An impostor cannot renew what it does not hold: `claimed_by` is in the
+    // predicate, so a worker whose claim was already reaped cannot extend it
+    // back into existence.
+    const impostor = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-b', leaseMs: 3_600_000 });
+    await impostor.heartbeat(batchId, 'lact_lease_3', new Date(NOW.getTime() + 90_000));
+    expect(await reapExpiredActionLeases(db, { now: new Date(NOW.getTime() + 200_000) })).toBe(1);
+  });
+
+  it('NEVER touches the deliberate hold, however long it has been held', async () => {
+    await planned('lact_lease_4', 'https://www.linkedin.com/in/four/');
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-a', leaseMs: 60_000 });
+    await store.claimNextDueAction(await store.openBatch(NOW), NOW);
+    // We clicked and lost the thread. A retry could put a second invite in
+    // somebody's notifications and that cannot be withdrawn.
+    await store.holdClaim('lact_lease_4', 'unknown');
+
+    const held = await row('lact_lease_4');
+    expect(held?.unheld).toBe(false);
+    expect(held?.unleased).toBe(true);
+
+    expect(await reapExpiredActionLeases(db, { now: new Date(NOW.getTime() + 30 * 86_400_000) })).toBe(0);
+    expect((await row('lact_lease_4'))?.unclaimed).toBe(false);
+    // And it is not offered to a worker either.
+    expect((await seatsWithDueActions(db, NOW)).filter((seat) => seat.workspaceId === WORKSPACE_ID)).toEqual([]);
+  });
+
+  it('recovers a pre-lease strand but not a pre-lease hold', async () => {
+    // Both rows are what this table looked like before migration 054: claimed,
+    // no owner, no deadline. The ONLY thing that tells them apart is that the
+    // hold path always recorded a `failure_kind` and the claim path never did.
+    await planned('lact_legacy_strand', 'https://www.linkedin.com/in/strand/');
+    await planned('lact_legacy_hold', 'https://www.linkedin.com/in/legacyhold/');
+    await db.prepare('UPDATE linkedin_actions SET claimed_at=? WHERE id=?').run(LONG_AGO.toISOString(), 'lact_legacy_strand');
+    await db.prepare("UPDATE linkedin_actions SET claimed_at=?, failure_kind='unknown' WHERE id=?").run(LONG_AGO.toISOString(), 'lact_legacy_hold');
+
+    expect(await reapExpiredActionLeases(db, { now: NOW })).toBe(1);
+    expect((await row('lact_legacy_strand'))?.unclaimed).toBe(true);
+    expect((await row('lact_legacy_hold'))?.unclaimed).toBe(false);
+  });
+
+  it('closes a batch whose worker is gone, and leaves a running one alone', async () => {
+    await db.prepare(`
+      INSERT INTO linkedin_batches (id, workspace_id, seat_key, status, started_at)
+      VALUES (?,?,'owner','running',?), (?,?,'owner','running',?)
+    `).run(
+      'lbatch_abandoned', WORKSPACE_ID, new Date(NOW.getTime() - 4 * 3_600_000).toISOString(),
+      'lbatch_live', WORKSPACE_ID, NOW.toISOString()
+    );
+
+    expect(await reapStaleLinkedInBatches(db, { now: NOW })).toBe(1);
+    const abandoned = await db.prepare('SELECT status, halt_reason FROM linkedin_batches WHERE id=?')
+      .get<{ status: string; halt_reason: string | null }>('lbatch_abandoned');
+    expect(abandoned?.status).toBe('halted');
+    // The batch was ABANDONED, not failed. Saying otherwise would invent a
+    // cause, the same rule `reapStaleAgentRuns` follows.
+    expect(abandoned?.halt_reason).toContain('stopped without closing it');
+    expect((await db.prepare('SELECT status FROM linkedin_batches WHERE id=?').get<{ status: string }>('lbatch_live'))?.status).toBe('running');
+  });
+});
+
+/**
+ * DISCOVERY: sharded, fair, bounded, and aware of a posture before a browser
+ * is opened for it.
+ */
+describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () => {
+  const BUSY = 'ws_linkedin_shard_busy';
+  const QUIET = 'ws_linkedin_shard_quiet';
+  const NOW = new Date('2026-08-04T10:00:00.000Z');
+  const LONG_AGO = new Date('2025-01-01T10:00:00.000Z');
+  let db: Db;
+
+  const plan = async (workspaceId: string, seatKey: string, id: string, plannedFor: Date) => {
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
+      VALUES (?,?,?,'profile_view',?,'planned',?,'export',?)
+    `).run(id, workspaceId, seatKey, `https://www.linkedin.com/in/${id}/`, plannedFor.toISOString(), LONG_AGO.toISOString());
+  };
+
+  beforeEach(async () => {
+    db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
+    for (const workspaceId of [BUSY, QUIET]) {
+      await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
+      await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(workspaceId, workspaceId, LONG_AGO.toISOString());
+    }
+    // The noisy tenant: four seats, all with work, none of it old.
+    for (const seatKey of ['owner', 'sales', 'support', 'growth']) {
+      await upsertSeat(db, BUSY, { label: seatKey, timezone: 'UTC' }, LONG_AGO, seatKey);
+      await plan(BUSY, seatKey, `lact_busy_${seatKey}`, NOW);
+    }
+    // The tenant that has been waiting a week, with one seat.
+    await upsertSeat(db, QUIET, { label: 'owner', timezone: 'UTC' }, LONG_AGO);
+    await plan(QUIET, 'owner', 'lact_quiet', new Date(NOW.getTime() - 7 * 86_400_000));
+  });
+
+  afterEach(async () => {
+    for (const workspaceId of [BUSY, QUIET]) await db?.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
+    await db?.close();
+  });
+
+  it('serves the tenant that has been waiting longest first', async () => {
+    // Before: `ORDER BY workspace_id, seat_key` with no limit, so the busy
+    // tenant was served first, to completion, on every tick -- and a tenant
+    // whose id sorted last was never reached at all.
+    const seats = (await dueSeatsForWorker(db, NOW)).filter((seat) => seat.workspaceId === BUSY || seat.workspaceId === QUIET);
+    expect(seats[0]).toMatchObject({ workspaceId: QUIET, seatKey: 'owner' });
+  });
+
+  it('caps what one tenant takes out of a single pass', async () => {
+    const seats = await dueSeatsForWorker(db, NOW, { maxSeatsPerWorkspace: 2 });
+    expect(seats.filter((seat) => seat.workspaceId === BUSY)).toHaveLength(2);
+    // And the small tenant is still served, which is the whole point of the cap.
+    expect(seats.some((seat) => seat.workspaceId === QUIET)).toBe(true);
+  });
+
+  it('partitions the fleet between workers: every seat once, no seat twice', async () => {
+    const all = await dueSeatsForWorker(db, NOW);
+    const first = await dueSeatsForWorker(db, NOW, { shard: { index: 0, total: 2 } });
+    const second = await dueSeatsForWorker(db, NOW, { shard: { index: 1, total: 2 } });
+    const key = (seat: { workspaceId: string; seatKey: string }) => `${seat.workspaceId}/${seat.seatKey}`;
+
+    // Before: every worker ran the identical query in the identical order, so
+    // they all reached for the same seat and Chromium's profile lock decided
+    // the winner. Adding a worker added contention and no throughput.
+    expect([...first, ...second].map(key).sort()).toEqual(all.map(key).sort());
+    expect(first.map(key).filter((entry) => second.map(key).includes(entry))).toEqual([]);
+    expect(first.length + second.length).toBe(all.length);
+  });
+
+  it('never offers a paused or cooling seat, so neither pays for a browser', async () => {
+    await upsertSeat(db, BUSY, { posture: 'paused' }, NOW, 'sales');
+    await upsertSeat(db, BUSY, { posture: 'cooldown' }, NOW, 'support');
+
+    const seats = (await dueSeatsForWorker(db, NOW)).filter((seat) => seat.workspaceId === BUSY);
+    expect(seats.map((seat) => seat.seatKey)).not.toContain('sales');
+    expect(seats.map((seat) => seat.seatKey)).not.toContain('support');
+    // The seats that may work still carry their posture, so the pass can refuse
+    // before it launches anything rather than after it has signed in.
+    expect(seats.every((seat) => seat.posture !== null)).toBe(true);
+  });
+
+  it('still surfaces a queue whose seat row is missing, rather than losing it', async () => {
+    await plan(QUIET, 'never_connected', 'lact_orphan', new Date(NOW.getTime() - 8 * 86_400_000));
+    const seats = await dueSeatsForWorker(db, NOW);
+    const orphan = seats.find((seat) => seat.seatKey === 'never_connected');
+    // Posture null is what the batch turns into 'No LinkedIn seat is
+    // configured...' -- a sentence an operator can act on. Dropping it here
+    // would be a queue that quietly never moves.
+    expect(orphan).toMatchObject({ workspaceId: QUIET, posture: null });
+  });
+
+  it('keeps the deployment-wide listing shape its callers already read', async () => {
+    const listed = await seatsWithDueActions(db, NOW);
+    expect(listed).toContainEqual({ workspaceId: QUIET, seatKey: 'owner', timezone: 'UTC' });
+    expect(listed.map((seat) => `${seat.workspaceId}/${seat.seatKey}`)).toEqual(
+      [...listed].map((seat) => `${seat.workspaceId}/${seat.seatKey}`).sort()
+    );
+  });
+
+  it('shards the periodic per-seat and per-workspace work the same way', async () => {
+    const key = (seat: { workspaceId: string; seatKey: string }) => `${seat.workspaceId}/${seat.seatKey}`;
+    const shardedSeats = [
+      ...(await seatRefsForShard(db, { shard: { index: 0, total: 2 }, limit: 500 })),
+      ...(await seatRefsForShard(db, { shard: { index: 1, total: 2 }, limit: 500 }))
+    ].map(key);
+    const everySeat = (await seatRefsForShard(db, { limit: 500 })).map(key);
+    expect(shardedSeats.sort()).toEqual(everySeat.sort());
+
+    // The cursor is what stops a bounded tick from meaning "the first N
+    // forever": page two starts where page one stopped.
+    const firstPage = await seatRefsForShard(db, { limit: 2 });
+    const secondPage = await seatRefsForShard(db, { limit: 2, after: firstPage[firstPage.length - 1] });
+    expect(secondPage.map((seat) => seat.seatKey)).not.toEqual(firstPage.map((seat) => seat.seatKey));
+
+    const workspaces = [
+      ...(await linkedinWorkspaceIdsForShard(db, { shard: { index: 0, total: 2 } })),
+      ...(await linkedinWorkspaceIdsForShard(db, { shard: { index: 1, total: 2 } }))
+    ];
+    // A partition again: both of these tenants appear exactly once between the
+    // two shards. (Other test files share this database, so the assertion is
+    // about coverage and non-duplication, not about the whole list.)
+    expect(workspaces.filter((workspaceId) => workspaceId === BUSY)).toEqual([BUSY]);
+    expect(workspaces.filter((workspaceId) => workspaceId === QUIET)).toEqual([QUIET]);
+    expect(new Set(workspaces).size).toBe(workspaces.length);
+  });
+
+  it('does not answer an unreadable queue with an empty one', async () => {
+    // THE FAILURE THAT LOOKED LIKE SUCCESS. A discovery read that times out --
+    // which is what the unindexed version did against a 30s statement_timeout
+    // -- used to be swallowed into `[]`, byte-for-byte identical to "nothing is
+    // due", so an entire deployment's LinkedIn queue could stop with nothing to
+    // alert on. It has to reach the caller.
+    const broken = { prepare: () => ({ all: async () => { throw new Error('canceling statement due to statement timeout'); } }) } as unknown as Db;
+    await expect(dueSeatsForWorker(broken, NOW)).rejects.toThrow('statement timeout');
+    // And the worker can be asked, from outside, whether the queue is moving.
+    expect(linkedInWorkerHealth()).toMatchObject({ discoveryHealthy: expect.any(Boolean) });
+  });
+});
+
+/**
+ * THE SEAT LEASE, WHICH IS ALSO THE SESSION PIN.
+ *
+ * The Chrome profile directory IS the LinkedIn session -- its cookies, its
+ * "remember this browser" device trust -- and it lives on ONE host's local
+ * disk. A second host picking up the same seat finds an empty directory and
+ * signs in from scratch: a new device, on an account LinkedIn already trusts a
+ * specific browser for, which is the loudest challenge signal available to us.
+ */
+describe.skipIf(!databaseUrl)('a seat is driven by one worker, on the host that has its session', () => {
+  const WORKSPACE_ID = 'ws_linkedin_seat_lease_test';
+  const NOW = new Date('2026-08-04T10:00:00.000Z');
+  const LONG_AGO = new Date('2025-01-01T10:00:00.000Z');
+  let db: Db;
+  let profileDir: string;
+
+  const lease = (over: { workerId: string; host: string; profileDir?: string; leaseMs?: number }, at: Date) =>
+    claimSeatLease(
+      db,
+      { workspaceId: WORKSPACE_ID, seatKey: 'owner', profileDir: over.profileDir ?? profileDir, leaseMs: 60_000, ...over },
+      at
+    );
+
+  beforeEach(async () => {
+    db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
+    await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(WORKSPACE_ID, 'seat lease', LONG_AGO.toISOString());
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, LONG_AGO);
+    profileDir = mkdtempSync(join(tmpdir(), 'trevra-seat-lease-'));
+    mkdirSync(join(profileDir, 'Default'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await db?.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+    await db?.close();
+  });
+
+  it('refuses a second worker while the first is driving, and hands over once the term lapses', async () => {
+    expect((await lease({ workerId: 'worker-a', host: 'host-1' }, NOW)).ok).toBe(true);
+
+    const contested = await lease({ workerId: 'worker-b', host: 'host-1' }, new Date(NOW.getTime() + 30_000));
+    expect(contested.ok).toBe(false);
+    expect(contested.ok === false && contested.reason).toContain('already being driven');
+
+    // Same host, expired term: a restarted worker is a new pid on the same
+    // disk, and that disk still has the seat's session.
+    expect((await lease({ workerId: 'worker-b', host: 'host-1' }, new Date(NOW.getTime() + 120_000))).ok).toBe(true);
+  });
+
+  it('will not let another host take a seat whose profile it does not have', async () => {
+    await lease({ workerId: 'worker-a', host: 'host-1' }, NOW);
+
+    const elsewhere = await lease(
+      { workerId: 'worker-c', host: 'host-2', profileDir: join(tmpdir(), 'trevra-not-here-at-all') },
+      new Date(NOW.getTime() + 86_400_000)
+    );
+    expect(elsewhere.ok).toBe(false);
+    // Refusing is the point: running it here means a brand-new device sign-in
+    // on that account, which is worse than the seat waiting.
+    expect(elsewhere.ok === false && elsewhere.reason).toContain('pinned to host');
+  });
+
+  it('lets another host take it once the profile is actually there', async () => {
+    await lease({ workerId: 'worker-a', host: 'host-1' }, NOW);
+    const moved = mkdtempSync(join(tmpdir(), 'trevra-moved-profile-'));
+    mkdirSync(join(moved, 'Default'), { recursive: true });
+
+    expect(seatProfilePresent(moved)).toBe(true);
+    // An operator who copied the profile here has said, by doing so, that this
+    // host is a home for this seat.
+    const taken = await lease({ workerId: 'worker-c', host: 'host-2', profileDir: moved }, new Date(NOW.getTime() + 86_400_000));
+    expect(taken.ok).toBe(true);
+  });
+
+  it('only the holder may heartbeat, and releasing keeps the affinity', async () => {
+    await lease({ workerId: 'worker-a', host: 'host-1' }, NOW);
+
+    expect(await heartbeatSeatLease(db, { workspaceId: WORKSPACE_ID, seatKey: 'owner', workerId: 'worker-b' }, NOW)).toBe(false);
+    expect(await heartbeatSeatLease(db, { workspaceId: WORKSPACE_ID, seatKey: 'owner', workerId: 'worker-a' }, NOW)).toBe(true);
+
+    await releaseSeatLease(db, { workspaceId: WORKSPACE_ID, seatKey: 'owner', workerId: 'worker-a' }, NOW);
+    // The row STAYS: it is also the record of which host holds this seat's
+    // session, and that outlives the pass that took it.
+    const kept = await db.prepare('SELECT host, released_at IS NOT NULL AS released FROM linkedin_seat_leases WHERE workspace_id=? AND seat_key=?')
+      .get<{ host: string; released: boolean }>(WORKSPACE_ID, 'owner');
+    expect(kept).toMatchObject({ host: 'host-1', released: true });
+
+    // And a released seat is immediately available on that host again.
+    expect((await lease({ workerId: 'worker-d', host: 'host-1' }, new Date(NOW.getTime() + 1_000))).ok).toBe(true);
+  });
+});
+
+/**
+ * The detect queue was a single GLOBAL FIFO with no tenant bound, so one
+ * workspace onboarding thousands of seats sat in front of every other
+ * workspace's Connect button.
+ */
+describe.skipIf(!databaseUrl)('the Connect queue is fair across tenants', () => {
+  const FIRST = 'ws_linkedin_detect_fair_a';
+  const SECOND = 'ws_linkedin_detect_fair_b';
+  const NOW = new Date('2026-08-04T10:00:00.000Z');
+  let db: Db;
+
+  beforeEach(async () => {
+    db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
+    for (const workspaceId of [FIRST, SECOND]) {
+      await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
+      await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(workspaceId, workspaceId, NOW.toISOString());
+    }
+    // The tenant onboarding in bulk asked first, twice.
+    await requestSeatDetect(db, { workspaceId: FIRST, timezone: 'UTC', seatKey: 'owner' }, new Date(NOW.getTime() - 60_000));
+    await requestSeatDetect(db, { workspaceId: FIRST, timezone: 'UTC', seatKey: 'sales' }, new Date(NOW.getTime() - 59_000));
+    // Somebody else pressed Connect once, later.
+    await requestSeatDetect(db, { workspaceId: SECOND, timezone: 'UTC', seatKey: 'owner' }, new Date(NOW.getTime() - 10_000));
+  });
+
+  afterEach(async () => {
+    for (const workspaceId of [FIRST, SECOND]) await db?.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
+    await db?.close();
+  });
+
+  it('serves two tenants before it serves one tenant twice', async () => {
+    const { driver } = fakeDriver();
+    const settled = await runPendingSeatDetectRequests(db, { enabled: true }, { driver, page, now: NOW, log: () => {}, maxRequests: 2 });
+
+    expect(settled).toHaveLength(2);
+    // THE PROPERTY IS THE NON-DUPLICATION. Before, the queue was a global FIFO
+    // with no tenant bound, so the two oldest requests were both this bulk
+    // onboarding's and the other tenant waited behind all of them.
+    expect(new Set(settled.map((request) => request.workspaceId)).size).toBe(2);
+    // Specifically: the bulk onboarding got ONE of its two, not both, however
+    // far in front of everybody else it queued.
+    expect(settled.filter((request) => request.workspaceId === FIRST).length).toBeLessThanOrEqual(1);
+  });
+});
+
+/**
+ * BROWSERS ARE THE MEMORY, AND THE MAP WAS APPEND-ONLY.
+ *
+ * One live Chromium per seat this process had ever served, at ~350-500MB each.
+ * The leak below is worse still: a failure anywhere after the launch returned
+ * null WITHOUT closing the context, so a leaked browser went on holding the
+ * profile directory's exclusive lock and permanently stranded that seat for
+ * every worker on the host.
+ */
+describe('open browsers are bounded, and a failed open leaks nothing', () => {
+  function fakePlaywright(options: { failAfterLaunch?: boolean } = {}) {
+    const opened: string[] = [];
+    const closed: string[] = [];
+    const playwright = {
+      chromium: {
+        launchPersistentContext: async (userDataDir: string) => {
+          opened.push(userDataDir);
+          return {
+            pages: () => [],
+            newPage: async () => {
+              if (options.failAfterLaunch) throw new Error('the tab could not be created');
+              return {};
+            },
+            cookies: async () => [],
+            on: () => {},
+            close: async () => {
+              closed.push(userDataDir);
+            }
+          };
+        }
+      }
+    } as unknown as PlaywrightLike;
+    return { playwright, opened, closed };
+  }
+
+  const config = { enabled: true, hosted: false, profileDir: '/tmp/trevra-browser-cap-test' };
+  const open = (playwright: PlaywrightLike, seatKey: string) =>
+    openBrowser(config, () => {}, { workspaceId: 'ws_cap', seatKey, headless: true, env: {}, playwright });
+
+  afterEach(async () => {
+    await closeLinkedInBrowser();
+    delete process.env.TREVRA_LINKEDIN_MAX_BROWSERS;
+  });
+
+  it('closes the least recently used context rather than growing forever', async () => {
+    process.env.TREVRA_LINKEDIN_MAX_BROWSERS = '2';
+    const { playwright, closed } = fakePlaywright();
+
+    await open(playwright, 'first');
+    await open(playwright, 'second');
+    // Touching the first one again makes the SECOND the least recently used.
+    await open(playwright, 'first');
+    await open(playwright, 'third');
+
+    expect(closed).toEqual([resolveProfileDir(config.profileDir, 'ws_cap', 'second')]);
+  });
+
+  it('closes the context it just opened when anything after the launch fails', async () => {
+    const { playwright, opened, closed } = fakePlaywright({ failAfterLaunch: true });
+
+    expect(await open(playwright, 'doomed')).toBeNull();
+
+    // Before: null was returned and the context stayed open -- a leaked
+    // Chromium holding a profile lock that stranded this seat for everybody.
+    expect(opened).toEqual(closed);
+    expect(closed).toHaveLength(1);
+  });
+
+  it('retires a context nobody has used for a while', async () => {
+    const { playwright, closed } = fakePlaywright();
+    await open(playwright, 'idle');
+
+    expect(await closeIdleBrowsers(new Date(Date.now() + 30 * 60_000))).toBe(1);
+    expect(closed).toHaveLength(1);
+    // And there is nothing left to retire afterwards.
+    expect(await closeIdleBrowsers(new Date(Date.now() + 90 * 60_000))).toBe(0);
+  });
+});
+
+/**
+ * One tenant's failure must not silence every other tenant's identical one.
+ */
+describe('log suppression is per key and time-boxed, not per process and forever', () => {
+  const NOW = new Date('2026-08-04T10:00:00.000Z');
+
+  it('says a thing once per key, and says it again for a different key', () => {
+    const first = `unready:ws_a/owner:${Math.random()}`;
+    const second = `unready:ws_b/owner:${Math.random()}`;
+
+    expect(shouldLogOnce(first, NOW)).toBe(true);
+    expect(shouldLogOnce(first, NOW)).toBe(false);
+    // Before: a module-level boolean, so the FIRST tenant to hit a condition
+    // printed the only line anybody would ever see about it.
+    expect(shouldLogOnce(second, NOW)).toBe(true);
+    // And a condition still present tomorrow says so again.
+    expect(shouldLogOnce(first, new Date(NOW.getTime() + 2 * 3_600_000))).toBe(true);
+  });
+});
+
+/**
+ * Serial was not slow, it was unfinishable: a batch is ~31 minutes, so a
+ * hundred due seats is two days of work per tick. Unbounded parallelism is not
+ * the fix either -- each in-flight seat is a whole Chromium.
+ */
+describe('bounded concurrency', () => {
+  it('keeps at most `limit` in flight and still runs everything', async () => {
+    const items = [1, 2, 3, 4, 5, 6, 7];
+    const done: number[] = [];
+    let inFlight = 0;
+    let peak = 0;
+
+    await runBounded(items, 3, async (item) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      done.push(item);
+      inFlight -= 1;
+    });
+
+    expect(done.sort((left, right) => left - right)).toEqual(items);
+    expect(peak).toBeLessThanOrEqual(3);
+    expect(peak).toBeGreaterThan(1);
+  });
+
+  it('stays strictly serial at a limit of one, which is what a headed laptop needs', async () => {
+    let peak = 0;
+    let inFlight = 0;
+    await runBounded([1, 2, 3], 1, async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight -= 1;
+    });
+    expect(peak).toBe(1);
+  });
+});
+
+/**
+ * The shard is a partition or it is nothing.
+ */
+describe('workerShard', () => {
+  it('is everything when nothing is configured', () => {
+    expect(workerShard({})).toEqual({ index: 0, total: 1 });
+  });
+
+  it('refuses a value that is not a partition, rather than serving the wrong slice', () => {
+    expect(() => workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '3', TREVRA_LINKEDIN_WORKER_INDEX: '3' })).toThrow(/between 0 and 2/);
+    expect(() => workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '0' })).toThrow(/1 or more/);
+    expect(() => workerShard({ TREVRA_LINKEDIN_WORKER_INDEX: '-1', TREVRA_LINKEDIN_WORKER_COUNT: '2' })).toThrow();
+    expect(workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '4', TREVRA_LINKEDIN_WORKER_INDEX: '2' })).toEqual({ index: 2, total: 4 });
   });
 });

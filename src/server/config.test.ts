@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateEnvironment } from './config.js';
+import { linkedInWorkerConfig, redditWorkerConfig, validateEnvironment } from './config.js';
 
 const base = {
   NODE_ENV: 'development',
@@ -72,5 +72,120 @@ describe('the LinkedIn local worker gate', () => {
       validateEnvironment({ ...base, TREVRA_LINKEDIN_PROFILE_DIR: '/srv/linkedin-profile' })
         .linkedinLocalWorker.profileDir
     ).toBe('/srv/linkedin-profile');
+  });
+});
+
+/**
+ * The multi-tenancy gate itself.
+ *
+ * TREVRA_DEPLOYMENT_MODE decides whether the browser workers run, whether the
+ * shared browser-profile paths are open, and whether one operator's personal
+ * subscription CLI can back everyone's agent runs. Defaulting it is fine for a
+ * developer; guessing it for a production deployment -- permissively, and
+ * without saying so -- is not. 'local' is already multi-tenant in practice: a
+ * workspace and organization are minted for every email that signs in.
+ */
+describe('the deployment-mode gate', () => {
+  const production = { ...base, NODE_ENV: 'production' };
+
+  /** The production block reports every problem at once; this reads them. */
+  function problems(env: Record<string, string>): string {
+    try {
+      validateEnvironment(env);
+      return '';
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  it('refuses to boot a production deployment that never says which it is', () => {
+    expect(() => validateEnvironment(production)).toThrow(/TREVRA_DEPLOYMENT_MODE must be set explicitly when NODE_ENV=production/);
+  });
+
+  it('says exactly what to set, both ways, and what the guess would turn on', () => {
+    const message = problems(production);
+    expect(message).toContain('TREVRA_DEPLOYMENT_MODE=hosted');
+    expect(message).toContain('TREVRA_DEPLOYMENT_MODE=local');
+    expect(message).toMatch(/LinkedIn and Reddit local workers/);
+  });
+
+  it('is satisfied by either value, said explicitly', () => {
+    // Other production requirements still fail here -- what matters is that
+    // THIS complaint is gone once the operator has answered the question.
+    for (const mode of ['local', 'hosted']) {
+      expect(problems({ ...production, TREVRA_DEPLOYMENT_MODE: mode }))
+        .not.toMatch(/TREVRA_DEPLOYMENT_MODE must be set explicitly/);
+    }
+  });
+
+  it('leaves development and self-hosting alone: unset still means local there', () => {
+    const runtime = validateEnvironment({ ...base });
+    expect(runtime.linkedinLocalWorker.hosted).toBe(false);
+    expect(runtime.redditLocalWorker.enabled).toBe(true);
+  });
+
+  it('applies to the worker CLIs too, which read their own slice of the environment', () => {
+    expect(() => linkedInWorkerConfig({ NODE_ENV: 'production' })).toThrow(/TREVRA_DEPLOYMENT_MODE must be set explicitly/);
+    expect(() => redditWorkerConfig({ NODE_ENV: 'production' })).toThrow(/TREVRA_DEPLOYMENT_MODE must be set explicitly/);
+    // Answered, they behave exactly as before.
+    expect(linkedInWorkerConfig({ NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'hosted' })).toMatchObject({ enabled: false, hosted: true });
+    expect(redditWorkerConfig({ NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'local' })).toMatchObject({ enabled: true, hosted: false });
+    // And a self-hoster running `npm run linkedin:worker` by hand is untouched.
+    expect(linkedInWorkerConfig({}).enabled).toBe(true);
+  });
+});
+
+/**
+ * Credential custody on a hosted box.
+ *
+ * TREVRA_SECRETS_KEY is what encrypts every workspace's stored LinkedIn and
+ * Reddit passwords and BYOK model keys. Absent, nothing announces itself: the
+ * app boots, the setup screen reads green, and every save fails at runtime.
+ * The shipped hosted runbook did not generate the key, so that is exactly how
+ * a hosted box came up -- with custody silently off for other people's
+ * credentials. Hosted must not boot without it; local still may, because a
+ * self-hoster automating their own accounts stores nothing.
+ */
+describe('hosted credential custody', () => {
+  const hosted = { ...base, NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'hosted' };
+  // 32 bytes, base64 -- the shape `openssl rand -base64 32` produces.
+  const KEY = Buffer.alloc(32, 7).toString('base64');
+
+  function problems(env: Record<string, string>): string {
+    try {
+      validateEnvironment(env);
+      return '';
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  it('refuses to boot a hosted deployment with no secrets key', () => {
+    const message = problems(hosted);
+    expect(message).toMatch(/TREVRA_SECRETS_KEY is required when TREVRA_DEPLOYMENT_MODE=hosted/);
+    // The message has to carry the fix, because the operator hitting this is
+    // reading a boot log on a box that will not start.
+    expect(message).toContain('openssl rand -base64 32');
+    expect(message).toMatch(/no workspace can store a LinkedIn or Reddit credential/);
+  });
+
+  it('is satisfied by a well-formed key', () => {
+    expect(problems({ ...hosted, TREVRA_SECRETS_KEY: KEY })).not.toMatch(/TREVRA_SECRETS_KEY/);
+  });
+
+  it('keeps "missing" and "malformed" as two different failures', () => {
+    // Present but not 32 base64-encoded bytes: the operator generated
+    // something, just not with the command above. Saying "required" here would
+    // send them looking for a variable they had already set.
+    const message = problems({ ...hosted, TREVRA_SECRETS_KEY: 'not-base64!!' });
+    expect(message).toMatch(/TREVRA_SECRETS_KEY must be 32 random bytes/);
+    expect(message).not.toMatch(/TREVRA_SECRETS_KEY is required/);
+  });
+
+  it('leaves a self-hosted production deployment free to run without one', () => {
+    // The current contract, kept on purpose: the local workers drive a browser
+    // profile the operator logged into by hand, so there is nothing to store,
+    // and requiring a key would break every existing self-host install.
+    expect(problems({ ...base, NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'local' })).not.toMatch(/TREVRA_SECRETS_KEY/);
   });
 });

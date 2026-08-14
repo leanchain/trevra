@@ -59,11 +59,21 @@
  * has no `last4` column at all. Adding a seat dimension does not widen WHERE a
  * password may live by one inch, and the CHECK on that table (`seat_key <>
  * 'owner'`) makes the split impossible to get wrong from the database's side.
+ *
+ * ...AND THE SEAT IS PART OF WHAT THE CIPHERTEXT IS BOUND TO. Both homes now
+ * seal against the row's identity (store, workspace, seat, kind) as GCM's
+ * additional authenticated data -- see the AAD section of `crypto.ts`. Because
+ * `seat_key` is one of those four components, a sealed sign-in cannot be moved
+ * between seats any more than it can be moved between tenants: seat B's row
+ * holding seat A's ciphertext fails to open, loudly, instead of signing a
+ * browser in as the wrong person. `seatCredentialContext` below is the one
+ * place this module spells that identity, so the write, the read and
+ * `custody.ts`'s re-seal cannot drift apart about what a row is.
  */
 import { linkedInWorkerConfig } from '../config.js';
 import { id, type Db } from '../db.js';
 import { OWNER_SEAT_KEY } from '../linkedin/seats.js';
-import { openSecret, sealSecret } from './crypto.js';
+import { openSecret, sealSecret, type SecretContext } from './crypto.js';
 import {
   deleteWorkspaceSecret,
   describeWorkspaceSecret,
@@ -131,6 +141,19 @@ function assertSeatKey(seatKey: string): void {
 }
 
 /**
+ * The identity a `linkedin_seat_credentials` row is sealed against.
+ *
+ * Non-owner seats only -- an owner-seat credential lives in
+ * `workspace_secrets` and gets its context from
+ * `store.ts` `workspaceSecretContext`, whose seat component is the literal
+ * 'owner'. The two never collide, which is the same split the table's CHECK
+ * enforces from the database's side.
+ */
+export function seatCredentialContext(workspaceId: string, seatKey: string, kind: CredentialHalf): SecretContext {
+  return { store: 'linkedin_seat_credentials', workspaceId, seatKey, kind };
+}
+
+/**
  * Seal one half into `linkedin_seat_credentials`.
  *
  * Non-owner seats only, by the table's own CHECK. The audit row mirrors what
@@ -154,17 +177,22 @@ async function putSeatSecret(
   // Throws when TREVRA_SECRETS_KEY is absent, which is exactly what the owner
   // path does through `putWorkspaceSecret`: a server with no key stores
   // nothing rather than storing a password in the clear.
-  const sealed = sealSecret(input.plaintext, input.env);
+  const sealed = sealSecret(
+    input.plaintext,
+    seatCredentialContext(input.workspaceId, input.seatKey, input.kind),
+    input.env
+  );
   const now = new Date().toISOString();
   await db.prepare(`
     INSERT INTO linkedin_seat_credentials (
-      id, workspace_id, seat_key, kind, ciphertext, iv, auth_tag, key_version, label, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      id, workspace_id, seat_key, kind, ciphertext, iv, auth_tag, key_version, key_id, label, created_at, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, seat_key, kind) DO UPDATE SET
       ciphertext=EXCLUDED.ciphertext,
       iv=EXCLUDED.iv,
       auth_tag=EXCLUDED.auth_tag,
       key_version=EXCLUDED.key_version,
+      key_id=EXCLUDED.key_id,
       label=EXCLUDED.label,
       updated_at=EXCLUDED.updated_at
   `).run(
@@ -176,6 +204,7 @@ async function putSeatSecret(
     sealed.iv,
     sealed.authTag,
     sealed.keyVersion,
+    sealed.keyId,
     input.label,
     now,
     now
@@ -213,11 +242,21 @@ async function readSeatSecret(
   env: NodeJS.ProcessEnv
 ): Promise<string | null> {
   const row = await db
-    .prepare('SELECT ciphertext, iv, auth_tag, key_version FROM linkedin_seat_credentials WHERE workspace_id=? AND seat_key=? AND kind=?')
-    .get<{ ciphertext: Buffer; iv: Buffer; auth_tag: Buffer; key_version: number }>(workspaceId, seatKey, kind);
+    .prepare('SELECT ciphertext, iv, auth_tag, key_version, key_id FROM linkedin_seat_credentials WHERE workspace_id=? AND seat_key=? AND kind=?')
+    .get<{ ciphertext: Buffer; iv: Buffer; auth_tag: Buffer; key_version: number; key_id: string | null }>(workspaceId, seatKey, kind);
   if (!row) return null;
+  // Context from the arguments the row was FOUND by: a ciphertext moved here
+  // from another workspace or another seat fails to open rather than signing
+  // this seat's browser in as somebody else.
   return openSecret(
-    { ciphertext: row.ciphertext, iv: row.iv, authTag: row.auth_tag, keyVersion: Number(row.key_version) },
+    {
+      ciphertext: row.ciphertext,
+      iv: row.iv,
+      authTag: row.auth_tag,
+      keyVersion: Number(row.key_version),
+      keyId: row.key_id == null ? null : String(row.key_id)
+    },
+    seatCredentialContext(workspaceId, seatKey, kind),
     env
   );
 }
@@ -444,9 +483,13 @@ export async function readLinkedInCredentials(
   // and the tests that pass a hosted `env` as the third argument -- keeps
   // resolving the owner seat exactly as it did.
   if (seatKey === OWNER_SEAT_KEY) {
-    const email = await readWorkspaceSecretPlaintext(db, workspaceId, 'linkedin.email');
+    // `env` is threaded through rather than left to `process.env`: the caller
+    // may be a test or a worker with its own environment, and a read path that
+    // quietly used a different key than the write path is the kind of drift
+    // this module exists to make impossible.
+    const email = await readWorkspaceSecretPlaintext(db, workspaceId, 'linkedin.email', env);
     if (!email) return null;
-    const password = await readWorkspaceSecretPlaintext(db, workspaceId, 'linkedin.password');
+    const password = await readWorkspaceSecretPlaintext(db, workspaceId, 'linkedin.password', env);
     if (!password) return null;
     return { email, password };
   }

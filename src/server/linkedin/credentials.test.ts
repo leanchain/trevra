@@ -471,8 +471,8 @@ describe('detectLinkedInSeat on an account change', () => {
   it('wipes the stored inbox and restarts the ramp when a different LinkedIn account signs in', async () => {
     await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich', profileUrl: PREVIOUS_PROFILE }, NOW);
     await db.prepare(`
-      INSERT INTO linkedin_threads (id, workspace_id, thread_urn, profile_url, name)
-      VALUES ('lthr_stale', ?, '2-stale==', ?, 'Someone from the old account')
+      INSERT INTO linkedin_threads (id, workspace_id, seat_key, thread_urn, profile_url, name)
+      VALUES ('lthr_stale', ?, 'owner', '2-stale==', ?, 'Someone from the old account')
     `).run(WORKSPACE_ID, PREVIOUS_PROFILE);
     await db.prepare(`
       INSERT INTO linkedin_messages (id, workspace_id, thread_id, direction, body, external_ref)
@@ -514,8 +514,8 @@ describe('detectLinkedInSeat on an account change', () => {
   it('does not reset anything when the same account re-detects', async () => {
     await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj', timezone: 'Europe/Zurich', profileUrl: PREVIOUS_PROFILE }, NOW);
     await db.prepare(`
-      INSERT INTO linkedin_threads (id, workspace_id, thread_urn, profile_url)
-      VALUES ('lthr_kept', ?, '2-kept==', ?)
+      INSERT INTO linkedin_threads (id, workspace_id, seat_key, thread_urn, profile_url)
+      VALUES ('lthr_kept', ?, 'owner', '2-kept==', ?)
     `).run(WORKSPACE_ID, PREVIOUS_PROFILE);
 
     const { driver } = fakeDriver({ loggedIn: true });

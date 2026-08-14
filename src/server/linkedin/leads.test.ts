@@ -583,3 +583,124 @@ describe('runPendingLeadSources', () => {
     expect((await listLeadSources(db, WORKSPACE_ID)).filter((entry) => entry.status === 'pending')).toHaveLength(1);
   });
 });
+
+/**
+ * WHOSE POSTURE MAY REFUSE A PAGE FETCH.
+ *
+ * A page fetch is an action performed BY ONE LINKEDIN ACCOUNT, and a seat
+ * cooling down after a limit wall is the account LinkedIn pushed back on. The
+ * refusal read `getSeatPosture(db, workspaceId, now)` -- whose `seatKey`
+ * defaults to the owner seat -- so on a multi-account workspace it asked about
+ * the wrong account in both directions: a cooling secondary seat kept fetching
+ * search pages through the very session that got the pushback, and a paused
+ * owner seat blocked every other account's sourcing for no reason at all.
+ */
+describe('the seat lead sourcing is gated on', () => {
+  it('refuses when the seat the walk runs through is cooling, even though the owner seat is healthy', async () => {
+    await seat();
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales (SDR)', timezone: 'UTC', posture: 'cooldown' }, NOW, 'sales');
+    await source();
+    const claimed = (await claimLeadSource(db, WORKSPACE_ID, NOW))!;
+
+    const harness = fakeScraper({ leads: [lead('maya', 'Maya Chen')] });
+    const result = await runLeadSource(db, claimed, { page, config: on(), scraper: harness.scraper, seatKey: 'sales', now: () => NOW });
+
+    expect(result.failureReason).toMatch(/cooldown/);
+    // Nothing was fetched: the whole point of reading the posture before the
+    // walk is that a refused source costs no page loads.
+    expect(harness.calls).toEqual([]);
+    expect(result.stored).toBe(0);
+  });
+
+  it('runs a healthy seat\'s walk even when the OWNER seat is paused', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', posture: 'paused' }, NOW);
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales (SDR)', timezone: 'UTC' }, NOW, 'sales');
+    await source();
+    const claimed = (await claimLeadSource(db, WORKSPACE_ID, NOW))!;
+
+    const harness = fakeScraper({ leads: [lead('maya', 'Maya Chen')] });
+    const result = await runLeadSource(db, claimed, { page, config: on(), scraper: harness.scraper, seatKey: 'sales', now: () => NOW });
+
+    expect(result.failureReason).toBeNull();
+    expect(result.stored).toBe(1);
+  });
+
+  it('still means the owner seat when no seat is named, which is what a single-seat workspace has always had', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', posture: 'paused' }, NOW);
+    await source();
+    const claimed = (await claimLeadSource(db, WORKSPACE_ID, NOW))!;
+    const result = await runLeadSource(db, claimed, { page, config: on(), scraper: fakeScraper().scraper, now: () => NOW });
+    expect(result.failureReason).toMatch(/paused/);
+  });
+});
+
+/**
+ * THE DAILY-CAP LOCK IS PER WORKSPACE, WHICH IS A 64-BIT CLAIM.
+ *
+ * `pg_advisory_xact_lock(class, hashtext(workspace)::int)` puts the workspace
+ * half in 32 bits, and by the birthday bound roughly 1% of ten-thousand-tenant
+ * deployments contain a colliding pair. A collision is not corruption -- the
+ * cap arithmetic stays correct -- but it is an outage shape: two workspaces
+ * with nothing to do with each other serialise their harvests end to end, each
+ * waiting on the other's page walks.
+ *
+ * This finds a real colliding pair rather than asserting about hashes in the
+ * abstract, then shows the lock no longer conflates them.
+ */
+describe('the daily-cap advisory lock', () => {
+  /** Namespaces the lock. 'LEAD' in ASCII, as leads.ts spells it. */
+  const LOCK_CLASS = 0x4c454144;
+
+  it('does not make two unrelated workspaces wait on each other', async () => {
+    // A birthday search over 32-bit hashtext: 200k candidates give a collision
+    // with overwhelming probability and Postgres does it in one statement.
+    const collision = await db.prepare(`
+      SELECT MIN(w) AS left_id, MAX(w) AS right_id
+      FROM (SELECT 'ws_collide_' || g AS w FROM generate_series(1, 200000) AS g) AS candidates
+      GROUP BY hashtext(w)::int
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `).get<{ left_id: string; right_id: string }>();
+    // If this ever comes back empty the search was too small, not the fix wrong.
+    expect(collision).toBeDefined();
+    const { left_id: left, right_id: right } = collision!;
+
+    // The old key really does collide for this pair...
+    const old = await db.prepare('SELECT hashtext(?)::int AS l, hashtext(?)::int AS r').get<{ l: number; r: number }>(left, right);
+    expect(old!.l).toBe(old!.r);
+    // ...and the 64-bit one does not.
+    const wide = await db
+      .prepare('SELECT hashtextextended(?, ?::bigint) AS l, hashtextextended(?, ?::bigint) AS r')
+      .get<{ l: number; r: number }>(left, LOCK_CLASS, right, LOCK_CLASS);
+    expect(wide!.l).not.toBe(wide!.r);
+
+    // And the lock itself lets the second workspace straight through while the
+    // first one holds its own. Two sessions, because an advisory lock is
+    // re-entrant within one.
+    const pool = db.getPool();
+    const holder = await pool.connect();
+    const other = await pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT pg_advisory_xact_lock(hashtextextended($1, $2::bigint))', [left, LOCK_CLASS]);
+      await other.query('BEGIN');
+      const got = await other.query<{ ok: boolean }>(
+        'SELECT pg_try_advisory_xact_lock(hashtextextended($1, $2::bigint)) AS ok',
+        [right, LOCK_CLASS]
+      );
+      expect(got.rows[0].ok).toBe(true);
+      // The same workspace is still serialised, which is the property the lock
+      // exists for: count-then-insert must be one indivisible step.
+      const same = await other.query<{ ok: boolean }>(
+        'SELECT pg_try_advisory_xact_lock(hashtextextended($1, $2::bigint)) AS ok',
+        [left, LOCK_CLASS]
+      );
+      expect(same.rows[0].ok).toBe(false);
+    } finally {
+      await other.query('ROLLBACK').catch(() => undefined);
+      await holder.query('ROLLBACK').catch(() => undefined);
+      other.release();
+      holder.release();
+    }
+  });
+});

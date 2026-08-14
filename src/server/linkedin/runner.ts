@@ -249,20 +249,63 @@ async function ledgerFloorFor(db: Db, workspaceId: string, seatKey: string): Pro
 }
 
 /**
+ * One profile URL reduced to the key both sides of a target comparison use.
+ *
+ * Lower-cased, and with any query or fragment removed. `target_ref` is opaque
+ * -- whatever a human typed or a CSV supplied, never resolved (022) -- and a
+ * harvested LinkedIn href carries `?miniProfileUrn=...` every single time, so
+ * `.../in/maya/` and `.../in/maya/?trk=x` are one person filed two ways.
+ *
+ * It is the JS side of migration 055's
+ * `idx_linkedin_actions_workspace_target_ci`, which indexes exactly
+ * `LOWER(SPLIT_PART(SPLIT_PART(target_ref, chr(63), 1), '#', 1))`. `leads.ts`
+ * carries the same expression against the same index for the same reason --
+ * duplicated rather than imported for the reason `withdraw.ts` gives about
+ * `targetMatchKeys`: the alternative is a module cycle through three files for
+ * one line.
+ *
+ * `chr(63)` IS THE QUESTION MARK, and it is spelled that way rather than '?'
+ * because `Db.prepare` rewrites every `?` in a statement into a positional
+ * placeholder before Postgres ever sees it -- including the ones inside string
+ * literals. A '?' in this expression would silently become `$1` and shift
+ * every real parameter along by one. The migration spells it `chr(63)` too, so
+ * the two expressions are textually identical and the planner matches the
+ * index.
+ */
+function targetKey(profileUrl: string): string {
+  return profileUrl.split(/[?#]/, 1)[0].toLowerCase();
+}
+
+/**
  * Contacts among `profileUrls` that have already answered.
  *
- * Two sources, both case-folded the way every other target lookup in this
- * subsystem folds them (`idx_linkedin_actions_target_ci`, migration 031): a
- * ledger row settled `replied`, and an inbound message on a thread resolved to
- * that profile. Batched per campaign rather than asked per member -- 500
- * members is 500 round trips otherwise.
+ * Two sources: a ledger row settled `replied`, and an inbound message on a
+ * thread resolved to that profile. Batched per campaign rather than asked per
+ * member -- 500 members is 500 round trips otherwise.
+ *
+ * NEITHER ARM NAMES A SEAT, and that is deliberate: a reply to ANY of this
+ * workspace's accounts means the campaign's objective is met, and the next
+ * scripted follow-up must not arrive on top of it. That is also why
+ * `idx_linkedin_actions_target_ci` (031) could not serve the first arm --
+ * `seat_key` sits in the middle of it -- so both arms were sequential scans of
+ * tables that keep everything forever. Migration 055 adds the two
+ * workspace-scoped, case-folded indexes these two predicates are written
+ * against.
+ *
+ * The ledger side compares NORMALISED keys ({@link targetKey}) rather than raw
+ * lower-cased ones, so a `replied` row stored with a tracking query stops the
+ * workflow for the person it names instead of being invisible to it. The
+ * thread side compares `LOWER(profile_url)` because that column is canonical
+ * by construction -- `syncThreads` stores `profileUrlFor(...)` output, which
+ * carries no query -- and the key side is already normalised, so the two meet.
  */
 async function repliedProfiles(db: Db, workspaceId: string, profileUrls: readonly string[]): Promise<Set<string>> {
   if (profileUrls.length === 0) return new Set();
-  const keys = profileUrls.map((url) => url.toLowerCase());
+  const keys = profileUrls.map(targetKey);
   const rows = await db.prepare(`
-    SELECT LOWER(a.target_ref) AS profile FROM linkedin_actions a
-      WHERE a.workspace_id=? AND a.status='replied' AND a.target_ref IS NOT NULL AND LOWER(a.target_ref) = ANY(?::text[])
+    SELECT LOWER(SPLIT_PART(SPLIT_PART(a.target_ref, chr(63), 1), '#', 1)) AS profile FROM linkedin_actions a
+      WHERE a.workspace_id=? AND a.status='replied' AND a.target_ref IS NOT NULL
+        AND LOWER(SPLIT_PART(SPLIT_PART(a.target_ref, chr(63), 1), '#', 1)) = ANY(?::text[])
     UNION
     SELECT LOWER(t.profile_url) AS profile FROM linkedin_threads t
       JOIN linkedin_messages m ON m.thread_id=t.id AND m.workspace_id=t.workspace_id
@@ -405,149 +448,162 @@ export async function runManagedCampaigns(db: Db, workspaceId: string, now: Date
       members.map((member) => member.profile_url).filter((url): url is string => Boolean(url))
     );
 
-    for (const member of members) {
-      const nowIso = now.toISOString();
-      // Every merge field the contact carries, not the three the renderer used
-      // to know about: email, phone and country are parsed on import, stored,
-      // and displayed, so a template asking for one gets it.
-      const lead = {
-        firstName: member.first_name,
-        lastName: member.last_name,
-        company: member.company,
-        email: member.email,
-        phone: member.phone,
-        country: member.country
-      };
+    /* --- ONE TRANSACTION FOR THE CAMPAIGN, AND THE MEMBER WRITES BATCHED. ---
+     *
+     * This loop used to open a `db.transaction` PER MEMBER -- a pool checkout,
+     * a BEGIN and a COMMIT each -- and then spend six or seven more round
+     * trips inside it on single-row UPDATEs. At `MEMBER_BATCH` = 500 members a
+     * tick, times a campaign per seat, times thousands of seats, the tick was
+     * bounded by the connection pool rather than by anything Postgres was
+     * asked to do. `repliedProfiles` above was already batched for exactly
+     * this reason; this is the rest of the same fix.
+     *
+     * WHAT MOVED AND WHAT DID NOT. Every decision below is unchanged, in the
+     * same order, with the same short-circuits -- what changed is that the
+     * member's resulting row state is COLLECTED rather than written on the
+     * spot, and flushed once at the end in a single `UPDATE ... FROM unnest`.
+     * Each member is decided exactly once per tick, so no member appears twice
+     * in the batch and the last-write-wins ambiguity of a multi-row UPDATE
+     * never arises.
+     *
+     * THE ATOMICITY BOUNDARY WIDENED FROM ONE MEMBER TO ONE CAMPAIGN, and that
+     * is the deliberate half of the trade. A failure mid-tick used to leave
+     * earlier members advanced; now it leaves the campaign exactly as the tick
+     * found it. That is the safer direction: every write here is idempotent by
+     * construction -- `recordAction`'s replay guard, the manual task's partial
+     * unique index, a member's step index -- so the next tick re-plans what
+     * was rolled back, whereas a half-advanced campaign is a state nothing
+     * reconciles.
+     */
+    const manualTaskIds: string[] = [];
+    const manualTaskMemberIds: string[] = [];
+    const manualTaskContactIds: string[] = [];
+    const manualTaskStepIds: string[] = [];
+    const manualTaskBodies: Array<string | null> = [];
+    const memberWrites = new Map<string, MemberWrite>();
 
-      /* --- Reply short-circuit. ---
-       *
-       * A conversation started is the campaign's whole objective, so the
-       * workflow stops the moment one does: the next scripted follow-up would
-       * arrive on top of a human answer.
-       */
-      if (member.profile_url && replied.has(member.profile_url.toLowerCase())) {
-        await db.prepare(`
-          UPDATE linkedin_campaign_members SET status='replied', next_eligible_at=NULL, updated_at=?
-          WHERE workspace_id=? AND id=?
-        `).run(nowIso, workspaceId, member.id);
-        continue;
-      }
+    await db.transaction(async (tx) => {
+      for (const member of members) {
+        const nowIso = now.toISOString();
+        // Every merge field the contact carries, not the three the renderer used
+        // to know about: email, phone and country are parsed on import, stored,
+        // and displayed, so a template asking for one gets it.
+        const lead = {
+          firstName: member.first_name,
+          lastName: member.last_name,
+          company: member.company,
+          email: member.email,
+          phone: member.phone,
+          country: member.country
+        };
+        const stepIndex = Number(member.step_index);
 
-      const stepIndex = Number(member.step_index);
-      const step = steps[stepIndex];
-      if (!step) {
-        await db.prepare(`
-          UPDATE linkedin_campaign_members SET status='completed', next_eligible_at=NULL, updated_at=?
-          WHERE workspace_id=? AND id=?
-        `).run(nowIso, workspaceId, member.id);
-        result.membersCompleted += 1;
-        continue;
-      }
+        /* --- Reply short-circuit. ---
+         *
+         * A conversation started is the campaign's whole objective, so the
+         * workflow stops the moment one does: the next scripted follow-up would
+         * arrive on top of a human answer.
+         */
+        if (member.profile_url && replied.has(targetKey(member.profile_url))) {
+          memberWrites.set(member.id, { stepIndex, status: 'replied', nextEligibleAt: null, lastActionId: null, variants: null, updatedAt: nowIso });
+          continue;
+        }
 
-      /* --- The human checkpoint. --- */
-      if (step.action === 'manual_message') {
-        const template = step.config.suggestedTemplate ?? '';
-        const suggested = template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
-        const inserted = await db.transaction(async (tx) => {
+        const step = steps[stepIndex];
+        if (!step) {
+          memberWrites.set(member.id, { stepIndex, status: 'completed', nextEligibleAt: null, lastActionId: null, variants: null, updatedAt: nowIso });
+          result.membersCompleted += 1;
+          continue;
+        }
+
+        /* --- The human checkpoint. --- */
+        if (step.action === 'manual_message') {
+          const template = step.config.suggestedTemplate ?? '';
+          const suggested = template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
+          // Collected for the one batched insert below, which carries the same
           // ON CONFLICT DO NOTHING against the pending partial unique index:
           // re-ticking a member that is already waiting on a human must not
           // queue the same task twice.
-          const row = await tx.prepare(`
-            INSERT INTO linkedin_manual_tasks (
-              id, workspace_id, campaign_id, member_id, contact_id, seat_key, workflow_step_id, suggested_body, status, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,'pending',?)
-            ON CONFLICT DO NOTHING RETURNING id
-          `).get<{ id: string }>(
-            id('limt'), workspaceId, campaign.id, member.id, member.contact_id, campaign.seat_key, step.id, suggested, nowIso
-          );
+          manualTaskIds.push(id('limt'));
+          manualTaskMemberIds.push(member.id);
+          manualTaskContactIds.push(member.contact_id);
+          manualTaskStepIds.push(step.id);
+          manualTaskBodies.push(suggested);
           // NOT advanced: `completeManualTask` owns `step_index+1`, and doing it
           // here as well would skip the step after this one.
-          await tx.prepare(`
-            UPDATE linkedin_campaign_members SET status='manual', next_eligible_at=NULL, updated_at=?
-            WHERE workspace_id=? AND id=?
-          `).run(nowIso, workspaceId, member.id);
-          return row !== undefined;
-        });
-        if (inserted) result.manualTasksCreated += 1;
-        continue;
-      }
-
-      /* --- Withdraw a stale invite. Writes no outbound action of its own. --- */
-      if (step.action === 'withdraw_pending') {
-        const outcome = await handleWithdrawStep(db, {
-          workspaceId,
-          seatKey: campaign.seat_key,
-          memberId: member.id,
-          afterDays: step.config.afterDays,
-          now
-        });
-        if (outcome.waitUntil) {
-          // The invite is not stale yet. Left ON this step, woken at the exact
-          // instant it becomes stale rather than re-polled every tick.
-          await db.prepare(`
-            UPDATE linkedin_campaign_members SET status='waiting', next_eligible_at=?::timestamptz, updated_at=?
-            WHERE workspace_id=? AND id=?
-          `).run(outcome.waitUntil.toISOString(), nowIso, workspaceId, member.id);
+          memberWrites.set(member.id, { stepIndex, status: 'manual', nextEligibleAt: null, lastActionId: null, variants: null, updatedAt: nowIso });
           continue;
         }
-        const advanced = await advanceMember(db, {
-          workspaceId,
-          memberId: member.id,
-          stepIndex,
-          steps,
-          from: now,
-          actionId: null,
-          now
-        });
-        if (advanced.completed) result.membersCompleted += 1;
-        continue;
-      }
 
-      /* --- Everything else writes a `planned` ledger row. --- */
-      const kind = kindForStep(step);
-      if (!kind) continue;
+        /* --- Withdraw a stale invite. Writes no outbound action of its own. --- */
+        if (step.action === 'withdraw_pending') {
+          const outcome = await handleWithdrawStep(tx, {
+            workspaceId,
+            seatKey: campaign.seat_key,
+            memberId: member.id,
+            afterDays: step.config.afterDays,
+            now
+          });
+          if (outcome.waitUntil) {
+            // The invite is not stale yet. Left ON this step, woken at the exact
+            // instant it becomes stale rather than re-polled every tick.
+            memberWrites.set(member.id, {
+              stepIndex,
+              status: 'waiting',
+              nextEligibleAt: outcome.waitUntil.toISOString(),
+              lastActionId: null,
+              variants: null,
+              updatedAt: nowIso
+            });
+            continue;
+          }
+          const advanced = advanceMember({ stepIndex, steps, from: now, actionId: null, now });
+          memberWrites.set(member.id, advanced.write);
+          if (advanced.completed) result.membersCompleted += 1;
+          continue;
+        }
 
-      // An action with no target is unclaimable (`claimNextDueAction` requires
-      // `target_ref NOT NULL`), so a member with no profile URL would sit due
-      // forever and hold the contact's one-active-campaign claim. Failed is
-      // terminal and releases it.
-      if (!member.profile_url) {
-        await db.prepare(`
-          UPDATE linkedin_campaign_members SET status='failed', next_eligible_at=NULL, updated_at=?
-          WHERE workspace_id=? AND id=?
-        `).run(nowIso, workspaceId, member.id);
-        result.membersBlocked += 1;
-        continue;
-      }
+        /* --- Everything else writes a `planned` ledger row. --- */
+        const kind = kindForStep(step);
+        if (!kind) continue;
 
-      const remaining = budget.get(kind) ?? 0;
-      // Out of ramp for this kind today. The member keeps its due-ness and is
-      // the first thing the next tick looks at.
-      if (remaining <= 0) continue;
+        // An action with no target is unclaimable (`claimNextDueAction` requires
+        // `target_ref NOT NULL`), so a member with no profile URL would sit due
+        // forever and hold the contact's one-active-campaign claim. Failed is
+        // terminal and releases it.
+        if (!member.profile_url) {
+          memberWrites.set(member.id, { stepIndex, status: 'failed', nextEligibleAt: null, lastActionId: null, variants: null, updatedAt: nowIso });
+          result.membersBlocked += 1;
+          continue;
+        }
 
-      let variantId: string | null = null;
-      let body: string | null = null;
-      if (step.action === 'connection_request') {
-        const template = step.config.message ?? '';
-        body = template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
-      } else if (step.action === 'message') {
-        // The stored choice wins on every re-run: an A/B split that moved a
-        // contact between arms would measure nothing.
-        const assigned = parseVariants(member.assigned_variants)[step.id];
-        const variant = step.config.variants.find((candidate) => candidate.id === assigned)
-          ?? chooseMessageVariant(step.config.variants, `${member.id}:${step.id}`);
-        variantId = variant.id;
-        body = renderWorkflowTemplate(variant.body, lead);
-      }
+        const remaining = budget.get(kind) ?? 0;
+        // Out of ramp for this kind today. The member keeps its due-ness and is
+        // the first thing the next tick looks at.
+        if (remaining <= 0) continue;
 
-      const plannedFor = scheduleSlot(seat, now, floors.get(campaign.seat_key) ?? null, `${member.id}:${step.id}`);
-      if (!plannedFor) {
-        result.membersBlocked += 1;
-        continue;
-      }
+        let variantId: string | null = null;
+        let body: string | null = null;
+        if (step.action === 'connection_request') {
+          const template = step.config.message ?? '';
+          body = template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
+        } else if (step.action === 'message') {
+          // The stored choice wins on every re-run: an A/B split that moved a
+          // contact between arms would measure nothing.
+          const assigned = parseVariants(member.assigned_variants)[step.id];
+          const variant = step.config.variants.find((candidate) => candidate.id === assigned)
+            ?? chooseMessageVariant(step.config.variants, `${member.id}:${step.id}`);
+          variantId = variant.id;
+          body = renderWorkflowTemplate(variant.body, lead);
+        }
 
-      const written = await db.transaction(async (tx) => {
-        const action = await recordAction(
+        const plannedFor = scheduleSlot(seat, now, floors.get(campaign.seat_key) ?? null, `${member.id}:${step.id}`);
+        if (!plannedFor) {
+          result.membersBlocked += 1;
+          continue;
+        }
+
+        const written = await recordAction(
           tx,
           {
             workspaceId,
@@ -565,43 +621,63 @@ export async function runManagedCampaigns(db: Db, workspaceId: string, now: Date
           },
           now
         );
-        if (!action.duplicate) {
+        if (!written.duplicate) {
           // Same transaction as the ledger row: `claimNextDueAction` must never
-          // see a dm whose approved bytes have not landed yet.
+          // see a dm whose approved bytes have not landed yet. That promise is
+          // now the CAMPAIGN's transaction rather than this member's, which is
+          // strictly stronger -- the row and its bytes still commit together,
+          // and so does everything else this tick decided.
           await tx.prepare(`
             UPDATE linkedin_actions SET body=?, campaign_member_id=?, workflow_step_id=?, variant_id=?
             WHERE id=? AND workspace_id=?
-          `).run(body, member.id, step.id, variantId, action.id, workspaceId);
+          `).run(body, member.id, step.id, variantId, written.id, workspaceId);
         }
-        if (variantId) {
-          await tx.prepare(`
-            UPDATE linkedin_campaign_members
-            SET assigned_variants = COALESCE(assigned_variants,'{}'::jsonb) || ?::jsonb, updated_at=?
-            WHERE workspace_id=? AND id=?
-          `).run(JSON.stringify({ [step.id]: variantId }), nowIso, workspaceId, member.id);
-        }
-        return action;
-      });
 
-      // A duplicate means this member already ran this step -- the slot is not
-      // consumed and the ramp is not charged, but the member still moves on.
-      if (!written.duplicate) {
-        result.actionsPlanned += 1;
-        budget.set(kind, remaining - 1);
-        floors.set(campaign.seat_key, plannedFor);
+        // A duplicate means this member already ran this step -- the slot is not
+        // consumed and the ramp is not charged, but the member still moves on.
+        if (!written.duplicate) {
+          result.actionsPlanned += 1;
+          budget.set(kind, remaining - 1);
+          floors.set(campaign.seat_key, plannedFor);
+        }
+
+        const advanced = advanceMember({ stepIndex, steps, from: plannedFor, actionId: written.id, now });
+        // The variant assignment rides on the same batched update as the step
+        // advance, in the same transaction as the ledger row it belongs to.
+        memberWrites.set(member.id, {
+          ...advanced.write,
+          variants: variantId === null ? null : JSON.stringify({ [step.id]: variantId })
+        });
+        if (advanced.completed) result.membersCompleted += 1;
       }
 
-      const advanced = await advanceMember(db, {
-        workspaceId,
-        memberId: member.id,
-        stepIndex,
-        steps,
-        from: plannedFor,
-        actionId: written.id,
-        now
-      });
-      if (advanced.completed) result.membersCompleted += 1;
-    }
+      if (manualTaskIds.length > 0) {
+        const inserted = await tx.prepare(`
+          INSERT INTO linkedin_manual_tasks (
+            id, workspace_id, campaign_id, member_id, contact_id, seat_key, workflow_step_id, suggested_body, status, created_at
+          )
+          SELECT * FROM unnest(
+            ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::timestamptz[]
+          )
+          ON CONFLICT DO NOTHING
+          RETURNING id
+        `).all<{ id: string }>(
+          manualTaskIds,
+          manualTaskIds.map(() => workspaceId),
+          manualTaskIds.map(() => campaign.id),
+          manualTaskMemberIds,
+          manualTaskContactIds,
+          manualTaskIds.map(() => campaign.seat_key),
+          manualTaskStepIds,
+          manualTaskBodies,
+          manualTaskIds.map(() => 'pending'),
+          manualTaskIds.map(() => now.toISOString())
+        );
+        result.manualTasksCreated += inserted.length;
+      }
+
+      await flushMemberWrites(tx, workspaceId, memberWrites);
+    });
 
     // A campaign with nothing left to do says so, rather than being re-scanned
     // on every tick forever.
@@ -620,38 +696,110 @@ export async function runManagedCampaigns(db: Db, workspaceId: string, now: Date
 }
 
 /**
+ * What one member's row should say after this tick.
+ *
+ * A VALUE, NOT A WRITE, and that is the whole point of it existing. Every
+ * branch of the member loop produces one of these and the loop flushes them
+ * together; nothing in the loop issues a single-row UPDATE any more.
+ */
+interface MemberWrite {
+  stepIndex: number;
+  status: string;
+  nextEligibleAt: string | null;
+  lastActionId: string | null;
+  /** A jsonb object merged into `assigned_variants`, or null to leave it alone. */
+  variants: string | null;
+  updatedAt: string;
+}
+
+/**
  * `step_index+1`, and the delay the NEXT step declares.
  *
  * THIS IS WHERE PER-STEP DELAYS BECOME REAL. `delayBefore` is measured from the
  * slot the step just planned, not from the tick that planned it: a message due
  * "two days after the invite" means after the invite's own slot, and measuring
  * from `now` would compound every tick's scheduling drift into the sequence.
+ *
+ * It takes no database handle: the arithmetic was always the interesting part
+ * and the UPDATE was always the same one. Returning the row state lets 500
+ * members share one statement instead of paying a round trip each.
  */
-async function advanceMember(
-  db: Db,
+function advanceMember(
   input: {
-    workspaceId: string;
-    memberId: string;
     stepIndex: number;
     steps: readonly WorkflowStep[];
     from: Date;
     actionId: string | null;
     now: Date;
   }
-): Promise<{ completed: boolean }> {
+): { write: MemberWrite; completed: boolean } {
   const nextIndex = input.stepIndex + 1;
   const nextStep = input.steps[nextIndex];
-  const nowIso = input.now.toISOString();
   const status = nextStep ? 'waiting' : 'completed';
   const nextEligible = nextStep
     ? new Date(input.from.getTime() + delayMilliseconds(nextStep.delayBefore)).toISOString()
     : null;
+  return {
+    write: {
+      stepIndex: nextIndex,
+      status,
+      nextEligibleAt: nextEligible,
+      lastActionId: input.actionId,
+      variants: null,
+      updatedAt: input.now.toISOString()
+    },
+    completed: !nextStep
+  };
+}
+
+/**
+ * Every member decision this tick made, in one statement.
+ *
+ * The column list is the union of what the six single-row UPDATEs it replaces
+ * wrote, and each one keeps its own semantics rather than being flattened into
+ * a blanket overwrite:
+ *
+ *   - `last_action_id` is COALESCEd, so a member that planned nothing this
+ *     tick keeps the action id it already had -- the same `COALESCE(?,
+ *     last_action_id)` `advanceMember`'s UPDATE carried;
+ *   - `assigned_variants` is MERGED and only when this tick chose a variant,
+ *     which is what the separate `|| ?::jsonb` update did. A null leaves the
+ *     column exactly as it was rather than clearing an A/B assignment made on
+ *     an earlier tick;
+ *   - `step_index` is written on every branch because every branch knows it:
+ *     the terminal statuses restate the member's current step and only the
+ *     advancing ones move it.
+ *
+ * `workspace_id` is in the WHERE clause for the reason it is everywhere else
+ * in this subsystem: a member id is a global identifier.
+ */
+async function flushMemberWrites(db: Db, workspaceId: string, writes: Map<string, MemberWrite>): Promise<void> {
+  if (writes.size === 0) return;
+  const entries = [...writes.entries()];
   await db.prepare(`
-    UPDATE linkedin_campaign_members
-    SET step_index=?, status=?, next_eligible_at=?::timestamptz, last_action_id=COALESCE(?, last_action_id), updated_at=?
-    WHERE workspace_id=? AND id=?
-  `).run(nextIndex, status, nextEligible, input.actionId, nowIso, input.workspaceId, input.memberId);
-  return { completed: !nextStep };
+    UPDATE linkedin_campaign_members m
+    SET step_index = w.step_index,
+        status = w.status,
+        next_eligible_at = w.next_eligible_at,
+        last_action_id = COALESCE(w.last_action_id, m.last_action_id),
+        assigned_variants = CASE
+          WHEN w.variants IS NULL THEN m.assigned_variants
+          ELSE COALESCE(m.assigned_variants, '{}'::jsonb) || w.variants
+        END,
+        updated_at = w.updated_at
+    FROM unnest(?::text[], ?::int[], ?::text[], ?::timestamptz[], ?::text[], ?::jsonb[], ?::timestamptz[])
+      AS w(id, step_index, status, next_eligible_at, last_action_id, variants, updated_at)
+    WHERE m.workspace_id=? AND m.id = w.id
+  `).run(
+    entries.map(([memberId]) => memberId),
+    entries.map(([, write]) => write.stepIndex),
+    entries.map(([, write]) => write.status),
+    entries.map(([, write]) => write.nextEligibleAt),
+    entries.map(([, write]) => write.lastActionId),
+    entries.map(([, write]) => write.variants),
+    entries.map(([, write]) => write.updatedAt),
+    workspaceId
+  );
 }
 
 /**

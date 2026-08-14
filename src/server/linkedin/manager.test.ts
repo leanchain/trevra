@@ -105,12 +105,26 @@ describe('LinkedIn outreach manager persistence', () => {
   // fill up and never drain. Multi-seat execution removes the filter, so the
   // property worth holding down is the opposite one: each seat is discovered
   // as itself, and the owner seat's discovery is unchanged.
+  // WAS: 'fails closed for non-owner execution: a secondary-seat action cannot
+  // wake the owner worker'. That assertion described the `AND seat_key='owner'`
+  // filter in the worker's discovery query, which made every non-owner queue
+  // fill up and never drain. Multi-seat execution removes the filter, so the
+  // property worth holding down is the opposite one: each seat is discovered
+  // as itself, and the owner seat's discovery is unchanged.
+  //
+  // FILTERED TO THIS WORKSPACE, because discovery is deliberately global: it
+  // sweeps every tenant with due work, so any sibling suite that leaves a seat
+  // and a planned action behind lands in this result set. Asserting on the raw
+  // list made this test a report on the rest of the suite rather than on
+  // discovery -- the filter keeps the property (each seat appears as itself,
+  // owner included) while making the assertion about this workspace's rows.
   it('discovers every seat with due work, each as its own seat', async () => {
+    const mine = async () => (await seatsWithDueActions(db, NOW)).filter((seat) => seat.workspaceId === WORKSPACE);
     await upsertSeat(db, WORKSPACE, { label: 'Secondary', timezone: 'Europe/Zurich' }, NOW, 'secondary');
     await recordAction(db, { workspaceId: WORKSPACE, seatKey: 'secondary', kind: 'profile_view', targetRef: 'https://www.linkedin.com/in/secondary-test/', status: 'planned', source: 'export', plannedFor: NOW.toISOString() }, NOW);
-    expect((await seatsWithDueActions(db, NOW)).map((seat) => seat.seatKey)).toEqual(['secondary']);
+    expect((await mine()).map((seat) => seat.seatKey)).toEqual(['secondary']);
     await recordAction(db, { workspaceId: WORKSPACE, seatKey: 'owner', kind: 'profile_view', targetRef: 'https://www.linkedin.com/in/owner-test/', status: 'planned', source: 'export', plannedFor: NOW.toISOString() }, NOW);
-    expect(await seatsWithDueActions(db, NOW)).toEqual([
+    expect(await mine()).toEqual([
       { workspaceId: WORKSPACE, seatKey: 'owner', timezone: 'Europe/Zurich' },
       { workspaceId: WORKSPACE, seatKey: 'secondary', timezone: 'Europe/Zurich' }
     ]);

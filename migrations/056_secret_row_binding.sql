@@ -1,0 +1,111 @@
+-- Secret custody: bind ciphertext to its row, and record which key sealed it.
+--
+-- Two columns' worth of schema behind a change of custody posture. The
+-- argument lives in `src/server/secrets/crypto.ts`; this file says what the
+-- database does about it and, more importantly, WHAT THE OPERATOR MUST DO
+-- AFTER APPLYING IT -- because applying this migration alone does not finish
+-- the transition, and a migration that leaves work undone had better say so.
+--
+-- ## What was wrong
+--
+-- 1. THE CIPHERTEXT WAS PORTABLE BETWEEN TENANTS. AES-256-GCM was called with
+--    no additional authenticated data, so it authenticated the BYTES and said
+--    nothing about WHICH ROW they belonged to. Row scoping was a SQL `WHERE`
+--    clause and nothing else. A (ciphertext, iv, auth_tag, key_version) tuple
+--    lifted out of tenant A's `workspace_secrets` row and written into tenant
+--    B's row decrypted cleanly, with a valid tag, and became B's credential:
+--    A's API key in B's Authorization header, A's LinkedIn password typed into
+--    B's browser. On a hosted multi-tenant deployment that is the whole game,
+--    and every mis-scoped UPDATE, wrong-workspace restore and support script
+--    was a cross-tenant credential transplant.
+--
+-- 2. ROTATION WAS UNVERIFIABLE. `key_version` is the envelope FORMAT, not the
+--    key's identity, so nothing recorded which key sealed a row. No query
+--    could answer "which rows are still on the old key", the documented
+--    three-step rotation had no completion criterion for step 2, and dropping
+--    TREVRA_SECRETS_KEY_PREVIOUS one row early bricked the remainder SILENTLY
+--    -- the failure surfaced days later, at use time, with the key that would
+--    have fixed it already gone.
+--
+-- ## What this migration adds
+--
+-- `key_id` on both tables that hold sealed values: a 128-bit HKDF fingerprint
+-- of the key material that sealed the row. DERIVED, NEVER CONFIGURED -- the
+-- operator hand-maintains nothing and there is no version-to-key map in the
+-- environment to get out of step with the rows, which was the original and
+-- still-correct objection to a key registry. A key IS its fingerprint.
+--
+-- NULLABLE, and that is the backwards-compatibility story: every row already
+-- in the table keeps its NULL, `key_version` stays 1, and `openSecret` still
+-- opens it with the unbound v1 path. A deployment that upgrades keeps reading
+-- its secrets on the first request after the deploy, with no data step and no
+-- downtime. Nothing is re-encrypted here: this migration runs inside the
+-- schema transaction, it has no access to TREVRA_SECRETS_KEY, and it must not
+-- -- a migration that could decrypt secrets would be a second, unreviewed
+-- custody path.
+--
+-- ## THE TRANSITION, AND HOW AN OPERATOR COMPLETES IT
+--
+--   1. Apply this migration and deploy. Reads accept the v1 (unbound) and v2
+--      (row-bound) envelopes; every write produces v2, so an active workspace
+--      converts itself the next time it saves a key.
+--   2. Convert the rest -- the workspace that saved its key eight months ago
+--      and has not touched it since is exactly the one that stays portable
+--      otherwise. Run the re-encrypt pass until it reports nothing left:
+--
+--        npx tsx --eval "const {openDatabase}=await import('./src/server/db.ts'); \
+--          const c=await import('./src/server/secrets/custody.ts'); \
+--          const db=await openDatabase({seedDemo:false}); \
+--          console.log(await c.resealSecrets(db)); \
+--          console.log(await c.secretsCustodyReport(db)); await db.close();"
+--
+--      It is a read-then-write loop, idempotent, interruptible, and it does
+--      NOT relax the hosted refusal: LinkedIn and Reddit credentials are
+--      skipped with a reason on a hosted deployment rather than decrypted by a
+--      maintenance script.
+--   3. Verify. `secretsCustodyReport(db).complete === true` means every row is
+--      on the v2 envelope AND on the current key. THIS IS THE ONLY BASIS FOR
+--      DROPPING TREVRA_SECRETS_KEY_PREVIOUS, and the reason this whole column
+--      exists. The same query by hand:
+--
+--        SELECT key_version, key_id, COUNT(*) FROM workspace_secrets
+--        GROUP BY 1,2;
+--
+--      Rows with key_version = 1 are still unbound. Rows whose key_id is not
+--      the fingerprint the running server reports are still on an older key.
+--
+-- Until step 2 is done, the pre-existing rows are no worse off than they were
+-- yesterday -- and no better. That is stated plainly rather than implied,
+-- because "we shipped the AAD fix" is not the same sentence as "no ciphertext
+-- in this database is portable any more", and only the second one is a
+-- security property.
+
+ALTER TABLE workspace_secrets ADD COLUMN IF NOT EXISTS key_id TEXT;
+ALTER TABLE linkedin_seat_credentials ADD COLUMN IF NOT EXISTS key_id TEXT;
+
+COMMENT ON COLUMN workspace_secrets.key_id IS
+  'HKDF fingerprint of the TREVRA_SECRETS_KEY that sealed this row. NULL = pre-v2 envelope, not yet re-sealed.';
+COMMENT ON COLUMN linkedin_seat_credentials.key_id IS
+  'HKDF fingerprint of the TREVRA_SECRETS_KEY that sealed this row. NULL = pre-v2 envelope, not yet re-sealed.';
+
+-- No index. Both tables hold one row per workspace per kind, the custody
+-- report is an operator action rather than a request-path query, and an index
+-- on a column with two or three distinct values would not be used anyway.
+
+-- `cli_oauth_token` stops carrying a `last4`.
+--
+-- `last4` is not free: it puts four characters of the value, unencrypted, in
+-- every backup and every replica, forever. For `model_api_key` it buys the
+-- answer to a real question -- "which of my provider keys is this?" -- because
+-- a workspace has several and no reveal endpoint exists, or may ever exist, to
+-- tell them apart. For a subscription OAuth token it buys NOTHING: there is
+-- one per workspace, it is never compared with another, and the only thing the
+-- product displays about it is the boolean `tokenStored`. So four characters
+-- of a live subscription credential were sitting in the clear to answer a
+-- question nobody asks.
+--
+-- `secrets/store.ts` now classifies the kind as 'opaque' and writes the empty
+-- string. This scrubs what the previous classification already wrote. The
+-- column is NOT NULL by schema and stays that way -- the empty string is the
+-- value that means "there is nothing here you are allowed to see".
+UPDATE workspace_secrets SET last4 = '' WHERE kind = 'cli_oauth_token' AND last4 <> '';

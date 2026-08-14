@@ -133,9 +133,18 @@ const REPLY_MAX = 500;
  * in the operator's words, and the refusal, when there is one, arrives from the
  * server in its own sentence. A gate that cannot be computed honestly is not
  * worth computing at all; a gate the operator cannot predict is what the copy
- * is for.
+ *
+ * 'held' IS LIVE, AND LEAVING IT OUT MADE THIS LIST DISAGREE WITH THE SERVER.
+ * The replay index refuses on `status <> 'skipped'` (`hasTarget` in
+ * src/server/linkedin/actions.ts), so a held answer -- one whose campaign is
+ * paused, migration 051 -- still vetoes a second answer to the same message.
+ * Without it here the strip said nothing was in flight, the composer offered
+ * the button, and the operator got a 409 enforcing a rule this screen had just
+ * told them did not apply. It is also the truthful reading on its own terms: a
+ * held reply has not been sent and has not been cancelled, which is the exact
+ * definition of in flight.
  */
-const LIVE_REPLY_STATUSES: ReadonlySet<string> = new Set(['planned', 'exported']);
+const LIVE_REPLY_STATUSES: ReadonlySet<string> = new Set(['planned', 'held', 'exported']);
 
 /** `sentAt` is parsed from display text and is frequently null. Never invented. */
 const messageTime = (sentAt: string | null) => {
@@ -162,6 +171,8 @@ const profileKey = (url: string | null | undefined) =>
  * claiming it is waiting; planned and claimed is being typed right now; sent
  * is delivered; skipped or withdrawn means it never left -- which the operator
  * has to be able to see here rather than be sent to another screen to find.
+ * Held is a pause parking it, and it is the one state where "waiting" would be
+ * a lie: see its branch below.
  */
 const replyStage = (action: LinkedInActionView): { label: string; chip: string; detail: string } => {
   if (action.status === 'sent' || action.status === 'accepted' || action.status === 'replied') {
@@ -180,6 +191,32 @@ const replyStage = (action: LinkedInActionView): { label: string; chip: string; 
       detail: action.failureKind
         ? `Held back to keep this account safe (${action.failureKind.replaceAll('_', ' ')}). Nothing reached them.`
         : 'This one was cancelled before it was typed. Nothing reached them.'
+    };
+  }
+  /**
+   * PARKED BY A PAUSE, AND THE ONE STATE WHERE "WAITING TO SEND" IS FALSE.
+   *
+   * `pauseManagedCampaign` moves every unclaimed row of a paused campaign to
+   * 'held' (migration 051), and the worker's claim query asks for 'planned'.
+   * So nothing will pick this up: not tonight, not at its planned moment, not
+   * ever, until a human resumes the campaign. Before this branch existed a
+   * held row fell through to the `plannedFor` test below and was labelled
+   * "Waiting to send" beside a future time it would sail past untouched --
+   * the operator would read that same sentence three days later while nothing
+   * moved, on the one screen that exists to answer "did it go?".
+   *
+   * It must not wear "Never sent" either. Resuming puts the identical row back
+   * to 'planned' with its wording, its person and its slot unchanged
+   * (`startManagedCampaign`), so the detail names both exits an operator
+   * actually has: resume and it goes, stop the campaign and it never does
+   * (`stopCampaign` skips held rows along with planned ones).
+   */
+  if (action.status === 'held') {
+    return {
+      label: 'Paused',
+      chip: 'li-status-held',
+      detail: 'Its campaign is paused, so nothing will pick this up — not at its planned time, not later. '
+        + 'Resume the campaign and it goes back in the queue exactly as it is; stop the campaign and it never sends.'
     };
   }
   if (action.claimedAt) {

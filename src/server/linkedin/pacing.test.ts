@@ -3,7 +3,7 @@ import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
 import { evaluateLinkedInSafety } from './guard.js';
 import { ACTION_GAP_SECONDS, BUSINESS_HOURS } from './limits.js';
-import { planPacing, type PacingPlan } from './pacing.js';
+import { planPacing, resolveSkillSeatKey, type PacingPlan } from './pacing.js';
 import { upsertSeat } from './seats.js';
 
 // Real ephemeral Postgres, per the repo's test harness: the smoothing IS the
@@ -588,5 +588,47 @@ describe('the planner and the gate agree', () => {
       const timing = verdict.checks.filter((entry) => entry.check === 'business-hours' || entry.check === 'weekend');
       expect(timing.map((entry) => entry.passed)).toEqual([true, true]);
     }
+  });
+});
+
+/**
+ * WHICH ACCOUNT AN AGENT MEANT WHEN IT DID NOT SAY.
+ *
+ * `gtm.linkedin-pace` and `gtm.linkedin-guard` both declared
+ * `seatKey: z.string().default(OWNER_SEAT_KEY)` on their skill input schemas.
+ * That default is right in `seats.ts`, where it keeps a single-seat
+ * workspace's pre-multi-seat call sites resolving the row they always did. On
+ * a skill input it is a different thing: it turns "the caller did not say"
+ * into a confident answer about one particular LinkedIn identity, and in a
+ * workspace running three accounts it prices every ceiling against an account
+ * nobody chose -- then names that account in the plan it hands back.
+ */
+describe('resolving the seat a skill call meant', () => {
+  it('uses the seat key when one was supplied', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, NOW);
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales', timezone: 'UTC' }, NOW, 'sales');
+    expect(await resolveSkillSeatKey(db, WORKSPACE_ID, 'sales')).toBe('sales');
+  });
+
+  it('uses the workspace\'s only seat when it has exactly one, whatever it is called', async () => {
+    // A single-account workspace has no ambiguity to resolve, and this is what
+    // keeps every existing single-seat caller working -- including one whose
+    // only account is not the owner key.
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales', timezone: 'UTC' }, NOW, 'sales');
+    expect(await resolveSkillSeatKey(db, WORKSPACE_ID, undefined)).toBe('sales');
+  });
+
+  it('refuses, naming the seats, when the workspace has several', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, NOW);
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales', timezone: 'UTC' }, NOW, 'sales');
+    await expect(resolveSkillSeatKey(db, WORKSPACE_ID, undefined)).rejects.toThrow(/owner, sales/);
+    await expect(resolveSkillSeatKey(db, WORKSPACE_ID, '  ')).rejects.toThrow(/'seatKey' is required/);
+  });
+
+  it('falls back to the owner key when the workspace has no seat at all', async () => {
+    // There is nothing to choose from, so the caller should get the planner's
+    // and the gate's honest no-seat answers rather than an error about a
+    // choice that did not exist.
+    expect(await resolveSkillSeatKey(db, WORKSPACE_ID, undefined)).toBe('owner');
   });
 });

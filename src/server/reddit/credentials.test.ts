@@ -264,12 +264,27 @@ describe('the credential routes', () => {
     expect(refusal.text).not.toContain(PASSWORD);
   });
 
-  it('wipes the pair on delete', async () => {
+  it('wipes the pair on delete, and says what else the disconnect removed', async () => {
     await as(session).post('/api/reddit/credentials').send({ username: USERNAME, password: PASSWORD }).expect(200);
 
     const wiped = await as(session).delete('/api/reddit/credentials').expect(200);
 
-    expect(wiped.body).toEqual({ hasCredentials: false, username: null });
+    // Deleting the two secret rows used to BE the disconnect, and it left the
+    // account able to post: the `reddit_accounts` row survived and the browser
+    // profile kept live cookies, so the reuse branch still found a signed-in
+    // session. The route now runs the real revocation and reports each part of
+    // it, because a disconnect that half-worked must not read as success.
+    const body = wiped.body as {
+      hasCredentials: boolean;
+      username: string | null;
+      disconnected: boolean;
+      removed: { credentialsRemoved: boolean; problems: string[] };
+    };
+    expect(body.hasCredentials).toBe(false);
+    expect(body.username).toBeNull();
+    expect(body.disconnected).toBe(true);
+    expect(body.removed.credentialsRemoved).toBe(true);
+    expect(body.removed.problems).toEqual([]);
     expect(await describeRedditCredentials(db, WORKSPACE_ID)).toEqual({ hasCredentials: false, username: null });
     expect(await readRedditCredentials(db, WORKSPACE_ID)).toBeNull();
   });

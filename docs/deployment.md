@@ -6,7 +6,17 @@ Trevra refuses to start without `DATABASE_URL`, and the URL must begin with `pos
 
 The one-time `db:migrate-sqlite` utility is deliberately outside the runtime path. It snapshots legacy files, imports them transactionally, and then leaves the original and backup files untouched for recovery.
 
-Application migrations are stored in `migrations/` and recorded in `schema_migrations`. Startup obtains a transaction-scoped PostgreSQL advisory lock before checking or applying migrations. This permits several Cloud Run instances to start concurrently without applying the same migration twice.
+## Migrations
+
+Application migrations are stored in `migrations/` and recorded in `schema_migrations`. `migrations/README.md` states the rules a migration file has to follow, including how a file opts out of its transaction for `CREATE INDEX CONCURRENTLY`.
+
+Applying migrations and opening a database are separate operations:
+
+- **Hosted** (`TREVRA_DEPLOYMENT_MODE=hosted`): run the migration job once per rollout, before the new revision receives traffic — `npm run db:migrate`, or `node dist-server/server/migrate-job.js` in the shipped image. Pods then verify the schema on boot and refuse to start if it is behind the build they are running. They never apply migrations themselves.
+- **Local or single-node self-host** (the default): `npm start`, `npm run dev` and the test harness apply pending migrations on the way up, so no extra step exists.
+- `DATABASE_AUTO_MIGRATE=true|false` overrides either default.
+
+The job uses a dedicated connection with no statement timeout — a data-rewriting migration over millions of rows is allowed to outlast the 30s request-pool limit — a short `lock_timeout` so a migration waiting on a live table fails fast instead of queueing traffic behind it, and one transaction per file so a failure part-way leaves the earlier files applied and the retry resumes. A session-scoped advisory lock lets several instances or two copies of the job start at once with only one applying anything.
 
 ## Local development stack
 
@@ -52,6 +62,8 @@ maximum possible connections ≈ Cloud Run max instances × DATABASE_POOL_MAX
 ```
 
 Leave headroom for Better Auth, migrations, administration, and failover. Trevra defaults to ten application connections and five Better Auth connections per instance. Reduce these values before increasing Cloud Run's maximum instance count.
+
+Every pool bound is per deployment: `DATABASE_POOL_MAX`, `DATABASE_CONNECT_TIMEOUT_MS`, `DATABASE_IDLE_TIMEOUT_MS`, `DATABASE_STATEMENT_TIMEOUT_MS`. When a pool does run out, the waiting caller receives `PostgreSQL pool exhausted: ...` naming its own stack frames and the pool census (`max`, `open`, `idle`, `waiting`) rather than a bare connect timeout, and any checkout held longer than `DATABASE_POOL_CHECKOUT_WARN_MS` (default 15000, 0 disables) logs the holder while it still holds it. Both lines name the code to fix; neither is a substitute for raising the ceiling.
 
 ## Terraform state
 

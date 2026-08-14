@@ -526,12 +526,21 @@ const EXTENSIONS: Record<ExportFormat, string> = {
  */
 export async function exportCampaign(db: Db, input: CampaignExportInput, now: Date): Promise<CampaignExport> {
   const seatKey = input.plan.seatKey || OWNER_SEAT_KEY;
-  const seat = await getSeat(db, input.workspaceId);
+  // THE SEAT THE PLAN NAMES. `getSeat` defaults to the owner seat, and
+  // omitting the argument here did not merely check the wrong row -- the two
+  // things this function needs the seat FOR are its timezone and its warm-up
+  // week, and both are then used below. Exporting a plan for a New York seat
+  // from a workspace whose owner seat is in Zurich printed every slot, every
+  // DAILY SEND COUNTS line and the whole header block in the wrong hours, and
+  // quoted a warm-up week belonging to a different account's ramp. The comment
+  // under this line already said exporting without the right timezone prints a
+  // schedule in the wrong hours; it was describing the bug above it.
+  const seat = await getSeat(db, input.workspaceId, seatKey);
   if (!seat) {
     // Fail closed. A plan only exists because a seat did, so a missing one
     // here means the seat was deleted mid-flight -- and exporting without its
     // timezone would print a schedule in the wrong hours.
-    throw new Error(`No LinkedIn seat is configured for this workspace; nothing can be exported for seat ${seatKey}.`);
+    throw new Error(`No LinkedIn seat '${seatKey}' is configured for this workspace; nothing can be exported for it.`);
   }
 
   const schedule = scheduleOf(input.plan, seat.timezone);

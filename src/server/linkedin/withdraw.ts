@@ -214,32 +214,96 @@ export async function syncPendingInvites(
   let matched = 0;
   let unmatched = 0;
 
-  for (const invite of list.invites) {
+  /*
+   * ONE UPDATE FOR THE WHOLE LIST, NOT ONE PER INVITE.
+   *
+   * LinkedIn's sent-invitations page carries up to 500 entries per seat and
+   * this ran an UPDATE for each of them, so a routine reconciliation was 500
+   * round trips per seat per sync -- 5,000 seats a tick is 2.5M through a pool
+   * of ten connections. The predicate below is the old one verbatim; only the
+   * number of statements changed.
+   *
+   * Each listed invite expands into the small closed set of spellings its
+   * ledger row might be filed under, and the expansion is carried into SQL as
+   * (index, key) pairs so the answer can be attributed back to the entry it
+   * came from. `matched` therefore still means "list entries that found at
+   * least one outstanding ledger row", exactly as `updated.changes > 0` did
+   * per invite -- including the degenerate case where LinkedIn lists the same
+   * person twice, which the old loop counted as two matches and this counts as
+   * two matches, because `hits` is computed per ENTRY and not per row.
+   *
+   * The rows themselves are updated once each. Where two entries reach the
+   * same row, DISTINCT ON takes the EARLIEST entry's `sentAt`, which is what
+   * the loop produced: the first UPDATE set `pending_since` and every later
+   * COALESCE over it was a no-op.
+   */
+  const entryIndexes: number[] = [];
+  const entryKeys: string[] = [];
+  const sentAts: Array<string | null> = [];
+  for (const [index, invite] of list.invites.entries()) {
     const keys = targetMatchKeys(invite.profileUrl);
     if (keys.length === 0) {
       unmatched += 1;
       continue;
     }
+    for (const key of keys) {
+      entryIndexes.push(index);
+      entryKeys.push(key);
+      sentAts.push(invite.sentAt);
+    }
+  }
+
+  if (entryIndexes.length > 0) {
     // COALESCE on pending_since, never an overwrite: LinkedIn's label is
     // relative and coarse ("3w"), so re-syncing weekly would otherwise walk the
     // recorded send date forward a few days at a time and make a three-week-old
     // invite look permanently three weeks old. The first reading is the closest
     // one to the truth we will ever get.
-    const updated = await db.prepare(`
-      UPDATE linkedin_actions
-      SET pending_seen_at=?, pending_since=COALESCE(pending_since, ?::timestamptz)
-      WHERE workspace_id=? AND seat_key=? AND kind='invite'
-        AND status IN ('sent', 'exported')
-        AND LOWER(target_ref) = ANY(?::text[])
-    `).run(nowIso, invite.sentAt, seat.workspaceId, seat.seatKey, keys);
-    if (updated.changes > 0) matched += 1;
-    else unmatched += 1;
+    const hit = await db.prepare(`
+      WITH listed AS (
+        SELECT * FROM unnest(?::int[], ?::text[], ?::timestamptz[]) AS t(entry, key, sent_at)
+      ),
+      hits AS (
+        SELECT DISTINCT l.entry, a.id
+        FROM listed l
+        JOIN linkedin_actions a ON LOWER(a.target_ref) = l.key
+        WHERE a.workspace_id=? AND a.seat_key=? AND a.kind='invite'
+          AND a.status IN ('sent', 'exported')
+      ),
+      updated AS (
+        UPDATE linkedin_actions a
+        SET pending_seen_at=?::timestamptz, pending_since=COALESCE(a.pending_since, s.sent_at)
+        FROM (
+          SELECT DISTINCT ON (h.id) h.id, l.sent_at
+          FROM hits h JOIN listed l ON l.entry = h.entry
+          ORDER BY h.id, l.entry
+        ) s
+        WHERE a.id = s.id
+        RETURNING 1
+      )
+      SELECT COUNT(DISTINCT entry)::int AS matched, (SELECT COUNT(*)::int FROM updated) AS rows_touched FROM hits
+    `).get<{ matched: number; rows_touched: number }>(
+      entryIndexes,
+      entryKeys,
+      sentAts,
+      seat.workspaceId,
+      seat.seatKey,
+      nowIso
+    );
+    matched = hit?.matched ?? 0;
+    unmatched += new Set(entryIndexes).size - matched;
   }
 
   // Rows we had positive evidence for before this sync and did not see in it.
   // Only rows with a `pending_seen_at` older than this sync are counted: an
   // invite nobody has ever seen on the list is not evidence of a disappearance,
   // it is evidence of never having looked.
+  //
+  // A SEPARATE STATEMENT ON PURPOSE, and it cannot be folded into the one
+  // above. Every CTE in a statement reads the same snapshot, so a `disappeared`
+  // count computed alongside the UPDATE would see the rows it just refreshed
+  // with their OLD `pending_seen_at` -- which is, by construction, older than
+  // this sync -- and report every invite LinkedIn had just shown us as gone.
   const gone = await db.prepare(`
     SELECT COUNT(*)::int AS total FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND kind='invite'
@@ -399,6 +463,15 @@ export async function selectWithdrawalCandidates(
  * a no-op reported as a duplicate instead of an error -- the same contract
  * `recordAction` has, for the same reason. Running the sweep twice, or running
  * it while a pass is in flight, queues each invite once.
+ * it while a pass is in flight, queues each invite once.
+ *
+ * ONE INSERT FOR THE WHOLE SWEEP. `DEFAULT_CANDIDATE_LIMIT` is 100 and the
+ * unattended pass runs per seat, so the loop this replaced was 100 round trips
+ * per seat per sweep for a statement whose only per-row input is four scalars.
+ * `ON CONFLICT DO NOTHING` behaves identically over a multi-row VALUES set --
+ * including for two rows in the SAME statement naming one invite, which is the
+ * one case a DO UPDATE could not have expressed -- so the idempotency is still
+ * the database's and still reported rather than thrown.
  */
 export async function enqueueWithdrawals(
   db: Db,
@@ -406,31 +479,31 @@ export async function enqueueWithdrawals(
   candidates: readonly WithdrawalCandidate[],
   now: Date
 ): Promise<{ queued: number; duplicates: number; ids: string[] }> {
+  if (candidates.length === 0) return { queued: 0, duplicates: 0, ids: [] };
   const nowIso = now.toISOString();
-  const ids: string[] = [];
-  let duplicates = 0;
 
-  for (const candidate of candidates) {
-    const row = await db.prepare(`
-      INSERT INTO linkedin_withdrawals (
-        id, workspace_id, seat_key, action_id, target_ref, status, pending_days, queued_at
-      ) VALUES (?,?,?,?,?,'queued',?,?)
-      ON CONFLICT (workspace_id, seat_key, action_id) WHERE status <> 'failed' DO NOTHING
-      RETURNING id
-    `).get<{ id: string }>(
-      id('lwd'),
-      seat.workspaceId,
-      seat.seatKey,
-      candidate.actionId,
-      candidate.targetRef,
-      candidate.pendingDays,
-      nowIso
-    );
-    if (row) ids.push(row.id);
-    else duplicates += 1;
-  }
+  const rows = await db.prepare(`
+    INSERT INTO linkedin_withdrawals (
+      id, workspace_id, seat_key, action_id, target_ref, status, pending_days, queued_at
+    )
+    SELECT * FROM unnest(
+      ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::int[], ?::timestamptz[]
+    )
+    ON CONFLICT (workspace_id, seat_key, action_id) WHERE status <> 'failed' DO NOTHING
+    RETURNING id
+  `).all<{ id: string }>(
+    candidates.map(() => id('lwd')),
+    candidates.map(() => seat.workspaceId),
+    candidates.map(() => seat.seatKey),
+    candidates.map((candidate) => candidate.actionId),
+    candidates.map((candidate) => candidate.targetRef),
+    candidates.map(() => 'queued'),
+    candidates.map((candidate) => candidate.pendingDays),
+    candidates.map(() => nowIso)
+  );
 
-  return { queued: ids.length, duplicates, ids };
+  const ids = rows.map((row) => row.id);
+  return { queued: ids.length, duplicates: candidates.length - ids.length, ids };
 }
 
 /**

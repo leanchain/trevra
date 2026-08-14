@@ -151,7 +151,16 @@ const THREAD_COLUMNS = `
   t.unread, t.snippet, t.campaign_id,
   TO_CHAR(t.synced_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS synced_at,
   TO_CHAR(t.created_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS created_at,
-  (SELECT COUNT(*) FROM linkedin_messages m WHERE m.thread_id = t.id)::int AS message_count,
+  -- SCOPED TO THE WORKSPACE AS WELL AS THE THREAD, and the extra clause is the
+  -- whole reason this subquery is affordable. idx_linkedin_messages_thread
+  -- (031) is on (workspace_id, thread_id, position); the only index on
+  -- thread_id alone is partial on direction='in'. So the unscoped form of this
+  -- count could use neither, and one 500-row inbox page became 500 sequential
+  -- scans of a table that holds every message ever synced. A message always
+  -- belongs to its thread's workspace -- syncThreadMessages writes both from
+  -- the same row, and the dedupe index is keyed on the pair -- so naming it
+  -- here narrows nothing and turns the count into an index probe.
+  (SELECT COUNT(*) FROM linkedin_messages m WHERE m.workspace_id = t.workspace_id AND m.thread_id = t.id)::int AS message_count,
   EXISTS (SELECT 1 FROM linkedin_messages m WHERE m.thread_id = t.id AND m.direction = 'in') AS has_reply
 `;
 
@@ -259,13 +268,22 @@ interface LedgerMatch {
  * invites and nothing else, and a reply is the strongest evidence an invite was
  * accepted (actions.ts treats 'replied' as implying acceptance everywhere). The
  * recency tiebreak is what settles everything else.
+ *
+ * `limit` IS REQUIRED AND IS NOT OPTIONAL BY OVERSIGHT. The ORDER BY is two
+ * expressions -- a boolean over `kind` and a three-way COALESCE -- and no
+ * index carries either, so Postgres must sort every matching row before it can
+ * answer. Unbounded, that meant a seat with a long history against one person
+ * sorted the whole set to hand back a list whose consumers read `[0]` and
+ * `.length`. Every caller states the smallest number that answers its own
+ * question, and both of them state 1.
  */
 async function ledgerMatches(
   db: Db,
   workspaceId: string,
   seatKey: string,
   profileUrl: string | null,
-  statuses: readonly string[] | null
+  statuses: readonly string[] | null,
+  limit: number
 ): Promise<LedgerMatch[]> {
   if (!profileUrl) return [];
   const candidates = targetRefCandidates(profileUrl);
@@ -279,12 +297,72 @@ async function ledgerMatches(
   } else {
     clauses.push("status <> 'skipped'");
   }
+  params.push(Math.max(1, Math.trunc(limit)));
 
   return db.prepare(`
     SELECT id, kind, status, campaign_id FROM linkedin_actions
     WHERE ${clauses.join(' AND ')}
     ORDER BY (kind = 'invite') DESC, COALESCE(recorded_at, planned_for, created_at) DESC, id DESC
+    LIMIT ?
   `).all<LedgerMatch>(...params);
+}
+
+/**
+ * The campaign each of these conversations belongs to, for a whole page of
+ * them at once.
+ *
+ * THE BATCHED FORM OF WHAT `syncThreads` USED TO ASK PER THREAD. The question
+ * is unchanged -- "among this person's non-skipped ledger rows, ordered invite
+ * first and then most recent, what is the campaign on the best one that has
+ * one" -- but a 5,000-conversation sync asked it 5,000 times, each time
+ * expanding one profile URL into its spellings and sorting the result.
+ *
+ * One statement asks it for every conversation at once and the answer is
+ * assembled here, IN THE SAME ORDER THE SINGLE-THREAD QUERY PRODUCED. The
+ * comparator in the ORDER BY is the same one, and a total order restricted to
+ * a subset keeps the relative order of that subset -- so walking the rows once
+ * and taking, for each thread, the first row that carries a campaign is
+ * exactly `matches.find((match) => match.campaign_id)` per thread, without the
+ * per-thread round trip.
+ *
+ * A candidate spelling that two conversations share is a person in two
+ * conversations, so it resolves for both rather than for whichever was seen
+ * first.
+ */
+async function campaignByProfileUrl(
+  db: Db,
+  workspaceId: string,
+  seatKey: string,
+  profileUrls: readonly string[]
+): Promise<Map<string, string>> {
+  const resolved = new Map<string, string>();
+  if (profileUrls.length === 0) return resolved;
+
+  // Every spelling any of these people might be filed under, and which
+  // conversation(s) each spelling belongs to.
+  const owners = new Map<string, string[]>();
+  for (const profileUrl of new Set(profileUrls)) {
+    for (const candidate of targetRefCandidates(profileUrl)) {
+      const existing = owners.get(candidate);
+      if (existing) existing.push(profileUrl);
+      else owners.set(candidate, [profileUrl]);
+    }
+  }
+  if (owners.size === 0) return resolved;
+
+  const rows = await db.prepare(`
+    SELECT LOWER(target_ref) AS ref, campaign_id FROM linkedin_actions
+    WHERE workspace_id=? AND seat_key=? AND LOWER(target_ref) = ANY(?::text[]) AND status <> 'skipped'
+    ORDER BY (kind = 'invite') DESC, COALESCE(recorded_at, planned_for, created_at) DESC, id DESC
+  `).all<{ ref: string; campaign_id: string | null }>(workspaceId, seatKey, [...owners.keys()]);
+
+  for (const row of rows) {
+    if (!row.campaign_id) continue;
+    for (const profileUrl of owners.get(row.ref) ?? []) {
+      if (!resolved.has(profileUrl)) resolved.set(profileUrl, row.campaign_id);
+    }
+  }
+  return resolved;
 }
 
 /**
@@ -329,66 +407,142 @@ export interface ThreadSyncResult {
  * the driver reports null for "could not read this time", and letting a failed
  * profile hop erase a URL that was resolved last week would break the campaign
  * linkage on a bad afternoon.
+ *
+ * FOUR STATEMENTS FOR THE WHOLE PAGE, NOT THREE OR FOUR PER CONVERSATION.
+ * This ran a loop: SELECT the existing row, ask the ledger which campaign the
+ * person belongs to, upsert, then SELECT the stored row back to return it. A
+ * 5,000-conversation sync was ~20,000 round trips, and the last of those four
+ * was pure waste -- it re-read a row this function had just written, one at a
+ * time, for the only reason that the upsert returned an id instead of the
+ * record. Now: one SELECT for every existing row, one batched ledger question
+ * (`campaignByProfileUrl`), one `unnest` upsert, one read-back for the whole
+ * page. The number of statements no longer depends on how many conversations
+ * LinkedIn showed us.
+ *
+ * NOTHING ABOUT THE RESULT CHANGED. `created` and `updated` are still decided
+ * by whether the row was already there, `linked` still counts only the
+ * conversations whose campaign pointer was resolved THIS RUN, and `threads` is
+ * still every synced conversation in the order the rail listed them.
+ *
+ * DUPLICATE URNs IN ONE PAGE COLLAPSE TO THE LAST ONE. The loop's semantics
+ * were the same -- the second write overwrote the first -- but a batched
+ * `INSERT ... ON CONFLICT DO UPDATE` cannot touch a row twice in one
+ * statement, so the collapse happens here, explicitly, instead of as a
+ * runtime error.
  */
 export async function syncThreads(db: Db, input: ThreadSyncInput, now: Date): Promise<ThreadSyncResult> {
   const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
   const timestamp = now.toISOString();
   const result: ThreadSyncResult = { created: 0, updated: 0, linked: 0, threads: [] };
 
+  const summaries = new Map<string, LinkedInThreadSummary>();
   for (const summary of input.threads) {
     const threadUrn = summary.threadUrn?.trim();
     if (!threadUrn) continue;
+    summaries.set(threadUrn, summary);
+  }
+  if (summaries.size === 0) return result;
+  const urns = [...summaries.keys()];
 
-    const existing = await db.prepare(`
-      SELECT id, profile_url, campaign_id FROM linkedin_threads WHERE workspace_id=? AND seat_key=? AND thread_urn=?
-    `).get<{ id: string; profile_url: string | null; campaign_id: string | null }>(input.workspaceId, seatKey, threadUrn);
+  const existingRows = await db.prepare(`
+    SELECT id, thread_urn, profile_url, campaign_id FROM linkedin_threads
+    WHERE workspace_id=? AND seat_key=? AND thread_urn = ANY(?::text[])
+  `).all<{ id: string; thread_urn: string; profile_url: string | null; campaign_id: string | null }>(
+    input.workspaceId,
+    seatKey,
+    urns
+  );
+  const existing = new Map(existingRows.map((row) => [row.thread_urn, row]));
 
-    const profileUrl = (summary.profileUrl ? profileUrlFor(summary.profileUrl) : null) ?? existing?.profile_url ?? null;
+  // The profile URL each conversation will be stored with: what the rail read
+  // this time, or what we already had. A failed profile hop reports null and
+  // must not erase a URL resolved last week.
+  const profileUrls = new Map<string, string | null>();
+  for (const [threadUrn, summary] of summaries) {
+    const known = existing.get(threadUrn);
+    profileUrls.set(threadUrn, (summary.profileUrl ? profileUrlFor(summary.profileUrl) : null) ?? known?.profile_url ?? null);
+  }
 
-    // Resolved once and then left alone: the ledger's answer for a given target
-    // does not change, and re-asking on every sync would run one query per
-    // conversation forever for a pointer that is already correct.
-    let campaignId = existing?.campaign_id ?? null;
+  // Resolved once and then left alone: the ledger's answer for a given target
+  // does not change, and re-asking on every sync would run one query per
+  // conversation forever for a pointer that is already correct. Asked here for
+  // every conversation that still needs one, in a single statement.
+  const unresolved = [...summaries.keys()]
+    .filter((threadUrn) => !existing.get(threadUrn)?.campaign_id)
+    .map((threadUrn) => profileUrls.get(threadUrn) ?? null)
+    .filter((profileUrl): profileUrl is string => profileUrl !== null);
+  const resolvedCampaigns = await campaignByProfileUrl(db, input.workspaceId, seatKey, unresolved);
+
+  const ids: string[] = [];
+  const workspaceIds: string[] = [];
+  const seatKeys: string[] = [];
+  const threadUrns: string[] = [];
+  const urlColumn: Array<string | null> = [];
+  const names: Array<string | null> = [];
+  const lastMessageAts: Array<string | null> = [];
+  const unreads: boolean[] = [];
+  const snippets: string[] = [];
+  const campaignIds: Array<string | null> = [];
+  const timestamps: string[] = [];
+
+  for (const [threadUrn, summary] of summaries) {
+    const known = existing.get(threadUrn);
+    const profileUrl = profileUrls.get(threadUrn) ?? null;
+    let campaignId = known?.campaign_id ?? null;
     if (!campaignId && profileUrl) {
-      const matches = await ledgerMatches(db, input.workspaceId, seatKey, profileUrl, null);
-      campaignId = matches.find((match) => match.campaign_id)?.campaign_id ?? null;
+      campaignId = resolvedCampaigns.get(profileUrl) ?? null;
       if (campaignId) result.linked += 1;
     }
 
-    const row = await db.prepare(`
-      INSERT INTO linkedin_threads (
-        id, workspace_id, seat_key, thread_urn, profile_url, name,
-        last_message_at, unread, snippet, campaign_id, synced_at, created_at
-      ) VALUES (?,?,?,?,?,?,?::timestamptz,?,?,?,?::timestamptz,?::timestamptz)
-      ON CONFLICT (workspace_id, seat_key, thread_urn) DO UPDATE SET
-        profile_url = COALESCE(excluded.profile_url, linkedin_threads.profile_url),
-        name = COALESCE(excluded.name, linkedin_threads.name),
-        last_message_at = COALESCE(excluded.last_message_at, linkedin_threads.last_message_at),
-        unread = excluded.unread,
-        snippet = excluded.snippet,
-        campaign_id = COALESCE(excluded.campaign_id, linkedin_threads.campaign_id),
-        synced_at = excluded.synced_at
-      RETURNING id
-    `).get<{ id: string }>(
-      existing?.id ?? id('lthr'),
-      input.workspaceId,
-      seatKey,
-      threadUrn,
-      profileUrl,
-      summary.name,
-      summary.lastMessageAt,
-      summary.unread,
-      summary.snippet ?? '',
-      campaignId,
-      timestamp,
-      timestamp
-    );
+    ids.push(known?.id ?? id('lthr'));
+    workspaceIds.push(input.workspaceId);
+    seatKeys.push(seatKey);
+    threadUrns.push(threadUrn);
+    urlColumn.push(profileUrl);
+    names.push(summary.name);
+    lastMessageAts.push(summary.lastMessageAt);
+    unreads.push(summary.unread);
+    snippets.push(summary.snippet ?? '');
+    campaignIds.push(campaignId);
+    timestamps.push(timestamp);
 
-    if (existing) result.updated += 1;
+    if (known) result.updated += 1;
     else result.created += 1;
+  }
 
-    const stored = await threadById(db, input.workspaceId, (row as { id: string }).id);
-    if (stored) result.threads.push(stored);
+  await db.prepare(`
+    INSERT INTO linkedin_threads (
+      id, workspace_id, seat_key, thread_urn, profile_url, name,
+      last_message_at, unread, snippet, campaign_id, synced_at, created_at
+    )
+    SELECT * FROM unnest(
+      ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[],
+      ?::timestamptz[], ?::boolean[], ?::text[], ?::text[], ?::timestamptz[], ?::timestamptz[]
+    )
+    ON CONFLICT (workspace_id, seat_key, thread_urn) DO UPDATE SET
+      profile_url = COALESCE(excluded.profile_url, linkedin_threads.profile_url),
+      name = COALESCE(excluded.name, linkedin_threads.name),
+      last_message_at = COALESCE(excluded.last_message_at, linkedin_threads.last_message_at),
+      unread = excluded.unread,
+      snippet = excluded.snippet,
+      campaign_id = COALESCE(excluded.campaign_id, linkedin_threads.campaign_id),
+      synced_at = excluded.synced_at
+  `).run(
+    ids, workspaceIds, seatKeys, threadUrns, urlColumn, names,
+    lastMessageAts, unreads, snippets, campaignIds, timestamps, timestamps
+  );
+
+  // One read-back for the page, then put it in the order the rail listed the
+  // conversations in -- which is what the per-thread re-read used to produce
+  // as a side effect of doing it inside the loop.
+  const storedRows = await db.prepare(`
+    SELECT ${THREAD_COLUMNS} FROM linkedin_threads t
+    WHERE t.workspace_id=? AND t.seat_key=? AND t.thread_urn = ANY(?::text[])
+  `).all<ThreadRow>(input.workspaceId, seatKey, urns);
+  const stored = new Map(storedRows.map((row) => [row.thread_urn, toThread(row)]));
+  for (const threadUrn of urns) {
+    const record = stored.get(threadUrn);
+    if (record) result.threads.push(record);
   }
 
   return result;
@@ -524,10 +678,19 @@ export async function syncThreadMessages(
     return result;
   }
 
-  const open = await ledgerMatches(db, input.workspaceId, seatKey, thread.profileUrl, REPLYABLE);
+  // ONE ROW IS THE WHOLE QUESTION. Only `open[0]` is ever reported against --
+  // the ORDER BY is what decides which row that is -- so the query says so
+  // rather than sorting a person's whole history to hand back a list this
+  // function reads the head of.
+  const open = await ledgerMatches(db, input.workspaceId, seatKey, thread.profileUrl, REPLYABLE, 1);
   if (open.length === 0) {
-    const any = await ledgerMatches(db, input.workspaceId, seatKey, thread.profileUrl, null);
-    result.linkage = any.some((match) => match.status === 'replied')
+    // The same question the old `any.some((match) => match.status ===
+    // 'replied')` asked, asked of the database instead of a materialised list:
+    // is there a row against this person already settled as replied. 'replied'
+    // is not 'skipped', so the status filter selects from exactly the set the
+    // unfiltered call used to return.
+    const alreadyReplied = await ledgerMatches(db, input.workspaceId, seatKey, thread.profileUrl, ['replied'], 1);
+    result.linkage = alreadyReplied.length > 0
       ? `A reply arrived and ${thread.profileUrl} is already recorded as having replied, so nothing changed.`
       : `A reply arrived from ${thread.profileUrl}, and this seat has no outreach action against them that a reply could be reported against. The conversation is stored; the funnel is unchanged.`;
     return result;
@@ -641,13 +804,12 @@ export async function listThreads(db: Db, workspaceId: string, filters: ThreadFi
   `).all<ThreadRow>(...params);
   return rows.map(toThread);
 }
-
-async function threadById(db: Db, workspaceId: string, threadId: string): Promise<LinkedInThreadRecord | undefined> {
-  const row = await db.prepare(`SELECT ${THREAD_COLUMNS} FROM linkedin_threads t WHERE t.id=? AND t.workspace_id=?`)
-    .get<ThreadRow>(threadId, workspaceId);
-  return row ? toThread(row) : undefined;
-}
-
+// `threadById` lived here to re-read one conversation immediately after
+// `syncThreads` had written it, one row at a time. The batched sync reads the
+// whole page back in one statement, and nothing else ever looked a thread up
+// by its opaque id -- every other path in this file keys on the URN, because
+// that is what LinkedIn and the API both name -- so the helper is gone rather
+// than left behind as the obvious thing for a future loop to reach for.
 /** One conversation by LinkedIn's own id, or undefined. */
 export async function threadByUrn(
   db: Db,

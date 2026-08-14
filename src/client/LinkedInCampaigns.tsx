@@ -2175,11 +2175,77 @@ function ApprovalBlock({ step, busy, onDecide }: {
  * ---------------------------------------------------------------------- */
 
 /**
+ * An IANA zone the runtime will actually accept, or null.
+ *
+ * `seat.timezone` is a stored string an operator typed or a browser detected,
+ * and `Intl` throws a RangeError on one it does not know. A screen that let
+ * that throw would blank the whole plan over a typo in a settings field, so a
+ * zone that cannot be used is treated as a zone we do not have -- which is a
+ * state this screen already has honest copy for.
+ */
+function usableZone(timezone: string | null | undefined): string | null {
+  if (!timezone) return null;
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: timezone }).format(0);
+    return timezone;
+  } catch { return null; }
+}
+
+/**
+ * Which of the account's OWN days an instant falls on, as 'YYYY-MM-DD'.
+ *
+ * `plannedFor.slice(0, 10)` -- what this replaced -- is the UTC date, and the
+ * pacing engine does not think in UTC. `planPacing` places every slot inside
+ * the SEAT's working hours evaluated in the SEAT's zone, and the daily ceiling
+ * it spends is counted over the seat's day. So for an account in Sydney an
+ * 09:30 Tuesday slot is 22:30 Monday UTC, and the UTC bucketing drew it under
+ * Monday: a calendar claiming the account works Sunday nights, with one day's
+ * ceiling split across two columns and both of them wrong.
+ *
+ * The 'en-US' argument is NOT a display locale -- nothing formatted here
+ * reaches a screen. It is the same machine-parsing trick `accountClock` uses
+ * in LinkedInSafety: a locale whose numbering system is known, read back
+ * through `formatToParts` so the parts are assembled in ISO order rather than
+ * whatever order that locale writes them in.
+ */
+function seatDayKey(iso: string, timezone: string | null): string {
+  if (!timezone) return iso.slice(0, 10);
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(new Date(iso));
+    const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? '';
+    const [year, month, day] = [part('year'), part('month'), part('day')];
+    return year && month && day ? `${year}-${month}-${day}` : iso.slice(0, 10);
+  } catch { return iso.slice(0, 10); }
+}
+
+/**
+ * A 'YYYY-MM-DD' calendar date, spelled for the reader.
+ *
+ * The locale is the browser's -- 'en-GB' was one operator's day-month order
+ * for everybody. The zone is pinned to UTC against a noon anchor for the same
+ * reason `dayLabel` in LinkedInViz pins its own: the argument is already a
+ * calendar date, not an instant, so the only job here is to name that date
+ * without a zone conversion silently moving it.
+ */
+const calendarDayLabel = (day: string) =>
+  new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })
+    .format(new Date(`${day}T12:00:00Z`));
+
+/**
  * The calendar of exact slots, from `POST /api/linkedin/plan`.
  *
  * A DRY RUN, and the screen says so in the place a founder looks: no slot here
  * is a `linkedin_actions` row, nothing is scheduled, and running it twice costs
  * nothing. Slots become real only downstream of a campaign approval.
+ *
+ * BOTH READS ON THIS SCREEN ANSWER FOR THE SAME ACCOUNT, which is what makes
+ * the zone below the right one: `planLinkedIn` sends no `seatKey` and
+ * `getLinkedInLimits` asks for none, so both fall to `OWNER_SEAT_KEY` on the
+ * server. There is no account picker here to break that pairing; if one is
+ * ever added it has to be passed to both calls, or this calendar starts
+ * labelling one account's slots in another account's clock.
  */
 export function OutreachPlan({ setToast }: { setToast: (message: string) => void }) {
   const { limits, loading: limitsLoading, error: limitsError } = useSeatLimits();
@@ -2205,9 +2271,20 @@ export function OutreachPlan({ setToast }: { setToast: (message: string) => void
     } finally { setBusy(false); }
   };
 
+  /**
+   * The account's own zone, when the limits report has one.
+   *
+   * `PacingPlan` carries a `seatKey` and no timezone, so this is the only
+   * place on the screen the zone can come from. Null when the account is not
+   * configured yet, when the report has not landed, or when the stored string
+   * is not a zone this runtime knows -- and the copy below says which clock is
+   * being used rather than leaving the reader to assume.
+   */
+  const seatZone = usableZone(limits?.seat.timezone);
+
   const byDay = new Map<string, LinkedInPlanResponse['plan']['slots']>();
   for (const slot of result?.plan.slots ?? []) {
-    const day = slot.plannedFor.slice(0, 10);
+    const day = seatDayKey(slot.plannedFor, seatZone);
     byDay.set(day, [...(byDay.get(day) ?? []), slot]);
   }
   const days = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b));
@@ -2272,7 +2349,19 @@ export function OutreachPlan({ setToast }: { setToast: (message: string) => void
         <div className="section-heading">
           <div>
             <h3 aria-level={2}>{result.plan.slots.length} action(s) across {days.length} day(s)</h3>
-            <p>Times are shown in your browser’s timezone. Every one of them was placed inside your working hours.</p>
+            {/* WHOSE CLOCK, stated, because the answer changes what the columns
+                mean. The engine placed these slots inside the ACCOUNT's working
+                hours in the ACCOUNT's zone, so that is the clock they are shown
+                in when the limits report gives us one -- and the zone is NAMED
+                rather than called "the account's", because an operator planning
+                for a Sydney account from London needs to know which 09:00 this
+                is. With no zone the times are the browser's and the copy says
+                so; it does not quietly let them read as the account's. */}
+            <p>{seatZone
+              ? <>Days and times are this account’s own, in <b>{seatZone}</b> — the clock its working hours and its
+                daily ceiling are enforced against. Every one of them was placed inside those working hours.</>
+              : <>This account’s timezone could not be read, so the days and times below are your browser’s. The plan
+                itself was still placed inside the account’s working hours, in the account’s own clock.</>}</p>
           </div>
         </div>
         {days.length === 0
@@ -2280,12 +2369,19 @@ export function OutreachPlan({ setToast }: { setToast: (message: string) => void
           : <div className="li-calendar">
             {days.map(([day, slots]) => <div className="li-cal-day" key={day}>
               <header>
-                <strong>{new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(`${day}T12:00:00Z`))}</strong>
+                <strong>{calendarDayLabel(day)}</strong>
                 <span>{slots.length}</span>
               </header>
               <i className="li-cal-load" style={{ width: `${(slots.length / busiest) * 100}%` }} />
               <ul>{slots.map((slot) => <li key={`${slot.plannedFor}-${slot.targetRef}`}>
-                <time>{new Date(slot.plannedFor).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+                {/* Same clock as the day it sits under, or the calendar
+                    contradicts itself: a 22:30 browser-local time filed under
+                    the account's Tuesday. `seatZone` is null-checked rather
+                    than spread, because passing `timeZone: undefined` and
+                    omitting the key are the same to Intl only by convention. */}
+                <time>{new Date(slot.plannedFor).toLocaleTimeString([], seatZone
+                  ? { hour: '2-digit', minute: '2-digit', timeZone: seatZone }
+                  : { hour: '2-digit', minute: '2-digit' })}</time>
                 <span className="li-target">{slot.targetRef}</span>
               </li>)}</ul>
             </div>)}

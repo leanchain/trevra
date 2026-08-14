@@ -128,9 +128,27 @@ export async function runSkill(skillId: string, input: unknown, ctx: SkillContex
     durationMs
   );
 
-  // No-op when the skill has not been seeded into `skills` yet; the ledger row still stands.
-  await ctx.db.prepare('UPDATE skills SET last_run_at=?, run_count=run_count+1, updated_at=? WHERE id=?')
-    .run(finishedAt.toISOString(), finishedAt.toISOString(), skill.manifest.id);
+  // Usage is PER TENANT, and lives in `workspace_skill_usage` for that reason.
+  //
+  // This used to be `UPDATE skills SET run_count=run_count+1, last_run_at=?`,
+  // against a catalogue table with no `workspace_id`. On a hosted deployment
+  // that is one counter shared by every customer: tenant A's run moved the
+  // number tenant B read, and `last_run_at` leaked the fact -- and the moment --
+  // that somebody else had just used the skill. Neither column could answer a
+  // per-tenant question honestly, so migration 059 moved usage here and dropped
+  // them from `skills`, which stays a purely global catalogue.
+  //
+  // Written unconditionally rather than as an UPDATE that quietly matches no
+  // rows: the row is keyed by the workspace that ran the skill, so there is
+  // always exactly one row to own the count, seeded or not.
+  await ctx.db.prepare(`
+    INSERT INTO workspace_skill_usage (workspace_id,skill_id,run_count,last_run_at,created_at,updated_at)
+    VALUES (?,?,1,?,?,?)
+    ON CONFLICT (workspace_id,skill_id) DO UPDATE SET
+      run_count=workspace_skill_usage.run_count+1,
+      last_run_at=excluded.last_run_at,
+      updated_at=excluded.updated_at
+  `).run(ctx.workspaceId, skill.manifest.id, finishedAt.toISOString(), finishedAt.toISOString(), finishedAt.toISOString());
 
   return {
     id: runId,

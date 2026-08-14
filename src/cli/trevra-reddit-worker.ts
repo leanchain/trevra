@@ -7,7 +7,7 @@ import {
   loginRedditAccount,
   redditBrowserReadiness,
   redditOffReason,
-  resolveRedditProfileDir
+  redditProfileDirBase
 } from '../server/reddit/local-worker.js';
 
 /**
@@ -69,13 +69,19 @@ const readiness = redditBrowserReadiness(config);
 if (!readiness.canLaunchHeaded) fail(readiness.reasons.join(' '));
 
 const db = await openDatabase();
-const profileDir = resolveRedditProfileDir(config.profileDir);
+/**
+ * The BASE, not a profile directory. Each workspace signs into its own
+ * `<base>-<workspace>-profile`, which is what stops one tenant's tick from
+ * inheriting -- or overwriting -- another tenant's Reddit session. Printing a
+ * single directory here would misdescribe what this loop is about to do.
+ */
+const profileBase = redditProfileDirBase(config.profileDir);
 /** `--workspace ws_x` narrows the loop to one; absent means every workspace with a Reddit account. */
 const onlyWorkspace = flag('workspace');
 /** Consumed by the FIRST pass only: a two-factor code is single-use and expires in seconds. */
 let otp = flag('otp');
 
-process.stdout.write(`Reddit worker running against the Chrome profile at ${profileDir}\n`);
+process.stdout.write(`Reddit worker running against one Chrome profile per workspace under ${profileBase}-<workspace>-profile\n`);
 process.stdout.write(`Re-checking the session every ${Math.round(runtime.automationIntervalMs / 1000)}s. Ctrl-C to stop.\n`);
 
 let running = false;
@@ -99,6 +105,20 @@ async function cycle(): Promise<void> {
       process.stdout.write(`[${outcome.status}] ${who}: ${outcome.message}\n`);
       if (outcome.status === 'otp_required') {
         process.stdout.write('  Re-run with `npm run reddit:worker -- --otp <code>` to finish.\n');
+      }
+      // ONE WINDOW AT A TIME. Each workspace now signs into its OWN profile
+      // directory and its own browser, so a loop that left them all open would
+      // put one headed Chrome per tenant on the operator's screen and keep
+      // every one of them there. The session is not in the process, it is in
+      // the profile directory on disk, so closing costs nothing this loop
+      // exists to preserve.
+      //
+      // EXCEPT WHEN A HUMAN IS NEEDED. `otp_required` and `challenge` are the
+      // two answers whose entire point is that a person finishes them in that
+      // window; closing it would take away the thing this whole command exists
+      // to provide.
+      if (outcome.status !== 'otp_required' && outcome.status !== 'challenge') {
+        await closeRedditBrowser(workspaceId);
       }
     }
   } catch (error) {

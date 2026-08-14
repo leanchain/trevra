@@ -7,7 +7,30 @@
  * disagreeing about what the same number is.
  */
 
-export const money = (amount: number, currency = 'EUR') => new Intl.NumberFormat('en-US', {
+/**
+ * A workspace's own money, in its reader's own notation.
+ *
+ * TWO SEPARATE DECISIONS, AND 'en-US' COLLAPSED THEM INTO ONE. The CURRENCY is
+ * the workspace's: every caller with a workspace behind it passes what the
+ * server stored for it -- `metrics.currency`, `client.currency`,
+ * `cost.produced.currency`. The LOCALE decides grouping, decimal mark and
+ * which side the symbol sits on, and that is a fact about the READER, not
+ * about the money. Running a German workspace's own euros through 'en-US'
+ * printed "€1,850" at somebody who writes "1.850 €" -- their currency, their
+ * amount, somebody else's punctuation, and a thousands separator that reads as
+ * a decimal point to them.
+ *
+ * `undefined` is not "no locale". It is the browser's, which is the only
+ * locale this client actually knows something about: there is no workspace
+ * locale field on any payload, and inventing a mapping from currency to locale
+ * would be worse than either -- a Swiss workspace billing in EUR is not German.
+ *
+ * The `'EUR'` default is NOT a workspace currency and never stood in for one.
+ * It is the fallback for the one caller formatting a RULE THRESHOLD rather
+ * than a stored figure (App.tsx's auto-approve sentence), which has no
+ * workspace row to read a currency off.
+ */
+export const money = (amount: number, currency = 'EUR') => new Intl.NumberFormat(undefined, {
   style: 'currency', currency, maximumFractionDigits: 0
 }).format(amount);
 
@@ -20,8 +43,14 @@ export const money = (amount: number, currency = 'EUR') => new Intl.NumberFormat
  * that puts a `usd()` figure next to a `money()` figure has to say so in
  * words -- see LoopView -- because two symbols in one panel with nothing
  * naming the difference is how a founder stops trusting all of them.
+ *
+ * Hard-USD is a claim about the CURRENCY and not about the reader, so the
+ * locale is theirs for the same reason as `money()` above. A founder in Paris
+ * is still billed in dollars; "1 234,56 $US" is that same figure written the
+ * way they read numbers, and pinning it to 'en-US' would have made the ONE
+ * genuinely foreign number on the screen the only one that looked native.
  */
-export const usd = (cents: number) => new Intl.NumberFormat('en-US', {
+export const usd = (cents: number) => new Intl.NumberFormat(undefined, {
   style: 'currency', currency: 'USD'
 }).format(cents / 100);
 
@@ -32,14 +61,25 @@ function currencySymbol(code: string): string | null {
   if (cached !== undefined) return cached;
   let symbol: string | null = null;
   try {
-    symbol = new Intl.NumberFormat('en-US', { style: 'currency', currency: code })
+    // The reader's locale, for the same reason `money()` uses it: which glyph
+    // stands for a currency is a fact about the reader. 'en-US' writes
+    // Canadian dollars as `CA$` and Australian ones as `A$`; a reader in
+    // either country writes `$`, and this function exists to make a server
+    // sentence match the chip beside it in THEIR notation.
+    symbol = new Intl.NumberFormat(undefined, { style: 'currency', currency: code })
       .formatToParts(0).find((part) => part.type === 'currency')?.value ?? null;
   } catch {
     // Not an ISO 4217 code -- `INV`, `SOW`, an acronym in a sentence. Left alone.
     symbol = null;
   }
-  SYMBOLS.set(code, symbol);
-  return symbol;
+  // A locale with no glyph for this currency hands the CODE back as its own
+  // "symbol" -- `RUB` and `XAF` do that in most English locales. Substituting
+  // that would turn "RUB 1,850" into "RUB1,850": the same three letters, minus
+  // the space that made it readable. Having no symbol is the honest answer,
+  // and `moneyProse` leaves the text untouched on null.
+  const resolved = symbol === code ? null : symbol;
+  SYMBOLS.set(code, resolved);
+  return resolved;
 }
 
 /**

@@ -5,7 +5,7 @@
   "serialNumber": "urn:uuid:***",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-14T00:28:47.538Z",
+    "timestamp": "2026-08-14T02:21:26.172Z",
     "lifecycles": [
       {
         "phase": "build"
@@ -15096,6 +15096,82 @@
       ]
     },
     {
+      "bom-ref": "patchright@1.61.1",
+      "type": "library",
+      "name": "patchright",
+      "version": "1.61.1",
+      "scope": "optional",
+      "author": "Microsoft Corportation, patched by github.com/Kaliiiiiiiiii-Vinyzu/",
+      "description": "A high-level API to automate web browsers",
+      "purl": "pkg:npm/patchright@1.61.1",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/patchright/-/patchright-1.61.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/Kaliiiiiiiiii-Vinyzu/patchright"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/Kaliiiiiiiiii-Vinyzu/patchright"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "91958d676b6e9ec04c4c15ad01115559a36f07bdfd18ec9b4e520f2d3f757b2c74604463b548c449ac289b03b48673a1ea3b752f74abbb43caeb6ca560e7ea43"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "patchright-core@1.61.1",
+      "type": "library",
+      "name": "patchright-core",
+      "version": "1.61.1",
+      "scope": "optional",
+      "author": "Microsoft Corportation, patched by github.com/Kaliiiiiiiiii-Vinyzu/",
+      "description": "A high-level API to automate web browsers",
+      "purl": "pkg:npm/patchright-core@1.61.1",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/patchright-core/-/patchright-core-1.61.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/Kaliiiiiiiiii-Vinyzu/patchright"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/Kaliiiiiiiiii-Vinyzu/patchright"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "77a26eebb0c4e8ecea9445f758fbd45f648b12cea2318d561118adfff9a9b2b4fdf151dcced694a34081c362e9c6adb955db9f54489611d71cd079cbc1d8aae8"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "path-is-absolute@1.0.1",
       "type": "library",
       "name": "path-is-absolute",
@@ -21329,6 +21405,7 @@
         "stripe@22.3.2",
         "zod@3.25.76",
         "zod-to-json-schema@3.25.2",
+        "patchright@1.61.1",
         "playwright@1.62.1",
         "@testcontainers/postgresql@12.0.4",
         "@types/cookie-parser@1.4.10",
@@ -23844,6 +23921,16 @@
     },
     {
       "ref": "parseurl@1.3.3",
+      "dependsOn": []
+    },
+    {
+      "ref": "patchright@1.61.1",
+      "dependsOn": [
+        "patchright-core@1.61.1"
+      ]
+    },
+    {
+      "ref": "patchright-core@1.61.1",
       "dependsOn": []
     },
     {

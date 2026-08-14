@@ -5,12 +5,16 @@ import {
   closeLinkedInBrowser,
   linkedInBrowserReadiness,
   linkedInOffReason,
+  linkedinWorkspaceIdsForShard,
   profileDirBase,
   runDueLinkedInActions,
-  runPendingSeatDetectRequests
+  runPendingSeatDetectRequests,
+  seatRefsForShard,
+  workerHost,
+  workerIdentity,
+  workerShard
 } from '../server/linkedin/local-worker.js';
 import { runLinkedInCampaignTick, runLinkedInSideTasks } from '../server/linkedin/jobs.js';
-import { linkedinSeatRefs, linkedinWorkspaceIds } from '../server/linkedin/seats.js';
 
 /**
  * `npm run linkedin:worker` -- the LinkedIn loop, on the machine that has a
@@ -106,6 +110,29 @@ if (!readiness.canLaunchHeaded) fail(readiness.reasons.join(' '));
 
 const seatKey = seatSelector(process.argv.slice(2));
 
+/**
+ * ONE MACHINE, AND BY DEFAULT ALL OF IT.
+ *
+ * The shard exists for the hosted fleet, where several worker hosts split the
+ * seats between them; on an operator's own laptop it is `0 of 1`, which selects
+ * everything and costs nothing. Read here rather than inside the loop so a
+ * mistyped `TREVRA_LINKEDIN_WORKER_INDEX` is a refusal to start with a sentence
+ * attached, not a worker that quietly serves half the accounts.
+ *
+ * The identity and the host go with it: the host is what pins a seat to the
+ * machine that holds its Chrome profile, and on a laptop that pin is what stops
+ * a container elsewhere from picking the seat up and signing in from a new
+ * device.
+ */
+let shard: ReturnType<typeof workerShard>;
+try {
+  shard = workerShard();
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
+const workerId = workerIdentity();
+const host = workerHost();
+
 const db = await openDatabase();
 // One Chrome profile per SEAT, not one per workspace and not one for the whole
 // process -- see `resolveProfileDir`. This loop can serve several, so there is
@@ -120,6 +147,10 @@ process.stdout.write(
 );
 process.stdout.write(`Checking for work every ${Math.round(runtime.automationIntervalMs / 1000)}s. Ctrl-C to stop.\n`);
 
+const SIDE_TASK_SEATS_PER_TICK = 50;
+const CAMPAIGN_WORKSPACES_PER_TICK = 50;
+let seatCursor: { workspaceId: string; seatKey: string } | null = null;
+let workspaceCursor: string | null = null;
 let running = false;
 let draining = false;
 
@@ -130,8 +161,13 @@ async function cycle(): Promise<void> {
     // Detection first: a workspace whose seat has just been connected has no
     // pacing history to work from until the seat row exists, so doing this
     // second would cost it a whole tick on the operator's very first run.
-    await runPendingSeatDetectRequests(db, config);
-    await runDueLinkedInActions(db, config, { seatKey });
+    await runPendingSeatDetectRequests(db, config, { shard });
+    // CONCURRENCY 1, EXPLICITLY. The hosted worker runs several seats at once
+    // because nobody is watching a headless container; here every batch is a
+    // real Chrome window on the operator's own desktop, and two of those
+    // fighting for the foreground is worse than two batches in a row -- the
+    // argument this file has always made, now that it has to be made out loud.
+    await runDueLinkedInActions(db, config, { ...(seatKey ? { seatKey } : {}), shard, workerId, host, concurrency: 1 });
     // Then the periodic work: read the inbox, reconcile LinkedIn's own
     // pending-invite list, drain the withdrawal queue, walk a lead source.
     // AFTER the send queue, always -- that is the only work with a paced slot
@@ -147,13 +183,22 @@ async function cycle(): Promise<void> {
     // pending-invite list is that account's list -- so iterating workspaces
     // would silently serve only whichever seat `runLinkedInSideTasks`
     // defaulted to and leave every other account's inbox stale.
-    for (const seat of await linkedinSeatRefs(db)) {
+    //
+    // Bounded and rotated for the same reason the container worker's loop is:
+    // a page at a time, continuing where the last tick stopped, so a machine
+    // driving many seats cannot spend a whole tick on the alphabetical head and
+    // never reach the tail.
+    const seats = await seatRefsForShard(db, { shard, limit: SIDE_TASK_SEATS_PER_TICK, after: seatCursor });
+    seatCursor = seats.length < SIDE_TASK_SEATS_PER_TICK ? null : seats[seats.length - 1] ?? null;
+    for (const seat of seats) {
       if (seatKey && seat.seatKey !== seatKey) continue;
       await runLinkedInSideTasks(db, config, { workspaceId: seat.workspaceId, seatKey: seat.seatKey });
     }
     // Campaigns advance once per WORKSPACE, after the side tasks have recorded
     // this cycle's outcomes -- see `runLinkedInCampaignTick`.
-    for (const workspaceId of await linkedinWorkspaceIds(db)) {
+    const workspaces = await linkedinWorkspaceIdsForShard(db, { shard, limit: CAMPAIGN_WORKSPACES_PER_TICK, after: workspaceCursor });
+    workspaceCursor = workspaces.length < CAMPAIGN_WORKSPACES_PER_TICK ? null : workspaces[workspaces.length - 1] ?? null;
+    for (const workspaceId of workspaces) {
       await runLinkedInCampaignTick(db, workspaceId);
     }
   } catch (error) {

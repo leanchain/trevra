@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { id, openDatabase, type Db } from '../db.js';
-import { countLeadContacts, createLeadList, getLeadList, importLeadCsv, importLeadSourceContacts, listLeadContacts, removeLeadContact, updateLeadContact } from './lead-lists.js';
+import { countLeadContacts, createLeadList, deleteLeadList, getLeadList, importLeadCsv, importLeadSourceContacts, listLeadContacts, removeLeadContact, updateLeadContact } from './lead-lists.js';
 import { createLeadSource } from './leads.js';
+import { createManagedCampaign, listCampaignMembers, pauseManagedCampaign, startManagedCampaign } from './managed-campaigns.js';
+import { upsertSeat } from './seats.js';
+import { saveWorkflow } from './workflows.js';
 
 /**
  * NO BROWSER AND NO LINKEDIN. The harvest is written straight into
@@ -63,9 +66,12 @@ beforeEach(async () => {
   await db
     .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
     .run(WORKSPACE_ID, 'LinkedIn Lead Lists Test', NOW.toISOString());
-  for (const table of ['linkedin_leads', 'linkedin_lead_sources', 'linkedin_actions', 'linkedin_campaigns', 'linkedin_lead_contacts', 'linkedin_lead_lists']) {
+  for (const table of ['linkedin_leads', 'linkedin_lead_sources', 'linkedin_actions', 'linkedin_campaigns', 'linkedin_workflows', 'linkedin_lead_contacts', 'linkedin_lead_lists', 'linkedin_seats']) {
     await db.prepare(`DELETE FROM ${table} WHERE workspace_id=?`).run(WORKSPACE_ID);
   }
+  // A managed campaign needs a seat to be created against, and the delete
+  // paths below are only interesting when there is a campaign holding the list.
+  await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'Europe/Zurich' }, new Date('2026-01-01T09:00:00.000Z'));
 });
 
 afterEach(async () => {
@@ -304,5 +310,156 @@ describe('importing only what the operator selected', () => {
     expect(all.inserted).toBe(1);
     expect(all.reused).toBe(2);
     expect(await contactCount()).toBe(3);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Deletion: of one person, and of a whole list.
+ *
+ * Everything below is about the same failure seen twice. `linkedin_actions`
+ * rows are not reachable by any foreign key -- `campaign_member_id` is a plain
+ * attribution column (migration 046) -- so a cascade that removes a person
+ * leaves their queued outreach behind, and something later sends it. The
+ * status that made this newly dangerous is 'held' (migration 051): a paused
+ * campaign's whole queue sits in it, and `startManagedCampaign` restores
+ * EVERY held row of a campaign to 'planned' in one statement, orphans
+ * included.
+ * ------------------------------------------------------------------------ */
+
+async function listWith(name: string, handles: readonly string[]): Promise<string> {
+  const list = await createLeadList(db, { workspaceId: WORKSPACE_ID, name }, NOW);
+  const csv = ['First Name,Last Name,Company,LinkedIn URL']
+    .concat(handles.map((handle) => `${handle},Person,Acme,https://www.linkedin.com/in/${handle}/`))
+    .join('\n');
+  await importLeadCsv(db, { workspaceId: WORKSPACE_ID, listId: list.id, csv }, NOW);
+  return list.id;
+}
+
+async function workflowId(name = 'Connect'): Promise<string> {
+  return (await saveWorkflow(db, {
+    workspaceId: WORKSPACE_ID,
+    name,
+    steps: [{ id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: 'Hi {{first_name}}' } }]
+  }, NOW)).id;
+}
+
+/** A queued ledger row attributed to a member, the way the runner writes one. */
+async function queueFor(campaignId: string, memberId: string, handle: string, status: 'planned' | 'held'): Promise<string> {
+  const actionId = `lact_${handle}`;
+  await db.prepare(`
+    INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,campaign_member_id,status,planned_for,source,replay_scope,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(actionId, WORKSPACE_ID, 'owner', 'invite', `https://www.linkedin.com/in/${handle}/`, campaignId, memberId, status, NOW.toISOString(), 'campaign', `${memberId}:invite`, NOW.toISOString());
+  return actionId;
+}
+
+async function actionStatus(actionId: string): Promise<string | undefined> {
+  return (await db.prepare('SELECT status FROM linkedin_actions WHERE workspace_id=? AND id=?')
+    .get<{ status: string }>(WORKSPACE_ID, actionId))?.status;
+}
+
+describe('deleting a lead who is in a PAUSED campaign', () => {
+  /**
+   * The worst outcome this subsystem can produce, and it needed no unusual
+   * input: pause a campaign, delete one lead, resume. The invite went out from
+   * the customer's own account, to somebody they had explicitly deleted, days
+   * after they deleted them, and LinkedIn cannot recall it.
+   */
+  it('skips the held rows too, so resuming the campaign cannot message them', async () => {
+    const listId = await listWith('Paused list', ['maya']);
+    const created = await createManagedCampaign(db, { workspaceId: WORKSPACE_ID, name: 'Paused', leadListId: listId, workflowId: await workflowId() }, NOW);
+    await startManagedCampaign(db, WORKSPACE_ID, created.campaign.id, NOW);
+    const [member] = await listCampaignMembers(db, WORKSPACE_ID, created.campaign.id);
+    const actionId = await queueFor(created.campaign.id, member.id, 'maya', 'planned');
+
+    await pauseManagedCampaign(db, WORKSPACE_ID, created.campaign.id, NOW);
+    expect(await actionStatus(actionId)).toBe('held');
+
+    expect(await removeLeadContact(db, WORKSPACE_ID, member.contactId)).toBe(true);
+    expect(await actionStatus(actionId)).toBe('skipped');
+
+    // The resume is the statement that used to hand the orphan back to the
+    // worker. It restores every held row of the campaign in one UPDATE and has
+    // no way to know which of them lost their person.
+    await startManagedCampaign(db, WORKSPACE_ID, created.campaign.id, NOW);
+    expect(await actionStatus(actionId)).toBe('skipped');
+  });
+});
+
+describe('deleting a lead list', () => {
+  it('refuses while a running campaign is built on it, and says which one', async () => {
+    const listId = await listWith('Live list', ['maya']);
+    const created = await createManagedCampaign(db, { workspaceId: WORKSPACE_ID, name: 'Still running', leadListId: listId, workflowId: await workflowId() }, NOW);
+    await startManagedCampaign(db, WORKSPACE_ID, created.campaign.id, NOW);
+
+    await expect(deleteLeadList(db, WORKSPACE_ID, listId)).rejects.toThrow(/Still running/);
+    expect(await getLeadList(db, WORKSPACE_ID, listId)).toBeDefined();
+  });
+
+  it('refuses while a PAUSED campaign is built on it, because a pause is resumable', async () => {
+    const listId = await listWith('Paused list', ['maya']);
+    const created = await createManagedCampaign(db, { workspaceId: WORKSPACE_ID, name: 'Merely paused', leadListId: listId, workflowId: await workflowId() }, NOW);
+    await startManagedCampaign(db, WORKSPACE_ID, created.campaign.id, NOW);
+    await pauseManagedCampaign(db, WORKSPACE_ID, created.campaign.id, NOW);
+
+    await expect(deleteLeadList(db, WORKSPACE_ID, listId)).rejects.toThrow(/Merely paused/);
+  });
+
+  /**
+   * The reason there was no route for this at all. Migration 046 made
+   * `list_id` NOT NULL ON DELETE CASCADE, so the database's answer to "delete
+   * this list" was "delete every person who first arrived through it" --
+   * including the ones sitting in other lists, which is exactly what migration
+   * 052 made possible and warned about in writing.
+   */
+  it('deletes the list and its memberships, and NOT the people in it', async () => {
+    const origin = await listWith('Origin', ['maya', 'jonas']);
+    const second = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'Second' }, NOW);
+    // The same two people, added to a second list rather than copied into it.
+    const reuse = await importLeadCsv(db, {
+      workspaceId: WORKSPACE_ID,
+      listId: second.id,
+      csv: 'First Name,Last Name,Company,LinkedIn URL\nmaya,Person,Acme,https://www.linkedin.com/in/maya/\njonas,Person,Acme,https://www.linkedin.com/in/jonas/'
+    }, NOW);
+    expect(reuse.reused).toBe(2);
+
+    const report = await deleteLeadList(db, WORKSPACE_ID, origin);
+
+    expect(report).toMatchObject({ name: 'Origin', membershipsRemoved: 2, contactsDetached: 2, campaignsDetached: 0, membersRemoved: 0, actionsSkipped: 0 });
+    expect(await getLeadList(db, WORKSPACE_ID, origin)).toBeUndefined();
+    // Both people are still leads, still in the other list, and no longer
+    // record an origin -- which is the true answer, not a repointed one.
+    expect(await contactCount()).toBe(2);
+    expect(await countLeadContacts(db, WORKSPACE_ID, second.id)).toBe(2);
+    const orphaned = await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_lead_contacts WHERE workspace_id=? AND list_id IS NULL')
+      .get<{ total: number }>(WORKSPACE_ID);
+    expect(orphaned?.total).toBe(2);
+  });
+
+  it('releases the planned AND held work of every campaign it detaches', async () => {
+    const listId = await listWith('Draft list', ['maya', 'jonas']);
+    const created = await createManagedCampaign(db, { workspaceId: WORKSPACE_ID, name: 'Never started', leadListId: listId, workflowId: await workflowId() }, NOW);
+    const members = await listCampaignMembers(db, WORKSPACE_ID, created.campaign.id);
+    const planned = await queueFor(created.campaign.id, members[0].id, 'maya', 'planned');
+    const held = await queueFor(created.campaign.id, members[1].id, 'jonas', 'held');
+    await db.prepare(`
+      INSERT INTO linkedin_manual_tasks (id,workspace_id,campaign_id,member_id,contact_id,seat_key,workflow_step_id,status,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).run('litask_draft', WORKSPACE_ID, created.campaign.id, members[0].id, members[0].contactId, 'owner', 'invite', 'pending', NOW.toISOString());
+
+    const report = await deleteLeadList(db, WORKSPACE_ID, listId);
+
+    expect(report).toMatchObject({ campaignsDetached: 1, membersRemoved: 2, tasksCancelled: 1, actionsSkipped: 2, membershipsRemoved: 2, contactsDetached: 2 });
+    expect(await actionStatus(planned)).toBe('skipped');
+    expect(await actionStatus(held)).toBe('skipped');
+    // The campaign survives with no list, rather than being deleted with it.
+    const campaign = await db.prepare('SELECT lead_list_id FROM linkedin_campaigns WHERE workspace_id=? AND id=?')
+      .get<{ lead_list_id: string | null }>(WORKSPACE_ID, created.campaign.id);
+    expect(campaign?.lead_list_id).toBeNull();
+    expect(await contactCount()).toBe(2);
+  });
+
+  it('answers undefined for a list this workspace does not have', async () => {
+    expect(await deleteLeadList(db, WORKSPACE_ID, 'lilst_nope')).toBeUndefined();
   });
 });

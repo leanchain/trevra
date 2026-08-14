@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { DEMO_USER_ID, DEMO_WORKSPACE_ID, id, openDatabase, resetDemoData, type Db } from '../db.js';
 import { listDomainEvents } from '../control-plane/events.js';
 import { registerSkill } from '../skills/registry.js';
-import { decidePlaybookApproval, startPlaybookRun } from './engine.js';
+import { decidePlaybookApproval, getPlaybookRun, startPlaybookRun } from './engine.js';
 import { registerPlaybook } from './registry.js';
 
 
@@ -293,6 +293,60 @@ describe('durable playbook engine', () => {
     expect(events.map((event) => event.eventType)).toContain('action.executed');
   });
 
+});
+
+/**
+ * `playbook_step_runs` is the table the engine leases, advances and executes
+ * from, and until 058 it had no `workspace_id`: a step run's tenant was
+ * whatever `playbook_runs` said, discoverable only by joining back. That made
+ * `WHERE playbook_run_id=?` -- the query that builds the step list every
+ * `advancePlaybookRun` iteration reads -- a predicate with no tenant in it at
+ * all.
+ *
+ * The column is nullable at this stage, so the write assertion below checks the
+ * value written, not NOT NULL.
+ */
+describe('workspace attribution on playbook step runs', () => {
+  it('writes the run\'s workspace on every step run, and hides a step run owned by another workspace', async () => {
+    const database = await openTestDb();
+    const foreignWorkspaceId = id('ws');
+    const now = new Date().toISOString();
+    await database.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+      .run(foreignWorkspaceId, 'Foreign tenant', now);
+    try {
+      const run = await startPlaybookRun(database, {
+        workspaceId: DEMO_WORKSPACE_ID,
+        playbookId: 'test.score-approval',
+        payload: { lead: { platform: 'shopify' } },
+        actorType: 'user',
+        actorId: DEMO_USER_ID
+      });
+
+      const written = await database.prepare('SELECT workspace_id FROM playbook_step_runs WHERE playbook_run_id=?')
+        .all<{ workspace_id: string | null }>(run.id);
+      expect(written.length).toBeGreaterThan(0);
+      expect(written.every((row) => row.workspace_id === DEMO_WORKSPACE_ID)).toBe(true);
+
+      // A step run belonging to another tenant, parented onto this run. Its
+      // status is `failed`, which is the state `advancePlaybookRun` reacts to by
+      // failing the whole run -- so before the read was scoped, one foreign row
+      // was enough to kill another tenant's playbook.
+      await database.prepare(`
+        INSERT INTO playbook_step_runs (id,workspace_id,playbook_run_id,step_id,step_type,status,attempt,available_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).run(id('pbs'), foreignWorkspaceId, run.id, 'ghost', 'skill', 'failed', 1, now, now);
+
+      const raw = await database.prepare('SELECT COUNT(*)::int AS total FROM playbook_step_runs WHERE playbook_run_id=? AND step_id=?')
+        .get<{ total: number }>(run.id, 'ghost');
+      expect(raw?.total).toBe(1);
+
+      const reloaded = await getPlaybookRun(database, DEMO_WORKSPACE_ID, run.id);
+      expect(reloaded?.steps.map((step) => step.stepId)).not.toContain('ghost');
+      expect(reloaded?.status).toBe('waiting_approval');
+    } finally {
+      await database.prepare('DELETE FROM workspaces WHERE id=?').run(foreignWorkspaceId);
+    }
+  });
 });
 
 describe('prepared revenue action adapters', () => {

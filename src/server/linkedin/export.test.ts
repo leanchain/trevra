@@ -288,7 +288,10 @@ describe('the ledger write', () => {
     await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(DEMO_WORKSPACE_ID);
     await expect(
       exportCampaign(db, { workspaceId: DEMO_WORKSPACE_ID, plan: plan(), sequence: sequence(), format: 'dripify' }, NOW)
-    ).rejects.toThrow(/No LinkedIn seat is configured/);
+      // Names the seat the PLAN asked for, because that is the one that was
+      // looked up: `getSeat` defaults to the owner seat and this call used to
+      // omit the argument, so the refusal quoted a key it had never checked.
+    ).rejects.toThrow(/No LinkedIn seat 'owner' is configured/);
   });
 });
 
@@ -515,5 +518,86 @@ describe('the approved-action payload', () => {
         sequence: sequence()
       })
     ).toThrow();
+  });
+});
+
+/**
+ * WHOSE TIMEZONE AND WHOSE RAMP THE FILE IS RENDERED IN.
+ *
+ * `exportCampaign` computes `seatKey` from the plan and then read the OWNER
+ * seat, because `getSeat` defaults its third argument. In a single-seat
+ * workspace those are the same row and nothing was visibly wrong. In a
+ * multi-account one the export was printed in another account's hours and
+ * quoted another account's warm-up week -- on every schedule line, in the
+ * header block, and in the `DAILY SEND COUNTS` section a human reads before
+ * pasting the file into their own tool.
+ */
+describe('the seat an export is rendered for', () => {
+  /** A second account in the same workspace: a different zone, and a brand-new ramp. */
+  async function salesSeat(): Promise<void> {
+    await upsertSeat(
+      db,
+      DEMO_WORKSPACE_ID,
+      { label: 'Sales (SDR)', timezone: 'Pacific/Auckland' },
+      // Activated today, so it is warm-up week 1 where the owner seat is past
+      // its ramp. The two numbers cannot be confused for one another.
+      NOW,
+      'sales'
+    );
+  }
+
+  it('renders in the named seat\'s timezone, not the owner seat\'s', async () => {
+    await salesSeat();
+    const exported = await exportCampaign(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, plan: plan({ seatKey: 'sales' }), sequence: sequence(), format: 'generic' },
+      NOW
+    );
+    expect(exported.timezone).toBe('Pacific/Auckland');
+    expect(exported.content).toContain('Pacific/Auckland');
+    expect(exported.content).not.toContain('Europe/Berlin');
+  });
+
+  it('quotes the named seat\'s warm-up week, not the owner seat\'s', async () => {
+    await salesSeat();
+    const owner = await exportCampaign(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, plan: plan(), sequence: sequence(), format: 'generic' },
+      NOW
+    );
+    const sales = await exportCampaign(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, plan: plan({ seatKey: 'sales' }), sequence: sequence(), format: 'generic' },
+      NOW
+    );
+    // The owner seat was activated in January and is past the ramp; the sales
+    // seat was activated at NOW and is in week 1 of it.
+    expect(owner.content).toContain('past the');
+    expect(sales.content).toContain('Warm-up week 1');
+  });
+
+  it('groups the schedule into the named seat\'s local days', async () => {
+    await salesSeat();
+    // 2026-08-06T08:14Z is the 6th in Berlin and already the 6th at 20:14 in
+    // Auckland; 2026-08-04T13:02Z is the 4th in Berlin and the 5th in
+    // Auckland. Grouping against the wrong seat puts a slot on the wrong day.
+    const sales = await exportCampaign(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, plan: plan({ seatKey: 'sales' }), sequence: sequence(), format: 'generic' },
+      NOW
+    );
+    expect(sales.schedule.map((day) => day.date)).toEqual(['2026-08-04', '2026-08-05', '2026-08-06']);
+  });
+
+  it('refuses by name when the plan\'s seat is the missing one, even though the owner seat exists', async () => {
+    await expect(
+      exportCampaign(
+        db,
+        { workspaceId: DEMO_WORKSPACE_ID, plan: plan({ seatKey: 'sales' }), sequence: sequence(), format: 'dripify' },
+        NOW
+      )
+      // The old code found the owner seat, exported happily, and printed the
+      // whole file in the wrong account's hours.
+    ).rejects.toThrow(/No LinkedIn seat 'sales' is configured/);
   });
 });

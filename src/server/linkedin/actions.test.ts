@@ -341,3 +341,49 @@ describe('hasTarget', () => {
     expect(await hasTarget(db, SEAT, 'invite', 'https://in/exported', null, '   ')).toBe(true);
   });
 });
+
+/**
+ * 'held' NEVER HAPPENED, SO IT NEVER COSTS ANYTHING.
+ *
+ * `COUNTED` excluded it only by accident: every caller pairs the predicate with
+ * `AND recorded_at > ?`, and a held row's `recorded_at` is normally null, so
+ * the wrong predicate produced the right answer. Nothing enforced the pairing.
+ * These two tests hold both halves down -- the predicate on its own, and the
+ * column that made it look correct.
+ */
+describe('a held row is not delivered work', () => {
+  it('stays out of a rolling window even when it carries a recorded_at', async () => {
+    await log({ kind: 'invite', status: 'sent', hoursAgo: 1, target: 'https://in/really-sent' });
+
+    // Not hypothetical: `pauseManagedCampaign` writes 'held' without touching
+    // `recorded_at`, so any row parked after an outcome was reported has one.
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,source,recorded_at,replay_scope,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      'lact_held_window_test',
+      WORKSPACE_ID,
+      'owner',
+      'invite',
+      'https://in/parked',
+      'held',
+      'campaign',
+      NOW.toISOString(),
+      'legacy',
+      NOW.toISOString()
+    );
+
+    // Two rows, one delivery. Counting the held one would charge this seat's
+    // daily ceiling for work a human explicitly stopped.
+    expect(await countActionsInWindow(db, SEAT, 'invite', 24, NOW)).toBe(1);
+  });
+
+  it('is written with no recorded_at, so it can never date a budget', async () => {
+    await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://in/held-fresh', status: 'held', source: 'campaign' },
+      NOW
+    );
+    expect((await rowFor('https://in/held-fresh')).recorded_at).toBeNull();
+  });
+});

@@ -23,6 +23,19 @@ RUN npm ci
 # to start is harder to diagnose than one that was never installed.
 RUN npx playwright install --with-deps chromium
 
+# Patchright's own copy of the same Chromium.
+#
+# Patchright is a patched Playwright: it never calls `Runtime.enable`, which is
+# the CDP side-channel every serious bot-detection vendor now checks for, and it
+# stops leaking `__pwInitScripts` and `__playwright__binding__` into every page.
+# `loadLinkedInPlaywright` prefers it and falls back to stock playwright, so the
+# image carries both -- the fallback is worth an image layer, because a seat that
+# cannot open a browser at all is worse than one that opens a detectable one.
+#
+# It pins its own browser revision, so this does not resolve to the download
+# above; both are needed. Same `chromium`-only, same `--with-deps` reasoning.
+RUN npx patchright install --with-deps chromium
+
 # The subscription CLIs the hosted agent can run instead of a BYOK model key
 # (TREVRA_AGENT_CLI in .env.example). They ship no credential -- the container
 # gets one at runtime through TREVRA_AGENT_CLI_OAUTH_TOKEN, because there is no

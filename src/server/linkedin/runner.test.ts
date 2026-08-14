@@ -662,3 +662,173 @@ describe('managed campaign runner', () => {
     expect((await actions()).filter((row) => row.kind === 'follow')).toHaveLength(0);
   });
 });
+
+/**
+ * THE TICK AFTER THE PER-MEMBER TRANSACTIONS WERE HOISTED OUT OF THE LOOP.
+ *
+ * The loop opened a `db.transaction` per member and then spent six or seven
+ * more round trips inside it on single-row UPDATEs; it now runs one
+ * transaction per CAMPAIGN and flushes every member's resulting row state in
+ * one `UPDATE ... FROM unnest`, plus one batched insert for manual tasks.
+ *
+ * The risk a batched write carries is that several members in one tick take
+ * DIFFERENT branches and the flush writes one of them over another, so these
+ * put several branches in a single tick and assert each member's own outcome.
+ */
+describe('one tick, several members, several branches', () => {
+  it('writes each member\'s own outcome when one tick takes four different branches', async () => {
+    const listId = await seededList('Mixed', [
+      { first: 'Plans', last: 'Fine', company: 'Acme', slug: 'plans-fine' },
+      { first: 'Already', last: 'Replied', company: 'Acme', slug: 'already-replied' },
+      { first: 'Also', last: 'Plans', company: 'Acme', slug: 'also-plans' },
+      { first: 'No', last: 'Url', company: 'Acme', slug: 'no-url' }
+    ]);
+    // The fourth contact loses its profile URL, which is the `failed` branch:
+    // an action with no target is unclaimable, so the member is released
+    // rather than left due forever.
+    await db.prepare('UPDATE linkedin_lead_contacts SET profile_url=NULL WHERE workspace_id=? AND profile_url LIKE ?')
+      .run(WORKSPACE, '%no-url%');
+
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Mixed',
+      steps: [
+        { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
+        { id: 'follow', action: 'follow', delayBefore: { amount: 1, unit: 'hours' }, config: {} }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Mixed');
+
+    // A ledger row that already replied, for the second contact only. The
+    // target is read back from the list rather than retyped, so the assertion
+    // is about the flush and not about URL spelling.
+    const contacts = await listLeadContacts(db, WORKSPACE, listId);
+    const alreadyReplied = contacts.find((contact) => contact.profileUrl?.includes('already-replied'))?.profileUrl as string;
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id, workspace_id, seat_key, kind, target_ref, status, recorded_at, source, replay_scope, created_at)
+      VALUES ('lact_pre_reply', ?, 'owner', 'dm', ?, 'replied', ?, 'manual', 'legacy', ?)
+    `).run(WORKSPACE, alreadyReplied, NOW.toISOString(), NOW.toISOString());
+
+    const result = await runManagedCampaigns(db, WORKSPACE, NOW);
+    // Two profile views planned (the healthy members), one member
+    // short-circuited on a reply, one released as failed -- and none of them
+    // wrote over another in the single flush at the end of the tick.
+    expect(result.actionsPlanned).toBe(2);
+    expect(result.membersBlocked).toBe(1);
+
+    const byContact = new Map(
+      (await db.prepare(`
+        SELECT l.profile_url, m.status, m.step_index
+        FROM linkedin_campaign_members m
+        JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
+        WHERE m.workspace_id=? AND m.campaign_id=?
+      `).all<{ profile_url: string | null; status: string; step_index: number }>(WORKSPACE, campaignId))
+        .map((row) => [row.profile_url ?? 'none', row])
+    );
+
+    const forSlug = (slug: string) => byContact.get(contacts.find((contact) => contact.profileUrl?.includes(slug))?.profileUrl ?? '');
+    expect(forSlug('plans-fine')).toMatchObject({ status: 'waiting', step_index: 1 });
+    expect(forSlug('also-plans')).toMatchObject({ status: 'waiting', step_index: 1 });
+    expect(forSlug('already-replied')).toMatchObject({ status: 'replied', step_index: 0 });
+    expect(byContact.get('none')).toMatchObject({ status: 'failed', step_index: 0 });
+  });
+
+  it('creates one manual task per member in a single tick, and parks each of them', async () => {
+    const listId = await seededList('Humans', [
+      { first: 'One', last: 'Person', company: 'Acme', slug: 'one-person' },
+      { first: 'Two', last: 'Person', company: 'Acme', slug: 'two-person' },
+      { first: 'Three', last: 'Person', company: 'Acme', slug: 'three-person' }
+    ]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Manual only',
+      steps: [{ id: 'ask', action: 'manual_message', delayBefore: { amount: 0, unit: 'hours' }, config: { suggestedTemplate: 'Hi {{firstName}}' } }]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Manual only');
+
+    const result = await runManagedCampaigns(db, WORKSPACE, NOW);
+    expect(result.manualTasksCreated).toBe(3);
+    const tasks = (await listManualTasks(db, WORKSPACE)).filter((task) => task.campaignId === campaignId);
+    expect(tasks).toHaveLength(3);
+    expect(tasks.map((task) => task.suggestedBody).sort()).toEqual(['Hi One', 'Hi Three', 'Hi Two']);
+    expect((await members(campaignId)).every((member) => member.status === 'manual' && member.step_index === 0)).toBe(true);
+
+    // Re-ticking must not queue a second task for a member already waiting on
+    // a human: the partial unique index refuses it and the count stays honest.
+    const second = await runManagedCampaigns(db, WORKSPACE, at(HOUR));
+    expect(second.manualTasksCreated).toBe(0);
+    expect((await listManualTasks(db, WORKSPACE)).filter((task) => task.campaignId === campaignId)).toHaveLength(3);
+  });
+
+  it('records the A/B variant for each member without clobbering the others', async () => {
+    // Two, not more: day 1 of a managed campaign is 20% of the seat's daily
+    // message ceiling, so a third member would simply not be planned this tick
+    // and the assertion would be about the ramp rather than about the flush.
+    const listId = await seededList('Variants', [
+      { first: 'Ay', last: 'One', company: 'Acme', slug: 'ay-one' },
+      { first: 'Bee', last: 'Two', company: 'Acme', slug: 'bee-two' }
+    ]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Split',
+      steps: [{
+        id: 'msg',
+        action: 'message',
+        delayBefore: { amount: 0, unit: 'hours' },
+        config: { variants: [{ id: 'a', body: 'Hello {{firstName}} (a)' }, { id: 'b', body: 'Hello {{firstName}} (b)' }] }
+      }]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Split');
+
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    const rows = await db.prepare(`
+      SELECT m.assigned_variants, a.variant_id
+      FROM linkedin_campaign_members m
+      JOIN linkedin_actions a ON a.campaign_member_id = m.id AND a.workspace_id = m.workspace_id
+      WHERE m.workspace_id=? AND m.campaign_id=?
+    `).all<{ assigned_variants: unknown; variant_id: string | null }>(WORKSPACE, campaignId);
+
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const assigned = typeof row.assigned_variants === 'string'
+        ? (JSON.parse(row.assigned_variants) as Record<string, string>)
+        : (row.assigned_variants as Record<string, string>);
+      // The member's stored choice and the row the worker will send must be
+      // the same arm, for every member, in one batched flush.
+      expect(assigned.msg).toBe(row.variant_id);
+    }
+  });
+
+  it('stops the workflow for a reply logged against a target_ref carrying a tracking query', async () => {
+    // `target_ref` is opaque: a harvested LinkedIn href carries
+    // `?miniProfileUrn=...` every single time, so the ledger genuinely holds
+    // `.../in/x?trk=y` for the person the contact list calls `.../in/x`. The
+    // raw lower-cased comparison this used to do saw two different people and
+    // sent the next scripted follow-up on top of a human answer.
+    const listId = await seededList('Tracked', [{ first: 'Tracked', last: 'Lead', company: 'Acme', slug: 'tracked-lead' }]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'View then follow',
+      steps: [
+        { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
+        { id: 'follow', action: 'follow', delayBefore: { amount: 1, unit: 'hours' }, config: {} }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Tracked');
+
+    // The exact spelling the contact list stores, plus a tracking query: the
+    // point is that the two are one person and the comparison must say so.
+    const contactUrl = (await listLeadContacts(db, WORKSPACE, listId))[0].profileUrl as string;
+    // The tracked URL is a PARAMETER rather than a SQL literal, because
+    // Db.prepare rewrites every question mark in a statement into a positional
+    // placeholder -- including one inside a query string.
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id, workspace_id, seat_key, kind, target_ref, status, recorded_at, source, replay_scope, created_at)
+      VALUES ('lact_tracked', ?, 'owner', 'dm', ?, 'replied', ?, 'manual', 'legacy', ?)
+    `).run(WORKSPACE, `${contactUrl}?trk=nav`, NOW.toISOString(), NOW.toISOString());
+
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    expect((await members(campaignId))[0].status).toBe('replied');
+    expect(await actions()).toHaveLength(1);
+  });
+});

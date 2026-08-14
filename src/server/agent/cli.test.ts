@@ -1,8 +1,11 @@
 import { randomBytes } from 'node:crypto';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { deleteWorkspaceSecret, putWorkspaceCliAgentConfig, putWorkspaceSecret, setWorkspaceCliRiskAccepted } from '../secrets/store.js';
-import { buildCliArgs, resolveCliBackend, resolveWorkspaceCliBackend, type CliAgentRunInput } from './cli.js';
+import { buildCliArgs, childEnv, resolveCliBackend, resolveWorkspaceCliBackend, type CliAgentRunInput, type CliBackend } from './cli.js';
 
 const RUN: CliAgentRunInput = {
   workspaceId: 'ws_1',
@@ -221,5 +224,164 @@ describe('resolveWorkspaceCliBackend', () => {
       const backend = await resolveWorkspaceCliBackend(db, WORKSPACE_ID);
       expect(backend).toMatchObject({ kind: 'claude', model: 'sonnet', oauthToken: TOKEN });
     }
+  });
+});
+
+/**
+ * The child's environment.
+ *
+ * The property under test is the INVERSION, not the current contents of the
+ * allowlist: a name reaches the child because someone put it in
+ * `INHERITED_ENV` on purpose, never because the deployment happened to set it.
+ * So the assertions are (a) representative deployment secrets are absent --
+ * including one invented here that no deny list could ever have named -- and
+ * (b) the run still has what it needs to actually work.
+ *
+ * `KNOWN` below is a deliberate second copy of the allowlist. Adding a name to
+ * cli.ts is a security decision, and a decision should cost two files.
+ */
+describe('childEnv', () => {
+  /**
+   * Every one of these is really set on this process while the test runs (the
+   * test runner sets BETTER_AUTH_SECRET and DATABASE_URL itself), so an
+   * inherited environment would carry them.
+   */
+  const SECRETS: Record<string, string> = {
+    // Forges a session for any user in any workspace: total auth bypass.
+    BETTER_AUTH_SECRET: 'test-only-better-auth-secret-with-more-than-32-characters',
+    // The rotation-window sibling of TREVRA_SECRETS_KEY. Decrypts every
+    // tenant's stored LinkedIn/Reddit passwords and model keys. The old deny
+    // list named the first and not the second, which is the whole argument.
+    TREVRA_SECRETS_KEY_PREVIOUS: 'dGVzdC1vbmx5LXByZXZpb3VzLXNlY3JldHMta2V5LTMyIQ==',
+    TREVRA_AGENT_TOKEN_PEPPER: 'test-only-agent-token-pepper-over-32-characters',
+    STRIPE_SECRET_KEY: 'sk_test_only',
+    STRIPE_WEBHOOK_SECRET: 'whsec_test_only',
+    TREVRA_SANDBOX_GATEWAY_TOKEN: 'test-only-sandbox-gateway-token',
+    NANGO_API_KEY: 'test-only-nango-key',
+    NANGO_WEBHOOK_SIGNING_KEY: 'test-only-nango-signing-key',
+    GOOGLE_CLIENT_SECRET: 'test-only-google-client-secret',
+    TRACTION_ADMIN_TOKEN: 'test-only-traction-admin-token',
+    INGEST_API_KEY: 'test-only-ingest-key',
+    TEMPORAL_API_KEY: 'test-only-temporal-key',
+    MARKETING_HASH_SALT: 'test-only-marketing-hash-salt',
+    ANTHROPIC_API_KEY: 'sk-ant-test-only',
+    // The one that matters most: a secret added to the deployment AFTER this
+    // file was last edited. A deny list cannot name it; an allowlist does not
+    // have to.
+    TREVRA_SECRET_ADDED_NEXT_QUARTER: 'the-name-nobody-remembered-to-deny'
+  };
+
+  /** The allowlist, plus the per-run names `childEnv` sets on purpose. */
+  const KNOWN = new Set([
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+    'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+    'TREVRA_AGENT_TIMEOUT_MS',
+    'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'
+  ]);
+
+  const TOKEN = 'sk-ant-oat01-one-run-only';
+
+  function backend(overrides: Partial<CliBackend> & Pick<CliBackend, 'kind'>): CliBackend {
+    return {
+      bin: overrides.kind,
+      model: null,
+      mcpCommand: ['node', '/srv/trevra/mcp.js'],
+      apiUrl: 'http://127.0.0.1:43887',
+      oauthToken: null,
+      home: null,
+      ...overrides
+    };
+  }
+
+  const previous = new Map<string, string | undefined>();
+  let workDir: string;
+
+  beforeEach(async () => {
+    for (const [name, value] of Object.entries(SECRETS)) {
+      if (!previous.has(name)) previous.set(name, process.env[name]);
+      process.env[name] = value;
+    }
+    workDir = await mkdtemp(join(tmpdir(), 'trevra-agent-test-'));
+  });
+
+  afterEach(async () => {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    previous.clear();
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  function assertNoDeploymentSecrets(env: NodeJS.ProcessEnv): void {
+    for (const [name, value] of Object.entries(SECRETS)) {
+      expect(env[name], `${name} must not reach the child`).toBeUndefined();
+      expect(Object.values(env)).not.toContain(value);
+    }
+    // And nothing at all outside the allowlist, whatever it is called.
+    expect(Object.keys(env).filter((name) => !KNOWN.has(name))).toEqual([]);
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.TREVRA_AGENT_CLI_OAUTH_TOKEN).toBeUndefined();
+  }
+
+  it('gives a Claude run its credential, its own HOME, and none of the deployment', async () => {
+    const env = await childEnv(backend({ kind: 'claude', oauthToken: TOKEN }), workDir);
+
+    assertNoDeploymentSecrets(env);
+
+    // What the run needs: a way to find the binary, and this run's credential.
+    expect(env.PATH).toBe(process.env.PATH);
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(TOKEN);
+
+    // A HOME of its own, private, inside the directory the run deletes.
+    expect(env.HOME).toBe(join(workDir, 'claude-home'));
+    expect(env.HOME).not.toBe(process.env.HOME);
+    expect(env.CLAUDE_CONFIG_DIR).toBe(join(workDir, 'claude-home', '.claude'));
+    expect(((await stat(env.HOME!)).mode & 0o777)).toBe(0o700);
+    expect(JSON.parse(await readFile(join(env.HOME!, '.claude.json'), 'utf8')))
+      .toMatchObject({ hasCompletedOnboarding: true });
+    // The credential is passed, never written down.
+    expect(await readFile(join(env.HOME!, '.claude.json'), 'utf8')).not.toContain(TOKEN);
+  });
+
+  it('leaves the self-hoster their signed-in HOME, since that IS their credential', async () => {
+    const env = await childEnv(backend({ kind: 'claude' }), workDir);
+    assertNoDeploymentSecrets(env);
+    expect(env.HOME).toBe(process.env.HOME);
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it('honours a mounted credential directory when there is no token to isolate', async () => {
+    const env = await childEnv(backend({ kind: 'claude', home: '/creds' }), workDir);
+    expect(env.HOME).toBe('/creds');
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
+  it('gives a Codex run a scratch CODEX_HOME and none of the deployment', async () => {
+    // A stub `codex` that does what `codex login --with-access-token` does:
+    // read the token from stdin and write it into CODEX_HOME.
+    const bin = join(workDir, 'codex-stub');
+    await writeFile(bin, '#!/bin/sh\ncat > "$CODEX_HOME/auth.json"\n', { mode: 0o755 });
+
+    const env = await childEnv(backend({ kind: 'codex', bin, oauthToken: TOKEN }), workDir);
+
+    assertNoDeploymentSecrets(env);
+    expect(env.PATH).toBe(process.env.PATH);
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+
+    // The login really ran, in a directory that dies with the run -- and it
+    // ran with the same stripped environment, or `cat` would not have found a
+    // PATH to run under.
+    expect(env.CODEX_HOME).toBe(join(workDir, 'codex-home'));
+    expect((await readFile(join(env.CODEX_HOME!, 'auth.json'), 'utf8')).trim()).toBe(TOKEN);
+    expect(((await stat(env.CODEX_HOME!)).mode & 0o777)).toBe(0o700);
+  });
+
+  it('points Codex at a mounted credential directory when there is no token', async () => {
+    const env = await childEnv(backend({ kind: 'codex', home: '/creds' }), workDir);
+    expect(env.CODEX_HOME).toBe('/creds/.codex');
+    expect(env.HOME).toBe('/creds');
   });
 });

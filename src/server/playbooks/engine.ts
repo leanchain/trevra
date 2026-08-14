@@ -60,11 +60,15 @@ export async function startPlaybookRun(
       JSON.stringify(parsedInput),correlationId,now,now,now
     );
     for (const step of playbook.steps) {
+      // Same `input.workspaceId` the `playbook_runs` insert above already
+      // stored: a step run belongs to exactly the tenant that owns its run, and
+      // 058 gave the child table a column to say so instead of making every
+      // reader join back to `playbook_runs` to find out.
       await tx.prepare(`
         INSERT INTO playbook_step_runs (
-          id,playbook_run_id,step_id,step_type,skill_id,status,attempt,available_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?)
-      `).run(id('pbs'),runId,step.id,step.type,step.type === 'skill' ? step.skillId : null,'pending',1,now,now);
+          id,workspace_id,playbook_run_id,step_id,step_type,skill_id,status,attempt,available_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+      `).run(id('pbs'),input.workspaceId,runId,step.id,step.type,step.type === 'skill' ? step.skillId : null,'pending',1,now,now);
     }
     await appendDomainEvent(tx, {
       workspaceId: input.workspaceId,
@@ -86,7 +90,7 @@ export async function startPlaybookRun(
 }
 
 export async function advancePlaybookRun(db: Db, workspaceId: string, runId: string): Promise<PlaybookRun> {
-  await recoverStaleSteps(db, runId);
+  await recoverStaleSteps(db, workspaceId, runId);
 
   for (let guard = 0; guard < 100; guard += 1) {
     const run = await getPlaybookRun(db, workspaceId, runId);
@@ -251,10 +255,18 @@ export async function getPlaybookRun(db: Db, workspaceId: string, runId: string)
   const row = await db.prepare('SELECT * FROM playbook_runs WHERE id=? AND workspace_id=?')
     .get<Record<string, unknown>>(runId,workspaceId);
   if (!row) return null;
+  // `row` proves the RUN belongs to `workspaceId`. The step read below used to
+  // trust `playbook_run_id` alone to inherit that proof -- which holds only as
+  // long as no step run ever carries a run id from another tenant. Now that the
+  // child row states its own workspace, require the two to agree: a mis-parented
+  // step run must not appear in this run's step list, where the engine would
+  // advance it, lease it, and execute whatever skill it names. The `IS NULL`
+  // arm keeps step runs written before this change visible, and is removed
+  // together with the nullable column.
   const stepRows = await db.prepare(`
     SELECT DISTINCT ON (step_id) * FROM playbook_step_runs
-    WHERE playbook_run_id=? ORDER BY step_id,attempt DESC
-  `).all<Record<string, unknown>>(runId);
+    WHERE playbook_run_id=? AND (workspace_id IS NULL OR workspace_id=?) ORDER BY step_id,attempt DESC
+  `).all<Record<string, unknown>>(runId,workspaceId);
   const playbook = getPlaybook(String(row.playbook_key),String(row.playbook_version));
   const order = new Map((playbook?.steps ?? []).map((step,index) => [step.id,index]));
   const steps = stepRows.map(serializeStep).sort((a,b) => (order.get(a.stepId) ?? 999) - (order.get(b.stepId) ?? 999));
@@ -395,11 +407,13 @@ async function runActionStep(
         await tx.prepare(`
           UPDATE playbook_step_runs SET status='failed',error=?,finished_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE id=?
         `).run(error, failedAt, failedAt, String(stepRun.id));
+        // The retry row inherits the workspace of the run being retried, which
+        // `advancePlaybookRun` already loaded under `workspace_id=?`.
         await tx.prepare(`
           INSERT INTO playbook_step_runs (
-            id,playbook_run_id,step_id,step_type,status,attempt,available_at,updated_at
-          ) VALUES (?,?,?,?,?,?,?,?)
-        `).run(id('pbs'), run.id, step.id, 'action', 'pending', attempt + 1, availableAt, failedAt);
+            id,workspace_id,playbook_run_id,step_id,step_type,status,attempt,available_at,updated_at
+          ) VALUES (?,?,?,?,?,?,?,?,?)
+        `).run(id('pbs'), run.workspaceId, run.id, step.id, 'action', 'pending', attempt + 1, availableAt, failedAt);
         await tx.prepare(`UPDATE playbook_runs SET status='queued',current_step_id=?,error=NULL,updated_at=? WHERE id=?`)
           .run(step.id, failedAt, run.id);
         await appendDomainEvent(tx, {
@@ -524,11 +538,13 @@ async function runSkillStep(
       await tx.prepare(`
         UPDATE playbook_step_runs SET status='failed',skill_run_id=?,output_json=?,error=?,finished_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE id=?
       `).run(result.run.id,JSON.stringify(result.run.output),result.run.error,now,now,String(stepRun.id));
+      // Same as the action retry above: the tenant comes from the run, not from
+      // the skill result and not from a default.
       await tx.prepare(`
         INSERT INTO playbook_step_runs (
-          id,playbook_run_id,step_id,step_type,skill_id,skill_version,status,attempt,available_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?)
-      `).run(id('pbs'),run.id,step.id,'skill',step.skillId,skill.version,'pending',attempt+1,availableAt,now);
+          id,workspace_id,playbook_run_id,step_id,step_type,skill_id,skill_version,status,attempt,available_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      `).run(id('pbs'),run.workspaceId,run.id,step.id,'skill',step.skillId,skill.version,'pending',attempt+1,availableAt,now);
       await tx.prepare(`UPDATE playbook_runs SET status='queued',current_step_id=?,error=NULL,updated_at=? WHERE id=?`)
         .run(step.id,now,run.id);
       await appendDomainEvent(tx,{
@@ -597,12 +613,16 @@ async function claimStep(db: Db, stepRunId: string): Promise<Record<string, unkn
   return claimed ?? null;
 }
 
-async function recoverStaleSteps(db: Db, runId: string): Promise<void> {
+// Takes `workspaceId` so the lease recovery below can be scoped: it rewrites
+// step-run state on the strength of a parent id, and an expired lease on a
+// mis-parented row would otherwise be reset by whichever tenant happens to
+// advance a run with the same id. The caller already holds the value.
+async function recoverStaleSteps(db: Db, workspaceId: string, runId: string): Promise<void> {
   const now = new Date().toISOString();
   await db.prepare(`
     UPDATE playbook_step_runs SET status='pending',lease_owner=NULL,lease_expires_at=NULL,updated_at=?
-    WHERE playbook_run_id=? AND status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
-  `).run(now,runId,now);
+    WHERE playbook_run_id=? AND (workspace_id IS NULL OR workspace_id=?) AND status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
+  `).run(now,runId,workspaceId,now);
 }
 
 async function failStep(

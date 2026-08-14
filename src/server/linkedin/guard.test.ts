@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
-import { LINKEDIN_CHECK_NAMES, evaluateLinkedInSafety, type LinkedInCheckName, type LinkedInSafetyVerdict } from './guard.js';
+import { LINKEDIN_CHECK_NAMES, evaluateLinkedInSafety, linkedinGuardSkill, type LinkedInCheckName, type LinkedInSafetyVerdict } from './guard.js';
 import { MAX_OUTSTANDING_INVITES } from './limits.js';
 import { upsertSeat } from './seats.js';
 
@@ -725,5 +725,75 @@ describe('the warm-up ceiling override', () => {
     const dm = await guard({ kind: 'dm', overrideWarmupCeiling: true });
     expect(check(dm, 'warmup-ceiling').passed).toBe(false);
     expect(check(dm, 'warmup-ceiling').detail).not.toContain('overrode');
+  });
+});
+
+/**
+ * THE SKILL'S OWN SEAT RESOLUTION.
+ *
+ * `evaluateLinkedInSafety` still defaults an ABSENT `seatKey` to the owner
+ * seat, and that is correct for it: it is the internal function every
+ * single-seat call site in this subsystem has always called that way. What
+ * changed is the SKILL boundary -- an agent calling `gtm.linkedin-guard`
+ * without naming an account has not asked for the owner one, and the schema no
+ * longer answers on its behalf. `resolveSkillSeatKey` (pacing.ts) is where
+ * that decision lives and where its cases are asserted; this pins the two
+ * facts about the gate that go with it.
+ */
+describe('the guard skill and the seat it is asked about', () => {
+  it('leaves seatKey optional on the input schema rather than defaulting it', () => {
+    // A default here would make "unspecified" indistinguishable from "the
+    // owner account" at the one boundary where an agent, not a call site, is
+    // supplying the value.
+    const parsed = linkedinGuardSkill.manifest.inputSchema.parse({
+      kind: 'invite',
+      targetRef: 'https://www.linkedin.com/in/maya/',
+      plannedFor: SLOT
+    }) as { seatKey?: string };
+    expect(parsed.seatKey).toBeUndefined();
+  });
+
+  it('prices its ceilings against the seat it is given, not the owner seat', async () => {
+    // The owner seat is established; the sales seat was activated today and is
+    // in warm-up week 1. Evaluating one against the other's ramp is the
+    // wrong-account action the resolution exists to prevent.
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, new Date('2026-01-05T09:00:00.000Z'));
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales (SDR)', timezone: 'UTC' }, NOW, 'sales');
+
+    const owner = await evaluateLinkedInSafety(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/maya/', plannedFor: SLOT },
+      NOW
+    );
+    const sales = await evaluateLinkedInSafety(
+      db,
+      { workspaceId: WORKSPACE_ID, seatKey: 'sales', kind: 'invite', targetRef: 'https://www.linkedin.com/in/maya/', plannedFor: SLOT },
+      NOW
+    );
+
+    expect(owner.checks.find((entry) => entry.check === 'seat-configured')?.detail).toContain("'Owner'");
+    expect(sales.checks.find((entry) => entry.check === 'seat-configured')?.detail).toContain("'Sales (SDR)'");
+    expect(sales.checks.find((entry) => entry.check === 'warmup-ceiling')?.detail).toContain('Warm-up week 1 permits no invites');
+    expect(sales.checks.find((entry) => entry.check === 'warmup-ceiling')?.passed).toBe(false);
+    expect(owner.checks.find((entry) => entry.check === 'warmup-ceiling')?.passed).toBe(true);
+  });
+
+  it('counts each seat\'s own ledger, so one account\'s volume never charges another\'s', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, new Date('2026-01-05T09:00:00.000Z'));
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales (SDR)', timezone: 'UTC' }, new Date('2026-01-05T09:00:00.000Z'), 'sales');
+    for (let index = 0; index < 5; index += 1) {
+      await recordAction(
+        db,
+        { workspaceId: WORKSPACE_ID, seatKey: 'owner', kind: 'invite', targetRef: `https://www.linkedin.com/in/owner-${index}/`, status: 'sent', source: 'export' },
+        NOW
+      );
+    }
+
+    const sales = await evaluateLinkedInSafety(
+      db,
+      { workspaceId: WORKSPACE_ID, seatKey: 'sales', kind: 'invite', targetRef: 'https://www.linkedin.com/in/maya/', plannedFor: SLOT },
+      NOW
+    );
+    expect(sales.checks.find((entry) => entry.check === 'rolling-24h')?.detail).toMatch(/^0 of /);
   });
 });

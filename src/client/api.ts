@@ -584,6 +584,68 @@ export function ledgerExportDownloadPath(id: string): string {
 }
 
 /**
+ * EVERYTHING this workspace holds, as one file.
+ *
+ * NOT the ledger export above, and the difference is worth putting in the UI
+ * copy: that one is ten run-and-action tables -- the evidence pack for a client
+ * -- and this one is the data-subject export the privacy policy promises,
+ * covering clients, messages, invoices, leads, lead lists, campaigns, inbox
+ * threads, seats, accounts, audit events and settings. Sealed credentials are
+ * named in the file's `withheld` list and never included.
+ *
+ * A plain href for the same reason the ledger download is: an attachment with
+ * `Cache-Control: no-store`, kept out of JS memory and out of any cache.
+ * Owner-only.
+ */
+export function workspaceExportDownloadPath(): string {
+  return '/api/workspace/export';
+}
+
+/** One entry per table that actually holds rows. */
+export interface WorkspaceErasurePreview {
+  workspace: { id: string; name: string };
+  /** The DELETE refuses anything else -- label the confirm box with it. */
+  confirmationPhrase: string;
+  inventory: Array<{ table: string; rows: number }>;
+  totalRows: number;
+  /** Reasons the erasure would be refused right now, each naming what to stop. */
+  inFlight: string[];
+  erasable: boolean;
+  reversible: false;
+}
+
+/**
+ * What erasure would remove, BEFORE anything is removed.
+ *
+ * Show this first, always. A destructive call nobody can preview is a
+ * destructive call nobody can consent to, and `inFlight` is the list of things
+ * the operator has to go and stop before the delete will proceed at all.
+ */
+export async function previewWorkspaceErasure(): Promise<WorkspaceErasurePreview> {
+  return request('/api/workspace/erasure');
+}
+
+/**
+ * Erase the workspace. Irreversible, and the server means it.
+ *
+ * `confirm` must be the workspace's own name, exactly -- a boolean is a
+ * checkbox a script ticks, and retyping the name is the smallest gesture that
+ * proves a human read the screen. 400 if it does not match, 409 if work is
+ * still in flight, and neither deletes anything. On success the session cookie
+ * is cleared server-side, so the client should route to signed-out rather than
+ * refetching.
+ */
+export async function eraseWorkspace(confirm: string): Promise<{
+  erased: true;
+  workspaceId: string;
+  workspaceName: string;
+  removed: Record<string, number>;
+  organizationRemoved: boolean;
+}> {
+  return request('/api/workspace', { method: 'DELETE', body: JSON.stringify({ confirm }) });
+}
+
+/**
  * Spent, sent and produced for one period.
  *
  * TWO THINGS THE SCREEN MUST NOT SOFTEN.
@@ -671,8 +733,21 @@ export { MAX_DAY_OVER_DAY_DELTA, MIN_RAMP_STEP, PACED_KINDS, WARMUP_MULTIPLIERS,
  */
 export const LINKEDIN_ACTION_KINDS: readonly LinkedInActionKind[] =
   ['invite', 'dm', 'reply', 'inmail', 'profile_view', 'comment', 'follow', 'like', 'endorse'];
+/**
+ * 'held' IS ON THIS LIST NOW, and its absence was half of a two-sided bug.
+ *
+ * The server's own filter enum omitted BOTH 'held' and 'withdrawn' while this
+ * list omitted 'held' and offered 'withdrawn' -- so the filter control rendered
+ * an option the API answered 400 to, and the rows a paused campaign parks
+ * (migration 051) could not be selected from either side. The `readonly
+ * LinkedInActionStatus[]` annotation is what should have caught it and cannot:
+ * it proves every entry is a real status, never that every real status is an
+ * entry. Server-side that gap is now closed by an `Exclude` check in `app.ts`;
+ * here the list stays hand-written because importing the value would drag zod
+ * and pg into the browser bundle, so this comment is the guard.
+ */
 export const LINKEDIN_ACTION_STATUSES: readonly LinkedInActionStatus[] =
-  ['planned', 'exported', 'sent', 'accepted', 'replied', 'declined', 'skipped', 'withdrawn'];
+  ['planned', 'held', 'exported', 'sent', 'accepted', 'replied', 'declined', 'skipped', 'withdrawn'];
 export const LINKEDIN_EXPORT_FORMATS: readonly ExportFormat[] = ['dripify', 'heyreach', 'expandi', 'generic'];
 
 /**
@@ -1139,13 +1214,49 @@ export async function resumeLinkedInSeat(seatKey?: string, reason?: string): Pro
 }
 
 /**
- * Forget this seat, including its ramp clock and the stored inbox that seat
- * produced. Leaves send history, detect requests and stored credentials
- * untouched -- only the seat row and the `linkedin_threads`/`linkedin_messages`
- * read cache go.
+ * Disconnect this seat: its ramp clock, the stored inbox it produced, its
+ * sealed credentials, and any queued or held work a worker could still claim
+ * against it (`released`). Send HISTORY survives -- the ledger is the record of
+ * what really happened -- but nothing that could still act does.
+ *
+ * Owner-only, and confirm before calling it.
  */
-export async function deleteLinkedInSeat(seatKey?: string): Promise<{ deleted: boolean; clearedThreads: number }> {
+export async function deleteLinkedInSeat(seatKey?: string): Promise<{
+  deleted: boolean;
+  clearedThreads: number;
+  released: unknown;
+}> {
   return request(`/api/linkedin/seat${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`, { method: 'DELETE' });
+}
+
+/**
+ * Delete a lead list and everyone on it.
+ *
+ * Refused by the server while a RUNNING campaign is enrolling from it -- the
+ * refusal comes back as a 409 with the sentence to show. Owner-only.
+ */
+export async function deleteLeadList(listId: string): Promise<{ deleted: unknown }> {
+  return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}`, { method: 'DELETE' });
+}
+
+/**
+ * Delete a campaign and the outreach records it produced.
+ *
+ * THE ONE CALL IN THIS FILE THAT REMOVES LEDGER ROWS, and the confirm dialog
+ * has to say so: a stopped campaign's actions are the record of who was
+ * approached and with what, and this is the erasure path rather than the
+ * housekeeping one. EXCLUSIONS SURVIVE -- somebody who asked to be left alone
+ * stays left alone, which is why `exclusionsKept` comes back true. Refused with
+ * a 409 while the campaign is running or paused (stop it first) or while a
+ * worker holds any of its actions. Owner-only.
+ */
+export async function deleteLinkedInCampaign(campaignId: string): Promise<{
+  deleted: boolean;
+  campaignId: string;
+  removed: { exports: number; manualTasks: number; members: number; actions: number };
+  exclusionsKept: boolean;
+}> {
+  return request(`/api/linkedin/campaigns/${encodeURIComponent(campaignId)}`, { method: 'DELETE' });
 }
 
 export async function getLinkedInLimits(seatKey?: string): Promise<LinkedInLimitsReport> {
@@ -1480,8 +1591,21 @@ export async function addLinkedInExclusions(
   return request('/api/linkedin/exclusions', { method: 'POST', body: JSON.stringify({ targets, source }) });
 }
 
-export async function getLinkedInAnalytics(days = 30): Promise<LinkedInAnalytics> {
-  return request(`/api/linkedin/analytics?days=${days}`);
+/**
+ * The funnel over a window.
+ *
+ * `seatKey` DOES NOT FILTER. The counts stay workspace-wide; it names whose
+ * clock the daily buckets are cut on, because every ceiling in the product is
+ * enforced in the seat's own timezone and a series bucketed on anything else
+ * shows columns that were never any day's total. The response says which zone
+ * it used (`timezone`) and whether the workspace's seats disagree about it
+ * (`timezoneSpansSeats`) -- a screen showing the second must say so rather than
+ * presenting one seat's days as everybody's.
+ */
+export async function getLinkedInAnalytics(days = 30, seatKey?: string): Promise<LinkedInAnalytics> {
+  const query = new URLSearchParams({ days: String(days) });
+  if (seatKey) query.set('seatKey', seatKey);
+  return request(`/api/linkedin/analytics?${query.toString()}`);
 }
 
 /* =====================================================================
