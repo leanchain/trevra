@@ -617,7 +617,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     </div>}
 
     <section className="page-panel">
-      <div className="section-heading">
+      <div className="section-heading li-inbox-head">
         <div>
           <h3 aria-level={2}>Inbox</h3>
           <p>

@@ -1226,6 +1226,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-inline-check { display: flex; align-items: center; gap: 8px; min-height: 24px; font-size: var(--t-text-xs); font-weight: 700; }
 .li-inline-check input { width: 16px; height: 16px; min-height: 0; flex: none; accent-color: var(--t-green-fill); }
 .li-hint { max-width: var(--t-measure); color: var(--muted); font-size: var(--t-text-xs); line-height: 1.45; }
+/* The rail's own top panel is full width with nothing beside it, so a
+   plain .section-heading's flex space-between stretches the Sync button to
+   the far right edge on a wide screen, leaving a long dead gap between it
+   and the title/description it belongs with. Capped so the two stay a
+   single visual group, same reasoning as the other full-width-exposed caps
+   in this file. */
+.li-inbox-head { max-width: 720px; }
 .li-filter-row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 12px; }
 .li-filter-standalone { margin-bottom: 0; align-items: center; }
 .li-filter-label { color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
