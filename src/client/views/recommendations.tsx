@@ -111,6 +111,6 @@ export function RecommendationList({ items, actions, empty }: {
 
 export function EmptyRecommendations({ isNew }: { isNew: boolean }) {
   return isNew
-    ? <div className="empty-state"><Inbox size={28} /><h4>Nothing here yet</h4><p>Connect a tool in Setup and Trevra will start finding work for you.</p></div>
-    : <div className="empty-state"><Check size={28} /><h4>You’re all clear</h4><p>Nothing needs you right now. Trevra will speak up when it does.</p></div>;
+    ? <div className="empty-state"><Inbox size={28} /><h4 aria-level={3}>Nothing here yet</h4><p>Connect a tool in Setup and Trevra will start finding work for you.</p></div>
+    : <div className="empty-state"><Check size={28} /><h4 aria-level={3}>You’re all clear</h4><p>Nothing needs you right now. Trevra will speak up when it does.</p></div>;
 }

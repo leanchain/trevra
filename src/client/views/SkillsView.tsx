@@ -155,7 +155,7 @@ export function SkillsView({ setToast, onNavigate }: {
             </div>
           </article>;
         })}
-        {modules.length === 0 && <div className="empty-state"><Boxes size={28} /><h4>Nothing here yet</h4><p>Connect your agent in <strong>Setup → Agent access</strong> and the jobs it can run show up here.</p><button className="secondary-button" onClick={() => onNavigate('/setup/agent')}>Connect an agent <ChevronRight size={15} /></button></div>}
+        {modules.length === 0 && <div className="empty-state"><Boxes size={28} /><h4 aria-level={3}>Nothing here yet</h4><p>Connect your agent in <strong>Setup → Agent access</strong> and the jobs it can run show up here.</p><button className="secondary-button" onClick={() => onNavigate('/setup/agent')}>Connect an agent <ChevronRight size={15} /></button></div>}
       </div>
       <p className="panel-note">Writing your own? Publishing needs a signing key on your machine, so it lives in the terminal: <code>npm run module -- help</code>.</p>
     </section>
@@ -335,8 +335,8 @@ function RunOneByHand({ setToast, onNavigate }: {
             <p>{playbook.description}</p>
             <code>{playbook.id}@{playbook.version}</code>
           </button>)}
-          {!loaded && <div className="empty-state"><LoaderCircle className="spin" size={28} /><h4>Loading what Trevra can run…</h4><p>One moment.</p></div>}
-          {loaded && playbooks.length === 0 && <div className="empty-state"><Workflow size={28} /><h4>No jobs available yet</h4><p>Connect your agent in <strong>Setup → Agent access</strong> and the jobs it can run appear here.</p><button className="secondary-button" onClick={() => onNavigate('/setup/agent')}>Connect an agent <ChevronRight size={15} /></button></div>}
+          {!loaded && <div className="empty-state"><LoaderCircle className="spin" size={28} /><h4 aria-level={3}>Loading what Trevra can run…</h4><p>One moment.</p></div>}
+          {loaded && playbooks.length === 0 && <div className="empty-state"><Workflow size={28} /><h4 aria-level={3}>No jobs available yet</h4><p>Connect your agent in <strong>Setup → Agent access</strong> and the jobs it can run appear here.</p><button className="secondary-button" onClick={() => onNavigate('/setup/agent')}>Connect an agent <ChevronRight size={15} /></button></div>}
         </div>
         <div className="playbook-input">
           <div className="playbook-input-head">

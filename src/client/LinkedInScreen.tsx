@@ -47,6 +47,7 @@ import {
   type LinkedInAnalytics,
   type LinkedInCampaign,
   type LinkedInExclusion,
+  type LinkedInLimitConfidence,
   type LinkedInLimitsReport,
   type LinkedInSeatResponse,
   type LinkedInWithdrawalCandidates,
@@ -124,6 +125,49 @@ const vanityOf = (profileUrl: string) => {
   } catch { return profileUrl; }
 };
 
+/**
+ * Where a number came from, in a sentence instead of a file path.
+ *
+ * The server ships its own internal document reference as the provenance of
+ * every ceiling. That reference is true and it is unreadable: nobody deciding
+ * whether to trust a daily limit can open `docs/…md 1.4`. The claim the tag
+ * makes -- published by LinkedIn, or measured by practitioners -- is the part
+ * that changes the decision, so that is the part that is rendered, and the
+ * paths stay out of the interface entirely.
+ */
+export const sourceNote = (confidence: LinkedInLimitConfidence) => confidence === 'HARD FACT'
+  ? 'Published by LinkedIn, or a term of its own contract.'
+  : 'Measured by people running LinkedIn outreach, not published by LinkedIn. Directionally right, never a guarantee.';
+
+/**
+ * Why today's number is the number it is.
+ *
+ * The server names the rule that bound the ceiling -- `warmup-multiplier`,
+ * `acceptance-rate`, `cooldown-band`. Those are this product's words for
+ * itself. An operator asks "why can I only send 12 today", and every one of
+ * these is an answer to that question in words they never had to learn.
+ */
+const LIMIT_REASON: Record<string, string> = {
+  'band-ceiling': 'the normal daily limit for an account this size',
+  'weekly-band': 'the weekly limit for an account this size',
+  'monthly-quota': 'LinkedIn’s own monthly quota',
+  'seat-unconfigured': 'no LinkedIn account is connected, so nothing may go out',
+  'seat-paused': 'this account is paused',
+  'acceptance-rate': 'too few invites are being accepted, so the daily number is halved until that recovers',
+  'warmup-multiplier': 'this account is still ramping up, so it sends less than its full allowance',
+  'cooldown-band': 'this account is in cooldown, so the careful starter limits apply'
+};
+
+/** The server's rule name in the operator's words, or the rule name made readable. */
+export const limitReason = (boundBy: string) => LIMIT_REASON[boundBy] ?? boundBy.replaceAll('-', ' ');
+
+/** Where a queued action came from. The stored values are `campaign`, `export` and `manual`. */
+const ACTION_SOURCE_LABELS: Record<string, string> = {
+  campaign: 'A campaign',
+  export: 'An export file',
+  manual: 'Added by hand'
+};
+
 /* -------------------------------------------------------------------------
  * `#/outreach` -- the Seat screen.
  * ---------------------------------------------------------------------- */
@@ -166,9 +210,9 @@ export function OutreachSeat(_props: { setToast: (message: string) => void }) {
 
   return <div className="page-stack">
     {error && <div className="error-banner">
-      <strong>{error}</strong> Nothing was changed. Whatever is below is the last good read.{' '}
+      <strong>{error}</strong> Nothing was changed. What is below is the last good reading.{' '}
       <button className="secondary-button" type="button" disabled={loading} onClick={() => void reload()}>
-        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Read the ceilings again
+        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Check the limits again
       </button>
     </div>}
 
@@ -186,7 +230,7 @@ export function OutreachSeat(_props: { setToast: (message: string) => void }) {
 
 function LoadingPanel({ loading }: { loading: boolean }) {
   return <section className="page-panel">
-    <p className="empty-copy">{loading ? 'Reading the seat’s ledger…' : 'No data.'}</p>
+    <p className="empty-copy">{loading ? 'Reading this account…' : 'No data.'}</p>
   </section>;
 }
 
@@ -222,7 +266,7 @@ export function LinkedInSeatSetup({ setToast }: { setToast: (message: string) =>
       setWorker(workerResponse);
       setError('');
     } catch (err) {
-      setError(errorMessage(err, 'Unable to read this seat. Nothing was changed — try again.'));
+      setError(errorMessage(err, 'Unable to read this LinkedIn account. Nothing was changed — try again.'));
     } finally { setLoading(false); }
   }, []);
 
@@ -231,9 +275,9 @@ export function LinkedInSeatSetup({ setToast }: { setToast: (message: string) =>
 
   return <div className="page-stack">
     {error && <div className="error-banner">
-      <strong>{error}</strong> Whatever is below is the last good read, and nothing on this screen was saved.{' '}
+      <strong>{error}</strong> What is below is the last good reading, and nothing on this screen was saved.{' '}
       <button className="secondary-button" type="button" disabled={loading} onClick={() => void load()}>
-        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Read the seat again
+        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Try again
       </button>
     </div>}
 
@@ -259,7 +303,7 @@ const WITHDRAWAL_STATUS_LABELS: Record<WithdrawalStatus, string> = {
   withdrawn: 'Withdrawn',
   stale: 'Gone from LinkedIn',
   failed: 'Failed',
-  held: 'Held by the gate'
+  held: 'Held back by your limits'
 };
 
 /**
@@ -283,7 +327,17 @@ const WITHDRAWAL_STATUS_LABELS: Record<WithdrawalStatus, string> = {
 function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) => void }) {
   const [backlog, setBacklog] = useState<LinkedInWithdrawalCandidates | null>(null);
   const [queue, setQueue] = useState<WithdrawalRecord[]>([]);
-  const [olderThanDays, setOlderThanDays] = useState(21);
+  /**
+   * The operator's own staleness threshold, or null for the server's.
+   *
+   * `GET /api/linkedin/withdrawals/candidates` reports `staleAfterDays` -- the
+   * threshold it actually applied -- and this screen sat a hardcoded 21 next to
+   * it, so a deployment that calls an invite stale at 14 was queried at 21 with
+   * nothing on screen saying the two had parted. Null means the first read asks
+   * for whatever the server considers stale, and the field then shows that
+   * number. Typing in it is an override, and an override wins from then on.
+   */
+  const [olderThanDays, setOlderThanDays] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'sync' | 'queue' | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -291,18 +345,23 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
   /** A 409 from the sync route: something to do on this machine, in the server's words. */
   const [blocked, setBlocked] = useState('');
 
+  /** What this server calls stale, once it has said so. Null before the first read. */
+  const staleAfterDays = backlog?.staleAfterDays ?? null;
+  /** The threshold actually in force: the operator's override, or the server's own. */
+  const days = olderThanDays ?? staleAfterDays;
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [candidates, withdrawals] = await Promise.all([
-        getLinkedInWithdrawalCandidates({ olderThanDays }),
+        getLinkedInWithdrawalCandidates(olderThanDays === null ? {} : { olderThanDays }),
         getLinkedInWithdrawals({ limit: 50 })
       ]);
       setBacklog(candidates);
       setQueue(withdrawals);
       setError('');
     } catch (err) {
-      setError(errorMessage(err, 'Unable to read the pending-invite backlog. Nothing was changed — try again.'));
+      setError(errorMessage(err, 'Unable to read your unanswered invites. Nothing was changed — try again.'));
     } finally { setLoading(false); }
   }, [olderThanDays]);
 
@@ -315,8 +374,15 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
     setError('');
     try {
       const result = await syncLinkedInPendingInvites();
-      setToast(`${result.listed} invitation(s) listed · ${result.matched} matched to this ledger, ${result.unmatched} sent by hand, `
-        + `${result.disappeared} no longer shown.${result.truncated ? ' The list was longer than one pass reads.' : ''}`);
+      // A PARTIAL READ IS NOT A CLEAN ONE. `degraded` names what that page did
+      // not give up, and dropping it reported a half-read invitation list as a
+      // complete one -- which then makes every count below look authoritative.
+      setToast(`${result.listed} invitation(s) still showing on LinkedIn · ${result.matched} that Trevra sent, `
+        + `${result.unmatched} you sent yourself, ${result.disappeared} no longer shown.`
+        + `${result.truncated ? ' The list was longer than one pass reads.' : ''}`
+        + `${result.degraded.length > 0
+          ? ` Partial reading — ${result.degraded.length} thing(s) could not be read: ${result.degraded.join(', ')}.`
+          : ''}`);
       await load();
     } catch (err) {
       const message = errorMessage(err, 'Unable to re-read the sent-invitations list');
@@ -329,11 +395,11 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
     setBusy('queue');
     setError('');
     try {
-      const result = await queueLinkedInWithdrawals({ olderThanDays });
+      const result = await queueLinkedInWithdrawals(days === null ? {} : { olderThanDays: days });
       setConfirming(false);
       setToast(`${result.queued} withdrawal(s) queued${result.duplicates > 0 ? `, ${result.duplicates} already queued` : ''}. `
-        + `Nothing has been withdrawn yet — the response says withdrawn: ${result.withdrawn}, and it always will. `
-        + 'The worker performs them one at a time, gated and paced.');
+        + `${result.withdrawn} have actually been withdrawn, and queueing never withdraws anything by itself. `
+        + 'They go one at a time, spaced out, inside your working hours.');
       await reloadOutreach();
     } catch (err) {
       setError(errorMessage(err, 'Unable to queue those withdrawals'));
@@ -350,13 +416,13 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
   return <section className="page-panel">
     <div className="section-heading">
       <div>
-        <h3>Outstanding invites</h3>
+        <h3 aria-level={2}>Invites nobody has answered</h3>
         <p>
-          Not a rolling window. An invite nobody answered keeps occupying a slot on LinkedIn’s side until it is accepted
-          or withdrawn, so a backlog spends weekly capacity that sending more cannot return.
+          These do not expire out of the count. An invite that is neither accepted nor withdrawn keeps using up your
+          weekly invite capacity on LinkedIn’s side, and sending more does not give any of it back.
         </p>
       </div>
-      <ConfidenceTag confidence="REPORTED" source="docs/linkedin-outreach-plan.md 1.4" compact />
+      <ConfidenceTag confidence="REPORTED" source={sourceNote('REPORTED')} compact />
     </div>
 
     {error && <div className="error-banner">{error}</div>}
@@ -370,22 +436,23 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
     <div className="li-backlog">
       <div className="li-backlog-head">
         <strong className={over ? 'li-backlog-over' : ''}>{pending}</strong>
-        <span>of {ceiling || '—'} outstanding invites{over ? ' — at or past the ceiling' : ''}</span>
+        <span>of {ceiling || '—'} unanswered invites{over ? ' — at or past the limit' : ''}</span>
       </div>
       <div
         className="li-backlog-meter"
         role="img"
         aria-label={ceiling > 0
-          ? `${pending} outstanding invites against a reported ceiling of ${ceiling}.`
-          : `${pending} outstanding invites. No ceiling was reported for this seat.`}
+          ? `${pending} unanswered invites against a reported limit of ${ceiling}.`
+          : `${pending} unanswered invites. No limit was reported for this account.`}
       >
         <i className={over ? 'li-backlog-fill li-backlog-fill-over' : 'li-backlog-fill'} style={{ width: `${share * 100}%` }} />
       </div>
       <p className="li-hint">
         {over
-          ? 'The safety gate refuses a new invite past this line, and it is right to: LinkedIn measures the backlog too. '
-            + 'Withdrawing the stale ones is what returns capacity here.'
-          : 'The gate refuses a new invite once the backlog reaches the ceiling. This number is REPORTED, from the same figure that puts acceptance at 25–30% above 100 invites a week.'}
+          ? 'Trevra will not send another invite past this line, and it is right not to — LinkedIn counts the unanswered '
+            + 'ones too. Withdrawing the oldest ones is the only thing that gives the capacity back.'
+          : 'Trevra stops sending invites once this reaches the limit. The limit itself is a practitioner estimate rather '
+            + 'than a published number — it comes from the same reporting that puts acceptance at 25–30% above 100 invites a week.'}
       </p>
     </div>
 
@@ -395,7 +462,7 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
           type="number"
           min={0}
           max={365}
-          value={olderThanDays}
+          value={days ?? ''}
           onChange={(event) => setOlderThanDays(Math.max(0, Math.trunc(Number(event.target.value) || 0)))}
         />
       </label>
@@ -406,20 +473,20 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
       {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the backlog" />}
     </div>
     <p className="panel-note">
-      Syncing re-reads LinkedIn’s own sent-invitations list in a browser on this machine and writes EVIDENCE, never a
-      conclusion: accepted, declined, expired and withdrawn all look identical from that list, so an invite’s absence is
-      recorded as absence and nothing is inferred from it.
+      Syncing opens LinkedIn’s own Sent invitations list in a browser on this machine and records only what that page
+      shows. Accepted, declined, expired and withdrawn all look identical there, so an invite that has vanished from the
+      list is recorded as vanished — Trevra will not guess which of the four it was.
     </p>
 
-    <h4 className="li-subhead">Stale enough to withdraw ({candidates.length})</h4>
+    <h4 className="li-subhead" aria-level={3}>Old enough to withdraw ({candidates.length})</h4>
     {candidates.length === 0
       ? <p className="empty-copy">
-        Nothing has been waiting longer than {olderThanDays} day(s). This is a shortlist, not a decision — it shows what
+        Nothing has been waiting longer than {days ?? '—'} day(s). This is a shortlist, not a decision — it shows what
         <em> would</em> be queued, before anything is.
       </p>
       : <div className="li-table-scroll">
         <table className="li-table">
-          <thead><tr><th>Target</th><th>Waiting</th><th>Campaign</th></tr></thead>
+          <thead><tr><th>Person</th><th>Waiting</th><th>Campaign</th></tr></thead>
           <tbody>{candidates.map((candidate) => <tr key={candidate.actionId}>
             <td className="li-target">{candidate.targetRef}</td>
             <td className="li-num">{candidate.pendingDays} day{candidate.pendingDays === 1 ? '' : 's'}</td>
@@ -431,20 +498,20 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
     <div className="li-two-step">
       <Undo2 size={20} />
       <div>
-        <strong>Queueing is not withdrawing, and this response always says <code>withdrawn: 0</code>.</strong>
+        <strong>Queueing is not withdrawing. Pressing the button withdraws nothing.</strong>
         <p>
-          Queueing writes one reversible row per invite. The local worker then claims them one at a time, re-runs the
-          whole safety gate against each, and clicks Withdraw at randomised 30–120 second gaps inside the seat’s business
-          hours — because clearing a backlog in one burst is the same volume spike as sending one. Watch the queue below
-          for what actually happened.
+          It puts one reversible line in the queue per invite. The worker on your machine then takes them one at a time,
+          re-runs every safety check against each, and clicks Withdraw at random 30–120 second gaps inside your working
+          hours — because clearing a backlog in one burst looks exactly like a sending spree. The queue below is where
+          you see what actually happened.
         </p>
       </div>
     </div>
 
     <div className="panel-footer">
       <span>
-        Withdrawing does not un-send an invite: the ledger keeps counting it in every rolling window, so volume cannot be
-        laundered by withdrawing and re-sending.
+        Withdrawing does not un-send an invite. Trevra goes on counting the original against every rolling limit, so
+        withdrawing and re-sending cannot buy you extra volume.
       </span>
       <button
         className="primary-button"
@@ -457,10 +524,10 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
     </div>
 
     {queue.length > 0 && <>
-      <h4 className="li-subhead">The withdrawal queue</h4>
+      <h4 className="li-subhead" aria-level={3}>The withdrawal queue</h4>
       <div className="li-table-scroll">
         <table className="li-table">
-          <thead><tr><th>Target</th><th>Status</th><th>Waited</th><th>Queued</th><th>Finished</th></tr></thead>
+          <thead><tr><th>Person</th><th>Status</th><th>Waited</th><th>Queued</th><th>Finished</th></tr></thead>
           <tbody>{queue.map((record) => <tr key={record.id}>
             <td className="li-target">{record.targetRef}</td>
             <td>
@@ -480,16 +547,16 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
       busy={busy === 'queue'}
       body={<>
         <p>
-          <b>This queues them. It withdraws nothing.</b> The response will say <code>withdrawn: 0</code>, and that is
-          correct — the rows are filed for the local worker to perform.
+          <b>This queues them. It withdraws nothing.</b> Trevra will report none withdrawn, and that is correct — the
+          work is filed for the browser on your machine to carry out.
         </p>
         <p>
-          The worker claims one at a time, re-runs the entire safety gate against it, and clicks Withdraw at randomised
-          30–120 second gaps inside this seat’s business hours. Nothing happens at all while the seat is paused.
+          It takes one at a time, re-runs every safety check against it, and clicks Withdraw at random 30–120 second
+          gaps inside your working hours. Nothing happens at all while this account is paused.
         </p>
         <p>
-          Each withdrawal is real on LinkedIn and cannot be taken back — the person can be invited again, but this
-          invite is gone. The ledger keeps counting the original send in every rolling window.
+          Each withdrawal is real on LinkedIn and cannot be taken back — you can invite the person again, but this
+          invite is gone. Trevra still counts the original invite against every rolling limit.
         </p>
       </>}
       confirmLabel={`Queue ${candidates.length} withdrawal(s)`}
@@ -517,11 +584,31 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
 }) {
   const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const current = seat?.seat ?? null;
+  /**
+   * The last profile read handed to a machine that can open a browser.
+   *
+   * `GET /api/linkedin/seat` carries it, and this screen never read it: a 202
+   * wrote a sentence into local state and the next refresh wiped every trace
+   * that a read was still outstanding, so the operator was left pressing the
+   * button again against a request already queued. This is the durable half --
+   * `blocked` below is the same fact said once, immediately.
+   */
+  const detectRequest = seat?.detectRequest ?? null;
   const auth = seat?.auth ?? null;
 
   // The manual fields exist for what detection cannot cover, and nothing else.
   // They are behind a disclosure that starts closed, because a form that opens
   // itself is a form the operator believes they have to fill in.
+  /**
+   * Whether that disclosure is open.
+   *
+   * CONTROLLED, because the save has to be able to open it: the label the
+   * server requires lives inside it, and a refusal naming a field nobody can
+   * see is a dead end. Still closed on first render, for the reason above.
+   */
+  const [manualOpen, setManualOpen] = useState(false);
+  /** So the same refusal can put the caret in the field it is about. */
+  const labelField = useRef<HTMLInputElement>(null);
   const [label, setLabel] = useState('');
   const [profileUrl, setProfileUrl] = useState('');
   const [timezone, setTimezone] = useState(browserZone);
@@ -684,15 +771,26 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
     try {
       await deleteLinkedInSeat();
       setConfirmingDelete(false);
-      setToast('Seat deleted. A new one starts its warm-up ramp from week 1.');
+      setToast('Account removed. The next account you connect starts its ramp-up at week 1.');
       setHydrated(false);
       onSaved();
     } catch (err) {
-      setDeleteError(errorMessage(err, 'Unable to delete the seat'));
+      setDeleteError(errorMessage(err, 'Unable to remove this LinkedIn account'));
     } finally { setDeletingSeat(false); }
   };
 
   const save = async () => {
+    // THE SERVER REQUIRES A LABEL, and the field for it lives inside a
+    // disclosure that starts closed -- so the primary control on this screen
+    // failed with a generic refusal and nothing pointing at the empty field.
+    // Caught here, named, and the disclosure holding it is opened and focused.
+    if (!label.trim()) {
+      setManualOpen(true);
+      setFailure('This account needs a name before its hours and limits can be saved. The field is under “Details '
+        + 'Trevra could not read from LinkedIn”, which is now open below — nothing else was changed.');
+      requestAnimationFrame(() => labelField.current?.focus());
+      return;
+    }
     setBusy(true);
     setFailure('');
     try {
@@ -714,10 +812,10 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
         dailyProfileViewLimit: Number(profileViewLimit),
         dailyFollowLimit: Number(followLimit)
       });
-      setToast('Seat saved. These values stand until the next read from the session replaces them.');
+      setToast('Saved. These values stand until the next read from LinkedIn replaces them.');
       onSaved();
     } catch (err) {
-      setFailure(errorMessage(err, 'Unable to save the seat'));
+      setFailure(errorMessage(err, 'Unable to save these settings'));
     } finally { setBusy(false); }
   };
 
@@ -731,17 +829,36 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>The seat</h3>
+          <h3 aria-level={2}>Your LinkedIn account</h3>
+          <p>The account Trevra acts on. Every limit on this screen is measured against this one account.</p>
         </div>
         <PostureBadge posture={seat?.posture ?? null} reason={seat?.seat?.pausedReason ?? null} />
       </div>
 
       {failure && <div className="error-banner">{failure}</div>}
 
-      {blocked && <div className="li-connect-blocked">
-        <strong><CircleAlert size={14} /> One thing has to happen on your machine first.</strong>
-        <p className="li-blocked-message">{blocked}</p>
-      </div>}
+      {blocked
+        ? <div className="li-connect-blocked">
+          <strong><CircleAlert size={14} /> One thing has to happen on your machine first.</strong>
+          <p className="li-blocked-message">{blocked}</p>
+        </div>
+        /* The same fact, but from the SERVER rather than from this click, so it
+           survives the refresh that used to erase it. */
+        : detectRequest?.status === 'pending'
+          ? <div className="li-connect-blocked">
+            <strong><CircleAlert size={14} /> A profile read is already waiting on your machine.</strong>
+            <p className="li-blocked-message">
+              Queued {relativeTime(detectRequest.requestedAt)} for the worker that can open a browser. Nothing has been
+              read yet, and pressing the button again queues nothing new.
+            </p>
+          </div>
+          : detectRequest?.status === 'failed' && detectRequest.failureReason
+            ? <div className="li-connect-blocked">
+              <strong><CircleAlert size={14} /> The last profile read did not finish.</strong>
+              <p className="li-blocked-message">{detectRequest.failureReason}</p>
+              <p>Nothing on the account was changed by it.</p>
+            </div>
+            : null}
 
       {current && <>
         <div className="li-seat-card">
@@ -779,15 +896,15 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
           </dl>
           <div className="li-seat-footer">
             <button className="ghost-button danger" onClick={() => setConfirmingDelete(true)}>
-              <Trash2 size={13} /> Delete seat
+              <Trash2 size={13} /> Remove this account
             </button>
           </div>
         </div>
 
         {degraded.length > 0 && <div className="li-degraded">
-          <strong>Read, but not all of it came back:</strong>
+          <strong>Read, but some of it did not come back:</strong>
           <ul>{degraded.map((entry) => <li key={entry}>{entry}</li>)}</ul>
-          <p>Anything missing is held as unknown, never as zero.</p>
+          <p>Anything missing is left blank rather than filled in with a zero or a guess.</p>
         </div>}
       </>}
 
@@ -795,8 +912,8 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
         ? <div className="li-signin-row">
           <span className="li-signin-id"><Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}</span>
           <span>{auth?.sessionValidAt
-            ? `Session valid ${relativeTime(auth.sessionValidAt)}`
-            : 'No session yet — the sign-in has not completed.'}</span>
+            ? `Signed in — last confirmed ${relativeTime(auth.sessionValidAt)}`
+            : 'Not signed in yet — the sign-in did not finish.'}</span>
           <div className="li-signin-actions">
             {!auth?.sessionValidAt && <button
               className="secondary-button"
@@ -866,25 +983,168 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
           </div>
         </>}
 
-      {connected && note && <p className="li-signin-error">{note.message}</p>}
+      {/* A challenge is an INSTRUCTION, not a fault. Styled as an error, the
+          server's “go and finish this in a browser” read as “this broke”. */}
+      {connected && note && <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>{note.message}</p>}
 
       <div className="li-seat-actions">
         <button className="secondary-button" disabled={detecting} onClick={() => void detect()}>
           {detecting ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
-          {current ? ' Re-read from LinkedIn' : ' Read my profile from LinkedIn'}
+          {current ? ' Re-read this profile from LinkedIn' : ' Read my profile from LinkedIn'}
         </button>
+      </div>
+    </section>
+
+    {confirmingDelete && <ConfirmDrawer
+      title="Remove this LinkedIn account?"
+      tone="danger"
+      busy={deletingSeat}
+      error={deleteError}
+      body={<>
+        <p>
+          This removes the name, connection count, timezone and sending status shown above — and the ramp-up clock with
+          them. <b>The clock cannot be recovered.</b> Whatever account you connect next starts back at week 1, sending
+          the smallest daily numbers again.
+        </p>
+        <p>
+          What has already been sent, and any stored LinkedIn password, are untouched — this removes the account record
+          only. To remove a stored password, use Disconnect above instead.
+        </p>
+      </>}
+      confirmLabel="Remove this account"
+      onConfirm={() => void removeSeat()}
+      onCancel={() => { setConfirmingDelete(false); setDeleteError(null); }}
+    />}
+
+    {/* SECOND, BECAUSE IT IS THE SECOND QUESTION. Connected, then healthy,
+        then allowed — and nothing goes out at all until this machine can open
+        a browser, however well configured the limits below are. It is a setup
+        step with a next action, not a fault: a first-run operator has not done
+        anything wrong by not having run the command yet. */}
+    <section className="page-panel">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}>Automation on your machine</h3>
+          <p>Trevra acts on LinkedIn by driving a real browser on your own computer. Nothing goes out while that cannot run.</p>
+        </div>
+        <Terminal size={20} className="li-heading-icon" />
+      </div>
+
+      {!worker
+        ? <p className="empty-copy">Could not check this machine. Nothing was changed — try again.</p>
+        : worker.ready
+          // A working thing states that it works, in one line. The checklist and
+          // the installed paths are evidence for a claim nobody is disputing,
+          // and a panel that shouts on a healthy tab is a panel operators learn
+          // to read past on the day it matters.
+          ? <p className="li-worker-ready">
+            <Check size={14} /> Ready · {worker.browser.canLaunchHeaded
+              ? 'it can open a Chrome window you can watch'
+              : 'it runs a browser in the background, with no window'}
+          </p>
+          : <>
+            <p className="li-hint">Two or three one-time steps, and then this account can send on its own.</p>
+
+            <div className="li-checklist">
+              <WorkerCheck ok={worker.enabled} label="Turned on for this install"
+                detail={worker.enabled
+                  ? 'On. This copy of Trevra is allowed to drive a browser.'
+                  : 'Off. A hosted Trevra cannot turn this on — run Trevra yourself and it can.'} />
+              <WorkerCheck ok={worker.playwrightInstalled} label="Browser automation installed"
+                detail={worker.playwrightInstalled
+                  ? 'Found on this machine.'
+                  : 'Run `npm i playwright && npx playwright install chromium` on this machine.'} />
+              <WorkerCheck ok={worker.browser.canLaunchHeadless} label="A browser this machine can open"
+                detail={worker.browser.headlessReasons[0] ?? 'A browser can open here, with or without a display.'} />
+              <WorkerCheck ok={worker.loggedIn} label="Signed into LinkedIn"
+                detail={worker.loggedIn
+                  ? 'Trevra has a live session for this account.'
+                  : 'Not signed in yet. Sign in above.'} />
+            </div>
+
+            {/* The server's own sentences. Each one names the single next thing
+                to do, so they are shown verbatim rather than summarised. */}
+            {problems.length > 0 && <ul className="li-blockers">
+              {problems.map((problem) => <li key={problem}>{problem}</li>)}
+            </ul>}
+          </>}
+
+      <p className="panel-note">
+        Self-hosted only: a hosted Trevra cannot open a browser for you. To run the sending loop on the machine that has
+        a screen — a Chrome window you can watch, instead of an invisible one — run <code>npm run linkedin:worker</code>{' '}
+        there and leave it running.
+      </p>
+    </section>
+
+    {/* THIRD: what this account may do today, and the two settings that decide
+        it. The working hours and the daily caps used to sit inside a disclosure
+        labelled "set these by hand", which is where an operator looks last for
+        the two numbers they were told to set first. */}
+    <section className="page-panel">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}>What this account may do today</h3>
+          <p>Done in the last 24 hours — a rolling window, not since midnight — against the most this account may do.</p>
+        </div>
+      </div>
+
+      {seat
+        ? <div className="li-stat-row">
+          {PACED_KINDS.map((kind) => {
+            const ceiling = limits?.limits.find((limit) => limit.kind === kind && limit.window === 'day');
+            return <LiStat
+              key={kind}
+              label={KIND_LABELS[kind]}
+              value={String(seat.today[kind] ?? 0)}
+              detail={ceiling
+                ? <>of {ceiling.ceiling} today — {limitReason(ceiling.boundBy)}{' '}
+                  <ConfidenceTag confidence={ceiling.confidence} source={sourceNote(ceiling.confidence)} compact /></>
+                : undefined}
+            />;
+          })}
+        </div>
+        : <p className="empty-copy">Connect a LinkedIn account above and today’s numbers appear here.</p>}
+
+      <h4 className="li-subhead" aria-level={3}>Working hours</h4>
+      <p className="li-hint">
+        Outside these days and times, nothing goes out: every automated action is refused at the moment it would have
+        run. These are your own extra limits. Where Trevra’s researched limits are lower, the lower number wins.
+      </p>
+      <div className="li-filter-row">
+        {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((name, day) => <label className="li-inline-check" key={name}>
+          <input type="checkbox" checked={workingDays.includes(day)} onChange={() => setWorkingDays((current) => current.includes(day) ? current.filter((value) => value !== day) : [...current, day].sort())} />
+          <span>{name}</span>
+        </label>)}
+      </div>
+      <div className="li-form-grid">
+        <label>Start<input type="time" value={workStart} onChange={(event) => setWorkStart(event.target.value)} /></label>
+        <label>End<input type="time" value={workEnd} onChange={(event) => setWorkEnd(event.target.value)} /></label>
+      </div>
+
+      <h4 className="li-subhead" aria-level={3}>Your daily limits</h4>
+      <p className="li-hint">
+        The most this account may do in any 24 hours. Set one to 0 to switch that action off completely. Trevra’s own
+        limits still apply on top: a new account ramping up sends less than whatever you type here.
+      </p>
+      <div className="li-form-grid">
+        <label>Connection invites / 24h<input type="number" min={0} max={75} value={inviteLimit} onChange={(event) => setInviteLimit(event.target.value)} /></label>
+        <label>Messages / 24h<input type="number" min={0} max={75} value={messageLimit} onChange={(event) => setMessageLimit(event.target.value)} /></label>
+        <label>Profile views / 24h<input type="number" min={0} max={100} value={profileViewLimit} onChange={(event) => setProfileViewLimit(event.target.value)} /></label>
+        <label>Follows / 24h<input type="number" min={0} max={50} value={followLimit} onChange={(event) => setFollowLimit(event.target.value)} /></label>
       </div>
 
       {/* Not the default path, and it must never look like one. Closed on first
           render, and it stays closed until somebody decides they need it. */}
-      <details className="li-manual-fields">
-        <summary><Settings2 size={13} /> Set these by hand</summary>
+      <details className="li-manual-fields" open={manualOpen} onToggle={(event) => setManualOpen(event.currentTarget.open)}>
+        <summary><Settings2 size={13} /> Details Trevra could not read from LinkedIn</summary>
         <p className="li-hint">
-          For what detection cannot cover: a profile the worker cannot reach, a seat you run in a timezone other than this
-          browser’s, or a connection count LinkedIn renders as “500+”. Saving here stands until the next re-read replaces it.
+          For what reading the profile cannot cover: a profile the browser cannot reach, an account you run in a
+          timezone other than this browser’s, or a connection count LinkedIn only ever shows as “500+”. What you set
+          here stands until the next read from LinkedIn replaces it. Leave a field empty to keep it unknown — nothing
+          here is filled in with a guess.
         </p>
         <div className="li-form-grid">
-          <label>Label<input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Pankaj (founder)" /></label>
+          <label>Name<input ref={labelField} value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Pankaj (founder)" /></label>
           <label>Timezone
             <input value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="Europe/Zurich" list="li-timezones" />
             <datalist id="li-timezones"><option value={browserZone} /></datalist>
@@ -892,122 +1152,18 @@ function SetupTab({ seat, worker, limits, setToast, onSaved }: {
           <label>Connections<input type="number" min={0} value={connections} onChange={(event) => setConnections(event.target.value)} placeholder="e.g. 640" /></label>
           <label>Profile URL<input value={profileUrl} onChange={(event) => setProfileUrl(event.target.value)} placeholder="https://www.linkedin.com/in/…" /></label>
         </div>
-        <h4 className="li-subhead" aria-level={3}>Automated activity window</h4>
-        <p className="li-hint">Outside these days and times the execution-time safety gate refuses every automated LinkedIn action. These are extra ceilings; Trevra’s researched safety bands still win when they are lower.</p>
-        <div className="li-filter-row">
-          {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((name, day) => <label className="li-inline-check" key={name}>
-            <input type="checkbox" checked={workingDays.includes(day)} onChange={() => setWorkingDays((current) => current.includes(day) ? current.filter((value) => value !== day) : [...current, day].sort())} />
-            <span>{name}</span>
-          </label>)}
-        </div>
-        <div className="li-form-grid">
-          <label>Start<input type="time" value={workStart} onChange={(event) => setWorkStart(event.target.value)} /></label>
-          <label>End<input type="time" value={workEnd} onChange={(event) => setWorkEnd(event.target.value)} /></label>
-          <label>Connection invites / 24h<input type="number" min={0} max={75} value={inviteLimit} onChange={(event) => setInviteLimit(event.target.value)} /></label>
-          <label>Messages / 24h<input type="number" min={0} max={75} value={messageLimit} onChange={(event) => setMessageLimit(event.target.value)} /></label>
-          <label>Profile views / 24h<input type="number" min={0} max={100} value={profileViewLimit} onChange={(event) => setProfileViewLimit(event.target.value)} /></label>
-          <label>Follows / 24h<input type="number" min={0} max={50} value={followLimit} onChange={(event) => setFollowLimit(event.target.value)} /></label>
-        </div>
-        <div className="panel-footer">
-          <span>Leave identity fields empty to hold them as unknown. Set an activity limit to 0 to disable that action type.</span>
-          <button className="primary-button" disabled={busy} onClick={() => void save()}>
-            {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save seat
-          </button>
-        </div>
       </details>
 
       <div className="panel-footer">
         <span>
-          The timezone comes from this browser — <code>{browserZone}</code> — and decides which 08:00–18:00 the plan spreads
-          across. The warm-up ramp is measured from when this seat started sending through Trevra, not from the age of the
-          LinkedIn account.
+          Times are read in this browser’s timezone — <code>{browserZone}</code> — which is what decides whose 08:00–18:00
+          the day is spread across. A newly connected account starts slow on purpose: the ramp-up is counted from the day
+          it started sending through Trevra, not from how old the LinkedIn account is.
         </span>
-        <ConfidenceTag confidence="REPORTED" source="docs/linkedin-outreach-plan.md 1.4" compact />
+        <button className="primary-button" disabled={busy} onClick={() => void save()}>
+          {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save hours and limits
+        </button>
       </div>
-    </section>
-
-    {confirmingDelete && <ConfirmDrawer
-      title="Delete this seat?"
-      tone="danger"
-      busy={deletingSeat}
-      error={deleteError}
-      body={<>
-        <p>
-          This removes the label, connection count, timezone and posture shown above — and the warm-up ramp clock with
-          them. <b>The clock cannot be recovered.</b> Whatever seat this workspace gets next, however it gets one,
-          starts back at week 1.
-        </p>
-        <p>
-          Send history and any stored LinkedIn credentials are untouched — this deletes the seat record only. To
-          remove a stored password, use Disconnect above instead.
-        </p>
-      </>}
-      confirmLabel="Delete seat"
-      onConfirm={() => void removeSeat()}
-      onCancel={() => { setConfirmingDelete(false); setDeleteError(null); }}
-    />}
-
-    {seat && <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3>Last 24 hours</h3>
-          <p>Rolling window, not since-midnight.</p>
-        </div>
-        {limits && <ConfidenceTag confidence="REPORTED" source="docs/linkedin-outreach-plan.md 1.4" compact />}
-      </div>
-      <div className="li-stat-row">
-        {PACED_KINDS.map((kind) => {
-          const ceiling = limits?.limits.find((limit) => limit.kind === kind && limit.window === 'day');
-          return <LiStat
-            key={kind}
-            label={KIND_LABELS[kind]}
-            value={String(seat.today[kind] ?? 0)}
-            detail={ceiling ? <>of {ceiling.ceiling}, bound by {ceiling.boundBy.replaceAll('-', ' ')} · {ceiling.confidence}</> : undefined}
-          />;
-        })}
-      </div>
-    </section>}
-
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3>Local worker</h3>
-          <p>Self-hosted only. A hosted Trevra cannot enable this.</p>
-        </div>
-        <Terminal size={20} className="li-heading-icon" />
-      </div>
-
-      {!worker
-        ? <p className="empty-copy">Worker status unavailable.</p>
-        : worker.ready
-          // A working thing states that it works, in one line. The checklist,
-          // the profile path and the source note are all evidence for a claim
-          // nobody is disputing, and a panel that shouts on a healthy tab is a
-          // panel operators learn to read past on the day it matters.
-          ? <p className="li-worker-ready">
-            <Check size={14} /> Local worker ready · {worker.browser.canLaunchHeaded ? 'headed Chrome on this machine' : 'headless Chromium'}
-          </p>
-          : <>
-            {/* Only when something is actually wrong, and one line per problem. */}
-            {problems.length > 0 && <ul className="li-blockers">
-              {problems.map((problem) => <li key={problem}>{problem}</li>)}
-            </ul>}
-
-            <div className="li-checklist">
-              <WorkerCheck ok={worker.enabled} label="Enabled for this deployment"
-                detail={worker.enabled ? 'On for this deployment.' : 'Off for this deployment.'} />
-              <WorkerCheck ok={worker.playwrightInstalled} label="Playwright installed"
-                detail={worker.playwrightPath ?? 'npm i playwright && npx playwright install chromium'} />
-              <WorkerCheck ok={worker.browser.canLaunchHeadless} label="Headless Chromium"
-                detail={worker.browser.headlessReasons[0] ?? 'A browser can open here without a display.'} />
-              <WorkerCheck ok={worker.loggedIn} label="Signed into LinkedIn"
-                detail={worker.loggedIn
-                  ? 'A session was confirmed live on this seat.'
-                  : 'No session confirmed yet. Sign in above.'} />
-            </div>
-
-            <p className="panel-note">Source: {worker.source}</p>
-          </>}
     </section>
   </>;
 }
@@ -1021,7 +1177,7 @@ function WorkerCheck({ ok, label, detail }: { ok: boolean | null; label: string;
 }
 
 /* -------------------------------------------------------------------------
- * `#/outreach/queue` -- the slots, and what became of them.
+ * `#/outreach/queue` -- everything scheduled, and what became of it.
  * ---------------------------------------------------------------------- */
 
 const OUTCOMES = ['sent', 'accepted', 'replied', 'declined'] as const;
@@ -1033,7 +1189,7 @@ const OUTCOME_LABELS: Record<typeof OUTCOMES[number], string> = {
   declined: 'Declined'
 };
 
-/** The two statuses a slot can still be pulled out of. Everything else has happened. */
+/** The two statuses an action can still be pulled out of. Everything else has happened. */
 const isSkippable = (action: LinkedInActionView) => action.status === 'planned' || action.status === 'exported';
 
 /**
@@ -1078,7 +1234,7 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
       setSelected(new Set());
       setError('');
     } catch (err) {
-      setError(errorMessage(err, 'Unable to load the queue. Nothing was changed — press Apply to try again.'));
+      setError(errorMessage(err, 'Unable to load what is scheduled. Nothing was changed — try again.'));
     } finally { setLoading(false); }
   };
 
@@ -1109,13 +1265,13 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
     setBusy(id);
     try {
       await skipLinkedInAction(id);
-      setToast('Skipped. The slot is released and nothing is scheduled against it.');
+      setToast('Skipped. It is off the schedule and will not go out.');
       // The queue, and the seat's spent-today figures wherever else they are
       // on screen. This used to be `onChanged()` reaching up through the tab
       // shell; there is no shell now, so it is a broadcast instead.
       await reloadOutreach();
     } catch (err) {
-      setError(errorMessage(err, 'Unable to skip that action. It is still in the queue — try it again.'));
+      setError(errorMessage(err, 'Unable to skip that action. It is still scheduled — try it again.'));
     } finally { setBusy(null); }
   };
 
@@ -1141,9 +1297,9 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
     const failed = selectedIds.length - done;
     if (failed === 0) {
       setConfirmingBulk(false);
-      setToast(`${done} slot(s) skipped and released. Nothing is scheduled against any of them.`);
+      setToast(`${done} action(s) skipped. None of them will go out.`);
     } else {
-      setError(`${done} of ${selectedIds.length} were skipped. The other ${failed} are still in the queue — they are `
+      setError(`${done} of ${selectedIds.length} were skipped. The other ${failed} are still scheduled — they are `
         + 'reloaded below, so tick those and try again.');
       setConfirmingBulk(false);
     }
@@ -1162,7 +1318,7 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
       setToast(`Recorded as ${outcome}${occurredAt ? ` on ${occurredAt}` : ''}.`);
       await reloadOutreach();
     } catch (err) {
-      setError(errorMessage(err, 'Unable to record that outcome. Nothing was written — try that button again.'));
+      setError(errorMessage(err, 'Unable to record what happened. Nothing was saved — try that button again.'));
     } finally { setBusy(null); }
   };
 
@@ -1184,43 +1340,58 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
             {campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
           </select>
         </label>
-        <button className="secondary-button" type="button" disabled={loading} onClick={() => void load()}>
-          {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Apply
-        </button>
+        {/* NO APPLY BUTTON. Every filter on this screen already reloads the
+            queue when it changes (the effect above), so a control labelled
+            Apply asked the operator to press it for something that had already
+            happened -- and pressing it fired the identical request a second
+            time. The spinner is the part of it that was saying anything. */}
+        {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the queue" />}
       </div>
 
       <details className="li-manual-fields">
         <summary><SlidersHorizontal size={13} /> Narrow it further</summary>
         <div className="li-form-grid">
-          <label>Kind
+          <label>Action
             <select value={kind} onChange={(event) => setKind(event.target.value as LinkedInActionKind | '')}>
-              <option value="">Any kind</option>
-              {LINKEDIN_ACTION_KINDS.map((option) => <option key={option} value={option}>{ACTION_KIND_LABELS[option]}</option>)}
+              <option value="">Any action</option>
+              {/* NOT `comment`. It is in the ledger's taxonomy, but nothing in
+                  this product schedules one -- no sequence step, no route, no
+                  import -- so offering it is offering a filter that can only
+                  ever come back empty. The other eight all have a writer:
+                  sequence steps, the engagement route, and inbox replies. */}
+              {LINKEDIN_ACTION_KINDS.filter((option) => option !== 'comment')
+                .map((option) => <option key={option} value={option}>{ACTION_KIND_LABELS[option]}</option>)}
             </select>
           </label>
         </div>
       </details>
     </section>
 
-    {error && <div className="error-banner">{error}</div>}
+    {error && <div className="error-banner">
+      <strong>{error}</strong>{' '}
+      <button className="secondary-button" type="button" disabled={loading} onClick={() => void load()}>
+        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Try again
+      </button>
+    </div>}
 
     <section className="page-panel">
       {/* The date belongs to MARKING, not to filtering. It sat in the filter row
           looking like a fifth way to narrow the list, which it never was. */}
       <div className="li-filter-row">
-        <label>Report outcomes as happening on
+        <label>These happened on
           <input type="date" value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} />
         </label>
         <span className="li-hint">
-          Leave it empty for “now”. Marking an outcome tells Trevra what already happened in your own tool; it sends
-          nothing. Every rolling window reads this date, so a Tuesday send reported on Friday has to charge Tuesday.
+          Leave it empty for “now”. Marking one of these tells Trevra what already happened on LinkedIn; it sends
+          nothing. Every rolling limit counts from this date, so something you sent on Tuesday and record on Friday has
+          to count against Tuesday.
         </span>
       </div>
 
       {selectedIds.length > 0 && <div className="li-filter-row">
         <span className="li-filter-label">{selectedIds.length} selected</span>
         <button className="li-danger-button" type="button" disabled={bulkBusy} onClick={() => setConfirmingBulk(true)}>
-          {bulkBusy ? <LoaderCircle className="spin" size={14} /> : <Ban size={14} />} Skip {selectedIds.length} slot(s)
+          {bulkBusy ? <LoaderCircle className="spin" size={14} /> : <Ban size={14} />} Skip {selectedIds.length} action(s)
         </button>
         <button className="ghost-button" type="button" disabled={bulkBusy} onClick={() => setSelected(new Set())}>Clear selection</button>
       </div>}
@@ -1228,8 +1399,11 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
       {actions.length === 0
         ? <div className="empty-state">
           <ListTree size={26} />
-          <h4>{filtered ? 'Nothing in the queue matches this filter' : 'Nothing is in the queue yet'}</h4>
-          <p>Slots enter the queue when an approved plan is exported.</p>
+          <h4 aria-level={2}>{filtered ? 'Nothing scheduled matches this filter' : 'Nothing is scheduled yet'}</h4>
+          <p>
+            Actions land here when you start a campaign on Campaigns, or when an approved plan is exported from
+            Approve &amp; export.
+          </p>
           {filtered && <button className="secondary-button" type="button" onClick={() => { setStatus(''); setKind(''); setCampaignId(''); }}>
             Clear the filters
           </button>}
@@ -1242,11 +1416,11 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
                   type="checkbox"
                   checked={allSelected}
                   disabled={skippable.length === 0}
-                  aria-label={allSelected ? 'Clear the selection' : `Select all ${skippable.length} slot(s) that can still be skipped`}
+                  aria-label={allSelected ? 'Clear the selection' : `Select all ${skippable.length} action(s) that can still be skipped`}
                   onChange={() => setSelected(allSelected ? new Set() : new Set(skippable.map((action) => action.id)))}
                 />
               </th>
-              <th>Target</th><th>Kind</th><th>Status</th><th>Planned for</th><th>Recorded</th><th>Source</th><th>Queued by</th><th>Mark as</th>
+              <th>Person</th><th>Action</th><th>Status</th><th>Goes out</th><th>Recorded</th><th>Came from</th><th>Queued by</th><th>Mark as</th>
             </tr></thead>
             <tbody>{actions.map((action) => <tr key={action.id}>
               <td>
@@ -1268,7 +1442,7 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
               </td>
               <td>{action.plannedFor ? new Date(action.plannedFor).toLocaleString() : '—'}</td>
               <td>{action.recordedAt ? new Date(action.recordedAt).toLocaleString() : '—'}</td>
-              <td>{action.source}</td>
+              <td>{ACTION_SOURCE_LABELS[action.source] ?? action.source}</td>
               <td>{nameFor(action.queuedByUserId) ?? '—'}</td>
               <td className="li-row-actions">
                 {OUTCOMES.map((outcome) => <button
@@ -1291,18 +1465,17 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
     </section>
 
     {confirmingBulk && <ConfirmDrawer
-      title={`Skip ${selectedIds.length} slot(s)?`}
+      title={`Skip ${selectedIds.length} scheduled action(s)?`}
       tone="danger"
       busy={bulkBusy}
       body={<>
-        <p>Each one is released: the slot goes back and nothing is scheduled against it.</p>
+        <p>Each one comes off the schedule and will not go out.</p>
         <p>
-          Skipping is written to the ledger and there is no un-skip — a skipped slot has to be planned again from its
-          campaign.
+          A skip is permanent and there is no undo — to bring one back, plan it again from the campaign it belongs to.
         </p>
-        <p>Nobody is contacted either way. This changes what Trevra has queued, not what LinkedIn has seen.</p>
+        <p>Nobody is contacted either way. This changes what Trevra was going to do, not what LinkedIn has already seen.</p>
       </>}
-      confirmLabel={`Skip ${selectedIds.length} slot(s)`}
+      confirmLabel={`Skip ${selectedIds.length} action(s)`}
       onConfirm={() => void skipSelected()}
       onCancel={() => setConfirmingBulk(false)}
     />}
@@ -1353,8 +1526,8 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>Never contact</h3>
-          <p>Applied before a plan is produced and before a campaign starts, never at send time.</p>
+          <h3 aria-level={2}>Never contact</h3>
+          <p>Checked before a campaign starts and before any plan is built, so nobody on this list ever reaches a queue.</p>
         </div>
       </div>
       {error && <div className="error-banner">{error}</div>}
@@ -1366,8 +1539,8 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
       </div>
       <div className="panel-footer">
         <span>
-          Matching is textual and case-folded; Trevra never resolves a handle against LinkedIn. There is no removal button:
-          removing an entry is a database operation.
+          Matching is on the text, ignoring case; Trevra never looks a handle up on LinkedIn to check it. There is no
+          Remove button here — taking somebody off this list is a database change, on purpose.
         </span>
         <button className="primary-button" disabled={busy} onClick={() => void add()}>
           {busy ? <LoaderCircle className="spin" size={15} /> : <Ban size={15} />} Add to the list
@@ -1380,7 +1553,7 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
         ? <p className="empty-copy">Nobody is excluded yet.</p>
         : <div className="li-table-scroll">
           <table className="li-table">
-            <thead><tr><th>Target</th><th>Reason</th><th>Source</th><th>Added</th></tr></thead>
+            <thead><tr><th>Person</th><th>Reason</th><th>Added from</th><th>Added</th></tr></thead>
             <tbody>{exclusions.map((entry) => <tr key={entry.id}>
               <td className="li-target">{entry.targetRef}</td>
               <td>{entry.reason || '—'}</td>

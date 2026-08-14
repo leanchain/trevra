@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseMessageVariant, delayMilliseconds, renderWorkflowTemplate, workflowStepsSchema } from './workflows.js';
+import { chooseMessageVariant, delayMilliseconds, renderWorkflowTemplate, unsupportedVariables, workflowStepsSchema } from './workflows.js';
 
 describe('LinkedIn manager workflows', () => {
   it('accepts the supported actions and hour/day delays', () => {
@@ -26,9 +26,53 @@ describe('LinkedIn manager workflows', () => {
     expect(() => workflowStepsSchema.parse([{ id: 'withdraw', action: 'withdraw_pending', delayBefore: { amount: 1, unit: 'days' }, config: { afterDays: 7 } }])).toThrow();
   });
 
-  it('renders only the three supported variables', () => {
+  it('renders the supported variables and leaves an unknown token standing', () => {
     expect(renderWorkflowTemplate('Hi {{first_name}} {{last_name}} from {{company}} / {{other}}', { firstName: 'Maya', lastName: 'Smith', company: 'Acme' }))
       .toBe('Hi Maya Smith from Acme / {{other}}');
+  });
+
+  // Migration 046 stores an email, a phone and a country on every contact, the
+  // importer parses all three and the lead table renders them -- and none of
+  // them could reach a message. A merge field for data the operator already
+  // supplied is not a feature request, it is the data being connected to the
+  // one place it was collected for.
+  it('merges email, phone and country, and renders a missing one as empty rather than as a token', () => {
+    expect(renderWorkflowTemplate(
+      '{{first_name}} / {{email}} / {{phone}} / {{country}}',
+      { firstName: 'Maya', lastName: 'Smith', company: 'Acme', email: 'maya@acme.test', phone: '+41 79 000 00 00', country: 'CH' }
+    )).toBe('Maya / maya@acme.test / +41 79 000 00 00 / CH');
+
+    // A contact whose CSV had no phone column: a blank, not the word null and
+    // not `{{phone}}` arriving in somebody's inbox.
+    expect(renderWorkflowTemplate('Call {{phone}} in {{country}}.', { firstName: 'Maya', lastName: 'Smith', company: 'Acme', phone: null }))
+      .toBe('Call  in .');
+
+    expect(workflowStepsSchema.parse([
+      { id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: 'Hi {{first_name}} in {{country}}' } }
+    ])).toHaveLength(1);
+  });
+
+  // `sequence.ts` documents camelCase (`{{firstName}}`) and this renderer filled
+  // only snake_case, so a line copied from one screen to the other was refused
+  // at save time -- or delivered with the braces intact by anything that leaves
+  // unknown tokens standing.
+  it('accepts the camelCase spelling of the three fields the sequence path shares', () => {
+    expect(renderWorkflowTemplate('Hi {{firstName}} {{lastName}} at {{company}}', { firstName: 'Maya', lastName: 'Smith', company: 'Acme' }))
+      .toBe('Hi Maya Smith at Acme');
+    expect(unsupportedVariables('{{firstName}} {{lastName}} {{company}} {{email}}')).toEqual([]);
+    expect(workflowStepsSchema.parse([
+      { id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: 'Hi {{firstName}}' } }
+    ])).toHaveLength(1);
+  });
+
+  // Widening the set does not soften the refusal: a name that is neither a
+  // canonical field nor an alias is still rejected on the write that
+  // introduced it, which is the whole reason the set is closed.
+  it('still refuses a variable that is neither a field nor an alias', () => {
+    expect(unsupportedVariables('Hi {{fistName}} at {{jobTitle}}').sort()).toEqual(['fistName', 'jobTitle']);
+    expect(() => workflowStepsSchema.parse([
+      { id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: 'Hi {{fistName}}' } }
+    ])).toThrow();
   });
 
   it('assigns an A/B variant deterministically', () => {

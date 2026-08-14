@@ -18,6 +18,7 @@ import {
   Plus,
   Save,
   ScanSearch,
+  Send,
   ShieldCheck,
   Sparkles,
   ThumbsUp,
@@ -47,6 +48,7 @@ import {
   importLinkedInTargets,
   linkedInExportDownloadPath,
   planLinkedIn,
+  queueLinkedInCampaign,
   saveLinkedInCampaignSequence,
   stopLinkedInCampaign,
   type BranchOn,
@@ -76,12 +78,12 @@ import {
   TONE_LABELS,
   actionStatusLabel,
   errorMessage,
-  humanizeRule,
   reloadOutreach,
   takeStagedTargets,
   useOutreachRefresh,
   useSeatLimits
 } from './LinkedInSafety';
+import { limitReason, sourceNote } from './LinkedInScreen';
 import { ConfidenceTag, Define } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 
@@ -134,7 +136,7 @@ const STEP_KINDS: readonly StepKindMeta[] = [
   { kind: 'inmail', label: 'InMail', Icon: Mail, carriesCopy: true },
   {
     kind: 'follow', label: 'Follow', Icon: UserCheck, carriesCopy: false,
-    noCopyNote: 'A follow carries no message. It puts this seat in their notifications without asking for anything.'
+    noCopyNote: 'A follow carries no message. It puts you in their notifications without asking for anything.'
   },
   {
     kind: 'like', label: 'Like', Icon: ThumbsUp, carriesCopy: false,
@@ -284,9 +286,58 @@ const DRAFTABLE_BRIEF: ReadonlyArray<readonly [keyof CampaignBrief, string]> = [
 const splitTargets = (value: string) => value.split(/[\n,]/).map((line) => line.trim()).filter(Boolean);
 
 /** Enough of a lead source to choose between two of them in one line. */
-const LEAD_SOURCE_KINDS: Record<string, string> = { search: 'People search', post: 'Post engagement' };
+/**
+ * Enough of a lead source to choose between two of them in one line.
+ *
+ * ALL FOUR KINDS THE SERVER HARVESTS. Two of them were missing, so a Sales
+ * Navigator walk and a keyword walk rendered their raw enum -- `sales_navigator`
+ * -- in the one chip whose whole job is to say what a saved search is. The words
+ * are the Find leads screen's, copied rather than imported: four strings are not
+ * worth coupling two screens that otherwise share nothing.
+ */
+const LEAD_SOURCE_KINDS: Record<string, string> = {
+  search: 'People search',
+  sales_navigator: 'Sales Navigator search',
+  content: 'Post & comment keywords',
+  post: 'One post’s engagement'
+};
 const LEAD_SOURCE_STATUS: Record<string, string> = {
-  pending: 'Queued', running: 'Walking', completed: 'Done', failed: 'Failed'
+  pending: 'Queued', running: 'Reading', completed: 'Done', failed: 'Failed'
+};
+
+/**
+ * Which limit shaped the plan, in words an operator can act on.
+ *
+ * The planner reports the rule that bound by its internal name. Every one of
+ * these is either something they set, something LinkedIn publishes, or
+ * something Trevra does on purpose -- and none of those is a phrase anybody
+ * should have to look up.
+ */
+const CEILING_LABELS: Record<string, string> = {
+  'seat-paused': 'this account is paused',
+  'working-days': 'your working days',
+  'business-hours-window-capacity': 'your working hours',
+  'warmup-multiplier': 'still ramping up',
+  'cooldown-band': 'cooldown',
+  'acceptance-rate': 'low acceptance rate',
+  'day-over-day-delta': 'no big jump from the day before',
+  weekend: 'quieter at weekends',
+  'enforcement-scan-day': 'quieter on Tue and Wed',
+  'weekly-band': 'weekly limit',
+  'pending-invite-backlog': 'invites nobody has answered',
+  'monthly-quota': 'LinkedIn’s monthly quota',
+  'band-ceiling': 'daily limit'
+};
+const ceilingLabel = (value: string) => CEILING_LABELS[value] ?? value.replaceAll('-', ' ');
+
+/** How far a campaign got, without the machinery that got it there. */
+const RUN_STATUS_LABELS: Record<string, string> = {
+  queued: 'Plan queued',
+  running: 'Building the plan…',
+  waiting_approval: 'Waiting for your approval',
+  completed: 'Plan approved and ready to export',
+  failed: 'The plan could not be built',
+  cancelled: 'Cancelled'
 };
 
 /** `https://www.linkedin.com/in/pankaj-x/` -> `linkedin.com/in/pankaj-x`. */
@@ -319,10 +370,10 @@ const MERGE_TOKEN = /\{\{\s*([A-Za-z0-9_.]+)\s*\}\}/g;
  * Surfaced on the card, and it blocks the save. The alternative is a 400 that
  * arrives after the operator has written six steps, naming one of them.
  */
-function unknownMergeFields(template: string): string[] {
+function unknownMergeFields(template: string, fields: readonly string[]): string[] {
   const found = new Set<string>();
   for (const match of template.matchAll(MERGE_TOKEN)) {
-    if (!LINKEDIN_MERGE_FIELDS.includes(match[1])) found.add(match[1]);
+    if (!fields.includes(match[1])) found.add(match[1]);
   }
   return [...found];
 }
@@ -466,6 +517,107 @@ function suggestedFieldLabels(suggested: LinkedInCampaignDraft['suggested']): st
 }
 
 /**
+ * Which backend proposed the suggested fields, in words rather than a slug.
+ *
+ * `POST /api/linkedin/campaigns/draft` answers `suggestedBy` -- the workspace's
+ * own configured model, or a model CLI on the server -- and this screen threw it
+ * away, so the block headed “Suggested, not read” never said what did the
+ * suggesting. A source the server does not name prints nothing at all.
+ */
+const SUGGESTED_BY_LABELS: Record<string, string> = {
+  model: 'the language model this workspace has configured',
+  cli: 'a language-model CLI on this server'
+};
+
+/** A campaign's own settings, as the run it was planned from recorded them. */
+interface StoredCampaignInput {
+  targets: string[];
+  contacts: ExportContact[];
+  brief: CampaignBrief;
+}
+
+/**
+ * Read a campaign's settings back off its playbook run.
+ *
+ * `GET /api/linkedin/campaigns/:id` returns the run, and `run.input` IS the
+ * payload the campaign was planned from -- the people, the tone, the action
+ * type, the horizon, the format, the contact rows the export's merge fields are
+ * filled from. Opening a campaign used to hydrate its name and its steps and
+ * nothing else, so the builder sat there showing an EMPTY people list and
+ * `consultative / invite / 14 days / dripify` as though those were the
+ * campaign's own answers. They were this file's defaults, and an operator
+ * editing a campaign had no way to tell the difference.
+ *
+ * NOTHING IS INVENTED HERE. The run input is stored after the playbook's own
+ * schema has applied its defaults, so a field that is absent is a field from
+ * before it existed and falls back to the same default the server would have
+ * used. The DOMAIN is the one thing deliberately not hydrated: no route returns
+ * it, because it is an input to drafting rather than part of a campaign, and
+ * guessing it off a target URL would be printing a fact nobody stated.
+ */
+function storedCampaignInput(input: unknown): StoredCampaignInput | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const stored = input as Record<string, unknown>;
+  if (!Array.isArray(stored.targets)) return null;
+  const text = (value: unknown) => typeof value === 'string' ? value : '';
+  const oneOf = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
+    typeof value === 'string' && (allowed as readonly string[]).includes(value) ? value as T : fallback;
+  const icp = (stored.icp ?? {}) as Record<string, unknown>;
+  const offer = (stored.offer ?? {}) as Record<string, unknown>;
+  const horizon = Number(stored.horizonDays);
+  return {
+    targets: stored.targets.filter((entry): entry is string => typeof entry === 'string'),
+    contacts: Array.isArray(stored.contacts) ? stored.contacts as ExportContact[] : [],
+    brief: {
+      ...EMPTY_BRIEF,
+      role: text(icp.role),
+      segment: text(icp.segment),
+      pain: text(icp.pain),
+      offerName: text(offer.name),
+      summary: text(offer.summary),
+      mechanism: text(offer.mechanism),
+      url: text(offer.url),
+      proof: Array.isArray(offer.proof)
+        ? offer.proof
+          .map((entry) => (entry ?? {}) as Record<string, unknown>)
+          .filter((entry) => typeof entry.label === 'string' && typeof entry.value === 'string')
+          .map((entry) => `${String(entry.label)}: ${String(entry.value)}`)
+          .join('\n')
+        : '',
+      tone: oneOf(stored.tone, TONES, EMPTY_BRIEF.tone),
+      kind: oneOf(stored.kind, PACED_KINDS, EMPTY_BRIEF.kind),
+      horizonDays: Number.isFinite(horizon) ? Math.max(1, Math.trunc(horizon)) : EMPTY_BRIEF.horizonDays,
+      format: oneOf(stored.format, LINKEDIN_EXPORT_FORMATS, EMPTY_BRIEF.format),
+      includeInMail: stored.includeInMail === true,
+      // `drafted` is the playbook's default and the run input carries it, so
+      // only an explicit 'none' is a noteless invite. Falling back to this
+      // file's own default -- 'none' -- would have shown the opposite of what
+      // the campaign was planned with.
+      inviteNote: stored.inviteNote === 'none' ? 'none' : 'drafted'
+    }
+  };
+}
+
+/**
+ * The format the open campaign's plan was APPROVED with, or null.
+ *
+ * `POST /api/linkedin/campaigns/:id/export` takes `format` optionally and falls
+ * back to `approved.format` -- so a select that always sends its own value
+ * OVERRIDES the approval. Initialised to 'dripify' and never seeded, it rendered
+ * a Dripify file for a campaign a founder had approved as Expandi, with nothing
+ * on screen saying the format had changed. The approval payload is the
+ * authority, so it is what the control opens on.
+ */
+function approvedFormat(run: PlaybookRun | null | undefined): ExportFormat | null {
+  const payload = run?.steps.find((step) => step.stepType === 'approval')?.input;
+  if (!payload || typeof payload !== 'object') return null;
+  const value = (payload as { format?: unknown }).format;
+  return typeof value === 'string' && (LINKEDIN_EXPORT_FORMATS as readonly string[]).includes(value)
+    ? value as ExportFormat
+    : null;
+}
+
+/**
  * The ceiling this campaign's chosen kind is actually bound by, today.
  *
  * Safety computes "12 invites left today, bound by warm-up-week-2" and then the
@@ -473,19 +625,44 @@ function suggestedFieldLabels(suggested: LinkedInCampaignDraft['suggested']): st
  * the constraint and hid it from the field that violates it. Shown inline,
  * confidence tag and binding rule intact, or said plainly to be unknown.
  */
-function BindingCeiling({ limits, kind }: { limits: LinkedInLimitsReport | null; kind: PacedKind }) {
+function BindingCeiling({ limits, loading, error, kind }: {
+  limits: LinkedInLimitsReport | null;
+  /** True while a read of the ceilings is in flight. */
+  loading: boolean;
+  /** That read's own refusal, or ''. */
+  error: string;
+  kind: PacedKind;
+}) {
   const ceiling: LinkedInCeiling | undefined = limits?.limits
     .find((limit) => limit.kind === kind && limit.window === 'day');
   if (!ceiling) {
+    // FOUR DIFFERENT SILENCES, and only one of them is "no account". This line
+    // used to assert that nothing was connected whenever `limits` was null --
+    // which is also true mid-load and true after a failed read, so a network
+    // blip told an operator with a live seat that they had none. Each state now
+    // says what it actually is, and none of them claims a limit it has not read.
+    if (loading) return <small className="li-hint">Reading what is left today…</small>;
+    if (error) {
+      return <small className="li-hint">
+        {error} Until that read succeeds this line cannot say how many are left today, and nothing here assumes it is
+        zero.
+      </small>;
+    }
+    if (limits && !limits.seat.configured) {
+      return <small className="li-hint">
+        No LinkedIn account is connected yet, so no daily limit applies. Connect one and this line says how many are left
+        today, and why.
+      </small>;
+    }
     return <small className="li-hint">
-      No seat is configured, so no ceiling applies yet. Safety will name the rule that binds once one is.
+      No daily limit came back for {KIND_LABELS[kind].toLowerCase()} on this account, so this line cannot say how many
+      are left today.
     </small>;
   }
   return <small className="li-hint">
-    {ceiling.remaining} of {ceiling.ceiling} {KIND_LABELS[kind].toLowerCase()} left today, bound by{' '}
-    {humanizeRule(ceiling.boundBy)}. The horizon spreads targets across days; it never raises that number, so a horizon
-    too short for the list simply plans fewer of them.{' '}
-    <ConfidenceTag confidence={ceiling.confidence} source={ceiling.source} compact />
+    {ceiling.remaining} of {ceiling.ceiling} {KIND_LABELS[kind].toLowerCase()} left today — {limitReason(ceiling.boundBy)}.
+    Spreading over more days never raises that number, so too few days simply means fewer people get reached.{' '}
+    <ConfidenceTag confidence={ceiling.confidence} source={sourceNote(ceiling.confidence)} compact />
   </small>;
 }
 
@@ -502,7 +679,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
   /** From `#/outreach/campaigns/:id`. A link to a campaign has to open it. */
   campaignId?: string | null;
 }) {
-  const { limits } = useSeatLimits();
+  const { limits, loading: limitsLoading, error: limitsError } = useSeatLimits();
   const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
   const [detail, setDetail] = useState<LinkedInCampaignDetail | null>(null);
   const [name, setName] = useState('');
@@ -534,6 +711,18 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
    * theirs and labelling it "suggested" after that would be wrong.
    */
   const [suggestedFields, setSuggestedFields] = useState<string[]>([]);
+  /** Which backend proposed them, as the draft named it. Null when the draft named none. */
+  const [suggestedBy, setSuggestedBy] = useState<string | null>(null);
+  /**
+   * The template the last draft was written against, when the server named one.
+   *
+   * `POST /campaigns/draft` answers `templateId` and pushes
+   * `sequence:drafted-from-template` into `degraded` when it had no complete
+   * brief to write specific copy from -- which is exactly the case an operator
+   * has to know about, because the steps below are then a shape rather than
+   * something written for them. The response carried it; this screen dropped it.
+   */
+  const [draftTemplateId, setDraftTemplateId] = useState<string | null>(null);
   /**
    * What the server says a sequence may contain. Read once, on mount, because
    * the branch control has to render the right five values before anybody
@@ -548,6 +737,10 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
   const [format, setFormat] = useState<ExportFormat>('dripify');
   /** The step whose delete is waiting on a confirmation. One drawer serves every card. */
   const [confirmRemove, setConfirmRemove] = useState<EditableSequenceStep | null>(null);
+  /** The campaign whose stop is waiting on a confirmation -- stopping is instant and has no undo, same tier as a step delete. */
+  const [confirmStop, setConfirmStop] = useState<{ id: string; name: string } | null>(null);
+  /** The campaign whose queue-for-the-worker is waiting on a confirmation -- this is the one control here that ends in something being sent. */
+  const [confirmQueue, setConfirmQueue] = useState<{ id: string; name: string } | null>(null);
   const copyRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   const loadList = async () => {
@@ -564,6 +757,29 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
       setBoundId(next.campaign?.id ?? id);
       setName(next.campaign?.name ?? '');
       setSteps(normalizeSteps(next.campaign?.sequence));
+      /*
+       * AND ITS SETTINGS, not this file's defaults.
+       *
+       * The people, the contact rows and the whole brief live on the run this
+       * campaign was planned from. Hydrating only the name and the steps left
+       * the operator editing a campaign in front of an empty “People to reach”
+       * and four pace controls showing values the campaign had never been given.
+       * Left alone when the run is gone: a builder holding the last campaign's
+       * numbers is wrong, and inventing this one's would be worse.
+       */
+      const stored = storedCampaignInput(next.run?.input);
+      if (stored) {
+        setTargets(stored.targets.join('\n'));
+        setContacts(stored.contacts);
+        setBrief(stored.brief);
+        setDegraded([]);
+        setSuggestedFields([]);
+        setSuggestedBy(null);
+        setDraftTemplateId(null);
+      }
+      // The format the plan was APPROVED with wins, because that is the one the
+      // export route falls back to and the one a founder actually read.
+      setFormat(approvedFormat(next.run) ?? stored?.brief.format ?? 'dripify');
       setTemplates(null);
       setError('');
     }
@@ -589,6 +805,10 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     setSteps([]);
     setBrief(EMPTY_BRIEF);
     setDegraded([]);
+    setSuggestedFields([]);
+    setSuggestedBy(null);
+    setDraftTemplateId(null);
+    setFormat('dripify');
     setTemplates(null);
     setError('');
   };
@@ -616,7 +836,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     const staged = takeStagedTargets();
     if (staged.length === 0) return;
     setTargets((current) => [...new Set([...splitTargets(current), ...staged])].join('\n'));
-    setToast(`${staged.length} profile URL(s) from lead sourcing are in the targets field below. `
+    setToast(`${staged.length} profile URL(s) from your lead search are in the list below. `
       + 'Nothing is saved until you create the campaign.');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -712,7 +932,24 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
       ...(condition && condition.on !== 'always' ? { condition } : {})
     }));
 
-  const rejectedFields = [...new Set(steps.flatMap((step) => unknownMergeFields(step.template)))];
+  /*
+   * WHAT THE SERVER SAYS A SEQUENCE MAY CONTAIN, read rather than hardcoded.
+   *
+   * `GET /api/linkedin/sequence-templates` publishes the merge fields, the
+   * invite-note cap and the step cap precisely so a builder does not drift from
+   * the validator. All three were fetched on mount and then never read: the
+   * screen went on printing its own 300 as LinkedIn's number, and offered no
+   * step cap at all, so step 26 was refused at save after the whole sequence had
+   * been written. The local constants stay as the fallback for a deployment that
+   * serves an older payload -- a builder with no cap is better than one with an
+   * invented cap.
+   */
+  const mergeFields = sequenceConfig?.mergeFields ?? LINKEDIN_MERGE_FIELDS;
+  const inviteNoteMax = sequenceConfig?.inviteNoteMaxChars ?? LINKEDIN_INVITE_NOTE_MAX_CHARS;
+  const maxSteps = sequenceConfig?.maxSteps ?? null;
+  const atStepCap = maxSteps !== null && steps.length >= maxSteps;
+  const overStepCap = maxSteps !== null && steps.length > maxSteps;
+  const rejectedFields = [...new Set(steps.flatMap((step) => unknownMergeFields(step.template, mergeFields)))];
   const branchOn = branchOnOptions(sequenceConfig?.branchOn ?? null);
   const branchIssues = steps
     .map((step, index) => ({ step, problem: branchProblem(steps, index) }))
@@ -720,7 +957,17 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
 
   /* ---- drafting ------------------------------------------------------- */
 
-  const draftSequence = async (templateId?: string) => {
+  /**
+   * Draft from the domain.
+   *
+   * IT SENDS THE DOMAIN AND THE TARGETS AND NOTHING ELSE, because that is all
+   * `/api/linkedin/campaigns/draft` accepts (its schema is `.strict()`). It used
+   * to take a `templateId` no call site ever passed; the tone and the two draft
+   * options in the brief are read where they are actually accepted -- on create,
+   * when Trevra writes the sequence from the brief -- and the fold says so
+   * rather than implying this button reads them.
+   */
+  const draftSequence = async () => {
     if (!domain.trim()) {
       setError('Add your domain first — the draft is written from what is on it.');
       return;
@@ -731,8 +978,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     try {
       const result = await draftLinkedInCampaign({
         domain: domain.trim(),
-        ...(list.length > 0 ? { targets: list } : {}),
-        ...(templateId ? { templateId } : {})
+        ...(list.length > 0 ? { targets: list } : {})
       });
       const missing = Array.isArray(result?.degraded) ? result.degraded.map(String) : [];
       setDegraded(missing);
@@ -743,6 +989,11 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
       const suggested = result?.suggested;
       setBrief((current) => applySuggestedBrief(applyDraftBrief(current, result?.brief, missing), suggested));
       setSuggestedFields(suggestedFieldLabels(suggested));
+      setSuggestedBy(typeof result?.suggestedBy === 'string' ? result.suggestedBy : null);
+      // Read off the response rather than the client type, which does not
+      // declare it yet. The route has returned it since the draft path existed.
+      const namedTemplate = (result as { templateId?: unknown } | null)?.templateId;
+      setDraftTemplateId(typeof namedTemplate === 'string' ? namedTemplate : null);
       setTemplates(null);
       const filled = suggestedFieldLabels(suggested).length;
       setToast(filled > 0
@@ -773,6 +1024,8 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
   const useTemplate = (template: LinkedInSequenceTemplate) => {
     setSteps(normalizeSteps(template?.steps));
     setTemplates(null);
+    // These steps are the operator's pick, not something a draft fell back to.
+    setDraftTemplateId(null);
     setToast(`Loaded “${template?.name ?? 'template'}”. Every line is yours to edit — nothing is saved yet.`);
   };
 
@@ -810,14 +1063,14 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
       const result = await getLinkedInLeads(source.id, 500);
       const pulled = result.leads.map((lead) => lead.profileUrl).filter(Boolean);
       if (pulled.length === 0) {
-        setToast('That walk stored nobody, so nothing was added. Nothing is invented to fill the gap.');
+        setToast('That search found nobody, so nothing was added. Trevra will not invent people to fill the gap.');
         return;
       }
       const before = splitTargets(targets);
       const merged = [...new Set([...before, ...pulled])];
       setTargets(merged.join('\n'));
       const added = merged.length - before.length;
-      setToast(`${added} profile URL(s) added to targets (${pulled.length - added} already there). `
+      setToast(`${added} profile URL(s) added (${pulled.length - added} were already there). `
         + 'Nothing is saved until you create the campaign.');
       setLeadSources(null);
     }
@@ -844,15 +1097,20 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
   const create = async () => {
     const list = splitTargets(targets);
     if (!name.trim() || list.length === 0) {
-      setError('A campaign needs a name and at least one target.');
+      setError('A campaign needs a name and at least one person to reach.');
       return;
     }
     if (rejectedFields.length > 0) {
-      setError(`Remove the merge fields the server does not accept: ${rejectedFields.map((field) => `{{${field}}}`).join(', ')}.`);
+      setError(`Remove the merge fields Trevra does not accept: ${rejectedFields.map((field) => `{{${field}}}`).join(', ')}.`);
       return;
     }
     if (branchIssues.length > 0) {
       setError(`Fix the branch on step ${branchIssues[0].step.id}: ${branchIssues[0].problem}`);
+      return;
+    }
+    if (overStepCap) {
+      setError(`A sequence may have at most ${maxSteps} steps and this one has ${steps.length}. `
+        + `Remove ${steps.length - (maxSteps ?? 0)} before creating the campaign.`);
       return;
     }
 
@@ -873,7 +1131,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     const missing = DRAFTABLE_BRIEF.filter(([field]) => !String(brief[field]).trim()).map(([, label]) => label);
     if (assembled.length === 0 && missing.length > 0) {
       setError('Add a step below, start from a template, or draft one with AI — a campaign is its sequence. '
-        + `To have Trevra draft it from the brief instead, that still needs: ${missing.join(', ')}.`);
+        + `To have Trevra write it from the brief instead, that still needs: ${missing.join(', ')}.`);
       return;
     }
 
@@ -908,7 +1166,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
           }
       });
       const note = created.excluded.length > 0
-        ? `Campaign created. ${created.excluded.length} target(s) skipped: on the exclusion list.`
+        ? `Campaign created. ${created.excluded.length} person(s) skipped: they are on your Never contact list.`
         : 'Campaign created.';
       setToast(`${note} Approve the plan to export it.`);
       await loadList();
@@ -922,11 +1180,16 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     if (!boundId) return;
     if (steps.length === 0) { setError('A sequence needs at least one step.'); return; }
     if (rejectedFields.length > 0) {
-      setError(`Remove the merge fields the server does not accept: ${rejectedFields.map((field) => `{{${field}}}`).join(', ')}.`);
+      setError(`Remove the merge fields Trevra does not accept: ${rejectedFields.map((field) => `{{${field}}}`).join(', ')}.`);
       return;
     }
     if (branchIssues.length > 0) {
       setError(`Fix the branch on step ${branchIssues[0].step.id}: ${branchIssues[0].problem}`);
+      return;
+    }
+    if (overStepCap) {
+      setError(`A sequence may have at most ${maxSteps} steps and this one has ${steps.length}. `
+        + `Remove ${steps.length - (maxSteps ?? 0)} before saving.`);
       return;
     }
     setBusy('save');
@@ -944,12 +1207,12 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     } finally { setBusy(null); }
   };
 
-  const decide = async (campaignId: string, run: PlaybookRun, step: PlaybookStepRun, decision: 'approve' | 'reject') => {
+  const decide = async (run: PlaybookRun, step: PlaybookStepRun, decision: 'approve' | 'reject') => {
     setBusy(`decide-${step.stepId}`);
     try {
       await decidePlaybookStep(run.id, step.stepId, decision);
       setToast(decision === 'approve'
-        ? 'Plan approved. The approval is bound to the exact bytes you read; a changed plan would need a new one.'
+        ? 'Plan approved. It covers exactly what you read — change one word and Trevra will ask you to approve it again.'
         : 'Plan rejected. Nothing was exported.');
       await reloadOutreach();
     } catch (err) {
@@ -957,46 +1220,119 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     } finally { setBusy(null); }
   };
 
+  /**
+   * Render the APPROVED bytes for the operator's own tool.
+   *
+   * `format` is sent, and it is sent seeded from the approval (see
+   * `approvedFormat`): the route reads it as an override of `approved.format`,
+   * so a control that opened on a hardcoded 'dripify' silently reformatted every
+   * campaign approved as anything else.
+   */
   const runExport = async (campaignId: string) => {
     setBusy('export');
+    setError('');
     try {
       const result = await exportLinkedInCampaign(campaignId, format);
       setToast(result.rendered
-        ? `Rendered ${result.export.filename}. ${result.recorded?.written ?? 0} slot(s) filed as exported, ${result.recorded?.duplicate ?? 0} duplicate.`
-        : `Already rendered from these exact approved bytes — same file, no second ledger write.`);
+        ? `Rendered ${result.export.filename}. ${result.recorded?.written ?? 0} action(s) recorded as exported, ${result.recorded?.duplicate ?? 0} already there.`
+        : 'This file was already rendered from exactly this approved plan — same file, and nothing recorded twice.');
       await reloadOutreach();
     } catch (err) {
       setError(errorMessage(err, 'Unable to export that campaign'));
     } finally { setBusy(null); }
   };
 
-  const stop = async (campaignId: string) => {
+  /**
+   * File the approved actions for the worker on this operator's own machine.
+   *
+   * THE OTHER HALF OF AN APPROVAL, and until now it had no button anywhere: the
+   * self-hosted worker is the path this product ships, and the only reachable
+   * answer to “the plan is approved, now what” was a CSV for somebody else's
+   * tool. Same precondition as the export beside it, because it acts on the same
+   * approved bytes -- `POST /campaigns/:id/queue` takes no body at all, since
+   * everything about what goes out was decided by the approval.
+   *
+   * IT SENDS NOTHING ITSELF. It writes 'planned' rows; the worker claims each
+   * one on its own tick, re-runs the whole safety gate against it, and acts
+   * inside the seat's working hours. Returns whether it got that far, so the
+   * drawer knows whether to close.
+   */
+  const queue = async (campaignId: string): Promise<boolean> => {
+    setBusy('queue');
+    setError('');
+    try {
+      const result = await queueLinkedInCampaign(campaignId);
+      setToast(`${result.recorded?.written ?? 0} action(s) queued for the worker on your machine, `
+        + `${result.recorded?.duplicate ?? 0} were already there. Nothing has been sent: the worker takes them one at a `
+        + 'time, re-runs every safety check against each, and acts only inside your working hours.');
+      await reloadOutreach();
+      return true;
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to queue that campaign for your worker'));
+      return false;
+    } finally { setBusy(null); }
+  };
+
+  /** Returns whether it actually stopped, so the confirmation drawer knows whether to close. */
+  const stop = async (campaignId: string): Promise<boolean> => {
     setBusy('stop');
+    setError('');
     try {
       const result = await stopLinkedInCampaign(campaignId);
-      setToast(`Campaign stopped. ${result.releasedActions} queued slot(s) released. This stops one campaign, not the seat — Pause everything, in the stop bar at the top of every screen, does that.`);
+      setToast(`Campaign stopped. ${result.releasedActions} scheduled action(s) will not go out. This stops one campaign, not the account — Pause everything, in the bar at the top of every screen, does that.`);
       await reloadOutreach();
+      return true;
     } catch (err) {
       setError(errorMessage(err, 'Unable to stop that campaign'));
+      return false;
     } finally { setBusy(null); }
   };
 
   const sequence = detail ? asSequence(detail.campaign.sequence) : null;
   const approval = detail?.run?.steps.find((step) => step.stepType === 'approval') ?? null;
+  /*
+   * THE APPROVAL WAS ACTUALLY GRANTED -- not merely requested.
+   *
+   * A step sitting at `waiting_approval` already carries its payload, and both
+   * the export and the queue act on approved bytes, so “an approval step exists”
+   * is not the question. `completed` is the only status `decidePlaybookStep`
+   * writes for an approval it granted. Before this, Render export was live from
+   * the moment a campaign opened and every pre-approval click could only produce
+   * an error banner.
+   */
+  const approved = approval?.status === 'completed';
   const lastDay = steps.length > 0 ? steps[steps.length - 1].day : 0;
 
   return <div className="page-stack">
+    {/* WHERE AM I, AND SHOULD I BE HERE. Two surfaces are called campaigns:
+        this one, which writes a sequence and hands you a file, and the managed
+        one, which runs the sequence for you. Somebody who cannot tell them
+        apart in the first sentence spends an afternoon configuring the wrong
+        one. */}
+    <section className="li-dryrun">
+      <Download size={20} />
+      <div>
+        <strong>Write a sequence, approve the exact wording, then export it or queue it.</strong>
+        <p>
+          This is the advanced path, and nothing on it goes out on its own. Use it when you want to run the messages in
+          another tool, or when Trevra cannot open a browser for you. For everyday outreach — a lead list, a workflow,
+          and a Start button that works through it for you — use{' '}
+          <a className="li-link" href="#/outreach/manager">Campaigns</a>.
+        </p>
+      </div>
+    </section>
+
     {error && <div className="error-banner">{error}</div>}
 
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>Campaigns</h3>
+          <h3 aria-level={2}>Sequences you have built here</h3>
         </div>
         {boundId && <button className="ghost-button" onClick={startNew}><Plus size={14} /> New campaign</button>}
       </div>
       {campaigns.length === 0
-        ? <p className="empty-copy">No campaigns yet. Name one below, then draft a sequence or assemble it step by step.</p>
+        ? <p className="empty-copy">Nothing built here yet. Name one below, then draft a sequence or assemble it step by step.</p>
         : <div className="li-campaign-list">
           {campaigns.map((campaign) => <button
             key={campaign.id}
@@ -1019,32 +1355,59 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     {detail && <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>{detail.campaign.name}</h3>
+          <h3 aria-level={2}>{detail.campaign.name}</h3>
           <p>
-            {detail.run ? `Run ${detail.run.id} · ${detail.run.status.replaceAll('_', ' ')}` : 'No playbook run attached.'}
+            {detail.run
+              ? RUN_STATUS_LABELS[detail.run.status] ?? detail.run.status.replaceAll('_', ' ')
+              : 'No plan has been built for this campaign yet.'}
             {detail.campaign.stopRequestedAt && ' · stop requested'}
           </p>
         </div>
         <div className="li-detail-actions">
-          <select value={format} onChange={(event) => setFormat(event.target.value as ExportFormat)} aria-label="Export format">
+          <select
+            value={format}
+            disabled={!approved}
+            onChange={(event) => setFormat(event.target.value as ExportFormat)}
+            aria-label="Export format"
+          >
             {LINKEDIN_EXPORT_FORMATS.map((option) => <option key={option} value={option}>{EXPORT_FORMAT_LABELS[option]}</option>)}
           </select>
-          <button className="secondary-button" disabled={busy === 'export'} onClick={() => void runExport(detail.campaign.id)}>
+          <button
+            className="secondary-button"
+            disabled={busy !== null || !approved}
+            onClick={() => void runExport(detail.campaign.id)}
+          >
             {busy === 'export' ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />} Render export
           </button>
-          <button className="ghost-button" disabled={busy === 'stop' || detail.campaign.status === 'stopped'} onClick={() => void stop(detail.campaign.id)}>
+          {/* THE PATH THIS PRODUCT SHIPS, and it had no control at all. Beside
+              the export rather than below it, because they are the same
+              decision made two ways: run the approved plan in somebody else's
+              tool, or run it here. */}
+          <button
+            className="secondary-button"
+            disabled={busy !== null || !approved || detail.campaign.status === 'stopped'}
+            onClick={() => { setError(''); setConfirmQueue({ id: detail.campaign.id, name: detail.campaign.name }); }}
+          >
+            {busy === 'queue' ? <LoaderCircle className="spin" size={14} /> : <Send size={14} />} Send with my own worker
+          </button>
+          <button className="ghost-button" disabled={busy === 'stop' || detail.campaign.status === 'stopped'} onClick={() => { setError(''); setConfirmStop({ id: detail.campaign.id, name: detail.campaign.name }); }}>
             <CircleStop size={14} /> Stop campaign
           </button>
         </div>
       </div>
 
+      {!approved && <p className="li-hint">
+        Exporting and queueing both hand over the exact bytes a human approved, and this campaign has none yet — so both
+        stay disabled until the plan below is approved. Neither could do anything before then but refuse.
+      </p>}
+
       {approval && <ApprovalBlock
         step={approval}
         busy={busy === `decide-${approval.stepId}`}
-        onDecide={(decision) => detail.run && void decide(detail.campaign.id, detail.run, approval, decision)}
+        onDecide={(decision) => detail.run && void decide(detail.run, approval, decision)}
       />}
 
-      <h4 className="li-subhead">Sequence</h4>
+      <h4 className="li-subhead" aria-level={3}>Sequence</h4>
       {sequence
         ? <>
           <SequenceNotes sequence={sequence} />
@@ -1052,10 +1415,10 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
             {sequence.steps.length} step(s), loaded into the builder below. Edit them there and save.
           </p>
         </>
-        : <p className="empty-copy">This campaign has no sequence yet — its run has not produced one.</p>}
+        : <p className="empty-copy">This campaign has no sequence yet.</p>}
 
       {detail.exports.length > 0 && <>
-        <h4 className="li-subhead">Exports</h4>
+        <h4 className="li-subhead" aria-level={3}>Exports</h4>
         <div className="li-table-scroll">
           <table className="li-table">
             <thead><tr><th>File</th><th>Format</th><th>Status</th><th>Size</th><th>Rendered</th><th /></tr></thead>
@@ -1071,12 +1434,12 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
         </div>
       </>}
 
-      <h4 className="li-subhead">Filed actions ({detail.actions.length})</h4>
+      <h4 className="li-subhead" aria-level={3}>Scheduled actions ({detail.actions.length})</h4>
       {detail.actions.length === 0
-        ? <p className="empty-copy">No slot has been filed for this campaign yet. Slots enter the ledger when an approved plan is exported.</p>
+        ? <p className="empty-copy">Nothing is scheduled for this campaign yet. Actions are scheduled when an approved plan is exported.</p>
         : <div className="li-table-scroll">
           <table className="li-table">
-            <thead><tr><th>Target</th><th>Kind</th><th>Status</th><th>Planned for</th></tr></thead>
+            <thead><tr><th>Person</th><th>Action</th><th>Status</th><th>Goes out</th></tr></thead>
             <tbody>{detail.actions.slice(0, 50).map((action) => <tr key={action.id}>
               <td className="li-target">{action.targetRef ?? '—'}</td>
               <td>{ACTION_KIND_LABELS_ONE[action.kind]}</td>
@@ -1090,7 +1453,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>{boundId ? 'Editing an existing campaign' : 'New campaign'}</h3>
+          <h3 aria-level={2}>{boundId ? 'Editing an existing campaign' : 'New campaign'}</h3>
           <p>{boundId
             ? 'The builder below is bound to the open campaign. Saving writes these steps back to it.'
             : 'A name, your domain, and who to reach. The copy is written below — the brief is optional and only steers the AI draft.'}</p>
@@ -1103,7 +1466,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
       </div>
 
       <div className="li-form-grid">
-        <label className="li-span-2">Targets — one handle or profile URL per line
+        <label className="li-span-2">People to reach — one handle or profile URL per line
           <textarea rows={6} value={targets} onChange={(event) => setTargets(event.target.value)} />
         </label>
         <div className="li-form-side">
@@ -1114,11 +1477,11 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
             onClick={() => void toggleLeadSources()}
           >
             {busy === 'leads' ? <LoaderCircle className="spin" size={15} /> : <ScanSearch size={15} />}
-            {leadSources !== null ? ' Hide lead sources' : ' Pull from lead sourcing'}
+            {leadSources !== null ? ' Hide saved searches' : ' Pull from a saved search'}
           </button>
           <label className="file-picker">
             {busy === 'import' ? <LoaderCircle className="spin" size={15} /> : <FileUp size={15} />}
-            <span>&nbsp;Import a target CSV</span>
+            <span>&nbsp;Import a CSV of people</span>
             <input type="file" accept=".csv,text/csv" onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) void uploadTargets(file);
@@ -1126,8 +1489,8 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
             }} />
           </label>
           <p className="panel-note">
-            The import persists nothing. It reads the file, drops anyone on the exclusion list, reports who this seat has
-            already contacted, and leaves the usable list here for you to read before any of it becomes a plan.
+            Importing saves nothing. It reads the file, drops anyone on your Never contact list, tells you who this
+            account has already contacted, and leaves the usable list here for you to read before any of it becomes a plan.
             {contacts.length > 0 && <> {contacts.length} contact record(s) held for the export’s merge fields.</>}
           </p>
         </div>
@@ -1140,10 +1503,10 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
         {leadSourcingOff && <div className="li-degraded">
           <strong>Lead sourcing is off, on purpose.</strong>
           <p>{leadSourcingOff}</p>
-          <p>Walks already stored are still listed below; only queueing a new one is refused.</p>
+          <p>Searches you have already run are still listed below; only starting a new one is refused.</p>
         </div>}
         {leadSources.length === 0
-          ? <p className="empty-copy">No source has been walked yet. Queue one on Outreach → Leads, then pull it in here.</p>
+          ? <p className="empty-copy">No search has been run yet. Start one on Find leads, then pull the results in here.</p>
           : <div className="li-source-list">
             {leadSources.map((source) => <button
               key={source.id}
@@ -1158,15 +1521,15 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
                 <span className="li-source-count">
                   {busy === `leads:${source.id}`
                     ? 'Reading…'
-                    : source.resultCount === 0 ? 'nobody stored' : `Pull ${source.resultCount} →`}
+                    : source.resultCount === 0 ? 'found nobody' : `Pull ${source.resultCount} →`}
                 </span>
               </span>
               <span className="li-source-url">{shortSourceUrl(source.url)}</span>
             </button>)}
           </div>}
         <p className="panel-note">
-          Pulling appends the profile URLs this walk stored to the field above and creates nothing. Exclusions are
-          applied where the plan is produced, so anyone who asked to be left alone is dropped before a payload exists.
+          Pulling adds the profile URLs this search found to the list above and creates nothing. Your Never contact list
+          is checked where the plan is built, so anybody who asked to be left alone is dropped before a message exists.
         </p>
       </div>}
 
@@ -1177,7 +1540,11 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
         <button className="secondary-button" disabled={busy === 'templates'} onClick={() => void toggleTemplates()}>
           {busy === 'templates' ? <LoaderCircle className="spin" size={15} /> : <LayoutTemplate size={15} />} Start from a template
         </button>
-        <small className="li-hint">Both fill the builder below, and both are a starting point — every step stays editable.</small>
+        <small className="li-hint">
+          Both fill the builder below, and both are a starting point — every step stays editable. <b>Draft with AI</b>
+          {' '}reads your domain and nothing else: the tone and the two draft options in the brief below are read where
+          Trevra writes the sequence from the brief instead, when you create the campaign.
+        </small>
       </div>
 
       {templates !== null && (templates.length === 0
@@ -1202,11 +1569,15 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
 
       <details className="li-brief-fold" open={briefOpen} onToggle={(event) => setBriefOpen(event.currentTarget.open)}>
         <summary><Sparkles size={13} /> Fine-tune the brief</summary>
-        <p className="li-hint">
-          The tone, kind, horizon and format below always travel with the campaign. The ICP and offer do not: they are
-          only read when there are no steps to post, and the server drafts a sequence from them instead. Assemble the
-          sequence below and none of that is needed.
-        </p>
+        <p className="li-hint">{boundId
+          ? 'The action type, spread and format below are the OPEN campaign’s, read back from the plan it was built '
+            + 'with. Saving a sequence posts the steps and nothing else, so they are shown here rather than edited — to '
+            + 'campaign the same people on a different action type or horizon, start a new campaign. The ICP, offer and '
+            + 'draft options are only ever read where Trevra writes a sequence from them, which an existing campaign '
+            + 'already has.'
+          : 'The action type, spread and format below travel with the campaign when you create it. The ICP, offer and '
+            + 'the draft options under them do not: they are read only when there is no sequence to save, in which case '
+            + 'Trevra writes one from them instead. Build the sequence below and none of that is needed.'}</p>
 
         {/* Two different statements, and they must not be one block. The first
             is "the site did not say this"; the second is "so a model guessed,
@@ -1226,52 +1597,61 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
           <div>
             <strong>Suggested, not read: {suggestedFields.join(', ')}</strong>
             <p>
-              A model proposed these from what your site publishes, because a homepage states what a company does and
-              never who it sells to. READ THEM BEFORE THEY GO ANYWHERE — they are the only fields on this screen with
-              nothing behind them, and they are yours to rewrite or clear. Nothing about your proof was suggested: that
-              stays bound to numbers enrichment actually counted.
+              {suggestedBy && SUGGESTED_BY_LABELS[suggestedBy]
+                ? `Proposed by ${SUGGESTED_BY_LABELS[suggestedBy]} from what your site publishes, because a homepage `
+                : 'A model proposed these from what your site publishes, because a homepage '}
+              states what a company does and never who it sells to. READ THEM BEFORE THEY GO ANYWHERE — they are the
+              only fields on this screen with nothing behind them, and they are yours to rewrite or clear. Nothing about
+              your proof was suggested: that stays bound to numbers enrichment actually counted.
             </p>
             <button className="ghost-button" type="button" onClick={() => {
               setBrief((current) => ({ ...current, role: '', segment: '', pain: '', mechanism: '' }));
               setSuggestedFields([]);
+              setSuggestedBy(null);
             }}>Clear the suggested fields</button>
           </div>
         </div>}
 
-        {/* FOUR controls that always apply, then six that apply on one path
-            only. Eight fields in one undifferentiated block asked the operator
-            to work out which of them they were obliged to answer, and the
-            answer depended on something two panels further down. */}
-        <h4 className="li-subhead">Pacing and format</h4>
-        <p className="li-hint">These four travel with every campaign, whichever way its copy arrives. Each already has a
-          working default — change one when you have a reason to.</p>
+        {/* THREE controls that reach the create route, then the one path the
+            rest of this fold is for. The tone and the two draft options used to
+            sit out here beside them, promising to steer “the AI” -- which read
+            as the Draft with AI button above, a route that accepts none of the
+            three. They are inside the draft-from-a-brief fold now, which is the
+            one place the server does read them. */}
+        <h4 className="li-subhead" aria-level={3}>Pace and format</h4>
+        <p className="li-hint">{boundId
+          ? 'This campaign’s own, read back from its plan. Editing a sequence re-plans against them; it cannot change '
+            + 'them.'
+          : 'These three travel with every campaign, whichever way its copy arrives. Each already has a working default '
+            + '— change one when you have a reason to.'}</p>
 
         <div className="li-form-grid">
-          <label>Tone
-            <select value={brief.tone} onChange={(event) => setBrief({ ...brief, tone: event.target.value as SequenceTone })}>
-              {TONES.map((tone) => <option key={tone} value={tone}>{TONE_LABELS[tone]}</option>)}
-            </select>
-            <Define term="Tone">how the draft addresses the target. It steers what the AI writes; it changes nothing about
-              what is sent or when.</Define>
-          </label>
-          <label>Paced kind
-            <select value={brief.kind} onChange={(event) => setBrief({ ...brief, kind: event.target.value as PacedKind })}>
+          <label>Action type
+            <select
+              value={brief.kind}
+              disabled={Boolean(boundId)}
+              onChange={(event) => setBrief({ ...brief, kind: event.target.value as PacedKind })}
+            >
               {PACED_KINDS.map((kind) => <option key={kind} value={kind}>{KIND_LABELS[kind]}</option>)}
             </select>
-            <Define term="Paced kind">the action this campaign spends its daily budget on. Each kind carries its own
-              ceiling, and Safety says which rule set it.</Define>
+            <Define term="Action type">the action this campaign spends its daily allowance on. Each one has its own
+              daily limit, and the Account screen says what is left of it.</Define>
           </label>
-          <label>Horizon (days)
-            <input type="number" min={1} max={90} value={brief.horizonDays}
+          <label>Spread over (days)
+            <input type="number" min={1} max={90} value={brief.horizonDays} disabled={Boolean(boundId)}
               onChange={(event) => setBrief({ ...brief, horizonDays: Number(event.target.value) || 1 })} />
-            <BindingCeiling limits={limits} kind={brief.kind} />
+            <BindingCeiling limits={limits} loading={limitsLoading} error={limitsError} kind={brief.kind} />
           </label>
           <label>Export format
-            <select value={brief.format} onChange={(event) => setBrief({ ...brief, format: event.target.value as ExportFormat })}>
+            <select
+              value={brief.format}
+              disabled={Boolean(boundId)}
+              onChange={(event) => setBrief({ ...brief, format: event.target.value as ExportFormat })}
+            >
               {LINKEDIN_EXPORT_FORMATS.map((option) => <option key={option} value={option}>{EXPORT_FORMAT_LABELS[option]}</option>)}
             </select>
-            <Define term="Export format">which tool’s CSV an approved plan is rendered for. Trevra sends nothing; you run
-              the file.</Define>
+            <Define term="Export format">which tool’s CSV an approved plan is written for. Trevra sends nothing on this
+              screen; you run the file, or you queue it for your own worker.</Define>
           </label>
         </div>
 
@@ -1280,9 +1660,9 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
         <details className="li-manual-fields">
           <summary><Sparkles size={13} /> Have Trevra draft the sequence from a brief instead</summary>
           <p className="li-hint">
-            Read only when there is no step below to post. The six fields marked <b>*</b> are required on this path and
-            required together — the server drafts from them, and one left empty is one the draft will invent. Assemble
-            the sequence yourself below and none of this is needed.
+            Read only when there is no step below to save. The six fields marked <b>*</b> are required on this path and
+            required together — Trevra writes the sequence from them, and one left empty is one the draft will invent.
+            Build the sequence yourself below and none of this is needed.
           </p>
 
           <div className="li-form-grid">
@@ -1300,39 +1680,88 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
               <textarea rows={3} value={brief.proof} onChange={(event) => setBrief({ ...brief, proof: event.target.value })} placeholder={'Cycle time: 41 days to 22\nSeats: 300'} />
             </label>
           </div>
+
+          {/* THE THREE CONTROLS THAT STEER THAT DRAFT, and they live here
+              because here is the only place the server reads them: they ride on
+              `POST /api/linkedin/campaigns` and reach `gtm.linkedin-sequence`
+              only when it has a brief to write from. They are ignored when the
+              campaign carries its own steps, and the draft route above accepts
+              none of the three at all. */}
+          <h4 className="li-subhead" aria-level={3}>How that draft should read</h4>
+          <p className="li-hint">
+            Read only on this same path. A sequence you built, loaded from a template or drafted from your domain
+            already carries its own copy, and none of these three change a word of it.
+          </p>
+
+          <div className="li-form-grid">
+            <label>Tone
+              <select
+                value={brief.tone}
+                disabled={Boolean(boundId)}
+                onChange={(event) => setBrief({ ...brief, tone: event.target.value as SequenceTone })}
+              >
+                {TONES.map((tone) => <option key={tone} value={tone}>{TONE_LABELS[tone]}</option>)}
+              </select>
+              <Define term="Tone">how the drafted copy addresses the target. It is read only where Trevra writes the
+                sequence from the brief above; it changes nothing about copy you wrote, and nothing about what is sent
+                or when.</Define>
+            </label>
+          </div>
+
+          <label className="li-inline-check">
+            <input
+              type="checkbox"
+              checked={brief.inviteNote === 'none'}
+              disabled={Boolean(boundId)}
+              onChange={(event) => setBrief({ ...brief, inviteNote: event.target.checked ? 'none' : 'drafted' })}
+            />
+            <span>Have the draft write the connection request with no note</span>
+          </label>
+          <small className="li-hint">
+            On by default. A note written before anyone has accepted anything is the most-read line in the sequence and
+            the least earned; a templated one reads as templated. Unticking this asks the draft for a note you can then
+            edit. To send a noteless invite in a sequence you built yourself, tick the same box on the invite card below
+            — an invite with empty copy IS a noteless invite.
+          </small>
+
+          <label className="li-inline-check">
+            <input
+              type="checkbox"
+              checked={brief.includeInMail}
+              disabled={Boolean(boundId)}
+              onChange={(event) => setBrief({ ...brief, includeInMail: event.target.checked })}
+            />
+            <span>Ask the draft for an InMail step</span>
+            <ConfidenceTag confidence="HARD FACT" source={sourceNote('HARD FACT')} compact />
+          </label>
+          <small className="li-hint">
+            InMail is capped at 50 per seat per month by LinkedIn itself — the one published number in this product. To
+            put one in a sequence you are building, add an InMail step below.
+          </small>
         </details>
-
-        <label className="li-inline-check">
-          <input
-            type="checkbox"
-            checked={brief.inviteNote === 'none'}
-            onChange={(event) => setBrief({ ...brief, inviteNote: event.target.checked ? 'none' : 'drafted' })}
-          />
-          <span>Send the connection request with no note</span>
-        </label>
-        <small className="li-hint">
-          On by default. A note written before anyone has accepted anything is the most-read line in the sequence and the
-          least earned; a templated one reads as templated. Unticking this asks the draft for a note you can then edit.
-        </small>
-
-        <label className="li-inline-check">
-          <input type="checkbox" checked={brief.includeInMail} onChange={(event) => setBrief({ ...brief, includeInMail: event.target.checked })} />
-          <span>Ask the draft for an InMail step</span>
-          <ConfidenceTag confidence="HARD FACT" source="docs/linkedin-outreach-plan.md 1.1" compact />
-        </label>
-        <small className="li-hint">InMail is capped at 50 per seat per month by LinkedIn itself — the one published number in this product.</small>
       </details>
     </section>
 
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>Sequence</h3>
+          <h3 aria-level={2}>Sequence</h3>
           <p>{steps.length === 0
             ? 'Empty. Draft one with AI, start from a template, or add the first step below.'
             : `${steps.length} step(s) across ${lastDay + 1} day(s), in day order. Day 0 is the day the campaign starts.`}</p>
         </div>
       </div>
+
+      {/* WHERE THESE STEPS CAME FROM, when the server said. The draft route
+          answers `templateId` and adds `sequence:drafted-from-template` to
+          `degraded` when it had no complete brief to write specific copy from --
+          which is the one case an operator has to be told about, because what
+          is below is then a shape rather than something written for them. */}
+      {draftTemplateId && <p className="li-hint">
+        These steps came from the <b>{sequenceConfig?.templates.find((template) => template.id === draftTemplateId)?.name
+          ?? draftTemplateId}</b> template rather than being written for your brief — the draft had no complete ICP and
+        offer to write from. Every line is still yours to edit.
+      </p>}
 
       {steps.length === 0
         ? <p className="empty-copy">Nothing here yet. A sequence is a list of actions with the gap you choose between them.</p>
@@ -1351,36 +1780,67 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
             onSort={sortSteps}
             bindCopy={(element) => { copyRefs.current[step.id] = element; }}
             onInsertMerge={(field) => insertMerge(step.id, field)}
+            mergeFields={mergeFields}
+            inviteNoteMax={inviteNoteMax}
           />)}
         </div>}
 
       <div className="li-add-step">
         <span className="li-filter-label">Add step</span>
-        <div className="li-add-step-buttons">
-          {STEP_KINDS.map(({ kind, label, Icon }) => <button className="li-mini-button" key={kind} onClick={() => addStep(kind)}>
-            <Icon size={12} /> {label}
-          </button>)}
+        <div className="li-add-step-groups">
+          {/* The seven kinds split on the same `carriesCopy` line the rest of
+              this file already draws between them (see the hint below): four
+              steps write a message, three only touch the target's profile.
+              Two labelled fieldsets, not seven flat buttons, so a screen
+              reader announces the grouping and not just a wall of options. */}
+          <fieldset className="li-add-step-group" disabled={atStepCap}>
+            <legend>Message steps</legend>
+            <div className="li-add-step-buttons">
+              {STEP_KINDS.filter(({ carriesCopy }) => carriesCopy).map(({ kind, label, Icon }) => <button className="li-mini-button" key={kind} onClick={() => addStep(kind)}>
+                <Icon size={12} /> {label}
+              </button>)}
+            </div>
+          </fieldset>
+          <fieldset className="li-add-step-group" disabled={atStepCap}>
+            <legend>Engagement steps</legend>
+            <div className="li-add-step-buttons">
+              {STEP_KINDS.filter(({ carriesCopy }) => !carriesCopy).map(({ kind, label, Icon }) => <button className="li-mini-button" key={kind} onClick={() => addStep(kind)}>
+                <Icon size={12} /> {label}
+              </button>)}
+            </div>
+          </fieldset>
         </div>
       </div>
 
+      {/* The server's own cap, said before it is hit rather than at the door.
+          `maxSteps` rides on the sequence-templates payload for exactly this
+          reason, and was fetched and never read: step 26 was refused after the
+          whole sequence had been written. Silent when the read failed — a cap
+          this screen invented would be worse than none. */}
+      {maxSteps !== null && <p className="li-hint">
+        {atStepCap
+          ? `A sequence may have at most ${maxSteps} steps and this one is at ${steps.length}. Delete one to add another.`
+          : `${steps.length} of at most ${maxSteps} steps.`}
+      </p>}
+
       <p className="li-hint">
-        <b>Follow</b>, <b>like</b> and <b>endorse</b> carry no copy, like a profile view. They are still paced by their
-        own daily ceilings and still go through every safety check — liking two hundred posts in an hour is a ban signal
+        <b>Follow</b>, <b>like</b> and <b>endorse</b> carry no copy, like a profile view. They still count against their
+        own daily limits and still go through every safety check — liking two hundred posts in an hour is a ban signal
         however harmless one like is.{' '}
-        <ConfidenceTag confidence="REPORTED" source="src/server/linkedin/limits.ts LINKEDIN_LIMITS" compact />
+        <ConfidenceTag confidence="REPORTED" source={sourceNote('REPORTED')} compact />
       </p>
 
       <p className="li-hint li-merge-legend">
-        Merge fields are substituted by your own tool, never rendered here. These four are the whole set —
-        {' '}{LINKEDIN_MERGE_FIELDS.map((field) => <code key={field}>{`{{${field}}}`}</code>)} — and the server rejects any
-        other. LinkedIn truncates a connection-request note at {LINKEDIN_INVITE_NOTE_MAX_CHARS} characters.
-        {' '}<ConfidenceTag confidence="HARD FACT" source="src/server/linkedin/sequence.ts INVITE_NOTE_MAX_CHARS" compact />
+        Merge fields are filled in by whichever tool runs the file, never here. These are the whole set —
+        {' '}{mergeFields.map((field) => <code key={field}>{`{{${field}}}`}</code>)} — and Trevra rejects any
+        other. LinkedIn cuts a connection-request note off at {inviteNoteMax} characters.
+        {' '}<ConfidenceTag confidence="HARD FACT" source={sourceNote('HARD FACT')} compact />
       </p>
 
       <div className="panel-footer">
         <span>{boundId
-          ? 'Saving re-plans this campaign, and an approval given before it has to be given again.'
-          : 'Creating posts these steps as the campaign’s sequence, runs the safety gate, and stops for your approval.'}</span>
+          ? 'Saving re-plans this campaign, and any approval you already gave has to be given again.'
+          : 'Creating saves these steps as the campaign’s sequence, checks them against every safety limit, and then stops for your approval.'}</span>
         {boundId
           ? <button className="primary-button" disabled={busy === 'save'} onClick={() => void saveSequence()}>
             {busy === 'save' ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save sequence
@@ -1392,7 +1852,50 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     </section>
 
     {/* A step is authored copy. One click on a 12px trash icon between two
-        reorder arrows it sits flush against was the whole of the ceremony. */}
+        reorder arrows it sits flush against was the whole of the ceremony.
+
+        AND THE DRAWER STAYS OPEN ON A FAILURE, so the failure has to be shown
+        inside it. `error` here read `busy === '' ? error : null`, and `busy` is
+        only ever 'stop' or null -- so a refused stop left the drawer sitting
+        there with the spinner off and nothing said at all. */}
+    {confirmStop && <ConfirmDrawer
+      title={`Stop “${confirmStop.name}”?`}
+      tone="danger"
+      body={<>
+        <p>Everything this campaign still has scheduled is cancelled — marked skipped, never sent — and it stops scheduling anything new. This stops one campaign, not the account.</p>
+        <p>There is no undo: a stopped campaign is not resumed, only rebuilt.</p>
+      </>}
+      confirmLabel="Stop campaign"
+      busy={busy === 'stop'}
+      error={error || null}
+      onCancel={() => { if (busy !== 'stop') { setConfirmStop(null); setError(''); } }}
+      onConfirm={() => void stop(confirmStop.id).then((ok) => { if (ok) setConfirmStop(null); })}
+    />}
+
+    {/* The only control on this screen that ends in messages reaching real
+        people. The approval bound the bytes; this says plainly what happens to
+        them next, and that it is the worker rather than Trevra that acts. */}
+    {confirmQueue && <ConfirmDrawer
+      title={`Queue “${confirmQueue.name}” for your own worker?`}
+      body={<>
+        <p>
+          This files the approved actions for the worker running on your machine. <b>Nothing is sent by pressing it.</b>
+          {' '}The worker takes them one at a time, re-runs the whole safety gate against each immediately before acting,
+          and works only inside this account’s working hours.
+        </p>
+        <p>
+          What goes out is exactly what you approved — that wording, those people, that schedule. Queueing the same
+          campaign twice queues nothing twice: an action this seat already has for a person is recognised and skipped.
+        </p>
+        <p>Self-hosted only. On a hosted Trevra this is refused, and the export beside it is the path that exists.</p>
+      </>}
+      confirmLabel="Queue it for my worker"
+      busy={busy === 'queue'}
+      error={error || null}
+      onCancel={() => { if (busy !== 'queue') { setConfirmQueue(null); setError(''); } }}
+      onConfirm={() => void queue(confirmQueue.id).then((ok) => { if (ok) setConfirmQueue(null); })}
+    />}
+
     {confirmRemove && <ConfirmDrawer
       title={`Delete the day ${confirmRemove.day} ${stepKindMeta(confirmRemove.kind).label.toLowerCase()}?`}
       tone="danger"
@@ -1427,7 +1930,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
  * campaign starts, and the plan engine is the only thing that turns that into
  * a calendar instant inside the seat's own business hours.
  */
-function SequenceStepCard({ step, index, total, branchOn, anchorsFor, problem, onChange, onMove, onRemove, onSort, bindCopy, onInsertMerge }: {
+function SequenceStepCard({ step, index, total, branchOn, anchorsFor, problem, onChange, onMove, onRemove, onSort, bindCopy, onInsertMerge, mergeFields, inviteNoteMax }: {
   step: EditableSequenceStep;
   index: number;
   total: number;
@@ -1443,6 +1946,10 @@ function SequenceStepCard({ step, index, total, branchOn, anchorsFor, problem, o
   onSort: () => void;
   bindCopy: (element: HTMLTextAreaElement | null) => void;
   onInsertMerge: (field: string) => void;
+  /** The merge fields the SERVER accepts, as it published them. Not this file's copy of the list. */
+  mergeFields: readonly string[];
+  /** The invite-note cap the server publishes. Same reason. */
+  inviteNoteMax: number;
 }) {
   const meta = stepKindMeta(step.kind);
   const { Icon } = meta;
@@ -1462,8 +1969,8 @@ function SequenceStepCard({ step, index, total, branchOn, anchorsFor, problem, o
   const bareInvite = step.kind === 'invite' && noNote;
   const carriesCopy = meta.carriesCopy && !bareInvite;
 
-  const overLimit = step.kind === 'invite' && step.template.length > LINKEDIN_INVITE_NOTE_MAX_CHARS;
-  const rejected = carriesCopy ? unknownMergeFields(step.template) : [];
+  const overLimit = step.kind === 'invite' && step.template.length > inviteNoteMax;
+  const rejected = carriesCopy ? unknownMergeFields(step.template, mergeFields) : [];
 
   const condition = step.condition && step.condition.on !== 'always' ? step.condition : null;
   const anchors = condition ? anchorsFor(condition.on) : [];
@@ -1591,24 +2098,24 @@ function SequenceStepCard({ step, index, total, branchOn, anchorsFor, problem, o
     {carriesCopy
       ? <>
         <div className="li-merge-row">
-          {LINKEDIN_MERGE_FIELDS.map((field) => <button
+          {mergeFields.map((field) => <button
             className="li-merge-button"
             key={field}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => onInsertMerge(field)}
           >{`{{${field}}}`}</button>)}
           {step.kind === 'invite' && <span className={`li-count ${overLimit ? 'is-over' : ''}`}>
-            {step.template.length}/{LINKEDIN_INVITE_NOTE_MAX_CHARS}
+            {step.template.length}/{inviteNoteMax}
           </span>}
         </div>
         {overLimit && <small className="li-merge-warn">
-          LinkedIn truncates the note at {LINKEDIN_INVITE_NOTE_MAX_CHARS} characters. A cut mid-sentence reads worse than
+          LinkedIn truncates the note at {inviteNoteMax} characters. A cut mid-sentence reads worse than
           one you shortened yourself.
         </small>}
         {rejected.length > 0 && <small className="li-merge-warn">
           {rejected.map((field) => `{{${field}}}`).join(', ')}{' '}
-          {rejected.length === 1 ? 'is not a merge field' : 'are not merge fields'} the server accepts. Replace or remove
-          before saving.
+          {rejected.length === 1 ? 'is not a merge field' : 'are not merge fields'} Trevra accepts. Replace or remove
+          them before saving.
         </small>}
       </>
       : <p className="li-hint">{bareInvite
@@ -1631,7 +2138,7 @@ function SequenceNotes({ sequence }: { sequence: LinkedInSequence }) {
   return <div className="li-warn-block">
     <CircleAlert size={16} />
     <div>
-      <strong>The critic flagged {notes.length} thing(s) in this copy.</strong>
+      <strong>{notes.length} thing(s) in this copy read as templated.</strong>
       <ul>{notes.map((note) => <li key={note}>{note}</li>)}</ul>
     </div>
   </div>;
@@ -1646,8 +2153,8 @@ function ApprovalBlock({ step, busy, onDecide }: {
     <div>
       <strong>{waiting ? 'This plan is waiting for you' : `Approval step: ${step.status.replaceAll('_', ' ')}`}</strong>
       <p>
-        Approving binds the hash of the exact payload below: the plan, the copy and the format.
-        {step.approvalPayloadHash && <> Payload hash <code>{step.approvalPayloadHash.slice(0, 16)}…</code></>}
+        Approving covers exactly what is below — this wording, these people, this schedule, this file format. Change any
+        of it afterwards and this approval stops counting: Trevra will ask you again rather than reuse it.
       </p>
     </div>
     {/* This button BINDS a hash. It used to be the same 34px green rectangle as
@@ -1656,8 +2163,7 @@ function ApprovalBlock({ step, busy, onDecide }: {
         on. */}
     {waiting && <div className="li-approval-actions">
       <button className="primary-button auth-submit" type="button" disabled={busy} onClick={() => onDecide('approve')}>
-        {busy ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />}
-        {step.approvalPayloadHash ? ` Approve these exact bytes · ${step.approvalPayloadHash.slice(0, 8)}…` : ' Approve these exact bytes'}
+        {busy ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />} Approve exactly this
       </button>
       <button className="ghost-button" type="button" disabled={busy} onClick={() => onDecide('reject')}><X size={14} /> Reject</button>
     </div>}
@@ -1676,7 +2182,7 @@ function ApprovalBlock({ step, busy, onDecide }: {
  * nothing. Slots become real only downstream of a campaign approval.
  */
 export function OutreachPlan({ setToast }: { setToast: (message: string) => void }) {
-  const { limits } = useSeatLimits();
+  const { limits, loading: limitsLoading, error: limitsError } = useSeatLimits();
   const [kind, setKind] = useState<PacedKind>('invite');
   const [horizonDays, setHorizonDays] = useState(14);
   const [targets, setTargets] = useState('');
@@ -1686,13 +2192,13 @@ export function OutreachPlan({ setToast }: { setToast: (message: string) => void
 
   const run = async () => {
     const list = splitTargets(targets);
-    if (list.length === 0) { setError('Add at least one target to plan.'); return; }
+    if (list.length === 0) { setError('Add at least one person to plan for.'); return; }
     setBusy(true);
     setError('');
     try {
       const response = await planLinkedIn({ kind, targets: list, horizonDays });
       setResult(response);
-      setToast(`Planned ${response.plan.slots.length} slot(s) across ${horizonDays} days. Nothing was saved.`);
+      setToast(`Worked out ${response.plan.slots.length} action(s) across ${horizonDays} days. Nothing was saved.`);
     } catch (err) {
       setResult(null);
       setError(errorMessage(err, 'Unable to plan those targets'));
@@ -1713,8 +2219,8 @@ export function OutreachPlan({ setToast }: { setToast: (message: string) => void
       <div>
         <strong>This is a dry run.</strong>
         <p>
-          It reads the seat’s real ledger and prices a plan against every ceiling at once, then throws the result away.
-          No row is written, nothing is scheduled, and no one is contacted.
+          It reads what this account has actually done, works out a schedule against every limit at once, and then
+          throws the answer away. Nothing is saved, nothing is scheduled, and nobody is contacted.
         </p>
       </div>
     </section>
@@ -1723,20 +2229,22 @@ export function OutreachPlan({ setToast }: { setToast: (message: string) => void
 
     <section className="page-panel">
       <div className="li-filter-row">
-        <label>Kind
+        <label>Action type
           <select value={kind} onChange={(event) => setKind(event.target.value as PacedKind)}>
             {PACED_KINDS.map((option) => <option key={option} value={option}>{KIND_LABELS[option]}</option>)}
           </select>
         </label>
-        <label>Horizon (days)
+        <label>Spread over (days)
           <input type="number" min={1} max={90} value={horizonDays} onChange={(event) => setHorizonDays(Number(event.target.value) || 1)} />
         </label>
         <button className="primary-button" disabled={busy} onClick={() => void run()}>
           {busy ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />} Preview plan
         </button>
       </div>
-      <p className="panel-note"><BindingCeiling limits={limits} kind={kind} /></p>
-      <label className="li-block-label">Targets — one handle or profile URL per line
+      <p className="panel-note">
+        <BindingCeiling limits={limits} loading={limitsLoading} error={limitsError} kind={kind} />
+      </p>
+      <label className="li-block-label">People — one handle or profile URL per line
         <textarea rows={5} value={targets} onChange={(event) => setTargets(event.target.value)} />
       </label>
     </section>
@@ -1745,30 +2253,30 @@ export function OutreachPlan({ setToast }: { setToast: (message: string) => void
       <section className="page-panel">
         <div className="section-heading">
           <div>
-            <h3>Why the plan looks like this</h3>
+            <h3 aria-level={2}>Why the plan looks like this</h3>
           </div>
-          <ConfidenceTag confidence="REPORTED" source="docs/linkedin-outreach-plan.md 1.3 and 1.4" compact />
+          <ConfidenceTag confidence="REPORTED" source={sourceNote('REPORTED')} compact />
         </div>
         <ol className="li-reasons">{result.plan.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ol>
         <div className="li-chip-row">
-          {result.plan.ceilingsApplied.map((ceiling) => <span className="li-chip" key={ceiling}>{ceiling.replaceAll('-', ' ')}</span>)}
+          {result.plan.ceilingsApplied.map((ceiling) => <span className="li-chip" key={ceiling}>{ceilingLabel(ceiling)}</span>)}
         </div>
         {result.excluded.length > 0 && <p className="panel-note">
-          {result.excluded.length} target(s) were dropped before planning because they are on the exclusion list:{' '}
-          {result.excluded.map((entry) => entry.targetRef).join(', ')}. Exclusions are applied before a plan exists, never at
-          send time.
+          {result.excluded.length} person(s) were dropped before planning because they are on your Never contact list:{' '}
+          {result.excluded.map((entry) => entry.targetRef).join(', ')}. That list is checked before a plan exists, so
+          nobody on it ever reaches a queue.
         </p>}
       </section>
 
       <section className="page-panel">
         <div className="section-heading">
           <div>
-            <h3>{result.plan.slots.length} slot(s) across {days.length} day(s)</h3>
-            <p>Seat <code>{result.plan.seatKey}</code>. Times shown in your browser’s timezone; the engine placed them inside the seat’s own business hours.</p>
+            <h3 aria-level={2}>{result.plan.slots.length} action(s) across {days.length} day(s)</h3>
+            <p>Times are shown in your browser’s timezone. Every one of them was placed inside your working hours.</p>
           </div>
         </div>
         {days.length === 0
-          ? <p className="empty-copy">Every ceiling that applies right now leaves no room to schedule anything. The Safety screen says which rule bound.</p>
+          ? <p className="empty-copy">The limits that apply right now leave no room to schedule anything. The Account screen says which one is holding it up.</p>
           : <div className="li-calendar">
             {days.map(([day, slots]) => <div className="li-cal-day" key={day}>
               <header>

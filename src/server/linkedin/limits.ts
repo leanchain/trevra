@@ -24,6 +24,8 @@
  * actually keeps a seat alive.
  */
 
+import type { LinkedInSeat } from './seats.js';
+
 /**
  * The kinds with a pacing band.
  *
@@ -325,4 +327,90 @@ export function warmupMultiplierFor(kind: string, week: number): number {
 /** The band for one kind. `cooldown`/`paused` postures pass 'warmup' -- backing off means the conservative band. */
 export function bandFor(kind: PacedKind, band: BandName): LinkedInBand {
   return LINKEDIN_LIMITS[kind][band];
+}
+
+/**
+ * The operator's own daily number for one kind, or null when they set none.
+ *
+ * `linkedin_seats` carries FOUR operator ceilings and this file paces EIGHT
+ * kinds, so the mapping is not one-to-one and the shape of the mismatch
+ * matters:
+ *
+ *   invite                -> dailyInviteLimit
+ *   dm | reply | inmail   -> dailyMessageLimit, ONE POOL over three kinds
+ *   profile_view          -> dailyProfileViewLimit
+ *   follow                -> dailyFollowLimit
+ *   like | endorse        -> null; the operator was never asked for a number
+ *
+ * THE MESSAGE ROW IS A POOL AND THAT IS THE WHOLE REASON THIS FUNCTION EXISTS
+ * SEPARATELY FROM THE BAND TABLE. "25 messages a day" is a statement about the
+ * account's total outbound messaging, not about DMs specifically, so it is
+ * compared against the count of all three kinds together -- while the band
+ * above it (`LINKEDIN_LIMITS`) is per kind and is compared against that kind's
+ * own count. Collapsing the two into a single `Math.min` is exactly the bug
+ * this pair of functions replaced: an InMail's 3/day band would clamp the
+ * operator's whole 25-message pool to 3, so three DMs blocked every InMail.
+ * `guard.ts` keeps them as two independent ceilings; both must pass.
+ *
+ * Null for `like` and `endorse` is deliberate rather than a gap to fill later:
+ * inventing an operator number nobody typed would launder a guess into a
+ * setting, exactly as inventing a band would launder one into a limit. Their
+ * band is the only ceiling they have, which is the honest answer.
+ *
+ * `LinkedInSeat` is imported as a TYPE ONLY. `seats.ts` imports `WARMUP_WEEKS`
+ * from this file, so a value import here would close a runtime cycle for a
+ * four-way switch; a type import is erased and closes nothing.
+ */
+export function seatOperatorLimit(seat: LinkedInSeat | undefined, kind: PacedKind): number | null {
+  if (!seat) return null;
+  switch (kind) {
+    case 'invite':
+      return seat.dailyInviteLimit;
+    case 'dm':
+    case 'reply':
+    case 'inmail':
+      return seat.dailyMessageLimit;
+    case 'profile_view':
+      return seat.dailyProfileViewLimit;
+    case 'follow':
+      return seat.dailyFollowLimit;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The daily ceiling that actually binds for one kind.
+ *
+ * THREE CASES, AND THE THIRD IS THE ONE WITH A POLICY IN IT.
+ *
+ *   no operator number      -> Trevra's researched band. Nobody said otherwise.
+ *   operator number         -> the STRICTER of the two. An operator asking for
+ *                              less than the band gets less; an operator asking
+ *                              for more than the band does not get more, because
+ *                              the band is what the research says keeps the
+ *                              account alive and a settings field is not
+ *                              evidence.
+ *   operator number, and
+ *   the seat's band override -> the operator's number, whatever it is.
+ *
+ * THE OVERRIDE IS A DELIBERATE, RECORDED DECISION AND NOT A CONVENIENCE. It
+ * lives on the seat (`safetyBandOverride`), so turning it on is an edit to the
+ * account somebody can see, and it lifts exactly one thing: the steady/warm-up
+ * BAND cap. It is not a bypass of the gate. Every other ceiling in `guard.ts`
+ * still applies unchanged -- the rolling 7-day and 30-day windows, the
+ * day-over-day variance clamp, the acceptance-rate throttle, business hours,
+ * the published InMail quota, the outstanding-invite backlog -- and BOTH ramps
+ * (the per-seat warm-up week and the per-campaign day ramp) still multiply
+ * whatever this returns. An override raises the number the ramps are a
+ * percentage OF; it never turns a ramp off. That distinction is the difference
+ * between "I know my account and I want my own number" and "send everything
+ * now", and only the first one is offered.
+ *
+ * `operatorLimit === null` with the override on is not an override of anything:
+ * there is no operator number to prefer, so the band stands.
+ */
+export function effectiveDailyCeiling(bandPerDay: number, operatorLimit: number | null, overrideBands: boolean): number {
+  if (overrideBands && operatorLimit !== null) return operatorLimit;
+  return operatorLimit === null ? bandPerDay : Math.min(bandPerDay, operatorLimit);
 }

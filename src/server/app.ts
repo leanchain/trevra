@@ -57,6 +57,7 @@ import {
   PlaybookError,
   startPlaybookRun
 } from './playbooks/engine.js';
+import type { PlaybookStepStatus } from './playbooks/types.js';
 import { listDomainEvents } from './control-plane/events.js';
 import { listWorkspacePolicies } from './control-plane/policy.js';
 import {
@@ -160,7 +161,11 @@ import {
   WARMUP_WEEKS,
   WEEKEND_FACTOR,
   bandFor,
+  effectiveDailyCeiling,
+  seatOperatorLimit,
   warmupMultiplier,
+  warmupMultiplierFor,
+  type LinkedInBand,
   type PacedKind
 } from './linkedin/limits.js';
 import { ACTION_KIND_VALUES, acceptanceRate, countActionsInWindow, hasTarget, ownerSeat } from './linkedin/actions.js';
@@ -229,14 +234,22 @@ import {
 import { BRANCH_ON_VALUES } from './linkedin/branching.js';
 import {
   createLeadSource,
+  dailyLeadAllowance,
   getLeadSource,
   leadSourcingConfig,
   leadSourcingEnabled,
   leadSourcingOffReason,
   listLeadSources,
-  listLeads
+  listLeads,
+  setDailyLeadCap,
+  LEAD_READ_LIMIT,
+  LEAD_SOURCE_KINDS,
+  MAX_DAILY_LEAD_CAP,
+  type LeadSourceKind
 } from './linkedin/leads.js';
 import {
+  clearInboxForSeat,
+  clearInboxForWorkspace,
   enqueueReply,
   listThreads,
   readThread as readStoredThread,
@@ -266,9 +279,12 @@ import { enrichCompany } from './skills/enrich.js';
 import { addExclusions, filterExcluded, listExclusions } from './linkedin/exclusions.js';
 import { parseLeadCsv } from './linkedin/lead-import.js';
 import {
+  LEAD_CONTACT_READ_LIMIT,
+  countLeadContacts,
   createLeadList,
   getLeadList,
   importLeadCsv,
+  importLeadSourceContacts,
   listLeadContacts,
   listLeadLists,
   removeLeadContact,
@@ -276,7 +292,9 @@ import {
   type LeadListSourceKind
 } from './linkedin/lead-lists.js';
 import { deleteWorkflow, getWorkflow, listWorkflows, saveWorkflow, workflowStepsSchema } from './linkedin/workflows.js';
+import { runManagedCampaigns } from './linkedin/runner.js';
 import {
+  campaignWarmupFraction,
   completeManualTask,
   createManagedCampaign,
   getManagedCampaign,
@@ -1467,14 +1485,15 @@ export function createApp(db: Db) {
 
   app.get('/api/linkedin/seat', linkedinRoute(async (req, res) => {
     const workspaceId = req.auth!.workspaceId;
+    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
     const now = new Date();
-    const seat = await getSeat(db, workspaceId);
-    const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : ownerSeat(workspaceId);
+    const seat = await getSeat(db, workspaceId, seatKey);
+    const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : { workspaceId, seatKey };
     const counts = await Promise.all(PACED_KINDS.map((kind) => countActionsInWindow(db, seatRef, kind, 24, now)));
     // A boolean and a masked address. There is no shape of this response that
     // carries the password, and no privilege level that changes that -- the
     // store has no function that could produce it here (secrets/linkedin.ts).
-    const credentials = await describeLinkedInCredentials(db, workspaceId);
+    const credentials = await describeLinkedInCredentials(db, workspaceId, seatKey);
     res.json({
       seat: seat ?? null,
       auth: {
@@ -1487,7 +1506,7 @@ export function createApp(db: Db) {
       // that FAILED has to reach the operator here -- otherwise a detect the
       // worker could not perform is indistinguishable from one still queued,
       // and the screen spins forever.
-      detectRequest: await latestSeatDetectRequest(db, workspaceId),
+      detectRequest: await latestSeatDetectRequest(db, workspaceId, seatKey),
       posture: seat ? effectivePosture(seat, now) : null,
       // Week 1 for a workspace with no seat: an unknown ramp clock is paced as
       // a new seat, never as an established one (seats.ts).
@@ -1504,11 +1523,11 @@ export function createApp(db: Db) {
   // owns -- paused and cooldown -- have their own routes below, because a kill
   // switch buried in a settings PUT is a kill switch nobody finds.
   app.put('/api/linkedin/seat', linkedinRoute(async (req, res) => {
-    const input = linkedinSeatSchema.parse(req.body ?? {});
+    const { seatKey = OWNER_SEAT_KEY, ...input } = linkedinSeatSchema.parse(req.body ?? {});
     const now = new Date();
     let seat;
     try {
-      seat = await upsertSeat(db, req.auth!.workspaceId, input as SeatPatch, now);
+      seat = await upsertSeat(db, req.auth!.workspaceId, input as SeatPatch, now, seatKey);
     } catch (error) {
       // seats.ts owns the label/timezone/date rules and its refusals are
       // operator input errors, not faults. Same pattern as the agent config route.
@@ -1525,32 +1544,88 @@ export function createApp(db: Db) {
   // moment it is needed is the moment something else is already wrong.
   app.post('/api/linkedin/seat/pause', linkedinRoute(async (req, res) => {
     const input = linkedinPauseSchema.parse(req.body ?? {});
-    const seat = await pauseSeat(db, req.auth!.workspaceId, input.reason, new Date());
-    if (!seat) throw new LinkedInApiError('No LinkedIn seat is configured for this workspace', 404);
+    const seat = await pauseSeat(db, req.auth!.workspaceId, input.reason, new Date(), input.seatKey);
+    if (!seat) throw new LinkedInApiError('That LinkedIn account is not configured for this workspace', 404);
     res.json({ seat, posture: 'paused' });
   }));
 
+  /**
+   * Resume, and RECORD WHY IT WAS RESUMED AND BY WHOM.
+   *
+   * `reason` is OPTIONAL, unlike the pause route's, and the asymmetry is the
+   * point: a pause with no reason leaves an account stopped for a cause nobody
+   * can reconstruct, while a resume with no reason is an ordinary
+   * "it is fine now" that must not be blocked behind a text box.
+   *
+   * IT DOES NOT LIVE ON THE SEAT, and it must not. `paused_reason` is the
+   * CURRENT state of a stopped account and is cleared the moment it starts
+   * again (seats.ts) -- storing a resume reason there would put a sentence
+   * about starting into the field the UI reads to explain a stop. What is
+   * wanted is history, so it goes where this workspace's history already is:
+   * one `audit_events` row carrying the reason, the actor who gave it, and the
+   * pause it answers, which is the pairing that makes either half readable a
+   * month later.
+   */
   app.post('/api/linkedin/seat/resume', linkedinRoute(async (req, res) => {
+    const { seatKey, reason } = linkedinResumeSchema.parse({ ...(req.body ?? {}), ...req.query });
+    const workspaceId = req.auth!.workspaceId;
     const now = new Date();
-    const seat = await resumeSeat(db, req.auth!.workspaceId, now);
-    if (!seat) throw new LinkedInApiError('No LinkedIn seat is configured for this workspace', 404);
+    // Read BEFORE the resume clears it: the pause this resume answers is half
+    // of what makes the record worth keeping.
+    const paused = await getSeat(db, workspaceId, seatKey);
+    const seat = await resumeSeat(db, workspaceId, now, seatKey);
+    if (!seat) throw new LinkedInApiError('That LinkedIn account is not configured for this workspace', 404);
+    const resumeReason = reason ?? null;
+    await db.prepare(`
+      INSERT INTO audit_events (
+        id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?)
+    `).run(
+      id('audit'),
+      workspaceId,
+      'user',
+      req.auth!.userId,
+      'linkedin.seat_resumed',
+      'linkedin_seat',
+      seat.seatKey,
+      JSON.stringify({ reason: resumeReason, pausedReason: paused?.pausedReason ?? null, previousPosture: paused?.posture ?? null }),
+      now.toISOString()
+    );
     // Stored 'warmup', but resuming a two-year-old account does not put it back
     // through the ramp -- the effective posture is re-derived from its age.
-    res.json({ seat, posture: effectivePosture(seat, now) });
+    res.json({ seat, posture: effectivePosture(seat, now), resumeReason });
   }));
 
   /**
-   * Forget this seat, including its ramp clock.
+   * Forget this seat, including its ramp clock -- and the inbox read cache
+   * that seat produced.
    *
-   * The one destructive route in this section. `deleteSeat` never touches the
-   * send ledger, the detect-request history or stored credentials -- only the
-   * seat row itself -- but that row is the warm-up ramp, so the next seat this
-   * workspace gets starts back at week 1, exactly as an undeclared seat does.
+   * `deleteSeat` itself never touches the send ledger, the detect-request
+   * history or stored credentials -- only the seat row -- but that row is
+   * the one thing that says WHICH LinkedIn account `linkedin_threads` and
+   * `linkedin_messages` belong to (seats.ts: one seat per workspace, so
+   * nothing in that schema is scoped to which account produced it). Deleting
+   * the seat without also clearing them would leave a stranger's DMs on
+   * screen under whatever seat this workspace declares next -- the same
+   * failure mode `detectLinkedInSeat`'s own account-change branch in
+   * `local-worker.ts` clears on an automatic re-detect, reached here too
+   * because an operator can start over by hand instead of waiting for one.
+   *
+   * `linkedin_actions` -- the send ledger -- is still never touched, for the
+   * same reason it survives every other reset here: it is history, not this
+   * account's current view.
+   *
    * The client is expected to confirm before calling this.
    */
   app.delete('/api/linkedin/seat', linkedinRoute(async (req, res) => {
-    const deleted = await deleteSeat(db, req.auth!.workspaceId);
-    res.json({ deleted });
+    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+    // Scoped to the account being forgotten. Clearing the whole workspace's
+    // cache would empty a SECOND account's inbox as a side effect of
+    // disconnecting the first, which is the one thing multi-account made
+    // possible to get wrong here.
+    const clearedThreads = await clearInboxForSeat(db, req.auth!.workspaceId, seatKey);
+    const deleted = await deleteSeat(db, req.auth!.workspaceId, seatKey);
+    res.json({ deleted, clearedThreads });
   }));
 
   /* ---------------------------------------------------------------------
@@ -1572,6 +1647,7 @@ export function createApp(db: Db) {
   app.post('/api/linkedin/seat/credentials', linkedinRoute(async (req, res) => {
     const input = linkedinCredentialsSchema.parse(req.body ?? {});
     const workspaceId = req.auth!.workspaceId;
+    const seatKey = input.seatKey;
 
     // Credential-management carve-out (design doc "Decisions made during
     // brainstorming" #2): full workspace parity for any member, EXCEPT this.
@@ -1590,6 +1666,7 @@ export function createApp(db: Db) {
     try {
       summary = await putLinkedInCredentials(db, {
         workspaceId,
+        seatKey,
         email: input.email,
         password: input.password,
         actorUserId: req.auth!.userId
@@ -1620,7 +1697,8 @@ export function createApp(db: Db) {
     if (req.auth!.role !== 'owner') {
       throw new LinkedInApiError('Only the workspace owner can manage the stored LinkedIn credentials', 403);
     }
-    await deleteLinkedInCredentials(db, workspaceId, req.auth!.userId);
+    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+    await deleteLinkedInCredentials(db, workspaceId, req.auth!.userId, seatKey);
     res.json({ hasCredentials: false, maskedEmail: null });
   }));
 
@@ -1660,6 +1738,7 @@ export function createApp(db: Db) {
 
     res.json(await loginLinkedInSeat(db, config, {
       workspaceId: req.auth!.workspaceId,
+      seatKey: input.seatKey,
       otp: input.otp,
       now: new Date()
     }));
@@ -1720,13 +1799,13 @@ export function createApp(db: Db) {
      *
      */
     const canDetectHere = linkedInBrowserReadiness(config).canLaunchHeaded
-      || ((await describeLinkedInCredentials(db, req.auth!.workspaceId)).hasCredentials
+      || ((await describeLinkedInCredentials(db, req.auth!.workspaceId, input.seatKey)).hasCredentials
         && linkedInHeadlessReadiness(config).canLaunchHeadless);
 
     if (!canDetectHere) {
       let request: Awaited<ReturnType<typeof requestSeatDetect>>;
       try {
-        request = await requestSeatDetect(db, { workspaceId: req.auth!.workspaceId, timezone: input.timezone }, new Date());
+        request = await requestSeatDetect(db, { workspaceId: req.auth!.workspaceId, seatKey: input.seatKey, timezone: input.timezone }, new Date());
       } catch (error) {
         if (error instanceof Error && LINKEDIN_SEAT_INPUT_ERROR.test(error.message)) throw new LinkedInApiError(error.message, 400);
         throw error;
@@ -1745,6 +1824,7 @@ export function createApp(db: Db) {
     try {
       result = await detectLinkedInSeat(db, config, {
         workspaceId: req.auth!.workspaceId,
+        seatKey: input.seatKey,
         timezone: input.timezone,
         now: new Date()
       });
@@ -1767,7 +1847,8 @@ export function createApp(db: Db) {
   // flattened to bare numbers -- the operator is betting their account on
   // these, and they deserve to know which is which.
   app.get('/api/linkedin/limits', linkedinRoute(async (req, res) => {
-    res.json(await effectiveLinkedInLimits(db, req.auth!.workspaceId, new Date()));
+    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+    res.json(await effectiveLinkedInLimits(db, req.auth!.workspaceId, new Date(), seatKey));
   }));
 
   // A DRY RUN. `planPacing` is pure with respect to the ledger -- it reads
@@ -1914,9 +1995,15 @@ export function createApp(db: Db) {
     const templateId = template ? template.id : complete ? null : DEFAULT_SEQUENCE_TEMPLATE_ID;
     if (!template && !complete) degraded.push('sequence:drafted-from-template');
 
+    // The three copy controls travel with the brief. Absent ones are left off
+    // entirely rather than defaulted here, so the skill's own defaults stay the
+    // single definition of what an unspecified draft sounds like.
     const skillInput = linkedinSequenceSkill.manifest.inputSchema.parse({
       ...(steps === undefined ? {} : { steps }),
       ...(complete ? { icp: brief.icp, offer: brief.offer } : {}),
+      ...(input.tone === undefined ? {} : { tone: input.tone }),
+      ...(input.inviteNote === undefined ? {} : { inviteNote: input.inviteNote }),
+      ...(input.includeInMail === undefined ? {} : { includeInMail: input.includeInMail }),
       targets: input.targets
     });
     const sequence = await linkedinSequenceSkill.run(skillInput, {
@@ -2061,11 +2148,16 @@ export function createApp(db: Db) {
       );
     }
 
+    // ABSENT MEANS UNCHANGED. Only the fields the operator actually sent are
+    // merged over the input this campaign was created with, so an edit to the
+    // copy cannot silently re-default the tone, the kind, the horizon or the
+    // export format to the playbook's values.
+    const { steps, ...overrides } = input;
     const previousRunId = campaign.playbookRunId;
     const run = await startPlaybookRun(db, {
       workspaceId,
       playbookId: LINKEDIN_PLAYBOOK_ID,
-      payload: { ...brief, campaignId: campaign.id, sequenceSteps: input.steps },
+      payload: { ...brief, ...overrides, campaignId: campaign.id, sequenceSteps: steps },
       actorType: 'user',
       actorId: req.auth!.userId
     });
@@ -2349,11 +2441,33 @@ export function createApp(db: Db) {
     res.json({ lists: await listLeadLists(db, req.auth!.workspaceId) });
   }));
 
+  /**
+   * One lead list and a page of the people on it.
+   *
+   * THE TOTAL IS COUNTED, NOT INFERRED FROM THE PAGE. `listLeadContacts` clamps
+   * to `LEAD_CONTACT_READ_LIMIT` whatever it is handed, so a longer list came
+   * back silently short and the only number the screen had was the length of
+   * what it received -- which is how it came to announce "the first 1,000 are
+   * shown" about a list nobody had measured.
+   *
+   * THE CEILING AND THE COUNT BOTH COME FROM `lead-lists.ts`. A literal here
+   * would be a third copy of a number the reader already clamps to and the UI
+   * already prints a sentence about, and an inline `COUNT(*)` would be this
+   * file's own opinion of which table a list's people are in -- which the
+   * membership schema has already changed once.
+   */
   app.get('/api/linkedin/manager/lead-lists/:id/contacts', linkedinRoute(async (req, res) => {
     const listId = String(req.params.id);
-    const list = await getLeadList(db, req.auth!.workspaceId, listId);
+    const workspaceId = req.auth!.workspaceId;
+    const list = await getLeadList(db, workspaceId, listId);
     if (!list) throw new LinkedInApiError('Lead list not found', 404);
-    res.json({ list, contacts: await listLeadContacts(db, req.auth!.workspaceId, listId, 5000) });
+    const [contacts, total] = await Promise.all([
+      listLeadContacts(db, workspaceId, listId, LEAD_CONTACT_READ_LIMIT),
+      countLeadContacts(db, workspaceId, listId)
+    ]);
+    // The page bound, so the screen can say "the first N of M" without holding
+    // its own copy of N.
+    res.json({ list, contacts, total, pageLimit: LEAD_CONTACT_READ_LIMIT });
   }));
 
   app.get('/api/linkedin/manager/workflows', linkedinRoute(async (req, res) => {
@@ -2379,17 +2493,44 @@ export function createApp(db: Db) {
     res.json({ campaign, members: await listCampaignMembers(db, req.auth!.workspaceId, campaignId) });
   }));
 
+  app.post('/api/linkedin/manager/campaigns/:id/start', linkedinRoute(async (req, res) => {
+    z.object({}).strict().parse(req.body ?? {});
+    try { res.json({ campaign: await startManagedCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date()) }); }
+    catch (error) { rethrowLinkedInManagerError(error); }
+  }));
+
+  app.post('/api/linkedin/manager/campaigns/:id/pause', linkedinRoute(async (req, res) => {
+    z.object({}).strict().parse(req.body ?? {});
+    try { res.json({ campaign: await pauseManagedCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date()) }); }
+    catch (error) { rethrowLinkedInManagerError(error); }
+  }));
+
   app.post('/api/linkedin/manager/campaigns/:id/stop', linkedinRoute(async (req, res) => {
     z.object({}).strict().parse(req.body ?? {});
     try { res.json({ campaign: await stopManagedCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date()) }); }
     catch (error) { rethrowLinkedInManagerError(error); }
   }));
 
+  /**
+   * Pause OR continue one lead, which is one route because they are one
+   * decision an operator reverses. The earlier shape hardcoded `true` on the
+   * grounds that only safety-reducing controls belong on this surface; that
+   * reasoning does not survive contact with the brief, where "lead in campaign
+   * can be easily paused or continued" is the requirement, and a pause nobody
+   * can undo is a removal wearing a different label.
+   */
   app.post('/api/linkedin/manager/members/:id/pause', linkedinRoute(async (req, res) => {
+    const input = z.object({ paused: z.boolean().default(true) }).strict().parse(req.body ?? {});
+    const changed = await setCampaignMemberPaused(db, req.auth!.workspaceId, String(req.params.id), input.paused, new Date());
+    if (!changed) throw new LinkedInApiError(input.paused ? 'Active campaign member not found' : 'Paused campaign member not found', 404);
+    res.json({ paused: input.paused });
+  }));
+
+  app.post('/api/linkedin/manager/members/:id/resume', linkedinRoute(async (req, res) => {
     z.object({}).strict().parse(req.body ?? {});
-    const paused = await setCampaignMemberPaused(db, req.auth!.workspaceId, String(req.params.id), true, new Date());
-    if (!paused) throw new LinkedInApiError('Active campaign member not found', 404);
-    res.json({ paused: true });
+    const resumed = await setCampaignMemberPaused(db, req.auth!.workspaceId, String(req.params.id), false, new Date());
+    if (!resumed) throw new LinkedInApiError('Paused campaign member not found', 404);
+    res.json({ paused: false });
   }));
 
   app.delete('/api/linkedin/manager/members/:id', linkedinRoute(async (req, res) => {
@@ -2401,6 +2542,33 @@ export function createApp(db: Db) {
   app.get('/api/linkedin/manager/tasks', linkedinRoute(async (req, res) => {
     const filters = linkedinManualTaskFiltersSchema.parse(req.query);
     res.json({ tasks: await listManualTasks(db, req.auth!.workspaceId, filters) });
+  }));
+
+  /**
+   * The human checkpoint, closed.
+   *
+   * This completes the TASK, not the message: the operator sent it in the
+   * inbox (or by hand), and this is them saying so, which is what releases the
+   * member to the next workflow step. Keeping the two separate is deliberate --
+   * Trevra never claims to have sent bytes it did not send.
+   */
+  app.post('/api/linkedin/manager/tasks/:id/complete', linkedinRoute(async (req, res) => {
+    z.object({}).strict().parse(req.body ?? {});
+    const completed = await completeManualTask(db, req.auth!.workspaceId, String(req.params.id), new Date());
+    if (!completed) throw new LinkedInApiError('Pending manual task not found', 404);
+    res.json({ completed: true });
+  }));
+
+  /**
+   * Advance every running campaign now instead of waiting for the worker tick.
+   *
+   * The same function the background tick calls, with the same ceilings: this
+   * is a "don't make me wait a minute" button, not a way around the ramp. It
+   * plans rows; it never sends.
+   */
+  app.post('/api/linkedin/manager/tick', linkedinRoute(async (req, res) => {
+    z.object({}).strict().parse(req.body ?? {});
+    res.json(await runManagedCampaigns(db, req.auth!.workspaceId, new Date()));
   }));
 
   app.get('/api/linkedin/manager/analytics', linkedinRoute(async (req, res) => {
@@ -2429,6 +2597,33 @@ export function createApp(db: Db) {
         rejected: preview.rejected.slice(0, 100).map(({ row, reason }) => ({ row, reason })),
         rejectedCount: preview.rejected.length
       });
+    } catch (error) { rethrowLinkedInManagerError(error); }
+  }));
+
+  /**
+   * The write half of the preview above, and the reason a lead list can hold
+   * leads at all. The preview parses and shows; this one persists, through the
+   * same parser, with the same scrub and the same automatch -- so what the
+   * operator confirmed on screen is exactly what lands.
+   */
+  app.post('/api/linkedin/manager/lead-lists/:id/import', linkedinTargetsUpload.single('file'), linkedinRoute(async (req, res) => {
+    if (!req.file) throw new LinkedInApiError('A CSV file of LinkedIn leads is required', 400);
+    if (!req.file.originalname.toLowerCase().endsWith('.csv')) throw new LinkedInApiError('Upload a .csv file of LinkedIn leads', 400);
+    let mapping: z.infer<typeof linkedinLeadFieldMappingSchema> | undefined;
+    if (typeof req.body?.mapping === 'string' && req.body.mapping.trim()) {
+      let decoded: unknown;
+      try { decoded = JSON.parse(req.body.mapping); }
+      catch { throw new LinkedInApiError('mapping must be valid JSON', 400); }
+      mapping = linkedinLeadFieldMappingSchema.parse(decoded);
+    }
+    try {
+      const result = await importLeadCsv(db, {
+        workspaceId: req.auth!.workspaceId,
+        listId: String(req.params.id),
+        csv: req.file.buffer.toString('utf8'),
+        mapping
+      }, new Date());
+      res.status(201).json(result);
     } catch (error) { rethrowLinkedInManagerError(error); }
   }));
 
@@ -2532,10 +2727,43 @@ export function createApp(db: Db) {
     });
   }));
 
+  /**
+   * The daily lead ceiling, read and set.
+   *
+   * Separate from the per-run `maxResults` on purpose: that one bounds how deep
+   * a single walk goes, and an operator who runs six sources in a morning has
+   * not bounded anything. This is the number the brief asks for -- how many new
+   * leads a day this workspace is willing to collect at all.
+   */
+  app.get('/api/linkedin/lead-sources/allowance', linkedinRoute(async (req, res) => {
+    res.json(await dailyLeadAllowance(db, req.auth!.workspaceId, new Date()));
+  }));
+
+  app.put('/api/linkedin/lead-sources/allowance', linkedinRoute(async (req, res) => {
+    const input = linkedinDailyLeadCapSchema.parse(req.body ?? {});
+    await setDailyLeadCap(db, req.auth!.workspaceId, input.cap, new Date());
+    res.json(await dailyLeadAllowance(db, req.auth!.workspaceId, new Date()));
+  }));
+
   app.get('/api/linkedin/lead-sources/:id', linkedinRoute(async (req, res) => {
     const source = await getLeadSource(db, req.auth!.workspaceId, String(req.params.id));
     if (!source) throw new LinkedInApiError('LinkedIn lead source not found', 404);
     res.json({ source });
+  }));
+
+  /**
+   * Turn what a walk found into leads a campaign can actually enrol.
+   *
+   * Harvested rows and campaign contacts were two different tables with no road
+   * between them, so a search could never feed a campaign. This is the road:
+   * the same scrub and the same first/last split the CSV path uses, into a
+   * persistent list.
+   */
+  app.post('/api/linkedin/lead-sources/:id/import', linkedinRoute(async (req, res) => {
+    const input = linkedinLeadSourceImportSchema.parse(req.body ?? {});
+    try {
+      res.status(201).json(await importLeadSourceContacts(db, { workspaceId: req.auth!.workspaceId, sourceId: String(req.params.id), ...input }, new Date()));
+    } catch (error) { rethrowLinkedInManagerError(error); }
   }));
 
   app.get('/api/linkedin/lead-sources/:id/leads', linkedinRoute(async (req, res) => {
@@ -3445,8 +3673,25 @@ function hash(value: string): string {
 
 const LINKEDIN_PLAYBOOK_ID = 'gtm.linkedin-outreach';
 
+/**
+ * An undecided approval step, in the words the refusal needs.
+ *
+ * Every state EXCEPT 'completed' is a refusal, and each one sends the operator
+ * somewhere different -- back to the approval screen, back to the drawing
+ * board, or nowhere at all. A single "not approved" would flatten the three.
+ */
+const LINKEDIN_APPROVAL_STATE: Partial<Record<PlaybookStepStatus, string>> = {
+  waiting_approval: 'is still waiting for a founder to approve it',
+  pending: 'has not reached its approval step yet',
+  running: 'is still being planned',
+  failed: 'was rejected',
+  skipped: 'had its approval step skipped',
+  cancelled: 'was cancelled'
+};
+
 /** Where every number below comes from. Quoted in each response, per the plan's honesty rule. */
 const LINKEDIN_PLAN_DOC = 'docs/linkedin-outreach-plan.md';
+
 
 /**
  * Wrap a LinkedIn handler.
@@ -3586,6 +3831,45 @@ async function approvedCampaignPayload(
       409
     );
   }
+
+  /**
+   * A PAYLOAD IS NOT A DECISION, and this checked only that a payload existed.
+   *
+   * `placeStepBehindApproval` (playbooks/engine.ts) writes `input_json` at the
+   * moment it STOPS for a human -- so a step sitting at `waiting_approval`, and
+   * a step a founder REJECTED, both carry a full payload. Reading that as
+   * "approved" is how a campaign nobody agreed to got 201s out of the export
+   * route and, once the worker route landed, would have got its actions written
+   * as 'planned' rows for the local worker to send. A disabled button in the
+   * client is not an authorisation check.
+   *
+   * TWO CONDITIONS, BOTH OF THEM THE ENGINE'S OWN. The step must have COMPLETED
+   * -- `decidePlaybookApproval` sets 'completed' on approve and 'failed' on
+   * reject -- and a `playbook_approvals` row must exist for this exact payload
+   * hash with `decision='approve'`, which is the same pair `runActionStep`
+   * requires before it will perform an approved action. An approval granted for
+   * a payload that has since changed is not an approval of this one.
+   */
+  if (approval.status !== 'completed') {
+    throw new LinkedInApiError(
+      `This campaign's plan ${LINKEDIN_APPROVAL_STATE[approval.status] ?? `is in state '${approval.status}'`}, so there is nothing approved to ${verb}. ${verb === 'export' ? 'An export is' : 'A queued campaign is'} the bytes a founder approved, never a plan nobody decided on.`,
+      409
+    );
+  }
+  const granted = approval.approvalPayloadHash
+    ? await db.prepare(`
+        SELECT id FROM playbook_approvals
+        WHERE workspace_id=? AND playbook_run_id=? AND step_run_id=? AND decision='approve' AND payload_hash=?
+        ORDER BY created_at DESC LIMIT 1
+      `).get<{ id: string }>(workspaceId, run!.id, approval.id, approval.approvalPayloadHash)
+    : undefined;
+  if (!granted) {
+    throw new LinkedInApiError(
+      `No founder approval is on file for this campaign's current plan, so it cannot be ${verb === 'export' ? 'exported' : 'queued'}. Approve the plan as it stands now -- an approval granted for a payload that has since changed is not an approval of this one.`,
+      409
+    );
+  }
+
   const approved = linkedinExportPayloadSchema.parse(approval.input);
 
   const storedSequence: unknown = campaign.sequence;
@@ -3662,21 +3946,34 @@ function validatedSequence(steps: readonly SequenceStepInput[]): LinkedInSequenc
 /**
  * The inputs a campaign can be re-planned from.
  *
- * Reads the copy on the campaign first (029), and falls back to the playbook
- * run that made it for campaigns created before that column existed. The
- * `targets` check is the test of usefulness rather than of shape: a payload
- * with no targets cannot be paced, so it is not an input, it is a husk.
+ * THE CAMPAIGN'S CURRENT RUN FIRST, and the stored brief (029) as the fallback
+ * for a campaign whose run has been pruned out of history -- which is the order
+ * an edit needs and the reverse of what this did.
+ *
+ * `linkedin_campaigns.brief_json` is written once, at creation, and
+ * `attachCampaignRun` has no way to update it; reading it first meant every
+ * re-plan started from the campaign's ORIGINAL settings. So an operator who
+ * edited the tone to `direct` and then edited a word of the copy got their tone
+ * silently reverted by the second save -- an edit undoing an earlier edit
+ * nobody had touched. The latest run's input is the campaign as it now stands,
+ * so edits compound instead of fighting.
+ *
+ * The `targets` check is the test of usefulness rather than of shape: a payload
+ * with no targets cannot be paced, so it is not an input, it is a husk -- and
+ * a run that never got that far falls through to the stored brief for exactly
+ * that reason.
  */
 async function campaignPlaybookInput(
   db: Db,
   workspaceId: string,
   campaign: { id: string; playbookRunId: string | null }
 ): Promise<Record<string, unknown> | null> {
+  if (campaign.playbookRunId) {
+    const run = await getPlaybookRun(db, workspaceId, campaign.playbookRunId);
+    if (isPlannableInput(run?.input)) return run.input;
+  }
   const stored = await getCampaignBrief(db, workspaceId, campaign.id);
-  if (isPlannableInput(stored)) return stored;
-  if (!campaign.playbookRunId) return null;
-  const run = await getPlaybookRun(db, workspaceId, campaign.playbookRunId);
-  return isPlannableInput(run?.input) ? run.input : null;
+  return isPlannableInput(stored) ? stored : null;
 }
 
 function isPlannableInput(value: unknown): value is Record<string, unknown> {
@@ -3685,8 +3982,15 @@ function isPlannableInput(value: unknown): value is Record<string, unknown> {
   return Array.isArray(targets) && targets.length > 0;
 }
 
-/** seats.ts owns these rules; this only recognises its refusals as 400s, not faults. */
-const LINKEDIN_SEAT_INPUT_ERROR = /(needs a label|needs an IANA timezone|is not an IANA timezone|must be a 'YYYY-MM-DD' date)/;
+/**
+ * seats.ts owns these rules; this only recognises its refusals as 400s, not faults.
+ *
+ * `Working hours must be` is the one refusal here that zod cannot also make and
+ * never will: `workStartMinute` and `workEndMinute` are each valid on their
+ * own, and only the PAIR is wrong. An operator who types an 18:00-08:00 window
+ * -- the ordinary way to get this wrong -- was told the server had faulted.
+ */
+const LINKEDIN_SEAT_INPUT_ERROR = /(needs a label|needs an IANA timezone|is not an IANA timezone|must be a 'YYYY-MM-DD' date|Working hours must be)/;
 
 /**
  * The two vocabularies, read from the modules that own them.
@@ -3700,6 +4004,10 @@ const linkedinPacedKind = z.enum(PACED_KIND_VALUES);
 const linkedinEngagementKind = z.enum(['follow', 'like', 'endorse']);
 const linkedinActionStatus = z.enum(['planned', 'exported', 'sent', 'accepted', 'replied', 'declined', 'skipped']);
 const linkedinExportFormat = z.enum(['dripify', 'heyreach', 'expandi', 'generic']);
+/** The two copy dials `gtm.linkedin-sequence` owns, spelled once for every route that offers them. */
+const linkedinSequenceTone = z.enum(['direct', 'consultative', 'peer']);
+/** `none` drafts a bare connection request; `drafted` is what every campaign before the option got. */
+const linkedinInviteNoteMode = z.enum(['drafted', 'none']);
 
 /**
  * The seat patch.
@@ -3711,7 +4019,40 @@ const linkedinExportFormat = z.enum(['dripify', 'heyreach', 'expandi', 'generic'
  */
 const linkedinSeatKeySchema = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
 
+/**
+ * The four ceilings an operator may set for themselves, and the range each may
+ * sit in.
+ *
+ * ONE TABLE, WITH THE ZOD FIELDS BUILT FROM IT, for the same reason
+ * `linkedinPacedKind` is derived from `PACED_KIND_VALUES` rather than
+ * hand-copied: a range the API validates against and a range the UI renders a
+ * control from must be the same range, and two hand-written copies of four
+ * numbers are two copies that eventually disagree. The maxima are migration
+ * 045's CHECK constraints (`linkedin_seats_*_limit_check`) and the defaults are
+ * that migration's column DEFAULTs, which `upsertSeat` falls back to for a seat
+ * that has never set one.
+ *
+ * THESE ARE THE OPERATOR'S NUMBERS, NOT THE SAFETY BANDS. `LINKEDIN_LIMITS` is
+ * what was researched and it is stricter in every posture that matters; which
+ * of the two binds is `safetyBandOverride`, and it is off until somebody says
+ * otherwise.
+ */
+const LINKEDIN_OPERATOR_RANGES = {
+  invite: { min: 0, max: 75, default: 30 },
+  message: { min: 0, max: 75, default: 25 },
+  profileView: { min: 0, max: 100, default: 25 },
+  follow: { min: 0, max: 50, default: 20 }
+} as const;
+
+type LinkedInOperatorLimit = keyof typeof LINKEDIN_OPERATOR_RANGES;
+
+function operatorLimitField(limit: LinkedInOperatorLimit) {
+  const range = LINKEDIN_OPERATOR_RANGES[limit];
+  return z.number().int().min(range.min).max(range.max).optional();
+}
+
 const linkedinSeatSchema = z.object({
+  seatKey: linkedinSeatKeySchema.optional(),
   label: z.string().trim().min(1).max(120).optional(),
   profileUrl: z.string().trim().max(500).nullable().optional(),
   accountOpenedOn: z.string().trim().max(20).nullable().optional(),
@@ -3720,10 +4061,21 @@ const linkedinSeatSchema = z.object({
   workingDays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
   workStartMinute: z.number().int().min(0).max(1439).optional(),
   workEndMinute: z.number().int().min(1).max(1440).optional(),
-  dailyInviteLimit: z.number().int().min(0).max(75).optional(),
-  dailyMessageLimit: z.number().int().min(0).max(75).optional(),
-  dailyProfileViewLimit: z.number().int().min(0).max(100).optional(),
-  dailyFollowLimit: z.number().int().min(0).max(50).optional()
+  dailyInviteLimit: operatorLimitField('invite'),
+  dailyMessageLimit: operatorLimitField('message'),
+  dailyProfileViewLimit: operatorLimitField('profileView'),
+  dailyFollowLimit: operatorLimitField('follow'),
+  /**
+   * The operator's informed opt-in: their own configured ceiling binds instead
+   * of Trevra's stricter researched band.
+   *
+   * IT IS NOT A WAY PAST THE RAMP. Warm-up still multiplies whatever ceiling
+   * ends up applying, so a week-1 seat with this on is still a week-1 seat --
+   * this decides WHICH ceiling is ramped, never whether one is. Seat-scoped
+   * like every other field here, because it is one human's decision about one
+   * LinkedIn account and not a workspace policy.
+   */
+  safetyBandOverride: z.boolean().optional()
 }).strict();
 
 const linkedinManagerSeatCreateSchema = linkedinSeatSchema.extend({
@@ -3772,7 +4124,8 @@ const linkedinManagedCampaignCreateSchema = z.object({
 
 const linkedinManagedAnalyticsSchema = z.object({
   campaignId: z.string().trim().min(1).max(120).optional(),
-  seatKey: linkedinSeatKeySchema.optional()
+  seatKey: linkedinSeatKeySchema.optional(),
+  sinceDays: z.coerce.number().int().min(1).max(365).optional()
 });
 
 const linkedinManualTaskFiltersSchema = z.object({
@@ -3789,8 +4142,20 @@ const linkedinManualTaskFiltersSchema = z.object({
  * fact the server cannot derive for itself.
  */
 const linkedinSeatDetectSchema = z.object({
-  timezone: z.string().trim().min(1).max(100)
+  timezone: z.string().trim().min(1).max(100),
+  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
 }).strict();
+
+/**
+ * Which LinkedIn account a seat route is about.
+ *
+ * Absent means the owner seat, everywhere, which is what keeps every existing
+ * caller -- and every existing test -- reading exactly as it did when a
+ * workspace could only have one account.
+ */
+const linkedinSeatSelectorSchema = z.object({
+  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
+});
 
 /**
  * The sign-in, and it goes ONE WAY.
@@ -3802,6 +4167,7 @@ const linkedinSeatDetectSchema = z.object({
  * middleware.
  */
 const linkedinCredentialsSchema = z.object({
+  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
   email: z.string().trim().min(3).max(320).email(),
   password: z.string().min(1).max(200)
 }).strict();
@@ -3814,7 +4180,8 @@ const linkedinCredentialsSchema = z.object({
  * `otp_required` answer.
  */
 const linkedinSeatLoginSchema = z.object({
-  otp: z.string().trim().min(4).max(12).optional()
+  otp: z.string().trim().min(4).max(12).optional(),
+  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
 }).strict();
 
 /**
@@ -3876,8 +4243,22 @@ const redditCommentSchema = z.object({
 const linkedinPauseSchema = z.object({
   // Not decoration: "why is this stopped" three weeks later is the question
   // this column answers, so it is required rather than defaulted to ''.
-  reason: z.string().trim().min(1).max(500)
+  reason: z.string().trim().min(1).max(500),
+  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
 }).strict();
+
+/**
+ * Resuming, with an optional note about why.
+ *
+ * Not `.strict()`, and for the same reason `linkedinSeatSelectorSchema` is not:
+ * this body is merged with the query string, which is a place stray parameters
+ * arrive from.
+ */
+const linkedinResumeSchema = z.object({
+  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
+  /** Optional on purpose -- see the route. Recorded in `audit_events`, never on the seat. */
+  reason: z.string().trim().min(1).max(500).optional()
+});
 
 const linkedinPlanSchema = z.object({
   seatKey: z.string().trim().min(1).max(64).optional(),
@@ -3975,12 +4356,46 @@ const linkedinCampaignSchema = z.object({
 const linkedinDraftSchema = z.object({
   domain: z.string().trim().min(1).max(253),
   targets: z.array(z.string().trim().min(1).max(500)).max(500).default([]),
-  templateId: z.string().trim().min(1).max(64).optional()
+  templateId: z.string().trim().min(1).max(64).optional(),
+  /**
+   * THE SAME THREE COPY CONTROLS THE CAMPAIGN PATH HAS, and they were missing
+   * here rather than deliberately withheld: `gtm.linkedin-sequence` has taken
+   * `tone`, `inviteNote` and `includeInMail` since it was written, the create
+   * route passes all three through the playbook, and this `.strict()` schema
+   * refused them outright -- so "draft with AI" was quietly the less capable of
+   * two drafting paths and the controls beside it did nothing.
+   *
+   * Absent means the skill's own default (`consultative`, a drafted invite
+   * note, no InMail), which is what every draft got before this.
+   */
+  tone: linkedinSequenceTone.optional(),
+  inviteNote: linkedinInviteNoteMode.optional(),
+  includeInMail: z.boolean().optional()
 }).strict();
 
-/** Editing a sequence. Same list, same rules as the create route -- see `linkedinSequenceStepsSchema`. */
+/**
+ * Editing a sequence on a campaign that already exists.
+ *
+ * THE STEPS, AND EVERYTHING THE CAMPAIGN WAS CREATED WITH. This took `steps`
+ * alone, so an edit could rewrite every word of the copy and not the tone it
+ * was drafted in, the action kind it is paced as, the horizon it is spread
+ * over or the tool it exports for -- making an edit a strictly narrower act
+ * than a create, and leaving the client no choice but to grey those controls
+ * out on a bound campaign.
+ *
+ * ABSENT MEANS UNCHANGED, never reset: the route re-plans through the same
+ * `gtm.linkedin-outreach` run and merges these over the input the campaign
+ * already carries, so an edit that only touches copy leaves the rest exactly as
+ * approved. Every field is the playbook's own, with the playbook's own bounds.
+ */
 const linkedinSequenceEditSchema = z.object({
-  steps: linkedinSequenceStepsSchema
+  steps: linkedinSequenceStepsSchema,
+  tone: linkedinSequenceTone.optional(),
+  inviteNote: linkedinInviteNoteMode.optional(),
+  includeInMail: z.boolean().optional(),
+  kind: linkedinPacedKind.optional(),
+  horizonDays: z.number().int().min(1).max(MAX_HORIZON_DAYS).optional(),
+  format: linkedinExportFormat.optional()
 }).strict();
 
 const linkedinExportRequestSchema = z.object({
@@ -4030,8 +4445,29 @@ const linkedinAnalyticsSchema = z.object({
  * AUTHENTICATED browser, and the fix for that is to never write it.
  */
 const linkedinLeadSourceSchema = z.object({
-  kind: z.enum(['search', 'post']),
+  kind: z.enum([...LEAD_SOURCE_KINDS] as [LeadSourceKind, ...LeadSourceKind[]]),
   url: z.string().trim().min(1).max(1000)
+}).strict();
+
+const linkedinDailyLeadCapSchema = z.object({
+  cap: z.number().int().min(0).max(MAX_DAILY_LEAD_CAP)
+}).strict();
+
+const linkedinLeadSourceImportSchema = z.object({
+  listId: z.string().trim().min(1).max(120).optional(),
+  listName: z.string().trim().min(1).max(200).optional(),
+  // `listLeads` clamps to LEAD_READ_LIMIT whatever it is asked for, so a larger
+  // number accepted here would be a promise the reader silently breaks.
+  limit: z.number().int().min(1).max(LEAD_READ_LIMIT).optional(),
+  /**
+   * The rows the operator actually ticked.
+   *
+   * Absent means every lead the walk found, up to `limit`, which is what this
+   * route did when there was no selection to respect. A screen that offers
+   * checkboxes and then imports the whole page is worse than one that offers
+   * none, so the selection travels rather than being thrown away at the button.
+   */
+  leadIds: z.array(z.string().trim().min(1).max(120)).min(1).max(LEAD_READ_LIMIT).optional()
 }).strict();
 
 const linkedinLeadListSchema = z.object({
@@ -4224,13 +4660,42 @@ async function accountDetail(db: Db, workspaceId: string, accountId: string): Pr
  */
 type LinkedInLimitConfidence = 'HARD FACT' | 'REPORTED';
 
+/**
+ * WHICH OF THE TWO DAILY NUMBERS THE CEILING WAS BUILT FROM.
+ *
+ * There are always two candidates and a screen that cannot name the winner
+ * cannot answer the only question an operator asks here -- "I typed 30, why
+ * does it say 18".
+ *
+ *   band              -- Trevra's researched band. Either the operator was
+ *                        never asked for a number for this kind, or theirs was
+ *                        the looser of the two and the stricter binds.
+ *   operator          -- the seat's own configured number, stricter than the
+ *                        band, so it binds.
+ *   operator-override -- the seat is opted out of the bands, so the operator's
+ *                        number binds whatever it is. The RAMPS STILL APPLY on
+ *                        top; an override raises the number they are a
+ *                        percentage of.
+ */
+type LinkedInCeilingSource = 'band' | 'operator' | 'operator-override';
+
 interface LinkedInCeiling {
   kind: PacedKind;
   window: 'day' | 'week' | 'month';
   /** What actually applies right now, after every rule above has been applied. */
   ceiling: number;
-  /** The band's own number, before warm-up and throttling. */
+  /** The band's own number, before warm-up, throttling and the operator's setting. */
   bandCeiling: number;
+  /**
+   * DAY ROWS ONLY. The seat's own configured number for this kind, or null
+   * where there is no seat or the operator was never asked for one (`like`,
+   * `endorse`). For `dm`, `reply` and `inmail` it is ONE POOL over all three:
+   * the setting is a statement about the account's total outbound messaging,
+   * and `guard.ts` checks it against the count of all three kinds together.
+   */
+  operatorLimit?: number | null;
+  /** DAY ROWS ONLY. Which of the two numbers `ceiling` was built from. */
+  ceilingSource?: LinkedInCeilingSource;
   /** Actions of this kind already counted inside the window. */
   used: number;
   remaining: number;
@@ -4238,11 +4703,45 @@ interface LinkedInCeiling {
   boundBy: string;
   /** The same fact in a sentence a founder can read. */
   rule: string;
+  /**
+   * The provenance of `bandCeiling` -- of the RESEARCH, not of the number that
+   * ended up binding. An operator's own setting has no confidence tag and is
+   * not given one here: `ceilingSource` says when it is what bound, and
+   * dressing a typed-in figure as REPORTED is exactly the laundering the tags
+   * exist to prevent.
+   */
   confidence: LinkedInLimitConfidence;
   source: string;
 }
 
 const LINKEDIN_WINDOW_HOURS = { day: 24, week: 24 * 7, month: 24 * 30 } as const;
+
+/** The three kinds that share ONE operator setting. `guard.ts` counts them together. */
+const MESSAGE_POOL_KINDS = ['dm', 'reply', 'inmail'] as const;
+
+/** A ramp that never reaches full is a bug in the ramp; this only stops the walk. */
+const CAMPAIGN_RAMP_MAX_DAYS = 60;
+
+/**
+ * The campaign-day ramp as fractions of the seat's ceiling, days 1..n.
+ *
+ * ASKED OF THE FUNCTION THAT APPLIES IT rather than declared here.
+ * `campaignWarmupFraction` in managed-campaigns.ts is the one place the step
+ * lives; a literal `[0.2, 0.4, ...]` in this file would be a second place that
+ * stays right only until somebody changes the first -- which is exactly what
+ * the client-side copy of the same arithmetic was.
+ */
+function campaignWarmupRamp(): number[] {
+  const epoch = Date.UTC(2026, 0, 1);
+  const startedAt = new Date(epoch).toISOString();
+  const fractions: number[] = [];
+  for (let day = 0; day < CAMPAIGN_RAMP_MAX_DAYS; day += 1) {
+    const fraction = campaignWarmupFraction(startedAt, new Date(epoch + day * 86_400_000));
+    fractions.push(fraction);
+    if (fraction >= 1) break;
+  }
+  return fractions;
+}
 
 /**
  * Every effective ceiling for this workspace's seat, each carrying the rule
@@ -4253,38 +4752,86 @@ const LINKEDIN_WINDOW_HOURS = { day: 24, week: 24 * 7, month: 24 * 30 } as const
  * rather than from LinkedIn" are different claims, and only the second one is
  * true.
  */
-async function effectiveLinkedInLimits(db: Db, workspaceId: string, now: Date) {
-  const seat = await getSeat(db, workspaceId);
+async function effectiveLinkedInLimits(db: Db, workspaceId: string, now: Date, seatKey: string = OWNER_SEAT_KEY) {
+  const seat = await getSeat(db, workspaceId, seatKey);
   const posture = seat ? effectivePosture(seat, now) : null;
   const warmupWeek = warmupWeekOf(seat?.activatedAt ?? null, now);
   const multiplier = warmupMultiplier(warmupWeek);
   // 'cooldown' and 'paused' both draw from the conservative band: backing off
   // means the warm-up numbers, not the steady ones.
   const band = posture === 'steady' ? 'steady' : 'warmup';
-  const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : ownerSeat(workspaceId);
+  // The ASKED-FOR account, whether or not it exists yet: an unconfigured second
+  // account must report its own zeros, not the first account's numbers.
+  const seatRef = { workspaceId, seatKey: seat?.seatKey ?? seatKey };
 
   const acceptance = await acceptanceRate(db, seatRef, ACCEPTANCE_WINDOW_DAYS, now);
   const throttled = acceptance.rate !== null && acceptance.rate < MIN_ACCEPTANCE_RATE;
+  // Fails closed on a workspace with no seat: nobody opted an account in that
+  // does not exist.
+  const overrideBands = seat?.safetyBandOverride ?? false;
 
   const limits: LinkedInCeiling[] = [];
+  // The band this seat is actually drawing from, kind by kind, so a screen can
+  // say "50 InMails a month" without holding its own copy of the table that
+  // says 50. Every number here comes off `LINKEDIN_LIMITS` via `bandFor`.
+  const bands = {} as Record<PacedKind, LinkedInBand>;
   for (const kind of PACED_KINDS) {
     const bandLimits = bandFor(kind, band);
+    bands[kind] = bandLimits;
     const [usedDay, usedWeek, usedMonth] = await Promise.all([
       countActionsInWindow(db, seatRef, kind, LINKEDIN_WINDOW_HOURS.day, now),
       countActionsInWindow(db, seatRef, kind, LINKEDIN_WINDOW_HOURS.week, now),
       countActionsInWindow(db, seatRef, kind, LINKEDIN_WINDOW_HOURS.month, now)
     ]);
 
-    const afterWarmup = Math.floor(bandLimits.perDay * multiplier);
+    /**
+     * THE CEILING THE PACER AND THE GATE WILL ACTUALLY APPLY, through the same
+     * function they call.
+     *
+     * This read `bandFor()` alone, so it reported 18 invites/day to an operator
+     * whose seat said 5 and to an operator who had opted out of the bands at
+     * 30 -- a screen quoting a number nothing downstream would honour, which is
+     * the one failure a limits report cannot have. `effectiveDailyCeiling`
+     * (limits.ts) owns the three-case rule; `pacing.ts` and `guard.ts` call it
+     * for the same reason this now does.
+     */
+    const operatorLimit = seatOperatorLimit(seat, kind);
+    const dailyCeiling = effectiveDailyCeiling(bandLimits.perDay, operatorLimit, overrideBands);
+    const ceilingSource: LinkedInCeilingSource =
+      operatorLimit === null
+        ? 'band'
+        : overrideBands
+          ? 'operator-override'
+          : operatorLimit < bandLimits.perDay
+            ? 'operator'
+            : 'band';
+
+    // PER KIND, because the gate is: passive kinds are not ramped at all (1.4's
+    // week 1 is passive-only, so views ARE the warm-up). The flat
+    // `warmupMultiplier` here reported zero profile views in week 1 for a seat
+    // the gate would have let view all fifteen.
+    const kindMultiplier = warmupMultiplierFor(kind, warmupWeek);
+    const afterWarmup = Math.floor(dailyCeiling * kindMultiplier);
     // Halves, never zeroes -- a seat cut to zero can never produce the outcomes
     // that would clear the throttle, so "halve it" would become "end it".
     const afterThrottle = throttled
       ? Math.max(afterWarmup > 0 ? 1 : 0, Math.floor(afterWarmup * ACCEPTANCE_THROTTLE_FACTOR))
       : afterWarmup;
 
+    const poolNote = MESSAGE_POOL_KINDS.includes(kind as (typeof MESSAGE_POOL_KINDS)[number])
+      ? ' That setting is one pool over DMs, replies and InMails together, not a number for this kind alone.'
+      : '';
+
     let ceiling = afterThrottle;
-    let boundBy = 'band-ceiling';
-    let rule = `The ${band} band ceiling for ${kind}: ${bandLimits.perDay}/day.`;
+    let boundBy = ceilingSource === 'band' ? 'band-ceiling' : 'operator-daily-limit';
+    let rule =
+      ceilingSource === 'operator'
+        ? `Your own ceiling for this account is ${operatorLimit} ${kind}(s)/day, stricter than Trevra's ${bandLimits.perDay}/day ${band} band, so yours is the one that binds.${poolNote}`
+        : ceilingSource === 'operator-override'
+          ? `This account is set to use your own daily limits instead of Trevra's safety bands, so ${operatorLimit} ${kind}(s)/day binds rather than the researched ${bandLimits.perDay}/day.${poolNote} Every ramp and every rolling window still applies on top.`
+          : operatorLimit === null
+            ? `The ${band} band ceiling for ${kind}: ${bandLimits.perDay}/day.`
+            : `You have set ${operatorLimit} ${kind}(s)/day for this account, but Trevra's researched ${band} band is ${bandLimits.perDay}/day and the stricter of the two binds.${poolNote} Turning on "use my own daily limits" for this account makes your number the binding one.`;
 
     if (!seat) {
       ceiling = 0;
@@ -4297,12 +4844,15 @@ async function effectiveLinkedInLimits(db: Db, workspaceId: string, now: Date) {
     } else if (throttled && afterThrottle < afterWarmup && acceptance.rate !== null) {
       boundBy = 'acceptance-rate';
       rule = `${ACCEPTANCE_WINDOW_DAYS}-day invite acceptance is ${(acceptance.rate * 100).toFixed(0)}% (${acceptance.accepted} of ${acceptance.decided} decided), below the ${(MIN_ACCEPTANCE_RATE * 100).toFixed(0)}% floor, so volume is halved until it recovers.`;
-    } else if (multiplier < 1) {
+    } else if (kindMultiplier < 1) {
       boundBy = 'warmup-multiplier';
-      rule = `Warm-up week ${warmupWeek} of ${WARMUP_WEEKS}: ${bandLimits.perDay} ${kind}/day x ${multiplier} = ${ceiling}/day.`;
+      // The ramp is a percentage OF the binding ceiling, not of the band, which
+      // is what makes an override raise the number it ramps rather than skip
+      // the ramp -- and what makes it respect an operator who asked for less.
+      rule = `Warm-up week ${warmupWeek} of ${WARMUP_WEEKS}: ${dailyCeiling} ${kind}/day x ${kindMultiplier} = ${ceiling}/day.`;
     } else if (posture === 'cooldown') {
       boundBy = 'cooldown-band';
-      rule = `Seat is in cooldown, so the conservative warm-up band applies: ${bandLimits.perDay} ${kind}/day.`;
+      rule = `Seat is in cooldown, so the conservative warm-up band applies: ${dailyCeiling} ${kind}/day.`;
     }
 
     limits.push({
@@ -4310,6 +4860,8 @@ async function effectiveLinkedInLimits(db: Db, workspaceId: string, now: Date) {
       window: 'day',
       ceiling,
       bandCeiling: bandLimits.perDay,
+      operatorLimit,
+      ceilingSource,
       used: usedDay,
       remaining: Math.max(0, ceiling - usedDay),
       boundBy,
@@ -4366,9 +4918,29 @@ async function effectiveLinkedInLimits(db: Db, workspaceId: string, now: Date) {
       warmupWeek,
       warmupWeeks: WARMUP_WEEKS,
       warmupMultiplier: multiplier,
-      band
+      band,
+      // Whether this seat's operator has opted their own configured ceilings in
+      // ahead of the researched band. Reported, never inferred: a seat nobody
+      // opted in is false, including a workspace with no seat at all.
+      safetyBandOverride: seat?.safetyBandOverride ?? false
     },
     limits,
+    /** Every band figure this seat is paced against, and the only copy of them. */
+    bands,
+    /**
+     * What an operator may set their OWN ceilings to, with the number a seat
+     * starts on. The API validates against exactly this table, so a control
+     * built from it cannot offer a number the route or the database refuses.
+     */
+    operatorRanges: LINKEDIN_OPERATOR_RANGES,
+    /**
+     * The campaign-day ramp, days 1..n, as fractions of the seat's ceiling.
+     *
+     * COMPUTED FROM `campaignWarmupFraction` RATHER THAN LISTED, so the screen
+     * showing the ramp and the runner applying it cannot disagree -- the
+     * arithmetic re-implemented client-side was the way they did.
+     */
+    campaignWarmupFractions: campaignWarmupRamp(),
     /**
      * The rules that are not per-kind ceilings but decide what a plan looks
      * like anyway. A daily cap is NOT the defence -- 20/20/20/0/0/0/20 is more
@@ -4591,6 +5163,24 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
 
   return {
     enabled,
+    /**
+     * WHICH KIND OF OFF THIS DEPLOYMENT IS, as a fact rather than as prose.
+     *
+     * The same `hosted` the server refuses credential custody on and the same
+     * one `linkedInOffReason` writes its sentence from, now carried
+     * structurally: hosted is a decision about who the automation operator is
+     * under LinkedIn's User Agreement 8.2, and no environment variable can undo
+     * it, while every other kind of off is a switch somebody can find. A client
+     * that has to tell those apart was reading `blockers` with a regular
+     * expression -- so an edit to a sentence changed what the screen claimed
+     * about the deployment, and printed an `npx playwright install` line to
+     * somebody who has no machine to run it on. A boolean cannot be reworded.
+     *
+     * True as well when the environment could not be validated at all: the
+     * fail-closed default above is off AND hosted, the pair that promises
+     * nothing.
+     */
+    hosted: workerConfig.hosted,
     playwrightInstalled,
     playwrightPath,
     /**

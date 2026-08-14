@@ -6,14 +6,22 @@ import {
   LoaderCircle,
   Play,
   RefreshCw,
+  Gauge,
+  ListPlus,
   ScanSearch,
   ShieldCheck,
   Users
 } from 'lucide-react';
 import {
+  ApiError,
   createLinkedInLeadSource,
+  getLinkedInLeadAllowance,
   getLinkedInLeadSources,
   getLinkedInLeads,
+  getLinkedInManagerLeadLists,
+  importLinkedInLeadSource,
+  setLinkedInLeadAllowance,
+  type DailyLeadAllowance,
   type LeadSourceKind,
   type LeadSourceStatus,
   type LinkedInLead,
@@ -45,23 +53,46 @@ import { relativeTime } from './LinkedInScreen';
  * the switch was turned off must still be able to see what they found; only
  * queueing a new walk is refused.
  */
-
 const KIND_LABELS: Record<LeadSourceKind, string> = {
   search: 'People search',
-  post: 'Post engagement'
+  sales_navigator: 'Sales Navigator search',
+  content: 'Post & comment keywords',
+  post: 'One post’s engagement'
 };
 
 const KIND_HINTS: Record<LeadSourceKind, string> = {
   search: 'A LinkedIn people-search results URL — the page you get after running a search, filters and all.',
+  sales_navigator: 'A Sales Navigator people-search URL. Its filters are part of the URL, so paste the search you actually ran.',
+  content: 'Keywords, matched against posts. The walk reads who wrote each matching post and who commented on it, and keeps the post it found them on.',
   post: 'A LinkedIn post URL. The walk reads who reacted to it and who commented on it.'
 };
 
+const KIND_PLACEHOLDERS: Record<LeadSourceKind, string> = {
+  search: 'https://www.linkedin.com/search/results/people/?keywords=…',
+  sales_navigator: 'https://www.linkedin.com/sales/search/people?query=…',
+  content: 'https://www.linkedin.com/search/results/content/?keywords=…',
+  post: 'https://www.linkedin.com/posts/…'
+};
+
+/** Which kinds the keyword box can write a URL for. Sales Navigator cannot be composed. */
+const KEYWORD_KINDS: readonly LeadSourceKind[] = ['search', 'content'];
+
+const INTERACTION_LABELS: Record<'post' | 'comment', string> = {
+  post: 'Wrote the post',
+  comment: 'Commented'
+};
+
 /**
- * Keywords -> the people-search URL LinkedIn itself would produce.
+ * Keywords -> the search URL LinkedIn itself would produce.
  *
  * TYPING KEYWORDS IS THE WHOLE INTERACTION. The URL field fills itself as the
  * operator types, and the walk queues straight from that -- a step that only
  * ever produces one predictable string is a step the screen can take itself.
+ *
+ * TWO SURFACES, ONE BOX. `people` answers "who matches these words" from
+ * profile text; `content` answers "who is TALKING about these words" and is
+ * the one the brief asks for -- posts and comments, with the post kept. The
+ * kind selector picks which question is being asked; the box is the same.
  *
  * It stays a convenience OVER the URL field, not a replacement for it.
  * Everything past a keyword string -- industry, seniority, company headcount,
@@ -69,12 +100,17 @@ const KIND_HINTS: Record<LeadSourceKind, string> = {
  * own internal ids, and no honest version of this box can invent them. So the
  * operator who wants filters runs the search on LinkedIn and pastes it, and
  * hand-editing the URL stops the keywords overwriting it. The field is the
- * source of truth either way.
+ * source of truth either way. Sales Navigator is not offered here at all: its
+ * `query=(...)` grammar is entirely facet ids, so a keyword-only Sales
+ * Navigator URL would be a worse search wearing a better name.
  */
-function peopleSearchUrl(keywords: string): string | null {
+function searchUrlForKeywords(kind: LeadSourceKind, keywords: string): string | null {
   const query = keywords.trim().replace(/\s+/g, ' ');
   if (!query) return null;
-  const url = new URL('https://www.linkedin.com/search/results/people/');
+  if (!KEYWORD_KINDS.includes(kind)) return null;
+  const url = new URL(kind === 'content'
+    ? 'https://www.linkedin.com/search/results/content/'
+    : 'https://www.linkedin.com/search/results/people/');
   url.searchParams.set('keywords', query);
   url.searchParams.set('origin', 'GLOBAL_SEARCH_HEADER');
   return url.toString();
@@ -94,6 +130,40 @@ const shortUrl = (url: string) => {
     const path = `${parsed.pathname}${parsed.search}`.replace(/\/+$/, '');
     return `${parsed.host}${path}`.slice(0, 90);
   } catch { return url.slice(0, 90); }
+};
+
+/**
+ * HOW MANY OF A WALK'S PEOPLE ONE READ CAN SHOW, and it is not how many it
+ * stored.
+ *
+ * `/lead-sources/:id/leads` clamps `limit` to 500 and takes no offset, so 500
+ * rows is the whole of what this screen can put on a page. The number beside a
+ * source is `result_count`, which the walk itself wrote -- a different fact,
+ * and the true one. They were printed as though they were the same fact, so an
+ * 800-person walk read "800 stored" over 500 rows, "select all" quietly meant
+ * 500, and Save wrote all 800. Each of those three is now said in its own
+ * words rather than left to be discovered.
+ */
+const LEAD_PAGE = 500;
+
+/**
+ * Is this lead list the one a previous save of this source created?
+ *
+ * The import stores the source's URL on the list as `source_ref`, so that is
+ * what identifies it -- but the two strings travel through different
+ * validators (`assertLeadSourceUrl` normalises through `URL`), and a trailing
+ * slash is not a different search. Compared on the part that identifies the
+ * page rather than byte for byte.
+ */
+const sameSourceUrl = (sourceRef: string | null, sourceUrl: string): boolean => {
+  if (!sourceRef) return false;
+  const normalize = (value: string) => {
+    try {
+      const parsed = new URL(value);
+      return `${parsed.host.toLowerCase()}${parsed.pathname.replace(/\/+$/, '')}${parsed.search}`;
+    } catch { return value.trim(); }
+  };
+  return normalize(sourceRef) === normalize(sourceUrl);
 };
 
 export function OutreachLeads({ setToast }: { setToast: (message: string) => void }) {
@@ -116,14 +186,33 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
   const [leads, setLeads] = useState<LinkedInLead[]>([]);
   const [leadsLoading, setLeadsLoading] = useState(false);
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * The lead list a previous save of THIS source went into, if there is one.
+   *
+   * The import route creates a list whenever it is handed no `listId`, so a
+   * second press of Save built a SECOND list with the same auto-generated name
+   * and nothing in it -- every person was already a contact, so every row
+   * deduped away and the operator was left with two lists, one of them empty.
+   * Matched on the URL the import stored as the list's `source_ref`, so a save
+   * made last week is found as surely as one made a minute ago.
+   */
+  const [savedList, setSavedList] = useState<{ id: string; name: string } | null>(null);
+
+  /** The daily ceiling on how many people this workspace will collect at all. */
+  const [allowance, setAllowance] = useState<DailyLeadAllowance | null>(null);
+  const [capDraft, setCapDraft] = useState('');
+  const [savingCap, setSavingCap] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await getLinkedInLeadSources(200);
+      const [result, nextAllowance] = await Promise.all([getLinkedInLeadSources(200), getLinkedInLeadAllowance()]);
       setSources(result.sources);
       setEnabled(result.enabled);
       setOffReason(result.offReason);
+      setAllowance(nextAllowance);
+      setCapDraft(String(nextAllowance.limit));
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to read the lead sources. Nothing was changed — try again.'));
@@ -148,8 +237,18 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
       await load();
     } catch (err) {
       // The 409 here is the opt-in refusing, and its sentence names which kind
-      // of off it is. It reads verbatim, in the calm block, not as a fault.
-      setError(errorMessage(err, 'Unable to queue that source'));
+      // of off it is. It reads verbatim, in the calm block, not as a fault --
+      // which is what the comment always said and what the red banner was doing
+      // the opposite of. A 409 on this route can only be `assertLeadSourcingOn`
+      // refusing, so it is also news: the switch is off, and this screen now
+      // knows it and stops offering a walk it cannot queue.
+      if (err instanceof ApiError && err.status === 409) {
+        setEnabled(false);
+        setOffReason(errorMessage(err, 'Lead sourcing is switched off for this deployment.'));
+        setError('');
+      } else {
+        setError(errorMessage(err, 'Unable to queue that source'));
+      }
     } finally { setBusy(false); }
   };
 
@@ -157,15 +256,78 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
     setOpenSource(source);
     setLeads([]);
     setPicked(new Set());
+    setSavedList(null);
     setLeadsLoading(true);
     try {
-      const result = await getLinkedInLeads(source.id, 500);
+      const result = await getLinkedInLeads(source.id, LEAD_PAGE);
       setLeads(result.leads);
       if (result.source) setOpenSource(result.source);
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to read the people this source found'));
     } finally { setLeadsLoading(false); }
+    // Afterwards and on its own: which list a previous save went into is worth
+    // knowing and is never worth failing the read of the people over. Without
+    // it the button below says it will create a list -- which is then exactly
+    // what it does, so a failure here costs honesty nothing.
+    try {
+      const existing = await getLinkedInManagerLeadLists();
+      const match = existing.find((list) => sameSourceUrl(list.sourceRef, source.url));
+      setSavedList(match ? { id: match.id, name: match.name } : null);
+    } catch { /* the copy falls back to "a new list", which is what will then happen */ }
+  };
+
+  const saveCap = async () => {
+    const cap = Number(capDraft);
+    if (!Number.isInteger(cap) || cap < 0 || cap > 1000) { setError('The daily lead limit is a whole number between 0 and 1000.'); return; }
+    setSavingCap(true);
+    try {
+      const next = await setLinkedInLeadAllowance(cap);
+      setAllowance(next);
+      setCapDraft(String(next.limit));
+      setToast(cap === 0
+        ? 'Daily lead limit set to 0. No walk will store anybody until you raise it.'
+        : `Daily lead limit set to ${cap} new leads a day, counted over a rolling 24 hours.`);
+      setError('');
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to change the daily lead limit.'));
+    } finally { setSavingCap(false); }
+  };
+
+  /**
+   * Harvested rows become leads a campaign can actually enrol.
+   *
+   * Two different tables with two different jobs: a walk stores what it SAW,
+   * and a lead list holds people a workflow may act on. This is the one step
+   * between them, and it is explicit rather than automatic -- collecting is not
+   * the same decision as contacting.
+   */
+  const importToList = async (source: LinkedInLeadSource) => {
+    setImporting(true);
+    try {
+      // THE TICKED ROWS TRAVEL. A screen that offers checkboxes, counts them
+      // beside the button and then imports the whole walk is worse than one
+      // that offers no checkboxes at all -- five of five hundred meant five
+      // hundred. Absent `leadIds` still means everybody, which is what the
+      // button says when nothing is ticked.
+      const chosen = leads.filter((lead) => picked.has(lead.profileUrl)).map((lead) => lead.id);
+      const result = await importLinkedInLeadSource(source.id, {
+        // Naming the list a previous save created is what stops a second press
+        // building a second one; without it the route creates.
+        ...(savedList ? { listId: savedList.id } : {}),
+        ...(chosen.length > 0 ? { leadIds: chosen } : {})
+      });
+      setSavedList({ id: result.list.id, name: result.list.name });
+      // `skipped` is the importer's own count, and it skips on exactly two
+      // things: a profile URL it cannot address, or no first name to open a
+      // message with. It has never skipped anybody for a missing company --
+      // post engagers rarely have one, and rejecting those would leave keyword
+      // discovery unable to feed a campaign at all.
+      setToast(`${result.inserted} lead(s) added to “${result.list.name}”${result.reused ? `, ${result.reused} already known` : ''}${result.skipped ? `, ${result.skipped} skipped for an unusable profile URL or no first name` : ''}. They can be enrolled in a campaign now.`);
+      setError('');
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to turn this source into a lead list.'));
+    } finally { setImporting(false); }
   };
 
   const toggle = (profileUrl: string) => setPicked((current) => {
@@ -218,33 +380,36 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
         loading={leadsLoading}
         picked={picked}
         allPicked={allPicked}
-        onBack={() => { setOpenSource(null); setLeads([]); setPicked(new Set()); }}
+        savedList={savedList}
+        onBack={() => { setOpenSource(null); setLeads([]); setPicked(new Set()); setSavedList(null); }}
         onToggle={toggle}
         onToggleAll={() => setPicked(allPicked ? new Set() : new Set(leads.map((lead) => lead.profileUrl)))}
         onSend={sendToBuilder}
+        importing={importing}
+        onImport={() => void importToList(openSource)}
       />
       : <>
         <section className="page-panel">
           <div className="section-heading">
             <div>
-              <h3>Walk a source</h3>
+              <h3 aria-level={2}>Walk a source</h3>
               <p>One URL becomes one walk. Nothing is fetched by this screen — the local worker opens the page in a real
                 browser on its own tick, at paced gaps, and stores only what LinkedIn rendered.</p>
             </div>
             <ScanSearch size={20} className="li-heading-icon" />
           </div>
 
-          {kind === 'search' && <div className="li-search-builder">
-            <label>What are you searching for
+          {KEYWORD_KINDS.includes(kind) && <div className="li-search-builder">
+            <label>{kind === 'content' ? 'What should they be talking about' : 'What are you searching for'}
               <input
                 value={keywords}
                 disabled={!enabled}
-                placeholder="revops founder seed stage"
+                placeholder={kind === 'content' ? 'cold outreach, sales automation' : 'revops founder seed stage'}
                 onChange={(event) => {
                   const next = event.target.value;
                   setKeywords(next);
                   // The URL follows the keywords until the operator takes it over.
-                  if (!urlDirty) setUrl(peopleSearchUrl(next) ?? '');
+                  if (!urlDirty) setUrl(searchUrlForKeywords(kind, next) ?? '');
                 }}
                 onKeyDown={(event) => {
                   if (event.key !== 'Enter' || busy || !enabled) return;
@@ -254,17 +419,30 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
               />
             </label>
             <p className="li-hint">
-              Type and the URL below writes itself; Enter queues the walk. Filters — industry, seniority, headcount,
-              connection degree — are LinkedIn’s own internal ids, so a filtered search is one you run on LinkedIn and
-              paste into that field, which then stops following what you type here. Nothing is invented to stand in for
-              them.
+              {kind === 'content'
+                ? <>Type and the URL below writes itself; Enter queues the walk. This walks the posts that match, and
+                  keeps for each person the post they were found on and whether they wrote it or commented on it.</>
+                : <>Type and the URL below writes itself; Enter queues the walk. Filters — industry, seniority,
+                  headcount, connection degree — are LinkedIn’s own internal ids, so a filtered search is one you run on
+                  LinkedIn and paste into that field, which then stops following what you type here. Nothing is invented
+                  to stand in for them.</>}
             </p>
           </div>}
 
           <div className="li-form-grid">
             <label>What kind of page
-              <select value={kind} onChange={(event) => setKind(event.target.value as LeadSourceKind)} disabled={!enabled}>
+              <select
+                value={kind}
+                disabled={!enabled}
+                onChange={(event) => {
+                  const next = event.target.value as LeadSourceKind;
+                  setKind(next);
+                  if (!urlDirty) setUrl(searchUrlForKeywords(next, keywords) ?? '');
+                }}
+              >
                 <option value="search">{KIND_LABELS.search}</option>
+                <option value="sales_navigator">{KIND_LABELS.sales_navigator}</option>
+                <option value="content">{KIND_LABELS.content}</option>
                 <option value="post">{KIND_LABELS.post}</option>
               </select>
               <small className="li-hint">{KIND_HINTS[kind]}</small>
@@ -274,9 +452,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
                 value={url}
                 disabled={!enabled}
                 onChange={(event) => { setUrl(event.target.value); setUrlDirty(true); }}
-                placeholder={kind === 'search'
-                  ? 'https://www.linkedin.com/search/results/people/?keywords=…'
-                  : 'https://www.linkedin.com/posts/…'}
+                placeholder={KIND_PLACEHOLDERS[kind]}
               />
               <small className="li-hint">
                 The URL is validated before the row exists, not before the fetch: a stored URL is one a worker will
@@ -296,10 +472,69 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
           </div>
         </section>
 
+        {/* The ceiling on collection itself, which is a different question from
+            how deep any one walk goes: six walks in a morning each stopping at
+            100 is 600 people nobody set out to collect. */}
         <section className="page-panel">
           <div className="section-heading">
             <div>
-              <h3>Sources</h3>
+              <h3 aria-level={2}>How many new leads a day</h3>
+              <p>Counted over a rolling 24 hours across every source. A walk that would pass this limit stops early and
+                says so instead of collecting anyway.</p>
+            </div>
+            <Gauge size={20} className="li-heading-icon" />
+          </div>
+          <div className="li-form-grid">
+            <label>Daily limit
+              <input
+                type="number"
+                min={0}
+                max={1000}
+                value={capDraft}
+                // Off with everything else on this screen. A ceiling on
+                // collection is only a ceiling on something that can run, and
+                // an editable one where no walk is permitted implies a walk is.
+                disabled={!enabled}
+                onChange={(event) => setCapDraft(event.target.value)}
+              />
+              <small className="li-hint">0–1000. Set 0 to collect nobody at all.</small>
+            </label>
+            {/* NOT ZERO WHEN IT IS UNKNOWN. A failed read of the allowance used
+                to print "Still allowed 0", which reads as a hard block that
+                does not exist and sends an operator looking for a limit to
+                raise. A number nobody read is not a number this screen has. */}
+            <div className="li-stat-row">
+              <div><span>Collected today</span><strong>{allowance ? allowance.used : <span className="li-unknown">—</span>}</strong></div>
+              <div><span>Still allowed</span><strong>{allowance ? allowance.remaining : <span className="li-unknown">—</span>}</strong></div>
+            </div>
+          </div>
+          {!allowance && !loading && <p className="li-hint">
+            Today’s count could not be read, so neither number is shown. The limit itself is unchanged and is still
+            applied by the walk — Refresh below reads it again.
+          </p>}
+          <div className="panel-footer">
+            <span>Changing this affects the next walk. It never deletes anybody already collected.</span>
+            {/* The old test compared the draft against `allowance?.limit ?? ''`,
+                so a failed read made it `'' === ''` and the button could never
+                be pressed again without a reload -- the one state in which the
+                operator most wants to set a number. Empty is the only draft
+                there is nothing to save from; a known limit still guards
+                against saving what is already stored. */}
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={!enabled || savingCap || capDraft.trim() === '' || (allowance !== null && capDraft === String(allowance.limit))}
+              onClick={() => void saveCap()}
+            >
+              {savingCap ? <LoaderCircle className="spin" size={14} /> : <Gauge size={14} />} Save limit
+            </button>
+          </div>
+        </section>
+
+        <section className="page-panel">
+          <div className="section-heading">
+            <div>
+              <h3 aria-level={2}>Sources</h3>
               <p>Result counts are people <em>stored</em>, not people seen.</p>
             </div>
             <button className="secondary-button" type="button" disabled={loading} onClick={() => void load()}>
@@ -339,21 +574,36 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
 }
 
 /** The people one walk stored, and the one thing to do with them. */
-function LeadList({ source, leads, loading, picked, allPicked, onBack, onToggle, onToggleAll, onSend }: {
+function LeadList({ source, leads, loading, picked, allPicked, importing, savedList, onBack, onToggle, onToggleAll, onSend, onImport }: {
   source: LinkedInLeadSource;
   leads: LinkedInLead[];
   loading: boolean;
   picked: ReadonlySet<string>;
   allPicked: boolean;
+  importing: boolean;
+  /** The list a previous save of this source went into, so a repeat can name it. */
+  savedList: { id: string; name: string } | null;
   onBack: () => void;
   onToggle: (profileUrl: string) => void;
   onToggleAll: () => void;
   onSend: () => void;
+  onImport: () => void;
 }) {
+  const showsPosts = leads.some((lead) => lead.postUrl !== null || lead.interactionKind !== null);
+  /**
+   * TWO NUMBERS, AND THEY ARE NOT THE SAME NUMBER. `stored` is what the walk
+   * wrote against the source; `leads.length` is what one read of it can put on
+   * a page. Printing the first over rows that are the second is how "800
+   * stored" came to sit above 500 rows, and every control below now names
+   * whichever of the two it actually operates on.
+   */
+  const stored = source.resultCount ?? 0;
+  const capped = leads.length >= LEAD_PAGE;
+  const beyondPage = capped && stored > leads.length;
   return <section className="page-panel">
     <div className="section-heading">
       <div>
-        <h3>{source.resultCount ?? 0} person(s) stored</h3>
+        <h3 aria-level={2}>{source.resultCount ?? 0} person(s) stored</h3>
         <p>
           <span className="li-chip">{KIND_LABELS[source.kind]}</span>{' '}
           <a className="li-link" href={source.url} target="_blank" rel="noreferrer">{shortUrl(source.url)} <ExternalLink size={11} /></a>
@@ -372,24 +622,42 @@ function LeadList({ source, leads, loading, picked, allPicked, onBack, onToggle,
       : leads.length === 0
         ? <div className="empty-state">
           <Users size={26} />
-          <h4>Nobody was stored from this source</h4>
+          <h4 aria-level={3}>Nobody was stored from this source</h4>
           <p>Either the walk has not run yet, or the page rendered nothing this worker could read. Nothing is invented
             to fill the gap.</p>
         </div>
         : <>
           <div className="li-filter-row">
             <label className="li-inline-check">
-              <input type="checkbox" checked={allPicked} onChange={onToggleAll} aria-label="Select every person this source found" />
-              <span>{picked.size} of {leads.length} selected</span>
+              <input type="checkbox" checked={allPicked} onChange={onToggleAll} aria-label="Select every person listed here" />
+              <span>
+                {picked.size} of {leads.length} listed selected
+                {beyondPage && ` · ${stored} stored in all`}
+              </span>
             </label>
             <button className="secondary-button" type="button" disabled={picked.size === 0} onClick={onSend}>
-              <Users size={14} /> Send {picked.size} to the campaign builder
+              <Users size={14} /> Add {picked.size} to the campaign builder
+            </button>
+            {/* The button says what it will write, because it can now write two
+                different things: the ticked rows, or the whole walk. */}
+            <button className="primary-button" type="button" disabled={importing || leads.length === 0} onClick={onImport}>
+              {importing ? <LoaderCircle className="spin" size={14} /> : <ListPlus size={14} />}
+              {picked.size > 0
+                ? ` Save the ${picked.size} selected as leads`
+                : savedList
+                  ? ` Add all ${stored || leads.length} to “${savedList.name}”`
+                  : ` Save all ${stored || leads.length} as a lead list`}
             </button>
           </div>
 
+          {beyondPage && <p className="li-hint">
+            This walk stored {stored} people and one read of the list returns at most {LEAD_PAGE}, so {leads.length} are
+            listed below. Ticking rows reaches those {leads.length}; saving with nothing ticked writes all {stored}.
+          </p>}
+
           <div className="li-table-scroll">
             <table className="li-table">
-              <thead><tr><th /><th>Name</th><th>Headline</th><th>Company</th><th>Profile</th></tr></thead>
+              <thead><tr><th /><th>Name</th><th>Headline</th><th>Company</th>{showsPosts && <><th>Found on</th><th>How</th></>}<th>Profile</th></tr></thead>
               <tbody>{leads.map((lead) => <tr key={lead.id}>
                 <td>
                   <input
@@ -401,7 +669,20 @@ function LeadList({ source, leads, loading, picked, allPicked, onBack, onToggle,
                 </td>
                 <td>{lead.name ?? <span className="li-unknown">Unknown</span>}</td>
                 <td>{lead.headline ?? <span className="li-unknown">Unknown</span>}</td>
-                <td>{lead.company ?? <span className="li-unknown">Unknown</span>}</td>
+                {/* NOT "Unknown", WHICH READS AS "WE LOOKED AND COULD NOT TELL".
+                    A post or comment card carries no company field at all, so
+                    for everybody found that way this was never read rather than
+                    read and missing. An empty cell says the true thing; the
+                    note under the table says which. */}
+                <td>{lead.company ?? <span className="li-unknown">—</span>}</td>
+                {showsPosts && <>
+                  <td>{lead.postUrl
+                    ? <a className="li-link" href={lead.postUrl} target="_blank" rel="noreferrer">the post <ExternalLink size={11} /></a>
+                    : <span className="li-unknown">—</span>}</td>
+                  <td>{lead.interactionKind
+                    ? <span className="li-chip">{INTERACTION_LABELS[lead.interactionKind]}</span>
+                    : <span className="li-unknown">—</span>}</td>
+                </>}
                 <td className="li-target">
                   <a className="li-link" href={lead.profileUrl} target="_blank" rel="noreferrer">{lead.profileUrl}</a>
                 </td>
@@ -409,11 +690,24 @@ function LeadList({ source, leads, loading, picked, allPicked, onBack, onToggle,
             </table>
           </div>
 
+          <p className="li-hint">
+            A dash is a field the page did not render for that person — left empty rather than filled in. A company is
+            the usual one: a post or a comment card does not carry one, so people found that way have none to read.
+          </p>
+
           <div className="panel-footer">
             <span>
-              Sending stages the selected profile URLs in the campaign builder’s targets field. It creates no campaign
+              Adding stages the selected profile URLs in the campaign builder’s targets field. It creates no campaign
               and schedules nothing; the exclusion list is applied where the plan is produced, so anyone who asked to be
               left alone is dropped before a payload exists.
+              {' '}{picked.size > 0
+                ? <>Saving writes <b>the {picked.size} you ticked</b> and nobody else.</>
+                : <>With nothing ticked, saving writes <b>everybody this walk stored</b>.</>}
+              {' '}{savedList
+                ? <>They go into <b>“{savedList.name}”</b>, the list this source was saved to before — somebody already
+                  in it is not added a second time.</>
+                : <>They go into a new list for this source. Saving again afterwards adds to that same list rather than
+                  building another.</>}
             </span>
           </div>
         </>}

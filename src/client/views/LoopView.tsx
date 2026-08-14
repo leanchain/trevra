@@ -118,9 +118,9 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
       // migration header switches it off on a hosted deployment outright. A
       // cell reading `0` would blame the operator for a switch they cannot
       // reach, so this one names the thing they CAN do.
-      value: 'Import a list',
-      unit: 'from a CSV or a paste',
-      href: '/outreach/campaigns'
+      value: 'Build a lead list',
+      unit: 'from a CSV or a search',
+      href: '/outreach/manager'
     },
     {
       id: 'reach',
@@ -129,22 +129,24 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
       // seat" on a workspace that has one, for the half-second before the
       // request lands, is a false statement about the thing this screen is
       // for.
-      value: limits ? (seat?.configured ? String(queued) : 'No seat') : seatError ? 'Not read' : 'Reading…',
+      value: limits ? (seat?.configured ? String(queued) : 'No account') : seatError ? 'Not read' : 'Reading…',
       unit: limits
-        ? (seat?.configured ? 'queued' : 'set one up first')
-        : seatError ? 'the seat could not be read' : 'one moment',
+        ? (seat?.configured ? 'queued' : 'connect one first')
+        : seatError ? 'the account could not be read' : 'one moment',
       href: limits ? (seat?.configured ? '/outreach/queue' : '/setup/seat') : null,
       unavailable: !limits
     },
     {
       id: 'answer',
       label: 'Answer',
-      // `linkedin_threads` exists as a migration and two server modules with
-      // no route between them. Zero replies and no reply detection are not the
-      // same fact, and only one of them is true here.
-      value: 'Not connected yet',
-      unit: 'reply detection is not wired up',
-      href: null,
+      // The inbox reads real threads now, but this screen does not read them:
+      // it would be a fourth request on the home screen for a number nothing
+      // here decides on. So the cell names the screen that has the answer
+      // rather than inventing a count -- and never renders a 0 it did not
+      // count.
+      value: 'Open the inbox',
+      unit: 'replies to you land there',
+      href: '/outreach/inbox',
       unavailable: true
     },
     {
@@ -182,17 +184,17 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
       return {
         stage: 'reach',
         sentence: queued > 0
-          ? `${queued} ${queued === 1 ? 'action is' : 'actions are'} planned and the seat is paused${seat.pausedReason ? ` — ${seat.pausedReason}` : ''}. Resume it, or lower the ceiling.`
-          : `The seat is paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'} Nothing will be scheduled until it is resumed.`,
-        action: 'Look at the seat',
+          ? `${queued} ${queued === 1 ? 'action is' : 'actions are'} scheduled and this LinkedIn account is paused${seat.pausedReason ? ` — ${seat.pausedReason}` : ''}. Resume it, or lower the daily limit.`
+          : `This LinkedIn account is paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'} Nothing will be scheduled until it is resumed.`,
+        action: 'Open the account',
         href: '/outreach'
       };
     }
     if (!seat?.configured) {
       return {
         stage: 'reach',
-        sentence: 'No seat is configured, so nothing can be paced and nothing can go out.',
-        action: 'Set up the seat',
+        sentence: 'No LinkedIn account is connected, so nothing can be scheduled and nothing can go out.',
+        action: 'Connect an account',
         href: '/setup/seat'
       };
     }
@@ -207,9 +209,9 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
     if (queued === 0) {
       return {
         stage: 'find',
-        sentence: 'The seat is ready and nothing is queued to go out.',
-        action: 'Build a campaign',
-        href: '/outreach/campaigns'
+        sentence: 'Your LinkedIn account is ready and nothing is queued to go out.',
+        action: 'Start a campaign',
+        href: '/outreach/manager'
       };
     }
     return null;
@@ -259,10 +261,10 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
         label="Going out this week"
         value={String(goingOut)}
         detail={!seat?.configured
-          ? 'No seat is configured yet'
+          ? 'No LinkedIn account is connected yet'
           : inviteDay
-            ? `of ${inviteDay.ceiling} a day the seat may send`
-            : 'The seat has published no daily ceiling yet'}
+            ? `of ${inviteDay.ceiling} invites a day this account may send`
+            : 'No daily limit has been worked out for this account yet'}
       />
       <Metric
         icon={<Inbox />}
@@ -367,6 +369,15 @@ interface Step {
   detail: string;
   cta: string | null;
   href: string | null;
+  /**
+   * Nothing this component already reads can say whether this step happened.
+   *
+   * It is shown as an instruction and left out of the count rather than given
+   * a tick derived from something adjacent. A checklist that guesses is worse
+   * than one that admits it does not know: the operator trusts the ticks, and
+   * one wrong tick is one step they never come back to.
+   */
+  untracked?: true;
 }
 
 function OnboardingChecklist({ data, limits, onNavigate }: {
@@ -376,7 +387,6 @@ function OnboardingChecklist({ data, limits, onNavigate }: {
 }) {
   const [hasAgent, setHasAgent] = useState(true);
   const [hasCampaign, setHasCampaign] = useState<boolean | null>(null);
-  const [hasQueued, setHasQueued] = useState<boolean | null>(null);
   const hasLiveConnection = data.connections.some((connection) => !connection.isDemo && connection.status === 'connected');
   const hasClients = data.clients.length > 0;
   const hasWork = data.recommendations.length > 0;
@@ -399,46 +409,60 @@ function OnboardingChecklist({ data, limits, onNavigate }: {
       ]);
       if (cancelled) return;
       setHasCampaign(planned.length + sent.length > 0);
-      setHasQueued(sent.length > 0);
     })();
     return () => { cancelled = true; };
   }, []);
 
+  // The order the product actually works in: one account, the hours it may
+  // work, a list of people, the steps to run against them, and then a campaign
+  // that puts the two together and starts. Only the first and the fifth leave a
+  // trace this screen can read; the rest say so.
   const outreach: Step[] = [
     {
       done: Boolean(seat?.configured),
-      title: 'Name your seat',
-      detail: 'Which LinkedIn account this workspace paces. Everything else is measured against it.',
-      cta: 'Set it up',
+      title: 'Connect your LinkedIn account',
+      detail: 'The account everything goes out from. Add it, then sign in once through the browser on your machine.',
+      cta: 'Connect it',
       href: '/setup/seat'
     },
     {
-      done: Boolean(seat?.configured) && seat?.posture !== null,
-      title: 'Connect the seat',
-      detail: 'Sign in once, on LinkedIn’s own screen, through the worker on your machine.',
-      cta: 'Connect',
+      untracked: true,
+      done: false,
+      title: 'Set your working hours and daily limits',
+      detail: 'The days and hours anything may go out, and how many invites, messages, profile views and follows a day.',
+      cta: 'Set them',
       href: '/setup/seat'
     },
     {
-      done: hasCampaign === true,
-      title: 'Build one campaign',
-      detail: 'Who it is for, what you are offering, and the sequence. Trevra drafts it; you edit it.',
+      untracked: true,
+      done: false,
+      title: 'Build a lead list',
+      detail: 'Upload a CSV of profiles, or save the results of a LinkedIn search as a list.',
       cta: 'Build one',
-      href: '/outreach/campaigns'
+      href: '/outreach/manager'
+    },
+    {
+      untracked: true,
+      done: false,
+      title: 'Build a workflow',
+      detail: 'The steps each person goes through — view, invite, message — and how long to wait between them.',
+      cta: 'Build one',
+      href: '/outreach/manager'
     },
     {
       done: hasCampaign === true,
-      title: 'Preview the plan',
-      detail: 'A dry run against the real ceilings. It writes nothing and sends nothing.',
-      cta: 'Preview',
-      href: '/outreach/plan'
+      title: 'Create a campaign and start it',
+      detail: 'A lead list plus a workflow. Press Start and Trevra works through it inside your hours and limits.',
+      cta: 'Create one',
+      href: '/outreach/manager'
     },
     {
-      done: hasQueued === true,
-      title: 'Approve and send',
-      detail: 'Export the approved bytes, run them in your own tool, then report back what happened.',
-      cta: 'Open the queue',
-      href: '/outreach/queue'
+      untracked: true,
+      done: false,
+      title: 'Answer the replies',
+      detail: 'Anyone who answers stops receiving the rest of the workflow, and waits for you in the inbox.',
+      cta: 'Open the inbox',
+      href: '/outreach/inbox'
     }
   ];
 
@@ -485,8 +509,8 @@ function OnboardingChecklist({ data, limits, onNavigate }: {
   const shown: Array<{ heading: string; blurb: string; steps: Step[] }> = [];
   if (showOutreach) {
     shown.push({
-      heading: 'Start sending',
-      blurb: 'A seat, a campaign, and the first batch out the door.',
+      heading: 'Start reaching people',
+      blurb: 'An account, a list, a workflow — and a campaign that works through them for you.',
       steps: outreach
     });
   }
@@ -499,8 +523,12 @@ function OnboardingChecklist({ data, limits, onNavigate }: {
   }
 
   const all = shown.flatMap((group) => group.steps);
-  const completed = all.filter((step) => step.done).length;
-  if (all.length === 0 || completed === all.length) return null;
+  // Only the steps something here can actually verify are counted. The rest are
+  // instructions, and counting them would either stall the card forever or make
+  // it claim knowledge it does not have.
+  const tracked = all.filter((step) => !step.untracked);
+  const completed = tracked.filter((step) => step.done).length;
+  if (tracked.length === 0 || completed === tracked.length) return null;
 
   return (
     <section className="onboarding-card">
@@ -509,14 +537,14 @@ function OnboardingChecklist({ data, limits, onNavigate }: {
           <h2>Let’s get you set up</h2>
           <p>A few short steps and the loop starts turning on its own.</p>
         </div>
-        <span className="status-pill">{completed} of {all.length} done</span>
+        <span className="status-pill">{completed} of {tracked.length} done</span>
       </div>
 
       {/* Not a step, because there is nothing to derive it from and a stored
           “acknowledged” flag is exactly the thing this card refuses to keep.
           It is a standing line instead, and it is first. */}
       {showOutreach && <p className="panel-note">
-        Before anything goes out: <button className="li-link" type="button" onClick={() => onNavigate('/outreach')} style={{ background: 'none', border: 0, padding: 0, font: 'inherit', cursor: 'pointer' }}>read what you are betting</button>. You are risking your own LinkedIn account, and that screen says which of its numbers LinkedIn published and which ones practitioners merely measured.
+        Before anything goes out: <button className="li-link" type="button" onClick={() => onNavigate('/outreach')} style={{ background: 'none', border: 0, padding: 0, font: 'inherit', cursor: 'pointer' }}>read what you are risking</button>. It is your own LinkedIn account on the line, and that screen says which of its numbers LinkedIn publishes and which ones people have only measured in practice.
       </p>}
 
       {shown.map((group) => <div key={group.heading}>
@@ -596,7 +624,7 @@ export function LoopCostView({ onNavigate }: { onNavigate: (path: string) => voi
     </section>
 
     {!cost && loading && <section className="page-panel">
-      <div className="empty-state"><LoaderCircle className="spin" size={28} /><h4>Reading the period…</h4><p>One moment.</p></div>
+      <div className="empty-state"><LoaderCircle className="spin" size={28} /><h4 aria-level={2}>Reading the period…</h4><p>One moment.</p></div>
     </section>}
 
     {cost && <>
@@ -646,7 +674,7 @@ export function LoopCostView({ onNavigate }: { onNavigate: (path: string) => voi
 
       <section className="page-panel">
         <div className="section-heading">
-          <div><h2>Sent</h2><p>What actually left, in the same window. Planned and skipped slots are not in here.</p></div>
+          <div><h2>Sent</h2><p>What actually left, in the same window. Scheduled and skipped actions are not in here.</p></div>
           <span className="status-pill">{cost.sent.actionsTotal.toLocaleString('en-US')} actions</span>
         </div>
         <div className="cost-table">

@@ -15,18 +15,22 @@ import {
   type StepCondition
 } from './branching.js';
 import {
+  SELECTORS,
   isSeatRead,
   playwrightDriver,
   type LinkedInDriver,
   type LinkedInDriverResult,
   type LinkedInFailureKind,
+  type LinkedInLocator,
   type LinkedInPage
 } from './driver.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
 import { ACTION_GAP_SECONDS, type PacedKind } from './limits.js';
+import { clearInboxForSeat } from './inbox.js';
 import {
   OWNER_SEAT_KEY,
   assertTimezone,
+  deleteSeat,
   getSeat,
   getSeatPosture,
   stampSeatSessionValid,
@@ -45,11 +49,22 @@ import {
  * construction (plan 4.3).
  *
  * ONE WAY INTO LINKEDIN, AND THE SESSION IS ALWAYS TRIED FIRST. A self-hoster's
- * own email and password, sealed in `workspace_secrets`, is opened only inside
- * `loginLinkedInSeat` and handed straight to the driver. `isLoggedIn` runs
- * before any sign-in -- a stored session that still works is reused, because
- * re-authenticating every run is slower and a much stronger ban signal than a
- * session that simply keeps working.
+ * own email and password, sealed by `secrets/linkedin.ts`, is opened only
+ * inside `loginLinkedInSeat` and handed straight to the driver. `isLoggedIn`
+ * runs before any sign-in -- a stored session that still works is reused,
+ * because re-authenticating every run is slower and a much stronger ban signal
+ * than a session that simply keeps working.
+ *
+ * EVERYTHING HERE IS PER SEAT, NOT PER WORKSPACE, AND THAT IS THE UNIT.
+ * A workspace may automate several LinkedIn accounts, and two accounts that
+ * share anything share the thing that gets them both restricted. So each
+ * (workspace_id, seat_key) has, separately: its own row in the due-work
+ * discovery query, its own claim and batch, its own posture and cooldown, its
+ * own stored sign-in, its own persistent Chrome profile directory, its own
+ * open browser handle, its own user agent / locale / timezone, and its own
+ * outbound proxy if the operator configured one. A checkpoint, a limit wall or
+ * a pause on one account therefore stops THAT account and leaves the others
+ * draining -- which is the entire point of running more than one.
  *
  * FOUR INVARIANTS, and each one exists because breaking it is how a LinkedIn
  * account dies:
@@ -124,6 +139,39 @@ export interface DueLinkedInAction {
    * claimable rather than claimable-and-unsendable.
    */
   threadUrn?: string | null;
+  /**
+   * The campaign this row belongs to, when it belongs to one.
+   *
+   * CARRIED SO THE PRE-SEND GATE CAN SEE IT, and it exists because it could
+   * not. `guard.ts` runs a second ramp -- 20/40/60/80/100% of the seat's daily
+   * ceiling over a managed campaign's first five days -- and it can only run it
+   * for a campaign it was told about. The claim did not select the column and
+   * the pre-send call did not pass one, so `campaign-warmup` took its "no
+   * campaign was named for this action" branch and passed unconditionally on
+   * every real send this worker has ever made: the campaign ramp existed at
+   * PLAN time (`runner.ts` budgets against it) and nowhere at SEND time.
+   */
+  campaignId?: string | null;
+  /**
+   * This row's replay identity within its kind and target (migration 047).
+   *
+   * Passed back into the gate for the same reason `campaignId` is: the gate's
+   * `duplicate-target` check asks the ledger's replay question, and asking it
+   * without the scope makes the gate stricter than the index it mirrors, which
+   * is how a managed workflow's second message step becomes permanently
+   * unsendable.
+   */
+  replayScope?: string;
+  /**
+   * The operator overrode this ONE reply's warm-up ceiling (migration 044).
+   *
+   * READ OFF THE ROW, NEVER DECIDED HERE. The column's own COMMENT is explicit
+   * about both halves: it is set exclusively by `enqueueReply` from an operator
+   * action in the inbox composer, and it is read back here so the override
+   * sticks to the row rather than having to be re-supplied at execution time.
+   * Nothing in this worker may set it, and nothing in this worker may infer it.
+   */
+  overrideWarmupCeiling?: boolean;
 }
 
 export type BatchStatus = 'completed' | 'halted';
@@ -131,6 +179,8 @@ export type BatchStatus = 'completed' | 'halted';
 export interface LocalBatchResult {
   batchId: string | null;
   workspaceId: string;
+  /** WHICH LINKEDIN ACCOUNT this pass drained. A batch is per seat, never per workspace. */
+  seatKey: string;
   /** Actions the driver reported `ok` for. */
   executed: number;
   /** Claimed, refused by the gate, released untouched. */
@@ -161,6 +211,14 @@ export interface BranchGateDecision {
  */
 export interface LocalWorkerStore {
   readonly workspaceId: string;
+  /**
+   * The seat this store is bound to. EVERY method below is scoped to
+   * (workspaceId, seatKey) and none of them may widen to the workspace:
+   * claiming, the posture read, the cooldown write and the branch lookup are
+   * all per account, which is what makes a limit wall on one seat leave the
+   * others draining.
+   */
+  readonly seatKey: string;
   /** The EFFECTIVE posture (seats.ts derives warmup/steady). Null means no seat. */
   seatPosture(now: Date): Promise<SeatPosture | null>;
   /** Open a stoppable batch and return its id. */
@@ -179,6 +237,27 @@ export interface LocalWorkerStore {
   claimNextDueAction(batchId: string, now: Date, exclude?: readonly string[]): Promise<DueLinkedInAction | null>;
   /** Nothing was sent: put the action back in the queue, recording why. */
   releaseClaim(actionId: string, failureKind: LinkedInFailureKind | null): Promise<void>;
+  /**
+   * Does this seat hold an invite to this target that was never accepted?
+   *
+   * Asked for ONE question and it is a narrow one: a profile with no Message
+   * control on it. `driver.ts` reports that as `selector_drift` -- correctly,
+   * from where it stands, since a control it needed was not on the page -- and
+   * the loop halts the seat's whole batch on drift, because if one selector has
+   * moved the next action would load a profile for nothing. But there is a
+   * completely ordinary reason for a missing Message button that has nothing to
+   * do with CSS: LinkedIn only offers it for a 1st-degree connection, and a
+   * managed workflow that sent an invite and queued a message behind it will
+   * reach that message while the invite is still pending.
+   *
+   * TRUE MEANS POSITIVE EVIDENCE, NEVER ABSENCE OF EVIDENCE. It answers "this
+   * seat invited this person and they have not accepted", not "we have no
+   * record of a connection" -- the second would classify a genuine drift on any
+   * profile Trevra never invited as a routine skip, which is precisely the
+   * detection this must not weaken. 'skipped' invites are excluded: a skipped
+   * row never happened and is evidence of nothing.
+   */
+  hasUnacceptedInvite(action: DueLinkedInAction): Promise<boolean>;
   settleSent(actionId: string, externalRef: string | null, now: Date): Promise<void>;
   settleSkipped(actionId: string, failureKind: LinkedInFailureKind): Promise<void>;
   /**
@@ -349,6 +428,7 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
   const result: LocalBatchResult = {
     batchId: null,
     workspaceId: store.workspaceId,
+    seatKey: store.seatKey,
     executed: 0,
     blocked: 0,
     failed: 0,
@@ -483,6 +563,16 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
     // what widens X.
     if (!verdict.allowed) {
       await store.releaseClaim(action.id, null);
+      // DEFERRED, EXACTLY AS A PENDING BRANCH IS DEFERRED, and for exactly the
+      // same reason. `claimNextDueAction` orders by `planned_for ASC`, so a row
+      // that is released and not excluded is the OLDEST due row again on the
+      // very next iteration -- and the gate that just refused it refuses it
+      // again, because nothing about the ledger changed in between. The loop
+      // used to spend all 25 iterations, each behind a 30-120s sleep, re-asking
+      // one question it already had the answer to, while every other action in
+      // the queue went untouched. One refusal per row per pass; the row stays
+      // planned, and the next pass asks again against a ledger that has moved.
+      deferred.push(action.id);
       result.blocked += 1;
       log(`LinkedIn local worker skipped action ${action.id}: ${verdict.reason ?? 'the safety gate refused it'}`);
       continue;
@@ -499,9 +589,61 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
       continue;
     }
 
-    result.failed += 1;
     const failureKind = outcome.failureKind ?? 'unknown';
     const detail = outcome.detail ? ` ${outcome.detail}` : '';
+
+    /*
+     * NOT DRIFT: A MESSAGE BUTTON THAT IS ABSENT BECAUSE THEY NEVER CONNECTED.
+     *
+     * LinkedIn offers a Message control on a profile only for a 1st-degree
+     * connection. `driver.ts` cannot tell WHY the control is missing -- from
+     * where it stands, a selector it needed did not match, which is honestly
+     * reported as `selector_drift` -- and the branch below then halts the
+     * seat's ENTIRE batch, because a genuinely drifted selector means every
+     * following action would load a page for nothing.
+     *
+     * That is the right treatment for drift and the wrong treatment for the
+     * commonest managed-workflow shape there is: invite, then a message step
+     * behind it. Reach that message while the invite is still pending and one
+     * lead who has not answered yet takes down the whole account's queue for
+     * that pass.
+     *
+     * So the two are told apart, with EVIDENCE ON BOTH SIDES rather than a
+     * guess:
+     *
+     *   - it must be the Message control specifically that did not match, which
+     *     is why the test is against `SELECTORS.messageButton` from driver.ts
+     *     itself rather than a copied string -- repairing that selector moves
+     *     this test with it;
+     *   - and this seat must hold an invite to this very person that was never
+     *     accepted. Positive evidence, not "we have no record of a connection":
+     *     a profile Trevra never invited still halts the batch, so drift on
+     *     anything else is detected exactly as strongly as before.
+     *
+     * The action is DEFERRED rather than skipped. "They have not accepted yet"
+     * is not "they never will" -- the same three-way reading `branching.ts`
+     * takes -- so the row stays planned for a later pass, is excluded from this
+     * pass's claims so the loop moves on, and nothing is settled. It is counted
+     * as a branch-pending deferral because that is what it is: a step waiting
+     * on an answer that has not arrived.
+     */
+    if (
+      failureKind === 'selector_drift'
+      && action.kind === 'dm'
+      && typeof outcome.detail === 'string'
+      && outcome.detail.startsWith(`${SELECTORS.messageButton} did not match`)
+      && (await store.hasUnacceptedInvite(action))
+    ) {
+      await store.releaseClaim(action.id, null);
+      deferred.push(action.id);
+      result.branchPending += 1;
+      log(
+        `LinkedIn local worker deferred action ${action.id}: ${action.targetRef} offers no Message control and this seat's invite to them has not been accepted, so they are not a 1st-degree connection yet. This is not selector drift and the batch continues.`
+      );
+      continue;
+    }
+
+    result.failed += 1;
 
     if (failureKind === 'limit_wall' || failureKind === 'challenge') {
       // LINKEDIN SAID STOP. Nothing was sent, so the claim is released -- but
@@ -554,6 +696,9 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
 /** Why this seat may not be worked, or null when it may. */
 function postureRefusal(posture: SeatPosture | null): string | null {
   if (posture === null) return 'No LinkedIn seat is configured for this workspace, so there is nothing to pace against.';
+  // Every refusal below is about ONE seat. `runDueLinkedInActions` logs it and
+  // moves to the next seat rather than ending the tick, so a paused or cooling
+  // account never stops the workspace's other accounts.
   if (posture === 'paused') return 'The seat is paused.';
   if (posture === 'cooldown') {
     // STRICTER THAN THE GATE, DELIBERATELY. `evaluateLinkedInSafety` lets a
@@ -579,6 +724,9 @@ interface DueActionRow {
   planned_for: string;
   body: string | null;
   thread_urn: string | null;
+  campaign_id: string | null;
+  replay_scope: string | null;
+  override_warmup_ceiling: boolean | null;
 }
 
 const EXECUTABLE_KIND_LIST = EXECUTABLE_KINDS.map((kind) => `'${kind}'`).join(', ');
@@ -622,25 +770,105 @@ function branchableSteps(sequence: unknown): BranchableStep[] {
   if (!Array.isArray(steps)) return [];
 
   const parsed: BranchableStep[] = [];
+  // The id of the most recent connection_request step seen so far, for the
+  // implicit acceptance gate below. Null until a manager workflow declares one.
+  let lastInviteStepId: string | null = null;
+
   for (const entry of steps) {
     if (typeof entry !== 'object' || entry === null) continue;
-    const step = entry as { id?: unknown; day?: unknown; kind?: unknown; condition?: unknown };
-    if (typeof step.id !== 'string' || typeof step.kind !== 'string') continue;
-    const condition =
+    const step = entry as { id?: unknown; day?: unknown; kind?: unknown; action?: unknown; condition?: unknown };
+    if (typeof step.id !== 'string') continue;
+
+    // TWO SEQUENCE DIALECTS, ONE PARSER, AND `action` IS THE CANONICAL ONE.
+    //
+    // A 025-era sequence stores a ledger `kind` per step. A manager workflow
+    // (`workflows.ts`, snapshot into `sequence_json` by
+    // `createManagedCampaign`) stores an `action` from its own discriminated
+    // union instead, and this parser only knew about `kind` -- so every
+    // manager campaign parsed to zero steps, `hasBranching` answered false, and
+    // the whole branch evaluation was skipped for exactly the campaigns this
+    // deployment runs itself.
+    const kind = typeof step.kind === 'string'
+      ? (step.kind as LinkedInActionKind)
+      : typeof step.action === 'string'
+        ? WORKFLOW_ACTION_KINDS[step.action] ?? null
+        : null;
+    // `manual_message` and `withdraw_pending` write no outbound ledger row at
+    // all (`runner.ts` `kindForStep` returns null for both), so there is no
+    // action for a branch to be about and nothing here can reference them.
+    if (kind === null) continue;
+
+    const declared =
       typeof step.condition === 'object' && step.condition !== null
         && typeof (step.condition as StepCondition).on === 'string'
         && typeof (step.condition as StepCondition).ofStepId === 'string'
         ? (step.condition as StepCondition)
         : null;
+
+    /*
+     * THE IMPLICIT ACCEPTANCE GATE, AND WHY IT IS NOT AN INVENTION.
+     *
+     * The manager's step vocabulary has no `condition` field: an operator
+     * builds "connection request, wait two days, message" and there is nowhere
+     * for them to say "...if they accepted". Nowhere, because on LinkedIn it is
+     * not a choice -- a profile message goes through the Message control, and
+     * LinkedIn shows that control to 1st-degree connections only. A message
+     * step behind a connection request is therefore ALREADY conditional on
+     * acceptance in fact, and the only question is whether Trevra knows it.
+     *
+     * It did not, and the failure ran all the way to the end: the message was
+     * claimed, gated, executed against somebody who never accepted, found no
+     * Message button, was reported as `selector_drift` and halted the seat's
+     * entire batch. One unanswered invite, one dead queue.
+     *
+     * So a message step that follows a connection request in the same workflow
+     * gets the condition the surface already imposes. It can only make a step
+     * run LATER or not at all -- `branching.ts` rule 2 -- so nothing is
+     * scheduled earlier, no ceiling is widened, and a workflow with no
+     * connection request in front of its message (messaging people this seat is
+     * already connected to) keeps running unconditionally, which is correct for
+     * exactly the same reason.
+     *
+     * A condition the operator DID declare always wins: this fills a gap, it
+     * does not overrule an author.
+     */
+    const condition = declared ?? (kind === 'dm' && lastInviteStepId !== null
+      ? { on: 'accepted' as const, ofStepId: lastInviteStepId }
+      : null);
+
     parsed.push({
       id: step.id,
+      // Manager workflows carry no absolute day: their spacing is `delayBefore`
+      // per step, which `runner.ts` has already turned into the row's
+      // `planned_for`. `evaluateBranches` floors every step at
+      // `max(day, plannedFor)`, so 0 here means "the paced slot is the floor",
+      // which is the truth for a managed row and never earlier than it.
       day: typeof step.day === 'number' ? step.day : 0,
-      kind: step.kind as LinkedInActionKind,
+      kind,
       condition
     });
+
+    if (kind === 'invite') lastInviteStepId = step.id;
   }
   return parsed;
 }
+
+/**
+ * A manager workflow action to the ledger kind it writes.
+ *
+ * The same mapping `runner.ts` `kindForStep` makes when it writes the row, and
+ * it has to stay the same one: this file reads back what that file wrote, so a
+ * disagreement here is a step whose own ledger row cannot be found.
+ * `manual_message` and `withdraw_pending` write nothing, and null says so.
+ */
+const WORKFLOW_ACTION_KINDS: Readonly<Record<string, LinkedInActionKind | null>> = {
+  connection_request: 'invite',
+  message: 'dm',
+  profile_view: 'profile_view',
+  follow: 'follow',
+  manual_message: null,
+  withdraw_pending: null
+};
 
 function safeJson(value: string): unknown {
   try {
@@ -653,9 +881,14 @@ function safeJson(value: string): unknown {
 export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): LocalWorkerStore {
   return {
     workspaceId,
+    seatKey,
 
     async seatPosture(now) {
-      return getSeatPosture(db, workspaceId, now);
+      // PER SEAT, and this line is load-bearing: it used to default to the
+      // owner seat, so a second account's batch read the OWNER's posture and
+      // would happily keep sending while its own seat was paused, or refuse
+      // while its own seat was fine.
+      return getSeatPosture(db, workspaceId, now, seatKey);
     },
 
     async openBatch(now) {
@@ -717,9 +950,15 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
           FOR UPDATE SKIP LOCKED
           LIMIT 1
         )
+        -- campaign_id, replay_scope and override_warmup_ceiling are selected
+        -- for ONE consumer: the pre-send re-evaluation of the safety gate.
+        -- Without them that call could not run the campaign-day ramp (it was
+        -- told no campaign was named, on every real send), could not ask the
+        -- ledger's own scoped replay question, and could not honour an override
+        -- an operator had already recorded on the row.
         RETURNING id, workspace_id, seat_key, kind, target_ref,
                   TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS planned_for,
-                  body, thread_urn
+                  body, thread_urn, campaign_id, replay_scope, override_warmup_ceiling
       `).get<DueActionRow>(now.toISOString(), batchId, workspaceId, seatKey, now.toISOString(), [...exclude]);
       if (!row) return null;
       return {
@@ -730,8 +969,26 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
         targetRef: row.target_ref,
         plannedFor: row.planned_for,
         body: row.body,
-        threadUrn: row.thread_urn
+        threadUrn: row.thread_urn,
+        campaignId: row.campaign_id,
+        replayScope: row.replay_scope ?? 'legacy',
+        overrideWarmupCeiling: row.override_warmup_ceiling === true
       };
+    },
+
+    async hasUnacceptedInvite(action) {
+      // Case-folded on both sides, the way every other target lookup in this
+      // subsystem folds them (idx_linkedin_actions_target_ci, migration 031):
+      // the invite and the message may have been written from different
+      // renderings of the same profile URL.
+      const row = await db.prepare(`
+        SELECT 1 AS unaccepted FROM linkedin_actions
+        WHERE workspace_id=? AND seat_key=? AND kind='invite'
+          AND target_ref IS NOT NULL AND LOWER(target_ref)=LOWER(?)
+          AND status NOT IN ('accepted', 'replied', 'skipped')
+        LIMIT 1
+      `).get<{ unaccepted: number }>(workspaceId, action.seatKey, action.targetRef);
+      return row !== undefined;
     },
 
     async branchDecision(action, now) {
@@ -836,7 +1093,11 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
     },
 
     async enterCooldown(now) {
-      await upsertSeat(db, workspaceId, { posture: 'cooldown' }, now);
+      // THE COOLDOWN LANDS ON THE SEAT THAT HIT THE WALL, and only on it.
+      // LinkedIn restricts an ACCOUNT, not a workspace: cooling every seat
+      // because one of them saw a limit wall would stop accounts that are
+      // perfectly healthy, and each of those then needs a human to resume it.
+      await upsertSeat(db, workspaceId, { posture: 'cooldown' }, now, seatKey);
     }
   };
 }
@@ -849,24 +1110,58 @@ export function postgresLocalWorkerStore(db: Db, workspaceId: string, seatKey: s
  * status. Asking twice keeps the original timestamp, so "when did somebody ask
  * for this to stop" survives an impatient second click.
  */
-export async function stopLinkedInBatches(db: Db, workspaceId: string): Promise<number> {
+export async function stopLinkedInBatches(db: Db, workspaceId: string, seatKey?: string): Promise<number> {
+  // No seat named means EVERY seat in the workspace, which is what the API's
+  // kill switch means when an operator presses Stop on the workspace. Naming
+  // one stops one account and leaves the others running.
   const result = await db.prepare(`
     UPDATE linkedin_batches SET stop_requested_at=CURRENT_TIMESTAMP
-    WHERE workspace_id=? AND status='running' AND stop_requested_at IS NULL
-  `).run(workspaceId);
+    WHERE workspace_id=? AND (?::text IS NULL OR seat_key=?) AND status='running' AND stop_requested_at IS NULL
+  `).run(workspaceId, seatKey ?? null, seatKey ?? null);
   return result.changes;
 }
 
-/** Workspaces with at least one claimable action due now. */
-export async function workspacesWithDueActions(db: Db, now: Date): Promise<string[]> {
+/** One LinkedIn account with work waiting for it, and what its browser should look like. */
+export interface DueSeat {
+  workspaceId: string;
+  seatKey: string;
+  /**
+   * The seat's own IANA timezone, or null when no seat row exists yet.
+   *
+   * Carried out of the discovery query rather than fetched per seat because it
+   * is what the browser context advertises (see {@link seatContextFingerprint}):
+   * a Zurich account whose browser claims to be in Chicago is a fingerprint
+   * inconsistency we would be creating for ourselves.
+   */
+  timezone: string | null;
+}
+
+/**
+ * Every SEAT with at least one claimable action due now.
+ *
+ * THE `AND seat_key='owner'` THIS REPLACES WAS THE BUG THAT MADE MULTI-SEAT
+ * COSMETIC. Actions were planned, filed and paced per seat all the way down
+ * the queue, and then the one query that decides what a worker picks up threw
+ * every non-owner row away -- so a second account's queue filled up and never
+ * drained, silently, with no error anywhere to notice.
+ *
+ * LEFT JOIN, so a due action whose seat row is missing still surfaces: the
+ * batch refuses it with 'No LinkedIn seat is configured...', which is a
+ * sentence an operator can act on, where dropping it here would be a queue
+ * that quietly never moves -- the exact failure this function just stopped
+ * having.
+ */
+export async function seatsWithDueActions(db: Db, now: Date): Promise<DueSeat[]> {
   const rows = await db.prepare(`
-    SELECT DISTINCT workspace_id FROM linkedin_actions
-    WHERE status='planned' AND claimed_at IS NULL
-      AND planned_for IS NOT NULL AND planned_for <= ?
-      AND seat_key='owner'
-      AND kind IN (${EXECUTABLE_KIND_LIST})
-  `).all<{ workspace_id: string }>(now.toISOString());
-  return rows.map((row) => row.workspace_id);
+    SELECT DISTINCT a.workspace_id, a.seat_key, s.timezone
+    FROM linkedin_actions a
+    LEFT JOIN linkedin_seats s ON s.workspace_id = a.workspace_id AND s.seat_key = a.seat_key
+    WHERE a.status='planned' AND a.claimed_at IS NULL
+      AND a.planned_for IS NOT NULL AND a.planned_for <= ?
+      AND a.kind IN (${EXECUTABLE_KIND_LIST})
+    ORDER BY a.workspace_id, a.seat_key
+  `).all<{ workspace_id: string; seat_key: string; timezone: string | null }>(now.toISOString());
+  return rows.map((row) => ({ workspaceId: row.workspace_id, seatKey: row.seat_key, timezone: row.timezone }));
 }
 
 // ---------------------------------------------------------------------------
@@ -886,19 +1181,78 @@ export interface LinkedInLocalWorkerConfig {
   hosted?: boolean;
 }
 
-const DEFAULT_PROFILE_DIR = '~/.trevra/linkedin-profile';
+const DEFAULT_PROFILE_DIR_BASE = '~/.trevra/linkedin';
 
 /**
- * The Chrome profile directory, `~` expanded here rather than in `config.ts`.
+ * The characters a workspace id may keep in a directory name. Whatever an id
+ * generator produces, this is a path component the moment it leaves this
+ * function -- no `/`, no `..`, nothing a shell or a filesystem reads as
+ * anything but literal text.
+ */
+function pathSafeId(id: string): string {
+  const safe = id.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  return safe || 'default';
+}
+
+/**
+ * The base a workspace's profile directory is built from, for a startup
+ * message printed before any workspace is known -- `resolveProfileDir` itself
+ * always requires one, on purpose, so nothing can quietly resolve the old
+ * single shared path by omitting it.
+ */
+export function profileDirBase(configured?: string | null): string {
+  return configured?.trim() ? configured.trim() : DEFAULT_PROFILE_DIR_BASE;
+}
+
+/**
+ * The Chrome profile directory for ONE SEAT, `~` expanded here rather than in
+ * `config.ts`.
+ *
+ * ONE DIRECTORY PER (WORKSPACE, SEAT), NEVER ONE FOR THE WHOLE PROCESS AND
+ * NEVER ONE PER WORKSPACE EITHER. A persistent user-data-dir IS the LinkedIn
+ * session: its cookies, its device fingerprint, its "remember this browser"
+ * standing. Two accounts sharing one directory do not merely see each other's
+ * inbox -- the second sign-in REPLACES the first one's session, so two seats
+ * would spend every tick logging each other out, which is both broken and the
+ * single loudest ban signal a pair of accounts can emit. `openBrowser` is what
+ * enforces the other half (a handle map keyed by seat, not one per process);
+ * this is what makes two seats land on two different directories at all.
+ *
+ * THE OWNER SEAT KEEPS THE PATH IT ALREADY HAS. `<base>-<workspace>-profile`
+ * is unchanged for `owner` and only additional seats get the extra segment, so
+ * an existing install does not wake up on an empty profile directory and
+ * silently need a fresh sign-in on the account it was already signed into.
  *
  * Resolved at the use site on purpose: `$HOME` belongs to the process that
  * actually launches the browser, and baking it into config would put one
  * machine's home directory into a value other machines read.
+ *
+ * `configured` is a BASE an operator may still override (`TREVRA_LINKEDIN_PROFILE_DIR`)
+ * -- still suffixed per seat, because the isolation this exists for is not
+ * something a global env var should be able to switch back off by accident.
  */
-export function resolveProfileDir(configured?: string | null): string {
-  const raw = configured?.trim() ? configured.trim() : DEFAULT_PROFILE_DIR;
+export function resolveProfileDir(
+  configured: string | null | undefined,
+  workspaceId: string,
+  seatKey: string = OWNER_SEAT_KEY
+): string {
+  const base = configured?.trim() ? configured.trim() : DEFAULT_PROFILE_DIR_BASE;
+  const seatSegment = seatKey === OWNER_SEAT_KEY ? '' : `-${pathSafeId(seatKey)}`;
+  const raw = `${base}-${pathSafeId(workspaceId)}${seatSegment}-profile`;
   const expanded = raw === '~' || raw.startsWith('~/') ? join(homedir(), raw.slice(1)) : raw;
   return isAbsolute(expanded) ? expanded : resolve(expanded);
+}
+
+/**
+ * The map key, and the one place the pair is spelled.
+ *
+ * ` ` rather than `:` because a seat key is operator-supplied. It cannot
+ * contain a NUL by `upsertSeat`'s alphabet, so no two distinct pairs can
+ * collide into one key -- which with a `:` they could (`ws:a` + `b` vs `ws` +
+ * `a:b`), and a collision here means two accounts sharing one browser.
+ */
+function seatHandleKey(workspaceId: string, seatKey: string): string {
+  return `${workspaceId} ${seatKey}`;
 }
 
 /**
@@ -1069,6 +1423,19 @@ export function linkedInHeadlessReadiness(
   return blockers.length === 0 ? { canLaunchHeadless: true, reasons: [] } : { canLaunchHeadless: false, reasons: blockers };
 }
 
+/**
+ * One attached DevTools-protocol client.
+ *
+ * OPTIONAL ON THE CONTEXT, because every test fake in this repo is a hand-written
+ * object and none of them speak CDP. A context that cannot open a session gets
+ * the plain launch options and nothing else -- the identity work below degrades,
+ * it never fails.
+ */
+export interface LinkedInCdpSession {
+  send(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  detach?(): Promise<void>;
+}
+
 /** The slice of a Playwright persistent context this codebase touches. */
 export interface LinkedInBrowserContext {
   pages(): unknown[];
@@ -1076,6 +1443,7 @@ export interface LinkedInBrowserContext {
   cookies(urls?: string | string[]): Promise<Array<{ name: string; domain: string }>>;
   on(event: 'close', handler: () => void): void;
   close(): Promise<void>;
+  newCDPSession?(page: unknown): Promise<LinkedInCdpSession>;
 }
 
 export interface PlaywrightLike {
@@ -1091,8 +1459,307 @@ interface BrowserHandle {
   close(): Promise<void>;
 }
 
-let browser: BrowserHandle | null = null;
+/**
+ * One open browser per SEAT, never one per workspace and never one for the
+ * whole process.
+ *
+ * A single shared handle here was the other half of the profile-directory bug
+ * `resolveProfileDir` fixes: even with two seats on two different profile
+ * directories, a lone `browser` variable would still hand the second seat's
+ * call the first seat's already-open page -- same session, same cookies, wrong
+ * account. Keyed by (workspace, seat), exactly as the profile directory now is.
+ */
+const browsers = new Map<string, BrowserHandle>();
 let missingPlaywrightLogged = false;
+
+// ---------------------------------------------------------------------------
+// Per-seat browser identity: stable, non-default, and derived, never drawn
+// ---------------------------------------------------------------------------
+
+/**
+ * What one seat's browser context claims to be.
+ *
+ * THE DEFAULTS ARE THE PROBLEM THIS SOLVES. Playwright's own defaults are a
+ * `HeadlessChrome/<version>` user agent, the host's locale and the host's
+ * timezone. The first is a literal announcement of automation; the other two
+ * make every seat this machine drives look like the same person, which is the
+ * shape of an agency farm rather than of several humans.
+ *
+ * DERIVED, NEVER DRAWN. `Math.random()` would give each seat a NEW identity on
+ * every launch -- a browser whose user agent, locale and timezone change
+ * between sessions is a far stronger signal than any single wrong value, and
+ * it is unreproducible for us too. Everything here is a pure function of
+ * (workspaceId, seatKey), which is the same determinism rule the pacing gaps
+ * already follow.
+ */
+export interface SeatContextFingerprint {
+  userAgent: string;
+  locale: string;
+  timezoneId: string;
+  /** The window this seat's headless browser reports. Never Playwright's 800x600. */
+  viewport: { width: number; height: number };
+}
+
+/**
+ * The user agent, on the platform this machine ACTUALLY RUNS.
+ *
+ * ONE TEMPLATE, LINUX, AND NOT A LIST OF PLATFORMS. This used to draw a
+ * per-seat string from a list that included Windows and macOS, and that was a
+ * self-inflicted wound: Playwright's `userAgent` option rewrites the UA STRING
+ * AND NOTHING ELSE. `Sec-CH-UA-Platform`, `Sec-CH-UA-Arch`,
+ * `navigator.userAgentData.platform` and `navigator.platform` all kept saying
+ * Linux, so every single request carried a client contradicting itself --
+ * a far louder signal than "another Linux Chrome" could ever be. Two seats on
+ * one machine SHOULD look like two profiles in one browser on one machine,
+ * because that is what they are; they are told apart by cookie jar, locale,
+ * timezone and (when configured) exit IP, none of which lie about the host.
+ *
+ * The major version is a fallback only. `alignClientHints` replaces this with
+ * the launched binary's own version as soon as the context is open, so the UA
+ * cannot drift from the Chromium that is actually rendering the page -- the
+ * skew this file used to ship with was UA 138/139 against a 151 binary.
+ */
+const FALLBACK_CHROME_MAJOR = 151;
+
+function linuxChromeUserAgent(major: number): string {
+  return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+/**
+ * Real desktop window sizes, seeded per seat.
+ *
+ * Playwright's headless default is 1280x720 for every context it has ever
+ * opened, which is both a known automation default and identical across every
+ * seat on the machine. These are ordinary laptop and monitor sizes; the seat
+ * keeps one forever, because a window that changes size between sessions is
+ * the same instability the user agent is not allowed to have.
+ */
+const SEAT_VIEWPORTS: ReadonlyArray<{ width: number; height: number }> = [
+  { width: 1512, height: 856 },
+  { width: 1440, height: 900 },
+  { width: 1536, height: 864 },
+  { width: 1680, height: 1050 },
+  { width: 1920, height: 1080 }
+];
+
+/**
+ * Locale/timezone PAIRS, never two independent draws.
+ *
+ * A context claiming `de-CH` from `America/Chicago` is more suspicious than
+ * either value alone, because no real browser is configured that way by
+ * accident. Pairing them means the derived identity is at least internally
+ * consistent even when we have no seat row to read a real timezone from.
+ */
+const SEAT_BROWSER_PROFILES: ReadonlyArray<{ locale: string; timezoneId: string }> = [
+  { locale: 'en-US', timezoneId: 'America/New_York' },
+  { locale: 'en-US', timezoneId: 'America/Chicago' },
+  { locale: 'en-US', timezoneId: 'America/Los_Angeles' },
+  { locale: 'en-GB', timezoneId: 'Europe/London' },
+  { locale: 'de-DE', timezoneId: 'Europe/Berlin' },
+  { locale: 'de-CH', timezoneId: 'Europe/Zurich' },
+  { locale: 'en-CA', timezoneId: 'America/Toronto' },
+  { locale: 'en-AU', timezoneId: 'Australia/Sydney' }
+];
+
+/** A stable index into a list, from a seed. The same seed always picks the same entry. */
+function seededIndex(seed: string, offset: number, length: number): number {
+  const digest = createHash('sha256').update(seed).digest('hex');
+  return Number.parseInt(digest.slice(offset, offset + 8), 16) % length;
+}
+
+/**
+ * The identity this seat's browser context advertises, every time it opens.
+ *
+ * `timezone` is the SEAT'S OWN IANA name when we have one, and it wins: the
+ * seat row already carries the timezone the operator's plans are spread
+ * across, so using it makes the browser agree with the account's actual
+ * working hours instead of contradicting them. The locale follows the
+ * timezone where a pair exists for it, so the two stay consistent. Only when
+ * no seat row exists yet -- a queue whose seat has not been detected -- does
+ * the timezone fall back to the derived pair.
+ */
+export function seatContextFingerprint(
+  workspaceId: string,
+  seatKey: string,
+  timezone?: string | null,
+  chromeMajor: number = FALLBACK_CHROME_MAJOR
+): SeatContextFingerprint {
+  const seed = `linkedin-context:${workspaceId}:${seatKey}`;
+  const derived = SEAT_BROWSER_PROFILES[seededIndex(seed, 0, SEAT_BROWSER_PROFILES.length)];
+  const userAgent = linuxChromeUserAgent(chromeMajor);
+  const viewport = SEAT_VIEWPORTS[seededIndex(seed, 16, SEAT_VIEWPORTS.length)];
+  const seatTimezone = timezone?.trim();
+  if (!seatTimezone) return { userAgent, locale: derived.locale, timezoneId: derived.timezoneId, viewport };
+  const paired = SEAT_BROWSER_PROFILES.find((profile) => profile.timezoneId === seatTimezone);
+  return { userAgent, locale: paired?.locale ?? derived.locale, timezoneId: seatTimezone, viewport };
+}
+
+/**
+ * Make the Client Hints agree with the user agent, using the browser's own
+ * version -- the one thing Playwright's context options cannot do.
+ *
+ * WHY THIS EXISTS AT ALL. `userAgent` on a context rewrites exactly one string.
+ * A page reads at least five other places for the same fact:
+ * `Sec-CH-UA`, `Sec-CH-UA-Platform`, `Sec-CH-UA-Full-Version-List` and
+ * `Sec-CH-UA-Arch` on every request, and `navigator.userAgentData` plus
+ * `navigator.platform` from script. `Emulation.setUserAgentOverride` with a
+ * `userAgentMetadata` block is the only call that sets all of them at once and
+ * keeps them consistent, which is why it is worth reaching past Playwright's
+ * API for.
+ *
+ * THE VERSION IS READ, NEVER GUESSED. `Browser.getVersion` returns the binary's
+ * real UA; the only edit made to it is `HeadlessChrome` -> `Chrome`, which is
+ * the one token that has to go and the one thing about it that is not true of a
+ * person's browser. Everything downstream -- brand list, full version list,
+ * `Sec-CH-UA` -- is derived from that same number, so there is no second source
+ * to drift out of step.
+ *
+ * THE SESSION IS NOT DETACHED. Chromium drops emulation overrides when the last
+ * client for a target goes away, so detaching here would quietly undo the whole
+ * function. It lives as long as the context does and closes with it.
+ *
+ * NEVER THROWS AND NEVER BLOCKS A LAUNCH. A context with no `newCDPSession` (a
+ * test fake) and a CDP call that fails both land in the same place: the seat
+ * keeps the launch-time user agent, which is at least internally consistent
+ * because it already names the real platform.
+ */
+async function alignClientHints(
+  context: LinkedInBrowserContext,
+  page: unknown,
+  fingerprint: SeatContextFingerprint,
+  log: (message: string) => void
+): Promise<void> {
+  if (typeof context.newCDPSession !== 'function') return;
+  try {
+    const cdp = await context.newCDPSession(page);
+    const version = await cdp.send('Browser.getVersion');
+    const reported = typeof version.userAgent === 'string' ? version.userAgent : '';
+    const full = /Chrome\/([\d.]+)/.exec(reported)?.[1];
+    if (!full) return;
+    const major = full.split('.')[0];
+    const language = fingerprint.locale;
+    await cdp.send('Emulation.setUserAgentOverride', {
+      // `HeadlessChrome` is the whole reason an override is still needed once
+      // the browser is the full Chromium build rather than the headless shell.
+      userAgent: reported.replace('HeadlessChrome', 'Chrome'),
+      acceptLanguage: `${language},${language.split('-')[0]};q=0.9`,
+      platform: 'Linux x86_64',
+      userAgentMetadata: {
+        // The GREASE entry is part of what a real Chrome sends; a brand list
+        // without one is as identifying as a wrong version.
+        brands: [
+          { brand: 'Not;A=Brand', version: '99' },
+          { brand: 'Chromium', version: major },
+          { brand: 'Google Chrome', version: major }
+        ],
+        fullVersionList: [
+          { brand: 'Not;A=Brand', version: '99.0.0.0' },
+          { brand: 'Chromium', version: full },
+          { brand: 'Google Chrome', version: full }
+        ],
+        fullVersion: full,
+        platform: 'Linux',
+        platformVersion: '6.8.0',
+        architecture: 'x86',
+        model: '',
+        mobile: false,
+        bitness: '64',
+        wow64: false
+      }
+    });
+  } catch (cause) {
+    log(
+      `LinkedIn seat browser kept its launch-time user agent: the client-hint override failed (${cause instanceof Error ? cause.message : String(cause)}).`
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-seat outbound proxy. Absent by default; NEVER silently skipped.
+// ---------------------------------------------------------------------------
+
+/** Playwright's proxy shape, declared here so this file still compiles without playwright. */
+export interface SeatProxy {
+  server: string;
+  username?: string;
+  password?: string;
+}
+
+const PROXY_ENV_PREFIX = 'TREVRA_LINKEDIN_PROXY';
+
+/** Whatever an id or a seat key is, this is what it may contribute to an env var name. */
+function envSafe(value: string): string {
+  return value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '_');
+}
+
+/**
+ * This seat's outbound proxy, or null when it has none.
+ *
+ * ABSENT BY DEFAULT, ON PURPOSE. The custody argument for this whole subsystem
+ * is that a self-hoster automates their own account from their own machine and
+ * their own IP -- which is why it is a strictly better risk posture than the
+ * hosted competitors that have to sell you a datacenter proxy. A proxy is for
+ * the operator who genuinely needs one (a second account on a residential line
+ * that is not this machine's), and it is opt-in per seat.
+ *
+ * THREE KEYS, MOST SPECIFIC WINS:
+ *
+ *   TREVRA_LINKEDIN_PROXY_<WORKSPACE>_<SEAT>  one seat in one workspace
+ *   TREVRA_LINKEDIN_PROXY_<SEAT>              that seat key, in any workspace
+ *   TREVRA_LINKEDIN_PROXY                     every seat on this machine
+ *
+ * lc-debt: the two-part key is built by flattening both ids to `[A-Z0-9_]`, so
+ * workspace `ws` + seat `a_sales` and workspace `ws_a` + seat `sales` produce
+ * the same variable name; upgrade path is a single
+ * `TREVRA_LINKEDIN_PROXIES` JSON map keyed by the exact pair.
+ *
+ * THROWS RATHER THAN RETURNING NULL FOR ANYTHING IT CANNOT PARSE, and that is
+ * the entire safety property. "A proxy was configured and we could not use it"
+ * must never resolve to "connect directly": the operator configured it because
+ * this account must not be seen coming from this IP, and a silent direct
+ * connection is the one outcome that cannot be undone once LinkedIn has logged
+ * it. The caller turns the throw into a refusal to open the browser at all.
+ */
+export function resolveSeatProxy(
+  env: NodeJS.ProcessEnv,
+  workspaceId: string,
+  seatKey: string
+): SeatProxy | null {
+  const candidates = [
+    `${PROXY_ENV_PREFIX}_${envSafe(workspaceId)}_${envSafe(seatKey)}`,
+    `${PROXY_ENV_PREFIX}_${envSafe(seatKey)}`,
+    PROXY_ENV_PREFIX
+  ];
+  const name = candidates.find((candidate) => env[candidate]?.trim());
+  if (!name) return null;
+  const raw = env[name]!.trim();
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    // The VALUE is never quoted back: a proxy URL routinely carries a password.
+    throw new Error(`${name} is not a URL. Use http://user:pass@host:port, https://... or socks5://host:port.`);
+  }
+  const scheme = url.protocol.replace(':', '');
+  if (!['http', 'https', 'socks5'].includes(scheme)) {
+    throw new Error(`${name} uses an unsupported proxy scheme '${scheme}'. Chromium accepts http, https and socks5.`);
+  }
+  if (!url.hostname) throw new Error(`${name} names no proxy host.`);
+  const username = decodeURIComponent(url.username);
+  const password = decodeURIComponent(url.password);
+  if (scheme === 'socks5' && (username || password)) {
+    // Chromium cannot authenticate a SOCKS proxy. Accepting it would mean
+    // launching with credentials that are silently dropped, which is a direct
+    // connection wearing a proxy's clothes.
+    throw new Error(`${name} is a SOCKS proxy with credentials, which Chromium cannot authenticate. Use an http proxy, or a SOCKS proxy that authorises this machine by IP.`);
+  }
+  return {
+    server: `${scheme}://${url.host}`,
+    ...(username ? { username } : {}),
+    ...(password ? { password } : {})
+  };
+}
 
 /**
  * The one actionable line, logged once (plan 4.4).
@@ -1164,41 +1831,120 @@ export async function loadLinkedInPlaywright(log: (message: string) => void = ()
  * A MODE CHANGE REOPENS. The handle records which mode it was launched in, so a
  * detect that needs headless cannot silently be answered by a headed window
  * left over from something else, or the reverse.
+ *
+ * ONE CONTEXT PER SEAT, WITH THAT SEAT'S OWN IDENTITY. The user-data-dir, the
+ * handle-map key, the user agent, the locale, the timezone and the proxy are
+ * all functions of (workspace, seat). Two accounts driven from this machine
+ * therefore share nothing -- not a cookie jar, not a fingerprint, not an exit
+ * IP if the operator configured one.
  */
 async function openBrowser(
   config: LinkedInLocalWorkerConfig,
   log: (message: string) => void,
-  options: { headless?: boolean } = {}
+  options: {
+    workspaceId: string;
+    seatKey?: string;
+    headless?: boolean;
+    /** The seat's own IANA timezone, when the caller already has it. */
+    timezone?: string | null;
+    /** Overridable so a test can drive the proxy rules without touching process.env. */
+    env?: NodeJS.ProcessEnv;
+  }
 ): Promise<BrowserHandle | null> {
   const headless = options.headless ?? false;
-  if (browser && browser.headless === headless) return browser;
-  if (browser) await closeLinkedInBrowser();
+  const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
+  const handleKey = seatHandleKey(options.workspaceId, seatKey);
+  const existing = browsers.get(handleKey);
+  if (existing && existing.headless === headless) return existing;
+  if (existing) await closeLinkedInBrowser(options.workspaceId, seatKey);
 
   const playwright = await loadLinkedInPlaywright(log);
   if (!playwright) return null;
-  const profileDir = resolveProfileDir(config.profileDir);
+  const profileDir = resolveProfileDir(config.profileDir, options.workspaceId, seatKey);
+
+  // THE PROXY IS RESOLVED BEFORE THE LAUNCH, AND A BAD ONE ENDS IT HERE.
+  // Refusing to open a browser at all is the only correct answer to "this seat
+  // must not be seen from this IP, and I cannot honour that": the work stays
+  // due for a worker that can, and nothing reaches LinkedIn from the wrong
+  // address in the meantime.
+  let proxy: SeatProxy | null;
+  try {
+    proxy = resolveSeatProxy(options.env ?? process.env, options.workspaceId, seatKey);
+  } catch (cause) {
+    log(
+      `LinkedIn local worker will not open a browser for seat '${seatKey}': ${cause instanceof Error ? cause.message : String(cause)} A seat with a configured proxy is never connected directly.`
+    );
+    return null;
+  }
+
+  const fingerprint = seatContextFingerprint(options.workspaceId, seatKey, options.timezone ?? null);
   try {
     const context = await playwright.chromium.launchPersistentContext(profileDir, {
       headless,
-      ...(headless ? {} : { viewport: null }),
+      // THE FULL CHROMIUM BUILD, NEVER `chrome-headless-shell`. Omitting this
+      // is how a headless launch silently became the headless SHELL binary --
+      // a different product from Chrome that ships without the PDF viewer,
+      // without `chrome.runtime`, with an empty `navigator.plugins`, with
+      // SwiftShader as its WebGL renderer and with scrollbars switched off. It
+      // announces itself to any fingerprinting script in the first frame, and
+      // it was doing so while the user agent claimed to be desktop Chrome.
+      // `channel: 'chromium'` is Playwright's opt-in to the real build running
+      // `--headless=new`, which shares the headed browser's surface.
+      channel: 'chromium',
+      // TWO OF PLAYWRIGHT'S OWN DEFAULTS, REMOVED.
+      //
+      // `--enable-automation` is Chromium's "this browser is being controlled"
+      // switch. It is readable from the page and it is the first thing every
+      // published detection writeup checks; shipping it while also passing
+      // `--disable-blink-features=AutomationControlled` was answering the same
+      // question twice, once truthfully.
+      //
+      // `--hide-scrollbars` zeroes the scrollbar width, which a page measures in
+      // one line (`innerWidth === documentElement.clientWidth`) and which no
+      // desktop Chrome on Linux or Windows would ever report.
+      ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
+      // Headed follows the real window; headless gets the seat's own stable
+      // desktop size rather than Playwright's 1280x720, which is both a known
+      // automation default and identical for every seat on this machine.
+      ...(headless ? { viewport: fingerprint.viewport } : { viewport: null }),
+      // Stable per seat and never the Playwright default -- see
+      // `seatContextFingerprint` for why all three travel together. The user
+      // agent here is the fallback; `alignClientHints` replaces it below with
+      // the launched binary's real version and matching client hints.
+      userAgent: fingerprint.userAgent,
+      locale: fingerprint.locale,
+      timezoneId: fingerprint.timezoneId,
+      // Absent unless the operator configured one. Passed as the context option
+      // rather than as a `--proxy-server` arg so Chromium can also answer the
+      // proxy's auth challenge, and so nothing here can accidentally be paired
+      // with a `--no-proxy-server` that would undo it.
+      ...(proxy ? { proxy } : {}),
       args: [
         '--disable-blink-features=AutomationControlled',
         ...(headless && inContainer() ? ['--no-sandbox', '--disable-dev-shm-usage'] : [])
       ]
     });
-    const existing = context.pages()[0];
-    const page = (existing ?? (await context.newPage())) as LinkedInPage;
-    browser = {
+    const existingPage = context.pages()[0];
+    const page = (existingPage ?? (await context.newPage())) as LinkedInPage;
+    // BEFORE ANY NAVIGATION. The context opens on `about:blank`, so no request
+    // has left the browser yet and the first one LinkedIn sees already carries
+    // a user agent and a `Sec-CH-UA*` set that agree with each other.
+    await alignClientHints(context, page, fingerprint, log);
+    const handle: BrowserHandle = {
       page,
       headless,
       close: async () => {
         await context.close();
       }
     };
-    return browser;
+    browsers.set(handleKey, handle);
+    return handle;
   } catch (cause) {
+    // NO RETRY WITHOUT THE PROXY, here or anywhere else. There is exactly one
+    // launch attempt, and if it carried a proxy then every attempt for this
+    // seat carries it.
     log(
-      `LinkedIn local worker could not open the browser profile at ${profileDir}: ${cause instanceof Error ? cause.message : String(cause)}. Log into LinkedIn by hand in that profile first.`
+      `LinkedIn local worker could not open the browser profile at ${profileDir}${proxy ? ` through ${proxy.server}` : ''}: ${cause instanceof Error ? cause.message : String(cause)}.`
     );
     return null;
   }
@@ -1235,6 +1981,76 @@ export interface LinkedInLoginOutcome {
 const BROWSER_OPEN_FAILED_MESSAGE =
   'Could not open a LinkedIn browser session on this machine; check that Chromium is installed and try again.';
 
+/** The band a keystroke gap is drawn from. Slow enough to be human, fast enough to finish. */
+const TYPING_GAP_MS = { min: 45, max: 165 } as const;
+
+/**
+ * The same page, but anything typed into it is typed at a human's speed.
+ *
+ * WHY THIS IS A WRAPPER AND NOT AN EDIT TO `driver.ts`. The sign-in form's
+ * selectors, its four outcomes and its "nothing was typed" guarantees are
+ * `driver.ts`'s subject and belong there. HOW FAST the characters go in is a
+ * posture decision this worker makes about a seat -- it is the same category
+ * of decision as the 30-120s inter-action gap and the per-seat fingerprint,
+ * both of which already live here. Wrapping the page keeps the two concerns in
+ * the two files that own them, and it means the cadence applies to every field
+ * the login flow types (the email, the password and the 2FA code) without
+ * `driver.ts` having to be told about any of them.
+ *
+ * WHAT IT ACTUALLY FIXES. `locator.fill()` sets the input's value in one
+ * operation and dispatches a single input event: twenty characters arrive in
+ * the same millisecond, with no keydown/keyup pairs and no inter-key timing at
+ * all. That is not what a person does, it is trivially observable from the
+ * page, and the sign-in form is the single surface where LinkedIn is looking
+ * hardest. Here the field is cleared and then each character is pressed, with a
+ * seeded pause in between.
+ *
+ * NO `Math.random()`, the same hard rule as everywhere else in this file: the
+ * gaps come from a generator seeded by the seat, so a sign-in is reproducible
+ * and a test can assert the cadence rather than tolerate it.
+ *
+ * NEITHER CREDENTIAL IS TOUCHED BEYOND BEING SPLIT INTO CHARACTERS. Nothing
+ * here logs, stores, or returns any part of the text it types.
+ */
+export function humanCadencePage(page: LinkedInPage, seed: string): LinkedInPage {
+  const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
+  const gap = (): number => Math.round(TYPING_GAP_MS.min + random() * (TYPING_GAP_MS.max - TYPING_GAP_MS.min));
+
+  const wrapLocator = (locator: LinkedInLocator): LinkedInLocator => {
+    const wrapped: LinkedInLocator = {
+      count: () => locator.count(),
+      first: () => wrapLocator(locator.first()),
+      click: (options) => locator.click(options),
+      textContent: (options) => locator.textContent(options),
+      fill: async (text, options) => {
+        // An empty fill is a CLEAR, not typing, and there is nothing to pace.
+        // A locator with no `press` is a test fake or a page object that cannot
+        // send keys; `driver.ts` already treats that as "cannot press a key",
+        // so falling back to the plain fill keeps this wrapper transparent
+        // rather than turning a missing capability into a sign-in failure.
+        if (!text || typeof locator.press !== 'function') return locator.fill(text, options);
+        await locator.fill('', options);
+        for (const character of [...text]) {
+          await locator.press(character, options);
+          await page.waitForTimeout(gap());
+        }
+      }
+    };
+    // Preserved exactly as found: `driver.ts` reads `typeof field.press` to
+    // decide whether the form can be submitted with Enter, and inventing the
+    // method here would have it press Enter on a page that cannot.
+    if (typeof locator.press === 'function') wrapped.press = (key, options) => locator.press!(key, options);
+    return wrapped;
+  };
+
+  return {
+    goto: (url, options) => page.goto(url, options),
+    url: () => page.url(),
+    waitForTimeout: (ms) => page.waitForTimeout(ms),
+    locator: (selector) => wrapLocator(page.locator(selector))
+  };
+}
+
 /**
  * Make this seat's browser session usable: reuse it if it works, sign in if it
  * does not.
@@ -1261,6 +2077,10 @@ export async function loginLinkedInSeat(
   config: LinkedInLocalWorkerConfig,
   options: {
     workspaceId: string;
+    /** Which LinkedIn account. Absent means the owner seat. */
+    seatKey?: string;
+    /** The seat's own IANA timezone, when the caller already has it. */
+    timezone?: string | null;
     /** A verification code the operator just read off their phone. */
     otp?: string;
     now?: Date;
@@ -1272,6 +2092,7 @@ export async function loginLinkedInSeat(
 ): Promise<LinkedInLoginOutcome> {
   const log = options.log ?? ((message: string) => console.log(message));
   const now = options.now ?? new Date();
+  const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
 
   // The gate first, before anything is imported, opened or queried.
   if (!config.enabled) return { status: 'failed', message: linkedInOffReason(config) };
@@ -1280,7 +2101,12 @@ export async function loginLinkedInSeat(
   if (!page) {
     const mode = seatBrowserMode(config);
     if (mode.blocked) return { status: 'failed', message: mode.blocked };
-    const handle = await openBrowser(config, log, { headless: mode.headless });
+    const handle = await openBrowser(config, log, {
+      workspaceId: options.workspaceId,
+      seatKey,
+      headless: mode.headless,
+      timezone: options.timezone ?? null
+    });
     if (!handle) return { status: 'failed', message: BROWSER_OPEN_FAILED_MESSAGE };
     page = handle.page;
   }
@@ -1288,31 +2114,45 @@ export async function loginLinkedInSeat(
   const driver = options.driver ?? playwrightDriver;
 
   // SESSION REUSE, AND IT IS THE NORMAL PATH. Nothing is decrypted to get here.
+  // Per seat, because each seat has its own profile directory and therefore its
+  // own session: one account's live session says nothing about another's.
   if (await driver.isLoggedIn(page)) {
-    await stampSeatSessionValid(db, options.workspaceId, now);
+    await stampSeatSessionValid(db, options.workspaceId, now, seatKey);
     return { status: 'ok', message: 'That LinkedIn session is still live, so nothing had to be signed in.' };
   }
 
-  const credentials = await readLinkedInCredentials(db, options.workspaceId);
+  const credentials = await readLinkedInCredentials(db, options.workspaceId, process.env, seatKey);
   if (!credentials) {
-    // Covers hosted, nothing stored, and half stored. One sentence.
+    // Covers hosted, nothing stored, and half stored. One sentence -- naming
+    // the seat only when there is more than one it could be, because "seat
+    // 'owner'" means nothing to somebody running a single account.
     return {
       status: 'failed',
-      message: 'Save your LinkedIn email and password here to sign in.'
+      message: seatKey === OWNER_SEAT_KEY
+        ? 'Save your LinkedIn email and password here to sign in.'
+        : `Save the LinkedIn email and password for seat '${seatKey}' to sign it in.`
     };
   }
 
-  const result = await driver.loginWithCredentials(page, {
-    email: credentials.email,
-    password: credentials.password,
-    otp: options.otp
-  });
+  const result = await driver.loginWithCredentials(
+    // HUMAN CADENCE ON THE ONE FORM THAT MATTERS. The wrapper is applied here
+    // and nowhere else: this is the only call in the codebase that types a
+    // credential, and every other page interaction is a click on a control the
+    // driver just found. Seeded by the seat, so the same account types at the
+    // same speed on every machine.
+    humanCadencePage(page, `linkedin-login:${options.workspaceId}:${seatKey}`),
+    {
+      email: credentials.email,
+      password: credentials.password,
+      otp: options.otp
+    }
+  );
 
   if ('needsOtp' in result) {
     return { status: 'otp_required', message: 'LinkedIn wants a verification code; enter the one it just sent and sign in again.' };
   }
   if (result.ok) {
-    await stampSeatSessionValid(db, options.workspaceId, now);
+    await stampSeatSessionValid(db, options.workspaceId, now, seatKey);
     return { status: 'ok', message: 'Signed in to LinkedIn; that session is now stored in the browser profile.' };
   }
   if (result.failureKind === 'challenge') {
@@ -1352,6 +2192,10 @@ export async function openLinkedInSession(
   config: LinkedInLocalWorkerConfig,
   options: {
     workspaceId: string;
+    /** Which LinkedIn account. Absent means the owner seat. */
+    seatKey?: string;
+    /** The seat's own IANA timezone, when the caller already has it. */
+    timezone?: string | null;
     now?: Date;
     driver?: LinkedInDriver;
     /** Absent -- always, outside a test -- means the shared persistent-profile browser. */
@@ -1362,6 +2206,7 @@ export async function openLinkedInSession(
   const log = options.log ?? ((message: string) => console.log(message));
   const now = options.now ?? new Date();
   const driver = options.driver ?? playwrightDriver;
+  const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
 
   // The gate first, before anything is imported, opened or queried.
   if (!config.enabled) return { ok: false, blocked: linkedInOffReason(config) };
@@ -1371,31 +2216,85 @@ export async function openLinkedInSession(
   const mode = seatBrowserMode(config);
   if (mode.blocked) return { ok: false, blocked: mode.blocked };
 
-  const handle = await openBrowser(config, log, { headless: mode.headless });
+  const handle = await openBrowser(config, log, {
+    workspaceId: options.workspaceId,
+    seatKey,
+    headless: mode.headless,
+    timezone: options.timezone ?? null
+  });
   if (!handle) return { ok: false, blocked: BROWSER_OPEN_FAILED_MESSAGE };
 
   // Every seat signs itself in: the session is reused when it still works, and
   // signed in with the stored email and password when it does not.
-  const outcome = await loginLinkedInSeat(db, config, { workspaceId: options.workspaceId, now, driver, page: handle.page, log });
+  const outcome = await loginLinkedInSeat(db, config, {
+    workspaceId: options.workspaceId,
+    seatKey,
+    timezone: options.timezone ?? null,
+    now,
+    driver,
+    page: handle.page,
+    log
+  });
   if (outcome.status !== 'ok') return { ok: false, blocked: outcome.message };
 
   return { ok: true, page: handle.page, driver };
 }
 
-/** Close the shared browser. Called from the worker's drain. */
-export async function closeLinkedInBrowser(): Promise<void> {
-  const handle = browser;
-  browser = null;
-  if (!handle) return;
-  try {
-    await handle.close();
-  } catch {
-    // A browser we cannot close is not a reason to fail a shutdown.
-  }
+/**
+ * Close one seat's browser, one workspace's, or -- called with no arguments,
+ * from the worker's drain -- every one this process opened.
+ *
+ * Three scopes because three callers need three different things: a shutdown
+ * closes everything (a browser left open holds its profile directory locked
+ * and the next worker cannot attach), a workspace being torn down closes its
+ * seats, and a single seat that has to be reopened in a different mode closes
+ * only itself and leaves its sibling accounts running.
+ */
+export async function closeLinkedInBrowser(workspaceId?: string, seatKey?: string): Promise<void> {
+  const handles = workspaceId
+    ? (() => {
+        // A seat key names exactly one handle; without one, every seat under
+        // this workspace, which is what "close this workspace's browser" has
+        // to mean now that a workspace can have several.
+        const prefix = `${workspaceId} `;
+        const keys = seatKey
+          ? [seatHandleKey(workspaceId, seatKey)]
+          : [...browsers.keys()].filter((key) => key.startsWith(prefix));
+        const found: BrowserHandle[] = [];
+        for (const key of keys) {
+          const handle = browsers.get(key);
+          browsers.delete(key);
+          if (handle) found.push(handle);
+        }
+        return found;
+      })()
+    : [...browsers.values()];
+  if (!workspaceId) browsers.clear();
+  await Promise.all(
+    handles.map(async (handle) => {
+      try {
+        await handle.close();
+      } catch {
+        // A browser we cannot close is not a reason to fail a shutdown.
+      }
+    })
+  );
 }
 
 /**
- * The worker's entry point: one pass over every workspace with work due.
+ * The worker's entry point: one pass over every SEAT with work due.
+ *
+ * ONE BATCH PER ACCOUNT, DRAINED INDEPENDENTLY. Each seat gets its own browser
+ * (its own profile directory, its own session, its own fingerprint and its own
+ * proxy if it has one), its own posture read, its own claim and its own
+ * cooldown. A seat that is paused, cooling, unable to sign in, or that hits a
+ * limit wall mid-batch is LOGGED AND SKIPPED, and the loop moves to the next
+ * seat -- a checkpoint on one LinkedIn account must not stop the others, which
+ * is the whole reason an operator runs more than one.
+ *
+ * Sequential rather than parallel, deliberately: two headed Chrome windows
+ * racing on one laptop is a worse experience than two batches in a row, and
+ * the per-action gaps mean a batch is mostly sleeping anyway.
  *
  * NEVER THROWS. It is called from the worker cycle alongside the automation
  * sweep and the playbook engine, and a LinkedIn failure must not cost any of
@@ -1404,7 +2303,18 @@ export async function closeLinkedInBrowser(): Promise<void> {
 export async function runDueLinkedInActions(
   db: Db,
   config: LinkedInLocalWorkerConfig,
-  options: { now?: Date; driver?: LinkedInDriver; log?: (message: string) => void } = {}
+  options: {
+    now?: Date;
+    driver?: LinkedInDriver;
+    log?: (message: string) => void;
+    /**
+     * Serve only this seat key. Absent means every seat with work due, which is
+     * the normal single-process case; naming one is how an operator splits
+     * accounts across processes or machines (`npm run linkedin:worker --
+     * --seat=sales`).
+     */
+    seatKey?: string;
+  } = {}
 ): Promise<LocalBatchResult[]> {
   // The gate first, before anything is imported, opened or queried.
   if (!config.enabled) return [];
@@ -1424,28 +2334,41 @@ export async function runDueLinkedInActions(
 
   const driver = options.driver ?? playwrightDriver;
   const results: LocalBatchResult[] = [];
-  let workspaceIds: string[];
+  let seats: DueSeat[];
   try {
-    workspaceIds = await workspacesWithDueActions(db, now);
+    seats = await seatsWithDueActions(db, now);
   } catch (cause) {
     log(`LinkedIn local worker could not list due actions: ${cause instanceof Error ? cause.message : String(cause)}`);
     return [];
   }
+  if (options.seatKey) seats = seats.filter((seat) => seat.seatKey === options.seatKey);
 
-  for (const workspaceId of workspaceIds) {
-    // Opened lazily and once, only after there is a workspace to serve.
-    const handle = await openBrowser(config, log, { headless: !headed.canLaunchHeaded });
-    if (!handle) return results;
-
-    // Every seat signs itself in: the session is made usable before the batch
-    // opens, reused when it still works and signed in when it does not.
-    const outcome = await loginLinkedInSeat(db, config, { workspaceId, now, driver, page: handle.page, log });
-    if (outcome.status !== 'ok') {
-      log(`LinkedIn local worker cannot use the seat for ${workspaceId}: ${outcome.message}`);
+  for (const { workspaceId, seatKey, timezone } of seats) {
+    // Opened lazily and once per SEAT, only after there is one to serve.
+    const handle = await openBrowser(config, log, {
+      workspaceId,
+      seatKey,
+      headless: !headed.canLaunchHeaded,
+      timezone
+    });
+    if (!handle) {
+      // `continue`, not `return`. A browser this seat cannot open -- a proxy it
+      // refused to skip, a profile directory another process holds -- says
+      // nothing about the next seat, and returning here used to abandon every
+      // remaining workspace's work for one workspace's problem.
+      log(`LinkedIn local worker could not open a browser for ${workspaceId}/${seatKey}; its work stays due.`);
       continue;
     }
 
-    const store = postgresLocalWorkerStore(db, workspaceId);
+    // Every seat signs itself in: the session is made usable before the batch
+    // opens, reused when it still works and signed in when it does not.
+    const outcome = await loginLinkedInSeat(db, config, { workspaceId, seatKey, timezone, now, driver, page: handle.page, log });
+    if (outcome.status !== 'ok') {
+      log(`LinkedIn local worker cannot use seat ${workspaceId}/${seatKey}: ${outcome.message}`);
+      continue;
+    }
+
+    const store = postgresLocalWorkerStore(db, workspaceId, seatKey);
     try {
       const result = await runLinkedInLocalBatch(store, {
         driver,
@@ -1463,7 +2386,41 @@ export async function runDueLinkedInActions(
               seatKey: action.seatKey,
               kind: action.kind as PacedKind,
               targetRef: action.targetRef,
-              plannedFor: action.plannedFor
+              // `at`, NOT `action.plannedFor`. This re-check happens immediately
+              // before the driver touches LinkedIn, so `at` IS the instant the
+              // action is about to happen -- the same principle `withdraw.ts`
+              // `evaluateWithdrawalSafety` already documents ("a withdrawal
+              // happens now, so `now` is the instant business hours and the
+              // weekend rule are judged against"). `action.plannedFor` is the
+              // slot the ledger row was ORIGINALLY paced for; once a batch falls
+              // behind (seat paused, worker downtime, a backlog drained on
+              // resume), that slot can be hours or days stale while still
+              // reading as a valid business-hours instant, which let the
+              // business-hours and weekend checks pass real sends that were
+              // actually about to fire at night or on a weekend. Every other
+              // check in the gate already reasons from `at`; this brings
+              // business-hours/weekend in line with them.
+              plannedFor: at.toISOString(),
+              // THE THREE FACTS THAT LIVE ON THE ROW AND NOWHERE ELSE.
+              //
+              // `campaignId` turns the campaign-day ramp on. It was omitted,
+              // and the claim did not even select the column, so
+              // `campaign-warmup` took its "no campaign was named" branch and
+              // passed unconditionally on every send this worker made: the
+              // 20/40/60/80/100% ramp shaped planning (`runner.ts`) and nothing
+              // at all at the moment of execution.
+              //
+              // `replayScope` is what makes `duplicate-target` ask the ledger's
+              // own question (migration 047) instead of a stricter one the
+              // ledger would not have asked.
+              //
+              // `overrideWarmupCeiling` is the operator's recorded decision
+              // about ONE reply (migration 044), read off the row so it sticks
+              // to it. This worker never sets it and never infers it -- it
+              // carries what `enqueueReply` wrote.
+              ...(action.campaignId ? { campaignId: action.campaignId } : {}),
+              ...(action.replayScope ? { replayScope: action.replayScope } : {}),
+              ...(action.overrideWarmupCeiling ? { overrideWarmupCeiling: true } : {})
             },
             at,
             // The claimed row is the SUBJECT of the question, not an answer to
@@ -1474,10 +2431,11 @@ export async function runDueLinkedInActions(
         log
       });
       results.push(result);
-      if (result.halted && result.haltReason) log(`LinkedIn local worker stopped for ${workspaceId}: ${result.haltReason}`);
+      if (result.halted && result.haltReason) log(`LinkedIn local worker stopped for ${workspaceId}/${seatKey}: ${result.haltReason}`);
     } catch (cause) {
-      // One workspace's failure is one workspace's failure.
-      log(`LinkedIn local worker failed for ${workspaceId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      // One SEAT's failure is one seat's failure. The loop carries on to the
+      // next account rather than ending the tick.
+      log(`LinkedIn local worker failed for ${workspaceId}/${seatKey}: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
   }
   return results;
@@ -1546,6 +2504,8 @@ export async function detectLinkedInSeat(
   config: LinkedInLocalWorkerConfig,
   options: {
     workspaceId: string;
+    /** Which LinkedIn account is being connected. Absent means the owner seat. */
+    seatKey?: string;
     /** IANA name, from the client's own Intl settings. Not derivable server-side. */
     timezone: string;
     now?: Date;
@@ -1560,6 +2520,7 @@ export async function detectLinkedInSeat(
 ): Promise<DetectSeatResult> {
   const log = options.log ?? ((message: string) => console.log(message));
   const now = options.now ?? new Date();
+  const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
   const refuse = (message: string, failureKind: LinkedInFailureKind | null = null): DetectSeatResult => ({
     detected: null,
     seat: null,
@@ -1575,7 +2536,14 @@ export async function detectLinkedInSeat(
   if (!page) {
     const mode = seatBrowserMode(config);
     if (mode.blocked) return refuse(mode.blocked);
-    const handle = await openBrowser(config, log, { headless: mode.headless });
+    const handle = await openBrowser(config, log, {
+      workspaceId: options.workspaceId,
+      seatKey,
+      headless: mode.headless,
+      // The timezone the client just read off its own Intl settings, which for
+      // a first detect is the only one that exists -- there is no seat row yet.
+      timezone: options.timezone
+    });
     if (!handle) return refuse(BROWSER_OPEN_FAILED_MESSAGE);
     page = handle.page;
   }
@@ -1584,7 +2552,15 @@ export async function detectLinkedInSeat(
 
   // The session is made usable before anything is read: reused when it still
   // works, signed in with the stored email and password when it does not.
-  const outcome = await loginLinkedInSeat(db, config, { workspaceId: options.workspaceId, now, driver, page, log });
+  const outcome = await loginLinkedInSeat(db, config, {
+    workspaceId: options.workspaceId,
+    seatKey,
+    timezone: options.timezone,
+    now,
+    driver,
+    page,
+    log
+  });
   if (outcome.status !== 'ok') return refuse(outcome.message, outcome.status === 'challenge' ? 'challenge' : null);
 
   const read = await driver.readSeat(page);
@@ -1595,14 +2571,57 @@ export async function detectLinkedInSeat(
     );
   }
 
-  const existing = await getSeat(db, options.workspaceId);
+  const existing = await getSeat(db, options.workspaceId, seatKey);
+
+  // A DIFFERENT LINKEDIN ACCOUNT THAN LAST TIME. `previousProfileUrl` is the
+  // identity this workspace last CONFIRMED (written by this same function on
+  // an earlier run); `read.profileUrl` is who the browser is signed in as
+  // right now, just re-verified by `loginLinkedInSeat` above. When they
+  // disagree, an operator has swapped which LinkedIn account this workspace
+  // automates -- new credentials saved over old ones -- and two things about
+  // the OLD account must not silently carry over to the new one:
+  //
+  //   1. THE STORED INBOX. `linkedin_threads`/`linkedin_messages` are a read
+  //      cache of one specific human's conversations, and since migration 045
+  //      they are keyed by (workspace_id, seat_key) -- so only THIS seat's
+  //      cache is cleared below. Left in place, the new account's Inbox screen
+  //      would show somebody else's DMs as its own; cleared workspace-wide, a
+  //      re-connect of one account would wipe every other account's inbox.
+  //   2. THE RAMP CLOCK. `activatedAt` measures how long THIS ACCOUNT has been
+  //      automated (plan 1.3); carrying an old account's clock into a brand
+  //      new one would pace it as an established seat on day one.
+  //
+  // `linkedin_actions` -- the send ledger -- is deliberately left alone, for
+  // the exact reason `deleteSeat` already leaves it alone: it is history, not
+  // this account's current view.
+  const previousProfileUrl = existing?.profileUrl ?? null;
+  const accountChanged = previousProfileUrl !== null && previousProfileUrl !== read.profileUrl;
+  let accountChangeNote: string | null = null;
+  if (accountChanged) {
+    const clearedThreads = await clearInboxForSeat(db, options.workspaceId, seatKey);
+    // The same "start over" path `DELETE /api/linkedin/seat` already offers on
+    // purpose (seats.ts): the `upsertSeat` call below re-inserts the row
+    // fresh, so `activatedAt` becomes `now` and the ramp restarts at week 1.
+    // Per seat, for the same reason the inbox clear is: swapping which account
+    // seat B automates must not restart seat A's warm-up ramp.
+    await deleteSeat(db, options.workspaceId, seatKey);
+    accountChangeNote =
+      `This browser signed in as ${read.profileUrl}, not ${previousProfileUrl} as this workspace last confirmed. `
+      + `${clearedThreads} stored conversation${clearedThreads === 1 ? '' : 's'} from the previous account `
+      + `${clearedThreads === 1 ? 'was' : 'were'} cleared and the warm-up ramp restarted for the new account.`;
+    log(accountChangeNote);
+  }
+
   const seat = await upsertSeat(
     db,
     options.workspaceId,
     {
       // The label is the operator's own words. A detected display name only
       // fills a seat that has none -- re-detecting must not rewrite "Pankaj
-      // (founder)" into whatever the profile heading says this month.
+      // (founder)" into whatever the profile heading says this month. That
+      // holds across an account change too: `existing` was captured before the
+      // reset above, so a custom label survives it on purpose -- it names this
+      // workspace's seat, not the LinkedIn account behind it.
       label: existing?.label.trim() || read.name?.trim() || handleOf(read.profileUrl),
       timezone: options.timezone,
       profileUrl: read.profileUrl,
@@ -1615,13 +2634,14 @@ export async function detectLinkedInSeat(
       // member's own signed-in profile page.
       sessionValidAt: now.toISOString()
     },
-    now
+    now,
+    seatKey
   );
 
   return {
     detected: { profileUrl: read.profileUrl, name: read.name, connectionsCount: read.connectionsCount },
     seat,
-    degraded: read.degraded,
+    degraded: accountChangeNote ? [accountChangeNote, ...read.degraded] : read.degraded,
     blocked: null,
     failureKind: null
   };
@@ -1832,6 +2852,11 @@ export async function runPendingSeatDetectRequests(
     try {
       const result = await detectLinkedInSeat(db, config, {
         workspaceId: request.workspaceId,
+        // The request has always carried the seat it is for (migration 045);
+        // it was simply never read here, so a Connect pressed for a second
+        // account detected the FIRST one and wrote its identity over the
+        // second seat's row.
+        seatKey: request.seatKey,
         timezone: request.timezone,
         now,
         driver: options.driver,
@@ -1848,7 +2873,7 @@ export async function runPendingSeatDetectRequests(
     const status = failureReason ? 'failed' : 'completed';
     await settleSeatDetectRequest(db, request.id, { status, failureReason }, now);
     settled.push({ ...request, status, failureReason, finishedAt: now.toISOString() });
-    if (failureReason) log(`LinkedIn seat detection failed for ${request.workspaceId}: ${failureReason}`);
+    if (failureReason) log(`LinkedIn seat detection failed for ${request.workspaceId}/${request.seatKey}: ${failureReason}`);
   }
 
   return settled;

@@ -142,8 +142,15 @@ export const INBOX_SELECTORS = {
    */
   threadProfileLink: 'a.msg-thread__link-to-profile, .msg-entity-lockup a[href*="/in/"], .msg-title-bar a[href*="/in/"]',
   messageList: 'ul.msg-s-message-list-content',
-  /** A class on the message item itself, hence concatenated rather than descended into. */
-  messageInboundMarker: '.msg-s-event-listitem--other',
+  /**
+   * A class on the message item itself, hence concatenated rather than
+   * descended into. Despite the `--other` name, this marks the ACCOUNT
+   * OWNER'S OWN sent message, not the other party's -- confirmed against live
+   * markup (2026-08-14): the operator's own message carries this modifier and
+   * the other participant's does not, the reverse of what the class name
+   * suggests. See `readThread`.
+   */
+  messageOwnMarker: '.msg-s-event-listitem--other',
   messageBody: '.msg-s-event-listitem__body',
   messageTimestamp: 'time.msg-s-message-group__timestamp, .msg-s-message-group__timestamp'
 } as const;
@@ -674,8 +681,10 @@ export async function listConversations(
  * a reply arrived at the end.
  *
  * DIRECTION IS READ OFF THE ITEM, not inferred from the sender's name: LinkedIn
- * marks the other party's messages with a class, and a name comparison would
- * call every message from a person who shares the operator's name outbound.
+ * marks the OPERATOR'S OWN message with a class (`messageOwnMarker` --
+ * despite its `--other` modifier name, verified against real markup rather
+ * than assumed), and a name comparison would call every message from a
+ * person who shares the operator's name outbound.
  *
  * A message with no timestamp of its own INHERITS the last one seen above it,
  * because LinkedIn renders one timestamp per group rather than per message. The
@@ -726,8 +735,8 @@ export async function readThread(
       continue;
     }
 
-    const inbound = await present(page, messageSelector(index, INBOX_SELECTORS.messageInboundMarker, ''));
-    messages.push({ at: parseInboxTimestamp(stamp, now()), direction: inbound ? 'in' : 'out', body });
+    const isOwnMessage = await present(page, messageSelector(index, INBOX_SELECTORS.messageOwnMarker, ''));
+    messages.push({ at: parseInboxTimestamp(stamp, now()), direction: isOwnMessage ? 'out' : 'in', body });
   }
 
   if (messages.length === 0) {

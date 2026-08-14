@@ -284,6 +284,37 @@ export interface WithdrawalCandidateOptions {
   olderThanDays?: number;
   /** Default {@link DEFAULT_CANDIDATE_LIMIT}. */
   limit?: number;
+  /**
+   * Narrow the sweep to named `linkedin_actions.id`s. Absent means every
+   * pending invite this seat has, which is the sweep every existing caller
+   * wants.
+   *
+   * It exists for the managed-workflow `withdraw_pending` step (`runner.ts`),
+   * which withdraws ONE member's own invite on that step's `afterDays` rather
+   * than the seat's whole backlog on the account default. Scoping the existing
+   * selector is the whole of that wiring -- the alternative was a second copy
+   * of the staleness rule, the live-withdrawal exclusion and the
+   * `pending_since`-over-`recorded_at` clock, in a file that would then drift
+   * from this one.
+   */
+  actionIds?: readonly string[];
+  /**
+   * Named `linkedin_actions.id`s this sweep must NOT touch.
+   *
+   * The mirror of `actionIds`, and it exists for one caller for one reason.
+   * `jobs.ts` runs the unattended sweep on the seat's ACCOUNT default staleness
+   * (21 days), but an invite that belongs to a managed campaign member has a
+   * staleness the workflow itself declared -- the `withdraw_pending` step's
+   * `afterDays` -- and that number is the operator's decision about that
+   * campaign, not a default to be quietly overridden. So the sweep runs once
+   * per declared `afterDays` over the invites it applies to, and then once more
+   * over everything else, and "everything else" is what this expresses.
+   *
+   * An include-list could not say it: `actionIds` would need every unmanaged
+   * invite enumerated up front, which is the whole table, and would silently
+   * stop being correct the moment a new one is written between the two queries.
+   */
+  excludeActionIds?: readonly string[];
 }
 
 /**
@@ -310,6 +341,13 @@ export async function selectWithdrawalCandidates(
   const olderThanDays = Math.max(0, options.olderThanDays ?? DEFAULT_STALE_AFTER_DAYS);
   const limit = Math.max(1, Math.trunc(options.limit ?? DEFAULT_CANDIDATE_LIMIT));
   const cutoff = new Date(now.getTime() - olderThanDays * 86_400_000).toISOString();
+  // NULL, not an empty array: an absent filter must select everything, and
+  // `= ANY('{}')` selects nothing.
+  const actionIds = options.actionIds && options.actionIds.length > 0 ? [...options.actionIds] : null;
+  // Same NULL-not-empty rule read the other way: an absent exclusion must
+  // exclude nothing, and `<> ALL('{}')` is true for every row, so either shape
+  // works here -- NULL is used anyway so both filters read identically.
+  const excludeIds = options.excludeActionIds && options.excludeActionIds.length > 0 ? [...options.excludeActionIds] : null;
 
   const rows = await db.prepare(`
     SELECT a.id, a.target_ref, a.campaign_id,
@@ -320,6 +358,8 @@ export async function selectWithdrawalCandidates(
       AND a.target_ref IS NOT NULL
       AND COALESCE(a.pending_since, a.recorded_at) IS NOT NULL
       AND COALESCE(a.pending_since, a.recorded_at) <= ?::timestamptz
+      AND (?::text[] IS NULL OR a.id = ANY(?::text[]))
+      AND (?::text[] IS NULL OR NOT (a.id = ANY(?::text[])))
       AND NOT EXISTS (
         SELECT 1 FROM linkedin_withdrawals w
         WHERE w.workspace_id=a.workspace_id AND w.seat_key=a.seat_key
@@ -332,6 +372,10 @@ export async function selectWithdrawalCandidates(
     seat.workspaceId,
     seat.seatKey,
     cutoff,
+    actionIds,
+    actionIds,
+    excludeIds,
+    excludeIds,
     limit
   );
 
@@ -598,7 +642,14 @@ export async function evaluateWithdrawalSafety(
     { excludeActionId: subject.actionId }
   );
 
-  const posture = await getSeatPosture(db, seat.workspaceId, now);
+  // PER SEAT, and the omission this line replaces was not cosmetic:
+  // `getSeatPosture` defaults its last argument to the OWNER seat, so a
+  // withdrawal pass on a secondary account read the owner's posture. A paused
+  // or cooling secondary kept withdrawing on the owner's say-so, and an owner
+  // in cooldown froze accounts that were fine. `seat.seatKey` is the whole fix
+  // and it is the same fix `postgresLocalWorkerStore.seatPosture` already
+  // carries a comment about.
+  const posture = await getSeatPosture(db, seat.workspaceId, now, seat.seatKey);
   const dailyCeiling = withdrawalCeilingFor(posture);
   const usedToday = await withdrawalsInWindow(db, seat, 24, now);
   const underCeiling = usedToday + 1 <= dailyCeiling;
@@ -945,7 +996,9 @@ export async function runWithdrawalBatch(
     haltReason: null
   };
 
-  const refusal = postureRefusal(await getSeatPosture(db, seat.workspaceId, now()));
+  // Per seat, for the reason `evaluateWithdrawalSafety` gives: this batch is
+  // ONE account's, and the posture that may stop it is that account's.
+  const refusal = postureRefusal(await getSeatPosture(db, seat.workspaceId, now(), seat.seatKey));
   if (refusal) return { ...result, halted: true, haltReason: refusal };
 
   for (let index = 0; index < maxActions; index += 1) {
@@ -956,8 +1009,9 @@ export async function runWithdrawalBatch(
     }
 
     // Re-read every pass, so pausing the seat stops the loop within one action
-    // rather than at the end of the queue.
-    const current = postureRefusal(await getSeatPosture(db, seat.workspaceId, now()));
+    // rather than at the end of the queue -- and read for THIS seat, so pausing
+    // this account stops this loop and pausing another one does not.
+    const current = postureRefusal(await getSeatPosture(db, seat.workspaceId, now(), seat.seatKey));
     if (current) {
       result.halted = true;
       result.haltReason = current;
@@ -977,7 +1031,11 @@ export async function runWithdrawalBatch(
     else result.failed += 1;
 
     if (outcome.blocked) log(`LinkedIn withdrawal ${claimed.id} was refused: ${outcome.detail}`);
-    if (outcome.cooldown) await upsertSeat(db, seat.workspaceId, { posture: 'cooldown' }, now());
+    // THE SEAT THAT HIT THE WALL IS THE SEAT THAT COOLS. `upsertSeat` also
+    // defaults to the owner, so a limit wall on a secondary account used to put
+    // the OWNER into cooldown -- stopping the account that was behaving and
+    // leaving the restricted one to keep clicking.
+    if (outcome.cooldown) await upsertSeat(db, seat.workspaceId, { posture: 'cooldown' }, now(), seat.seatKey);
 
     if (outcome.halt) {
       result.halted = true;

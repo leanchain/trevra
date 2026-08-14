@@ -18,7 +18,9 @@ import {
   WARMUP_WEEKS,
   WEEKEND_FACTOR,
   bandFor,
+  effectiveDailyCeiling,
   isPassiveKind,
+  seatOperatorLimit,
   warmupMultiplierFor,
   type PacedKind
 } from './limits.js';
@@ -158,6 +160,70 @@ export function isWeekend(weekday: number): boolean {
   return weekday === 0 || weekday === 6;
 }
 
+/**
+ * The days and hours ONE SEAT actually works, in its own local clock.
+ *
+ * The operator's configuration is authoritative and `BUSINESS_HOURS` is the
+ * fallback for the only case with no seat to ask -- `guard.ts` evaluating a
+ * workspace that has never configured one.
+ *
+ * Both the planner and the gate read this same window, and that is the whole
+ * point of it living here. A planner that placed slots against a hardcoded
+ * 08:00-18:00 Mon-Fri while the gate enforced the seat's own 10:00-14:00
+ * Tue/Thu does not produce a BLOCKED action -- it produces one that is
+ * refused at execution time and silently never happens.
+ */
+export interface WorkWindow {
+  /** JS weekday numbers, Sunday=0. Empty disables automated activity entirely. */
+  days: readonly number[];
+  /** Minutes after local midnight. `endMinute` is exclusive. */
+  startMinute: number;
+  endMinute: number;
+}
+
+/** The window for a workspace with no seat: the researched default, nothing configured. */
+export const DEFAULT_WORK_WINDOW: WorkWindow = {
+  days: [1, 2, 3, 4, 5],
+  startMinute: BUSINESS_HOURS.start * 60,
+  endMinute: BUSINESS_HOURS.end * 60
+};
+
+/** Structural, so neither this module nor `guard.ts` has to import the seat row's whole type. */
+export interface WorkWindowSeat {
+  workingDays: readonly number[];
+  workStartMinute: number;
+  workEndMinute: number;
+}
+
+export function workWindowOf(seat: WorkWindowSeat | null | undefined): WorkWindow {
+  if (!seat) return DEFAULT_WORK_WINDOW;
+  return { days: [...seat.workingDays], startMinute: seat.workStartMinute, endMinute: seat.workEndMinute };
+}
+
+/** 'HH:MM' for a minute-of-day, for the sentences both the plan and the gate write. */
+export function formatMinuteOfDay(minute: number): string {
+  return `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+}
+
+/**
+ * What one weekday's volume is multiplied by, and the single predicate the
+ * planner and the gate both answer "may this seat act on this day" with.
+ *
+ * A DAY THE OPERATOR CONFIGURED IS A WORKING DAY, weekend or not. Ticking
+ * Saturday in `working_days` is an explicit statement about this account, and
+ * WEEKEND_FACTOR does not get to veto it -- the factor is VOLUME SHAPING for a
+ * weekend day nobody configured (0.0 today: a founder's LinkedIn going quiet
+ * at the weekend is the least remarkable thing about it). Any other
+ * unconfigured day is 0: this seat does not work it.
+ *
+ * `> 0` is the workable-day test. Reading it in both files is what stops the
+ * plan and the gate disagreeing about which days exist.
+ */
+export function weekdayVolumeFactor(window: WorkWindow, weekday: number): number {
+  if (window.days.includes(weekday)) return 1;
+  return isWeekend(weekday) ? WEEKEND_FACTOR : 0;
+}
+
 export function addLocalDays(date: LocalDate, days: number): LocalDate {
   const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day) + days * 86_400_000);
   return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() };
@@ -186,7 +252,7 @@ function seededRandom(seed: string): () => number {
 }
 
 /**
- * Seconds-of-day for `count` actions inside the business-hours window.
+ * Seconds-of-day for `count` actions inside the seat's own working window.
  *
  * Evenly spread with jitter, NOT a randomised burst. 1.4 asks for two things
  * that sound like one -- "randomised 30-120s gaps" and "never a 2-hour block"
@@ -199,17 +265,39 @@ function seededRandom(seed: string): () => number {
  * `random` is consumed a fixed two draws per slot regardless of which branch
  * is taken, so the sequence cannot desynchronise between runs.
  */
-function spreadWithinBusinessHours(count: number, random: () => number, earliestSecond: number): number[] {
+function spreadWithinWorkingHours(count: number, random: () => number, earliestSecond: number, window: WorkWindow): number[] {
   if (count <= 0) return [];
-  const windowStart = Math.max(BUSINESS_HOURS.start * 3600, earliestSecond);
-  const windowEnd = BUSINESS_HOURS.end * 3600;
+  const windowStart = Math.max(window.startMinute * 60, earliestSecond);
+  const windowEnd = window.endMinute * 60;
   const span = Math.max(0, windowEnd - windowStart);
-  const spacing = span / count;
+
+  /**
+   * How many slots this window can actually hold, spaced at least
+   * `ACTION_GAP_SECONDS.max` apart in the worst case.
+   *
+   * WITHOUT THIS, a `count` that does not fit -- a same-day plan generated
+   * late in the window is the normal way to reach one -- ran the loop below
+   * anyway: `cursor = Math.min(at, windowEnd - 1)` clamped every slot past
+   * the window's true capacity to the SAME second, `windowEnd - 1`. That is
+   * several automated actions at one literal instant, a harder detection
+   * signature than the "twenty minutes of machine-gun activity" this
+   * function exists to avoid (see the comment above). Bounding by the
+   * MAXIMUM gap rather than the minimum is deliberate conservatism: the
+   * grid-plus-jitter placement below only needs `ACTION_GAP_SECONDS.min`
+   * between slots when there is room to spare, but under `random()`'s worst
+   * draw two slots can be up to `ACTION_GAP_SECONDS.max` apart, so that is
+   * the bound capacity must respect for the loop to never need to clamp.
+   */
+  const capacity = span <= 0 ? 0 : Math.floor(span / ACTION_GAP_SECONDS.max) + 1;
+  const scheduled = Math.min(count, capacity);
+  if (scheduled <= 0) return [];
+
+  const spacing = span / scheduled;
   const jitterRoom = Math.max(0, spacing - ACTION_GAP_SECONDS.max);
 
   const seconds: number[] = [];
   let cursor = Number.NEGATIVE_INFINITY;
-  for (let index = 0; index < count; index += 1) {
+  for (let index = 0; index < scheduled; index += 1) {
     const target = windowStart + index * spacing + random() * jitterRoom;
     const gap = ACTION_GAP_SECONDS.min + random() * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min);
     const at = index === 0 ? target : Math.max(target, cursor + gap);
@@ -232,16 +320,26 @@ function sumOfLast(values: readonly number[], count: number): number {
  * compare today's count against itself, which passes by construction and
  * gates nothing.
  *
- * Weekend buckets are skipped, also on purpose. WEEKEND_FACTOR is 0, so a
- * Sunday is 0 by design, and seeding Monday's clamp from it would reset the
- * ramp every single week -- manufacturing the exact weekly sawtooth plan 1.3
- * describes as the thing that gets accounts restricted. Shared with `guard.ts`
- * so the plan and the gate can never disagree about what "yesterday" was.
+ * NON-WORKING buckets are skipped, also on purpose. A day this seat does not
+ * work is 0 by design -- a weekend under WEEKEND_FACTOR 0, or any weekday the
+ * operator did not tick -- and seeding the next day's clamp from it would
+ * reset the ramp every single week, manufacturing the exact weekly sawtooth
+ * plan 1.3 describes as the thing that gets accounts restricted. A seat
+ * configured for Tuesdays and Thursdays would otherwise ramp from a Monday
+ * zero every Tuesday, forever.
+ *
+ * `window` defaults to the researched Mon-Fri window, which is what a
+ * workspace with no seat is paced against. Shared with `guard.ts` so the plan
+ * and the gate can never disagree about what "yesterday" was.
  */
-export function previousBusinessDayCount(history: readonly number[], todayLocal: LocalDate): number {
+export function previousBusinessDayCount(
+  history: readonly number[],
+  todayLocal: LocalDate,
+  window: WorkWindow = DEFAULT_WORK_WINDOW
+): number {
   for (let index = history.length - 2; index >= 0; index -= 1) {
     const bucketDate = addLocalDays(todayLocal, -(history.length - 1 - index));
-    if (isWeekend(weekdayOf(bucketDate))) continue;
+    if (weekdayVolumeFactor(window, weekdayOf(bucketDate)) === 0) continue;
     return history[index];
   }
   return 0;
@@ -259,7 +357,7 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
   const ceilingsApplied: string[] = [];
 
   // --- Step 1: posture, and the warm-up week derived from account age. ---
-  const seat = await getSeat(db, input.workspaceId);
+  const seat = await getSeat(db, input.workspaceId, seatKey);
   if (!seat) {
     reasons.push('No LinkedIn seat is configured for this workspace, so there is nothing to pace. Add one with a label, a timezone, and the date the account was opened.');
     return { seatKey, slots: [], reasons, ceilingsApplied };
@@ -269,6 +367,19 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
   if (posture === 'paused') {
     ceilingsApplied.push('seat-paused');
     reasons.push(`Seat '${seat.label}' is paused${seat.pausedReason ? `: ${seat.pausedReason}` : ''}. Nothing is scheduled while it is paused.`);
+    return { seatKey, slots: [], reasons, ceilingsApplied };
+  }
+
+  // The seat's own days and hours, not a constant. Every slot below is placed
+  // inside this window because `guard.ts` refuses one outside it, and a plan
+  // the gate refuses is an action that stalls rather than an action that is
+  // blocked with a reason.
+  const window = workWindowOf(seat);
+  if (window.days.length === 0) {
+    ceilingsApplied.push('working-days');
+    reasons.push(
+      `Seat '${seat.label}' has no working days configured, so there is no day this plan could place an action on. Tick at least one day in this account's schedule.`
+    );
     return { seatKey, slots: [], reasons, ceilingsApplied };
   }
 
@@ -286,17 +397,52 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
   const warmupWeek = warmupWeekOf(seat.activatedAt, now);
   const band = bandFor(input.kind, posture === 'steady' ? 'steady' : 'warmup');
 
-  // --- Step 2: base daily volume = band ceiling x warm-up multiplier. ---
-  //
-  // Passive kinds skip the multiplier -- 1.4's week 1 is "passive only", so
-  // views ARE the warm-up rather than something it suppresses. Zeroing them
-  // would leave a new seat inert for seven days and then acting, which is the
-  // "slide and spike" shape this engine exists to avoid producing.
+  /* --- Step 2: base daily volume = daily ceiling x warm-up multiplier. ---
+   *
+   * THE CEILING, NOT THE BAND, and that distinction was missing entirely.
+   * This function read `bandFor()` and nothing else, so it never once looked
+   * at the four numbers the operator actually configured on the seat. An
+   * operator who set 5 invites/day and asked for a plan got a schedule of 18 a
+   * day -- every slot past the fifth refused by `guard.ts` at execution time,
+   * which is not a blocked action with a reason, it is an action that silently
+   * never happens. The planner and the gate reconcile the two numbers the same
+   * way now, through the same function.
+   *
+   * Passive kinds skip the multiplier -- 1.4's week 1 is "passive only", so
+   * views ARE the warm-up rather than something it suppresses. Zeroing them
+   * would leave a new seat inert for seven days and then acting, which is the
+   * "slide and spike" shape this engine exists to avoid producing.
+   */
   const passive = isPassiveKind(input.kind);
   const multiplier = warmupMultiplierFor(input.kind, warmupWeek);
-  const baseDaily = Math.floor(band.perDay * multiplier);
+  const operatorLimit = seatOperatorLimit(seat, input.kind);
+  const dailyCeiling = effectiveDailyCeiling(band.perDay, operatorLimit, seat.safetyBandOverride);
+  const baseDaily = Math.floor(dailyCeiling * multiplier);
   reasons.push(
-    `Seat '${seat.label}' is ${posture}, warm-up week ${warmupWeek}: ${band.perDay} ${input.kind}/day x ${multiplier} = ${baseDaily}/day before smoothing.`
+    `Seat '${seat.label}' is ${posture}, warm-up week ${warmupWeek}: ${dailyCeiling} ${input.kind}/day x ${multiplier} = ${baseDaily}/day before smoothing.`
+  );
+  // THE BINDING NUMBER IS NAMED, whichever it is. These sentences are what a
+  // founder reads to find out why a plan is the size it is, and "18/day"
+  // against a form that says 30 is the question they would otherwise have to
+  // ask support.
+  if (operatorLimit !== null && operatorLimit < band.perDay && !seat.safetyBandOverride) {
+    ceilingsApplied.push('operator-daily-limit');
+    reasons.push(
+      `Your own ceiling for this account is ${operatorLimit} ${input.kind}(s)/day, which is stricter than Trevra's ${band.perDay}/day ${posture} safety band, so yours is the one that binds. Raise it in this account's settings if you want more.`
+    );
+  } else if (operatorLimit !== null && operatorLimit > band.perDay && !seat.safetyBandOverride) {
+    ceilingsApplied.push('safety-band');
+    reasons.push(
+      `You have set ${operatorLimit} ${input.kind}(s)/day for this account, but Trevra's researched ${posture} band is ${band.perDay}/day and the stricter of the two binds -- so this plan is built on ${band.perDay}/day, not ${operatorLimit}. Turning on "use my own daily limits" for this account makes your number the binding one; the warm-up ramps, the rolling windows and the variance clamp all still apply either way.`
+    );
+  } else if (operatorLimit !== null && seat.safetyBandOverride && operatorLimit > band.perDay) {
+    ceilingsApplied.push('operator-daily-limit');
+    reasons.push(
+      `This account is set to use your own daily limits instead of Trevra's safety bands, so ${operatorLimit} ${input.kind}(s)/day binds rather than the researched ${band.perDay}/day. Every other ceiling -- the warm-up ramp, the rolling 7-day and 30-day windows, and the day-over-day variance clamp -- still applies.`
+    );
+  }
+  reasons.push(
+    `Slots are placed between ${formatMinuteOfDay(window.startMinute)} and ${formatMinuteOfDay(window.endMinute)} in ${seat.timezone}, on weekday(s) ${window.days.join(', ')} -- this account's configured working window, which is the same window the safety gate refuses a slot outside of.`
   );
   if (passive && warmupWeek <= WARMUP_WEEKS) {
     reasons.push(`${input.kind} is passive activity, so it runs at the full ${posture} band during warm-up instead of being ramped. Every other ceiling still applies.`);
@@ -360,11 +506,11 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
   const nowSecondOfDay = todayLocal.hour * 3600 + todayLocal.minute * 60 + todayLocal.second;
   // A plan generated after the window has closed starts tomorrow rather than
   // back-dating slots into an evening nobody will act on.
-  const startsToday = nowSecondOfDay < BUSINESS_HOURS.end * 3600;
+  const startsToday = nowSecondOfDay < window.endMinute * 60;
   const startDate = startsToday ? todayLocal : addLocalDays(todayLocal, 1);
 
   // --- Step 3 seed: the most recent BUSINESS day's actual count. ---
-  let previousActual = previousBusinessDayCount(history, todayLocal);
+  let previousActual = previousBusinessDayCount(history, todayLocal, window);
   reasons.push(`Previous business day carried ${previousActual} ${input.kind}(s); the next day may not exceed it by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%.`);
 
   const seed = canonicalPayloadHash({
@@ -383,10 +529,12 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
   let assigned = 0;
   let deltaClamped = false;
   let weekendSkipped = false;
+  let offDaySkipped = false;
   let scanDayClamped = false;
   let weeklyClamped = false;
   let monthlyClamped = false;
   let backlogClamped = false;
+  let windowCapacityClamped = false;
 
   for (let dayIndex = 0; dayIndex < horizon && assigned < targets.length; dayIndex += 1) {
     const day = addLocalDays(startDate, dayIndex);
@@ -400,15 +548,25 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
     // --- Step 4: acceptance-rate throttle. Halves, never zeroes. ---
     if (throttled) allowed = Math.max(allowed > 0 ? 1 : 0, Math.floor(allowed * ACCEPTANCE_THROTTLE_FACTOR));
 
-    // --- Step 5: weekend factor, then the Tue/Wed enforcement-scan rule. ---
-    const weekend = isWeekend(weekday);
-    if (weekend) {
-      allowed = Math.floor(allowed * WEEKEND_FACTOR);
-      weekendSkipped = true;
-    } else if (ENFORCEMENT_SCAN_WEEKDAYS.includes(weekday)) {
+    // --- Step 5: the seat's configured days, then the Tue/Wed scan rule. ---
+    //
+    // The configured days decide WHICH days exist for this seat; the weekend
+    // factor only shapes the volume of a weekend day nobody configured. So an
+    // operator who ticked Saturday gets Saturdays at full volume, and the gate
+    // agrees because it reads the same `weekdayVolumeFactor`.
+    const dayFactor = weekdayVolumeFactor(window, weekday);
+    if (dayFactor < 1) {
+      allowed = Math.floor(allowed * dayFactor);
+      if (isWeekend(weekday)) weekendSkipped = true;
+      else offDaySkipped = true;
+    }
+    if (dayFactor > 0 && ENFORCEMENT_SCAN_WEEKDAYS.includes(weekday)) {
       // Not skipped -- capped. A day's MAXIMUM is never scheduled on a scan
       // day; skipping two of five working days would create its own sawtooth.
-      const capped = Math.min(allowed, Math.max(0, band.perDay - 1));
+      // Measured against the EFFECTIVE ceiling, because that is what "a day's
+      // maximum" means for this seat: an operator capped at 5 whose band is 18
+      // would otherwise see this rule do nothing at all.
+      const capped = Math.min(allowed, Math.max(0, dailyCeiling - 1));
       if (capped < allowed) scanDayClamped = true;
       allowed = capped;
     }
@@ -437,9 +595,18 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
 
     const count = Math.min(allowed, targets.length - assigned);
 
-    // --- Step 6: spread inside business hours, seat-local, seeded jitter. ---
+    // --- Step 6: spread inside the working window, seat-local, seeded jitter. ---
     const earliest = dayIndex === 0 && startsToday ? nowSecondOfDay : 0;
-    for (const secondOfDay of spreadWithinBusinessHours(count, random, earliest)) {
+    const secondsOfDay = spreadWithinWorkingHours(count, random, earliest, window);
+    // The window itself can hold fewer than `count` slots without crowding
+    // (see `spreadWithinWorkingHours`'s own capacity note) -- typically only
+    // the first, partial day of a plan generated late in the business-hours
+    // window. Bookkeeping below uses what was ACTUALLY scheduled, never the
+    // request: `timeline` and `previousActual` feed tomorrow's day-over-day
+    // ceiling, and overstating today's count there would hand a future day a
+    // more permissive ceiling than this seat actually earned.
+    if (secondsOfDay.length < count) windowCapacityClamped = true;
+    for (const secondOfDay of secondsOfDay) {
       slots.push({
         plannedFor: zonedToUtc(day, secondOfDay, seat.timezone).toISOString(),
         kind: input.kind,
@@ -448,8 +615,8 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
       assigned += 1;
     }
 
-    timeline.push(count);
-    if (!weekend) previousActual = count;
+    timeline.push(secondsOfDay.length);
+    if (dayFactor > 0) previousActual = secondsOfDay.length;
   }
 
   // --- Step 7: report every ceiling that bound, not just the first. ---
@@ -459,7 +626,17 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
   }
   if (weekendSkipped) {
     ceilingsApplied.push('weekend');
-    reasons.push('Weekend days are left empty; the ramp resumes from the last business day rather than from zero.');
+    reasons.push(
+      WEEKEND_FACTOR === 0
+        ? 'Weekend days this account has not configured as working days are left empty; the ramp resumes from the last working day rather than from zero.'
+        : `Weekend days this account has not configured as working days carry ${(WEEKEND_FACTOR * 100).toFixed(0)}% of a working day's volume; a weekend day it HAS configured is a working day and carries a full one.`
+    );
+  }
+  if (offDaySkipped) {
+    ceilingsApplied.push('working-days');
+    reasons.push(
+      `Days outside this account's configured working days (${window.days.join(', ')}) are left empty. The safety gate refuses a slot outside them, so planning one would stall the action rather than perform it.`
+    );
   }
   if (scanDayClamped) {
     ceilingsApplied.push('enforcement-scan-day');
@@ -481,6 +658,12 @@ export async function planPacing(db: Db, input: PacingInput, now: Date): Promise
       input.kind === 'inmail'
         ? `LinkedIn's published 50-InMail monthly quota bound on at least one day; ${band.perMonth} is a hard quota, not a pacing preference.`
         : `The rolling 30-day ceiling of ${band.perMonth} ${input.kind}(s) bound on at least one day.`
+    );
+  }
+  if (windowCapacityClamped) {
+    ceilingsApplied.push('business-hours-window-capacity');
+    reasons.push(
+      `At least one day carried fewer than its allowed count: the remaining business-hours window did not have room for all of them at a safe ${ACTION_GAP_SECONDS.min}-${ACTION_GAP_SECONDS.max}s spacing, so the rest rolled to the next available day rather than crowding the window's close.`
     );
   }
   if (assigned < targets.length) {
@@ -520,7 +703,7 @@ export const linkedinPacingSkill: Skill<PacingSkillInput, PacingPlan> = {
     name: 'LinkedIn pacing plan',
     version: '1.0.0',
     description:
-      'Schedule LinkedIn actions for one seat across a horizon: warm-up ramp from account age, day-over-day variance smoothing against the real ledger, acceptance-rate throttle, weekend and enforcement-scan rules, and a deterministic spread inside the seat\'s business hours.',
+      'Schedule LinkedIn actions for one seat across a horizon: warm-up ramp from account age, day-over-day variance smoothing against the real ledger, acceptance-rate throttle, weekend and enforcement-scan rules, and a deterministic spread inside the seat\'s own configured working days and hours.',
     sideEffect: 'none',
     requiresApproval: false,
     inputSchema,

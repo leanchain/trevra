@@ -306,4 +306,38 @@ describe('hasTarget', () => {
     // And an explicit null is the same as omitting it.
     expect(await hasTarget(db, SEAT, 'invite', 'https://in/claimed', null)).toBe(true);
   });
+
+  it('only counts a row that shares the replay scope, exactly as the 047 index does', async () => {
+    // A managed workflow names `member:step`, so its second message step is a
+    // different action rather than a repeat of the first. The gate used to ask
+    // the unscoped question and refuse it forever -- stricter than the ledger
+    // it guards, which would have stored both rows quite happily.
+    await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'dm', targetRef: 'https://in/lead', status: 'sent', source: 'campaign', replayScope: 'limem_1:step-2' },
+      NOW
+    );
+
+    // The same step for the same member is still a duplicate.
+    expect(await hasTarget(db, SEAT, 'dm', 'https://in/lead', null, 'limem_1:step-2')).toBe(true);
+    // A LATER step is a different action, and the ledger would accept it.
+    expect(await hasTarget(db, SEAT, 'dm', 'https://in/lead', null, 'limem_1:step-4')).toBe(false);
+    // And an unscoped caller asks the legacy question, which this row is not in.
+    expect(await hasTarget(db, SEAT, 'dm', 'https://in/lead')).toBe(false);
+  });
+
+  it('keeps the legacy guard exactly as strict for callers that name no scope', async () => {
+    await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://in/exported', status: 'exported', source: 'export' },
+      NOW
+    );
+
+    // Both unscoped: still a duplicate, which is what stops a replayed export
+    // from inviting one stranger twice.
+    expect(await hasTarget(db, SEAT, 'invite', 'https://in/exported')).toBe(true);
+    expect(await hasTarget(db, SEAT, 'invite', 'https://in/exported', null, 'legacy')).toBe(true);
+    // Blank and whitespace normalise to 'legacy', the way `recordAction` does.
+    expect(await hasTarget(db, SEAT, 'invite', 'https://in/exported', null, '   ')).toBe(true);
+  });
 });

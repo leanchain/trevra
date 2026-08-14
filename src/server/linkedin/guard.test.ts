@@ -21,6 +21,8 @@ beforeEach(async () => {
     .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
     .run(WORKSPACE_ID, 'LinkedIn Guard Test', NOW.toISOString());
   await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(WORKSPACE_ID);
+  await db.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=?').run(WORKSPACE_ID);
+  await db.prepare('DELETE FROM linkedin_workflows WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
 });
 
@@ -65,7 +67,7 @@ function check(verdict: LinkedInSafetyVerdict, name: LinkedInCheckName) {
 }
 
 describe('the every-check contract', () => {
-  it('runs all thirteen checks even when the very first one fails', async () => {
+  it('runs all fourteen checks even when the very first one fails', async () => {
     // No seat, a weekend midnight slot, and a duplicate target all at once.
     // The reference behaviour this mirrors -- outreach/safety.ts -- exists
     // because short-circuiting makes an operator fix one blocker per run.
@@ -238,6 +240,41 @@ describe('timing', () => {
     expect(check(verdict, 'weekend').passed).toBe(false);
   });
 
+  it('lets a seat that WORKS Saturdays act on a Saturday', async () => {
+    // WEEKEND_FACTOR shapes the volume of a weekend day nobody configured. It
+    // does not overrule an operator who ticked Saturday in `working_days`:
+    // the configured days are authoritative for the weekday question, and
+    // `pacing.ts` places slots on exactly the days this check accepts.
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Weekend seat', timezone: 'UTC', workingDays: [3, 6], workStartMinute: 600, workEndMinute: 840 },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+    const verdict = await guard({ plannedFor: '2026-08-08T11:00:00.000Z' });
+    expect(check(verdict, 'weekend').passed).toBe(true);
+    expect(check(verdict, 'weekend').detail).toContain('explicitly configured');
+    expect(check(verdict, 'business-hours').passed).toBe(true);
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it('still refuses a day the operator did not tick, and the hours outside the window', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Weekend seat', timezone: 'UTC', workingDays: [3, 6], workStartMinute: 600, workEndMinute: 840 },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+    // Thursday: a weekday, and not one of this seat's working days.
+    const offDay = await guard({ plannedFor: '2026-08-06T11:00:00.000Z' });
+    expect(check(offDay, 'business-hours').passed).toBe(false);
+    expect(check(offDay, 'business-hours').detail).toContain('weekday(s) 3,6');
+    // Wednesday, but at 09:00 -- an hour before the configured window opens.
+    const early = await guard({ plannedFor: '2026-08-05T09:00:00.000Z' });
+    expect(check(early, 'business-hours').passed).toBe(false);
+    expect(check(early, 'business-hours').detail).toContain('between 10:00 and 14:00');
+  });
+
   it('names Tuesday and Wednesday as enforcement-scan days without blocking them', async () => {
     await seat('2026-01-01');
     const verdict = await guard({ plannedFor: '2026-08-11T10:00:00.000Z' });
@@ -326,7 +363,7 @@ describe('InMail quota and duplicates', () => {
     expect(verdict.allowed).toBe(false);
   });
 
-  it('leaves the other twelve checks untouched when a row is excluded', async () => {
+  it('leaves every other check untouched when a row is excluded', async () => {
     await seat('2026-01-01');
     const claimed = await recordAction(
       db,
@@ -394,5 +431,299 @@ describe('InMail quota and duplicates', () => {
     );
     const verdict = await guard({ kind: 'dm', targetRef: 'https://www.linkedin.com/in/known' });
     expect(check(verdict, 'duplicate-target').passed).toBe(true);
+  });
+});
+
+/**
+ * THE CAMPAIGN-DAY RAMP, the second of the two warm-ups.
+ *
+ * `warmup-ceiling` ramps by week since the SEAT was first automated;
+ * `campaign-warmup` ramps by day since this CAMPAIGN was started, at the
+ * manager brief's 20/40/60/80/100%. Both apply, and the stricter one binds --
+ * a seat automated since January is at full capacity and a campaign it started
+ * this morning still only gets a fifth of it.
+ */
+describe('campaign warm-up', () => {
+  let campaignSeq = 0;
+
+  async function campaignRow(startedAt: string | null, options: { workflow?: boolean } = {}): Promise<string> {
+    const workflowId = 'liwf_guard_test';
+    const withWorkflow = options.workflow !== false;
+    if (withWorkflow) {
+      await db
+        .prepare(
+          'INSERT INTO linkedin_workflows (id,workspace_id,name,steps_json,created_at,updated_at) VALUES (?,?,?,?::jsonb,?,?) ON CONFLICT (id) DO NOTHING'
+        )
+        .run(workflowId, WORKSPACE_ID, 'Guard test workflow', '[]', NOW.toISOString(), NOW.toISOString());
+    }
+    campaignSeq += 1;
+    const campaignId = `licmp_guard_${campaignSeq}`;
+    await db
+      .prepare(`
+        INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,workflow_id,started_at,created_at,updated_at)
+        VALUES (?,?,?,'running','{}'::jsonb,'owner',?,?::timestamptz,?,?)
+      `)
+      .run(campaignId, WORKSPACE_ID, `Guard campaign ${campaignSeq}`, withWorkflow ? workflowId : null, startedAt, NOW.toISOString(), NOW.toISOString());
+    return campaignId;
+  }
+
+  async function logCampaignInvites(campaignId: string, count: number): Promise<void> {
+    for (let index = 0; index < count; index += 1) {
+      actionSeq += 1;
+      await recordAction(
+        db,
+        { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: `campaign-${actionSeq}`, campaignId, status: 'sent', source: 'campaign' },
+        new Date(NOW.getTime() - 3_600_000)
+      );
+    }
+  }
+
+  function seatWithInviteLimit(limit: number) {
+    return upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', dailyInviteLimit: limit },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+  }
+
+  it('blocks the third invite of a managed campaign on its first day', async () => {
+    await seatWithInviteLimit(10);
+    const campaignId = await campaignRow(NOW.toISOString());
+
+    // Day 1 is 20% of the seat's effective 10/day ceiling: two invites.
+    const fresh = await guard({ campaignId });
+    expect(check(fresh, 'campaign-warmup').passed).toBe(true);
+    expect(check(fresh, 'campaign-warmup').detail).toContain('0 of 2');
+    expect(check(fresh, 'campaign-warmup').detail).toContain('campaign day 1');
+
+    await logCampaignInvites(campaignId, 2);
+    const third = await guard({ campaignId });
+    expect(check(third, 'campaign-warmup').passed).toBe(false);
+    expect(check(third, 'campaign-warmup').detail).toContain('2 of 2');
+    expect(third.reason).toContain('campaign-warmup');
+    // The per-seat ramp is untouched and still passing -- this seat has been
+    // automated since January. Two ramps, and the stricter one binds.
+    expect(check(third, 'warmup-ceiling').passed).toBe(true);
+    expect(check(third, 'rolling-24h').passed).toBe(true);
+  });
+
+  it('lifts the ceiling as the campaign ages: day 3 is 60%', async () => {
+    await seatWithInviteLimit(10);
+    const campaignId = await campaignRow(new Date(NOW.getTime() - 2 * 86_400_000).toISOString());
+    await logCampaignInvites(campaignId, 2);
+    const verdict = await guard({ campaignId });
+    expect(check(verdict, 'campaign-warmup').passed).toBe(true);
+    expect(check(verdict, 'campaign-warmup').detail).toContain('2 of 6');
+    expect(check(verdict, 'campaign-warmup').detail).toContain('campaign day 3');
+  });
+
+  it('passes, and says why, for a campaign that is not a managed one', async () => {
+    await seatWithInviteLimit(10);
+    // No workflow and never started: a 025-era campaign folder whose actions a
+    // human exports by hand. Never silently absent -- reported as not ramped.
+    const campaignId = await campaignRow(null, { workflow: false });
+    const verdict = await guard({ campaignId });
+    expect(check(verdict, 'campaign-warmup').passed).toBe(true);
+    expect(check(verdict, 'campaign-warmup').detail).toContain('not a managed campaign');
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it('passes, and says why, when no campaign was named at all', async () => {
+    await seatWithInviteLimit(10);
+    const verdict = await guard();
+    expect(check(verdict, 'campaign-warmup').passed).toBe(true);
+    expect(check(verdict, 'campaign-warmup').detail).toContain('No campaign was named');
+  });
+
+  it('counts only this campaign\'s own actions', async () => {
+    await seatWithInviteLimit(10);
+    const first = await campaignRow(NOW.toISOString());
+    const second = await campaignRow(NOW.toISOString());
+    await logCampaignInvites(first, 2);
+
+    // One seat runs several campaigns and their ramps are independent -- the
+    // seat-level ceilings above are what stop the total running away.
+    const verdict = await guard({ campaignId: second });
+    expect(check(verdict, 'campaign-warmup').passed).toBe(true);
+    expect(check(verdict, 'campaign-warmup').detail).toContain('0 of 2');
+  });
+});
+
+/**
+ * TWO DAILY CEILINGS, NOT ONE, and the difference is what an InMail costs.
+ *
+ * Trevra's band is per kind; the operator's "messages" setting is one pool over
+ * dm+reply+inmail. Comparing the POOL against the per-kind band collapsed the
+ * whole pool to whichever band was smallest, so an account that had sent three
+ * DMs could never send an InMail.
+ */
+describe('the operator pool and the per-kind band are independent', () => {
+  function seatWithMessageLimit(limit: number) {
+    return upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', dailyMessageLimit: limit },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+  }
+
+  it('LETS AN INMAIL THROUGH after three DMs, instead of collapsing the pool to 3', async () => {
+    await seatWithMessageLimit(25);
+    for (let index = 0; index < 3; index += 1) await log('dm', 'sent', 1);
+
+    // Before: `min(inmail band 3, operator 25) = 3` was compared against the
+    // POOL count of 3, so 3 + 1 <= 3 failed and every InMail was refused.
+    const inmail = await guard({ kind: 'inmail' });
+    expect(check(inmail, 'rolling-24h').passed).toBe(true);
+    expect(check(inmail, 'rolling-24h').detail).toContain("3 of the operator's 25");
+  });
+
+  it('lets a reply through after twelve DMs, for the same reason', async () => {
+    await seatWithMessageLimit(25);
+    for (let index = 0; index < 12; index += 1) await log('dm', 'sent', 1);
+    expect(check(await guard({ kind: 'reply' }), 'rolling-24h').passed).toBe(true);
+  });
+
+  it('still enforces the per-kind band against that kind\'s own count', async () => {
+    await seatWithMessageLimit(25);
+    // Three InMails is the whole steady band for InMails, whatever the pool says.
+    for (let index = 0; index < 3; index += 1) await log('inmail', 'sent', 1);
+    const verdict = await guard({ kind: 'inmail' });
+    expect(check(verdict, 'rolling-24h').passed).toBe(false);
+    expect(check(verdict, 'rolling-24h').detail).toContain('per-kind ceiling is full');
+  });
+
+  it('still enforces the operator pool across all three message kinds', async () => {
+    await seatWithMessageLimit(5);
+    // Two DMs, two replies and one InMail is five messages: the pool is full,
+    // even though no single kind is anywhere near its band.
+    for (let index = 0; index < 2; index += 1) await log('dm', 'sent', 1);
+    for (let index = 0; index < 2; index += 1) await log('reply', 'sent', 1);
+    await log('inmail', 'sent', 1);
+
+    const verdict = await guard({ kind: 'dm' });
+    expect(check(verdict, 'rolling-24h').passed).toBe(false);
+    expect(check(verdict, 'rolling-24h').detail).toContain('operator pool is full');
+  });
+
+  it('names the stricter of the two numbers in the ceiling it quotes', async () => {
+    await seatWithMessageLimit(4);
+    const verdict = await guard({ kind: 'dm' });
+    // 4 < the 12/day steady dm band, so the operator's number is what binds and
+    // the sentence says which is which.
+    expect(check(verdict, 'rolling-24h').detail).toContain("the stricter of Trevra's 12/day safety band and the operator setting 4/day");
+    expect(check(verdict, 'warmup-ceiling').detail).toContain('4/day');
+  });
+});
+
+describe('duplicate-target is scoped the way the ledger is scoped', () => {
+  it('does not let one workflow step veto the next one', async () => {
+    await seat('2026-01-01');
+    await recordAction(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'dm',
+        targetRef: 'https://www.linkedin.com/in/lead/',
+        status: 'sent',
+        source: 'campaign',
+        replayScope: 'limem_1:step-2'
+      },
+      new Date(NOW.getTime() - 3_600_000)
+    );
+
+    // Step 4 is a different action, and the ledger's own replay index (047)
+    // would store it. The gate used to refuse it forever, so a workflow with
+    // two message steps could never send the second.
+    const next = await evaluateLinkedInSafety(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'dm',
+        targetRef: 'https://www.linkedin.com/in/lead/',
+        plannedFor: SLOT,
+        replayScope: 'limem_1:step-4'
+      },
+      NOW
+    );
+    expect(check(next, 'duplicate-target').passed).toBe(true);
+    expect(check(next, 'duplicate-target').detail).toContain("limem_1:step-4");
+
+    // And a genuine repeat of the SAME step for the SAME member is still the
+    // thing the replay guard exists to prevent.
+    const repeat = await evaluateLinkedInSafety(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'dm',
+        targetRef: 'https://www.linkedin.com/in/lead/',
+        plannedFor: SLOT,
+        replayScope: 'limem_1:step-2'
+      },
+      NOW
+    );
+    expect(check(repeat, 'duplicate-target').passed).toBe(false);
+  });
+
+  it('keeps the legacy one-kind-per-target guard for unscoped callers', async () => {
+    await seat('2026-01-01');
+    // An export writes with no replay scope, which stores 'legacy'. A second
+    // unscoped invite to that target is still the duplicate it always was --
+    // this is what stops a replayed export inviting one stranger twice.
+    await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/exported/', status: 'exported', source: 'export' },
+      new Date(NOW.getTime() - 3_600_000)
+    );
+    const verdict = await guard({ targetRef: 'https://www.linkedin.com/in/exported/' });
+    expect(check(verdict, 'duplicate-target').passed).toBe(false);
+  });
+});
+
+/**
+ * Migration 044's column, honoured. The COMMENT on it is the specification:
+ * it relaxes ONE check, for replies only, and says so out loud.
+ */
+describe('the warm-up ceiling override', () => {
+  it('relaxes the warm-up ceiling for a reply, and says it was overridden', async () => {
+    await seat('2026-08-04'); // Week 1: the ramp permits no messages at all.
+    const refused = await guard({ kind: 'reply' });
+    expect(check(refused, 'warmup-ceiling').passed).toBe(false);
+
+    const overridden = await guard({ kind: 'reply', overrideWarmupCeiling: true });
+    expect(check(overridden, 'warmup-ceiling').passed).toBe(true);
+    expect(check(overridden, 'warmup-ceiling').detail).toContain('overrode the warm-up ceiling');
+    expect(check(overridden, 'warmup-ceiling').detail).toContain('relaxes this ceiling and nothing else');
+  });
+
+  it('leaves every other check able to refuse', async () => {
+    await seat('2026-08-04');
+    // Outside business hours, with the override on: still refused, and not by
+    // the warm-up ceiling.
+    const nightly = await evaluateLinkedInSafety(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'reply',
+        targetRef: 'https://www.linkedin.com/in/maya/',
+        plannedFor: '2026-08-06T02:00:00.000Z',
+        overrideWarmupCeiling: true
+      },
+      NOW
+    );
+    expect(check(nightly, 'warmup-ceiling').passed).toBe(true);
+    expect(nightly.allowed).toBe(false);
+    expect(nightly.reason).toContain('business-hours');
+  });
+
+  it('is ignored for every kind except a reply', async () => {
+    await seat('2026-08-04');
+    // A warm-up ramp exists to stop a new seat behaving like an established
+    // one; answering somebody who wrote to you first is the only exception
+    // offered, and a cold DM is not it.
+    const dm = await guard({ kind: 'dm', overrideWarmupCeiling: true });
+    expect(check(dm, 'warmup-ceiling').passed).toBe(false);
+    expect(check(dm, 'warmup-ceiling').detail).not.toContain('overrode');
   });
 });

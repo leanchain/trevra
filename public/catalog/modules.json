@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1.0.0",
-  "generatedAt": "2026-08-04T00:03:19+02:00",
-  "sourceRevision": "365131940d83",
+  "generatedAt": "2026-08-13T21:44:16+02:00",
+  "sourceRevision": "123b574b5695",
   "project": "Trevra",
   "contract": {
     "inputs": "Zod-validated input schema",
@@ -235,7 +235,7 @@
       "id": "gtm.linkedin-guard",
       "name": "LinkedIn seat safety gate",
       "version": "1.0.0",
-      "description": "Check one proposed LinkedIn action against every per-seat ceiling at once: pause state, warm-up week, rolling 24h/7d/30d windows, day-over-day variance, acceptance rate, business hours, weekends, the published InMail quota, the outstanding-invite backlog, and duplicate targets.",
+      "description": "Check one proposed LinkedIn action against every per-seat ceiling at once: pause state, warm-up week, the campaign-day warm-up ramp, rolling 24h/7d/30d windows, day-over-day variance, acceptance rate, the seat's configured working days and hours, weekends, the published InMail quota, the outstanding-invite backlog, and duplicate targets.",
       "sideEffect": "none",
       "requiresApproval": false,
       "runtime": "builtin",
@@ -266,7 +266,7 @@
       "id": "gtm.linkedin-pace",
       "name": "LinkedIn pacing plan",
       "version": "1.0.0",
-      "description": "Schedule LinkedIn actions for one seat across a horizon: warm-up ramp from account age, day-over-day variance smoothing against the real ledger, acceptance-rate throttle, weekend and enforcement-scan rules, and a deterministic spread inside the seat's business hours.",
+      "description": "Schedule LinkedIn actions for one seat across a horizon: warm-up ramp from account age, day-over-day variance smoothing against the real ledger, acceptance-rate throttle, weekend and enforcement-scan rules, and a deterministic spread inside the seat's own configured working days and hours.",
       "sideEffect": "none",
       "requiresApproval": false,
       "runtime": "builtin",

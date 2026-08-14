@@ -4,9 +4,20 @@ import { WARMUP_WEEKS } from './limits.js';
 /**
  * The LinkedIn seat: the human account everything else is paced against.
  *
- * One seat per workspace (plan 7.1, DECIDED), so every function here is keyed
- * by workspace_id alone. The ledger still carries a `seat_key` for the agency
- * case; this module supplies the only value it ever takes today.
+ * A WORKSPACE MAY HAVE SEVERAL, AND THE UNIT OF EVERYTHING IS
+ * (workspace_id, seat_key). That is the change migration 045 opened and
+ * migration 049 finished: `linkedin_seats` is primary-keyed on the pair, and
+ * so is every fact derived from a seat -- its posture and warm-up clock (this
+ * module), its due actions and batches (`local-worker.ts`), its stored
+ * sign-in (`secrets/linkedin.ts`), its Chrome profile directory and its
+ * browser context. A checkpoint, a limit wall or a pause on one account
+ * therefore stops THAT account and leaves every other seat in the workspace
+ * draining.
+ *
+ * `owner` is the seat every single-seat workspace already has and the default
+ * every function here takes when no key is named, so a caller that predates
+ * multi-seat still resolves the same row it always did. It is a default, not a
+ * privilege: nothing below treats it as special.
  *
  * NOTHING SAFETY-CRITICAL READS A USER-DECLARED FIELD ANY MORE, and that is
  * the rule this module now enforces.
@@ -34,8 +45,15 @@ import { WARMUP_WEEKS } from './limits.js';
 export type SeatPosture = 'warmup' | 'steady' | 'paused' | 'cooldown';
 
 /**
- * The only seat key in use. Written into `linkedin_actions.seat_key` so the
- * ledger already has the column the deferred multi-seat case needs.
+ * The seat key every workspace starts with, and the default of every function
+ * in this module.
+ *
+ * NOT THE ONLY ONE ANY MORE, and nothing here may assume it is. It is the key
+ * a single-seat workspace has always used, so defaulting to it keeps every
+ * pre-multi-seat call site resolving the same row -- and it is the one value
+ * `secrets/linkedin.ts` reads out of `workspace_secrets` rather than out of
+ * `linkedin_seat_credentials`, which is the only place in the codebase where
+ * the difference between this key and any other is load-bearing.
  */
 export const OWNER_SEAT_KEY = 'owner';
 
@@ -84,6 +102,30 @@ export interface LinkedInSeat {
   dailyMessageLimit: number;
   dailyProfileViewLimit: number;
   dailyFollowLimit: number;
+  /**
+   * THE INFORMED OPT-IN THAT MAKES THE FOUR NUMBERS ABOVE BINDING.
+   *
+   * The product brief gives the operator a daily ceiling per kind (invites
+   * default 30, range 0-75; messages 25; profile views 25; follows 20), and
+   * every ceiling in this subsystem is `min(band, operator)` -- Trevra's own
+   * researched bands (`limits.ts`: 18 invites/day, 12 dm/day in the steady
+   * band) are stricter than the defaults the form offers. An operator who
+   * types 30 therefore gets 18, silently, with nothing anywhere saying why.
+   *
+   * False (the default) keeps that behaviour, which is the right one: the
+   * bands are what the research says, and quietly obeying a bigger number is
+   * how accounts get restricted. True says the operator has read what the
+   * band is and is taking their own number instead, and it lifts the
+   * steady/warm-up BAND cap only.
+   *
+   * WHAT IT DOES NOT LIFT, and this is the whole reason it is safe to offer:
+   * both ramps still apply on top of it -- the per-seat warm-up week
+   * (`warmupMultiplierFor`) and the per-campaign 20/40/60/80/100% day ramp
+   * (`campaignActionLimit`) -- as do the rolling windows, the day-over-day
+   * variance clamp, the working window, and posture. An override is a
+   * different ceiling, never an absence of one.
+   */
+  safetyBandOverride: boolean;
 }
 
 /**
@@ -112,6 +154,8 @@ export interface SeatPatch {
   dailyMessageLimit?: number;
   dailyProfileViewLimit?: number;
   dailyFollowLimit?: number;
+  /** See {@link LinkedInSeat.safetyBandOverride}. Absent means unchanged; a first write defaults to false. */
+  safetyBandOverride?: boolean;
 }
 
 interface SeatRow {
@@ -134,6 +178,7 @@ interface SeatRow {
   daily_message_limit: number;
   daily_profile_view_limit: number;
   daily_follow_limit: number;
+  safety_band_override: boolean;
 }
 
 /**
@@ -168,7 +213,8 @@ const SEAT_COLUMNS = `
   daily_invite_limit,
   daily_message_limit,
   daily_profile_view_limit,
-  daily_follow_limit
+  daily_follow_limit,
+  safety_band_override
 `;
 
 function parsedWorkingDays(value: unknown): number[] {
@@ -197,7 +243,10 @@ function toSeat(row: SeatRow): LinkedInSeat {
     dailyInviteLimit: Number(row.daily_invite_limit),
     dailyMessageLimit: Number(row.daily_message_limit),
     dailyProfileViewLimit: Number(row.daily_profile_view_limit),
-    dailyFollowLimit: Number(row.daily_follow_limit)
+    dailyFollowLimit: Number(row.daily_follow_limit),
+    // Fails CLOSED on a row this schema never wrote: an absent flag is not an
+    // override, it is a seat nobody has opted in for.
+    safetyBandOverride: row.safety_band_override === true
   };
 }
 
@@ -233,6 +282,33 @@ export async function linkedinWorkspaceIds(db: Db): Promise<string[]> {
     SELECT DISTINCT workspace_id FROM linkedin_seats ORDER BY workspace_id
   `).all<{ workspace_id: string }>();
   return rows.map((row) => row.workspace_id);
+}
+
+/** One configured LinkedIn account, named the way every execution path keys on it. */
+export interface SeatRef {
+  workspaceId: string;
+  seatKey: string;
+}
+
+/**
+ * EVERY seat on this deployment, as the pair everything downstream is keyed by.
+ *
+ * The multi-seat replacement for iterating {@link linkedinWorkspaceIds} and
+ * assuming one account behind each id. A worker doing the periodic work --
+ * reading the inbox, reconciling pending invites, draining withdrawals,
+ * walking a lead source -- has to do it once per ACCOUNT, because every one of
+ * those reads a different signed-in session; doing it once per workspace would
+ * silently serve only whichever seat came first.
+ *
+ * Paused and cooling seats are included, for the same reason
+ * `linkedinWorkspaceIds` includes them: every job re-reads the posture and
+ * refuses for itself, and filtering here would put that rule in two places.
+ */
+export async function linkedinSeatRefs(db: Db): Promise<SeatRef[]> {
+  const rows = await db.prepare(`
+    SELECT workspace_id, seat_key FROM linkedin_seats ORDER BY workspace_id, seat_key
+  `).all<{ workspace_id: string; seat_key: string }>();
+  return rows.map((row) => ({ workspaceId: row.workspace_id, seatKey: row.seat_key }));
 }
 
 export async function listSeats(db: Db, workspaceId: string): Promise<LinkedInSeat[]> {
@@ -324,6 +400,9 @@ export async function upsertSeat(
   const dailyMessageLimit = resolveLimit(patch.dailyMessageLimit, existing?.dailyMessageLimit ?? 25, 75, 'daily_message_limit');
   const dailyProfileViewLimit = resolveLimit(patch.dailyProfileViewLimit, existing?.dailyProfileViewLimit ?? 25, 100, 'daily_profile_view_limit');
   const dailyFollowLimit = resolveLimit(patch.dailyFollowLimit, existing?.dailyFollowLimit ?? 20, 50, 'daily_follow_limit');
+  // Absent means UNCHANGED, like every other field here; a seat that has never
+  // been opted in is false. There is no path that turns this on by inference.
+  const safetyBandOverride = patch.safetyBandOverride ?? existing?.safetyBandOverride ?? false;
   const timestamp = now.toISOString();
 
   const row = await db.prepare(`
@@ -331,8 +410,8 @@ export async function upsertSeat(
       workspace_id, seat_key, label, profile_url, account_opened_on, connections_count,
       timezone, activated_at, detected_at, session_valid_at, posture, paused_reason,
       working_days, work_start_minute, work_end_minute, daily_invite_limit,
-      daily_message_limit, daily_profile_view_limit, daily_follow_limit, created_at, updated_at
-    ) VALUES (?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?)
+      daily_message_limit, daily_profile_view_limit, daily_follow_limit, safety_band_override, created_at, updated_at
+    ) VALUES (?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, seat_key) DO UPDATE SET
       label = excluded.label,
       profile_url = excluded.profile_url,
@@ -353,6 +432,7 @@ export async function upsertSeat(
       daily_message_limit = excluded.daily_message_limit,
       daily_profile_view_limit = excluded.daily_profile_view_limit,
       daily_follow_limit = excluded.daily_follow_limit,
+      safety_band_override = excluded.safety_band_override,
       updated_at = excluded.updated_at
     RETURNING ${SEAT_COLUMNS}
   `).get<SeatRow>(
@@ -375,6 +455,7 @@ export async function upsertSeat(
     dailyMessageLimit,
     dailyProfileViewLimit,
     dailyFollowLimit,
+    safetyBandOverride,
     timestamp,
     timestamp
   );

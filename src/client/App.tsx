@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Bot,
@@ -87,6 +87,7 @@ import { AccountsScreen } from './AccountsScreen';
 import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
 import { OutreachInbox } from './LinkedInInbox';
 import { OutreachLeads } from './LinkedInLeads';
+import { LinkedInAccounts } from './LinkedInAccounts';
 import { OutreachManagerRead } from './LinkedInManagerRead';
 import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions, LinkedInSeatSetup, OutreachQueue, OutreachSeat } from './LinkedInScreen';
@@ -146,14 +147,27 @@ const NAV_ITEMS: Array<{ section: Section; path: string; icon: React.ReactNode; 
  * (ui/route.ts): a tab pointing at a segment the router does not answer to
  * would silently land on the section root.
  */
-const OUTREACH_ROUTES: Array<{ sub: string; label: string }> = [
-  { sub: '', label: 'Seat' },
-  { sub: 'leads', label: 'Lead sources' },
-  { sub: 'manager', label: 'Manager' },
-  { sub: 'plan', label: 'Plan' },
-  { sub: 'campaigns', label: 'Campaigns' },
-  { sub: 'queue', label: 'Queue' },
-  { sub: 'inbox', label: 'Inbox' }
+const OUTREACH_ROUTES: Array<{ sub: string; label: string; advanced?: true }> = [
+  { sub: '', label: 'Account' },
+  { sub: 'leads', label: 'Find leads' },
+  { sub: 'manager', label: 'Campaigns' },
+  { sub: 'inbox', label: 'Inbox' },
+  // THE ADVANCED THREE, and the order is the order they are used in.
+  //
+  // These are the ORIGINAL path: build a sequence, get its exact wording
+  // approved, then either hand it to the local worker's queue or export it for
+  // a tool Trevra does not drive. It still works and some operators need it --
+  // an export is the only route on a hosted deployment, which cannot drive a
+  // browser at all.
+  //
+  // It is not, however, what a first-time operator should meet. "Campaigns"
+  // above is the product: a lead list plus a workflow, started with one button
+  // and advanced by the runner. Two surfaces both called campaigns is how
+  // somebody spends an afternoon configuring the wrong one, so the primary one
+  // takes the name and these three are marked as the deeper path.
+  { sub: 'plan', label: 'Plan', advanced: true },
+  { sub: 'campaigns', label: 'Approve & export', advanced: true },
+  { sub: 'queue', label: 'Send queue', advanced: true }
 ];
 
 type ToastMessage = { message: string; undo?: () => void };
@@ -233,20 +247,48 @@ export function App() {
   const [hiddenIds, setHiddenIds] = useState<string[]>([]);
   const [overlay, setOverlay] = useState<'help' | 'shortcuts' | 'jump' | null>(null);
   const setToast = (message: string) => setToastState(message ? { message } : null);
+  // True once the fetch gating the loading screen has run past a reasonable
+  // window with no answer yet -- see the stall timer in `load` below.
+  const [loadStalled, setLoadStalled] = useState(false);
+  // Last call wins, matching the token pattern every other screen in this
+  // codebase already uses for a fetch that can overlap itself (a StrictMode
+  // double-mount, or a person hammering "Try again"). Without it, an older
+  // call finishing after a newer one could stomp the newer one's state.
+  const loadToken = useRef(0);
+  const loadStallTimer = useRef<number | null>(null);
 
   const load = async () => {
+    const token = ++loadToken.current;
+    setLoadStalled(false);
+    if (loadStallTimer.current !== null) window.clearTimeout(loadStallTimer.current);
+    // The loading screen used to have no ceiling: if `ensureSession` or
+    // `getDashboard` never settled -- a stuck connection, a backend mid-restart
+    // -- the spinner ran forever with nothing on screen to say so or to retry.
+    // 12s is past any normal cold load and short enough that a real stall gets
+    // an exit before the person watching it gives up and reloads by hand.
+    loadStallTimer.current = window.setTimeout(() => {
+      if (loadToken.current === token) setLoadStalled(true);
+    }, 12_000);
     try {
       setError('');
       await ensureSession();
-      setData(await getDashboard());
+      const next = await getDashboard();
+      if (loadToken.current !== token) return;
+      setData(next);
       setNeedsAuth(false);
     } catch (err) {
+      if (loadToken.current !== token) return;
       if (err instanceof ApiError && err.status === 401) {
         setData(null);
         setNeedsAuth(true);
         return;
       }
       setError(err instanceof Error ? err.message : 'Unable to load Trevra');
+    } finally {
+      if (loadToken.current === token && loadStallTimer.current !== null) {
+        window.clearTimeout(loadStallTimer.current);
+        loadStallTimer.current = null;
+      }
     }
   };
 
@@ -256,6 +298,7 @@ export function App() {
     // Not a route. `#get-started` is the marketing site's link into the signup
     // panel, and `parseRoute` leaves it alone precisely so this still sees it.
     if (window.location.hash === '#get-started') setShowAuth(true);
+    return () => { if (loadStallTimer.current !== null) window.clearTimeout(loadStallTimer.current); };
   }, []);
   // Fired per screen, not once per session: page views that cannot see
   // navigation cannot tell you anything about navigation.
@@ -379,11 +422,20 @@ export function App() {
     githubUrl={GITHUB_URL}
     onGetStarted={() => document.getElementById('hosted')?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth' })}
   />;
-  if (needsAuth === null) return <div className="center-state"><LoaderCircle className="spin" /> <span>Building your revenue brief…</span></div>;
+  // The bare spinner, and what replaces it once a stall has run past the
+  // window above: the same error/retry shape every other read failure on this
+  // screen already uses, not a second visual language for "still nothing".
+  const loadingGate = <div className="center-state"><LoaderCircle className="spin" /> <span>Building your revenue brief…</span></div>;
+  const stalledGate = <div className="center-state error">
+    <p>Still trying to reach Trevra. This is taking longer than it should.</p>
+    <button onClick={() => void load()}>Try again</button>
+  </div>;
+
+  if (needsAuth === null) return loadStalled ? stalledGate : loadingGate;
   if (needsAuth) return showAuth
     ? <AuthScreen onAuthenticated={load} onBack={() => setShowAuth(false)} />
     : <MarketingScreen githubUrl={GITHUB_URL} onGetStarted={() => setShowAuth(true)} />;
-  if (!data && !error) return <div className="center-state"><LoaderCircle className="spin" /> <span>Building your revenue brief…</span></div>;
+  if (!data && !error) return loadStalled ? stalledGate : loadingGate;
   if (error) return <div className="center-state error"><p>{error}</p><button onClick={() => void load()}>Try again</button></div>;
   if (!data) return null;
 
@@ -483,20 +535,27 @@ export function App() {
             />)}
 
         {route.section === 'outreach' && <div className="page-stack">
-          {/* Six sub-screens, and until now no way to reach five of them: the
-              routes existed, the strip that names them did not. Same markup
-              and same class family as Setup's, because they are the same
-              control and a second dialect would be a second thing to learn. */}
+          {/* Same markup and class family as Setup's strip, because it is the
+              same control and a second dialect would be a second thing to
+              learn. The one addition is the divider: the last three tabs are
+              the approve-and-export path, which is a different job from the
+              first four and should not read as a continuation of them. */}
           <nav className="outreach-nav" aria-label="Outreach sections">
-            {OUTREACH_ROUTES.map((entry) => <button
-              key={entry.sub}
-              type="button"
-              className={route.sub === entry.sub ? 'is-active' : undefined}
-              aria-current={route.sub === entry.sub ? 'page' : undefined}
-              onClick={() => go(`/outreach${entry.sub ? `/${entry.sub}` : ''}`)}
-            >{entry.label}</button>)}
+            {OUTREACH_ROUTES.map((entry, index) => <Fragment key={entry.sub}>
+              {entry.advanced && !OUTREACH_ROUTES[index - 1]?.advanced && <span className="outreach-nav-divider" aria-hidden="true" />}
+              <button
+                type="button"
+                className={route.sub === entry.sub ? 'is-active' : entry.advanced ? 'is-advanced' : undefined}
+                aria-current={route.sub === entry.sub ? 'page' : undefined}
+                onClick={() => go(`/outreach${entry.sub ? `/${entry.sub}` : ''}`)}
+              >{entry.label}</button>
+            </Fragment>)}
           </nav>
 
+          {/* Accounts first: which LinkedIn accounts exist, which one you are
+              working in, and how to add another. The seat panel below it is
+              the detail for the active one. */}
+          {route.sub === '' && <LinkedInAccounts setToast={setToast} />}
           {route.sub === '' && <OutreachSeat setToast={setToast} />}
           {route.sub === 'campaigns' && <OutreachCampaigns setToast={setToast} campaignId={route.id} />}
           {route.sub === 'inbox' && <OutreachInbox setToast={setToast} />}
@@ -1698,7 +1757,7 @@ function ClientsView({ data, onNavigate }: { data: DashboardPayload; onNavigate:
         <div className="client-card-value"><small>Relationship value</small><strong>{money(client.activeValue, client.currency)}</strong></div>
         <div className="client-next"><small>Next action</small><strong title={client.nextAction ?? undefined}>{clip(client.nextAction ?? 'No urgent action', 60)}</strong></div>
       </article>)}
-      {data.clients.length === 0 && <div className="empty-state"><BriefcaseBusiness size={28} /><h4>No clients yet</h4><p>Connect a tool or upload an agreement and your clients appear here.</p><button className="secondary-button" onClick={() => onNavigate('/setup/data')}>Connect a tool <ChevronRight size={15} /></button></div>}
+      {data.clients.length === 0 && <div className="empty-state"><BriefcaseBusiness size={28} /><h4 aria-level={3}>No clients yet</h4><p>Connect a tool or upload an agreement and your clients appear here.</p><button className="secondary-button" onClick={() => onNavigate('/setup/data')}>Connect a tool <ChevronRight size={15} /></button></div>}
     </div>
   </section>;
 }
@@ -1787,7 +1846,7 @@ function ConnectionsView({ data, reload, setToast, busyId, setBusyId }: {
             ><Unplug size={17} /></button>}
           </div>
         </article>)}
-        {data.connections.length === 0 && <div className="empty-state"><Link2 size={28} /><h4>No tools connected</h4><p>Pick one below and sign in on the provider’s own screen — it takes about a minute.</p></div>}
+        {data.connections.length === 0 && <div className="empty-state"><Link2 size={28} /><h4 aria-level={3}>No tools connected</h4><p>Pick one below and sign in on the provider’s own screen — it takes about a minute.</p></div>}
       </div>
     </section>
 
@@ -2278,9 +2337,18 @@ function NavButton({ active, icon, label, badge, onClick }: {
 function viewTitle(route: Route): string {
   if (route.section === 'loop') return route.sub === 'cost' ? 'What this cost' : 'Your loop';
   if (route.section === 'outreach') {
-    if (route.sub === 'campaigns') return 'Campaigns';
+    // ONE NAME PER SCREEN, and it is the name in the nav.
+    //
+    // `manager` had no case at all, so the tab labelled "Campaigns" landed on a
+    // heading that said "Outreach seat" -- and `campaigns`, which the nav calls
+    // "Approve & export", took the title "Campaigns" for itself. Two screens
+    // claiming one name is the exact confusion OUTREACH_ROUTES was reorganised
+    // to remove: see the comment there for why the managed runner is the one
+    // that gets the word.
+    if (route.sub === 'campaigns') return 'Approve & export';
     if (route.sub === 'inbox') return 'Inbox';
     if (route.sub === 'leads') return 'Lead sources';
+    if (route.sub === 'manager') return 'Campaigns';
     if (route.sub === 'plan') return 'Plan preview';
     if (route.sub === 'queue') return 'Queue';
     return 'Outreach seat';

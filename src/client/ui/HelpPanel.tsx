@@ -34,23 +34,26 @@ const HELP: Record<Section, HelpTopic> = {
     vocabulary: [
       { term: 'Stage', meaning: 'One of the six things that happen between a stranger and a paid invoice: Find, Reach, Answer, Deliver, Bill, Paid.' },
       { term: 'Stuck', meaning: 'The one stage that is holding up the others. Never more than one at a time — if two are stuck, the earlier one is the one you can do something about.' },
-      { term: 'Not connected yet', meaning: 'That stage has no backend in this build. It is drawn so the loop is whole, and it will never show you a zero it cannot stand behind.' }
+      { term: 'Not built yet', meaning: 'That stage has nothing behind it in this build. It is drawn so the loop is whole, and it will never show you a zero it cannot stand behind.' }
     ],
     more: <p>The loop and the vocabulary behind it are written down in <code>docs/gtm-shell-shape.md</code> and <code>docs/founder-skills.md</code>.</p>
   },
   outreach: {
     heading: 'Outreach',
-    does: 'Run the seat: what may go out today, why that number, and where the variance is. Nothing on any of these screens sends anything — there is no route that would let one. What reaches LinkedIn reaches it through a file you download and run in your own tool, or through the self-hosted worker driving a browser you logged into by hand.',
+    does: 'Run your LinkedIn accounts: build a lead list, build a workflow, start a campaign, and answer what comes back. What may go out today and why that number is on the account screen. Nothing sends from a Trevra server — what reaches LinkedIn goes through the worker driving a browser you signed into yourself, or through a file you download and run in your own tool.',
     vocabulary: [
       { term: 'HARD FACT', meaning: 'LinkedIn published the number, or refuses the action past it.' },
       { term: 'REPORTED', meaning: 'Practitioners measured it and LinkedIn has never confirmed it. Directionally right, never a guarantee.' },
-      { term: 'Paced kind', meaning: 'An action type the engine rations — invites, DMs, InMails — as opposed to one it only records.' },
-      { term: 'Posture', meaning: 'What this seat is doing right now: warming up, steady, cooling down, or paused.' },
-      { term: 'Band ceiling', meaning: 'What the seat’s connection-count band allows before warm-up, throttling or posture touch it.' },
-      { term: 'Day-over-day clamp', meaning: 'The most today’s volume may differ from yesterday’s, so a seat never jumps.' },
-      { term: 'Gated action', meaning: 'A row queued for the local worker, re-checked against every safety rule before it is performed. A queued reply is not a sent one.' },
+      { term: 'Workflow', meaning: 'The steps a lead goes through — profile view, connection request, message, follow, a manual message you write yourself — with a wait between each one.' },
+      { term: 'Campaign', meaning: 'One lead list running through one workflow on one LinkedIn account. Start it and it advances by itself; a lead can only be in one at a time.' },
+      { term: 'Manual message', meaning: 'A step that stops and waits for you. It shows up in the inbox, and the lead moves on once you mark it done.' },
+      { term: 'Warm-up', meaning: 'Two ramps, and the stricter one applies: a new account builds up over its first weeks, and a new campaign starts at 20% of your daily limits and reaches full on day five.' },
+      { term: 'Daily limits', meaning: 'Your own ceilings per account — connection requests, messages, profile views, follows. Trevra also has its own safety ceiling; whichever is smaller is the one that applies.' },
+      { term: 'Working hours', meaning: 'The days and hours this account is allowed to act. Nothing is scheduled or performed outside them, in that account’s own timezone.' },
+      { term: 'Sending status', meaning: 'What an account is doing right now: ramping up, running, slowed down, or paused.' },
+      { term: 'Safety check', meaning: 'Every action is re-checked against every limit immediately before it is performed. A queued message is not a sent one.' },
       { term: 'Branch', meaning: 'A step that waits on an earlier step’s outcome — accepted, replied, or neither. The default is “always”, which is what every unbranched sequence already is.' },
-      { term: 'Lead sourcing', meaning: 'Reading profiles out of a search page or a post. A separate opt-in from sending, because it is scraping under LinkedIn’s User Agreement 8.2 and the exposure is not the same.' }
+      { term: 'Lead sourcing', meaning: 'Reading profiles out of a search page, a post, or the posts and comments matching your keywords. A separate opt-in from sending, because it is scraping under LinkedIn’s User Agreement 8.2 and the exposure is not the same.' }
     ],
     more: <p>The pacing policy, and where each number came from, is in <code>docs/linkedin-outreach-plan.md</code>. The public write-up is at <a href="/how-it-works">How it works</a>.</p>
   },
@@ -195,18 +198,18 @@ export function ShortcutSheet({ onClose }: { onClose: () => void }) {
 const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   { path: '/loop', label: 'Loop', hint: 'What the loop is doing, and where it is stuck' },
   { path: '/loop/cost', label: 'What this cost', hint: 'Spent, sent, produced — one period' },
-  { path: '/outreach', label: 'Outreach · Seat', hint: 'What may go out today, and why that number' },
-  { path: '/outreach/campaigns', label: 'Outreach · Campaigns', hint: 'Build and approve a sequence' },
-  { path: '/outreach/inbox', label: 'Outreach · Inbox', hint: 'Conversations, and replies queued as gated actions' },
-  { path: '/outreach/leads', label: 'Outreach · Lead sources', hint: 'Walk a search or a post into a list of people' },
+  { path: '/outreach', label: 'Outreach · Account', hint: 'Your LinkedIn accounts, and what may go out today' },
+  { path: '/outreach/manager', label: 'Outreach · Campaigns', hint: 'Lead lists, workflows, and running campaigns' },
+  { path: '/outreach/inbox', label: 'Outreach · Inbox', hint: 'Replies, and the messages waiting for you to write' },
+  { path: '/outreach/leads', label: 'Outreach · Find leads', hint: 'Turn a search, a post or keywords into a list of people' },
+  { path: '/outreach/campaigns', label: 'Outreach · Approve & export', hint: 'Write a sequence, approve the wording, export it' },
   { path: '/outreach/plan', label: 'Outreach · Plan preview', hint: 'A dry run. Writes nothing' },
-  { path: '/outreach/queue', label: 'Outreach · Queue', hint: 'What is scheduled, and what happened to it' },
   { path: '/money', label: 'Money', hint: 'Agreed, delivered, billed, paid — and what wasn’t' },
   { path: '/ledger', label: 'Run ledger', hint: 'Every run, with the evidence' },
   { path: '/setup/agent', label: 'Setup · Agent access', hint: 'Connect Claude Code or Codex' },
   { path: '/setup/spend', label: 'Setup · The spending cap', hint: 'The monthly cap and the switch, inside Agent access' },
   { path: '/setup/data', label: 'Setup · Connections', hint: 'Where your data comes from' },
-  { path: '/setup/seat', label: 'Setup · LinkedIn seat', hint: 'Identity, credentials, worker' },
+  { path: '/setup/seat', label: 'Setup · LinkedIn account', hint: 'Identity, sign-in, worker' },
   { path: '/setup/skills', label: 'Setup · Skills', hint: 'What your agent can do, and running one by hand' },
   { path: '/setup/limits', label: 'Setup · Limits', hint: 'Automation rules, hard limits, never-contact list' }
 ];

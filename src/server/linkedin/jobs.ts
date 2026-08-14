@@ -27,12 +27,15 @@ import {
   stopLinkedInBatches,
   type LinkedInLocalWorkerConfig
 } from './local-worker.js';
+import { runManagedCampaigns, type RunnerResult } from './runner.js';
 import { OWNER_SEAT_KEY } from './seats.js';
 import {
+  DEFAULT_CANDIDATE_LIMIT,
   runWithdrawalBatch,
   sweepStaleInvites,
   syncPendingInvites,
   type WithdrawalBatchResult,
+  type WithdrawalCandidate,
   type WithdrawalCandidateOptions
 } from './withdraw.js';
 
@@ -332,6 +335,130 @@ export interface WithdrawalJobResult extends WithdrawalBatchResult {
 }
 
 /**
+ * The staleness a managed workflow declared for one seat's invites.
+ *
+ * Every pending invite this seat holds that belongs to a campaign member whose
+ * workflow has a `withdraw_pending` step, paired with that step's own
+ * `afterDays`. Read from `linkedin_workflows.steps_json` -- the LIVE workflow,
+ * the same one `runner.ts` reads when it ticks the step, rather than the
+ * snapshot in `linkedin_campaigns.sequence_json`, so editing a workflow changes
+ * the sweep exactly as it changes the runner.
+ *
+ * ONE STATEMENT RATHER THAN A LOOP OVER CAMPAIGNS: a seat can carry a dozen
+ * campaigns and a lead list can carry thousands of members, and the answer is
+ * one join away.
+ *
+ * The first `withdraw_pending` step wins when a workflow has several. That is a
+ * choice and the conservative one is not available: a workflow with two
+ * withdraw steps has two answers and no way to say which invite belongs to
+ * which, and the FIRST one is the earliest deadline the operator wrote down.
+ */
+async function managedInviteStaleness(db: Db, seat: SeatRef): Promise<Array<{ actionId: string; afterDays: number }>> {
+  const rows = await db.prepare(`
+    SELECT a.id AS action_id, (
+      SELECT (step->'config'->>'afterDays')::int
+      FROM jsonb_array_elements(w.steps_json) AS step
+      WHERE step->>'action' = 'withdraw_pending'
+      LIMIT 1
+    ) AS after_days
+    FROM linkedin_actions a
+    JOIN linkedin_campaign_members m ON m.id = a.campaign_member_id AND m.workspace_id = a.workspace_id
+    JOIN linkedin_campaigns c ON c.id = m.campaign_id AND c.workspace_id = m.workspace_id
+    JOIN linkedin_workflows w ON w.id = c.workflow_id AND w.workspace_id = c.workspace_id
+    WHERE a.workspace_id=? AND a.seat_key=? AND a.kind='invite'
+      AND a.status IN ('sent', 'exported')
+      AND a.campaign_member_id IS NOT NULL
+  `).all<{ action_id: string; after_days: number | null }>(seat.workspaceId, seat.seatKey);
+
+  const out: Array<{ actionId: string; afterDays: number }> = [];
+  for (const row of rows) {
+    // A workflow with no withdraw step said nothing about staleness, so its
+    // invites fall through to the account default with everything else.
+    if (row.after_days === null) continue;
+    const afterDays = Number(row.after_days);
+    if (!Number.isFinite(afterDays) || afterDays <= 0) continue;
+    out.push({ actionId: row.action_id, afterDays });
+  }
+  return out;
+}
+
+/**
+ * The sweep, run once per staleness rule instead of once on the account default.
+ *
+ * THE DEFAULT WAS OVERRULING THE OPERATOR. `DEFAULT_STALE_AFTER_DAYS` is 21,
+ * and the unattended pass supplied no `olderThanDays` at all, so every pending
+ * invite in the workspace was withdrawn at 21 days -- including the ones
+ * belonging to a campaign whose workflow says, in a field the operator typed a
+ * number into, to wait 30. The workflow's `withdraw_pending` step was honoured
+ * only on the runner's own path (`handleWithdrawStep`), and this pass quietly
+ * withdrew the invite a week early behind it.
+ *
+ * So the invites are partitioned. Each declared `afterDays` sweeps its own
+ * invites at its own age; everything else -- a one-off export, a hand-sent
+ * invite, a campaign whose workflow has no withdraw step -- sweeps at the
+ * caller's number or the account default, and is the only thing that does.
+ *
+ * A CALLER'S EXPLICIT `olderThanDays` DOES NOT REACH THE MANAGED ONES, and that
+ * is deliberate rather than an oversight. "Withdraw everything older than seven
+ * days" is a statement about the backlog; "wait thirty days before withdrawing
+ * on this campaign" is a statement about a specific campaign, made in that
+ * campaign's own workflow, and the narrower statement wins. The direction it
+ * errs in is leaving an invite pending longer, never withdrawing one sooner
+ * than somebody asked.
+ *
+ * `limit` is a budget across the WHOLE sweep, not per partition, so splitting
+ * the query cannot multiply how much one pass queues.
+ */
+async function sweepStaleInvitesRespectingWorkflows(
+  db: Db,
+  seat: SeatRef,
+  now: Date,
+  options: WithdrawalCandidateOptions = {}
+): Promise<{ candidates: WithdrawalCandidate[]; queued: number; duplicates: number }> {
+  const managed = await managedInviteStaleness(db, seat);
+
+  const byAfterDays = new Map<number, string[]>();
+  for (const entry of managed) {
+    const bucket = byAfterDays.get(entry.afterDays);
+    if (bucket) bucket.push(entry.actionId);
+    else byAfterDays.set(entry.afterDays, [entry.actionId]);
+  }
+
+  const candidates: WithdrawalCandidate[] = [];
+  let queued = 0;
+  let duplicates = 0;
+  let budget = Math.max(1, Math.trunc(options.limit ?? DEFAULT_CANDIDATE_LIMIT));
+
+  // Ascending, so the oldest deadline gets first call on the budget when a pass
+  // cannot queue everything it found.
+  for (const afterDays of [...byAfterDays.keys()].sort((left, right) => left - right)) {
+    if (budget <= 0) break;
+    const swept = await sweepStaleInvites(db, seat, now, {
+      olderThanDays: afterDays,
+      actionIds: byAfterDays.get(afterDays) as string[],
+      limit: budget
+    });
+    candidates.push(...swept.candidates);
+    queued += swept.queued;
+    duplicates += swept.duplicates;
+    budget -= swept.candidates.length;
+  }
+
+  if (budget > 0) {
+    const swept = await sweepStaleInvites(db, seat, now, {
+      ...(options.olderThanDays === undefined ? {} : { olderThanDays: options.olderThanDays }),
+      ...(managed.length === 0 ? {} : { excludeActionIds: managed.map((entry) => entry.actionId) }),
+      limit: budget
+    });
+    candidates.push(...swept.candidates);
+    queued += swept.queued;
+    duplicates += swept.duplicates;
+  }
+
+  return { candidates, queued, duplicates };
+}
+
+/**
  * Sweep stale invites into the queue, then drain the queue at paced gaps.
  *
  * THE SWEEP AND THE DRAIN ARE ONE CALL AND TWO DECISIONS. Queueing is pure
@@ -358,7 +485,7 @@ export async function runLinkedInWithdrawals(
   const seat = seatOf(options.workspaceId, options.seatKey);
   const log = options.log ?? (() => {});
 
-  const swept = await sweepStaleInvites(db, seat, now, {
+  const swept = await sweepStaleInvitesRespectingWorkflows(db, seat, now, {
     ...(options.olderThanDays === undefined ? {} : { olderThanDays: options.olderThanDays }),
     ...(options.limit === undefined ? {} : { limit: options.limit })
   });
@@ -487,6 +614,7 @@ export async function runLinkedInSideTasks(
     withdrawals: null,
     leads: []
   };
+
   if (!config.enabled) return result;
 
   const jobs: Array<[string, () => Promise<void>]> = [
@@ -528,6 +656,40 @@ export async function runLinkedInSideTasks(
   }
 
   return result;
+}
+
+/**
+ * Advance every running managed campaign in one workspace.
+ *
+ * SEPARATE FROM `runLinkedInSideTasks`, and separate for two reasons.
+ *
+ * It is WORKSPACE work, not SEAT work. The side tasks now run once per seat --
+ * each account has its own inbox to read and its own backlog to reconcile --
+ * but a campaign advances once per tick regardless of how many accounts the
+ * workspace has, and running the tick per seat would hand the same member two
+ * steps in one cycle.
+ *
+ * It also NEEDS NO BROWSER. It reads campaign state and writes 'planned' rows,
+ * which is arithmetic, not automation, so it must keep working on a deployment
+ * where the local worker is off -- otherwise a paused install silently freezes
+ * every campaign mid-workflow with nothing recording why.
+ *
+ * Ordered AFTER the side tasks by its callers, deliberately: it plans from
+ * outcomes the inbox sync has already recorded, rather than from a ledger that
+ * is half-updated for this cycle.
+ */
+export async function runLinkedInCampaignTick(
+  db: Db,
+  workspaceId: string,
+  options: { now?: Date; log?: (message: string) => void } = {}
+): Promise<RunnerResult | null> {
+  const log = options.log ?? ((message: string) => console.log(message));
+  try {
+    return await runManagedCampaigns(db, workspaceId, options.now ?? new Date());
+  } catch (cause) {
+    log(`LinkedIn campaign tick failed for ${workspaceId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    return null;
+  }
 }
 
 /** Re-exported so a route can stop a withdrawal pass with the switch that stops a batch. */

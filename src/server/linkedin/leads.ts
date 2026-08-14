@@ -6,13 +6,19 @@ import {
   HARD_MAX_PAGES,
   HARD_MAX_RESULTS,
   canonicalProfileUrl,
+  contentSearchUrlFor,
   playwrightScrapeDriver,
   postUrlFor,
+  salesNavigatorUrlFor,
   searchResultsUrlFor,
+  type LeadInteractionKind,
   type LinkedInScrapeDriver,
   type LinkedInScrapePage,
+  type ScrapeOptions,
+  type ScrapeResult,
   type ScrapedLead
 } from './driver-scrape.js';
+import { scrubNameField, splitAndScrubName } from './lead-import.js';
 import { getSeatPosture, type SeatPosture } from './seats.js';
 
 /**
@@ -126,7 +132,25 @@ export function leadSourcingOffReason(config: Pick<LeadSourcingConfig, 'optIn' |
  * Rows.
  * ------------------------------------------------------------------------ */
 
-export type LeadSourceKind = 'search' | 'post';
+/**
+ * The four surfaces a list of people can come from.
+ *
+ * FOUR KINDS AND NOT A GENERIC 'url', for the reason migration 030 gives for
+ * the first two: they are four different walks with four different selector
+ * tables and four different failure shapes, and a column that said only "a
+ * URL" would push that distinction into a regex at every read site.
+ *
+ *   'search'          -- /search/results/people/, walked page by page
+ *   'post'            -- one post permalink; its reactors and its commenters
+ *   'sales_navigator' -- /sales/search/people, a different product's result list
+ *   'content'         -- /search/results/content/, keyword discovery: the posts
+ *                        that match, then their authors and commenters
+ */
+export type LeadSourceKind = 'search' | 'post' | 'sales_navigator' | 'content';
+
+/** Every accepted kind, for the route schema that has to name them. */
+export const LEAD_SOURCE_KINDS = ['search', 'post', 'sales_navigator', 'content'] as const;
+
 export type LeadSourceStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export interface LinkedInLeadSource {
@@ -149,9 +173,16 @@ export interface LinkedInLead {
   workspaceId: string;
   sourceId: string;
   profileUrl: string;
+  /** The scrubbed display name -- `firstName` and `lastName` joined. */
   name: string | null;
+  firstName: string | null;
+  lastName: string | null;
   headline: string | null;
   company: string | null;
+  /** The post they were found on, or null when the surface was not a post. */
+  postUrl: string | null;
+  /** 'post' for its author, 'comment' for a commenter, null otherwise. */
+  interactionKind: LeadInteractionKind | null;
   createdAt: string;
 }
 
@@ -175,8 +206,12 @@ interface LeadRow {
   source_id: string;
   profile_url: string;
   name: string | null;
+  first_name: string | null;
+  last_name: string | null;
   headline: string | null;
   company: string | null;
+  post_url: string | null;
+  interaction_kind: string | null;
   created_at: string;
 }
 
@@ -185,7 +220,17 @@ const SOURCE_COLUMNS = `
   result_count, failure_reason, created_at, updated_at
 `;
 
-const LEAD_COLUMNS = `id, workspace_id, source_id, profile_url, name, headline, company, created_at`;
+const LEAD_COLUMNS = `
+  id, workspace_id, source_id, profile_url, name, first_name, last_name,
+  headline, company, post_url, interaction_kind, created_at
+`;
+
+const INTERACTION_KINDS = new Set<string>(['post', 'comment']);
+
+/** The stored kind, or null. An unrecognised string is a null, never a guess. */
+function interactionKindOf(value: string | null | undefined): LeadInteractionKind | null {
+  return value && INTERACTION_KINDS.has(value) ? (value as LeadInteractionKind) : null;
+}
 
 function toSource(row: LeadSourceRow): LinkedInLeadSource {
   return {
@@ -210,8 +255,12 @@ function toLead(row: LeadRow): LinkedInLead {
     sourceId: row.source_id,
     profileUrl: row.profile_url,
     name: row.name,
+    firstName: row.first_name,
+    lastName: row.last_name,
     headline: row.headline,
     company: row.company,
+    postUrl: row.post_url,
+    interactionKind: interactionKindOf(row.interaction_kind),
     createdAt: row.created_at
   };
 }
@@ -235,8 +284,27 @@ export interface LeadSourceInsert {
  * authenticated browser, and the fix for that is to never write it.
  */
 export function leadSourceUrlFor(kind: LeadSourceKind, url: string): string | null {
-  return kind === 'search' ? searchResultsUrlFor(url) : postUrlFor(url);
+  switch (kind) {
+    case 'search':
+      return searchResultsUrlFor(url);
+    case 'post':
+      return postUrlFor(url);
+    case 'sales_navigator':
+      return salesNavigatorUrlFor(url);
+    case 'content':
+      return contentSearchUrlFor(url);
+    default:
+      return null;
+  }
 }
+
+/** What a rejected URL of each kind should have looked like. */
+const LEAD_SOURCE_SHAPES: Record<LeadSourceKind, string> = {
+  search: 'a LinkedIn people-search URL (https://www.linkedin.com/search/results/people/...)',
+  post: 'a LinkedIn post URL (https://www.linkedin.com/feed/update/urn:li:activity:... or /posts/...)',
+  sales_navigator: 'a LinkedIn Sales Navigator people-search URL (https://www.linkedin.com/sales/search/people?...)',
+  content: 'a LinkedIn content-search URL (https://www.linkedin.com/search/results/content/?keywords=...)'
+};
 
 /**
  * Ask for a source to be walked.
@@ -253,11 +321,7 @@ export async function createLeadSource(
 ): Promise<{ source: LinkedInLeadSource; duplicate: boolean }> {
   const url = leadSourceUrlFor(input.kind, input.url);
   if (!url) {
-    throw new Error(
-      input.kind === 'search'
-        ? `'${input.url}' is not a LinkedIn people-search URL (https://www.linkedin.com/search/results/people/...).`
-        : `'${input.url}' is not a LinkedIn post URL (https://www.linkedin.com/feed/update/urn:li:activity:... or /posts/...).`
-    );
+    throw new Error(`'${input.url}' is not ${LEAD_SOURCE_SHAPES[input.kind] ?? 'a supported LinkedIn lead source URL'}.`);
   }
 
   const sourceId = id('llsrc');
@@ -322,12 +386,30 @@ export async function claimLeadSource(db: Db, workspaceId: string, now: Date): P
   return row ? toSource(row) : null;
 }
 
+/**
+ * HOW MANY OF A SOURCE'S PEOPLE ARE EVER READ AT ONCE. One number, and it is
+ * both the default and the ceiling, on purpose.
+ *
+ * THE THREE LIMITS IN THIS PIPELINE USED TO DISAGREE and every one of them was
+ * a literal typed at its own call site: the leads screen asked for 500, the
+ * import into a list defaulted to 2000, and the contacts route capped at 5000.
+ * A source holding 800 people therefore showed 500 rows above a Save button
+ * that wrote 800 -- the operator reviewed one set and shipped another, with
+ * nothing anywhere saying so.
+ *
+ * Exported so the route, the screen and {@link importLeadSourceContacts} quote
+ * THIS number rather than each inventing one. The pair with it is
+ * `LEAD_CONTACT_READ_LIMIT` in lead-lists.ts, which does the same job for the
+ * contacts side.
+ */
+export const LEAD_READ_LIMIT = 2_000;
+
 /** The people one source found, newest first. */
-export async function listLeads(db: Db, workspaceId: string, sourceId: string, limit = 500): Promise<LinkedInLead[]> {
+export async function listLeads(db: Db, workspaceId: string, sourceId: string, limit = LEAD_READ_LIMIT): Promise<LinkedInLead[]> {
   const rows = await db.prepare(`
     SELECT ${LEAD_COLUMNS} FROM linkedin_leads
     WHERE workspace_id=? AND source_id=? ORDER BY created_at DESC, id DESC LIMIT ?
-  `).all<LeadRow>(workspaceId, sourceId, Math.max(1, Math.min(2_000, Math.trunc(limit))));
+  `).all<LeadRow>(workspaceId, sourceId, Math.max(1, Math.min(LEAD_READ_LIMIT, Math.trunc(limit))));
   return rows.map(toLead);
 }
 
@@ -345,6 +427,101 @@ async function finishLeadSource(
     SET status=?, result_count=?, failure_reason=?, finished_at=?, updated_at=?
     WHERE workspace_id=? AND id=?
   `).run(outcome.status, outcome.resultCount, outcome.failureReason, iso, iso, workspaceId, sourceId);
+}
+
+/* ---------------------------------------------------------------------------
+ * The daily cap.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * How many leads a workspace may STORE in any rolling 24 hours.
+ *
+ * A PER-RUN CEILING IS NOT A DAILY ONE, and until now only per-run ceilings
+ * existed: `maxResults` bounds one walk, `maxSources` bounds one pass, and ten
+ * passes of ten is a hundred with nothing anywhere saying stop. "At most N
+ * leads a day" is a promise about a WORKSPACE OVER TIME, so it is counted over
+ * time, from rows actually written.
+ *
+ * COUNTED FROM ROWS STORED, NOT ROWS SEEN. A harvest of 100 that filtered 60
+ * already-contacted people spent 40 of the cap, because 40 is what the operator
+ * got. Counting what was fetched would let a workspace exhaust its day on
+ * people it was never allowed to contact.
+ *
+ * ROLLING, NOT MIDNIGHT. A calendar day resets at an hour LinkedIn does not
+ * care about and hands a fresh hundred to whoever is awake at 00:01, which is
+ * exactly the burst shape the pacing everywhere else in this subsystem exists
+ * to avoid.
+ */
+export const DEFAULT_DAILY_LEAD_CAP = 100;
+export const MAX_DAILY_LEAD_CAP = 1000;
+export const DAILY_LEAD_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * This workspace's cap. The DEFAULT when no row exists.
+ *
+ * The absent row is not written on read: "has an operator chosen a cap?" stays
+ * answerable, and a default that lives in one constant cannot drift from a
+ * default that was copied into ten thousand rows.
+ */
+export async function getDailyLeadCap(db: Db, workspaceId: string): Promise<number> {
+  const row = await db.prepare('SELECT daily_lead_cap FROM linkedin_lead_settings WHERE workspace_id=?')
+    .get<{ daily_lead_cap: number }>(workspaceId);
+  return row ? Number(row.daily_lead_cap) : DEFAULT_DAILY_LEAD_CAP;
+}
+
+/**
+ * Set the cap. 0 is legal and means "no harvesting", which is the control an
+ * operator has at hand when they want to pause without touching an environment
+ * variable they may not own.
+ */
+export async function setDailyLeadCap(db: Db, workspaceId: string, cap: number, now: Date = new Date()): Promise<number> {
+  const value = Math.trunc(Number(cap));
+  if (!Number.isFinite(value) || value < 0 || value > MAX_DAILY_LEAD_CAP) {
+    throw new Error(`The daily lead cap must be a whole number between 0 and ${MAX_DAILY_LEAD_CAP}.`);
+  }
+  const iso = now.toISOString();
+  await db.prepare(`
+    INSERT INTO linkedin_lead_settings (workspace_id, daily_lead_cap, created_at, updated_at)
+    VALUES (?,?,?,?)
+    ON CONFLICT (workspace_id) DO UPDATE SET daily_lead_cap=EXCLUDED.daily_lead_cap, updated_at=EXCLUDED.updated_at
+  `).run(workspaceId, value, iso, iso);
+  return value;
+}
+
+/** Leads STORED by this workspace since `since`. */
+export async function leadsStoredSince(db: Db, workspaceId: string, since: Date): Promise<number> {
+  const row = await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_leads WHERE workspace_id=? AND created_at >= ?')
+    .get<{ total: number }>(workspaceId, since.toISOString());
+  return Number(row?.total ?? 0);
+}
+
+export interface DailyLeadAllowance {
+  /** The cap in force. */
+  limit: number;
+  /** Leads stored in the last 24 hours. */
+  used: number;
+  /** How many more may be stored right now. Never negative. */
+  remaining: number;
+}
+
+/**
+ * Namespaces the daily-cap advisory lock. 'LEAD' in ASCII, so a collision
+ * would have to be another subsystem deliberately picking the same class.
+ */
+const LEAD_CAP_LOCK_CLASS = 0x4c454144;
+
+/**
+ * The cap, what it has spent, and what is left.
+ *
+ * A READ, NOT A RESERVATION, and callers must treat it as one: it is what
+ * `runLeadSource` bounds the FETCH with, and the authoritative slice is taken
+ * again inside `storeLeads` under a lock. Nothing between this call and that
+ * one stops another pass spending the same day.
+ */
+export async function dailyLeadAllowance(db: Db, workspaceId: string, now: Date): Promise<DailyLeadAllowance> {
+  const limit = await getDailyLeadCap(db, workspaceId);
+  const used = await leadsStoredSince(db, workspaceId, new Date(now.getTime() - DAILY_LEAD_WINDOW_MS));
+  return { limit, used, remaining: Math.max(0, limit - used) };
 }
 
 /* ---------------------------------------------------------------------------
@@ -421,9 +598,49 @@ export interface LeadSourceRunResult {
   stored: number;
   /** Why the rest were not written. Three different facts, kept apart. */
   filtered: { duplicate: number; excluded: number; contacted: number };
+  /** People the walk found and the DAILY cap would not let us keep. */
+  capped: number;
+  /** The cap, what it had spent before this run, and what is left after it. */
+  dailyCap: DailyLeadAllowance;
+  /**
+   * The daily cap is spent. Reported rather than thrown, and the pass stops:
+   * the next source would fetch pages for people it could not store.
+   */
+  dailyCapReached: boolean;
   /** What could not be read, plus what the cap dropped. */
   degraded: string[];
   failureReason: string | null;
+}
+
+/** Point a claimed source at the walk its kind names. */
+function walkFor(
+  scraper: LinkedInScrapeDriver,
+  page: LinkedInScrapePage,
+  source: LinkedInLeadSource,
+  options: ScrapeOptions
+): Promise<ScrapeResult> {
+  switch (source.kind) {
+    case 'search':
+      return scraper.scrapeSearchResults(page, source.url, options);
+    case 'post':
+      return scraper.scrapePostEngagers(page, source.url, options);
+    case 'sales_navigator':
+      return scraper.scrapeSalesNavigatorResults(page, source.url, options);
+    case 'content':
+      return scraper.scrapeContentSearch(page, source.url, options);
+    default:
+      // A kind no walk answers is a row written by a version that knew
+      // something this one does not. Refused, never guessed at.
+      return Promise.resolve({
+        ok: false,
+        failureKind: 'not_found',
+        detail: `'${String(source.kind)}' is not a lead source kind this build knows how to walk.`,
+        leads: [],
+        degraded: [],
+        pagesWalked: 0,
+        dropped: 0
+      });
+  }
 }
 
 /**
@@ -452,6 +669,9 @@ export async function runLeadSource(
     harvested: 0,
     stored: 0,
     filtered: { duplicate: 0, excluded: 0, contacted: 0 },
+    capped: 0,
+    dailyCap: { limit: DEFAULT_DAILY_LEAD_CAP, used: 0, remaining: DEFAULT_DAILY_LEAD_CAP },
+    dailyCapReached: false,
     degraded: [],
     failureReason: null
   };
@@ -472,17 +692,35 @@ export async function runLeadSource(
     return { ...empty, failureReason: refusal };
   }
 
+  // THE DAILY CAP IS READ BEFORE THE FETCH, NOT AFTER IT. A run that harvests
+  // 100 people it is not allowed to keep has already spent the account's
+  // standing on all of them; the only cap worth having is one that stops the
+  // pages from being loaded at all.
+  const allowance = await dailyLeadAllowance(db, source.workspaceId, now());
+  if (allowance.remaining <= 0) {
+    const reason = allowance.limit === 0
+      ? 'The daily lead cap for this workspace is 0, so no leads may be stored and nothing was fetched. Raise the cap to start sourcing again.'
+      : `The daily lead cap of ${allowance.limit} is already spent (${allowance.used} lead${allowance.used === 1 ? '' : 's'} stored in the last 24 hours), so nothing was fetched. The window rolls; this source can be re-queued once it does.`;
+    await finishLeadSource(db, source.workspaceId, source.id, { status: 'failed', resultCount: 0, failureReason: reason }, now());
+    return { ...empty, dailyCap: allowance, dailyCapReached: true, failureReason: reason };
+  }
+
   const options = {
-    maxResults: deps.config.maxResults,
+    // The walk itself is told to stop at whatever is left of the day, so the
+    // cap costs fetches rather than merely discarding their results.
+    maxResults: Math.min(deps.config.maxResults, allowance.remaining),
     maxPages: deps.config.maxPages,
     seed: source.id,
     sleep: deps.sleep,
     log: deps.log
   };
-  const outcome = source.kind === 'search'
-    ? await scraper.scrapeSearchResults(deps.page, source.url, options)
-    : await scraper.scrapePostEngagers(deps.page, source.url, options);
+  const outcome = await walkFor(scraper, deps.page, source, options);
 
+  // THE ALLOWANCE READ ABOVE BOUNDED THE FETCH; THE ONE THAT COMES BACK HERE
+  // IS THE ONE THAT COUNTS. `storeLeads` re-reads the window under a lock and
+  // reports what it actually reserved, because between the read at the top of
+  // this function and the write at the bottom sits a whole page walk -- easily
+  // a minute -- during which another pass may have spent the same day.
   const stored = await storeLeads(db, source, outcome.leads, now());
   const failureReason = outcome.ok
     ? null
@@ -496,13 +734,24 @@ export async function runLeadSource(
     now()
   );
 
+  const dailyCap = stored.allowance;
+  const degraded = stored.capped > 0
+    ? [
+        ...outcome.degraded,
+        `${stored.capped} harvested ${stored.capped === 1 ? 'person was' : 'people were'} not stored: this workspace's daily cap of ${dailyCap.limit} leads was reached. The window is a rolling 24 hours.`
+      ]
+    : outcome.degraded;
+
   return {
     sourceId: source.id,
     status: outcome.ok ? 'completed' : 'failed',
     harvested: outcome.leads.length,
     stored: stored.stored,
     filtered: stored.filtered,
-    degraded: outcome.degraded,
+    capped: stored.capped,
+    dailyCap,
+    dailyCapReached: dailyCap.remaining <= 0,
+    degraded,
     failureReason
   };
 }
@@ -531,10 +780,14 @@ export async function runPendingLeadSources(
     const source = await claimLeadSource(db, workspaceId, now());
     if (!source) break;
     results.push(await runLeadSource(db, source, deps));
+    const last = results[results.length - 1];
     // A wall stops the whole pass, not just this source. Walking the next
     // search after LinkedIn has just said stop is exactly the behaviour that
     // escalates a temporary restriction (plan 1.3).
-    if (results[results.length - 1].status === 'failed') break;
+    if (last.status === 'failed') break;
+    // And so does a spent daily cap: the next source would load pages for
+    // people this workspace is not allowed to keep today.
+    if (last.dailyCapReached) break;
   }
   return results;
 }
@@ -561,15 +814,30 @@ function postureRefusal(posture: SeatPosture | null): string | null {
  * and `ON CONFLICT DO NOTHING` on the (workspace, profile_url) index is what
  * makes re-running a source idempotent -- the same guarantee `recordAction`
  * gets from its own index, reported rather than thrown.
+ *
+ * AND THE DAILY CAP IS RESERVED HERE, UNDER A LOCK, RATHER THAN READ UPSTAIRS
+ * AND TRUSTED. `runLeadSource` reads the allowance before it fetches, which is
+ * right -- it is what stops the pages being loaded at all -- but a read is not
+ * a reservation. Two passes that started a minute apart both saw the same
+ * `remaining: 40`, both walked, and both stored 40 into a cap of 100. "At most
+ * N leads a day" was true of each pass and false of the workspace, which is
+ * the only place it was ever promised. So the window is counted again INSIDE
+ * the transaction that writes, behind a workspace-scoped advisory lock, and
+ * the slice is taken from that count. A concurrent pass now waits, re-counts,
+ * and sees what the first one actually stored.
+ *
+ * lc-debt: one advisory lock per workspace serialises concurrent harvests of
+ * that workspace end to end; fine at a cap of at most 1000 rows a day, and the
+ * upgrade path if it ever matters is a reservations table the count comes from
+ * instead of a COUNT(*) over the window.
  */
 async function storeLeads(
   db: Db,
   source: LinkedInLeadSource,
   leads: readonly ScrapedLead[],
   now: Date
-): Promise<{ stored: number; filtered: LeadSourceRunResult['filtered'] }> {
+): Promise<{ stored: number; filtered: LeadSourceRunResult['filtered']; capped: number; allowance: DailyLeadAllowance }> {
   const filtered = { duplicate: 0, excluded: 0, contacted: 0 };
-  if (leads.length === 0) return { stored: 0, filtered };
 
   const { excluded, contacted } = await suppressionSets(db, source.workspaceId);
   const keep: ScrapedLead[] = [];
@@ -585,27 +853,80 @@ async function storeLeads(
     }
     keep.push(lead);
   }
-  if (keep.length === 0) return { stored: 0, filtered };
 
   const iso = now.toISOString();
-  const result = await db.prepare(`
-    INSERT INTO linkedin_leads (id, workspace_id, source_id, profile_url, name, headline, company, created_at)
-    SELECT * FROM unnest(
-      ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::timestamptz[]
-    )
-    ON CONFLICT (workspace_id, LOWER(profile_url)) DO NOTHING
-  `).run(
-    keep.map(() => id('llead')),
-    keep.map(() => source.workspaceId),
-    keep.map(() => source.id),
-    keep.map((lead) => lead.profileUrl),
-    keep.map((lead) => lead.name),
-    keep.map((lead) => lead.headline),
-    keep.map((lead) => lead.company),
-    keep.map(() => iso)
-  );
+  const since = new Date(now.getTime() - DAILY_LEAD_WINDOW_MS);
 
-  // Everything the index swallowed was somebody this workspace already has.
-  filtered.duplicate = keep.length - result.changes;
-  return { stored: result.changes, filtered };
+  return db.transaction(async (tx) => {
+    // ONE LOCK PER WORKSPACE, HELD TO COMMIT. `pg_advisory_xact_lock` is the
+    // cheapest thing that makes count-then-insert one indivisible step, and it
+    // releases itself on COMMIT or ROLLBACK -- there is no path out of this
+    // transaction that leaks it. The class id namespaces it away from every
+    // other advisory lock a Postgres box might be holding.
+    await tx.prepare('SELECT pg_advisory_xact_lock(?::int, hashtext(?)::int)').get(LEAD_CAP_LOCK_CLASS, source.workspaceId);
+
+    const limit = await getDailyLeadCap(tx, source.workspaceId);
+    const used = await leadsStoredSince(tx, source.workspaceId, since);
+    const remaining = Math.max(0, limit - used);
+
+    // THE CAP IS APPLIED AFTER THE SUPPRESSION FILTER, so a day's allowance is
+    // spent on people the operator can actually contact rather than on 40
+    // already-excluded rows that were about to be dropped anyway.
+    const allowed = keep.slice(0, remaining);
+    const capped = keep.length - allowed.length;
+    if (allowed.length === 0) return { stored: 0, filtered, capped, allowance: { limit, used, remaining } };
+
+    // THE SCRUB RUNS HERE, ON EVERY PATH INTO THE TABLE -- AND IT NOW ACTUALLY
+    // DOES. The sentence above this line was true of a name the driver handed
+    // over as one string and false of one it handed over already split: the
+    // pre-split branch copied `firstName`/`lastName` THROUGH, raw, so the only
+    // writer that got scrubbed was the one that had already been scrubbed by
+    // `makeLead`. Any other `ScrapedLead` writer -- an importer, a fixture, a
+    // future surface -- stored "Dr. Maya" and "Chen \u{1F1FA}\u{1F1F8}" and the
+    // UI rendered them verbatim. Dedicated halves go through `scrubNameField`,
+    // which applies the same table and, unlike the joined splitter, may never
+    // empty a name it was handed.
+    const named = allowed.map((lead) => {
+      const split = lead.firstName || lead.lastName
+        ? { firstName: scrubNameField(lead.firstName ?? ''), lastName: scrubNameField(lead.lastName ?? '') }
+        : splitAndScrubName(lead.name ?? '');
+      const full = [split.firstName, split.lastName].filter(Boolean).join(' ');
+      return { ...lead, ...split, fullName: full || null };
+    });
+
+    const result = await tx.prepare(`
+      INSERT INTO linkedin_leads (
+        id, workspace_id, source_id, profile_url, name, first_name, last_name,
+        headline, company, post_url, interaction_kind, created_at
+      )
+      SELECT * FROM unnest(
+        ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[],
+        ?::text[], ?::text[], ?::text[], ?::text[], ?::timestamptz[]
+      )
+      ON CONFLICT (workspace_id, LOWER(profile_url)) DO NOTHING
+    `).run(
+      named.map(() => id('llead')),
+      named.map(() => source.workspaceId),
+      named.map(() => source.id),
+      named.map((lead) => lead.profileUrl),
+      named.map((lead) => lead.fullName),
+      named.map((lead) => lead.firstName || null),
+      named.map((lead) => lead.lastName || null),
+      named.map((lead) => lead.headline),
+      named.map((lead) => lead.company),
+      named.map((lead) => lead.postUrl),
+      named.map((lead) => interactionKindOf(lead.interactionKind)),
+      named.map(() => iso)
+    );
+
+    // Everything the index swallowed was somebody this workspace already has.
+    filtered.duplicate = allowed.length - result.changes;
+    const spent = used + result.changes;
+    return {
+      stored: result.changes,
+      filtered,
+      capped,
+      allowance: { limit, used: spent, remaining: Math.max(0, limit - spent) }
+    };
+  });
 }

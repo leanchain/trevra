@@ -1316,6 +1316,58 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-add-step-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .li-add-step-buttons button { display: inline-flex; align-items: center; gap: 6px; }
 
+/* ---- the manager's reusable workflow builder -----------------------------
+   A numbered timeline of the same .li-step cards the campaign sequence builder
+   uses. The rail is the only new shape -- a number and a connector, so the
+   order a step runs in is readable without counting rows -- and every colour,
+   radius and type step below is already in the token layer. */
+.li-wf-timeline { list-style: none; display: grid; gap: 10px; margin: 0 0 4px; padding: 0; }
+.li-wf-node { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 13px; }
+.li-wf-node.is-dragging { opacity: .45; }
+.li-wf-node.is-drop-target > .li-wf-card { border-color: var(--green); }
+.li-wf-rail { display: grid; grid-template-rows: auto 1fr; justify-items: center; gap: 5px; }
+.li-wf-marker { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--t-green-200); background: var(--green-3); color: var(--green); font-size: var(--t-text-chip); font-weight: 700; font-variant-numeric: tabular-nums; }
+.li-wf-line { width: 2px; height: 100%; min-height: 12px; border-radius: 1px; background: var(--t-line-soft); }
+.li-wf-when { color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
+.li-wf-grip { cursor: grab; }
+.li-wf-grip:active { cursor: grabbing; }
+.li-wf-wait { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 96px); gap: 10px; }
+.li-wf-issues { display: grid; gap: 4px; margin-top: 6px; }
+.li-wf-issues .li-merge-warn { margin-top: 0; }
+
+/* A/B variants. Two blocks that read as one control, because a weight only
+   means anything against the other weight. */
+.li-wf-variants { display: grid; gap: 10px; }
+.li-wf-variant { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: var(--t-r-sm); padding: 11px 12px; background: var(--t-field); }
+.li-wf-variant-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.li-wf-weight { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
+.li-wf-weight input { width: 68px; min-height: var(--t-tap); border: 1px solid var(--line); border-radius: var(--t-r-sm); background: var(--panel); padding: 6px 9px; color: var(--ink); font-size: var(--t-text-xs); font-weight: 700; font-variant-numeric: tabular-nums; }
+.li-wf-share { color: var(--muted); font-size: var(--t-text-xs); font-weight: 700; font-variant-numeric: tabular-nums; }
+.li-wf-variant-head .li-mini-button { margin-left: auto; }
+.li-wf-split { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.li-wf-split .li-hint { margin: 0; }
+.li-wf-split-bar { display: flex; flex: 1 1 150px; height: 6px; border-radius: var(--t-r-sm); background: var(--t-line-soft); overflow: hidden; }
+.li-wf-split-fill { display: block; height: 100%; background: var(--t-green-fill); }
+.li-wf-split-b { background: var(--blue); }
+
+/* The preview is what one lead would read, so it is the same .li-template
+   block a rendered sequence shows -- captioned, because it is a sample. */
+.li-wf-preview { display: grid; gap: 5px; margin-top: 9px; }
+.li-wf-preview-label { color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
+
+/* Empty: what a workflow IS, then three of them one click away. */
+.li-wf-empty { padding: 30px 20px 26px; }
+.li-wf-empty > svg { color: var(--green); }
+.li-wf-empty > p { max-width: var(--t-measure); margin: 0 auto; line-height: 1.6; }
+.li-wf-starters { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 20px 0 14px; }
+.li-wf-starter { display: grid; align-content: start; gap: 7px; border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-field); padding: 13px 14px; color: var(--ink); text-align: left; cursor: pointer; }
+.li-wf-starter:hover { border-color: var(--t-green-200); background: var(--green-3); }
+.li-wf-starter strong { font-size: var(--t-text-xs); }
+.li-wf-starter p { max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.5; }
+.li-wf-starter-steps { display: flex; flex-wrap: wrap; gap: 5px; }
+.li-wf-empty-actions { display: flex; justify-content: center; }
+@media (max-width: 760px) { .li-wf-wait { grid-template-columns: 1fr; } }
+
 /* Plan preview: a calendar of exact slots. */
 .li-reasons { max-width: var(--t-measure); margin: 0; padding-left: 19px; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.7; }
 .li-calendar { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
@@ -2059,6 +2111,19 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 }
 .setup-nav > *:hover,
 .outreach-nav > *:hover { color: var(--ink); }
+
+/* The approve-and-export path: still one click away, but read as the deeper
+   route rather than the next step. Weight, not colour -- a greyed-out tab
+   reads as disabled, and these work perfectly well. */
+.outreach-nav > .is-advanced { font-weight: var(--t-w-medium); opacity: 0.72; }
+.outreach-nav > .is-advanced:hover { opacity: 1; }
+.outreach-nav-divider {
+  align-self: center;
+  width: 1px;
+  height: 15px;
+  margin: 0 7px;
+  background: var(--line);
+}
 .setup-nav > .is-active,
 .setup-nav > [aria-current="page"],
 .outreach-nav > .is-active,
@@ -2211,3 +2276,544 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   html { scroll-behavior: auto; }
 }
 @keyframes still-working { 50% { opacity: .35; } }
+
+/* ===========================================================================
+ * CAMPAIGNS (Outreach -> Campaigns). Additive: every rule below is a new
+ * `mgr-` class or a modifier scoped to one, so nothing already on screen
+ * changes shape. The screen leans on the existing vocabulary -- .li-table,
+ * .li-chip, .li-filter-row, .li-template, .li-dryrun, .li-warn-block -- and
+ * only adds what that vocabulary has no word for: a campaign card, a status
+ * bar, a per-lead timeline and a side-by-side version comparison.
+ *
+ * The nine member statuses are ONE palette, declared once here and used by
+ * both the bar (an <svg>, so its widths are attributes rather than inline
+ * styles) and the legend dot beside every label. Two greens that collide in
+ * dark mode were the reason the ramp uses 800 for finished rather than 700.
+ * ======================================================================== */
+:root {
+  --mgr-pending:   var(--t-line-strong);
+  --mgr-active:    var(--t-green-fill);
+  --mgr-waiting:   var(--t-green-300);
+  --mgr-manual:    var(--t-amber);
+  --mgr-paused:    var(--t-field-line);
+  --mgr-replied:   var(--t-blue);
+  --mgr-completed: var(--t-green-800);
+  --mgr-removed:   var(--t-line);
+  --mgr-failed:    var(--t-red);
+}
+
+.mgr-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* Hidden from sight, not from a screen reader -- and deliberately NOT
+   absolutely positioned: an abs-positioned box inside a table cell resolves
+   against the initial containing block, escapes the table's own scroll
+   container and lengthens the page's scrollable width by however far right
+   the cell happened to sit. 1x1 in normal flow costs nothing and stays put. */
+.mgr-sr { display: inline-block; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* A table is as wide as its content, and a plain block scroll container still
+   reports that width as its own minimum -- so an ancestor grid track grows to
+   fit it and the whole page scrolls sideways instead of the table. As a grid
+   item with an explicit 0 minimum, the scroll container finally scrolls. */
+.mgr-wide { display: grid; grid-template-columns: minmax(0, 1fr); }
+
+/* The one line that says whether there is anything to do at all. */
+.mgr-summary { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 12px; color: var(--muted); font-size: var(--t-text-xs); font-variant-numeric: tabular-nums; }
+.mgr-summary span + span::before,
+.mgr-meta span + span::before { content: '·'; margin-right: 14px; color: var(--t-line-strong); }
+
+.mgr-list { display: grid; gap: 12px; margin-top: 12px; }
+.mgr-skel { height: 104px; border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-field); animation: mgr-breathe 1.6s ease-in-out infinite; }
+@keyframes mgr-breathe { 50% { opacity: .5; } }
+
+/* --- One campaign. --------------------------------------------------- */
+.mgr-campaign { display: grid; gap: 11px; border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-field); padding: 15px 16px; }
+.mgr-campaign.is-open { background: var(--panel); border-color: var(--t-line-strong); box-shadow: var(--t-shadow-sm); }
+.mgr-campaign-head { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.mgr-toggle { flex: 1 1 24ch; min-width: 0; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.mgr-toggle strong { font-size: var(--t-text-md); font-weight: 700; }
+.mgr-toggle > svg { flex: none; color: var(--muted); }
+.mgr-toggle:hover strong { color: var(--green); }
+.mgr-toggle:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 3px; border-radius: var(--t-r-xs); }
+.mgr-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; color: var(--muted); font-size: var(--t-text-xs); }
+.mgr-meta b { color: var(--ink); font-weight: 700; }
+
+.mgr-chip-running { background: var(--green-3); color: var(--green); }
+.mgr-chip-paused { background: var(--amber-bg); color: var(--amber); }
+.mgr-chip-completed { background: var(--green-2); color: var(--green); }
+.mgr-chip-stopped { background: var(--red-bg); color: var(--red); }
+
+/* --- Members by status: bar, legend, and the dot that carries the hue. -- */
+.mgr-bar { display: block; width: 100%; height: 10px; border-radius: var(--t-r-xs); overflow: hidden; background: var(--t-line-soft); }
+.mgr-seg-pending { fill: var(--mgr-pending); }
+.mgr-seg-active { fill: var(--mgr-active); }
+.mgr-seg-waiting { fill: var(--mgr-waiting); }
+.mgr-seg-manual { fill: var(--mgr-manual); }
+.mgr-seg-paused { fill: var(--mgr-paused); }
+.mgr-seg-replied { fill: var(--mgr-replied); }
+.mgr-seg-completed { fill: var(--mgr-completed); }
+.mgr-seg-removed { fill: var(--mgr-removed); }
+.mgr-seg-failed { fill: var(--mgr-failed); }
+
+.mgr-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 5px 16px; margin: 0; padding: 0; }
+.mgr-legend li { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--t-text-xs); }
+.mgr-legend b { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+.mgr-state { display: inline-flex; align-items: center; gap: 7px; }
+.mgr-legend i, .mgr-state i { flex: none; width: 9px; height: 9px; border-radius: 2px; }
+.mgr-dot-pending { background: var(--mgr-pending); }
+.mgr-dot-active { background: var(--mgr-active); }
+.mgr-dot-waiting { background: var(--mgr-waiting); }
+.mgr-dot-manual { background: var(--mgr-manual); }
+.mgr-dot-paused { background: var(--mgr-paused); }
+.mgr-dot-replied { background: var(--mgr-replied); }
+.mgr-dot-completed { background: var(--mgr-completed); }
+.mgr-dot-removed { background: var(--mgr-removed); border: 1px solid var(--t-line-strong); }
+.mgr-dot-failed { background: var(--mgr-failed); }
+
+/* Why day one is slow, said where the low numbers are. */
+.mgr-warmup { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.55; }
+.mgr-pips { display: inline-flex; gap: 3px; flex: none; }
+.mgr-pips i { width: 12px; height: 5px; border-radius: 2px; background: var(--t-line-strong); }
+.mgr-pips i.is-on { background: var(--t-green-fill); }
+
+/* --- The member list. ------------------------------------------------- */
+.mgr-members { border-top: 1px solid var(--line); padding-top: 14px; }
+.mgr-members .li-filter-row { margin-bottom: 10px; }
+.mgr-members .li-filter-row .li-hint { margin: 0 0 10px; }
+.mgr-linkish { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+.mgr-linkish svg { flex: none; color: var(--muted); }
+.mgr-linkish:hover { color: var(--green); }
+.mgr-linkish:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 3px; border-radius: var(--t-r-xs); }
+.mgr-row-open > td { background: var(--t-surface-2); }
+.mgr-row-detail > td { background: var(--t-surface-2); padding: 4px 14px 18px; }
+.mgr-more { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.mgr-more .li-hint { margin: 0; }
+
+/* --- One lead's sequence: done, current, later. ------------------------ */
+.mgr-timeline { list-style: none; display: grid; gap: 15px; margin: 0; padding: 0 0 0 22px; }
+.mgr-tl { position: relative; }
+.mgr-tl::before { content: ''; position: absolute; left: -14px; top: 15px; bottom: -18px; width: 1px; background: var(--line); }
+.mgr-tl:last-child::before { display: none; }
+.mgr-tl-mark { position: absolute; left: -18px; top: 4px; width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--t-line-strong); background: var(--panel); }
+.mgr-tl-done .mgr-tl-mark { background: var(--green); border-color: var(--green); }
+.mgr-tl-current .mgr-tl-mark { left: -19px; width: 11px; height: 11px; border: 2px solid var(--green); }
+.mgr-tl-next { opacity: .72; }
+.mgr-tl-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin: 0 0 3px; font-size: var(--t-text-xs); }
+.mgr-tl-head strong { font-weight: 700; }
+.mgr-tl-head span { color: var(--muted); }
+.mgr-tl-when { margin: 0; color: var(--ink); font-size: var(--t-text-xs); }
+.mgr-tl-current .mgr-tl-when { color: var(--green); font-weight: 700; }
+.mgr-tl-note { max-width: var(--t-measure); margin: 3px 0 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.5; }
+.mgr-tl-body { margin-top: 7px; max-height: 9rem; overflow: auto; }
+
+/* --- Results. ---------------------------------------------------------- */
+/* auto-fit rather than four fixed columns: six numbers wrap onto two rows,
+   and a 1px gap over the container's own line colour keeps the rules between
+   cells straight on both rows without a per-cell border to reset. */
+.mgr-stats { grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr)); gap: 1px; background: var(--line); }
+.mgr-stats .li-stat { border-right: 0; }
+.mgr-window { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.mgr-ab { display: grid; gap: 18px; }
+.mgr-ab-group { display: grid; gap: 10px; }
+.mgr-ab-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0; font-size: var(--t-text-sm); font-weight: 700; }
+.mgr-ab-head span { color: var(--muted); font-size: var(--t-text-xs); font-weight: 400; }
+.mgr-variants { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 12px; }
+.mgr-variant { display: grid; gap: 9px; align-content: start; border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-field); padding: 12px 13px; }
+.mgr-variant.is-leading { border-color: var(--green); }
+.mgr-variant header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mgr-variant header strong { font-size: var(--t-text-sm); }
+.mgr-variant .li-template { max-height: 8rem; overflow: auto; }
+.mgr-variant-nums { margin: 0; color: var(--muted); font-size: var(--t-text-xs); }
+.mgr-variant-nums b { color: var(--ink); font-size: var(--t-text-lg); font-weight: 700; font-variant-numeric: tabular-nums; }
+.mgr-rate { display: block; width: 100%; height: 4px; border-radius: 2px; overflow: hidden; background: var(--t-line-soft); }
+.mgr-rate-fill { fill: var(--t-green-fill); }
+
+/* --- Empty states, and the create flow. -------------------------------- */
+.mgr-empty { display: grid; justify-items: start; gap: 9px; border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-field); padding: 20px; }
+.mgr-empty h4 { margin: 0; font-size: var(--t-text-lg); font-weight: var(--t-w-bold); }
+.mgr-empty p { max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.6; }
+.mgr-empty .mgr-actions { margin-top: 3px; }
+
+.mgr-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .92fr); gap: 20px; align-items: start; }
+.mgr-fields { grid-template-columns: minmax(0, 1fr); margin-bottom: 0; }
+.mgr-fields .li-hint { margin: 0; }
+.mgr-preview { border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-surface-2); padding: 15px 16px; }
+.mgr-preview h4 { margin: 0 0 10px; font-size: var(--t-text-sm); font-weight: 700; }
+.mgr-preview-lede { max-width: var(--t-measure); margin: 0 0 12px; font-size: var(--t-text-xs); line-height: 1.65; }
+.mgr-preview-lede b { font-weight: 700; }
+.mgr-preview-steps { list-style: none; display: grid; gap: 6px; margin: 0 0 12px; padding: 0; }
+.mgr-preview-steps li { display: flex; align-items: baseline; gap: 10px; font-size: var(--t-text-xs); }
+.mgr-preview-day { flex: none; min-width: 5ch; color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
+.mgr-preview-note { max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.55; }
+.mgr-preview .li-warn-block { margin-top: 13px; }
+.mgr-created { margin-top: 16px; }
+.mgr-created .mgr-actions { margin-top: 11px; }
+
+@media (max-width: 900px) {
+  .mgr-split { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  /* The controls stop sharing a line with the name they belong to, and the
+     four filters stack rather than squeezing to two characters each. */
+  .mgr-toggle { flex-basis: 100%; }
+  .mgr-members .li-filter-row { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .mgr-stats { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The skeleton is saying "still reading", so it stays -- it just stops
+     pulsing and holds the dimmer of its two states. */
+  .mgr-skel { animation: none; opacity: .6; }
+}
+
+/* --- Building a lead list from a CSV, and living with one afterwards. -----
+ * Additive only. The controls are the sheet's own -- .li-form-grid supplies
+ * every field's height, border and radius, .li-table the rows, .li-warn-block
+ * and .error-banner the refusals -- so what follows is the shapes those pieces
+ * are arranged into and nothing that repaints them.
+ * ------------------------------------------------------------------------ */
+/* min-width: 0 on the wrapper AND on each panel, or the contacts table's own
+   minimum width becomes the page's: a grid item defaults to min-width: auto,
+   which refuses to shrink below its content and pushes the whole screen wider
+   than the phone it is on. With this, the table scrolls inside .li-table-scroll
+   and nothing else moves. */
+.lead-build { display: grid; gap: 20px; min-width: 0; }
+.lead-build > .page-panel { min-width: 0; }
+
+/* The drop target is the panel; this is where it says so. A dashed edge is the
+   one place in the sheet it is honest: this box takes something dragged. */
+.lead-drop { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; border: 1px dashed var(--t-line-strong); border-radius: var(--t-r-md); background: var(--t-field); padding: 15px 17px; transition: border-color 180ms ease, background-color 180ms ease; }
+.lead-drop.is-dragging { border-color: var(--green); background: var(--green-3); }
+.lead-drop > svg { flex: none; color: var(--muted); }
+.lead-drop-copy { flex: 1 1 24ch; min-width: 0; display: grid; gap: 4px; }
+.lead-drop-copy strong { font-size: var(--t-text-sm); overflow-wrap: anywhere; }
+.lead-drop-copy p { max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.5; }
+.lead-drop > label { flex: none; min-height: var(--t-tap); }
+
+.lead-section { display: grid; gap: 10px; margin-top: 18px; }
+.lead-section h4 { margin: 0; font-size: var(--t-text-sm); font-weight: 700; }
+.lead-section > .li-hint { margin: 0; }
+.lead-section .li-table-scroll { margin-top: 2px; }
+
+/* One field, one column, one note about where the column came from. Wider than
+   the two-up form grid it borrows its controls from, so a long CSV heading is
+   readable rather than truncated mid-word. */
+.li-form-grid.lead-map-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 10px; margin-bottom: 0; }
+.lead-map-row { border: 1px solid var(--line); border-radius: var(--t-r-sm); background: var(--t-surface-2); padding: 10px 12px; min-width: 0; }
+/* A required column with nothing pointed at it stops the import, so it does not
+   wait to be noticed: the row itself carries the refusal. */
+.lead-map-row.is-missing { border-color: var(--t-red-line); background: var(--red-bg); }
+.lead-map-name { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.lead-map-name em { font-style: normal; font-size: var(--t-text-chip); font-weight: 700; letter-spacing: var(--t-track-caps); text-transform: uppercase; color: var(--red); }
+.lead-map-note { color: var(--muted); font-size: var(--t-text-chip); font-weight: 400; overflow-wrap: anywhere; }
+
+.lead-scrub-list { list-style: none; display: grid; gap: 7px; margin: 0; padding: 0; }
+.lead-scrub-list > li { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; font-size: var(--t-text-xs); }
+.lead-scrub-list svg { flex: none; align-self: center; color: var(--muted); }
+.lead-scrub-list em { font-style: normal; color: var(--muted); font-size: var(--t-text-chip); }
+.lead-scrub-raw { color: var(--muted); overflow-wrap: anywhere; }
+.lead-scrub-raw.is-changed { text-decoration: line-through; text-decoration-color: var(--t-line-strong); }
+
+.lead-report { display: grid; gap: 9px; margin-top: 16px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: var(--t-r-md); background: var(--panel); padding: 14px 16px; }
+.lead-report > strong { display: flex; align-items: center; gap: 8px; color: var(--green); font-size: var(--t-text-sm); }
+.lead-report > strong svg { flex: none; }
+.lead-report .li-hint { margin: 0; }
+.lead-report .mgr-actions { margin-top: 2px; }
+.lead-counts { list-style: none; display: flex; flex-wrap: wrap; gap: 5px 20px; margin: 0; padding: 0; color: var(--muted); font-size: var(--t-text-xs); }
+.lead-counts strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* Four kinds of list, one of which is built on this screen. The other three are
+   named here so the absent controls read as "elsewhere", not as missing. */
+.lead-kinds { display: grid; gap: 10px; margin-top: 18px; border-top: 1px solid var(--t-line-soft); padding-top: 15px; }
+.lead-kinds h4 { margin: 0; font-size: var(--t-text-sm); font-weight: 700; }
+.lead-kinds dl { display: grid; gap: 7px; margin: 0; }
+.lead-kinds dl > div { display: grid; grid-template-columns: minmax(0, 22ch) minmax(0, 1fr); gap: 14px; align-items: baseline; }
+.lead-kinds dt { font-size: var(--t-text-xs); font-weight: 700; }
+.lead-kinds dd { max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.5; }
+.lead-kinds .li-link { display: inline-flex; align-items: center; gap: 5px; justify-self: start; }
+
+/* A row number is 1-4 characters; the reason beside it is the sentence worth
+   reading, so the number keeps a column its own width and no more. */
+.lead-rejects th:first-child, .lead-rejects td:first-child { width: 7ch; }
+
+/* Seven columns are not squeezed into a phone: the table keeps a readable
+   width and scrolls sideways inside .li-table-scroll, which is why the wrapper
+   above needs min-width: 0. */
+.lead-contacts { min-width: 740px; }
+.lead-contacts td:last-child { white-space: nowrap; }
+.lead-row-editing > td { background: var(--t-surface-2); }
+
+/* The editor sits ABOVE the table rather than inside it. A form in a row of a
+   sideways-scrolling table is a form half of which is off-screen on a phone,
+   and no amount of stickiness fixes that honestly. */
+.lead-editor { display: grid; gap: 10px; border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-surface-2); padding: 14px 15px; margin-bottom: 13px; }
+.lead-editor h4 { margin: 0; font-size: var(--t-text-sm); font-weight: 700; }
+.li-form-grid.lead-edit-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 10px; margin-bottom: 0; }
+.lead-editor .li-hint { margin: 0; }
+
+@media (max-width: 640px) {
+  .lead-drop { align-items: flex-start; }
+  .lead-kinds dl > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+}
+
+/* =========================================================================
+   OUTREACH SAFETY: the per-account answer.
+
+   The screen leads with one panel per LinkedIn account -- what is holding
+   that account back, its four operator ceilings against Trevra's own, its
+   working window and its two warm-ups. Everything here is additive: the
+   panel, the heading, the chips, the meters and the charts under it are the
+   shared .page-panel / .li-* system, unchanged.
+   ====================================================================== */
+
+/* The answer, first. The 3px left accent is this app's callout language
+   (.li-honesty, .li-warn-block, .setup-banner) and carries the tone; the
+   surface stays neutral so the number beside it is still the loudest thing. */
+.li-answer { display: grid; grid-template-columns: auto 1fr; gap: 13px; align-items: start; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: var(--t-r-md); background: var(--t-field); padding: 15px 17px; color: var(--green); }
+.li-answer-warn { border-left-color: var(--amber); color: var(--amber); }
+.li-answer-danger { border-left-color: var(--red); color: var(--red); }
+.li-answer > svg { flex: none; margin-top: 1px; }
+.li-answer strong { display: block; max-width: var(--t-measure); color: var(--ink); font-size: var(--t-text-md); line-height: 1.4; margin-bottom: 7px; }
+.li-answer p { max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.6; }
+.li-answer p + p { margin-top: 7px; }
+.li-answer p b { color: var(--ink); font-weight: 700; }
+
+/* The four ceilings the operator owns, as one strip: used, what applies, and
+   which of the two numbers produced it. */
+.li-caps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border: 1px solid var(--line); border-radius: var(--t-r-md); overflow: hidden; background: var(--panel); margin-top: 16px; }
+.li-cap { border-right: 1px solid var(--line); padding: 13px 15px; background: var(--t-field); }
+.li-cap:last-child { border-right: 0; }
+.li-cap-label { margin: 0 0 5px; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.4; }
+.li-cap-label span { color: var(--muted); opacity: .85; }
+.li-cap strong { display: block; font-family: var(--t-display); font-size: var(--t-text-2xl); font-weight: var(--t-w-bold); letter-spacing: var(--t-track-title); line-height: 1.1; font-variant-numeric: tabular-nums; }
+.li-cap strong em { font-style: normal; font-family: var(--t-body); font-size: var(--t-text-lg); font-weight: var(--t-w-bold); color: var(--muted); margin-left: 2px; }
+.li-cap-spent strong { color: var(--amber); }
+.li-cap-meter { height: 5px; border-radius: var(--t-r-sm); background: var(--green-2); overflow: hidden; margin: 9px 0 8px; }
+.li-cap-meter i { display: block; height: 100%; background: var(--t-green-fill); }
+.li-cap-spent .li-cap-meter i { background: var(--amber); }
+.li-cap small { display: block; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.45; }
+.li-cap-counts { margin-top: 5px; opacity: .8; }
+.li-cap small b { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* The three facts an operator asks for next: when this account may act, and
+   the two warm-ups that both apply to it. */
+.li-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border: 1px solid var(--line); border-radius: var(--t-r-md); overflow: hidden; background: var(--panel); margin-top: 14px; }
+.li-fact { border-right: 1px solid var(--line); padding: 13px 15px; }
+.li-fact:last-child { border-right: 0; }
+.li-fact h4 { margin: 0 0 7px; color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
+.li-fact p { max-width: var(--t-measure); margin: 0; font-size: var(--t-text-xs); line-height: 1.6; }
+.li-fact p + p { margin-top: 6px; color: var(--muted); }
+.li-fact b { font-weight: 700; }
+
+/* The status badge now carries a written status -- "Warming up", not
+   "warmup" -- so the capitalise rule that fixed the raw column value would
+   now title-case a sentence. The paused badge carries the operator's own
+   pause note, which is a sentence and not a chip: it wraps rather than
+   forcing the panel wider than a phone. */
+.li-posture { text-transform: none; }
+.li-posture-paused { white-space: normal; text-align: left; }
+
+@media (max-width: 900px) {
+  .li-caps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .li-cap:nth-child(2n) { border-right: 0; }
+  .li-cap:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .li-facts { grid-template-columns: minmax(0, 1fr); }
+  .li-fact { border-right: 0; border-bottom: 1px solid var(--line); }
+  .li-fact:last-child { border-bottom: 0; }
+}
+@media (max-width: 640px) {
+  .li-caps { grid-template-columns: minmax(0, 1fr); }
+  .li-cap { border-right: 0; border-bottom: 1px solid var(--line); }
+  .li-cap:last-child { border-bottom: 0; }
+  .li-answer { grid-template-columns: minmax(0, 1fr); }
+  .li-answer > svg { display: none; }
+}
+
+/* =========================================================================
+ * MULTI-ACCOUNT LINKEDIN (LinkedInAccounts.tsx)
+ *
+ * Everything here is new; nothing above is restyled. The screen reuses the
+ * outreach vocabulary it already had -- .li-seat-card, .li-signin*,
+ * .li-connect-blocked, .li-table, .li-form-grid, .li-stat-row -- because one
+ * account and five accounts are the same object at different counts, and a
+ * second visual language for the plural case would say otherwise.
+ *
+ * WHAT IS ACTUALLY NEW IS THE CHOICE: which account am I working in. That gets
+ * the app's existing selection idiom (.outreach-nav's 2px green underline on a
+ * green-3 field), not a new one, so "this is the selected thing" reads the same
+ * on every surface of the product.
+ * ====================================================================== */
+
+/* One bordered strip with hairline dividers -- the .li-stat-row treatment, for
+   the same reason: N accounts each in their own bordered card is N borders
+   doing the work of one. Scrolls sideways rather than wrapping, so the strip
+   stays one row and the selected tab stays where the eye left it. */
+/* `contain: inline-size` is load-bearing, not decoration. `overflow-x: auto`
+   alone gives this strip its own scrollbar but NOT its own width: the panel
+   above it, and the 1fr column above that, are still sized from the strip's
+   min-content, so four accounts on a phone would widen the whole document
+   sideways. Size containment makes the strip's width a fact about its
+   container rather than its contents. Same rule, same reason, on the accounts
+   table below. */
+.li-acct-switch {
+  display: flex;
+  overflow-x: auto;
+  contain: inline-size;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+}
+.li-acct-tab {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  flex: 1 0 190px;
+  min-width: 0;
+  min-height: var(--t-tap);
+  padding: 13px 15px 11px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: var(--t-field);
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+.li-acct-tab:last-child { border-right: 0; }
+.li-acct-tab:hover { background: var(--t-surface-2); color: var(--ink); }
+.li-acct-tab.is-active {
+  border-bottom-color: var(--green);
+  background: var(--green-3);
+  color: var(--green);
+}
+.li-acct-tab-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.li-acct-tab-head strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--t-text-sm);
+  font-weight: var(--t-w-bold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.li-acct-tab.is-active .li-acct-tab-head strong { color: var(--green); }
+.li-acct-tab small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.li-acct-tab-state { font-size: var(--t-text-chip); font-weight: var(--t-w-bold); }
+.li-acct-tab.is-active .li-acct-tab-state { color: var(--green); }
+
+/* The status dot and its chip. Colour is never the only carrier: the chip
+   always spells the state out beside it. */
+.li-acct-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--t-line-strong); }
+.li-acct-dot-ok { background: var(--green); }
+.li-acct-dot-warn { background: var(--amber); }
+.li-acct-dot-stop { background: var(--red); }
+.li-acct-dot-off { background: var(--t-line-strong); }
+.li-acct-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  padding: 4px 11px;
+  border-radius: var(--t-r-pill);
+  background: var(--t-surface-2);
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-weight: var(--t-w-bold);
+  white-space: nowrap;
+}
+.li-acct-state-ok { background: var(--green-3); color: var(--green); }
+.li-acct-state-warn { background: var(--amber-bg); color: var(--amber); }
+.li-acct-state-stop { background: var(--red-bg); color: var(--red); }
+
+/* The account panel, on switch. ONE authored moment on this screen: the panel
+   is keyed on the account, so choosing another remounts it, and the content
+   arrives from where the strip is rather than blinking. */
+.li-acct-panel { animation: li-acct-arrive 260ms cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes li-acct-arrive {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.li-acct-key {
+  padding: 2px 7px;
+  border-radius: var(--t-r-xs);
+  background: var(--t-surface-2);
+  color: var(--muted);
+  font-family: var(--t-mono);
+  font-size: var(--t-text-chip);
+}
+.li-acct-promise { margin-top: 14px; }
+.li-acct-remove { margin-left: auto; }
+.li-acct-error { margin-bottom: 12px; }
+
+/* Usage against a ceiling, inside a table cell: the number is the answer and
+   the bar is only its shape, so the bar is 3px and carries no label. */
+.li-acct-usage {
+  display: block;
+  width: 100%;
+  height: 3px;
+  margin-top: 5px;
+  border-radius: var(--t-r-pill);
+  background: var(--t-surface-3);
+  overflow: hidden;
+}
+.li-acct-usage-fill { display: block; height: 100%; border-radius: inherit; background: var(--green); }
+.li-acct-usage-fill.is-full { background: var(--amber); }
+
+/* Paired with the existing .li-table-scroll, which brings the scrollbar. */
+.li-acct-scroll { contain: inline-size; }
+
+.li-acct-pick {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--green);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+  text-align: left;
+  cursor: pointer;
+}
+.li-acct-pick:hover { text-decoration: underline; }
+.li-acct-row-active > td { background: var(--green-3); }
+.li-acct-row-mail { display: block; margin-top: 3px; color: var(--muted); font-size: var(--t-text-chip); }
+
+/* A field's own footnote. Not .li-hint: that inherits the label's 700 and a
+   bold range hint competes with the label it is explaining. */
+.li-acct-range {
+  max-width: var(--t-measure);
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-weight: var(--t-w-body);
+  line-height: 1.45;
+}
+
+.li-acct-add {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.li-acct-add.is-first { margin-top: 0; padding-top: 0; border-top: 0; }
+.li-acct-add > .li-hint { margin: 0 0 14px; }
+/* A two-word button that breaks across two lines reads as two controls. */
+.li-acct-nowrap,
+.li-acct-form-actions button,
+.li-acct-manage .panel-footer button { white-space: nowrap; }
+.li-acct-form-actions { display: flex; gap: 9px; align-items: center; }
+.li-acct-manage .panel-footer { margin-top: 16px; }
+.li-acct-manage .panel-footer span { max-width: var(--t-measure); }
+
+@media (max-width: 760px) {
+  .li-acct-tab { flex-basis: 165px; }
+  .li-acct-remove { margin-left: 0; }
+  .li-acct-form-actions { width: 100%; justify-content: flex-end; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .li-acct-panel { animation: none; }
+  .li-acct-tab { transition: none; }
+}

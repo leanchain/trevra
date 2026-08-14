@@ -5,12 +5,12 @@ import {
   closeLinkedInBrowser,
   linkedInBrowserReadiness,
   linkedInOffReason,
-  resolveProfileDir,
+  profileDirBase,
   runDueLinkedInActions,
   runPendingSeatDetectRequests
 } from '../server/linkedin/local-worker.js';
-import { runLinkedInSideTasks } from '../server/linkedin/jobs.js';
-import { linkedinWorkspaceIds } from '../server/linkedin/seats.js';
+import { runLinkedInCampaignTick, runLinkedInSideTasks } from '../server/linkedin/jobs.js';
+import { linkedinSeatRefs, linkedinWorkspaceIds } from '../server/linkedin/seats.js';
 
 /**
  * `npm run linkedin:worker` -- the LinkedIn loop, on the machine that has a
@@ -20,8 +20,36 @@ import { linkedinWorkspaceIds } from '../server/linkedin/seats.js';
  * `runPendingSeatDetectRequests` exactly as `src/worker/index.ts` does; there
  * is no second implementation of pacing, claiming or the safety gate here, and
  * there must never be one. What differs is only WHERE it runs: against the
- * host's own Chrome profile and the host's own display, over the same Postgres
+ * host's own Chrome profiles and the host's own display, over the same Postgres
  * the containers use (published on TREVRA_DB_PORT, default 45432).
+ *
+ * ONE PROCESS DRIVES EVERY SEAT, AND THAT IS A DELIBERATE CHOICE OVER
+ * ONE-PROCESS-PER-SEAT.
+ *
+ * The brief allowed either. This is safe as one process because the only two
+ * things two accounts could collide over are already isolated per seat, by
+ * construction rather than by convention:
+ *
+ *   1. THE CHROME PROFILE DIRECTORY. `resolveProfileDir` keys on
+ *      (workspace, seat), so two seats cannot share a user-data-dir -- which
+ *      matters because Chromium takes an exclusive lock on one, and because a
+ *      shared one would have two accounts overwriting each other's session.
+ *   2. THE OPEN BROWSER. `local-worker.ts` keeps a handle map keyed on the
+ *      same pair, so a second seat's call can never be handed the first seat's
+ *      already-open page.
+ *
+ * Everything else a batch touches -- the claim, the posture, the cooldown, the
+ * ledger -- is already keyed by (workspace_id, seat_key) in SQL, and the drain
+ * is SEQUENTIAL, one seat's batch after another's, so no two accounts are ever
+ * mid-action at the same moment on this machine. That is also why this is the
+ * better default: two headed Chrome windows fighting over one laptop's
+ * foreground is a worse experience than two batches in a row, and a batch is
+ * mostly asleep in its 30-120s gaps anyway.
+ *
+ * `--seat=<key>` is still there for the case that genuinely needs separate
+ * processes: one account behind a proxy and another not, two accounts on two
+ * different machines, or an operator who wants to stop one account without
+ * touching the other. Each process then serves exactly the seat it was given.
  *
  * REFUSES TO START rather than looping uselessly. A worker that cannot open a
  * browser has nothing to contribute and would only claim work away from one
@@ -32,6 +60,29 @@ import { linkedinWorkspaceIds } from '../server/linkedin/seats.js';
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
   process.exit(1);
+}
+
+/**
+ * `--seat=<key>`, or nothing.
+ *
+ * NOTHING MEANS EVERY SEAT, not the owner seat. Defaulting to `owner` here
+ * would reproduce the exact bug this change exists to remove -- a worker
+ * started with no arguments quietly serving one account and leaving the rest
+ * of the workspace's queues to fill up -- so the default is the inclusive one
+ * and narrowing is the explicit act.
+ */
+function seatSelector(argv: readonly string[]): string | undefined {
+  const flag = argv.find((argument) => argument === '--seat' || argument.startsWith('--seat='));
+  if (!flag) return undefined;
+  const value = flag.includes('=') ? flag.slice(flag.indexOf('=') + 1).trim() : (argv[argv.indexOf(flag) + 1] ?? '').trim();
+  if (!value) fail('--seat needs a seat key, e.g. --seat=owner or --seat=sales.');
+  // The same alphabet `seats.ts` enforces on a stored key. Rejected here rather
+  // than silently matching nothing, because "the worker ran and did nothing"
+  // is the least debuggable outcome available.
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value)) {
+    fail(`'${value}' is not a seat key. Use 1-64 letters, numbers, underscores or dashes.`);
+  }
+  return value;
 }
 
 // A config problem must arrive as one line, not as a zod stack trace. This
@@ -53,9 +104,20 @@ if (!config.enabled) fail(linkedInOffReason(config));
 const readiness = linkedInBrowserReadiness(config);
 if (!readiness.canLaunchHeaded) fail(readiness.reasons.join(' '));
 
+const seatKey = seatSelector(process.argv.slice(2));
+
 const db = await openDatabase();
-const profileDir = resolveProfileDir(config.profileDir);
-process.stdout.write(`LinkedIn worker running against the Chrome profile at ${profileDir}\n`);
+// One Chrome profile per SEAT, not one per workspace and not one for the whole
+// process -- see `resolveProfileDir`. This loop can serve several, so there is
+// no single path left to print here, only the base they are all built from.
+process.stdout.write(
+  `LinkedIn worker running with a separate Chrome profile per seat, under ${profileDirBase(config.profileDir)}-<workspace>[-<seat>]-profile\n`
+);
+process.stdout.write(
+  seatKey
+    ? `Serving seat '${seatKey}' only. Run another process with a different --seat to drive another account.\n`
+    : 'Serving every configured seat, one at a time. Pass --seat=<key> to serve just one.\n'
+);
 process.stdout.write(`Checking for work every ${Math.round(runtime.automationIntervalMs / 1000)}s. Ctrl-C to stop.\n`);
 
 let running = false;
@@ -69,7 +131,7 @@ async function cycle(): Promise<void> {
     // pacing history to work from until the seat row exists, so doing this
     // second would cost it a whole tick on the operator's very first run.
     await runPendingSeatDetectRequests(db, config);
-    await runDueLinkedInActions(db, config);
+    await runDueLinkedInActions(db, config, { seatKey });
     // Then the periodic work: read the inbox, reconcile LinkedIn's own
     // pending-invite list, drain the withdrawal queue, walk a lead source.
     // AFTER the send queue, always -- that is the only work with a paced slot
@@ -79,8 +141,20 @@ async function cycle(): Promise<void> {
     // self-hosted split the API and the container worker have no display, so
     // they serve only seats that sign themselves in. Same functions, same
     // gates; only the machine differs.
+    //
+    // ONCE PER SEAT, NOT ONCE PER WORKSPACE. Every one of these reads a
+    // different signed-in session -- the inbox is that account's inbox, the
+    // pending-invite list is that account's list -- so iterating workspaces
+    // would silently serve only whichever seat `runLinkedInSideTasks`
+    // defaulted to and leave every other account's inbox stale.
+    for (const seat of await linkedinSeatRefs(db)) {
+      if (seatKey && seat.seatKey !== seatKey) continue;
+      await runLinkedInSideTasks(db, config, { workspaceId: seat.workspaceId, seatKey: seat.seatKey });
+    }
+    // Campaigns advance once per WORKSPACE, after the side tasks have recorded
+    // this cycle's outcomes -- see `runLinkedInCampaignTick`.
     for (const workspaceId of await linkedinWorkspaceIds(db)) {
-      await runLinkedInSideTasks(db, config, { workspaceId });
+      await runLinkedInCampaignTick(db, workspaceId);
     }
   } catch (error) {
     // Neither call throws by contract. This is for the case they are wrong

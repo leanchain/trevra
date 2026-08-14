@@ -4,6 +4,7 @@ import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from
 import { LinkedInApiError, createCampaign, newCampaignId } from './campaigns.js';
 import type { LinkedInInboxMessage, LinkedInThreadSummary } from './driver-inbox.js';
 import {
+  clearInboxForWorkspace,
   enqueueReply,
   listThreads,
   readThread,
@@ -36,6 +37,8 @@ const NOW = new Date('2026-08-04T10:00:00.000Z'); // A Tuesday, 10:00 UTC: insid
 const WORKSPACE_ID = 'ws_linkedin_inbox_test';
 const OTHER_WORKSPACE_ID = 'ws_linkedin_inbox_other';
 const MAYA = 'https://www.linkedin.com/in/maya/';
+/** The person the SALES seat is talking to, in its own inbox. */
+const SALES_LEAD = 'https://www.linkedin.com/in/sales-lead/';
 
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
@@ -444,16 +447,82 @@ describe('enqueueReply', () => {
     expect(queued.verdict.checks.find((entry) => entry.check === 'duplicate-target')?.passed).toBe(true);
   });
 
-  it('still refuses a second reply to the same person, so the replay guard keeps its meaning', async () => {
+  it('still refuses a double-submitted reply to the same message in the same conversation', async () => {
     await steadySeat();
+    await syncThreadMessages(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', messages: [inbound()] }, NOW);
     await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'first' }, NOW);
 
-    // The narrower kind moved the boundary; it did not remove one. One reply
-    // per target per seat, refused by the same two mechanisms that refuse a
-    // second invite.
+    // The narrower scope moved the boundary; it did not remove one. Nothing
+    // has happened in the conversation since, so a second queued answer to the
+    // same message is a double-submit and the replay guard says so.
     await expect(
-      enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'second' }, NOW)
+      enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'first' }, NOW)
     ).rejects.toThrow(/duplicate-target/);
+  });
+
+  it('ANSWERS THE SAME CONVERSATION AGAIN once it has moved on', async () => {
+    // The defect this replaces: a reply filed under the default 'legacy' scope,
+    // so ONE reply per person for the life of the ledger and every later answer
+    // a permanent 409. A conversation is the one place where messaging somebody
+    // repeatedly is the normal case, not the abuse the guard was built for.
+    await steadySeat();
+    await syncThreadMessages(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', messages: [inbound()] }, NOW);
+
+    const first = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Sure -- here it is.' }, NOW);
+    expect(first.verdict.allowed).toBe(true);
+
+    // They write again. That is a different message, so answering it is a
+    // different action.
+    await syncThreadMessages(
+      db,
+      { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', messages: [inbound(), inbound('And what does it cost?', '2026-08-04T09:45:00.000Z')] },
+      NOW
+    );
+
+    const second = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Two hundred a month.' }, NOW);
+    expect(second.actionId).not.toBe(first.actionId);
+    expect(second.verdict.checks.find((entry) => entry.check === 'duplicate-target')?.passed).toBe(true);
+
+    // Both rows survive side by side, which is what migration 047's widened
+    // replay index is for.
+    const scopes = await db.prepare('SELECT replay_scope FROM linkedin_actions WHERE workspace_id=? AND kind=? ORDER BY created_at')
+      .all<{ replay_scope: string }>(WORKSPACE_ID, 'reply');
+    expect(scopes).toHaveLength(2);
+    expect(scopes[0].replay_scope).not.toBe(scopes[1].replay_scope);
+    for (const row of scopes) expect(row.replay_scope).toContain('thread:2-maya==');
+  });
+
+  it('carries the operator\'s warm-up override onto the row, for replies only', async () => {
+    // A brand-new seat: warm-up week 1 permits no messages at all, which is
+    // exactly the ceiling migration 044's control exists to let a human answer
+    // through -- for ONE reply, explicitly, and for nothing else.
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, NOW);
+
+    await expect(
+      enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello' }, NOW)
+    ).rejects.toThrow(/warmup-ceiling/);
+
+    const queued = await enqueueReply(
+      db,
+      { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello', overrideWarmupCeiling: true },
+      NOW
+    );
+    expect(queued.verdict.allowed).toBe(true);
+    expect(queued.verdict.checks.find((entry) => entry.check === 'warmup-ceiling')?.detail).toContain('overrode the warm-up ceiling');
+
+    // PERSISTED, so the worker's pre-send re-evaluation honours the same
+    // decision without anybody having to re-supply it.
+    const row = await db.prepare('SELECT override_warmup_ceiling FROM linkedin_actions WHERE id=?')
+      .get<{ override_warmup_ceiling: boolean }>(queued.actionId);
+    expect(row?.override_warmup_ceiling).toBe(true);
+  });
+
+  it('leaves the override off by default, so nothing acquires it by accident', async () => {
+    await steadySeat();
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello' }, NOW);
+    const row = await db.prepare('SELECT override_warmup_ceiling FROM linkedin_actions WHERE id=?')
+      .get<{ override_warmup_ceiling: boolean }>(queued.actionId);
+    expect(row?.override_warmup_ceiling).toBe(false);
   });
 
   it('refuses an empty body, an unknown conversation, and one with no profile URL', async () => {
@@ -472,5 +541,53 @@ describe('enqueueReply', () => {
     await expect(
       enqueueReply(db, { workspaceId: OTHER_WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello' }, NOW)
     ).rejects.toThrow(/not found/);
+  });
+
+  it('CANNOT REPLY INTO ANOTHER SEAT\'S CONVERSATION EITHER', async () => {
+    // The same rule one level down, and the one that actually bit: an inbox is
+    // per LinkedIn ACCOUNT, not per workspace. `threadByUrn` defaults to the
+    // owner seat, so a reply queued for the sales account used to resolve the
+    // OWNER's conversation and file a row against the wrong identity -- a
+    // message that would have been sent from an account nobody chose.
+    await steadySeat();
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'UTC' }, new Date(NOW.getTime() - 60 * 86_400_000), 'sales');
+
+    // '2-maya==' is synced for the OWNER seat by this describe's beforeEach.
+    await expect(
+      enqueueReply(db, { workspaceId: WORKSPACE_ID, seatKey: 'sales', threadUrn: '2-maya==', body: 'hello' }, NOW)
+    ).rejects.toThrow(/not found/);
+    expect(await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_actions WHERE workspace_id=?').get<{ total: number }>(WORKSPACE_ID))
+      .toMatchObject({ total: 0 });
+
+    // The sales seat's OWN conversation, with the same LinkedIn thread id, is
+    // a different conversation and is answerable by that seat alone.
+    await syncThreads(db, { workspaceId: WORKSPACE_ID, seatKey: 'sales', threads: [summary({ profileUrl: SALES_LEAD })] }, NOW);
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, seatKey: 'sales', threadUrn: '2-maya==', body: 'hello' }, NOW);
+
+    expect(queued.targetRef).toBe(SALES_LEAD);
+    const row = await db.prepare('SELECT seat_key, target_ref FROM linkedin_actions WHERE id=?')
+      .get<{ seat_key: string; target_ref: string }>(queued.actionId);
+    expect(row).toMatchObject({ seat_key: 'sales', target_ref: SALES_LEAD });
+  });
+});
+
+describe('clearInboxForWorkspace', () => {
+  it('wipes every stored thread and, by cascade, every message -- for this workspace only', async () => {
+    await syncThreads(db, { workspaceId: WORKSPACE_ID, threads: [summary()] }, NOW);
+    await syncThreadMessages(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', messages: [inbound()] }, NOW);
+    await syncThreads(db, { workspaceId: OTHER_WORKSPACE_ID, threads: [summary({ threadUrn: '2-other==' })] }, NOW);
+
+    const removed = await clearInboxForWorkspace(db, WORKSPACE_ID);
+
+    expect(removed).toBe(1);
+    expect(await listThreads(db, WORKSPACE_ID)).toEqual([]);
+    expect(await db.prepare('SELECT id FROM linkedin_messages WHERE workspace_id=?').all(WORKSPACE_ID)).toEqual([]);
+    // Another workspace's inbox is untouched -- this is an account-change
+    // reset, not a general-purpose wipe.
+    expect(await listThreads(db, OTHER_WORKSPACE_ID)).toHaveLength(1);
+  });
+
+  it('is a no-op count on a workspace with nothing synced', async () => {
+    expect(await clearInboxForWorkspace(db, WORKSPACE_ID)).toBe(0);
   });
 });

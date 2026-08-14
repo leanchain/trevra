@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { upsertSeat } from './seats.js';
 import { recordAction } from './actions.js';
-import { workspacesWithDueActions } from './local-worker.js';
+import { seatsWithDueActions } from './local-worker.js';
 import { createLeadList, importLeadCsv, listLeadContacts, updateLeadContact } from './lead-lists.js';
 import { saveWorkflow } from './workflows.js';
 import {
@@ -99,12 +99,21 @@ describe('LinkedIn outreach manager persistence', () => {
     expect(actions?.total ?? 0).toBe(0);
   });
 
-  it('fails closed for non-owner execution: a secondary-seat action cannot wake the owner worker', async () => {
+  // WAS: 'fails closed for non-owner execution: a secondary-seat action cannot
+  // wake the owner worker'. That assertion described the `AND seat_key='owner'`
+  // filter in the worker's discovery query, which made every non-owner queue
+  // fill up and never drain. Multi-seat execution removes the filter, so the
+  // property worth holding down is the opposite one: each seat is discovered
+  // as itself, and the owner seat's discovery is unchanged.
+  it('discovers every seat with due work, each as its own seat', async () => {
     await upsertSeat(db, WORKSPACE, { label: 'Secondary', timezone: 'Europe/Zurich' }, NOW, 'secondary');
     await recordAction(db, { workspaceId: WORKSPACE, seatKey: 'secondary', kind: 'profile_view', targetRef: 'https://www.linkedin.com/in/secondary-test/', status: 'planned', source: 'export', plannedFor: NOW.toISOString() }, NOW);
-    expect(await workspacesWithDueActions(db, NOW)).toEqual([]);
+    expect((await seatsWithDueActions(db, NOW)).map((seat) => seat.seatKey)).toEqual(['secondary']);
     await recordAction(db, { workspaceId: WORKSPACE, seatKey: 'owner', kind: 'profile_view', targetRef: 'https://www.linkedin.com/in/owner-test/', status: 'planned', source: 'export', plannedFor: NOW.toISOString() }, NOW);
-    expect(await workspacesWithDueActions(db, NOW)).toEqual([WORKSPACE]);
+    expect(await seatsWithDueActions(db, NOW)).toEqual([
+      { workspaceId: WORKSPACE, seatKey: 'owner', timezone: 'Europe/Zurich' },
+      { workspaceId: WORKSPACE, seatKey: 'secondary', timezone: 'Europe/Zurich' }
+    ]);
   });
 
   it('uses the exact five-day 20/40/60/80/100 campaign ramp', () => {

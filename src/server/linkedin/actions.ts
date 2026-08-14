@@ -354,7 +354,7 @@ export async function countPendingInvites(
 
 /**
  * True when this seat already has a non-skipped action of `kind` against
- * `targetRef`.
+ * `targetRef` IN THE SAME REPLAY SCOPE.
  *
  * `excludeActionId` drops exactly ONE row from the lookup, by primary key. It
  * exists for the caller that has already claimed its own ledger row and is now
@@ -362,19 +362,48 @@ export async function countPendingInvites(
  * its own duplicate. It is deliberately an id and not a flag: excluding a
  * named row keeps the question "is there another one", where a flag would turn
  * it into "skip this check", which is a different and much weaker question.
+ *
+ * `replayScope` IS THE OTHER HALF OF MIGRATION 047, AND WITHOUT IT THIS QUERY
+ * CONTRADICTED THE LEDGER IT GUARDS.
+ *
+ * 047 widened the partial unique index behind `recordAction` from
+ * (workspace, seat, kind, target) to (workspace, seat, kind, target,
+ * replay_scope), precisely so a managed workflow can touch one person twice
+ * with one kind under a stable `member:step` scope while every legacy writer
+ * -- which supplies no scope and stores 'legacy' -- keeps colliding exactly as
+ * before. This predicate is what `guard.ts` `duplicate-target` asks, and it
+ * ignored the new column: so the ledger would happily accept a workflow's
+ * second message step while the gate refused it forever, because the FIRST
+ * step's row was already `sent` against the same person. A campaign with two
+ * message steps could never send the second one.
+ *
+ * The rule is therefore the index's rule, verbatim: a row vetoes this one only
+ * when it shares its replay scope. Different scope, different action -- the
+ * ledger would store both, so the gate must allow both. Same scope, or both
+ * unscoped, is still a duplicate, so nothing an existing caller does changes:
+ * an export, an inbox reply and a manual row all default to 'legacy' here for
+ * the same reason `recordAction` defaults them to 'legacy' there, and the
+ * legacy one-kind-per-target guard is exactly as strict as it ever was.
+ *
+ * A genuine repeat of the SAME step for the SAME member still fails, because
+ * that repeat carries the same `member:step` scope by construction.
  */
 export async function hasTarget(
   db: Db,
   seat: SeatRef,
   kind: LinkedInActionKind,
   targetRef: string,
-  excludeActionId: string | null = null
+  excludeActionId: string | null = null,
+  replayScope: string | null = null
 ): Promise<boolean> {
+  // The same normalisation `recordAction` applies on the way in, so the
+  // question and the write can never disagree about which scope a row is in.
+  const scope = replayScope?.trim() || 'legacy';
   const row = await db.prepare(`
     SELECT id FROM linkedin_actions
-    WHERE workspace_id=? AND seat_key=? AND kind=? AND target_ref=? AND status <> 'skipped'
+    WHERE workspace_id=? AND seat_key=? AND kind=? AND target_ref=? AND replay_scope=? AND status <> 'skipped'
       AND id IS DISTINCT FROM ?::text
     LIMIT 1
-  `).get<{ id: string }>(seat.workspaceId, seat.seatKey, kind, targetRef, excludeActionId);
+  `).get<{ id: string }>(seat.workspaceId, seat.seatKey, kind, targetRef, scope, excludeActionId);
   return row !== undefined;
 }

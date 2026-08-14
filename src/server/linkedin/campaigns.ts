@@ -234,15 +234,21 @@ export async function getCampaignBrief(db: Db, workspaceId: string, campaignId: 
  * Everything else -- exported, sent, accepted, replied, declined -- is a claim
  * that something left Trevra, and rewriting the copy behind it would make the
  * campaign a lie about what was sent.
+ *
+ * 'held' does not count either, for the same reason as 'planned' rather than a
+ * new one: it is where `pauseManagedCampaign` parks a row that was scheduled
+ * but never claimed, so that resuming can hand back the identical slot
+ * (migration 051). Nothing has been delivered, and counting it here would let
+ * a paused campaign be refused an edit on the grounds that it had already
+ * sent -- which is precisely the state a pause exists to create.
  */
 export async function countDeliveredActions(db: Db, workspaceId: string, campaignId: string): Promise<number> {
   const row = await db.prepare(`
     SELECT COUNT(*)::int AS total FROM linkedin_actions
-    WHERE workspace_id=? AND campaign_id=? AND status NOT IN ('planned','skipped')
+    WHERE workspace_id=? AND campaign_id=? AND status NOT IN ('planned','held','skipped')
   `).get<{ total: number }>(workspaceId, campaignId);
   return row?.total ?? 0;
 }
-
 /** Record the approved copy and the run behind it, once the playbook has produced them. */
 export async function attachCampaignRun(
   db: Db,

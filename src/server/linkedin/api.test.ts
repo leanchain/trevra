@@ -8,6 +8,7 @@ import { closeAuthDatabase, migrateAuthDatabase } from '../auth-service.js';
 import { recordAction } from './actions.js';
 import { upsertSeat } from './seats.js';
 import { LinkedInApiError, writeActionStatus } from './campaigns.js';
+import { canonicalPayloadHash } from '../control-plane/payload.js';
 
 /**
  * The LinkedIn HTTP surface (docs/linkedin-outreach-plan.md section 5).
@@ -469,19 +470,40 @@ async function seedApprovedCampaign(
   const payload = { ...APPROVED_PAYLOAD, ...overrides, campaignId };
   const iso = NOW.toISOString();
 
+  /**
+   * APPROVED MEANS DECIDED, not "a payload exists".
+   *
+   * This fixture used to seed the step at `waiting_approval` with no
+   * `playbook_approvals` row -- the exact state a founder has been ASKED about
+   * and has not answered -- and then assert that exporting and queueing it
+   * succeeded. That was the bug, not the test: `placeStepBehindApproval` writes
+   * `input_json` at the moment it stops for a human, so a pending step and a
+   * REJECTED step both carry a full payload. `approvedCampaignPayload` now
+   * requires what `runActionStep` has always required -- the step COMPLETED,
+   * and an `approve` row for this exact payload hash -- so the fixture seeds a
+   * campaign somebody actually approved.
+   */
+  const stepRunId = `pbs_${workspaceId}`;
+  const payloadHash = canonicalPayloadHash(payload);
+
   await db.prepare('DELETE FROM playbook_runs WHERE id=?').run(runId);
   await db.prepare(`
     INSERT INTO playbook_runs (
       id,workspace_id,playbook_key,playbook_version,status,actor_type,actor_id,
       input_json,correlation_id,created_at,started_at,updated_at
     ) VALUES (?,?,?,?,?,?,?,?::jsonb,?,?,?,?)
-  `).run(runId, workspaceId, 'gtm.linkedin-outreach', '1.0.0', 'waiting_approval', 'user', `usr_${workspaceId}`,
+  `).run(runId, workspaceId, 'gtm.linkedin-outreach', '1.0.0', 'running', 'user', `usr_${workspaceId}`,
     JSON.stringify({ targets: payload.plan.slots.map((slot) => slot.targetRef) }), `corr_${workspaceId}`, iso, iso, iso);
   await db.prepare(`
     INSERT INTO playbook_step_runs (
-      id,playbook_run_id,step_id,step_type,status,attempt,input_json,available_at,updated_at
-    ) VALUES (?,?,?,?,?,?,?::jsonb,?,?)
-  `).run(`pbs_${workspaceId}`, runId, 'approve-campaign', 'approval', 'waiting_approval', 1, JSON.stringify(payload), iso, iso);
+      id,playbook_run_id,step_id,step_type,status,attempt,input_json,approval_payload_hash,available_at,updated_at
+    ) VALUES (?,?,?,?,?,?,?::jsonb,?,?,?)
+  `).run(stepRunId, runId, 'approve-campaign', 'approval', 'completed', 1, JSON.stringify(payload), payloadHash, iso, iso);
+  await db.prepare(`
+    INSERT INTO playbook_approvals (
+      id,workspace_id,playbook_run_id,step_run_id,user_id,decision,payload_hash,comment,created_at
+    ) VALUES (?,?,?,?,?,?,?,?,?)
+  `).run(`pba_${workspaceId}`, workspaceId, runId, stepRunId, `usr_${workspaceId}`, 'approve', payloadHash, null, iso);
 
   await db.prepare(`
     INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,playbook_run_id,created_at,updated_at)
@@ -1254,7 +1276,7 @@ describe('engagement route (034)', () => {
 
     expect(queued.verdict.allowed).toBe(true);
     // EVERY check, unfiltered. "It is only a follow" is not a reason to skip one.
-    expect(queued.verdict.checks).toHaveLength(13);
+      expect(queued.verdict.checks).toHaveLength(14);
 
     const row = await db.prepare('SELECT kind,status FROM linkedin_actions WHERE id=?')
       .get<{ kind: string; status: string }>(queued.actionId);
@@ -1387,18 +1409,45 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     await seat(WORKSPACE_A, '2026-01-01');
     await seat(WORKSPACE_B);
 
-    const deleted = (await as(sessionA).delete('/api/linkedin/seat').expect(200)).body as { deleted: boolean };
-    expect(deleted).toEqual({ deleted: true });
+    const deleted = (await as(sessionA).delete('/api/linkedin/seat').expect(200)).body as { deleted: boolean; clearedThreads: number };
+    expect(deleted).toEqual({ deleted: true, clearedThreads: 0 });
 
     const after = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as { seat: unknown };
     expect(after.seat).toBeNull();
 
     // A second delete finds nothing left to remove, honestly.
-    expect((await as(sessionA).delete('/api/linkedin/seat').expect(200)).body).toEqual({ deleted: false });
+    expect((await as(sessionA).delete('/api/linkedin/seat').expect(200)).body).toEqual({ deleted: false, clearedThreads: 0 });
 
     // The other workspace's seat is untouched.
     const other = (await as(sessionB).get('/api/linkedin/seat').expect(200)).body as { seat: unknown };
     expect(other.seat).not.toBeNull();
+  });
+
+  it('clears this workspace\'s stored inbox when the seat is deleted, and never the other workspace\'s', async () => {
+    await seat(WORKSPACE_A, '2026-01-01');
+    await seat(WORKSPACE_B);
+
+    await db.prepare(`
+      INSERT INTO linkedin_threads (id, workspace_id, thread_urn, profile_url, name)
+      VALUES ('lthr_a', ?, '2-a==', 'https://www.linkedin.com/in/stale/', 'Someone from the old account')
+    `).run(WORKSPACE_A);
+    await db.prepare(`
+      INSERT INTO linkedin_messages (id, workspace_id, thread_id, direction, body, external_ref)
+      VALUES ('lmsg_a', ?, 'lthr_a', 'in', 'A message from before the reconnect', 'sha256:stale-a')
+    `).run(WORKSPACE_A);
+    await db.prepare(`
+      INSERT INTO linkedin_threads (id, workspace_id, thread_urn, profile_url, name)
+      VALUES ('lthr_b', ?, '2-b==', 'https://www.linkedin.com/in/other/', 'Someone in the other workspace')
+    `).run(WORKSPACE_B);
+
+    const deleted = (await as(sessionA).delete('/api/linkedin/seat').expect(200)).body as { deleted: boolean; clearedThreads: number };
+    expect(deleted).toEqual({ deleted: true, clearedThreads: 1 });
+
+    expect(await db.prepare('SELECT id FROM linkedin_threads WHERE workspace_id=?').all(WORKSPACE_A)).toEqual([]);
+    expect(await db.prepare('SELECT id FROM linkedin_messages WHERE workspace_id=?').all(WORKSPACE_A)).toEqual([]);
+
+    // The other workspace's inbox is untouched.
+    expect(await db.prepare('SELECT id FROM linkedin_threads WHERE workspace_id=?').all(WORKSPACE_B)).toHaveLength(1);
   });
 
   it('refuses a seat write it cannot honour, and refuses to set posture at all', async () => {

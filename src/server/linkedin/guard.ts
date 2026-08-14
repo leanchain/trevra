@@ -13,7 +13,6 @@ import {
 } from './actions.js';
 import {
   ACCEPTANCE_WINDOW_DAYS,
-  BUSINESS_HOURS,
   ENFORCEMENT_SCAN_WEEKDAYS,
   INMAIL_MONTHLY_QUOTA,
   MAX_DAY_OVER_DAY_DELTA,
@@ -24,11 +23,14 @@ import {
   WARMUP_WEEKS,
   WEEKEND_FACTOR,
   bandFor,
+  effectiveDailyCeiling,
   isPassiveKind,
+  seatOperatorLimit,
   warmupMultiplierFor,
   type PacedKind
 } from './limits.js';
-import { isWeekend, localDateOf, previousBusinessDayCount, weekdayOf } from './pacing.js';
+import { campaignActionLimit, campaignWarmupFraction } from './managed-campaigns.js';
+import { formatMinuteOfDay, isWeekend, localDateOf, previousBusinessDayCount, weekdayOf, weekdayVolumeFactor, workWindowOf } from './pacing.js';
 import { OWNER_SEAT_KEY, effectivePosture, getSeat, warmupWeekOf } from './seats.js';
 
 /**
@@ -51,6 +53,7 @@ export type LinkedInCheckName =
   | 'seat-configured'
   | 'seat-paused'
   | 'warmup-ceiling'
+  | 'campaign-warmup'
   | 'rolling-24h'
   | 'rolling-7d'
   | 'rolling-30d'
@@ -67,6 +70,7 @@ export const LINKEDIN_CHECK_NAMES = [
   'seat-configured',
   'seat-paused',
   'warmup-ceiling',
+  'campaign-warmup',
   'rolling-24h',
   'rolling-7d',
   'rolling-30d',
@@ -109,6 +113,60 @@ export interface LinkedInSafetyInput {
   targetRef: string;
   /** ISO-8601 instant the action is scheduled for. */
   plannedFor: string;
+  /**
+   * The campaign this action belongs to, when it belongs to one.
+   *
+   * Absent is the ordinary case -- a one-off export has no campaign -- and the
+   * `campaign-warmup` check says so out loud rather than vanishing. Present
+   * and MANAGED (started, with a workflow) is what turns the campaign-day ramp
+   * on for this action.
+   */
+  campaignId?: string;
+  /**
+   * The replay identity of the action under evaluation, within its kind and
+   * target. Absent means 'legacy', exactly as it does in `recordAction`.
+   *
+   * `duplicate-target` asks the ledger's own replay question, so it has to ask
+   * it in the ledger's own terms (migration 047): a row only duplicates this
+   * one when it shares this scope. A managed workflow supplies `member:step`,
+   * so its second message step is a different action rather than a forbidden
+   * repeat of the first; every other caller supplies nothing and gets the
+   * legacy one-kind-per-target guard unchanged.
+   *
+   * Deliberately NOT on the skill's input schema, for the same reason
+   * `excludeActionId` is not: an approved playbook payload must not be able to
+   * name a scope that excuses it from the duplicate check.
+   */
+  replayScope?: string;
+  /**
+   * The operator overrode a `warmup-ceiling` refusal for THIS ONE reply.
+   *
+   * Migration 044 (`linkedin_actions.override_warmup_ceiling`) is the record of
+   * that decision and its COMMENT is the specification this field implements:
+   * set exclusively by `enqueueReply` from the inbox composer's "Override the
+   * warm-up ceiling" control, read back off the row by the local worker's
+   * pre-send re-evaluation so the override STICKS TO THE ROW instead of having
+   * to be re-supplied by whoever happens to call the gate next.
+   *
+   * IT RELAXES EXACTLY ONE CHECK. `warmup-ceiling`, and nothing else. Posture,
+   * both rolling windows, the campaign ramp, the day-over-day clamp, the
+   * acceptance throttle, business hours, weekends, the InMail quota, the
+   * pending-invite backlog and `duplicate-target` all still run and can all
+   * still refuse -- and the relaxed check says in its own `detail` that it was
+   * overridden, so a verdict never reads as a clean pass it did not earn.
+   *
+   * REPLIES ONLY, enforced here as well as at the write site. A warm-up ramp
+   * exists to stop a new seat from behaving like an established one, and the
+   * one action where a human is answering somebody who wrote to them first is
+   * the only one where "I know what I am doing" is a claim about a real
+   * conversation rather than about volume. Anything else carrying this flag is
+   * ignored rather than honoured: fail-closed is the direction a gate is
+   * allowed to be wrong in.
+   *
+   * Absent from the skill's input schema for the third time and the same
+   * reason as the two fields above it.
+   */
+  overrideWarmupCeiling?: boolean;
 }
 
 export interface LinkedInSafetyOptions {
@@ -120,14 +178,16 @@ export interface LinkedInSafetyOptions {
    * without this the check finds the action under evaluation and fails on it,
    * every time. A row cannot be its own duplicate.
    *
-   * It excludes exactly one row, by primary key. Any OTHER non-skipped row
-   * against the same target still fails the check, and no other check is
-   * affected -- all twelve of them still see the whole ledger. That is the
+   * Any OTHER non-skipped row against the same target still fails the check,
+   * and no other check is affected -- all of them still see the ledger. That is the
    * difference between this and the alternative a caller might reach for,
    * which is to run the gate and then discount a failing check afterwards:
    * that puts "ignore the guard under conditions X" in the caller, where the
    * next edit widens X. The gate stays authoritative; it is simply told which
    * row is the subject of the question.
+   *
+   * It excludes exactly one row, by primary key, and every other check still
+   * sees the whole ledger.
    *
    * Absent means absent: omitting it preserves the export-mode semantics
    * exactly, and it is deliberately NOT on the skill's input schema, so an
@@ -151,9 +211,60 @@ function automationOfLinkedIn(): Pick<LinkedInSafetyVerdict, 'automationMode' | 
 const HISTORY_DAYS = 30;
 
 /**
+ * The campaign's ramp clock, or undefined when there is nothing to ramp.
+ *
+ * A campaign qualifies only when it has BOTH a `started_at` and a
+ * `workflow_id` -- that pair is what makes it a managed campaign this
+ * deployment drives, as opposed to a draft, or a 025-era campaign folder whose
+ * actions a human exported by hand. A campaign that fails the test is reported
+ * as not ramped, never treated as ramped-to-zero.
+ */
+async function managedCampaignRamp(db: Db, workspaceId: string, campaignId: string): Promise<{ startedAt: string } | undefined> {
+  const row = await db
+    .prepare('SELECT started_at, workflow_id FROM linkedin_campaigns WHERE workspace_id=? AND id=?')
+    .get<{ started_at: string | null; workflow_id: string | null }>(workspaceId, campaignId);
+  if (!row || row.started_at === null || row.workflow_id === null) return undefined;
+  return { startedAt: row.started_at };
+}
+
+/**
+ * This campaign's non-skipped actions of one kind in the rolling window.
+ *
+ * Deliberately NOT `actions.ts`'s seat-scoped counters: every ceiling there
+ * asks "what has this SEAT done", and the campaign ramp asks "what has this
+ * CAMPAIGN done" -- one seat legitimately runs several campaigns and their
+ * ramps are independent. Same two rules as every other window in the ledger:
+ * `recorded_at`, and rolling rather than calendar.
+ */
+async function countCampaignActionsInWindow(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  kind: PacedKind,
+  sinceHours: number,
+  now: Date
+): Promise<number> {
+  const since = new Date(now.getTime() - sinceHours * 3_600_000).toISOString();
+  const row = await db
+    .prepare(`
+      SELECT COUNT(*)::int AS total FROM linkedin_actions
+      WHERE workspace_id=? AND campaign_id=? AND kind=? AND status <> 'skipped' AND recorded_at > ?
+    `)
+    .get<{ total: number }>(workspaceId, campaignId, kind, since);
+  return row?.total ?? 0;
+}
+
+/** 1-based campaign day, for the sentence the operator reads. */
+function campaignDayOf(startedAt: string, now: Date): number {
+  const start = Date.parse(startedAt);
+  if (Number.isNaN(start)) return 1;
+  return Math.max(1, Math.floor((now.getTime() - start) / 86_400_000) + 1);
+}
+
+/**
  * Run every gate against one proposed action.
  *
- * A workspace with NO seat still gets all thirteen checks, evaluated against the
+ * A workspace with NO seat still gets all fourteen checks, evaluated against the
  * most conservative assumptions available (warm-up band, week 1, UTC). The
  * alternative -- returning early with one blocker -- is the short-circuit this
  * module exists to avoid, and it would hide the fact that the action is also
@@ -174,6 +285,9 @@ export async function evaluateLinkedInSafety(
   const timezone = seat?.timezone ?? 'UTC';
   const warmupWeek = seat ? warmupWeekOf(seat.activatedAt, now) : 1;
   const band = bandFor(input.kind, posture === 'steady' ? 'steady' : 'warmup');
+  // The seat's own days and hours, or the researched default when there is no
+  // seat to ask. Same window `pacing.ts` places slots inside.
+  const window = workWindowOf(seat);
 
   checks.push({
     check: 'seat-configured',
@@ -195,13 +309,13 @@ export async function evaluateLinkedInSafety(
   const used24 = await countActionsInWindow(db, seatRef, input.kind, 24, now);
   const messageKinds = ['dm', 'reply', 'inmail'] as const;
   const isMessage = messageKinds.includes(input.kind as (typeof messageKinds)[number]);
-  const operatorLimit = seat
-    ? input.kind === 'invite' ? seat.dailyInviteLimit
-      : isMessage ? seat.dailyMessageLimit
-        : input.kind === 'profile_view' ? seat.dailyProfileViewLimit
-          : input.kind === 'follow' ? seat.dailyFollowLimit
-            : null
-    : null;
+  // The operator's own number for this kind, and whether the seat says it wins
+  // over Trevra's researched band. Both live in `limits.ts` -- the mapping from
+  // eight paced kinds onto four settings fields, and the three-case rule for
+  // combining a band with a setting, are policy, and policy belongs in the file
+  // that carries the evidence for it rather than restated in the gate.
+  const operatorLimit = seatOperatorLimit(seat, input.kind);
+  const overrideBands = seat?.safetyBandOverride ?? false;
   const operatorUsed24 = operatorLimit === null
     ? used24
     : isMessage
@@ -210,28 +324,116 @@ export async function evaluateLinkedInSafety(
   const used7d = await countActionsInWindow(db, seatRef, input.kind, 24 * 7, now);
   const used30d = await countActionsInWindow(db, seatRef, input.kind, 24 * 30, now);
 
+  const effectiveDailyLimit = effectiveDailyCeiling(band.perDay, operatorLimit, overrideBands);
+
+  /**
+   * WHERE THE PER-KIND CEILING CAME FROM, in the operator's words.
+   *
+   * Every detail below that quotes a daily number quotes this instead of
+   * `band.perDay`, because after the override those are different numbers and a
+   * refusal that names the wrong one sends somebody to the wrong screen. When
+   * the override is on the sentence says so explicitly and quotes BOTH figures:
+   * an operator who lifted the band deserves to see, on every ceiling they
+   * read, that what is binding is their number and not Trevra's research.
+   */
+  const ceilingSource =
+    operatorLimit === null
+      ? `${band.perDay}/day`
+      : overrideBands
+        ? `${operatorLimit}/day, the operator's own ceiling, which overrides Trevra's researched ${band.perDay}/day safety band for this seat`
+        : `${effectiveDailyLimit}/day, the stricter of Trevra's ${band.perDay}/day safety band and the operator setting ${operatorLimit}/day`;
+
   // Passive kinds skip the ramp -- see PASSIVE_KINDS. They are still checked
-  // here, just against the full band: only the multiplier is bypassed.
+  // here, just against the full ceiling: only the multiplier is bypassed.
+  //
+  // THE RAMP MULTIPLIES `effectiveDailyLimit`, NOT `band.perDay`. That is what
+  // makes the override lift a CAP without ever lifting a RAMP: week 2 of an
+  // overridden seat is 40% of the operator's number instead of 40% of ours, and
+  // it is still 40%. It also makes the ramp respect an operator who asked for
+  // LESS than the band, which the old `band.perDay x multiplier` quietly did
+  // not.
   const multiplier = warmupMultiplierFor(input.kind, warmupWeek);
-  const warmupCeiling = Math.floor(band.perDay * multiplier);
+  const warmupCeiling = Math.floor(effectiveDailyLimit * multiplier);
+  const warmupPassed = used24 + 1 <= warmupCeiling;
+  // Migration 044, honoured for `reply` and ignored for everything else. See
+  // `LinkedInSafetyInput.overrideWarmupCeiling`.
+  const overrideWarmup = input.overrideWarmupCeiling === true && input.kind === 'reply';
+  const warmupDetail =
+    warmupCeiling === 0
+      ? `Warm-up week ${warmupWeek} permits no ${input.kind}s at all (${ceilingSource} x ${multiplier}). ${seat === undefined ? 'No seat is configured, so this is paced as a brand-new one; detect the seat to start its ramp.' : 'Wait for the ramp. It is keyed to how long this seat has been automated, not to the account\'s age, so there is nothing to declare that would lift it.'}`
+      : isPassiveKind(input.kind) && warmupWeek <= WARMUP_WEEKS
+        ? `${used24} of ${warmupCeiling} ${input.kind}s used in the last 24h. Passive activity is not ramped during warm-up; it is what the warm-up consists of.`
+        : `${used24} of ${warmupCeiling} ${input.kind}s used in the last 24h (warm-up week ${warmupWeek}: ${ceilingSource} x ${multiplier}).`;
   checks.push({
     check: 'warmup-ceiling',
-    passed: used24 + 1 <= warmupCeiling,
-    detail:
-      warmupCeiling === 0
-        ? `Warm-up week ${warmupWeek} permits no ${input.kind}s at all (${band.perDay}/day x ${multiplier}). ${seat === undefined ? 'No seat is configured, so this is paced as a brand-new one; detect the seat to start its ramp.' : 'Wait for the ramp. It is keyed to how long this seat has been automated, not to the account\'s age, so there is nothing to declare that would lift it.'}`
-        : isPassiveKind(input.kind) && warmupWeek <= WARMUP_WEEKS
-          ? `${used24} of ${warmupCeiling} ${input.kind}s used in the last 24h. Passive activity is not ramped during warm-up; it is what the warm-up consists of.`
-          : `${used24} of ${warmupCeiling} ${input.kind}s used in the last 24h (warm-up week ${warmupWeek}: ${band.perDay}/day x ${multiplier}).`
+    passed: warmupPassed || overrideWarmup,
+    detail: overrideWarmup
+      ? `${warmupDetail} The operator explicitly overrode the warm-up ceiling for this one reply, so this check ${warmupPassed ? 'would have passed anyway and the override changed nothing' : 'does not refuse it'}. It relaxes this ceiling and nothing else -- every other check below still runs and can still refuse.`
+      : warmupDetail
   });
 
-  const effectiveDailyLimit = operatorLimit === null ? band.perDay : Math.min(band.perDay, operatorLimit);
+  // THE SECOND RAMP, and it is a different clock from the one above.
+  //
+  // `warmup-ceiling` ramps by WEEK since this SEAT was first automated.
+  // This one ramps by DAY since this CAMPAIGN was started: 20/40/60/80/100%
+  // over days 1..5, implemented once in `managed-campaigns.ts` and READ here
+  // rather than restated, so the manager's ramp and the gate's ramp cannot
+  // drift into two different policies wearing the same name.
+  //
+  // Both apply and the stricter one binds. A seat automated since January is
+  // at full seat capacity; a campaign it started this morning still gets 20%
+  // of that capacity, because the risk the campaign ramp answers is a NEW
+  // burst of near-identical outreach, not a new account.
+  const campaignId = input.campaignId?.trim() || null;
+  const campaign = campaignId === null ? undefined : await managedCampaignRamp(db, input.workspaceId, campaignId);
+  const campaignLimit = campaign === undefined ? null : campaignActionLimit(effectiveDailyLimit, campaign.startedAt, now);
+  const campaignUsed24 =
+    campaign === undefined || campaignId === null ? 0 : await countCampaignActionsInWindow(db, input.workspaceId, campaignId, input.kind, 24, now);
+  checks.push({
+    check: 'campaign-warmup',
+    passed: campaignLimit === null || campaignUsed24 + 1 <= campaignLimit,
+    detail:
+      campaign !== undefined && campaignLimit !== null
+        ? `${campaignUsed24} of ${campaignLimit} ${input.kind}s used by this campaign in the last 24 hours: campaign day ${campaignDayOf(campaign.startedAt, now)} is ${(campaignWarmupFraction(campaign.startedAt, now) * 100).toFixed(0)}% of the seat's ${effectiveDailyLimit}/day ceiling. The campaign ramp and the per-seat warm-up both apply; whichever is stricter binds.`
+        : campaignId === null
+          ? `No campaign was named for this action, so the campaign-day ramp does not apply and only the per-seat warm-up week does. The ramp shapes managed campaigns -- the ones this deployment runs itself.`
+          : `Campaign '${campaignId}' is not a managed campaign in this workspace (a managed campaign has a workflow and has been started), so the 20/40/60/80/100% campaign-day ramp does not apply to it. The per-seat warm-up above still does.`
+  });
+
+  /**
+   * TWO INDEPENDENT DAILY CEILINGS, AND BOTH HAVE TO PASS.
+   *
+   * They were one, and being one was a bug with teeth. Trevra's band is PER
+   * KIND (`limits.ts`: an InMail is 3/day because InMails are 3/day) while the
+   * operator's "messages" setting is ONE POOL over dm+reply+inmail ("this
+   * account sends at most 25 messages a day" is a statement about the account,
+   * not about DMs). The old line compared the POOL count against
+   * `min(band.perDay, operatorLimit)`, which multiplied the two mistakes
+   * together: evaluating an InMail collapsed the whole 25-message pool to
+   * min(3, 25) = 3, so three DMs already sent refused every InMail, and twelve
+   * DMs refused every reply. A per-kind number was being used as a pool cap.
+   *
+   * So each ceiling is now checked against the number it is a ceiling ON:
+   *
+   *   the per-kind ceiling  (`effectiveDailyLimit`) against this kind's own
+   *                         count (`used24`);
+   *   the operator's pool   (`operatorLimit`)       against the operator's own
+   *                         number (`operatorUsed24`, which IS the pool for the
+   *                         three message kinds and is the same as `used24` for
+   *                         every other kind).
+   *
+   * Neither is discounted by the other and the stricter one binds, which is the
+   * same composition every other pair of ceilings in this file uses.
+   */
+  const bandPassed = used24 + 1 <= effectiveDailyLimit;
+  const poolPassed = operatorLimit === null || operatorUsed24 + 1 <= operatorLimit;
+  const poolNoun = isMessage ? 'messages (DMs, replies and InMails share one operator ceiling)' : `${input.kind}s`;
   checks.push({
     check: 'rolling-24h',
-    passed: used24 + 1 <= band.perDay && operatorUsed24 + 1 <= effectiveDailyLimit,
+    passed: bandPassed && poolPassed,
     detail: operatorLimit === null
-      ? `${used24} of ${band.perDay} ${input.kind}s used in the last 24 hours (${posture} band).`
-      : `${operatorUsed24} of ${effectiveDailyLimit} account-level ${isMessage ? 'messages' : `${input.kind}s`} used in the last 24 hours; the effective ceiling is the stricter of Trevra's ${band.perDay}/day safety band and the operator setting ${operatorLimit}/day.`
+      ? `${used24} of ${effectiveDailyLimit} ${input.kind}s used in the last 24 hours (${posture} band).`
+      : `${used24} of ${ceilingSource} used in the last 24 hours for ${input.kind}s, and ${operatorUsed24} of the operator's ${operatorLimit}/day account-level ${poolNoun}. Two independent ceilings -- the per-kind one and the operator's pool -- and ${bandPassed && poolPassed ? 'both pass' : !bandPassed && !poolPassed ? 'both are full' : bandPassed ? 'the operator pool is full' : 'the per-kind ceiling is full'}.`
   });
 
   checks.push({
@@ -255,7 +457,7 @@ export async function evaluateLinkedInSafety(
   // The anti-"slide and spike" check, and the reason this module exists at all
   // (plan 1.3): a day-over-day jump is the signal, not the daily total.
   const history = await dailyCountsForLastNDays(db, seatRef, input.kind, HISTORY_DAYS, now);
-  const previous = previousBusinessDayCount(history, localDateOf(now, timezone));
+  const previous = previousBusinessDayCount(history, localDateOf(now, timezone), window);
   const deltaCeiling = Math.max(previous + MIN_RAMP_STEP, Math.floor(previous * (1 + MAX_DAY_OVER_DAY_DELTA)));
   checks.push({
     check: 'day-over-day-delta',
@@ -277,34 +479,47 @@ export async function evaluateLinkedInSafety(
   const parsed = !Number.isNaN(plannedAt.getTime());
   const local = parsed ? localDateOf(plannedAt, timezone) : null;
 
+  // The window and the weekday predicate BOTH come from `pacing.ts`, and that
+  // is the fix for the gap that made this comment necessary: the planner used
+  // to place slots against a hardcoded 08:00-18:00 Mon-Fri while this gate
+  // enforced the seat's own configuration, so a seat working 10:00-14:00
+  // Tue/Thu was handed slots that were refused here and never happened.
   const weekday = local === null ? null : weekdayOf(local);
   const minuteOfDay = local === null ? null : local.hour * 60 + local.minute;
-  const configuredDays = seat?.workingDays ?? [1, 2, 3, 4, 5];
-  const configuredStart = seat?.workStartMinute ?? BUSINESS_HOURS.start * 60;
-  const configuredEnd = seat?.workEndMinute ?? BUSINESS_HOURS.end * 60;
+  // > 0 means "this seat may act on this weekday at all". A day the operator
+  // configured scores 1 whether or not it is a weekend; an unconfigured
+  // weekend scores WEEKEND_FACTOR; anything else scores 0.
+  const dayFactor = weekday === null ? 0 : weekdayVolumeFactor(window, weekday);
   const insideConfiguredWindow =
-    local !== null && weekday !== null && configuredDays.includes(weekday)
-    && minuteOfDay !== null && minuteOfDay >= configuredStart && minuteOfDay < configuredEnd;
-  const hhmm = (minute: number): string => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+    local !== null && dayFactor > 0
+    && minuteOfDay !== null && minuteOfDay >= window.startMinute && minuteOfDay < window.endMinute;
   checks.push({
     check: 'business-hours',
     passed: insideConfiguredWindow,
     detail:
       local === null
         ? `'${input.plannedFor}' is not a parseable instant, so it cannot be placed inside a working-hours window.`
-        : `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}; this account works on weekday(s) ${configuredDays.join(',') || 'none'} between ${hhmm(configuredStart)} and ${hhmm(configuredEnd)}.`
+        : `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}; this account works on weekday(s) ${window.days.join(',') || 'none'} between ${formatMinuteOfDay(window.startMinute)} and ${formatMinuteOfDay(window.endMinute)}.`
   });
   const onWeekend = weekday !== null && isWeekend(weekday);
+  const configuredDay = weekday !== null && window.days.includes(weekday);
   checks.push({
     check: 'weekend',
-    // WEEKEND_FACTOR is the policy; this check just reads it. Raise the factor
-    // above zero and weekends stop being blocked, with no edit here.
-    passed: local !== null && (!onWeekend || WEEKEND_FACTOR > 0),
+    // THE OPERATOR'S CONFIGURED DAYS ARE AUTHORITATIVE for the weekday
+    // question. Ticking Saturday in `working_days` is an explicit statement
+    // about this account, and WEEKEND_FACTOR does not get to overrule it --
+    // the factor shapes the VOLUME of a weekend day nobody configured. Raise
+    // it above zero and unconfigured weekends stop being blocked, with no edit
+    // here. Same predicate the planner places slots with, so this check can
+    // never refuse an instant the plan just produced.
+    passed: local !== null && (!onWeekend || dayFactor > 0),
     detail:
       local === null
         ? `'${input.plannedFor}' is not a parseable instant, so its weekday is unknown.`
         : onWeekend
-          ? `Scheduled on a weekend in ${timezone}, and the weekend factor is ${WEEKEND_FACTOR}.`
+          ? configuredDay
+            ? `Scheduled on a weekend in ${timezone}, and this account is explicitly configured to work weekday ${weekday}. A configured day is a working day; the weekend factor of ${WEEKEND_FACTOR} shapes only the days nobody configured.`
+            : `Scheduled on a weekend in ${timezone} that this account has not configured as a working day, and the weekend factor is ${WEEKEND_FACTOR}.`
           : ENFORCEMENT_SCAN_WEEKDAYS.includes(weekday as number)
             ? `Scheduled on a weekday in ${timezone}. It is a reported enforcement-scan day, so the pacing engine keeps it below the daily maximum.`
             : `Scheduled on a weekday in ${timezone}.`
@@ -344,15 +559,29 @@ export async function evaluateLinkedInSafety(
         : `The outstanding-invite ceiling applies to invites; this is a ${input.kind}. ${pendingInvites} invite(s) are pending for this seat.`
   });
 
+  // SCOPED, EXACTLY AS THE LEDGER'S REPLAY INDEX IS SCOPED (migration 047).
+  //
+  // Asking the unscoped question here made the gate stricter than the table it
+  // guards: a managed workflow's second message step carries its own
+  // `member:step` scope and the ledger would store it, but this check found the
+  // first step's `sent` row against the same person and refused forever, so a
+  // two-message workflow could never send its second message. Handing the scope
+  // to `hasTarget` makes the two agree by construction. A row in a DIFFERENT
+  // scope is a different action and does not veto this one; a row in the SAME
+  // scope -- including the legacy/unscoped default every existing caller uses --
+  // still does, which is what keeps a genuine repeat of one step for one member,
+  // and a replayed export, refused.
   const excludeActionId = options.excludeActionId ?? null;
-  const duplicate = await hasTarget(db, seatRef, input.kind, input.targetRef, excludeActionId);
+  const replayScope = input.replayScope?.trim() || 'legacy';
+  const duplicate = await hasTarget(db, seatRef, input.kind, input.targetRef, excludeActionId, replayScope);
   const subject = excludeActionId ? ' besides the one being evaluated' : '';
+  const scoped = replayScope === 'legacy' ? '' : ` in replay scope '${replayScope}'`;
   checks.push({
     check: 'duplicate-target',
     passed: !duplicate,
     detail: duplicate
-      ? `This seat already has a ${input.kind} logged against '${input.targetRef}'${subject}. A second one is the thing the ledger's replay guard exists to prevent.`
-      : `No prior ${input.kind} against '${input.targetRef}'${subject}.`
+      ? `This seat already has a ${input.kind} logged against '${input.targetRef}'${scoped}${subject}. A second one is the thing the ledger's replay guard exists to prevent.`
+      : `No prior ${input.kind} against '${input.targetRef}'${scoped}${subject}.`
   });
 
   const failed = checks.find((entry) => !entry.passed);
@@ -369,6 +598,8 @@ const inputSchema = z.object({
   kind: z.enum(PACED_KIND_VALUES),
   targetRef: z.string().min(1).max(500),
   plannedFor: z.string().min(1),
+  /** The managed campaign this action belongs to, when it belongs to one. */
+  campaignId: z.string().min(1).max(64).optional(),
   /**
    * Fail the run when the gate says no, instead of reporting it. Same reason
    * `gtm.outreach-guard` has it: the playbook engine's steps are an
@@ -400,7 +631,7 @@ export const linkedinGuardSkill: Skill<LinkedInGuardInput, LinkedInSafetyVerdict
     name: 'LinkedIn seat safety gate',
     version: '1.0.0',
     description:
-      'Check one proposed LinkedIn action against every per-seat ceiling at once: pause state, warm-up week, rolling 24h/7d/30d windows, day-over-day variance, acceptance rate, business hours, weekends, the published InMail quota, the outstanding-invite backlog, and duplicate targets.',
+      'Check one proposed LinkedIn action against every per-seat ceiling at once: pause state, warm-up week, the campaign-day warm-up ramp, rolling 24h/7d/30d windows, day-over-day variance, acceptance rate, the seat\'s configured working days and hours, weekends, the published InMail quota, the outstanding-invite backlog, and duplicate targets.',
     sideEffect: 'none',
     requiresApproval: false,
     inputSchema,
@@ -414,7 +645,8 @@ export const linkedinGuardSkill: Skill<LinkedInGuardInput, LinkedInSafetyVerdict
         seatKey: input.seatKey,
         kind: input.kind as PacedKind,
         targetRef: input.targetRef,
-        plannedFor: input.plannedFor
+        plannedFor: input.plannedFor,
+        campaignId: input.campaignId
       },
       ctx.now()
     );

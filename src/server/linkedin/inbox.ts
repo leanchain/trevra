@@ -560,6 +560,35 @@ export async function syncThreadMessages(
   return result;
 }
 
+/**
+ * Forget every stored conversation for this workspace: every `linkedin_thread`
+ * and, by the `ON DELETE CASCADE` in migration 031, every `linkedin_message`
+ * hanging off one.
+ *
+ * THE ONE CALLER IS AN ACCOUNT CHANGE. `local-worker.ts`'s `detectLinkedInSeat`
+ * calls this the moment a freshly-confirmed `profileUrl` disagrees with the
+ * one this workspace last stored: the threads and messages in this schema are
+ * a READ CACHE of one specific LinkedIn account's inbox (seats.ts: one seat
+ * per workspace, so nothing here is scoped to WHICH account produced it), and
+ * leaving a previous account's conversations in place would show the operator
+ * somebody else's DMs as their new seat's own.
+ *
+ * `linkedin_actions` -- the send ledger -- is never touched here, for the same
+ * reason `deleteSeat` never touches it: it is history, not this account's
+ * current view, and a reset must not double as a silent delete of what Trevra
+ * actually sent.
+ */
+export async function clearInboxForWorkspace(db: Db, workspaceId: string): Promise<number> {
+  const result = await db.prepare('DELETE FROM linkedin_threads WHERE workspace_id=?').run(workspaceId);
+  return result.changes;
+}
+
+/** Clear only the read cache belonging to one LinkedIn account. */
+export async function clearInboxForSeat(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): Promise<number> {
+  const result = await db.prepare('DELETE FROM linkedin_threads WHERE workspace_id=? AND seat_key=?').run(workspaceId, seatKey);
+  return result.changes;
+}
+
 /* -------------------------------------------------------------------------
  * Reading the inbox.
  * ---------------------------------------------------------------------- */
@@ -675,6 +704,23 @@ export interface ReplyRequest {
   plannedFor?: string;
   /** The Trevra user whose live request queued this reply -- see `LinkedInActionRecord.queuedByUserId`. */
   queuedByUserId?: string | null;
+  /**
+   * The operator ticked "Override the warm-up ceiling" in the composer.
+   *
+   * THE ONLY PLACE IN TREVRA THAT MAY SET migration 044's
+   * `linkedin_actions.override_warmup_ceiling`, which is what that column's own
+   * COMMENT says and what makes the flag mean anything: it is a HUMAN saying "I
+   * am answering somebody who wrote to me and I accept the ramp does not fit
+   * this one message". Nothing infers it, nothing defaults it on, and the
+   * worker never decides it -- the worker reads it back off the row so the
+   * decision travels with the action it was made about.
+   *
+   * It relaxes the `warmup-ceiling` check and NOTHING ELSE. The gate still runs
+   * whole and can still refuse this reply for any of its other reasons, and the
+   * verdict returned to the composer says in the check's own detail that the
+   * ceiling was overridden rather than passed.
+   */
+  overrideWarmupCeiling?: boolean;
 }
 
 export interface EnqueuedReply {
@@ -687,6 +733,44 @@ export interface EnqueuedReply {
   plannedFor: string;
   /** The full verdict, so a UI can show what was checked rather than just that it passed. */
   verdict: LinkedInSafetyVerdict;
+}
+
+/**
+ * The replay identity of a reply: this conversation, and the message it answers.
+ *
+ * WHY THIS PAIR AND NOT SOMETHING ELSE. `replay_scope` (migration 047) asks
+ * "which action IS this, within its kind and target", and for a reply the
+ * honest answer is not "a reply to Maya" -- Maya will be replied to many times
+ * over a live conversation -- it is "the answer to what Maya just said". The
+ * thread pins the conversation; the last stored message pins the point in it.
+ * A thread that has moved on since gives the next reply a different identity;
+ * a thread that has not gives it the same one, which is exactly when a second
+ * queued reply is a double-submit rather than a follow-up.
+ *
+ * THE ANCHOR IS THE LAST MESSAGE IN THE THREAD, INBOUND OR OUTBOUND, and both
+ * directions matter. Inbound is the ordinary case (they wrote, we answer).
+ * Outbound is what lets a conversation be carried on: once this seat's reply
+ * has been sent and the inbox sync has stored it, it becomes the anchor, so the
+ * message after it is a new action rather than a permanent 409.
+ *
+ * `external_ref` is used rather than the row id because it is the content
+ * digest `messageRef` computes -- stable across re-syncs of the same
+ * transcript, where a row id is only stable while the row survives. A thread
+ * with nothing stored yet anchors on 'thread-start', which is a real position
+ * (nobody has said anything) rather than a missing value.
+ *
+ * Ordered by `position`, for the reason `readThread` documents: `sent_at` is a
+ * parse of display text and is frequently null, while `position` is the order
+ * LinkedIn rendered them in.
+ */
+async function replyReplayScope(db: Db, workspaceId: string, threadId: string, threadUrn: string): Promise<string> {
+  const last = await db.prepare(`
+    SELECT external_ref FROM linkedin_messages
+    WHERE workspace_id=? AND thread_id=?
+    ORDER BY position DESC, id DESC
+    LIMIT 1
+  `).get<{ external_ref: string }>(workspaceId, threadId);
+  return `thread:${threadUrn}:${last?.external_ref ?? 'thread-start'}`;
 }
 
 /**
@@ -732,18 +816,33 @@ export interface EnqueuedReply {
  * never buy volume a DM could not, which is the half of the original reasoning
  * that was right.
  *
- * WHAT IS STILL REFUSED. A second reply to the same person in the same
- * conversation, because `duplicate-target` and the replay guard now apply to
- * `reply` exactly as they applied to `dm`. That is a real limitation and it is
- * the conservative direction: one queued reply per person at a time, and the
- * next one may be queued once this one has been sent... which it may not, since
- * a sent row is still non-skipped.
+ * WHAT IS STILL REFUSED, AND WHAT STOPPED BEING REFUSED.
  *
- * lc-debt: one reply per (seat, target) for the life of the ledger, so a
- * conversation cannot be answered twice through this path; upgrade path is a
- * replay guard keyed on (workspace, seat, kind, target, thread_urn) for
- * kind='reply' plus the matching `hasTarget` predicate, which needs the 022
- * index widened rather than dropped.
+ * The replay guard used to be keyed on (workspace, seat, kind, target) with no
+ * further identity, and a reply filed under the default 'legacy' scope. That
+ * made ONE reply per person the ceiling FOR THE LIFE OF THE LEDGER: the first
+ * reply was queued, sent, and left as a non-skipped row, so the second reply to
+ * the same conversation -- weeks later, answering a message that had not been
+ * written yet -- was a permanent 409. A guard built to stop a replayed export
+ * from inviting a stranger twice was ending conversations.
+ *
+ * Migration 047 widened that index to include `replay_scope`, and a reply now
+ * names its own: THE CONVERSATION, PLUS THE MESSAGE IT IS ANSWERING (see
+ * `replyReplayScope`). That key is the natural one because it is what a reply
+ * IS -- an answer to a particular thing somebody said in a particular thread --
+ * and it draws the line in the place the operator would draw it:
+ *
+ *   - a second reply after they have written again is a DIFFERENT answer to a
+ *     DIFFERENT message, so it has a different scope and is queued;
+ *   - a second reply after the first has been sent and synced back is likewise
+ *     anchored past it, so a conversation can be carried on;
+ *   - a double-submitted composer -- the same reply, twice, before either has
+ *     moved the thread -- resolves to the SAME scope and is refused, which is
+ *     the case the guard existed for.
+ *
+ * The refusal that remains is therefore "you already have an unsent answer to
+ * that exact message", which is a true and useful thing to say, rather than
+ * "this person has been replied to once, ever".
  */
 export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Promise<EnqueuedReply> {
   const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
@@ -752,7 +851,22 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
     throw new LinkedInApiError('A reply needs a body. Trevra sends approved bytes and does not compose them.', 400);
   }
 
-  const thread = await threadByUrn(db, input.workspaceId, input.threadUrn);
+  // PER SEAT, AND THIS ARGUMENT IS LOAD-BEARING. `threadByUrn` defaults its
+  // last parameter to the owner seat, and omitting it here meant a reply
+  // queued for a SECONDARY account resolved the OWNER's conversation: the row
+  // was filed against the wrong account's thread, its profile URL and campaign
+  // came from the wrong inbox, and the worker would have sent it from a
+  // LinkedIn identity nobody chose. The same silent default is what
+  // `withdraw.ts` had in four places and what
+  // `postgresLocalWorkerStore.seatPosture` carries its own comment about --
+  // the failure mode of a defaulted seat key is never a missing row, it is the
+  // wrong account acting, which is why the whole subsystem is per seat.
+  //
+  // A conversation that belongs to another seat is reported as NOT FOUND
+  // rather than as a permission error, which is the same answer another
+  // workspace's thread already gets: from this seat's point of view it does
+  // not exist, and saying so leaks nothing about the other account's inbox.
+  const thread = await threadByUrn(db, input.workspaceId, input.threadUrn, seatKey);
   if (!thread) throw new LinkedInApiError('LinkedIn conversation not found', 404);
   if (!thread.profileUrl) {
     throw new LinkedInApiError(
@@ -767,9 +881,25 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
     throw new LinkedInApiError(`'${plannedFor}' is not a parseable instant, so this reply has no slot to be paced into.`, 400);
   }
 
+  const replayScope = await replyReplayScope(db, input.workspaceId, thread.id, thread.threadUrn);
+  const overrideWarmupCeiling = input.overrideWarmupCeiling === true;
+
   const verdict = await evaluateLinkedInSafety(
     db,
-    { workspaceId: input.workspaceId, seatKey, kind: 'reply', targetRef, plannedFor },
+    {
+      workspaceId: input.workspaceId,
+      seatKey,
+      kind: 'reply',
+      targetRef,
+      plannedFor,
+      // Asked in the ledger's own terms, so the gate and the row that is about
+      // to be written agree about what would collide with what.
+      replayScope,
+      // The operator's decision, honoured here so they are told NOW whether the
+      // override was enough -- and persisted below so it is honoured again at
+      // the moment of execution without anybody having to remember it.
+      ...(overrideWarmupCeiling ? { overrideWarmupCeiling: true } : {})
+    },
     now
   );
   if (!verdict.allowed) {
@@ -792,6 +922,7 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
         status: 'planned',
         plannedFor,
         source: 'manual',
+        replayScope,
         queuedByUserId: input.queuedByUserId ?? null
       },
       now
@@ -802,8 +933,13 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
     // either (local-worker.ts), so a half-written row is not claimable rather
     // than claimable-and-unsendable -- and the transaction means it cannot
     // survive at all.
-    await tx.prepare('UPDATE linkedin_actions SET body=?, thread_urn=? WHERE id=? AND workspace_id=?')
-      .run(body, thread.threadUrn, record.id, input.workspaceId);
+    // `override_warmup_ceiling` rides along in the same statement and the same
+    // transaction as the bytes, because it is the same fact about the same
+    // decision: this row is an operator's answer to a person, sent under an
+    // exception they chose. Migration 044's COMMENT names `enqueueReply` as the
+    // only writer, and this is it.
+    await tx.prepare('UPDATE linkedin_actions SET body=?, thread_urn=?, override_warmup_ceiling=? WHERE id=? AND workspace_id=?')
+      .run(body, thread.threadUrn, overrideWarmupCeiling, record.id, input.workspaceId);
     return record;
   });
 
@@ -814,7 +950,7 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
     // rather than swallowed, because silently returning the earlier row would
     // tell an operator their reply was queued when their words were dropped.
     throw new LinkedInApiError(
-      `The ledger already holds a reply to ${targetRef} for this seat, so this one was not queued. One target takes one action of one kind per seat.`,
+      `The ledger already holds a reply to ${targetRef} answering the same message in this conversation, so this one was not queued. Send or discard that one first; once the conversation moves on, the next reply is a different action.`,
       409
     );
   }

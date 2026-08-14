@@ -9,8 +9,8 @@ import { reapStaleAgentRuns } from '../server/agent/runs.js';
 import { orchestrationMode } from '../server/orchestration/client.js';
 import { validateEnvironment } from '../server/config.js';
 import { closeLinkedInBrowser, runDueLinkedInActions, runPendingSeatDetectRequests } from '../server/linkedin/local-worker.js';
-import { runLinkedInSideTasks } from '../server/linkedin/jobs.js';
-import { linkedinWorkspaceIds } from '../server/linkedin/seats.js';
+import { runLinkedInCampaignTick, runLinkedInSideTasks } from '../server/linkedin/jobs.js';
+import { linkedinSeatRefs, linkedinWorkspaceIds } from '../server/linkedin/seats.js';
 import { runDueResearchSources } from '../server/research/service.js';
 
 const runtime=validateEnvironment();
@@ -84,8 +84,15 @@ async function linkedinCycle():Promise<void>{
     // `runLinkedInSideTasks` catches each job on its own and opens no browser
     // where it cannot, so a workspace this process may not serve costs a
     // readiness probe and nothing else.
+    // PER SEAT, not per workspace: each connected LinkedIn account has its own
+    // inbox to read, its own pending-invite list to reconcile and its own
+    // withdrawal queue, and none of them are the owner account's.
+    for(const seat of await linkedinSeatRefs(db)){
+      await runLinkedInSideTasks(db,runtime.linkedinLocalWorker,{workspaceId:seat.workspaceId,seatKey:seat.seatKey});
+    }
+    // Once per workspace, AFTER the side tasks -- see `runLinkedInCampaignTick`.
     for(const workspaceId of await linkedinWorkspaceIds(db)){
-      await runLinkedInSideTasks(db,runtime.linkedinLocalWorker,{workspaceId});
+      await runLinkedInCampaignTick(db,workspaceId);
     }
   }
   catch(error){console.error('LinkedIn local worker cycle failed',error);}

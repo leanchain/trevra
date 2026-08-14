@@ -5,7 +5,7 @@
   "serialNumber": "urn:uuid:***",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-06T09:39:58.541Z",
+    "timestamp": "2026-08-14T00:28:47.538Z",
     "lifecycles": [
       {
         "phase": "build"
@@ -345,14 +345,14 @@
       ]
     },
     {
-      "bom-ref": "@emnapi/wasi-threads@1.2.2",
+      "bom-ref": "@emnapi/wasi-threads@1.2.3",
       "type": "library",
       "name": "@emnapi/wasi-threads",
-      "version": "1.2.2",
+      "version": "1.2.3",
       "scope": "optional",
       "author": "toyobayashi",
       "description": "WASI threads proposal implementation in JavaScript",
-      "purl": "pkg:npm/%40emnapi/wasi-threads@1.2.2",
+      "purl": "pkg:npm/%40emnapi/wasi-threads@1.2.3",
       "properties": [
         {
           "name": "cdx:npm:package:development",
@@ -365,6 +365,10 @@
       ],
       "externalReferences": [
         {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@emnapi/wasi-threads/-/wasi-threads-1.2.3.tgz"
+        },
+        {
           "type": "vcs",
           "url": "git+https://github.com/toyobayashi/emnapi.git"
         },
@@ -375,6 +379,12 @@
         {
           "type": "issue-tracker",
           "url": "https://github.com/toyobayashi/emnapi/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "10b1017bc3ec2efbc9e9032bd332edf1f7ef3875bf75cd66dc213334c83b68952fddb31aa03b70d935f20c0c24601baba31c6e1c4c214532c949ee6cc9ae78ee"
         }
       ],
       "licenses": [
@@ -15901,6 +15911,82 @@
       ]
     },
     {
+      "bom-ref": "playwright@1.62.1",
+      "type": "library",
+      "name": "playwright",
+      "version": "1.62.1",
+      "scope": "optional",
+      "author": "Microsoft Corporation",
+      "description": "A high-level API to automate web browsers",
+      "purl": "pkg:npm/playwright@1.62.1",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/playwright/-/playwright-1.62.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/microsoft/playwright.git"
+        },
+        {
+          "type": "website",
+          "url": "https://playwright.dev"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "d0cf8bdcb003f3f9e6e79e0b3a56bd032c748f4b66159d0505ca10ec5d55b951e933f5e9882f11703cc1401f16e7e840f0bdb64c7c442f3785fb659c533bdc2e"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "playwright-core@1.62.1",
+      "type": "library",
+      "name": "playwright-core",
+      "version": "1.62.1",
+      "scope": "optional",
+      "author": "Microsoft Corporation",
+      "description": "A high-level API to automate web browsers",
+      "purl": "pkg:npm/playwright-core@1.62.1",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.62.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/microsoft/playwright.git"
+        },
+        {
+          "type": "website",
+          "url": "https://playwright.dev"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "c0f612c0404963d187ada2125eacaab71d276b42e93b75c45fb8cd0e19ed6dec7bb73512ee42e766c3a516bb85241e078bfae10cc8d71aa1dec0367af2761957"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "postcss@8.5.23",
       "type": "library",
       "name": "postcss",
@@ -21243,6 +21329,7 @@
         "stripe@22.3.2",
         "zod@3.25.76",
         "zod-to-json-schema@3.25.2",
+        "playwright@1.62.1",
         "@testcontainers/postgresql@12.0.4",
         "@types/cookie-parser@1.4.10",
         "@types/express@5.0.6",
@@ -21315,7 +21402,7 @@
       "dependsOn": []
     },
     {
-      "ref": "@emnapi/wasi-threads@1.2.2",
+      "ref": "@emnapi/wasi-threads@1.2.3",
       "dependsOn": [
         "tslib@2.8.1"
       ]
@@ -23889,6 +23976,16 @@
     },
     {
       "ref": "pkce-challenge@5.0.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "playwright@1.62.1",
+      "dependsOn": [
+        "playwright-core@1.62.1"
+      ]
+    },
+    {
+      "ref": "playwright-core@1.62.1",
       "dependsOn": []
     },
     {

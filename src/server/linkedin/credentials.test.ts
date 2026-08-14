@@ -13,7 +13,7 @@ import {
   readLinkedInCredentials
 } from '../secrets/linkedin.js';
 import type { LinkedInDriver, LinkedInLoginResult, LinkedInPage } from './driver.js';
-import { loginLinkedInSeat } from './local-worker.js';
+import { detectLinkedInSeat, loginLinkedInSeat } from './local-worker.js';
 import { getSeat, upsertSeat } from './seats.js';
 
 /**
@@ -106,6 +106,8 @@ beforeEach(async () => {
   for (const workspaceId of [WORKSPACE_ID, OTHER_WORKSPACE_ID]) {
     await db.prepare('DELETE FROM workspace_secrets WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM audit_events WHERE workspace_id=?').run(workspaceId);
+    await db.prepare('DELETE FROM linkedin_messages WHERE workspace_id=?').run(workspaceId);
+    await db.prepare('DELETE FROM linkedin_threads WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(workspaceId);
   }
   session = await seedSession(WORKSPACE_ID);
@@ -454,5 +456,83 @@ describe('loginLinkedInSeat', () => {
     // The read gate refuses, so the driver is never handed anything.
     expect(seen).toHaveLength(0);
     expect(outcome.status).toBe('failed');
+  });
+});
+
+/**
+ * A workspace reconnecting a DIFFERENT LinkedIn account -- new credentials
+ * saved over old ones, then re-detected -- must not keep showing the previous
+ * account's conversations or pace the new one as though it were established.
+ */
+describe('detectLinkedInSeat on an account change', () => {
+  const PREVIOUS_PROFILE = 'https://www.linkedin.com/in/pankaj/';
+  const NEW_PROFILE = 'https://www.linkedin.com/in/daryna-radiichuk/';
+
+  it('wipes the stored inbox and restarts the ramp when a different LinkedIn account signs in', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich', profileUrl: PREVIOUS_PROFILE }, NOW);
+    await db.prepare(`
+      INSERT INTO linkedin_threads (id, workspace_id, thread_urn, profile_url, name)
+      VALUES ('lthr_stale', ?, '2-stale==', ?, 'Someone from the old account')
+    `).run(WORKSPACE_ID, PREVIOUS_PROFILE);
+    await db.prepare(`
+      INSERT INTO linkedin_messages (id, workspace_id, thread_id, direction, body, external_ref)
+      VALUES ('lmsg_stale', ?, 'lthr_stale', 'in', 'A message from before the reconnect', 'sha256:stale')
+    `).run(WORKSPACE_ID);
+    await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: 'daryna@example.com', password: PASSWORD });
+
+    const { driver } = fakeDriver({ loggedIn: false, answer: () => ({ ok: true }) });
+    driver.readSeat = async () => ({ ok: true, profileUrl: NEW_PROFILE, name: 'Daryna Radiichuk', connectionsCount: 512, degraded: [] });
+
+    const later = new Date(NOW.getTime() + 30 * 86_400_000);
+    const lines: string[] = [];
+    const result = await detectLinkedInSeat(db, config, {
+      workspaceId: WORKSPACE_ID,
+      timezone: 'Europe/Zurich',
+      now: later,
+      driver,
+      page,
+      log: (message: string) => lines.push(message)
+    });
+
+    expect(result.blocked).toBeNull();
+    expect(result.seat?.profileUrl).toBe(NEW_PROFILE);
+    // The ramp restarted: `activatedAt` is `later`, not the original `NOW`.
+    expect(result.seat?.activatedAt).toBe(later.toISOString());
+    // The operator's own label survives an account change; it names the seat, not the account.
+    expect(result.seat?.label).toBe('Pankaj (founder)');
+
+    expect(result.degraded).toHaveLength(1);
+    expect(result.degraded[0]).toContain(NEW_PROFILE);
+    expect(result.degraded[0]).toContain(PREVIOUS_PROFILE);
+    expect(result.degraded[0]).toContain('1 stored conversation');
+    expect(lines).toContain(result.degraded[0]);
+
+    expect(await db.prepare('SELECT id FROM linkedin_threads WHERE workspace_id=?').all(WORKSPACE_ID)).toEqual([]);
+    expect(await db.prepare('SELECT id FROM linkedin_messages WHERE workspace_id=?').all(WORKSPACE_ID)).toEqual([]);
+  });
+
+  it('does not reset anything when the same account re-detects', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj', timezone: 'Europe/Zurich', profileUrl: PREVIOUS_PROFILE }, NOW);
+    await db.prepare(`
+      INSERT INTO linkedin_threads (id, workspace_id, thread_urn, profile_url)
+      VALUES ('lthr_kept', ?, '2-kept==', ?)
+    `).run(WORKSPACE_ID, PREVIOUS_PROFILE);
+
+    const { driver } = fakeDriver({ loggedIn: true });
+
+    const later = new Date(NOW.getTime() + 7 * 86_400_000);
+    const result = await detectLinkedInSeat(db, config, {
+      workspaceId: WORKSPACE_ID,
+      timezone: 'Europe/Zurich',
+      now: later,
+      driver,
+      page,
+      log: () => {}
+    });
+
+    expect(result.seat?.profileUrl).toBe(PREVIOUS_PROFILE);
+    expect(result.seat?.activatedAt).toBe(NOW.toISOString());
+    expect(result.degraded).toEqual([]);
+    expect(await db.prepare('SELECT id FROM linkedin_threads WHERE workspace_id=?').all(WORKSPACE_ID)).toHaveLength(1);
   });
 });

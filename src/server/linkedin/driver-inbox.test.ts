@@ -203,7 +203,8 @@ class FakePage implements LinkedInPage {
       const message = open.messages[Number(nth[1]) - 1];
       if (!message) return none;
       if (!suffix) return { count: 1, text: null };
-      if (suffix.includes('msg-s-event-listitem--other')) return message.direction === 'in' ? { count: 1, text: null } : none;
+      // Real markup: the OWNER's own message carries `--other`, not the other party's (see driver-inbox.ts).
+      if (suffix.includes('msg-s-event-listitem--other')) return message.direction === 'out' ? { count: 1, text: null } : none;
       if (suffix.includes('msg-s-event-listitem__body')) {
         return message.bodyless ? none : { count: 1, text: message.body };
       }

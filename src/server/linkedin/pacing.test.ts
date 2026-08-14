@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
+import { evaluateLinkedInSafety } from './guard.js';
 import { ACTION_GAP_SECONDS, BUSINESS_HOURS } from './limits.js';
 import { planPacing, type PacingPlan } from './pacing.js';
 import { upsertSeat } from './seats.js';
@@ -155,6 +156,64 @@ describe('warm-up ramp', () => {
     const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 }, NOW);
     expect(plan.slots).toHaveLength(0);
     expect(plan.reasons.join(' ')).toContain('warm-up week 1');
+  });
+});
+
+/**
+ * THE OPERATOR'S OWN CEILING, which the planner used to ignore completely.
+ *
+ * `planPacing` read `bandFor()` and never once looked at the four daily limits
+ * sitting on the seat row -- so an operator who set 5 invites a day got a plan
+ * of 18 a day, and thirteen of those slots were refused by `guard.ts` at
+ * execution time. A refused slot is not a blocked action with a reason; it is
+ * an action that silently never happens.
+ */
+describe('the operator\'s configured daily limit', () => {
+  it('binds when it is stricter than the band, and names the number', async () => {
+    await seat('2026-01-01');
+    await upsertSeat(db, WORKSPACE_ID, { dailyInviteLimit: 5 }, NOW);
+    // Real volume yesterday, so the day-over-day ramp is not what binds.
+    for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
+
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW);
+    // The steady band is 18/day and the smoothing clamp would allow 24. Five
+    // is what the operator asked for and five is what the gate will pass.
+    expect(perDay(plan)[0]).toBe(5);
+    expect(plan.ceilingsApplied).toContain('operator-daily-limit');
+    expect(plan.reasons.join(' ')).toContain('Your own ceiling for this account is 5 invite(s)/day');
+  });
+
+  it('keeps the safety band binding when the operator asks for more, and says so', async () => {
+    await seat('2026-01-01');
+    // The shipped default: 30/day against an 18/day researched band.
+    await upsertSeat(db, WORKSPACE_ID, { dailyInviteLimit: 30 }, NOW);
+    for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
+
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 1 }, NOW);
+    expect(perDay(plan)[0]).toBe(18);
+    expect(plan.ceilingsApplied).toContain('safety-band');
+    expect(plan.reasons.join(' ')).toContain('You have set 30 invite(s)/day');
+  });
+
+  it('lets the operator\'s number win once the band override is on', async () => {
+    await seat('2026-01-01');
+    await upsertSeat(db, WORKSPACE_ID, { dailyInviteLimit: 30, safetyBandOverride: true }, NOW);
+    for (let index = 0; index < 30; index += 1) await log('invite', 'sent', 30);
+
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(60), horizonDays: 1 }, NOW);
+    expect(perDay(plan)[0]).toBe(30);
+    expect(plan.ceilingsApplied).toContain('operator-daily-limit');
+    expect(plan.reasons.join(' ')).toContain('use your own daily limits');
+  });
+
+  it('still ramps an overridden seat through its warm-up weeks', async () => {
+    // The override lifts the BAND cap and nothing else. A week-1 seat with the
+    // flag on still sends zero invites, because the warm-up multiplier is a
+    // separate rule and it is the one that says "week 1 is passive only".
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC', dailyInviteLimit: 75, safetyBandOverride: true }, new Date('2026-08-04T09:00:00.000Z'));
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 }, NOW);
+    expect(plan.slots).toHaveLength(0);
+    expect(plan.ceilingsApplied).toContain('warmup-multiplier');
   });
 });
 
@@ -369,5 +428,165 @@ describe('seat state', () => {
     // Warm-up band is 5/day, so smoothing's 13 does not apply.
     expect(perDay(plan)[0]).toBe(5);
     expect(plan.ceilingsApplied).toContain('cooldown-band');
+  });
+});
+
+/**
+ * THE REGRESSION `spreadWithinBusinessHours` exists to hold down: a day whose
+ * remaining business-hours window is too short to fit its allowed count at a
+ * safe spacing used to fall through to `cursor = Math.min(at, windowEnd - 1)`
+ * for every slot past the window's true capacity -- which clamps them all to
+ * the SAME second. Several actions at one literal instant is a harder
+ * detection signature than the "twenty minutes of machine-gun activity" the
+ * spread exists to avoid. The fix bounds how many slots a day's remaining
+ * window is asked to hold and rolls the rest to the next available day
+ * instead of crowding the window's close.
+ */
+describe('spreading inside a short business-hours window', () => {
+  it('never schedules two slots in the same window at the same second, and rolls the rest to the next day', async () => {
+    await seat('2026-01-01');
+    // Steady, established volume, so the day's allowed count is the full
+    // 18/day band rather than something the ramp or the delta clamp already
+    // shrank to fit.
+    for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
+
+    // Thursday, 17:55 UTC -- five minutes before BUSINESS_HOURS.end (18:00).
+    // Eighteen invites are allowed today; the window has room for only a few
+    // of them at ACTION_GAP_SECONDS.max spacing.
+    const lateNow = new Date('2026-08-06T17:55:00.000Z');
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(18), horizonDays: 3 }, lateNow);
+
+    const today = plan.slots.filter((slot) => slot.plannedFor.startsWith('2026-08-06'));
+    // 300s of window left, ACTION_GAP_SECONDS.max = 120s: room for 3, not 18.
+    expect(today.length).toBe(3);
+
+    // The actual bug: every slot past capacity used to collapse onto the same
+    // clamped second. Distinct timestamps is the assertion that matters.
+    const distinctSeconds = new Set(today.map((slot) => slot.plannedFor));
+    expect(distinctSeconds.size).toBe(today.length);
+
+    // Every slot lands inside the window, none of them past its close.
+    for (const slot of today) {
+      expect(new Date(slot.plannedFor).getTime()).toBeLessThanOrEqual(new Date('2026-08-06T18:00:00.000Z').getTime());
+      expect(new Date(slot.plannedFor).getTime()).toBeGreaterThanOrEqual(lateNow.getTime());
+    }
+
+    expect(plan.ceilingsApplied).toContain('business-hours-window-capacity');
+    // The other 15 were not dropped -- they rolled into the next available
+    // business day(s) rather than crowding today's close.
+    expect(plan.slots.length).toBeGreaterThan(today.length);
+  });
+});
+
+/**
+ * THE SEAT'S OWN SCHEDULE, which the planner used to ignore.
+ *
+ * It planned against the hardcoded 08:00-18:00 Mon-Fri `BUSINESS_HOURS` while
+ * `guard.ts` enforced `working_days` / `work_start_minute` / `work_end_minute`
+ * from the seat row. An account configured for 10:00-14:00 on Tuesdays and
+ * Thursdays therefore got slots the gate refused -- and a refused slot is not
+ * a blocked action with a reason, it is an action that silently never happens.
+ */
+describe('the seat\'s configured working window', () => {
+  function configuredSeat(days: number[], startMinute: number, endMinute: number) {
+    return upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', workingDays: days, workStartMinute: startMinute, workEndMinute: endMinute },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+  }
+
+  it('places every slot inside a 10:00-14:00 Tuesday/Thursday window', async () => {
+    await configuredSeat([2, 4], 600, 840);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(12), horizonDays: 21 }, NOW);
+
+    expect(plan.slots.length).toBeGreaterThan(0);
+    for (const slot of plan.slots) {
+      const at = new Date(slot.plannedFor);
+      expect([2, 4]).toContain(at.getUTCDay());
+      const minuteOfDay = at.getUTCHours() * 60 + at.getUTCMinutes();
+      expect(minuteOfDay).toBeGreaterThanOrEqual(600);
+      expect(minuteOfDay).toBeLessThan(840);
+    }
+    // Monday, Wednesday and Friday are working days for nobody here, and the
+    // plan says so rather than quietly emitting nothing.
+    expect(plan.ceilingsApplied).toContain('working-days');
+    expect(plan.reasons.join(' ')).toContain('10:00 and 14:00');
+  });
+
+  it('works Saturdays for a seat whose operator ticked Saturday', async () => {
+    // WEEKEND_FACTOR is volume shaping for a weekend nobody configured. It
+    // does not get to veto a day somebody configured on purpose.
+    await configuredSeat([6], 600, 840);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 14 }, NOW);
+
+    expect(plan.slots.length).toBeGreaterThan(0);
+    for (const slot of plan.slots) expect(new Date(slot.plannedFor).getUTCDay()).toBe(6);
+    // Both Saturdays inside the horizon, ramped 1 then 2 rather than started
+    // at the band ceiling.
+    expect(new Set(plan.slots.map((slot) => slot.plannedFor.slice(0, 10)))).toEqual(new Set(['2026-08-08', '2026-08-15']));
+  });
+
+  it('plans nothing when the operator has ticked no days at all', async () => {
+    await configuredSeat([], 600, 840);
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 14 }, NOW);
+    expect(plan.slots).toHaveLength(0);
+    expect(plan.ceilingsApplied).toContain('working-days');
+    expect(plan.reasons.join(' ')).toContain('no working days configured');
+  });
+});
+
+/**
+ * THE REGRESSION THAT MATTERS MOST: the planner and the gate answering the
+ * same question about the same instant the same way. They are two files and
+ * one policy, and when they drift the failure is silent -- the plan looks
+ * healthy and every action it produced is refused at execution time.
+ */
+describe('the planner and the gate agree', () => {
+  it('produces slots the safety gate accepts, including on a configured Saturday', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', workingDays: [2, 4, 6], workStartMinute: 600, workEndMinute: 840 },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(6), horizonDays: 14 }, NOW);
+    expect(plan.slots.length).toBeGreaterThan(2);
+    expect(plan.slots.some((slot) => new Date(slot.plannedFor).getUTCDay() === 6)).toBe(true);
+
+    for (const slot of plan.slots) {
+      const verdict = await evaluateLinkedInSafety(
+        db,
+        { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: slot.targetRef, plannedFor: slot.plannedFor },
+        NOW
+      );
+      const timing = verdict.checks.filter((entry) => entry.check === 'business-hours' || entry.check === 'weekend');
+      expect(timing.map((entry) => entry.passed)).toEqual([true, true]);
+    }
+
+    // ...and the first slot clears the whole gate, not just the timing pair.
+    const first = await evaluateLinkedInSafety(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: plan.slots[0].targetRef, plannedFor: plan.slots[0].plannedFor },
+      NOW
+    );
+    expect(first.reason).toBeNull();
+    expect(first.allowed).toBe(true);
+  });
+
+  it('agrees on the default Monday-to-Friday window too', async () => {
+    await seat('2026-01-01');
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(4), horizonDays: 7 }, NOW);
+    expect(plan.slots.length).toBeGreaterThan(0);
+    for (const slot of plan.slots) {
+      const verdict = await evaluateLinkedInSafety(
+        db,
+        { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: slot.targetRef, plannedFor: slot.plannedFor },
+        NOW
+      );
+      const timing = verdict.checks.filter((entry) => entry.check === 'business-hours' || entry.check === 'weekend');
+      expect(timing.map((entry) => entry.passed)).toEqual([true, true]);
+    }
   });
 });

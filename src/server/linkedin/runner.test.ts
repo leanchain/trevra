@@ -1,0 +1,664 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { openDatabase, type Db } from '../db.js';
+import { createLeadList, importLeadCsv, listLeadContacts } from './lead-lists.js';
+import {
+  completeManualTask,
+  createManagedCampaign,
+  listCampaignMembers,
+  listManualTasks,
+  managedAnalytics,
+  pauseManagedCampaign,
+  setCampaignMemberPaused,
+  startManagedCampaign
+} from './managed-campaigns.js';
+import { runManagedCampaigns, runManagedCampaignsForAllWorkspaces } from './runner.js';
+import { upsertSeat } from './seats.js';
+import { saveWorkflow } from './workflows.js';
+
+let db: Db;
+const WORKSPACE = 'ws_linkedin_runner_test';
+/** A Monday, 09:00, inside the seat's 08:00-18:00 UTC working window. */
+const NOW = new Date('2026-08-03T09:00:00.000Z');
+const HOUR = 3_600_000;
+const DAY = 86_400_000;
+const UTC_ISO = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;
+
+beforeEach(async () => {
+  db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+  await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING').run(WORKSPACE, 'Runner Test', NOW.toISOString());
+  await db.prepare('DELETE FROM linkedin_withdrawals WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_messages WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_threads WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_manual_tasks WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_campaign_members WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_workflows WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_lead_contacts WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_lead_lists WHERE workspace_id=?').run(WORKSPACE);
+  await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE);
+  await upsertSeat(
+    db,
+    WORKSPACE,
+    {
+      label: 'Owner',
+      // UTC so every assertion below reads the seat's own wall clock.
+      timezone: 'UTC',
+      workingDays: [1, 2, 3, 4, 5],
+      workStartMinute: 480,
+      workEndMinute: 1080
+    },
+    new Date('2026-01-01T09:00:00.000Z')
+  );
+});
+
+afterEach(async () => db?.close());
+
+interface ActionRow {
+  id: string;
+  kind: string;
+  status: string;
+  body: string | null;
+  target_ref: string | null;
+  workflow_step_id: string | null;
+  variant_id: string | null;
+  campaign_member_id: string | null;
+  replay_scope: string;
+  planned_for: string | null;
+}
+
+interface MemberRow {
+  id: string;
+  contact_id: string;
+  status: string;
+  step_index: number;
+  assigned_variants: Record<string, string>;
+  next_eligible_at: string | null;
+}
+
+async function actions(): Promise<ActionRow[]> {
+  return db.prepare(`
+    SELECT id,kind,status,body,target_ref,workflow_step_id,variant_id,campaign_member_id,replay_scope,
+           TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO}) AS planned_for
+    FROM linkedin_actions WHERE workspace_id=? ORDER BY planned_for ASC NULLS LAST, id ASC
+  `).all<ActionRow>(WORKSPACE);
+}
+
+async function members(campaignId: string): Promise<MemberRow[]> {
+  return db.prepare(`
+    SELECT id,contact_id,status,step_index,assigned_variants,
+           TO_CHAR(next_eligible_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS next_eligible_at
+    FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=? ORDER BY id ASC
+  `).all<MemberRow>(WORKSPACE, campaignId);
+}
+
+async function campaignStatus(campaignId: string): Promise<string> {
+  const row = await db.prepare('SELECT status FROM linkedin_campaigns WHERE workspace_id=? AND id=?').get<{ status: string }>(WORKSPACE, campaignId);
+  return row?.status ?? 'missing';
+}
+
+async function seededList(name: string, people: Array<{ first: string; last: string; company: string; slug: string }>): Promise<string> {
+  const list = await createLeadList(db, { workspaceId: WORKSPACE, name }, NOW);
+  const csv = [
+    'First Name,Last Name,Company,Email,LinkedIn URL',
+    ...people.map((person) => `${person.first},${person.last},${person.company},${person.slug}@test.test,https://www.linkedin.com/in/${person.slug}`)
+  ].join('\n');
+  const result = await importLeadCsv(db, { workspaceId: WORKSPACE, listId: list.id, csv }, NOW);
+  expect(result.inserted).toBe(people.length);
+  return list.id;
+}
+
+async function runningCampaign(listId: string, workflowId: string, name: string): Promise<string> {
+  const made = await createManagedCampaign(db, { workspaceId: WORKSPACE, name, leadListId: listId, workflowId }, NOW);
+  await startManagedCampaign(db, WORKSPACE, made.campaign.id, NOW);
+  return made.campaign.id;
+}
+
+function at(offsetMs: number): Date {
+  return new Date(NOW.getTime() + offsetMs);
+}
+
+function plus(iso: string | null, ms: number): string {
+  return new Date(new Date(iso as string).getTime() + ms).toISOString();
+}
+
+describe('managed campaign runner', () => {
+  it('walks a six-action workflow one step at a time, honouring hour and day delays', async () => {
+    const listId = await seededList('Six actions', [{ first: 'Maya', last: 'Smith', company: 'Acme', slug: 'maya-smith' }]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Everything',
+      steps: [
+        { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
+        { id: 'invite', action: 'connection_request', delayBefore: { amount: 1, unit: 'hours' }, config: { message: 'Hi {{first_name}}' } },
+        { id: 'msg', action: 'message', delayBefore: { amount: 2, unit: 'hours' }, config: { variants: [{ id: 'a', body: 'A {{first_name}}', weight: 50 }, { id: 'b', body: 'B {{company}}', weight: 50 }] } },
+        { id: 'follow', action: 'follow', delayBefore: { amount: 1, unit: 'days' }, config: {} },
+        { id: 'manual', action: 'manual_message', delayBefore: { amount: 0, unit: 'hours' }, config: { suggestedTemplate: 'Ping {{first_name}} at {{company}}' } },
+        { id: 'withdraw', action: 'withdraw_pending', delayBefore: { amount: 0, unit: 'hours' }, config: { afterDays: 1 } }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Six');
+
+    // Step 1: the profile view, planned for the next open instant.
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(1);
+    let ledger = await actions();
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].kind).toBe('profile_view');
+    expect(ledger[0].status).toBe('planned');
+    expect(ledger[0].workflow_step_id).toBe('view');
+    expect(ledger[0].target_ref).toBe('https://www.linkedin.com/in/maya-smith/');
+    expect(new Date(ledger[0].planned_for as string).getTime()).toBeGreaterThanOrEqual(NOW.getTime());
+    const view = ledger[0];
+    let member = (await members(campaignId))[0];
+    expect(member.step_index).toBe(1);
+    expect(member.status).toBe('waiting');
+    expect(ledger[0].replay_scope).toBe(`${member.id}:view`);
+    expect(ledger[0].campaign_member_id).toBe(member.id);
+    // THE HOUR DELAY, measured from the slot rather than from the tick.
+    expect(member.next_eligible_at).toBe(plus(view.planned_for, HOUR));
+
+    // A tick before the delay elapses does nothing at all.
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(0);
+    expect(await actions()).toHaveLength(1);
+
+    // Step 2: the invitation, with the rendered note.
+    expect((await runManagedCampaigns(db, WORKSPACE, at(2 * HOUR))).actionsPlanned).toBe(1);
+    ledger = await actions();
+    const invite = ledger.find((row) => row.kind === 'invite');
+    expect(invite?.body).toBe('Hi Maya');
+    expect(invite?.workflow_step_id).toBe('invite');
+    member = (await members(campaignId))[0];
+    expect(member.step_index).toBe(2);
+    expect(member.next_eligible_at).toBe(plus(invite?.planned_for ?? null, 2 * HOUR));
+
+    // Step 3: the A/B message.
+    expect((await runManagedCampaigns(db, WORKSPACE, at(5 * HOUR))).actionsPlanned).toBe(1);
+    ledger = await actions();
+    const message = ledger.find((row) => row.kind === 'dm');
+    expect(message?.variant_id === 'a' || message?.variant_id === 'b').toBe(true);
+    expect(message?.body).toBe(message?.variant_id === 'a' ? 'A Maya' : 'B Acme');
+    member = (await members(campaignId))[0];
+    expect(member.step_index).toBe(3);
+    expect(member.assigned_variants.msg).toBe(message?.variant_id);
+    // THE DAY DELAY.
+    expect(member.next_eligible_at).toBe(plus(message?.planned_for ?? null, DAY));
+
+    // Step 4: the follow.
+    expect((await runManagedCampaigns(db, WORKSPACE, at(2 * DAY))).actionsPlanned).toBe(1);
+    ledger = await actions();
+    expect(ledger.filter((row) => row.kind === 'follow')).toHaveLength(1);
+    member = (await members(campaignId))[0];
+    expect(member.step_index).toBe(4);
+
+    // Step 5: the human checkpoint. Nothing outbound is planned for it.
+    const manualTick = await runManagedCampaigns(db, WORKSPACE, at(2 * DAY + HOUR));
+    expect(manualTick.manualTasksCreated).toBe(1);
+    expect(manualTick.actionsPlanned).toBe(0);
+    member = (await members(campaignId))[0];
+    expect(member.status).toBe('manual');
+    expect(member.step_index).toBe(4);
+    expect(member.next_eligible_at).toBeNull();
+    const tasks = await listManualTasks(db, WORKSPACE, { status: 'pending' });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].suggestedBody).toBe('Ping Maya at Acme');
+
+    // A tick while the human still owes an answer neither advances nor duplicates.
+    const heldTick = await runManagedCampaigns(db, WORKSPACE, at(2 * DAY + 2 * HOUR));
+    expect(heldTick.manualTasksCreated).toBe(0);
+    expect(await listManualTasks(db, WORKSPACE, { status: 'pending' })).toHaveLength(1);
+
+    expect(await completeManualTask(db, WORKSPACE, tasks[0].id, at(2 * DAY + 2 * HOUR))).toBe(true);
+    member = (await members(campaignId))[0];
+    expect(member.step_index).toBe(5);
+    expect(member.status).toBe('active');
+
+    // Step 6: withdraw-pending. The invite is still sitting in the queue --
+    // nothing has sent it -- so there is nothing to withdraw YET and the member
+    // is HELD on the step rather than advanced past it.
+    const heldOnWithdraw = await runManagedCampaigns(db, WORKSPACE, at(3 * DAY));
+    expect(heldOnWithdraw.membersCompleted).toBe(0);
+    member = (await members(campaignId))[0];
+    expect(member.status).toBe('waiting');
+    expect(member.step_index).toBe(5);
+    expect(member.next_eligible_at).not.toBeNull();
+    expect(await campaignStatus(campaignId)).toBe('running');
+
+    // Once the worker actually sends it, the withdrawal clock starts from THAT
+    // instant -- and the step resolves a day later, not a day after the slot.
+    await db.prepare(`UPDATE linkedin_actions SET status='sent', recorded_at=? WHERE workspace_id=? AND kind='invite'`).run(at(3 * DAY).toISOString(), WORKSPACE);
+    const last = await runManagedCampaigns(db, WORKSPACE, at(5 * DAY));
+    expect(last.membersCompleted).toBe(1);
+    member = (await members(campaignId))[0];
+    expect(member.status).toBe('completed');
+    expect(member.next_eligible_at).toBeNull();
+    expect(await campaignStatus(campaignId)).toBe('completed');
+
+    // Four outbound rows for four outbound steps, and not one more.
+    expect(await actions()).toHaveLength(4);
+  });
+
+  it('caps day-one planning at the campaign ramp and releases the rest on day two', async () => {
+    await upsertSeat(db, WORKSPACE, { dailyInviteLimit: 10 }, NOW);
+    const listId = await seededList('Ramp', [1, 2, 3, 4, 5].map((n) => ({ first: `Lead${n}`, last: 'Test', company: 'Acme', slug: `ramp-${n}` })));
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Invite only',
+      steps: [{ id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: null } }]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Ramp');
+
+    // Day 1 is 20% of 10.
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(2);
+    expect((await actions()).filter((row) => row.kind === 'invite')).toHaveLength(2);
+    const waiting = (await members(campaignId)).filter((row) => row.step_index === 0);
+    expect(waiting).toHaveLength(3);
+    expect(waiting.every((row) => row.status === 'active')).toBe(true);
+
+    // Re-ticking the same day plans nothing more: the ramp is counted against
+    // what this campaign already has in the next 24 hours.
+    expect((await runManagedCampaigns(db, WORKSPACE, at(HOUR))).actionsPlanned).toBe(0);
+    expect(await actions()).toHaveLength(2);
+
+    // Day 2 is 40% -- minus the two day-one invites still inside the window.
+    expect((await runManagedCampaigns(db, WORKSPACE, at(DAY))).actionsPlanned).toBe(2);
+    expect(await actions()).toHaveLength(4);
+    expect(await campaignStatus(campaignId)).toBe('running');
+
+    // Day 3 is 60%, and the last lead goes out.
+    expect((await runManagedCampaigns(db, WORKSPACE, at(2 * DAY))).actionsPlanned).toBe(1);
+    expect(await actions()).toHaveLength(5);
+    expect(await campaignStatus(campaignId)).toBe('completed');
+  });
+
+  it('withdraw-pending waits for afterDays, then hands the invite to the withdrawal queue', async () => {
+    const listId = await seededList('Withdraw', [
+      { first: 'Stale', last: 'Lead', company: 'Acme', slug: 'stale-lead' },
+      { first: 'Warm', last: 'Lead', company: 'Widgets', slug: 'warm-lead' }
+    ]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Invite then withdraw',
+      steps: [
+        { id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: null } },
+        { id: 'withdraw', action: 'withdraw_pending', delayBefore: { amount: 0, unit: 'hours' }, config: { afterDays: 3 } }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Withdraw');
+
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(2);
+    // The worker's half: one invite went out and is unanswered, the other was
+    // accepted.
+    await db.prepare(`UPDATE linkedin_actions SET status='sent', recorded_at=? WHERE workspace_id=? AND target_ref LIKE '%stale-lead%'`).run(NOW.toISOString(), WORKSPACE);
+    await db.prepare(`UPDATE linkedin_actions SET status='accepted', recorded_at=? WHERE workspace_id=? AND target_ref LIKE '%warm-lead%'`).run(NOW.toISOString(), WORKSPACE);
+
+    const early = await runManagedCampaigns(db, WORKSPACE, at(HOUR));
+    expect(early.membersCompleted).toBe(1);
+    const afterEarly = await members(campaignId);
+    const stale = afterEarly.find((row) => row.status === 'waiting');
+    expect(stale?.step_index).toBe(1);
+    // Not withdrawn yet, and woken at the exact instant it becomes stale.
+    expect(stale?.next_eligible_at).toBe(new Date(NOW.getTime() + 3 * DAY).toISOString());
+    expect(await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_withdrawals WHERE workspace_id=?').get<{ total: number }>(WORKSPACE)).toEqual({ total: 0 });
+    // The accepted invite advanced past the withdraw step immediately.
+    expect(afterEarly.find((row) => row.status === 'completed')).toBeDefined();
+
+    await runManagedCampaigns(db, WORKSPACE, at(4 * DAY));
+    const queued = await db.prepare(`
+      SELECT w.status, a.target_ref FROM linkedin_withdrawals w
+      JOIN linkedin_actions a ON a.id=w.action_id
+      WHERE w.workspace_id=?
+    `).all<{ status: string; target_ref: string }>(WORKSPACE);
+    expect(queued).toHaveLength(1);
+    expect(queued[0].status).toBe('queued');
+    expect(queued[0].target_ref).toBe('https://www.linkedin.com/in/stale-lead/');
+    expect((await members(campaignId)).every((row) => row.status === 'completed')).toBe(true);
+    expect(await campaignStatus(campaignId)).toBe('completed');
+  });
+
+  it('keeps an A/B assignment stable across re-runs and records it on the ledger row', async () => {
+    // The steady dm band is 12/day, so the campaign's day-one 20% ramp would
+    // otherwise be 2 and this test would be measuring the ramp rather than the
+    // A/B split. The override is the operator's informed opt-in to their own
+    // 25/day figure, which is what the four members below need.
+    await upsertSeat(db, WORKSPACE, { dailyMessageLimit: 25, safetyBandOverride: true }, NOW);
+    const listId = await seededList('Variants', [1, 2, 3, 4].map((n) => ({ first: `Ab${n}`, last: 'Test', company: 'Acme', slug: `ab-${n}` })));
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Message only',
+      steps: [{ id: 'msg', action: 'message', delayBefore: { amount: 0, unit: 'hours' }, config: { variants: [{ id: 'a', body: 'A {{first_name}}', weight: 50 }, { id: 'b', body: 'B {{first_name}}', weight: 50 }] } }]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Variants');
+
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(4);
+    const first = await actions();
+    expect(first).toHaveLength(4);
+    const assigned = new Map((await members(campaignId)).map((row) => [row.id, row.assigned_variants.msg]));
+    for (const row of first) {
+      expect(row.variant_id).toBeTruthy();
+      expect(row.variant_id).toBe(assigned.get(row.campaign_member_id as string));
+      // The body is the CHOSEN variant's, rendered -- not the other arm's.
+      expect(row.body).toMatch(row.variant_id === 'a' ? /^A Ab\d$/ : /^B Ab\d$/);
+    }
+
+    // Replay the step: the stored choice is reused, and the replay scope makes
+    // the second attempt a no-op rather than a second message.
+    await db.prepare(`UPDATE linkedin_campaign_members SET status='active', step_index=0, next_eligible_at=? WHERE workspace_id=? AND campaign_id=?`).run(NOW.toISOString(), WORKSPACE, campaignId);
+    expect((await runManagedCampaigns(db, WORKSPACE, at(HOUR))).actionsPlanned).toBe(0);
+    const second = await actions();
+    expect(second).toHaveLength(4);
+    expect(second.map((row) => `${row.id}:${row.variant_id}`)).toEqual(first.map((row) => `${row.id}:${row.variant_id}`));
+    const reassigned = new Map((await members(campaignId)).map((row) => [row.id, row.assigned_variants.msg]));
+    expect([...reassigned.entries()]).toEqual([...assigned.entries()]);
+  });
+
+  it('fails a member with no profile URL instead of blocking the campaign, and stays idempotent', async () => {
+    const listId = await seededList('Targets', [
+      { first: 'Has', last: 'Url', company: 'Acme', slug: 'has-url' },
+      { first: 'No', last: 'Url', company: 'Widgets', slug: 'no-url' }
+    ]);
+    await db.prepare(`UPDATE linkedin_lead_contacts SET profile_url=NULL WHERE workspace_id=? AND list_id=? AND first_name='No'`).run(WORKSPACE, listId);
+    const contacts = await listLeadContacts(db, WORKSPACE, listId);
+    expect(contacts.filter((contact) => contact.profileUrl === null)).toHaveLength(1);
+
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'View only',
+      steps: [{ id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} }]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Targets');
+
+    const tick = await runManagedCampaigns(db, WORKSPACE, NOW);
+    expect(tick.actionsPlanned).toBe(1);
+    expect(tick.membersBlocked).toBe(1);
+    expect(tick.membersCompleted).toBe(1);
+    const after = await members(campaignId);
+    expect(after.filter((row) => row.status === 'failed')).toHaveLength(1);
+    expect(after.filter((row) => row.status === 'completed')).toHaveLength(1);
+    expect(await campaignStatus(campaignId)).toBe('completed');
+
+    // Re-running the tick writes nothing: the campaign is finished, and even a
+    // member forced back onto the step hits the replay scope.
+    expect((await runManagedCampaignsForAllWorkspaces(db, at(HOUR))).actionsPlanned).toBe(0);
+    await db.prepare(`UPDATE linkedin_campaigns SET status='running' WHERE workspace_id=? AND id=?`).run(WORKSPACE, campaignId);
+    await db.prepare(`UPDATE linkedin_campaign_members SET status='active', step_index=0, next_eligible_at=? WHERE workspace_id=? AND campaign_id=? AND status='completed'`).run(NOW.toISOString(), WORKSPACE, campaignId);
+    const replay = await runManagedCampaignsForAllWorkspaces(db, at(2 * HOUR));
+    expect(replay.campaignsTicked).toBe(1);
+    expect(replay.actionsPlanned).toBe(0);
+    expect(await actions()).toHaveLength(1);
+  });
+
+  /**
+   * THE RAMP IS A PERCENTAGE OF THE CEILING THE GATE ENFORCES.
+   *
+   * The runner budgeted off `seat.dailyInviteLimit` raw while `guard.ts` ramps
+   * off `min(band, operator)`. With the shipped default of 30 against an 18/day
+   * researched band, day one planned 6 invites and the gate passed 3 -- the
+   * other three sat refused with nothing saying why.
+   */
+  it('budgets the campaign ramp off the effective ceiling, not the raw operator limit', async () => {
+    // The shipped default. The steady invite band is 18/day.
+    await upsertSeat(db, WORKSPACE, { dailyInviteLimit: 30 }, NOW);
+    const listId = await seededList('Ceiling', [1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ first: `Cap${n}`, last: 'Test', company: 'Acme', slug: `cap-${n}` })));
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Invite only',
+      steps: [{ id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: null } }]
+    }, NOW)).id;
+    await runningCampaign(listId, workflowId, 'Ceiling');
+
+    // 20% of 18, not 20% of 30.
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(3);
+  });
+
+  it('lets the operator\'s own ceiling drive the ramp once the band override is on', async () => {
+    await upsertSeat(db, WORKSPACE, { dailyInviteLimit: 30, safetyBandOverride: true }, NOW);
+    const listId = await seededList('Override', [1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ first: `Ov${n}`, last: 'Test', company: 'Acme', slug: `ov-${n}` })));
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Invite only',
+      steps: [{ id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: null } }]
+    }, NOW)).id;
+    await runningCampaign(listId, workflowId, 'Override');
+
+    // 20% of the operator's 30 now that they have opted out of the band.
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(6);
+  });
+
+  /**
+   * PAUSE HAS TO STOP THE SENDING, NOT JUST THE PLANNING.
+   *
+   * It wrote one word into `linkedin_campaigns` and stopped. The local worker
+   * claims out of `linkedin_actions`, so every invite and DM already scheduled
+   * for the coming days went out anyway -- for as long as the queue reached.
+   */
+  it('holds queued work on pause and hands the same rows back on resume', async () => {
+    const listId = await seededList('Pausing', [1, 2, 3].map((n) => ({ first: `Pz${n}`, last: 'Test', company: 'Acme', slug: `pz-${n}` })));
+    // Two steps, so the members are still live when the pause lands: a
+    // finished campaign completes itself and cannot be paused at all.
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Invite then follow',
+      steps: [
+        { id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: null } },
+        { id: 'follow', action: 'follow', delayBefore: { amount: 5, unit: 'days' }, config: {} }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Pausing');
+
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(3);
+    const queued = await actions();
+    expect(queued.every((row) => row.status === 'planned')).toBe(true);
+
+    expect((await pauseManagedCampaign(db, WORKSPACE, campaignId, at(HOUR))).status).toBe('paused');
+    // Not claimable any more: the worker's query wants 'planned'.
+    const paused = await actions();
+    expect(paused.map((row) => row.status)).toEqual(['held', 'held', 'held']);
+    // Nothing was destroyed -- same rows, same ids, same slots.
+    expect(paused.map((row) => row.id)).toEqual(queued.map((row) => row.id));
+    expect(paused.map((row) => row.planned_for)).toEqual(queued.map((row) => row.planned_for));
+    // And members are left exactly as they were: collapsing them would be
+    // indistinguishable from the per-lead pause an operator sets by hand.
+    expect((await listCampaignMembers(db, WORKSPACE, campaignId)).every((m) => m.status === 'waiting' || m.status === 'active')).toBe(true);
+
+    await startManagedCampaign(db, WORKSPACE, campaignId, at(2 * HOUR));
+    const resumed = await actions();
+    expect(resumed.map((row) => row.status)).toEqual(['planned', 'planned', 'planned']);
+    expect(resumed.map((row) => row.id)).toEqual(queued.map((row) => row.id));
+    // Resumed, not re-planned: no duplicate invite to any of the three.
+    expect(resumed).toHaveLength(3);
+  });
+
+  /**
+   * THE OTHER DOOR INTO THE STATE MACHINE.
+   *
+   * `completeManualTask` set `next_eligible_at = now`, so "manual message ->
+   * wait 3 days -> follow-up" fired the follow-up on the very next tick, on top
+   * of the message the operator had just sent by hand.
+   */
+  it('applies the next step\'s delay when a manual task is completed', async () => {
+    const listId = await seededList('Manual delay', [{ first: 'Hand', last: 'Sent', company: 'Acme', slug: 'hand-sent' }]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Manual then follow-up',
+      steps: [
+        { id: 'manual', action: 'manual_message', delayBefore: { amount: 0, unit: 'hours' }, config: { suggestedTemplate: 'Hi {{first_name}}' } },
+        { id: 'followup', action: 'message', delayBefore: { amount: 3, unit: 'days' }, config: { variants: [{ id: 'a', body: 'Following up, {{first_name}}', weight: 50 }] } }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Manual delay');
+
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).manualTasksCreated).toBe(1);
+    const task = (await listManualTasks(db, WORKSPACE, { status: 'pending' }))[0];
+    const completedAt = at(HOUR);
+    expect(await completeManualTask(db, WORKSPACE, task.id, completedAt)).toBe(true);
+
+    const member = (await members(campaignId))[0];
+    expect(member.step_index).toBe(1);
+    expect(member.status).toBe('active');
+    expect(member.next_eligible_at).toBe(new Date(completedAt.getTime() + 3 * DAY).toISOString());
+
+    // The very next tick sends nothing: the three days have not passed.
+    expect((await runManagedCampaigns(db, WORKSPACE, at(2 * HOUR))).actionsPlanned).toBe(0);
+    expect((await runManagedCampaigns(db, WORKSPACE, at(4 * DAY))).actionsPlanned).toBe(1);
+  });
+
+  it('refuses to complete a manual task whose member is no longer waiting on it', async () => {
+    const listId = await seededList('Manual paused', [{ first: 'Stuck', last: 'Lead', company: 'Acme', slug: 'stuck-lead' }]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Manual only',
+      steps: [{ id: 'manual', action: 'manual_message', delayBefore: { amount: 0, unit: 'hours' }, config: { suggestedTemplate: null } }]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Manual paused');
+
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    const task = (await listManualTasks(db, WORKSPACE, { status: 'pending' }))[0];
+    const member = (await members(campaignId))[0];
+    expect(await setCampaignMemberPaused(db, WORKSPACE, member.id, true, at(HOUR))).toBe(true);
+
+    // The member cannot leave the manual state, so the task is NOT reported as
+    // completed -- it used to vanish from the queue with the lead left behind.
+    expect(await completeManualTask(db, WORKSPACE, task.id, at(2 * HOUR))).toBe(false);
+    expect(await listManualTasks(db, WORKSPACE, { status: 'pending' })).toHaveLength(1);
+    expect((await members(campaignId))[0].step_index).toBe(0);
+    expect((await members(campaignId))[0].status).toBe('paused');
+  });
+
+  /**
+   * A LEAD LIST IS NOT A PHOTOGRAPH TAKEN AT CREATION.
+   *
+   * The only member INSERT lived in `createManagedCampaign`, so every contact
+   * imported into a running campaign's list afterwards was invisible to it
+   * forever -- the list grew, the screen showed the new leads, and not one of
+   * them was ever contacted.
+   */
+  it('enrols contacts imported into a running campaign\'s lead list', async () => {
+    const listId = await seededList('Growing', [{ first: 'First', last: 'In', company: 'Acme', slug: 'first-in' }]);
+    // A second, far-off step keeps the campaign running long enough for the
+    // import to land -- a finished campaign completes itself.
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'View then follow',
+      steps: [
+        { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
+        { id: 'follow', action: 'follow', delayBefore: { amount: 30, unit: 'days' }, config: {} }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Growing');
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(1);
+
+    await importLeadCsv(db, {
+      workspaceId: WORKSPACE,
+      listId,
+      csv: ['First Name,Last Name,Company,Email,LinkedIn URL', 'Late,Arrival,Widgets,late@test.test,https://www.linkedin.com/in/late-arrival'].join('\n')
+    }, at(HOUR));
+
+    const tick = await runManagedCampaigns(db, WORKSPACE, at(2 * HOUR));
+    expect(tick.actionsPlanned).toBe(1);
+    expect((await listCampaignMembers(db, WORKSPACE, campaignId))).toHaveLength(2);
+    expect((await actions()).map((row) => row.target_ref)).toContain('https://www.linkedin.com/in/late-arrival/');
+
+    // Idempotent: a second tick does not enrol anybody twice.
+    await runManagedCampaigns(db, WORKSPACE, at(3 * HOUR));
+    expect((await listCampaignMembers(db, WORKSPACE, campaignId))).toHaveLength(2);
+  });
+
+  /**
+   * "EDITING ONE DOES NOT CHANGE CAMPAIGNS ALREADY RUNNING ON IT" -- which the
+   * campaign screen says out loud, and which the runner made false by loading
+   * the workflow live on every tick.
+   */
+  it('runs the snapshot the campaign was started with, not a later edit', async () => {
+    const listId = await seededList('Snapshot', [{ first: 'Snap', last: 'Shot', company: 'Acme', slug: 'snap-shot' }]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'View then follow',
+      steps: [
+        { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
+        { id: 'follow', action: 'follow', delayBefore: { amount: 1, unit: 'hours' }, config: {} }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Snapshot');
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(1);
+
+    // The operator rewrites step 2 while the campaign is mid-flight.
+    await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      id: workflowId,
+      name: 'View then follow',
+      steps: [
+        { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
+        { id: 'msg', action: 'message', delayBefore: { amount: 1, unit: 'hours' }, config: { variants: [{ id: 'a', body: 'Edited', weight: 50 }] } }
+      ]
+    }, at(HOUR));
+
+    expect((await runManagedCampaigns(db, WORKSPACE, at(2 * HOUR))).actionsPlanned).toBe(1);
+    const kinds = (await actions()).map((row) => row.kind);
+    // The follow the campaign was STARTED with, not the message it was edited to.
+    expect(kinds).toEqual(['profile_view', 'follow']);
+
+    // Restarting is the operator's act of choosing the new version, and only
+    // then does the edit reach this campaign.
+    await db.prepare(`UPDATE linkedin_campaign_members SET status='active', step_index=1, next_eligible_at=? WHERE workspace_id=? AND campaign_id=?`).run(NOW.toISOString(), WORKSPACE, campaignId);
+    await db.prepare(`UPDATE linkedin_campaigns SET status='paused' WHERE workspace_id=? AND id=?`).run(WORKSPACE, campaignId);
+    await startManagedCampaign(db, WORKSPACE, campaignId, at(3 * HOUR));
+    expect((await runManagedCampaigns(db, WORKSPACE, at(4 * HOUR))).actionsPlanned).toBe(1);
+    expect((await actions()).map((row) => row.kind).sort()).toEqual(['dm', 'follow', 'profile_view']);
+  });
+
+  /**
+   * Two of the six workflow actions produced no measurable output at all: a
+   * follow-only workflow reported zeros forever, and `withdraw_pending` had
+   * nothing to show for itself.
+   */
+  it('reports follows and withdrawals in the analytics panel', async () => {
+    const listId = await seededList('Counting', [
+      { first: 'Count', last: 'One', company: 'Acme', slug: 'count-one' },
+      { first: 'Count', last: 'Two', company: 'Widgets', slug: 'count-two' }
+    ]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'Invite then follow',
+      steps: [
+        { id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: null } },
+        { id: 'follow', action: 'follow', delayBefore: { amount: 1, unit: 'hours' }, config: {} }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Counting');
+
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    await db.prepare(`UPDATE linkedin_actions SET status='sent', recorded_at=? WHERE workspace_id=? AND kind='invite'`).run(NOW.toISOString(), WORKSPACE);
+    await runManagedCampaigns(db, WORKSPACE, at(2 * HOUR));
+    await db.prepare(`UPDATE linkedin_actions SET status='sent', recorded_at=? WHERE workspace_id=? AND kind='follow'`).run(at(2 * HOUR).toISOString(), WORKSPACE);
+    // One invite went unanswered long enough to be taken back.
+    await db.prepare(`UPDATE linkedin_actions SET status='withdrawn' WHERE workspace_id=? AND kind='invite' AND target_ref LIKE '%count-one%'`).run(WORKSPACE);
+
+    const analytics = await managedAnalytics(db, WORKSPACE, { campaignId });
+    expect(analytics.followsSent).toBe(2);
+    expect(analytics.invitesWithdrawn).toBe(1);
+    expect(analytics.invitesSent).toBe(1);
+  });
+
+  it('stops the workflow when the lead has already replied', async () => {
+    const listId = await seededList('Replies', [{ first: 'Answered', last: 'Lead', company: 'Acme', slug: 'answered-lead' }]);
+    const workflowId = (await saveWorkflow(db, {
+      workspaceId: WORKSPACE,
+      name: 'View then follow',
+      steps: [
+        { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
+        { id: 'follow', action: 'follow', delayBefore: { amount: 1, unit: 'hours' }, config: {} }
+      ]
+    }, NOW)).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Replies');
+
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(1);
+    await db.prepare(`UPDATE linkedin_actions SET status='replied', recorded_at=? WHERE workspace_id=?`).run(NOW.toISOString(), WORKSPACE);
+
+    await runManagedCampaigns(db, WORKSPACE, at(2 * HOUR));
+    const member = (await members(campaignId))[0];
+    expect(member.status).toBe('replied');
+    expect(member.next_eligible_at).toBeNull();
+    // The follow was never planned.
+    expect((await actions()).filter((row) => row.kind === 'follow')).toHaveLength(0);
+  });
+});

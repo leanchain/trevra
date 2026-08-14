@@ -77,9 +77,10 @@ import type {
 } from '../server/linkedin/campaigns';
 import type { LinkedInExclusion } from '../server/linkedin/exclusions';
 import type { ExportContact, ExportFormat, ScheduledDay } from '../server/linkedin/export';
-import type { BandName, PacedKind } from '../server/linkedin/limits';
+import type { BandName, LinkedInBand, PacedKind } from '../server/linkedin/limits';
 import type { SeatDetectRequest } from '../server/linkedin/local-worker';
 import type { PacingPlan } from '../server/linkedin/pacing';
+import type { CampaignQueued } from '../server/linkedin/queue';
 import type { LinkedInSeat, SeatPatch, SeatPosture } from '../server/linkedin/seats';
 import type { LinkedInIcp, LinkedInOffer, LinkedInSequence, SequenceTone } from '../server/linkedin/sequence';
 
@@ -739,18 +740,48 @@ export type LinkedInLimitConfidence = 'HARD FACT' | 'REPORTED';
  * private function inside src/server/app.ts and its return type is not
  * exported. Everything this file CAN import, it imports.
  */
+/**
+ * WHICH OF THE TWO DAILY NUMBERS THE CEILING WAS BUILT FROM.
+ *
+ *   band              -- Trevra's researched band: either no operator number
+ *                        exists for this kind, or theirs was looser and the
+ *                        stricter of the two binds.
+ *   operator          -- the account's own configured number, stricter than the
+ *                        band, so it binds.
+ *   operator-override -- the account is opted out of the bands, so its own
+ *                        number binds whatever it is. Both ramps, the rolling
+ *                        windows and the variance clamp still apply on top.
+ *
+ * The screen has to be able to NAME this. "I typed 30 and it says 18" is the
+ * only question this report exists to answer.
+ */
+export type LinkedInCeilingSource = 'band' | 'operator' | 'operator-override';
+
 export interface LinkedInCeiling {
   kind: PacedKind;
   window: 'day' | 'week' | 'month';
-  /** What applies right now, after warm-up, throttle and posture. */
+  /** What applies right now, after warm-up, throttle, posture and the account's own setting. */
   ceiling: number;
   /** The band's own number, before any of that. */
   bandCeiling: number;
+  /**
+   * DAY ROWS ONLY. The account's own configured number for this kind, null
+   * where none was ever asked for (`like`, `endorse`) or no account exists.
+   * For `dm`, `reply` and `inmail` it is ONE POOL over all three kinds.
+   */
+  operatorLimit?: number | null;
+  /** DAY ROWS ONLY. Which number `ceiling` was built from. */
+  ceilingSource?: LinkedInCeilingSource;
   used: number;
   remaining: number;
   /** Which rule produced `ceiling`. */
   boundBy: string;
   rule: string;
+  /**
+   * The provenance of `bandCeiling`, i.e. of the RESEARCH -- never of an
+   * operator's own setting, which has no confidence tag and is not given one.
+   * `ceilingSource` is what says whether the research is what bound.
+   */
   confidence: LinkedInLimitConfidence;
   source: string;
 }
@@ -759,6 +790,19 @@ interface LinkedInSignalBase {
   rule: string;
   confidence: LinkedInLimitConfidence;
   source: string;
+}
+
+/**
+ * What an operator may set one of their own daily ceilings to.
+ *
+ * `default` is what a seat that has never set one runs at. Server-owned: the
+ * PUT validates against exactly this range, so a control built from anything
+ * else eventually offers a number the route refuses.
+ */
+export interface LinkedInOperatorRange {
+  min: number;
+  max: number;
+  default: number;
 }
 
 export interface LinkedInLimitsReport {
@@ -772,8 +816,35 @@ export interface LinkedInLimitsReport {
     warmupWeeks: number;
     warmupMultiplier: number;
     band: BandName;
+    /**
+     * This seat's operator has opted their own configured ceilings in ahead of
+     * Trevra's stricter researched band. Warm-up still ramps whichever ceiling
+     * applies -- this says which one, never whether one applies at all.
+     */
+    safetyBandOverride: boolean;
   };
   limits: LinkedInCeiling[];
+  /**
+   * The band figures this seat is paced against, per kind. THE ONLY COPY: a
+   * screen that wants to say "50 InMails a month" reads it here rather than
+   * printing a literal that stops being true when the table moves.
+   */
+  bands: Record<PacedKind, LinkedInBand>;
+  /** The ranges the seat PUT validates a hand-set ceiling against. */
+  operatorRanges: {
+    invite: LinkedInOperatorRange;
+    message: LinkedInOperatorRange;
+    profileView: LinkedInOperatorRange;
+    follow: LinkedInOperatorRange;
+  };
+  /**
+   * The campaign-day ramp as fractions of the seat's ceiling, days 1..n.
+   *
+   * Computed by the server from the function the runner applies, so a screen
+   * renders the ramp instead of re-deriving it -- the client-side copy of that
+   * arithmetic could only ever be right by coincidence.
+   */
+  campaignWarmupFractions: number[];
   signals: {
     acceptance: LinkedInSignalBase & {
       windowDays: number;
@@ -827,6 +898,17 @@ export interface LinkedInSeatAuth {
 /** Also declared rather than imported: the handler builds this object inline. */
 export interface LinkedInWorkerStatus {
   enabled: boolean;
+  /**
+   * THIS IS A HOSTED DEPLOYMENT, so local execution and lead sourcing are not
+   * available and no setting can make them available.
+   *
+   * The structured form of the distinction `blockers` states in prose: hosted
+   * is a decision about who the automation operator is under LinkedIn's User
+   * Agreement 8.2, and it is the one kind of off with no switch behind it.
+   * Branch on THIS, never on the wording of a blocker -- "install playwright"
+   * is the wrong thing to tell somebody with no machine to install it on.
+   */
+  hosted: boolean;
   playwrightInstalled: boolean;
   playwrightPath: string | null;
   /** The seat's confirmed-session record: true only once a session was CONFIRMED live. */
@@ -868,6 +950,11 @@ export interface LinkedInCampaignCreated {
   campaign: LinkedInCampaign;
   run: PlaybookRun;
   excluded: LinkedInExcluded[];
+}
+
+/** What the queue route answers with: the campaign it queued, and what the ledger did. */
+export interface LinkedInCampaignQueued extends CampaignQueued {
+  campaignId: string;
 }
 
 export interface LinkedInExportResponse {
@@ -928,12 +1015,16 @@ export interface LinkedInCampaignInput {
     | (LinkedInCampaignCommonInput & { sequenceSteps: EditableSequenceStep[]; icp?: never; offer?: never });
 }
 
-export async function getLinkedInSeat(): Promise<LinkedInSeatResponse> {
-  return request('/api/linkedin/seat');
+/**
+ * One LinkedIn account's state. `seatKey` absent means the first account, which
+ * is what every caller written before multi-account meant and still means.
+ */
+export async function getLinkedInSeat(seatKey?: string): Promise<LinkedInSeatResponse> {
+  return request(`/api/linkedin/seat${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`);
 }
 
-export async function saveLinkedInSeat(patch: SeatPatch): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
-  return request('/api/linkedin/seat', { method: 'PUT', body: JSON.stringify(patch) });
+export async function saveLinkedInSeat(patch: SeatPatch, seatKey?: string): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
+  return request('/api/linkedin/seat', { method: 'PUT', body: JSON.stringify(seatKey ? { ...patch, seatKey } : patch) });
 }
 
 /** What one read of the logged-in session produced. */
@@ -965,8 +1056,8 @@ export interface LinkedInSeatDetection {
  * a login or challenge wall, and the server's message already names the profile
  * directory to log into. Surface that message verbatim.
  */
-export async function detectLinkedInSeat(timezone: string): Promise<LinkedInSeatDetection> {
-  return request('/api/linkedin/seat/detect', { method: 'POST', body: JSON.stringify({ timezone }) });
+export async function detectLinkedInSeat(timezone: string, seatKey?: string): Promise<LinkedInSeatDetection> {
+  return request('/api/linkedin/seat/detect', { method: 'POST', body: JSON.stringify(seatKey ? { timezone, seatKey } : { timezone }) });
 }
 
 /**
@@ -977,7 +1068,7 @@ export async function detectLinkedInSeat(timezone: string): Promise<LinkedInSeat
  * server holds it encrypted and hands it to one thing -- the browser session
  * it opens on this machine.
  */
-export async function saveLinkedInCredentials(input: { email: string; password: string }): Promise<{
+export async function saveLinkedInCredentials(input: { email: string; password: string; seatKey?: string }): Promise<{
   hasCredentials: true;
   maskedEmail: string;
 }> {
@@ -985,8 +1076,8 @@ export async function saveLinkedInCredentials(input: { email: string; password: 
 }
 
 /** Removable at any time, which is half of why storing it is defensible at all. */
-export async function deleteLinkedInCredentials(): Promise<{ hasCredentials: false }> {
-  return request('/api/linkedin/seat/credentials', { method: 'DELETE' });
+export async function deleteLinkedInCredentials(seatKey?: string): Promise<{ hasCredentials: false }> {
+  return request(`/api/linkedin/seat/credentials${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`, { method: 'DELETE' });
 }
 
 export type LinkedInLoginStatus = 'ok' | 'otp_required' | 'challenge' | 'failed';
@@ -1005,8 +1096,11 @@ export interface LinkedInLoginResult {
  * the body for the reason every one-time code does: a query string is a proxy
  * log.
  */
-export async function loginLinkedInSeat(otp?: string): Promise<LinkedInLoginResult> {
-  return request('/api/linkedin/seat/login', { method: 'POST', body: JSON.stringify(otp ? { otp } : {}) });
+export async function loginLinkedInSeat(otp?: string, seatKey?: string): Promise<LinkedInLoginResult> {
+  const body: { otp?: string; seatKey?: string } = {};
+  if (otp) body.otp = otp;
+  if (seatKey) body.seatKey = seatKey;
+  return request('/api/linkedin/seat/login', { method: 'POST', body: JSON.stringify(body) });
 }
 
 /**
@@ -1015,24 +1109,47 @@ export async function loginLinkedInSeat(otp?: string): Promise<LinkedInLoginResu
  * `reason` is required by the server rather than defaulted, because "why is
  * this stopped" three weeks later is the question the column answers.
  */
-export async function pauseLinkedInSeat(reason: string): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
-  return request('/api/linkedin/seat/pause', { method: 'POST', body: JSON.stringify({ reason }) });
-}
-
-export async function resumeLinkedInSeat(): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
-  return request('/api/linkedin/seat/resume', { method: 'POST' });
+export async function pauseLinkedInSeat(reason: string, seatKey?: string): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
+  return request('/api/linkedin/seat/pause', { method: 'POST', body: JSON.stringify(seatKey ? { reason, seatKey } : { reason }) });
 }
 
 /**
- * Forget this seat, including its ramp clock. Leaves send history, detect
- * requests and stored credentials untouched -- only the seat row goes.
+ * Start the account again, optionally saying why.
+ *
+ * `reason` is OPTIONAL where pause's is required, and the asymmetry is
+ * deliberate: an account stopped for a cause nobody wrote down is unreadable a
+ * month later, while "it is fine now" must not be blocked behind a text box.
+ * What is given is recorded in the workspace's audit history against the actor
+ * who gave it, paired with the pause it answers -- it is NOT stored on the
+ * seat, whose `pausedReason` describes a stop that is over.
+ *
+ * `seatKey` stays the first parameter so every existing caller keeps working;
+ * pass `undefined` for the owner account.
  */
-export async function deleteLinkedInSeat(): Promise<{ deleted: boolean }> {
-  return request('/api/linkedin/seat', { method: 'DELETE' });
+export async function resumeLinkedInSeat(seatKey?: string, reason?: string): Promise<{
+  seat: LinkedInSeat;
+  posture: SeatPosture;
+  /** Exactly what was recorded, or null when the operator gave none. */
+  resumeReason: string | null;
+}> {
+  return request('/api/linkedin/seat/resume', {
+    method: 'POST',
+    body: JSON.stringify({ ...(seatKey ? { seatKey } : {}), ...(reason ? { reason } : {}) })
+  });
 }
 
-export async function getLinkedInLimits(): Promise<LinkedInLimitsReport> {
-  return request('/api/linkedin/limits');
+/**
+ * Forget this seat, including its ramp clock and the stored inbox that seat
+ * produced. Leaves send history, detect requests and stored credentials
+ * untouched -- only the seat row and the `linkedin_threads`/`linkedin_messages`
+ * read cache go.
+ */
+export async function deleteLinkedInSeat(seatKey?: string): Promise<{ deleted: boolean; clearedThreads: number }> {
+  return request(`/api/linkedin/seat${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`, { method: 'DELETE' });
+}
+
+export async function getLinkedInLimits(seatKey?: string): Promise<LinkedInLimitsReport> {
+  return request(`/api/linkedin/limits${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`);
 }
 
 /** A dry run. No slot becomes a `linkedin_actions` row on this path. */
@@ -1175,6 +1292,16 @@ export interface LinkedInCampaignDraft {
   sequence: { steps: EditableSequenceStep[] };
   degraded: string[];
   /**
+   * The template this draft was shaped from, or null when the brief was
+   * complete enough to draft specific copy instead.
+   *
+   * The route has always returned it and the screen has always needed it -- to
+   * show which shape it is looking at, and to send the same one back to
+   * `POST /api/linkedin/campaigns`. Reading it through a cast was the client
+   * asserting a field this type denied.
+   */
+  templateId: string | null;
+  /**
    * The four fields a homepage cannot state, PROPOSED by a model -- absent when
    * no model is configured. Deliberately outside `brief`: everything in there
    * was read off the site with evidence behind it, and these were not. They are
@@ -1219,12 +1346,40 @@ export async function getLinkedInSequenceConfig(): Promise<LinkedInSequenceConfi
 }
 
 /** Writes nothing. The response is a draft the operator edits before a campaign exists. */
+/**
+ * `tone`, `inviteNote` and `includeInMail` are the same three controls the
+ * campaign path has. Absent means the server's own defaults -- a consultative
+ * tone, a drafted invite note and no InMail.
+ */
 export async function draftLinkedInCampaign(input: {
   domain: string;
   targets?: string[];
   templateId?: string;
+  tone?: SequenceTone;
+  inviteNote?: LinkedInInviteNoteMode;
+  includeInMail?: boolean;
 }): Promise<LinkedInCampaignDraft> {
   return request('/api/linkedin/campaigns/draft', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/** `none` drafts a bare connection request; `drafted` is a connection request with a note. */
+export type LinkedInInviteNoteMode = 'drafted' | 'none';
+
+/**
+ * What a campaign is configured with, beyond its copy.
+ *
+ * Every field optional and every one absent-means-unchanged on an edit. These
+ * are the playbook's own names and the playbook's own values -- `horizonDays`
+ * and `kind` are what the pacing engine reads, `format` is the tool the export
+ * is rendered for, and the three copy dials are `gtm.linkedin-sequence`'s.
+ */
+export interface LinkedInCampaignSettings {
+  tone?: SequenceTone;
+  inviteNote?: LinkedInInviteNoteMode;
+  includeInMail?: boolean;
+  kind?: PacedKind;
+  horizonDays?: number;
+  format?: ExportFormat;
 }
 
 /** Exactly what `PATCH /api/linkedin/campaigns/:id/sequence` returns -- every field, none optional. */
@@ -1247,12 +1402,24 @@ export interface LinkedInSequenceSaved {
  * to the hash of the bytes that were read, and these are different bytes. The
  * screen says so before the button is pressed, not after.
  */
+/**
+ * Edit a bound campaign: the copy, and anything it was created with.
+ *
+ * `settings` are ABSENT-MEANS-UNCHANGED, merged server-side over the input the
+ * campaign already carries, so editing the words cannot re-default the tone,
+ * the paced kind, the horizon or the export format. Editing is no longer a
+ * narrower act than creating, which is why these controls need not be greyed
+ * out on a campaign that already exists.
+ *
+ * Re-plans and re-approves: the previous approval is retired by this call.
+ */
 export async function saveLinkedInCampaignSequence(
   id: string,
-  steps: EditableSequenceStep[]
+  steps: EditableSequenceStep[],
+  settings: LinkedInCampaignSettings = {}
 ): Promise<LinkedInSequenceSaved> {
   return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/sequence`, {
-    method: 'PATCH', body: JSON.stringify({ steps })
+    method: 'PATCH', body: JSON.stringify({ steps, ...settings })
   });
 }
 
@@ -1261,6 +1428,23 @@ export async function exportLinkedInCampaign(id: string, format?: ExportFormat):
   return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/export`, {
     method: 'POST', body: JSON.stringify(format ? { format } : {})
   });
+}
+
+/**
+ * Hand the APPROVED campaign to this deployment's own worker.
+ *
+ * The sibling of `exportLinkedInCampaign` and the other half of what an
+ * approval is for: export renders bytes for somebody else's tool, this queues
+ * them for the browser on this machine. IT SENDS NOTHING HERE -- the rows are
+ * written 'planned', the worker claims them on its own tick and re-runs the
+ * safety gate immediately before each action.
+ *
+ * Self-hosted only, and the server says which kind of off it is: a 409 on
+ * hosted Trevra is a decision about who the automation operator is, not a
+ * switch to go hunting for. Surface its message verbatim.
+ */
+export async function queueLinkedInCampaign(campaignId: string): Promise<LinkedInCampaignQueued> {
+  return request(`/api/linkedin/campaigns/${encodeURIComponent(campaignId)}/queue`, { method: 'POST', body: '{}' });
 }
 
 export async function stopLinkedInCampaign(id: string): Promise<{ campaign: LinkedInCampaign; releasedActions: number }> {
@@ -1348,7 +1532,38 @@ export async function previewLinkedInManagerLeadCsv(
   return response.json();
 }
 
-export async function getLinkedInManagerLeadContacts(listId: string): Promise<{ list: LinkedInLeadList; contacts: LinkedInLeadContact[] }> {
+/** The write half of the preview: parses through the same scrub + automatch, and persists. */
+export async function importLinkedInManagerLeadCsv(
+  listId: string,
+  file: File,
+  mapping?: LinkedInLeadCsvPreview['mapping']
+): Promise<{ inserted: number; duplicates: number; rejected: Array<{ row: number; reason: string }>; mapping: LinkedInLeadCsvPreview['mapping']; headers: string[] }> {
+  const form = new FormData();
+  form.append('file', file);
+  if (mapping) form.append('mapping', JSON.stringify(mapping));
+  const response = await fetch(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/import`, { method: 'POST', body: form, credentials: 'include' });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    throw new ApiError(body.error ?? 'Lead CSV import failed', response.status);
+  }
+  return response.json();
+}
+
+/**
+ * A page of one lead list, and HOW MANY PEOPLE ARE ACTUALLY ON IT.
+ *
+ * `total` is counted server-side, not `contacts.length`: the route returns at
+ * most one page, so the two differ exactly when the screen most needs to say
+ * so. Announcing a truncation from the page length alone is how the UI came to
+ * claim a first-1,000 that nobody had counted.
+ */
+export async function getLinkedInManagerLeadContacts(listId: string): Promise<{
+  list: LinkedInLeadList;
+  contacts: LinkedInLeadContact[];
+  total: number;
+  /** The server's page bound. `contacts.length` is short of `total` exactly when this is reached. */
+  pageLimit: number;
+}> {
   return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/contacts`);
 }
 
@@ -1390,12 +1605,20 @@ export async function getLinkedInManagedCampaign(id: string): Promise<{ campaign
   return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}`);
 }
 
+export async function startLinkedInManagedCampaign(id: string): Promise<ManagedCampaign> {
+  return (await request<{ campaign: ManagedCampaign }>(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/start`, { method: 'POST', body: '{}' })).campaign;
+}
+
+export async function pauseLinkedInManagedCampaign(id: string): Promise<ManagedCampaign> {
+  return (await request<{ campaign: ManagedCampaign }>(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/pause`, { method: 'POST', body: '{}' })).campaign;
+}
+
 export async function stopLinkedInManagedCampaign(id: string): Promise<ManagedCampaign> {
   return (await request<{ campaign: ManagedCampaign }>(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/stop`, { method: 'POST', body: '{}' })).campaign;
 }
 
-export async function pauseLinkedInManagedMember(id: string): Promise<boolean> {
-  return (await request<{ paused: boolean }>(`/api/linkedin/manager/members/${encodeURIComponent(id)}/pause`, { method: 'POST', body: '{}' })).paused;
+export async function setLinkedInManagedMemberPaused(id: string, paused: boolean): Promise<boolean> {
+  return (await request<{ paused: boolean }>(`/api/linkedin/manager/members/${encodeURIComponent(id)}/pause`, { method: 'POST', body: JSON.stringify({ paused }) })).paused;
 }
 
 export async function removeLinkedInManagedMember(id: string): Promise<boolean> {
@@ -1409,10 +1632,39 @@ export async function getLinkedInManualTasks(filters: { seatKey?: string; status
   return (await request<{ tasks: ManualTaskView[] }>(`/api/linkedin/manager/tasks${query.size ? `?${query}` : ''}`)).tasks;
 }
 
-export async function getLinkedInManagedAnalytics(filters: { campaignId?: string; seatKey?: string } = {}): Promise<ManagedAnalytics> {
+/** Closes the human checkpoint. Sending the message stays the operator's act, in the inbox. */
+export async function completeLinkedInManualTask(id: string): Promise<boolean> {
+  return (await request<{ completed: boolean }>(`/api/linkedin/manager/tasks/${encodeURIComponent(id)}/complete`, { method: 'POST', body: '{}' })).completed;
+}
+
+export interface ManagedCampaignTickResult {
+  campaignsTicked: number;
+  actionsPlanned: number;
+  manualTasksCreated: number;
+  membersCompleted: number;
+  membersBlocked: number;
+}
+
+/** Advances every running campaign now. Plans work; never sends it. */
+export async function tickLinkedInManagedCampaigns(): Promise<ManagedCampaignTickResult> {
+  return request('/api/linkedin/manager/tick', { method: 'POST', body: '{}' });
+}
+
+/**
+ * The manager's numbers, including `followsSent` and `invitesWithdrawn` -- the
+ * two workflow actions that until now produced nothing measurable at all.
+ *
+ * A name for the server's own type rather than a second copy of it: both fields
+ * live on `ManagedAnalytics`, and restating them here would be a shape that
+ * looks authoritative while being unable to notice the server changing.
+ */
+export type LinkedInManagedAnalytics = ManagedAnalytics;
+
+export async function getLinkedInManagedAnalytics(filters: { campaignId?: string; seatKey?: string; sinceDays?: number } = {}): Promise<LinkedInManagedAnalytics> {
   const query = new URLSearchParams();
   if (filters.campaignId) query.set('campaignId', filters.campaignId);
   if (filters.seatKey) query.set('seatKey', filters.seatKey);
+  if (filters.sinceDays !== undefined) query.set('sinceDays', String(filters.sinceDays));
   return request(`/api/linkedin/manager/analytics${query.size ? `?${query}` : ''}`);
 }
 
@@ -1478,6 +1730,38 @@ export async function getLinkedInLeads(id: string, limit?: number): Promise<{
     `/api/linkedin/lead-sources/${encodeURIComponent(id)}/leads${limit ? `?limit=${limit}` : ''}`
   );
   return { source: result.source ?? null, leads: Array.isArray(result.leads) ? result.leads : [] };
+}
+
+export interface DailyLeadAllowance {
+  limit: number;
+  used: number;
+  remaining: number;
+}
+
+/** How many new leads a day this workspace is willing to collect at all. */
+export async function getLinkedInLeadAllowance(): Promise<DailyLeadAllowance> {
+  return request('/api/linkedin/lead-sources/allowance');
+}
+
+export async function setLinkedInLeadAllowance(cap: number): Promise<DailyLeadAllowance> {
+  return request('/api/linkedin/lead-sources/allowance', { method: 'PUT', body: JSON.stringify({ cap }) });
+}
+
+/**
+ * Turns what a walk found into leads a campaign can enrol.
+ *
+ * `leadIds` is the operator's selection, and passing it is the difference
+ * between importing the rows they ticked and importing the page they were
+ * looking at. Absent means every lead this source found, up to `limit`.
+ */
+export async function importLinkedInLeadSource(sourceId: string, input: { listId?: string; listName?: string; limit?: number; leadIds?: string[] } = {}): Promise<{
+  list: LinkedInLeadList;
+  inserted: number;
+  duplicates: number;
+  reused: number;
+  skipped: number;
+}> {
+  return request(`/api/linkedin/lead-sources/${encodeURIComponent(sourceId)}/import`, { method: 'POST', body: JSON.stringify(input) });
 }
 
 /* =====================================================================

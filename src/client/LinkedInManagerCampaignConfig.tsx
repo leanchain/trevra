@@ -1,52 +1,416 @@
-import { useEffect, useState } from 'react';
-import { LoaderCircle, Plus } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { CircleAlert, LoaderCircle, Play, Plus, Users, Workflow as WorkflowIcon } from 'lucide-react';
 import {
   createLinkedInManagedCampaign,
+  getLinkedInLimits,
   getLinkedInManagerLeadLists,
-  getLinkedInManagerWorkflows
+  getLinkedInManagerSeats,
+  getLinkedInManagerWorkflows,
+  startLinkedInManagedCampaign,
+  type LinkedInCeilingSource,
+  type LinkedInLimitsReport
 } from './api';
+import { effectiveDailyCeiling } from '../server/linkedin/limits';
+import { useActiveSeatKey } from './LinkedInAccounts';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
-import type { LinkedInWorkflow } from '../server/linkedin/workflows';
+import type { LinkedInSeat } from '../server/linkedin/seats';
+import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
+import type { ManagedCampaign } from '../server/linkedin/managed-campaigns';
 import { errorMessage } from './LinkedInSafety';
 
-export function LinkedInManagerCampaignConfig({ onChanged, setToast }: { onChanged: () => Promise<void>; setToast: (message: string) => void }) {
+/**
+ * Creating a campaign, with the consequences shown before the button.
+ *
+ * Three selects used to be the whole screen, and none of them said what would
+ * happen: how many people get enrolled, who sends to them, how long the
+ * sequence runs, or that day one is deliberately slow. The right-hand column
+ * answers all four while the form is still being filled in, and the two things
+ * that quietly produce a campaign that never sends -- an empty list, an
+ * account with no working days -- are warned about BEFORE the create, not
+ * discovered a day later.
+ */
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
+  profile_view: 'View their profile',
+  connection_request: 'Send a connection request',
+  message: 'Send a message',
+  manual_message: 'A message you write yourself',
+  follow: 'Follow them',
+  withdraw_pending: 'Withdraw the invite if still pending'
+};
+
+const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+const clock = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+const stepHours = (step: WorkflowStep) => step.delayBefore.unit === 'days' ? step.delayBefore.amount * 24 : step.delayBefore.amount;
+
+/* ---------------------------------------------------------------------------
+ * WHAT A CAMPAIGN IS ACTUALLY ALLOWED TO SEND.
+ *
+ * Shared with the campaign screen and living HERE rather than there because
+ * `LinkedInManagerRead.tsx` already imports this panel in order to render it;
+ * exporting from that file and importing back would close a module cycle for
+ * the sake of tidier filing.
+ * ------------------------------------------------------------------------ */
+
+/** The four paced kinds a managed campaign can spend, in the order they are shown. */
+const MANAGED_KINDS = ['invite', 'dm', 'profile_view', 'follow'] as const;
+export type ManagedKind = (typeof MANAGED_KINDS)[number];
+
+/**
+ * The campaign-day ramp, READ from the server instead of restated on the client.
+ *
+ * This panel used to compute it -- `Math.max(0.2, day * 0.2)` -- and multiply
+ * the operator's raw setting by it. Two things were wrong at once: the ramp
+ * ignored the per-seat warm-up week, and the operator's setting is not the
+ * ceiling, so the preview promised 6 invites and 5 messages on a day the gate
+ * allowed 3 and 2. `campaignWarmupFractions` is the same array `guard.ts`
+ * paces against, so there is one ramp with one definition again -- including
+ * how many days it runs for, which is not this file's opinion either.
+ */
+export function rampFractions(report: LinkedInLimitsReport | null): readonly number[] | null {
+  const fractions = report?.campaignWarmupFractions;
+  return fractions && fractions.length > 0 ? fractions : null;
+}
+
+/** The fraction for a 1-based campaign day. Days past the ramp sit at its last value. */
+export function rampFractionForDay(report: LinkedInLimitsReport | null, day: number): number | null {
+  const fractions = rampFractions(report);
+  if (!fractions) return null;
+  return fractions[Math.min(Math.max(1, Math.floor(day)), fractions.length) - 1];
+}
+
+export interface EnforcedCeiling {
+  kind: ManagedKind;
+  /** Trevra's researched band for this account's posture, per day. */
+  band: number;
+  /** The number the operator typed on Setup -> LinkedIn account, where one exists. */
+  operator: number | null;
+  /** What this account may send today once the campaign is past its ramp. */
+  full: number;
+  /** The same with the campaign-day ramp on top: what may go out today. */
+  today: number;
+  /** Which of the two numbers `full` was built from. */
+  source: LinkedInCeilingSource;
+}
+
+/**
+ * What the gate will actually let a campaign on this account do, per kind.
+ *
+ * NOTHING IS RECOMPUTED THAT THE SERVER ALREADY ANSWERED. `ceiling` on a day
+ * row is the account's real per-day allowance -- band, the operator's own
+ * setting, the band override, the per-seat warm-up week, the acceptance-rate
+ * throttle and posture, all already applied -- so it is read, not rebuilt out
+ * of parts on a screen that cannot see the ledger those parts came from.
+ *
+ * THE ONE THING THAT IS COMPUTED IS THE CAMPAIGN RAMP, and it is computed the
+ * way `guard.ts` computes it: the campaign-day fraction multiplies the ceiling
+ * BEFORE the per-seat warm-up week, because the two ramps are separate clocks
+ * measuring separate risks and it is the stricter of the two that binds. That
+ * resolved-before-the-week number is what `effectiveDailyCeiling` returns, so
+ * the function itself is imported from `limits.ts` and called rather than
+ * mirrored -- a copy of a policy is a copy that drifts, and this screen
+ * printing a number the gate disagrees with is the whole defect.
+ *
+ * Returns null when the limits report has not arrived. NOTHING IS GUESSED IN
+ * ITS PLACE -- an operator setting rendered as a ceiling is what this function
+ * exists to end, so a caller with no report prints no number at all.
+ */
+export function enforcedCeilings(
+  report: LinkedInLimitsReport | null,
+  campaignFraction: number
+): Record<ManagedKind, EnforcedCeiling> | null {
+  if (!report) return null;
+  const entries: Array<readonly [ManagedKind, EnforcedCeiling]> = [];
+  for (const kind of MANAGED_KINDS) {
+    const row = report.limits.find((limit) => limit.kind === kind && limit.window === 'day');
+    if (!row) return null;
+    const operator = row.operatorLimit ?? null;
+    const beforeRamps = effectiveDailyCeiling(row.bandCeiling, operator, report.seat.safetyBandOverride);
+    entries.push([kind, {
+      kind,
+      band: report.bands[kind].perDay,
+      operator,
+      full: row.ceiling,
+      today: Math.min(row.ceiling, Math.floor(beforeRamps * campaignFraction)),
+      source: row.ceilingSource ?? 'band'
+    }]);
+  }
+  return Object.fromEntries(entries) as Record<ManagedKind, EnforcedCeiling>;
+}
+
+/**
+ * Where a ceiling came from, in the operator's words.
+ *
+ * "I typed 30 and it says 18" is the only question the number raises, so the
+ * answer travels with it everywhere it is printed.
+ */
+export function ceilingSourceNote(ceiling: EnforcedCeiling): string {
+  if (ceiling.source === 'operator-override') {
+    return `your own number, which this account is set to use in place of Trevra’s researched band of ${ceiling.band} a day`;
+  }
+  if (ceiling.source === 'operator') {
+    return `your own setting of ${ceiling.operator ?? ceiling.band}, stricter than Trevra’s researched band of ${ceiling.band} a day`;
+  }
+  return `Trevra’s researched band of ${ceiling.band} a day, the stricter of it and your setting${ceiling.operator === null ? '' : ` of ${ceiling.operator}`}`;
+}
+
+/** Everything needed to build the same campaign a second time, minus the name. */
+export interface CampaignPrefill {
+  /** A suggested name. The operator edits it before creating. */
+  name: string;
+  seatKey: string;
+  leadListId: string;
+  workflowId: string;
+}
+
+export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads, onNeedWorkflows, prefill }: {
+  onChanged: () => Promise<void>;
+  setToast: (message: string) => void;
+  /**
+   * Where "Import leads" and "Build a workflow" go.
+   *
+   * REQUIRED, and making them required is the fix. They were optional with no
+   * fallback, so any mount that forgot one rendered a button that did nothing
+   * at all -- in exactly the state, no list or no workflow, where that button
+   * is the only way forward. A required prop turns a forgetful mount into a
+   * compile error instead of a dead end an operator has to guess their way out
+   * of.
+   */
+  onNeedLeads: () => void;
+  onNeedWorkflows: () => void;
+  /** Fills the form from a finished campaign, so "run this list again" is one click. */
+  prefill?: CampaignPrefill | null;
+}) {
+  /**
+   * The account this screen follows, shared with every other LinkedIn screen.
+   *
+   * "Sends from" both STARTS at the operator's pick and WRITES BACK to it, so
+   * choosing an account to send from is the same act as choosing the account
+   * the inbox and the queue are showing. One question, one answer, everywhere.
+   */
+  const [activeSeatKey, setActiveSeatKey] = useActiveSeatKey();
+  const [seats, setSeats] = useState<LinkedInSeat[]>([]);
   const [lists, setLists] = useState<LinkedInLeadList[]>([]);
   const [workflows, setWorkflows] = useState<LinkedInWorkflow[]>([]);
   const [name, setName] = useState('');
+  const [seatKey, setSeatKey] = useState(activeSeatKey);
   const [listId, setListId] = useState('');
   const [workflowId, setWorkflowId] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [limits, setLimits] = useState<LinkedInLimitsReport | null>(null);
+  const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [created, setCreated] = useState<{ campaign: ManagedCampaign; enrolled: number; skippedAlreadyActive: number } | null>(null);
 
   const refreshOptions = async () => {
-    const [nextLists, nextWorkflows] = await Promise.all([getLinkedInManagerLeadLists(), getLinkedInManagerWorkflows()]);
+    const [nextSeats, nextLists, nextWorkflows] = await Promise.all([
+      getLinkedInManagerSeats(), getLinkedInManagerLeadLists(), getLinkedInManagerWorkflows()
+    ]);
+    setSeats(nextSeats);
     setLists(nextLists);
     setWorkflows(nextWorkflows);
+    // A remembered account that no longer exists is not a pick, it is a stale
+    // key: fall back to the first real one rather than sending from nothing.
+    setSeatKey((current) => nextSeats.some((candidate) => candidate.seatKey === current) ? current : nextSeats[0]?.seatKey || '');
     setListId((current) => current || nextLists[0]?.id || '');
     setWorkflowId((current) => current || nextWorkflows[0]?.id || '');
   };
   useEffect(() => { void refreshOptions().catch(() => undefined); }, []);
 
+  /** Follow a pick made on another screen, as long as that account exists here. */
+  useEffect(() => {
+    if (!seats.some((candidate) => candidate.seatKey === activeSeatKey)) return;
+    setSeatKey(activeSeatKey);
+  }, [activeSeatKey, seats]);
+
+  useEffect(() => {
+    if (!prefill) return;
+    setName(prefill.name);
+    // Rebuilding a campaign is a decision to work on ITS account, so the shared
+    // pick moves with it rather than snapping back on the next options refresh.
+    setSeatKey(prefill.seatKey);
+    setActiveSeatKey(prefill.seatKey);
+    setListId(prefill.leadListId);
+    setWorkflowId(prefill.workflowId);
+    setCreated(null);
+    setError('');
+  }, [prefill]);
+
+  /**
+   * The ceilings this account is really under, for the account chosen above.
+   *
+   * Refetched per account because the band a seat draws from depends on its
+   * posture and its warm-up week, both of which are per-account facts.
+   */
+  useEffect(() => {
+    if (!seatKey) { setLimits(null); return undefined; }
+    let live = true;
+    void getLinkedInLimits(seatKey)
+      .then((report) => { if (live) setLimits(report); })
+      .catch(() => { if (live) setLimits(null); });
+    return () => { live = false; };
+  }, [seatKey]);
+
+  const seat = seats.find((candidate) => candidate.seatKey === seatKey) ?? null;
+  const list = lists.find((candidate) => candidate.id === listId) ?? null;
+  const workflow = workflows.find((candidate) => candidate.id === workflowId) ?? null;
+
+  const pickSeat = (key: string) => { setSeatKey(key); setActiveSeatKey(key); };
+
+  const fractions = rampFractions(limits);
+  const dayOneFraction = fractions?.[0] ?? null;
+  const ceilings = useMemo(() => enforcedCeilings(limits, dayOneFraction ?? 1), [limits, dayOneFraction]);
+
+  const schedule = useMemo(() => {
+    if (!workflow) return { steps: [] as Array<{ step: WorkflowStep; day: number }>, days: 0 };
+    let elapsed = 0;
+    const steps = workflow.steps.map((step) => {
+      elapsed += stepHours(step);
+      return { step, day: Math.floor(elapsed / 24) + 1 };
+    });
+    return { steps, days: Math.max(1, Math.ceil(elapsed / 24)) };
+  }, [workflow]);
+
+  const warnings: string[] = [];
+  if (list && list.leadCount === 0) warnings.push(`“${list.name}” has no leads in it yet, so the campaign would start empty. Import leads into it first.`);
+  if (seat && seat.workingDays.length === 0) warnings.push(`“${seat.label}” has no working days set, so nothing will go out until you set them on Setup → LinkedIn account.`);
+  // Not a guess about the account: the ceiling the server reports for it is
+  // zero right now, so a campaign started under it would enrol its leads and
+  // then sit still. `rule` is the server's own sentence for why.
+  if (seat && ceilings && ceilings.invite.full === 0 && ceilings.dm.full === 0) {
+    warnings.push(`“${seat.label}” is not allowed to send anything at the moment, so the campaign would enrol its leads and then wait. ${limits?.limits.find((limit) => limit.kind === 'invite' && limit.window === 'day')?.rule ?? ''}`.trim());
+  }
+
   const create = async () => {
     if (!name.trim() || !listId || !workflowId) return;
-    setBusy(true); setError('');
+    setBusy('create');
+    setError('');
     try {
-      const result = await createLinkedInManagedCampaign({ name: name.trim(), leadListId: listId, workflowId });
+      const result = await createLinkedInManagedCampaign({ name: name.trim(), seatKey: seatKey || undefined, leadListId: listId, workflowId });
+      setCreated(result);
       setName('');
-      setToast(`Campaign draft created: ${result.enrolled} lead(s) enrolled${result.skippedAlreadyActive ? `, ${result.skippedAlreadyActive} already claimed by another active campaign` : ''}. No action was queued.`);
       await Promise.all([refreshOptions(), onChanged()]);
-    } catch (err) { setError(errorMessage(err, 'Unable to create that campaign draft.')); }
-    finally { setBusy(false); }
+    } catch (err) { setError(errorMessage(err, 'Unable to create that campaign.')); }
+    finally { setBusy(''); }
   };
 
+  const startNow = async () => {
+    if (!created) return;
+    setBusy('start');
+    setError('');
+    try {
+      await startLinkedInManagedCampaign(created.campaign.id);
+      setToast(`“${created.campaign.name}” is running.${dayOneFraction === null ? '' : ` Day one is held to ${Math.round(dayOneFraction * 100)}% of what this account may send.`}`);
+      setCreated(null);
+      await onChanged();
+    } catch (err) { setError(errorMessage(err, 'The campaign was created but could not be started.')); }
+    finally { setBusy(''); }
+  };
+
+  const missing = seats.length === 0 || lists.length === 0 || workflows.length === 0;
+
   return <section className="page-panel">
-    <div className="section-heading"><div><h3 aria-level={2}>Create a managed campaign draft</h3><p>One persistent lead list + one reusable workflow. Enrollment takes the database-level one-active-campaign claim; creating the draft queues nothing.</p></div></div>
+    <div className="section-heading"><div>
+      <h3 aria-level={2}>Create a campaign</h3>
+      <p>Pick who sends, who they send to and what they send. Nothing goes out until you start it.</p>
+    </div></div>
+
     {error && <div className="error-banner">{error}</div>}
-    <div className="li-form-grid">
-      <label>Campaign name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Q3 founder outreach" /></label>
-      <label>Lead list<select value={listId} onChange={(event) => setListId(event.target.value)}><option value="">Choose a list</option>{lists.map((list) => <option key={list.id} value={list.id}>{list.name} ({list.leadCount})</option>)}</select></label>
-      <label>Workflow<select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}><option value="">Choose a workflow</option>{workflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select></label>
-    </div>
-    <div className="panel-footer"><span>Paused members keep their one-campaign claim; only terminal removal/reply/completion/failure releases it.</span><button className="primary-button" type="button" disabled={busy || !name.trim() || !listId || !workflowId} onClick={() => void create()}>{busy ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />} Create draft</button></div>
+
+    {missing
+      ? <div className="mgr-empty">
+        <h4 aria-level={3}>Two things first</h4>
+        <p>A campaign is a lead list plus a workflow, sent from a LinkedIn account. {seats.length === 0 && 'No account is set up. '}{lists.length === 0 && 'No lead list exists yet. '}{workflows.length === 0 && 'No workflow exists yet. '}</p>
+        <div className="mgr-actions">
+          {seats.length === 0 && <a className="primary-button" href="#/setup/seat">Set up a LinkedIn account</a>}
+          {lists.length === 0 && <button className="secondary-button" type="button" onClick={onNeedLeads}><Users size={14} /> Import leads</button>}
+          {workflows.length === 0 && <button className="secondary-button" type="button" onClick={onNeedWorkflows}><WorkflowIcon size={14} /> Build a workflow</button>}
+        </div>
+      </div>
+      : <div className="mgr-split">
+        <div className="li-form-grid mgr-fields">
+          <label>Campaign name
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Q3 founder outreach" />
+          </label>
+          <label>Sends from
+            <select value={seatKey} onChange={(event) => pickSeat(event.target.value)}>
+              {seats.map((candidate) => <option key={candidate.seatKey} value={candidate.seatKey}>{candidate.label}</option>)}
+            </select>
+          </label>
+          <label>Lead list
+            <select value={listId} onChange={(event) => setListId(event.target.value)}>
+              <option value="">Choose a list</option>
+              {lists.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name} — {plural(candidate.leadCount, 'lead')}</option>)}
+            </select>
+          </label>
+          <label>Workflow
+            <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
+              <option value="">Choose a workflow</option>
+              {workflows.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name} — {plural(candidate.steps.length, 'step')}</option>)}
+            </select>
+          </label>
+          <p className="li-hint">A lead can only be in one active campaign at a time. Anyone already in another one is left where they are.</p>
+        </div>
+
+        <aside className="mgr-preview">
+          <h4 aria-level={3}>What will happen</h4>
+          {list && workflow && seat
+            ? <>
+              <p className="mgr-preview-lede">
+                <b>{plural(list.leadCount, 'lead')}</b> from {list.name} will be worked through <b>{workflow.name}</b> by <b>{seat.label}</b>, over about <b>{plural(schedule.days, 'day')}</b> each.
+              </p>
+              <ol className="mgr-preview-steps">
+                {schedule.steps.map(({ step, day }) => <li key={step.id}>
+                  <span className="mgr-preview-day">Day {day}</span>
+                  {ACTION_LABEL[step.action]}
+                </li>)}
+              </ol>
+              <p className="mgr-preview-note">
+                {seat.workingDays.length > 0
+                  ? `Only on ${seat.workingDays.map((day) => WEEKDAYS[day]).join(', ')}, ${clock(seat.workStartMinute)}–${clock(seat.workEndMinute)} ${seat.timezone}.`
+                  : 'This account has no working hours set, so nothing can go out yet.'}
+                {' '}
+                {ceilings && fractions && dayOneFraction !== null
+                  ? <>Day 1 is held to {Math.round(dayOneFraction * 100)}% of what this account may send — {plural(ceilings.invite.today, 'invite')} and {plural(ceilings.dm.today, 'message')} across the whole campaign — and reaches full speed on day {fractions.length}. Full speed is {plural(ceilings.invite.full, 'invite')} and {plural(ceilings.dm.full, 'message')} a day; the invite ceiling is {ceilingSourceNote(ceilings.invite)}.</>
+                  : 'Day 1 is deliberately slow, and the campaign steps up to full speed over its first few days.'}
+              </p>
+            </>
+            : <p className="empty-copy">Choose a lead list and a workflow to see what this campaign will do.</p>}
+
+          {warnings.length > 0 && <div className="li-warn-block">
+            <CircleAlert size={16} />
+            <div>
+              <strong>Worth fixing first</strong>
+              <ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+            </div>
+          </div>}
+        </aside>
+      </div>}
+
+    {created && <div className="li-dryrun mgr-created">
+      <Play size={18} />
+      <div>
+        <strong>“{created.campaign.name}” is ready</strong>
+        <p>
+          {plural(created.enrolled, 'lead')} enrolled.
+          {created.skippedAlreadyActive > 0 && ` ${plural(created.skippedAlreadyActive, 'lead')} skipped — already in another active campaign.`}
+          {' '}It is not running yet: nothing goes out until you start it.
+        </p>
+        <div className="mgr-actions">
+          <button className="primary-button" type="button" disabled={busy !== ''} onClick={() => void startNow()}>
+            {busy === 'start' ? <LoaderCircle className="spin" size={14} /> : <Play size={14} />} Start it now
+          </button>
+          <button className="secondary-button" type="button" disabled={busy !== ''} onClick={() => setCreated(null)}>Leave it for later</button>
+        </div>
+      </div>
+    </div>}
+
+    {!missing && <div className="panel-footer">
+      <span>Creating a campaign queues nothing. Start is the only control that lets work go out.</span>
+      <button className="primary-button" type="button" disabled={busy !== '' || !name.trim() || !listId || !workflowId} onClick={() => void create()}>
+        {busy === 'create' ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />} Create campaign
+      </button>
+    </div>}
   </section>;
 }

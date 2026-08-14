@@ -542,6 +542,7 @@ html:has(.static-launch) { scroll-padding-top: 92px; scroll-behavior: smooth; }
 
 .launch-logo {
   width: fit-content;
+  min-width: var(--t-tap);
   min-height: var(--t-tap);
   display: inline-flex;
   align-items: center;
@@ -1316,6 +1317,7 @@ html:has(.static-launch) { scroll-padding-top: 92px; scroll-behavior: smooth; }
 .launch-footer > div > strong { margin-bottom: 8px; font-size: var(--t-text-chip); text-transform: uppercase; letter-spacing: var(--t-track-caps); }
 .launch-footer > div > a {
   width: fit-content;
+  min-width: var(--t-tap);
   min-height: var(--t-tap);
   display: inline-flex;
   align-items: center;

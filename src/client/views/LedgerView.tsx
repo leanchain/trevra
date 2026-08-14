@@ -147,7 +147,7 @@ export function LedgerView({ runId, setToast, onNavigate }: {
 
     <section className="page-panel">
       <div className="section-heading">
-        <div><h3>Every run</h3><p>Newest first. Open one to see every step, what went in, what came out, and the proof behind it.</p></div>
+        <div><h3 aria-level={2}>Every run</h3><p>Newest first. Open one to see every step, what went in, what came out, and the proof behind it.</p></div>
         <button className="secondary-button" onClick={() => void reload()}><RefreshCw size={15} /> Refresh</button>
       </div>
 
@@ -211,9 +211,9 @@ export function LedgerView({ runId, setToast, onNavigate }: {
             <button className="secondary-button run-open" onClick={() => onNavigate(`/ledger/run/${run.id}`)}>See every step <ChevronRight size={15} /></button>
           </article>;
         })}
-        {!loaded && <div className="empty-state"><LoaderCircle className="spin" size={28} /><h4>Loading your runs…</h4><p>One moment.</p></div>}
-        {loaded && activity.length === 0 && <div className="empty-state"><Workflow size={28} /><h4>No runs yet</h4><p>Your agent has not done anything here. Start a job by hand in <strong>Setup → Skills</strong>, or give the agent a standing job in <strong>Setup → Agent access</strong>.</p><button className="secondary-button" onClick={() => onNavigate('/setup/skills')}>Run one by hand <ChevronRight size={15} /></button></div>}
-        {loaded && activity.length > 0 && shown.length === 0 && <div className="empty-state"><Workflow size={28} /><h4>No run matches these filters</h4><p>{activity.length} {activity.length === 1 ? 'run is' : 'runs are'} on file. Widen the window or clear a filter.</p><button className="secondary-button" onClick={() => { setStatus('all'); setActor('all'); setDays(365); }}>Show everything</button></div>}
+        {!loaded && <div className="empty-state"><LoaderCircle className="spin" size={28} /><h4 aria-level={3}>Loading your runs…</h4><p>One moment.</p></div>}
+        {loaded && activity.length === 0 && <div className="empty-state"><Workflow size={28} /><h4 aria-level={3}>No runs yet</h4><p>Your agent has not done anything here. Start a job by hand in <strong>Setup → Skills</strong>, or give the agent a standing job in <strong>Setup → Agent access</strong>.</p><button className="secondary-button" onClick={() => onNavigate('/setup/skills')}>Run one by hand <ChevronRight size={15} /></button></div>}
+        {loaded && activity.length > 0 && shown.length === 0 && <div className="empty-state"><Workflow size={28} /><h4 aria-level={3}>No run matches these filters</h4><p>{activity.length} {activity.length === 1 ? 'run is' : 'runs are'} on file. Widen the window or clear a filter.</p><button className="secondary-button" onClick={() => { setStatus('all'); setActor('all'); setDays(365); }}>Show everything</button></div>}
       </div>
     </section>
 
@@ -288,7 +288,7 @@ function LedgerExportPanel({ counts, setToast }: {
   return <section className="page-panel ledger-export">
     <div className="section-heading">
       <div>
-        <h3><FileDown size={18} /> Take your ledger with you</h3>
+        <h3 aria-level={2}><FileDown size={18} /> Take your ledger with you</h3>
         <p>One archive: NDJSON per table plus a <code>manifest.json</code> with the sha256 of every file in it. Not a spreadsheet — the ledger is nested, and flattening it would throw away the evidence, which is the part worth having.</p>
       </div>
       <span className="status-pill">{(counts.jobs + counts.agent).toLocaleString('en-US')} runs loaded</span>

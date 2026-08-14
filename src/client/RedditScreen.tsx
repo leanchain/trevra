@@ -246,7 +246,7 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>The Reddit account</h3>
+          <h3 aria-level={2}>The Reddit account</h3>
           <p>One handle per workspace. It is the name printed under everything this screen posts.</p>
         </div>
         <MessageSquare size={20} className="li-heading-icon" />
@@ -337,7 +337,7 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>Read subreddits</h3>
+          <h3 aria-level={2}>Read subreddits</h3>
           <p>Read-only. This button opens listings through the signed-in session and posts nothing.</p>
         </div>
         <Search size={20} className="li-heading-icon" />
@@ -376,7 +376,7 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>Threads</h3>
+          <h3 aria-level={2}>Threads</h3>
           <p>Replying here posts the comment immediately. There is no queue and nothing to approve afterwards.</p>
         </div>
         <Send size={20} className="li-heading-icon" />
@@ -394,7 +394,7 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
       {!research
         ? <div className="empty-state">
           <MessageSquare size={22} />
-          <h4>Nothing read yet</h4>
+          <h4 aria-level={3}>Nothing read yet</h4>
           <p>Name a subreddit above and read it. What comes back is what the listing showed, unranked and unfiltered.</p>
         </div>
         : research.reads.length === 0

@@ -771,3 +771,96 @@ describe('runWithdrawalBatch', () => {
     expect(targets).toEqual([]);
   });
 });
+
+/**
+ * EVERY POSTURE READ AND EVERY COOLDOWN WRITE IS PER SEAT.
+ *
+ * `getSeatPosture` and `upsertSeat` both default their last argument to the
+ * OWNER seat, and this module omitted it in four places. A workspace with one
+ * account never noticed; a workspace with two got the two worst possible
+ * behaviours at once -- a paused or cooling secondary that kept withdrawing on
+ * the owner's say-so, and a limit wall on the secondary that put the OWNER into
+ * cooldown, stopping the account that was behaving and leaving the restricted
+ * one running.
+ */
+describe('a withdrawal pass is bound to its own account', () => {
+  const SALES: SeatRef = { workspaceId: WORKSPACE_ID, seatKey: 'sales' };
+
+  function batchDeps(overrides: Record<string, unknown> = {}) {
+    const { driver, targets } = fakeDriver();
+    return {
+      targets,
+      deps: {
+        driver,
+        page,
+        batchId: 'lbatch_seat',
+        evaluate: async () => allowed(),
+        now: () => NOW,
+        sleep: async () => {},
+        ...overrides
+      }
+    };
+  }
+
+  async function salesInvite(handle: string, daysAgo: number): Promise<string> {
+    const at = new Date(NOW.getTime() - daysAgo * 86_400_000);
+    const { id } = await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, seatKey: 'sales', kind: 'invite', targetRef: `https://www.linkedin.com/in/${handle}/`, status: 'sent', source: 'export' },
+      at
+    );
+    return id;
+  }
+
+  beforeEach(async () => {
+    await steadySeat();
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'UTC' }, new Date('2026-01-01T09:00:00.000Z'), 'sales');
+  });
+
+  it('STOPS A PAUSED SECONDARY even while the owner seat is perfectly healthy', async () => {
+    await salesInvite('lead', 40);
+    await sweepStaleInvites(db, SALES, NOW);
+    await upsertSeat(db, WORKSPACE_ID, { posture: 'paused' }, NOW, 'sales');
+
+    const { deps, targets } = batchDeps();
+    const result = await runWithdrawalBatch(db, SALES, deps);
+
+    expect(result).toMatchObject({ halted: true, withdrawn: 0 });
+    expect(result.haltReason).toContain('paused');
+    expect(targets).toEqual([]);
+  });
+
+  it('is not stopped by the OWNER seat being paused', async () => {
+    await salesInvite('lead', 40);
+    await sweepStaleInvites(db, SALES, NOW);
+    await upsertSeat(db, WORKSPACE_ID, { posture: 'paused' }, NOW);
+
+    // A restriction on one LinkedIn account says nothing about another, which
+    // is the entire reason an operator runs more than one.
+    const { deps, targets } = batchDeps();
+    expect(await runWithdrawalBatch(db, SALES, deps)).toMatchObject({ halted: false, withdrawn: 1 });
+    expect(targets).toHaveLength(1);
+  });
+
+  it('COOLS THE SEAT THAT HIT THE WALL, and leaves the owner alone', async () => {
+    await salesInvite('lead', 40);
+    await sweepStaleInvites(db, SALES, NOW);
+    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'limit_wall', detail: 'a wall' }));
+
+    const result = await runWithdrawalBatch(db, SALES, batchDeps({ driver }).deps);
+
+    expect(result).toMatchObject({ halted: true, failed: 1, withdrawn: 0 });
+    expect((await getSeat(db, WORKSPACE_ID, 'sales'))?.posture).toBe('cooldown');
+    expect((await getSeat(db, WORKSPACE_ID))?.posture).not.toBe('cooldown');
+  });
+
+  it('reads its own posture for the withdrawal ceiling, not the owner\'s', async () => {
+    const actionId = await salesInvite('lead', 40);
+    // The owner is in cooldown; the sales seat is steady. The ceiling this
+    // verdict reports must be the sales seat's.
+    await upsertSeat(db, WORKSPACE_ID, { posture: 'cooldown' }, NOW);
+
+    const verdict = await evaluateWithdrawalSafety(db, SALES, { actionId, targetRef: 'https://www.linkedin.com/in/lead/' }, NOW);
+    expect(verdict.dailyCeiling).toBe(withdrawalCeilingFor('steady'));
+  });
+});

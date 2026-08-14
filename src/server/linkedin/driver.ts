@@ -284,6 +284,17 @@ const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
 /** Long enough for LinkedIn's client-side render, short enough not to stall a batch. */
 const SETTLE_MS = 1_500;
+/**
+ * A recognised device shows "We're logging you in" -- an interstitial with NO
+ * form on it at all -- before it redirects to either the feed or a checkpoint.
+ * Observed real-world redirects land ~4s after DOMContentLoaded, so a single
+ * `SETTLE_MS` read lands mid-interstitial and misreports a live redirect as
+ * `selector_drift`. This is the outer budget the poll below is allowed to
+ * spend waiting that redirect out; the common case (the form is already there)
+ * never uses more than one iteration of it.
+ */
+const LOGIN_REDIRECT_TIMEOUT_MS = 8_000;
+const LOGIN_REDIRECT_POLL_MS = 500;
 
 function fail(failureKind: LinkedInFailureKind, detail: string): LinkedInDriverResult {
   return { ok: false, failureKind, detail };
@@ -785,7 +796,26 @@ export async function loginWithCredentials(
     return fail('selector_drift', `Could not open the LinkedIn sign-in page: ${cause instanceof Error ? cause.message : String(cause)}. Nothing was typed.`);
   }
 
-  const email = page.locator(SELECTORS.loginEmailField);
+  // A device LinkedIn already recognises answers /login with "We're logging
+  // you in" -- no form, no checkpoint URL yet, nothing any selector below
+  // matches -- and redirects on its own a few seconds later, to the feed or to
+  // a checkpoint. POLL FOR THAT REDIRECT before concluding the form itself is
+  // gone: a read taken mid-interstitial and a read taken after `SETTLE_MS` on a
+  // genuinely reskinned page look identical from here, so the only way to tell
+  // them apart is to give the redirect the time it actually takes.
+  const deadline = Date.now() + LOGIN_REDIRECT_TIMEOUT_MS;
+  let email = page.locator(SELECTORS.loginEmailField);
+  while (
+    (await email.count()) === 0
+    && !(await present(page, SELECTORS.globalNav))
+    && !CHECKPOINT_PATH.test(page.url())
+    && !(await present(page, SELECTORS.otpField))
+    && Date.now() < deadline
+  ) {
+    await page.waitForTimeout(LOGIN_REDIRECT_POLL_MS);
+    email = page.locator(SELECTORS.loginEmailField);
+  }
+
   if ((await email.count()) === 0) {
     // /login on a live session redirects to the feed, which is a success we
     // reached by a different door.

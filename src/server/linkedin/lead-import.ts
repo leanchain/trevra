@@ -76,22 +76,128 @@ export function autoMatchLeadFields(headers: readonly string[]): LeadFieldMappin
 }
 
 /**
+ * EVERYTHING IN A DISPLAY NAME THAT IS DECORATION RATHER THAN A NAME.
+ *
+ * `\p{Extended_Pictographic}` ALONE WAS NOT ENOUGH, and the gap was not an
+ * exotic one. A FLAG is a pair of REGIONAL INDICATORS (U+1F1E6..U+1F1FF) and
+ * those carry Extended_Pictographic=No, so `Maya \u{1F1FA}\u{1F1F8} Chen` came
+ * through this function completely unchanged and was stored with a surname of
+ * "\u{1F1FA}\u{1F1F8} Chen" -- rendered verbatim into `Hi {{firstName}}`. Flags
+ * in a LinkedIn display name are ordinary, not rare.
+ *
+ * THREE MORE SHAPES MISS THE PICTOGRAPHIC PROPERTY FOR THE SAME REASON and are
+ * matched here explicitly:
+ *
+ *   * KEYCAPS. `1️⃣` is the PLAIN DIGIT `1` plus a variation selector
+ *     plus the enclosing-keycap mark. Removing only the two combining marks
+ *     would leave a bare `1` sitting inside the name, so the whole sequence is
+ *     one alternative and it is matched FIRST, before the digit can survive.
+ *   * TAG SEQUENCES. `\u{1F3F4}\u{E0067}...\u{E007F}` is a pictographic base
+ *     followed by six INVISIBLE tag characters; strip the base alone and the
+ *     tags stay in the string.
+ *   * MISCELLANEOUS SYMBOLS used as decoration -- the `▸ ✦ ➤
+ *     ▪` a headline is padded with. They are Symbol/other, not
+ *     pictographs.
+ *
+ * `\p{So}` is the honest generalisation of the last case and it subsumes the
+ * regional indicators too: it is every "other symbol" in Unicode and it
+ * contains no letter in any script. Letters, marks and CJK are untouched, so
+ * `Anne-Marie`, `Núñez` and `陈` survive it intact.
+ */
+const NAME_DECORATION =
+  /[#*0-9]️?⃣|\p{Extended_Pictographic}|\p{So}|[\u{1F3FB}-\u{1F3FF}]|[\u{E0020}-\u{E007F}]|[︎️‍⃣]/gu;
+
+/** The punctuation the brief names -- `.`, `,`, `?`, `!` -- and nothing else. */
+const NAME_PUNCTUATION = /[.,?!]/g;
+const NAME_PUNCTUATION_SPLIT = /[.,?!]+/;
+
+/**
+ * A display name as a list of name parts. `dropTitles` applies the 33-token
+ * table; false gives the same parse with every token kept.
+ *
+ * TOKENISE FIRST, THEN TAKE THE PUNCTUATION OUT OF EACH TOKEN. The order is
+ * the whole fix. Replacing `.,?!` with spaces BEFORE the split turned `Ph.D.`
+ * into `Ph` and `D`, `M.B.A.` into `M`, `B`, `A`, and `M.D.` into `M` and `D` --
+ * and not one of those fragments is in the table, so every DOTTED title
+ * survived a scrub whose entire job was to remove it. "Chen Ph D" was stored
+ * under a UI that promises PhD/MBA/MSc are taken off.
+ *
+ * A token is therefore compacted (`Ph.D.` -> `PhD`) and looked up WHOLE. Only
+ * when the whole token is not itself a title is it split on its punctuation,
+ * which is what still reads `Dr.Jane` and `Smith,MBA` -- one whitespace token
+ * holding two words -- as the two words they are.
+ */
+function nameTokens(value: string, dropTitles: boolean): string[] {
+  const parts: string[] = [];
+  for (const raw of value.normalize('NFKC').replace(NAME_DECORATION, ' ').split(/\s+/)) {
+    if (!raw) continue;
+    const compact = raw.replace(NAME_PUNCTUATION, '');
+    if (!compact) continue;
+    if (dropTitles && SCRUB_TOKENS.has(compact.toLowerCase())) continue;
+    for (const piece of raw.split(NAME_PUNCTUATION_SPLIT)) {
+      const part = piece.trim();
+      if (!part) continue;
+      if (dropTitles && SCRUB_TOKENS.has(part.toLowerCase())) continue;
+      parts.push(part);
+    }
+  }
+  return parts;
+}
+
+/**
  * Remove titles/degrees/emoji without substring damage. `ma` is a removable
  * token; the same letters inside `Maya` are not.
  */
 export function scrubLeadName(value: string): string {
-  const withoutEmoji = value
-    .normalize('NFKC')
-    .replace(/\p{Extended_Pictographic}|\uFE0F|\u200D/gu, ' ')
-    .replace(/[.,?!]+/g, ' ');
-  return withoutEmoji
-    .split(/\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .filter((part) => !SCRUB_TOKENS.has(part.toLowerCase()))
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return nameTokens(typeof value === 'string' ? value : '', true).join(' ');
+}
+
+/**
+ * The scrub for a DEDICATED first- or last-name column, which may never empty
+ * one.
+ *
+ * THE TABLE IS A LIST OF TITLES AND IT IS ALSO A LIST OF SURNAMES. `Do`, `Ma`,
+ * `Ba`, `Bs`, `Sr` and `Lion` are all in it, and they are all real family
+ * names: Anh Do, Yo-Yo Ma. Applied to a JOINED display name that is a
+ * defensible gamble -- "Maya Chen, MBA" almost never means a Ms. MBA. Applied
+ * to a column whose HEADER already said "Last name", it is not a gamble at
+ * all: the operator has already told us this string is a name, and scrubbing
+ * it to nothing made `normalizeLeadRow` throw "Missing required last name" at
+ * a row that was perfectly correct.
+ *
+ * So a dedicated column falls back to ITS OWN VALUE, decoration and punctuation
+ * still gone, whenever the token table would have left it empty. A field that
+ * was empty to begin with stays empty and is still refused upstream.
+ */
+export function scrubNameField(value: string): string {
+  const raw = typeof value === 'string' ? value : '';
+  const scrubbed = nameTokens(raw, true).join(' ');
+  return scrubbed || nameTokens(raw, false).join(' ');
+}
+
+/**
+ * One display name -> a scrubbed first and last name.
+ *
+ * THE ONE SPLITTER, SHARED BY THE CSV IMPORT AND EVERY SCRAPE. A LinkedIn card
+ * shows "Dr. Maya Chen, MBA 🙂" as a single string; a CSV shows the same person
+ * as two columns. Both end up in the same `linkedin_lead_contacts` row and both
+ * end up in the same `{{firstName}}` in a template, so both go through the same
+ * scrub -- otherwise the harvested copy of a person an operator also uploaded
+ * is a DIFFERENT person as far as the dedupe key is concerned.
+ *
+ * FIRST TOKEN, THEN EVERYTHING ELSE. "Maria del Carmen Rossi" keeps "del Carmen
+ * Rossi" together rather than dropping the particles: a surname is whatever is
+ * left after the given name, and picking the LAST token would rename half of
+ * Latin America and most of the Netherlands.
+ *
+ * A name that scrubs away to nothing gives two empty strings rather than a
+ * throw -- the caller decides whether a nameless row is still a lead.
+ */
+export function splitAndScrubName(raw: string): { firstName: string; lastName: string } {
+  const clean = scrubLeadName(typeof raw === 'string' ? raw : '');
+  if (!clean) return { firstName: '', lastName: '' };
+  const parts = clean.split(' ');
+  return { firstName: parts[0] ?? '', lastName: parts.slice(1).join(' ') };
 }
 
 function nullable(value: unknown): string | null {
@@ -116,7 +222,12 @@ function canonicalProfileUrl(value: unknown): string | null {
   return `https://www.linkedin.com/in/${match[1]}/`;
 }
 
-function dedupeKey(input: Pick<NormalizedLeadInput, 'firstName' | 'lastName' | 'company' | 'email' | 'profileUrl'>): string {
+/**
+ * The identity a lead is deduplicated on. EXPORTED so the scraped path can set
+ * it the same way the CSV path does -- two writers computing "the same person"
+ * two ways is how one human ends up in two campaigns.
+ */
+export function leadDedupeKey(input: Pick<NormalizedLeadInput, 'firstName' | 'lastName' | 'company' | 'email' | 'profileUrl'>): string {
   const identity = input.profileUrl
     ? `linkedin:${input.profileUrl.toLowerCase()}`
     : input.email
@@ -130,8 +241,9 @@ export function normalizeLeadRow(row: Record<string, string>, mapping: LeadField
     const header = mapping[field];
     return header ? String(row[header] ?? '') : '';
   };
-  const firstName = scrubLeadName(read('firstName'));
-  const lastName = scrubLeadName(read('lastName'));
+  // DEDICATED COLUMNS, so the scrub may not empty them: see `scrubNameField`.
+  const firstName = scrubNameField(read('firstName'));
+  const lastName = scrubNameField(read('lastName'));
   const company = read('company').normalize('NFKC').replace(/\s+/g, ' ').trim();
   if (!firstName || !lastName || !company) {
     const missing = [!firstName && 'first name', !lastName && 'last name', !company && 'company'].filter(Boolean).join(', ');
@@ -149,7 +261,65 @@ export function normalizeLeadRow(row: Record<string, string>, mapping: LeadField
     dedupeKey: '',
     original: { ...row }
   };
-  lead.dedupeKey = dedupeKey(lead);
+  lead.dedupeKey = leadDedupeKey(lead);
+  return lead;
+}
+
+/** A harvested person, as `linkedin_leads` stored them. */
+export interface ScrapedLeadRecord {
+  profileUrl: string | null;
+  name?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  headline?: string | null;
+  company?: string | null;
+  postUrl?: string | null;
+  interactionKind?: string | null;
+}
+
+/**
+ * A harvested lead in the shape the contacts table takes, or null.
+ *
+ * SEPARATE FROM `normalizeLeadRow` AND DELIBERATELY MORE FORGIVING ABOUT ONE
+ * FIELD. A CSV row without a company is a row the operator can go and fix, so
+ * it is rejected. A search card without one is the NORMAL case -- post engagers
+ * have no company field at all -- and rejecting those would mean keyword
+ * discovery could never feed a campaign, which is the entire point of it.
+ *
+ * A NAMELESS ROW IS STILL REJECTED, because the first thing a campaign does
+ * with a contact is put their first name in a message, and "Hi ," is worse
+ * than one fewer lead. The profile URL is likewise required: a lead we cannot
+ * address is not a lead.
+ *
+ * Everything the contacts table has no column for -- the headline, the post,
+ * the interaction -- is kept in `original`, so "where did this person come
+ * from" still has an answer after the source rows are pruned.
+ */
+export function normalizeScrapedLead(input: ScrapedLeadRecord): NormalizedLeadInput | null {
+  const profileUrl = canonicalProfileUrl(input.profileUrl);
+  if (!profileUrl) return null;
+  const split = input.firstName || input.lastName
+    ? { firstName: scrubNameField(input.firstName ?? ''), lastName: scrubNameField(input.lastName ?? '') }
+    : splitAndScrubName(input.name ?? '');
+  if (!split.firstName) return null;
+  const company = (input.company ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
+  const original: Record<string, string> = { profileUrl };
+  if (input.name) original.name = input.name;
+  if (input.headline) original.headline = input.headline;
+  if (input.postUrl) original.postUrl = input.postUrl;
+  if (input.interactionKind) original.interactionKind = input.interactionKind;
+  const lead: NormalizedLeadInput = {
+    firstName: split.firstName,
+    lastName: split.lastName,
+    company,
+    email: null,
+    phone: null,
+    country: null,
+    profileUrl,
+    dedupeKey: '',
+    original
+  };
+  lead.dedupeKey = leadDedupeKey(lead);
   return lead;
 }
 

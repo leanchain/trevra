@@ -93,7 +93,7 @@ export function LinkedInFunnel() {
   return <section className="page-panel li-viz">
     <div className="section-heading">
       <div>
-        <h3>Outreach, end to end</h3>
+        <h3 aria-level={2}>Outreach, end to end</h3>
         <p>
           Every LinkedIn action this workspace has ever filed — not a window, not the last 30 days. All of it, from the
           first slot planned to the last reply recorded.
@@ -109,7 +109,7 @@ export function LinkedInFunnel() {
       : !anything
         ? <div className="empty-state">
           <TrendingUp size={26} />
-          <h4>Nothing has gone out yet</h4>
+          <h4 aria-level={3}>Nothing has gone out yet</h4>
           <p>A slot enters this ledger when an approved plan is exported. Build a campaign and the funnel fills itself in.</p>
           <a className="primary-button" href="#/outreach/campaigns" style={{ textDecoration: 'none' }}>Build a campaign</a>
         </div>
@@ -156,7 +156,7 @@ export function LinkedInCampaignBreakdown() {
   return <section className="page-panel">
     <div className="section-heading">
       <div>
-        <h3>By campaign</h3>
+        <h3 aria-level={2}>By campaign</h3>
         <p>Every action ever filed, per campaign. Acceptance counts decided invites only — an unanswered invite is not a refusal.</p>
       </div>
     </div>

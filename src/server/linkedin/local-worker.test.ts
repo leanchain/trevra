@@ -3,25 +3,39 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase, type Db } from '../db.js';
-import type { LinkedInDriver, LinkedInDriverResult, LinkedInPage, LinkedInSeatRead } from './driver.js';
+import { SELECTORS, type LinkedInDriver, type LinkedInDriverResult, type LinkedInPage, type LinkedInSeatRead } from './driver.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyCheck, type LinkedInSafetyVerdict } from './guard.js';
 import { ACTION_GAP_SECONDS } from './limits.js';
 import { getSeat, upsertSeat, type SeatPosture } from './seats.js';
 import {
   actionGapSeconds,
   detectLinkedInSeat,
+  humanCadencePage,
   latestSeatDetectRequest,
   linkedInBrowserReadiness,
   linkedInOffReason,
+  postgresLocalWorkerStore,
   requestSeatDetect,
   resolveProfileDir,
+  resolveSeatProxy,
   runDueLinkedInActions,
   runLinkedInLocalBatch,
   runPendingSeatDetectRequests,
+  seatContextFingerprint,
+  seatsWithDueActions,
+  stopLinkedInBatches,
   type BranchGateDecision,
   type DueLinkedInAction,
   type LocalWorkerStore
 } from './local-worker.js';
+import type { LinkedInLocator } from './driver.js';
+import {
+  deleteLinkedInCredentials,
+  describeLinkedInCredentials,
+  putLinkedInCredentials,
+  readLinkedInCredentials
+} from '../secrets/linkedin.js';
+import { randomBytes } from 'node:crypto';
 
 /**
  * THE DRIVER IS ALWAYS FAKE HERE, AND SO IS THE STORE.
@@ -95,9 +109,22 @@ function fakeStore(
   options: {
     posture?: SeatPosture | null;
     branch?: (action: DueLinkedInAction, now: Date) => Promise<BranchGateDecision | null>;
+    seatKey?: string;
+    /** What the ledger says about a pending invite to the action's target. */
+    unacceptedInvite?: boolean;
   } = {}
 ): StoreHarness {
   const queue = [...actions];
+  // A RELEASED ROW IS IMMEDIATELY CLAIMABLE AGAIN, and the fake has to say so.
+  //
+  // `releaseClaim` in the real store only nulls `claimed_at`: the row stays
+  // 'planned', and the very next claim -- ordered by `planned_for ASC` -- hands
+  // back the OLDEST due row, which is the one just released. A fake that
+  // quietly dropped a released row modelled a queue that cannot livelock, and
+  // the loop's real bug was a livelock: a gate refusal that released without
+  // deferring burned every iteration of the pass, at a 30-120s sleep each, on
+  // one row the gate had already refused.
+  const byId = new Map(actions.map((entry) => [entry.id, entry]));
   let posture: SeatPosture | null = options.posture === undefined ? 'steady' : options.posture;
   let stopped = false;
   const harness: StoreHarness = {
@@ -118,6 +145,7 @@ function fakeStore(
     },
     store: {
       workspaceId: 'ws_test',
+      seatKey: options.seatKey ?? 'owner',
       seatPosture: async () => posture,
       // Fixed, so "the same batch produces the same gaps" is assertable.
       openBatch: async () => 'lbatch_fixed',
@@ -137,7 +165,12 @@ function fakeStore(
       },
       releaseClaim: async (id, failureKind) => {
         harness.released.push({ id, failureKind });
+        // Back to the front: it is the oldest row again, which is exactly what
+        // `ORDER BY planned_for ASC` hands out next.
+        const row = byId.get(id);
+        if (row) queue.unshift(row);
       },
+      hasUnacceptedInvite: async () => options.unacceptedInvite === true,
       settleSent: async (id) => {
         harness.sent.push(id);
       },
@@ -441,6 +474,35 @@ describe('the safety gate runs per action', () => {
     expect(harness.released).toEqual([{ id: 'lact_2', failureKind: null }]);
   });
 
+  it('DEFERS a refused row instead of re-claiming it until the pass is exhausted', async () => {
+    // THE LIVELOCK. A refused row was released and left claimable, and the claim
+    // is ordered by `planned_for ASC` -- so the same row came back on the very
+    // next iteration, was refused by the same unchanged ledger, and the pass
+    // spent all 25 of its iterations (each behind a 30-120s gap) on one action
+    // while the rest of the queue was never reached.
+    const harness = fakeStore(threeActions);
+    const { driver, calls } = fakeDriver();
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async (candidate) =>
+        candidate.id === 'lact_1'
+          ? verdict({ allowed: false, reason: 'rolling-24h: 18 of 18 invites used', checks: [{ check: 'rolling-24h', passed: false, detail: 'full' }] })
+          : verdict()
+    });
+
+    // Claimed ONCE each, in order, and the two behind the refusal still ran.
+    expect(harness.claimed).toEqual(['lact_1', 'lact_2', 'lact_3']);
+    expect(result.blocked).toBe(1);
+    expect(result.executed).toBe(2);
+    expect(calls.map((entry) => entry.target)).toEqual(['https://www.linkedin.com/in/b/', 'https://www.linkedin.com/in/c/']);
+    // Released with no failure kind: nothing was attempted, let alone failed.
+    expect(harness.released).toEqual([{ id: 'lact_1', failureKind: null }]);
+  });
+
   it('blocks on a duplicate-target refusal instead of second-guessing the gate', async () => {
     // The worker used to discount this one check under conditions of its own.
     // It does not any more: `excludeActionId` makes the gate authoritative
@@ -507,10 +569,11 @@ describe('what LinkedIn says stops the batch', () => {
     expect(result.halted).toBe(true);
     expect(result.executed).toBe(0);
     expect(result.haltReason).toMatch(/limit wall/);
-    // Nothing was sent, so the claim is released -- but the two untouched
-    // actions were never even claimed.
+    // Nothing was sent, so the claim is released -- and it goes back in the
+    // queue with the two untouched actions, which were never even claimed.
     expect(harness.released).toEqual([{ id: 'lact_1', failureKind: 'limit_wall' }]);
-    expect(harness.remaining()).toBe(2);
+    expect(harness.claimed).toEqual(['lact_1']);
+    expect(harness.remaining()).toBe(3);
     expect(harness.closed).toEqual([{ status: 'halted', haltReason: result.haltReason, executed: 0 }]);
   });
 
@@ -581,6 +644,66 @@ describe('what LinkedIn says stops the batch', () => {
 
     expect(calls).toHaveLength(1);
     expect(harness.released).toEqual([{ id: 'lact_1', failureKind: 'selector_drift' }]);
+    expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
+  });
+
+  it('defers a message to somebody who never accepted, instead of halting the batch as drift', async () => {
+    // No Message control on a profile is not always drift: LinkedIn shows it to
+    // 1st-degree connections only, so the commonest managed-workflow shape --
+    // invite, then a message behind it -- reaches the message while the invite
+    // is still pending. Halting the whole seat's batch for one unanswered
+    // invite is what this classification stops.
+    const messages = [
+      action({ id: 'lact_1', kind: 'dm', targetRef: 'https://www.linkedin.com/in/a/', body: 'hello' }),
+      action({ id: 'lact_2', kind: 'dm', targetRef: 'https://www.linkedin.com/in/b/', body: 'hello' })
+    ];
+    const harness = fakeStore(messages, { unacceptedInvite: true });
+    const { driver, calls } = fakeDriver((target) =>
+      target === 'https://www.linkedin.com/in/a/'
+        ? { ok: false, failureKind: 'selector_drift', detail: `${SELECTORS.messageButton} did not match on https://www.linkedin.com/in/a/. Nothing was clicked.` }
+        : ok
+    );
+
+    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+
+    expect(result.halted).toBe(false);
+    expect(result.failed).toBe(0);
+    expect(result.branchPending).toBe(1);
+    expect(result.executed).toBe(1);
+    // Released untouched, and not re-handed on this pass.
+    expect(harness.released).toEqual([{ id: 'lact_1', failureKind: null }]);
+    expect(calls.map((entry) => entry.target)).toEqual(['https://www.linkedin.com/in/a/', 'https://www.linkedin.com/in/b/']);
+  });
+
+  it('still halts on a missing Message control when no unaccepted invite explains it', async () => {
+    // The narrowing is evidence-based on BOTH sides. A profile this seat never
+    // invited has no innocent explanation for a missing Message control, so it
+    // is drift and the batch stops exactly as before.
+    const harness = fakeStore([action({ kind: 'dm', body: 'hello' })], { unacceptedInvite: false });
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'selector_drift',
+      detail: `${SELECTORS.messageButton} did not match on https://www.linkedin.com/in/maya/. Nothing was clicked.`
+    }));
+
+    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+
+    expect(result.halted).toBe(true);
+    expect(result.failed).toBe(1);
+    expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
+  });
+
+  it('still halts on drift in any other control, even with an unaccepted invite on file', async () => {
+    const harness = fakeStore([action({ kind: 'dm', body: 'hello' })], { unacceptedInvite: true });
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'selector_drift',
+      detail: 'button.artdeco-button--connect did not match on https://www.linkedin.com/in/maya/. Nothing was clicked.'
+    }));
+
+    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+
+    expect(result.halted).toBe(true);
     expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
   });
 });
@@ -702,10 +825,26 @@ describe('the optional dependency', () => {
     await expect(runDueLinkedInActions(forbidden, { enabled: true }, { log: () => {} })).resolves.toEqual([]);
   });
 
-  it('defaults the profile directory under the operator home, not the repo', () => {
-    expect(resolveProfileDir()).toMatch(/\.trevra\/linkedin-profile$/);
-    expect(resolveProfileDir('  ')).toMatch(/\.trevra\/linkedin-profile$/);
-    expect(resolveProfileDir('/opt/profiles/linkedin')).toBe('/opt/profiles/linkedin');
+  it('defaults the profile directory under the operator home, not the repo, suffixed per workspace', () => {
+    expect(resolveProfileDir(undefined, 'ws_a')).toMatch(/\.trevra\/linkedin-ws_a-profile$/);
+    expect(resolveProfileDir('  ', 'ws_a')).toMatch(/\.trevra\/linkedin-ws_a-profile$/);
+    expect(resolveProfileDir('/opt/profiles/linkedin', 'ws_a')).toBe('/opt/profiles/linkedin-ws_a-profile');
+  });
+
+  it('gives two different workspaces two different profile directories -- the whole point', () => {
+    const a = resolveProfileDir(undefined, 'ws_a');
+    const b = resolveProfileDir(undefined, 'ws_b');
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/linkedin-ws_a-profile$/);
+    expect(b).toMatch(/linkedin-ws_b-profile$/);
+  });
+
+  it('keeps a workspace id to safe path characters', () => {
+    const traversal = resolveProfileDir(undefined, '../../etc/passwd');
+    expect(traversal).not.toContain('/../');
+    expect(traversal).not.toContain('etc/passwd');
+    expect(traversal).toMatch(/linkedin-_+etc_passwd-profile$/);
+    expect(resolveProfileDir(undefined, '')).toMatch(/linkedin-default-profile$/);
   });
 });
 
@@ -847,12 +986,13 @@ describe.skipIf(!databaseUrl)('the gate stays authoritative about duplicates', (
       log: () => {},
       now: () => NOW,
       // Wired exactly as runDueLinkedInActions wires it: the function, with the
-      // claimed row excluded. Not the `gtm.linkedin-guard` skill, which does
-      // not expose the exclusion at all.
+      // claimed row excluded, and `plannedFor` set to `at` -- the instant this
+      // re-check happens, not the row's possibly-stale original slot. Not the
+      // `gtm.linkedin-guard` skill, which does not expose the exclusion at all.
       evaluate: async (candidate, at) => {
         const verdict = await evaluateLinkedInSafety(
           db,
-          { ...input, targetRef: candidate.targetRef, plannedFor: candidate.plannedFor },
+          { ...input, targetRef: candidate.targetRef, plannedFor: at.toISOString() },
           at,
           { excludeActionId: candidate.id }
         );
@@ -865,6 +1005,121 @@ describe.skipIf(!databaseUrl)('the gate stays authoritative about duplicates', (
     expect(calls).toHaveLength(0);
     expect(result.executed).toBe(0);
     expect(result.blocked).toBe(1);
+  });
+});
+
+/**
+ * THE REGRESSION `local-worker.ts`'s `runDueLinkedInActions` wiring exists to
+ * hold down: the business-hours (and weekend) check has to judge the instant
+ * the action is ACTUALLY about to happen, not the ledger row's original
+ * `plannedFor`. A row can go stale -- a paused or cooling seat, or worker
+ * downtime, leaves `planned` rows with an old-but-valid-looking slot -- and
+ * once claimable again they are all judged against `now` for every OTHER
+ * check (the rolling windows, warm-up, acceptance rate). Business-hours and
+ * weekend must not be the one check still reading the stale timestamp, or a
+ * backlog drained on resume can send for real at night or on a weekend while
+ * every check reports business hours as satisfied.
+ */
+describe.skipIf(!databaseUrl)('the gate judges the real send instant, not a stale plan', () => {
+  const WORKSPACE_ID = 'ws_linkedin_stale_planned_for_test';
+  const TARGET = 'https://www.linkedin.com/in/stale-slot/';
+  // The slot this action was ORIGINALLY paced for: a Tuesday, 10:00 UTC --
+  // squarely inside business hours (08:00-18:00).
+  const STALE_PLANNED_FOR = new Date('2026-08-04T10:00:00.000Z');
+  // When the batch actually reaches it -- days later, at 23:00 UTC. Outside
+  // business hours, on a different weekday than the stale slot claims.
+  const EXECUTION_INSTANT = new Date('2026-08-07T23:00:00.000Z');
+  let db: Db;
+
+  beforeEach(async () => {
+    db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
+    await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+      .run(WORKSPACE_ID, 'LinkedIn stale plannedFor test', STALE_PLANNED_FOR.toISOString());
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, new Date('2025-01-01T10:00:00.000Z'));
+  });
+
+  afterEach(async () => {
+    await db?.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+    await db?.close();
+  });
+
+  it('blocks a claimed action whose stale plannedFor reads as business hours when it is actually being sent at night', async () => {
+    const harness = fakeStore([
+      action({ id: 'lact_stale_slot', workspaceId: WORKSPACE_ID, targetRef: TARGET, plannedFor: STALE_PLANNED_FOR.toISOString() })
+    ]);
+    const { driver, calls } = fakeDriver();
+    const verdicts: LinkedInSafetyVerdict[] = [];
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      now: () => EXECUTION_INSTANT,
+      // Wired exactly as runDueLinkedInActions wires it (post-fix): `plannedFor`
+      // is `at`, the instant of this very re-check, not `candidate.plannedFor`.
+      evaluate: async (candidate, at) => {
+        const verdict = await evaluateLinkedInSafety(
+          db,
+          {
+            workspaceId: WORKSPACE_ID,
+            seatKey: 'owner',
+            kind: 'invite',
+            targetRef: candidate.targetRef,
+            plannedFor: at.toISOString()
+          },
+          at,
+          { excludeActionId: candidate.id }
+        );
+        verdicts.push(verdict);
+        return verdict;
+      }
+    });
+
+    const businessHoursCheck = verdicts[0]!.checks.find((entry) => entry.check === 'business-hours');
+    expect(businessHoursCheck?.passed).toBe(false);
+    expect(verdicts[0]!.allowed).toBe(false);
+    expect(calls).toHaveLength(0);
+    expect(result.executed).toBe(0);
+    expect(result.blocked).toBe(1);
+  });
+
+  it('the pre-fix wiring (plannedFor from the stale row) is exactly what let this through', async () => {
+    // Same scenario, but reproducing the OLD call shape: `plannedFor` taken
+    // from the claimed row instead of `at`. This documents the bug the test
+    // above guards against -- if this assertion ever starts failing, the two
+    // tests together have stopped proving anything.
+    const harness = fakeStore([
+      action({ id: 'lact_stale_slot_prefix', workspaceId: WORKSPACE_ID, targetRef: TARGET, plannedFor: STALE_PLANNED_FOR.toISOString() })
+    ]);
+    const { driver, calls } = fakeDriver();
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      now: () => EXECUTION_INSTANT,
+      evaluate: async (candidate, at) =>
+        evaluateLinkedInSafety(
+          db,
+          {
+            workspaceId: WORKSPACE_ID,
+            seatKey: 'owner',
+            kind: 'invite',
+            targetRef: candidate.targetRef,
+            plannedFor: candidate.plannedFor // the bug: the stale slot, not `at`
+          },
+          at,
+          { excludeActionId: candidate.id }
+        )
+    });
+
+    // Sent for real (in this fake), at 23:00, because the gate was told the
+    // slot was 10:00 the previous Tuesday.
+    expect(calls).toHaveLength(1);
+    expect(result.executed).toBe(1);
   });
 });
 
@@ -1146,5 +1401,648 @@ describe.skipIf(!databaseUrl)('the seat detect queue', () => {
     expect(settled).toHaveLength(1);
     expect(settled[0].id).toBe(queued.id);
     expect(settled[0].status).toBe('completed');
+  });
+});
+
+/* ===========================================================================
+ * MULTI-SEAT EXECUTION
+ *
+ * The audit finding this section exists to hold down: a workspace could plan,
+ * pace and file actions for a second LinkedIn account all the way down the
+ * queue, and then the worker only ever drained the owner seat -- so the second
+ * account's queue filled up and never moved, silently, with nothing in any log
+ * to notice. Everything below asserts one of the four things that had to
+ * become per-(workspace, seat) for that to stop being true: DISCOVERY, the
+ * PROFILE DIRECTORY and BROWSER IDENTITY, the COOLDOWN, and the CREDENTIAL.
+ *
+ * The owner seat's behaviour is asserted alongside every one of them, because
+ * the change is only safe if an existing single-seat install notices nothing.
+ * ======================================================================== */
+
+describe('per-seat profile directories and browser identity', () => {
+  it('leaves the owner seat on the exact path it already has', () => {
+    // An existing install must not wake up on an empty profile directory and
+    // need a fresh sign-in on the account it was already signed into.
+    expect(resolveProfileDir(undefined, 'ws_a', 'owner')).toBe(resolveProfileDir(undefined, 'ws_a'));
+    expect(resolveProfileDir(undefined, 'ws_a', 'owner')).toMatch(/\.trevra\/linkedin-ws_a-profile$/);
+    expect(resolveProfileDir('/opt/profiles/linkedin', 'ws_a', 'owner')).toBe('/opt/profiles/linkedin-ws_a-profile');
+  });
+
+  it('gives every other seat a directory of its own', () => {
+    const owner = resolveProfileDir(undefined, 'ws_a');
+    const sales = resolveProfileDir(undefined, 'ws_a', 'sales');
+    const support = resolveProfileDir(undefined, 'ws_a', 'support');
+
+    expect(new Set([owner, sales, support]).size).toBe(3);
+    expect(sales).toMatch(/linkedin-ws_a-sales-profile$/);
+    // Two accounts sharing one user-data-dir do not merely see each other's
+    // cookies: the second sign-in replaces the first one's session, so the two
+    // seats would spend every tick logging each other out.
+    expect(sales).not.toBe(owner);
+    // And the same seat key under a different workspace is a different account.
+    expect(resolveProfileDir(undefined, 'ws_b', 'sales')).not.toBe(sales);
+  });
+
+  it('keeps a seat key to safe path characters, like the workspace id', () => {
+    const traversal = resolveProfileDir(undefined, 'ws_a', '../../etc/passwd');
+    expect(traversal).not.toContain('/../');
+    expect(traversal).not.toContain('etc/passwd');
+  });
+
+  it('derives a stable, non-default identity per seat, with no Math.random anywhere', () => {
+    const first = seatContextFingerprint('ws_a', 'owner');
+    const again = seatContextFingerprint('ws_a', 'owner');
+    const other = seatContextFingerprint('ws_a', 'sales');
+
+    // STABLE. A browser whose user agent, locale and timezone change between
+    // sessions is a far stronger signal than any one wrong value.
+    expect(again).toEqual(first);
+    // DISTINCT. Two accounts from one machine must not be one fingerprint.
+    expect(`${other.userAgent}|${other.locale}|${other.timezoneId}`)
+      .not.toBe(`${first.userAgent}|${first.locale}|${first.timezoneId}`);
+    // NON-DEFAULT. Playwright's own default announces the automation outright.
+    for (const seat of [first, other]) {
+      expect(seat.userAgent).not.toContain('HeadlessChrome');
+      expect(seat.userAgent).toMatch(/^Mozilla\/5\.0 .*Chrome\/\d+/);
+      expect(seat.locale).toMatch(/^[a-z]{2}-[A-Z]{2}$/);
+      expect(() => new Intl.DateTimeFormat('en-US', { timeZone: seat.timezoneId })).not.toThrow();
+    }
+  });
+
+  it("uses the seat's own timezone when there is one, so the browser agrees with the plan", () => {
+    const zurich = seatContextFingerprint('ws_a', 'sales', 'Europe/Zurich');
+    expect(zurich.timezoneId).toBe('Europe/Zurich');
+    expect(zurich.locale).toBe('de-CH');
+    // The user agent is a fact about the seat, not about where it is.
+    expect(zurich.userAgent).toBe(seatContextFingerprint('ws_a', 'sales').userAgent);
+    // A timezone with no paired locale still wins for the timezone itself.
+    expect(seatContextFingerprint('ws_a', 'sales', 'Asia/Tokyo').timezoneId).toBe('Asia/Tokyo');
+  });
+});
+
+/**
+ * The proxy.
+ *
+ * THE ONE PROPERTY THAT MATTERS IS THE REFUSAL. An operator configures a proxy
+ * for a seat because that account must not be seen coming from this machine's
+ * IP. "Configured but unusable" therefore has exactly one correct answer --
+ * do not open a browser -- and never "connect directly this once", because a
+ * direct connection cannot be taken back once LinkedIn has logged it.
+ */
+describe('per-seat outbound proxy', () => {
+  it('is absent by default, which is the whole custody argument', () => {
+    expect(resolveSeatProxy({}, 'ws_a', 'owner')).toBeNull();
+    // Nothing about a seat key or a workspace id conjures one into existence.
+    expect(resolveSeatProxy({ TREVRA_LINKEDIN_PROXY: '   ' }, 'ws_a', 'sales')).toBeNull();
+  });
+
+  it('resolves the most specific key that is set', () => {
+    const env = {
+      TREVRA_LINKEDIN_PROXY: 'http://everyone:pw@shared.example:8080',
+      TREVRA_LINKEDIN_PROXY_SALES: 'http://seat.example:3128',
+      TREVRA_LINKEDIN_PROXY_WS_A_SALES: 'http://exact.example:3128'
+    } as NodeJS.ProcessEnv;
+
+    expect(resolveSeatProxy(env, 'ws_a', 'sales')?.server).toBe('http://exact.example:3128');
+    expect(resolveSeatProxy(env, 'ws_b', 'sales')?.server).toBe('http://seat.example:3128');
+    expect(resolveSeatProxy(env, 'ws_b', 'owner')).toEqual({
+      server: 'http://shared.example:8080',
+      username: 'everyone',
+      password: 'pw'
+    });
+  });
+
+  it('REFUSES rather than falling back to a direct connection', () => {
+    // Every one of these is a configured proxy that cannot be honoured. None
+    // of them may resolve to null, because null means "connect directly".
+    for (const value of ['not-a-url', 'ftp://proxy.example:21', 'socks5://user:pw@proxy.example:1080']) {
+      expect(() => resolveSeatProxy({ TREVRA_LINKEDIN_PROXY: value }, 'ws_a', 'owner')).toThrow();
+    }
+    // And the refusal never quotes the value back: a proxy URL routinely
+    // carries a password.
+    try {
+      resolveSeatProxy({ TREVRA_LINKEDIN_PROXY: 'http://user:hunter2@' }, 'ws_a', 'owner');
+      throw new Error('a malformed proxy must not resolve');
+    } catch (error) {
+      expect((error as Error).message).not.toContain('hunter2');
+    }
+  });
+});
+
+/**
+ * Human-cadence credential typing.
+ *
+ * `locator.fill()` sets an input's value in one operation: twenty characters
+ * in the same millisecond, no keydown/keyup pairs, no inter-key timing at all.
+ * On the one form where LinkedIn is looking hardest, that is the cheapest
+ * possible tell.
+ */
+describe('human-cadence typing on the sign-in form', () => {
+  function fakeField(options: { canPress?: boolean } = {}) {
+    const filled: string[] = [];
+    const pressed: string[] = [];
+    const locator: LinkedInLocator = {
+      count: async () => 1,
+      first: () => locator,
+      click: async () => {},
+      textContent: async () => null,
+      fill: async (text) => {
+        filled.push(text);
+      },
+      ...(options.canPress === false ? {} : { press: async (key: string) => { pressed.push(key); } })
+    };
+    return { locator, filled, pressed };
+  }
+
+  function fakePage(field: LinkedInLocator) {
+    const waits: number[] = [];
+    const wrapped: LinkedInPage = {
+      goto: async () => undefined,
+      url: () => 'https://www.linkedin.com/login',
+      locator: () => field,
+      waitForTimeout: async (ms) => {
+        waits.push(ms);
+      }
+    };
+    return { page: wrapped, waits };
+  }
+
+  it('types character by character with a pause between each, instead of one fill', async () => {
+    const field = fakeField();
+    const { page: fake, waits } = fakePage(field.locator);
+
+    await humanCadencePage(fake, 'seed').locator('input').first().fill('a@b.co');
+
+    // The field is cleared once, and then every character is a real keypress.
+    expect(field.filled).toEqual(['']);
+    expect(field.pressed).toEqual(['a', '@', 'b', '.', 'c', 'o']);
+    expect(waits).toHaveLength(6);
+    for (const ms of waits) {
+      expect(ms).toBeGreaterThanOrEqual(45);
+      expect(ms).toBeLessThanOrEqual(165);
+    }
+  });
+
+  it('paces the same seat identically every time, and two seats differently', async () => {
+    async function type(seed: string): Promise<number[]> {
+      const field = fakeField();
+      const { page: fake, waits } = fakePage(field.locator);
+      await humanCadencePage(fake, seed).locator('input').fill('correct horse');
+      return waits;
+    }
+
+    const first = await type('linkedin-login:ws_a:owner');
+    expect(await type('linkedin-login:ws_a:owner')).toEqual(first);
+    // Not merely different values -- a different SEQUENCE, so two accounts on
+    // one machine do not share a typing rhythm either.
+    expect(await type('linkedin-login:ws_a:sales')).not.toEqual(first);
+  });
+
+  it('stays transparent for a page that cannot press keys, and never invents the method', async () => {
+    const field = fakeField({ canPress: false });
+    const { page: fake, waits } = fakePage(field.locator);
+    const wrapped = humanCadencePage(fake, 'seed').locator('input');
+
+    await wrapped.fill('typed-in-one-go');
+
+    // `driver.ts` reads `typeof field.press` to decide whether the form can be
+    // submitted with Enter. Inventing it here would have it press Enter on a
+    // page that cannot.
+    expect(wrapped.press).toBeUndefined();
+    expect(field.filled).toEqual(['typed-in-one-go']);
+    expect(waits).toEqual([]);
+  });
+
+  it('leaves an empty fill alone -- that is a clear, not typing', async () => {
+    const field = fakeField();
+    const { page: fake, waits } = fakePage(field.locator);
+    await humanCadencePage(fake, 'seed').locator('input').fill('');
+    expect(field.filled).toEqual(['']);
+    expect(field.pressed).toEqual([]);
+    expect(waits).toEqual([]);
+  });
+});
+
+/**
+ * The database half: discovery, claiming and cooldown, all per seat.
+ *
+ * Postgres-backed because every one of these was a SQL bug -- an
+ * `AND seat_key='owner'` in one query and a missing seat argument in three
+ * others -- and a fake store would assert none of it.
+ */
+describe.skipIf(!databaseUrl)('multi-seat draining', () => {
+  const WORKSPACE_ID = 'ws_linkedin_multi_seat_test';
+  const OTHER_WORKSPACE_ID = 'ws_linkedin_multi_seat_other';
+  // A Tuesday, 10:00 UTC: inside business hours everywhere the gate looks.
+  const NOW = new Date('2026-08-04T10:00:00.000Z');
+  const LONG_AGO = new Date('2025-01-01T10:00:00.000Z');
+  let db: Db;
+
+  async function plan(seatKey: string, actionId: string, target: string): Promise<void> {
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
+      VALUES (?,?,?,'profile_view',?,'planned',?,'export',?)
+    `).run(actionId, WORKSPACE_ID, seatKey, target, NOW.toISOString(), NOW.toISOString());
+  }
+
+  beforeEach(async () => {
+    db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
+    for (const workspaceId of [WORKSPACE_ID, OTHER_WORKSPACE_ID]) {
+      await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
+      await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+        .run(workspaceId, 'LinkedIn multi-seat test', NOW.toISOString());
+    }
+    // Two accounts in one workspace, both long past their warm-up ramp.
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, LONG_AGO);
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'Europe/Zurich' }, LONG_AGO, 'sales');
+  });
+
+  afterEach(async () => {
+    for (const workspaceId of [WORKSPACE_ID, OTHER_WORKSPACE_ID]) {
+      await db?.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
+    }
+    await db?.close();
+  });
+
+  it("DISCOVERS A SECOND SEAT'S DUE ACTIONS -- the bug this whole change is about", async () => {
+    await plan('sales', 'lact_sales_only', 'https://www.linkedin.com/in/sales-target/');
+
+    // Before: the discovery query carried `AND seat_key='owner'`, so this list
+    // came back EMPTY and the sales queue never drained.
+    expect(await seatsWithDueActions(db, NOW)).toEqual([
+      { workspaceId: WORKSPACE_ID, seatKey: 'sales', timezone: 'Europe/Zurich' }
+    ]);
+  });
+
+  it('leaves the owner seat discovered exactly as before, alongside the others', async () => {
+    await plan('owner', 'lact_owner_1', 'https://www.linkedin.com/in/owner-target/');
+    await plan('sales', 'lact_sales_1', 'https://www.linkedin.com/in/sales-target/');
+
+    expect(await seatsWithDueActions(db, NOW)).toEqual([
+      { workspaceId: WORKSPACE_ID, seatKey: 'owner', timezone: 'UTC' },
+      { workspaceId: WORKSPACE_ID, seatKey: 'sales', timezone: 'Europe/Zurich' }
+    ]);
+
+    // And nothing that is not due yet is swept in with it.
+    expect(await seatsWithDueActions(db, new Date(NOW.getTime() - 60_000))).toEqual([]);
+  });
+
+  it('surfaces a due action whose seat row is missing, rather than dropping it silently', async () => {
+    await plan('ghost', 'lact_ghost', 'https://www.linkedin.com/in/ghost/');
+    // A queue that quietly never moves is the exact failure this function just
+    // stopped having; the batch refuses it with a sentence instead.
+    expect(await seatsWithDueActions(db, NOW)).toEqual([
+      { workspaceId: WORKSPACE_ID, seatKey: 'ghost', timezone: null }
+    ]);
+
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'ghost');
+    const { driver, calls } = fakeDriver();
+    const result = await runLinkedInLocalBatch(store, { driver, page, sleep: noSleep, log: () => {}, now: () => NOW, evaluate: async () => verdict() });
+    expect(result.haltReason).toMatch(/No LinkedIn seat is configured/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("claims only its own seat's rows, never the neighbouring account's", async () => {
+    await plan('owner', 'lact_owner_1', 'https://www.linkedin.com/in/owner-target/');
+    await plan('sales', 'lact_sales_1', 'https://www.linkedin.com/in/sales-target/');
+
+    const salesStore = postgresLocalWorkerStore(db, WORKSPACE_ID, 'sales');
+    const batchId = await salesStore.openBatch(NOW);
+    const claimed = await salesStore.claimNextDueAction(batchId, NOW);
+
+    expect(claimed?.id).toBe('lact_sales_1');
+    expect(claimed?.seatKey).toBe('sales');
+    // The owner's row is untouched and still claimable by the owner's store.
+    expect(await salesStore.claimNextDueAction(batchId, NOW)).toBeNull();
+
+    const ownerStore = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner');
+    const ownerBatch = await ownerStore.openBatch(NOW);
+    expect((await ownerStore.claimNextDueAction(ownerBatch, NOW))?.id).toBe('lact_owner_1');
+  });
+
+  it('A COOLDOWN ON ONE SEAT LEAVES THE OTHER DRAINING', async () => {
+    await plan('owner', 'lact_owner_1', 'https://www.linkedin.com/in/owner-target/');
+    await plan('sales', 'lact_sales_1', 'https://www.linkedin.com/in/sales-target/');
+
+    // LinkedIn pushed back on the sales account. It restricts an ACCOUNT, not
+    // a workspace, so cooling every seat would stop accounts that are fine and
+    // leave a human to resume each of them.
+    const salesStore = postgresLocalWorkerStore(db, WORKSPACE_ID, 'sales');
+    await salesStore.enterCooldown(NOW);
+
+    expect((await getSeat(db, WORKSPACE_ID, 'sales'))?.posture).toBe('cooldown');
+    expect((await getSeat(db, WORKSPACE_ID))?.posture).not.toBe('cooldown');
+
+    const { driver, calls } = fakeDriver();
+    const halted = await runLinkedInLocalBatch(salesStore, { driver, page, sleep: noSleep, log: () => {}, now: () => NOW, evaluate: async () => verdict() });
+    expect(halted.seatKey).toBe('sales');
+    expect(halted.halted).toBe(true);
+    expect(halted.haltReason).toMatch(/cooldown/);
+    expect(halted.executed).toBe(0);
+
+    const owner = await runLinkedInLocalBatch(postgresLocalWorkerStore(db, WORKSPACE_ID), {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      now: () => NOW,
+      evaluate: async () => verdict()
+    });
+    expect(owner.seatKey).toBe('owner');
+    expect(owner.executed).toBe(1);
+    expect(owner.halted).toBe(false);
+    // Exactly one action reached the driver, and it was the owner's.
+    expect(calls.map((call) => call.target)).toEqual(['https://www.linkedin.com/in/owner-target/']);
+  });
+
+  it('stops one seat\'s batches by name, and every seat\'s when none is named', async () => {
+    const ownerBatch = await postgresLocalWorkerStore(db, WORKSPACE_ID).openBatch(NOW);
+    const salesBatch = await postgresLocalWorkerStore(db, WORKSPACE_ID, 'sales').openBatch(NOW);
+
+    // Naming a seat stops that account and leaves the other running.
+    expect(await stopLinkedInBatches(db, WORKSPACE_ID, 'sales')).toBe(1);
+    const stopped = await db
+      .prepare('SELECT id, seat_key, stop_requested_at FROM linkedin_batches WHERE workspace_id=? ORDER BY seat_key')
+      .all<{ id: string; seat_key: string; stop_requested_at: string | null }>(WORKSPACE_ID);
+    expect(stopped.find((row) => row.id === ownerBatch)?.stop_requested_at).toBeNull();
+    expect(stopped.find((row) => row.id === salesBatch)?.stop_requested_at).not.toBeNull();
+
+    // No seat named is the workspace kill switch: everything still running.
+    expect(await stopLinkedInBatches(db, WORKSPACE_ID)).toBe(1);
+    // Asking twice keeps the original timestamp rather than counting again.
+    expect(await stopLinkedInBatches(db, WORKSPACE_ID)).toBe(0);
+  });
+
+  it('a limit wall on one seat cools that seat and no other', async () => {
+    await plan('sales', 'lact_sales_1', 'https://www.linkedin.com/in/sales-target/');
+    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'limit_wall', detail: 'weekly invitation limit' }));
+
+    const result = await runLinkedInLocalBatch(postgresLocalWorkerStore(db, WORKSPACE_ID, 'sales'), {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      now: () => NOW,
+      evaluate: async () => verdict()
+    });
+
+    expect(result.halted).toBe(true);
+    expect((await getSeat(db, WORKSPACE_ID, 'sales'))?.posture).toBe('cooldown');
+    // The owner seat never saw a wall and is not paying for one.
+    expect((await getSeat(db, WORKSPACE_ID))?.posture).not.toBe('cooldown');
+  });
+
+  /**
+   * The credential, per seat, with the owner's rows deliberately not moved.
+   *
+   * The backward-compatibility claim is MIGRATION-FREE: nothing moved, because
+   * the owner seat still reads and writes `workspace_secrets` through the same
+   * reviewed path it always did. These assertions are what make that claim
+   * checkable rather than a comment.
+   */
+  describe('per-seat credentials', () => {
+    const OWNER_EMAIL = 'owner@example.com';
+    const OWNER_PASSWORD = 'owner-canary-Ei9ohGh4';
+    const SALES_EMAIL = 'sales@example.com';
+    const SALES_PASSWORD = 'sales-canary-Ahz1Kae8';
+    let previousKey: string | undefined;
+
+    beforeEach(() => {
+      previousKey = process.env.TREVRA_SECRETS_KEY;
+      process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    });
+
+    afterEach(() => {
+      if (previousKey === undefined) delete process.env.TREVRA_SECRETS_KEY;
+      else process.env.TREVRA_SECRETS_KEY = previousKey;
+      delete process.env.TREVRA_DEPLOYMENT_MODE;
+    });
+
+    it('keeps owner credentials written before this change resolving, out of the same table', async () => {
+      // Written exactly as every pre-multi-seat caller wrote them: no seat key.
+      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: OWNER_EMAIL, password: OWNER_PASSWORD });
+
+      const rows = await db
+        .prepare('SELECT kind FROM workspace_secrets WHERE workspace_id=? ORDER BY kind')
+        .all<{ kind: string }>(WORKSPACE_ID);
+      expect(rows.map((row) => row.kind)).toEqual(['linkedin.email', 'linkedin.password']);
+      // Nothing was copied into the seat table, so there is no migration that
+      // could have half-run and no second copy of the owner's password.
+      const copied = await db
+        .prepare('SELECT COUNT(*)::int AS total FROM linkedin_seat_credentials WHERE workspace_id=?')
+        .get<{ total: number }>(WORKSPACE_ID);
+      expect(copied?.total).toBe(0);
+
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      // And the seat-aware call resolves the same pair for the same seat.
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID, process.env, 'owner'))
+        .toEqual({ email: OWNER_EMAIL, password: OWNER_PASSWORD });
+    });
+
+    it('gives a second seat its own sign-in, sealed the same way', async () => {
+      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      const stored = await putLinkedInCredentials(db, {
+        workspaceId: WORKSPACE_ID,
+        email: SALES_EMAIL,
+        password: SALES_PASSWORD,
+        seatKey: 'sales'
+      });
+      expect(stored).toEqual({ hasCredentials: true, maskedEmail: 's•••@example.com' });
+
+      // Each seat opens its OWN pair. Before this change there was one pair per
+      // workspace, so a second account could not sign in at all.
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID, process.env, 'sales'))
+        .toEqual({ email: SALES_EMAIL, password: SALES_PASSWORD });
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID))
+        .toEqual({ email: OWNER_EMAIL, password: OWNER_PASSWORD });
+
+      expect(await describeLinkedInCredentials(db, WORKSPACE_ID, 'sales'))
+        .toEqual({ hasCredentials: true, maskedEmail: 's•••@example.com' });
+      expect(await describeLinkedInCredentials(db, WORKSPACE_ID, 'support'))
+        .toEqual({ hasCredentials: false, maskedEmail: null });
+
+      // Same envelope, same key, and nothing plaintext-derived in the clear.
+      const rows = await db
+        .prepare('SELECT kind, label, ciphertext FROM linkedin_seat_credentials WHERE workspace_id=? AND seat_key=? ORDER BY kind')
+        .all<{ kind: string; label: string | null; ciphertext: Buffer }>(WORKSPACE_ID, 'sales');
+      expect(rows.map((row) => row.kind)).toEqual(['linkedin.email', 'linkedin.password']);
+      expect(rows[0].label).toBe('s•••@example.com');
+      expect(rows[1].label).toBeNull();
+      for (const row of rows) {
+        expect(row.ciphertext.toString('utf8')).not.toContain(SALES_PASSWORD);
+        expect(row.ciphertext.toString('utf8')).not.toContain(SALES_EMAIL);
+      }
+      // The owner's rows did not move, and there is no owner row in the seat
+      // table for a delete to miss.
+      const ownerInSeatTable = await db
+        .prepare("SELECT COUNT(*)::int AS total FROM linkedin_seat_credentials WHERE workspace_id=? AND seat_key='owner'")
+        .get<{ total: number }>(WORKSPACE_ID);
+      expect(ownerInSeatTable?.total).toBe(0);
+    });
+
+    it('wipes one seat without touching the other', async () => {
+      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales' });
+
+      expect(await deleteLinkedInCredentials(db, WORKSPACE_ID, null, 'sales')).toBe(true);
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID, process.env, 'sales')).toBeNull();
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      expect(await deleteLinkedInCredentials(db, WORKSPACE_ID, null, 'sales')).toBe(false);
+    });
+
+    it('refuses hosted custody for EVERY seat, not just the owner', async () => {
+      const hosted = { ...process.env, TREVRA_DEPLOYMENT_MODE: 'hosted' } as NodeJS.ProcessEnv;
+
+      await expect(
+        putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales', env: hosted })
+      ).rejects.toThrow('This deployment is hosted, so it will not take custody of a LinkedIn password.');
+
+      // And a hosted instance that inherited rows from a self-hosted dump still
+      // does not open them, for any seat.
+      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales' });
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID, hosted, 'sales')).toBeNull();
+    });
+
+    it('scopes a seat key to its workspace', async () => {
+      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales' });
+      expect(await readLinkedInCredentials(db, OTHER_WORKSPACE_ID, process.env, 'sales')).toBeNull();
+    });
+  });
+});
+
+/**
+ * WHAT THE CLAIM CARRIES OFF THE ROW, and why each field is load-bearing.
+ *
+ * The pre-send re-evaluation of the safety gate is the last thing that happens
+ * before the driver touches LinkedIn, and it can only judge what it is told.
+ * Three facts live on the ledger row and nowhere else, and the claim did not
+ * select any of them -- so the gate ran, every time, missing all three.
+ */
+describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', () => {
+  const WORKSPACE_ID = 'ws_linkedin_claim_facts_test';
+  const NOW = new Date('2026-08-04T10:00:00.000Z');
+  const LONG_AGO = new Date('2025-01-01T10:00:00.000Z');
+  let db: Db;
+
+  beforeEach(async () => {
+    db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
+    await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(WORKSPACE_ID, 'claim facts', NOW.toISOString());
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, LONG_AGO);
+  });
+
+  afterEach(async () => {
+    await db?.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+    await db?.close();
+  });
+
+  it('returns the campaign, the replay scope and the warm-up override off the row', async () => {
+    await db.prepare(`
+      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,started_at,created_at,updated_at)
+      VALUES (?,?,?,'running',?::jsonb,'owner',?,?,?)
+    `).run('licmp_claim', WORKSPACE_ID, 'Claim facts', JSON.stringify({ steps: [] }), NOW.toISOString(), NOW.toISOString(), NOW.toISOString());
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,status,planned_for,source,replay_scope,override_warmup_ceiling,body,thread_urn,created_at)
+      VALUES (?,?,'owner','reply',?,?,'planned',?,'manual',?,true,?,?,?)
+    `).run(
+      'lact_claimfacts', WORKSPACE_ID, 'https://www.linkedin.com/in/maya/', 'licmp_claim',
+      NOW.toISOString(), 'thread:2-maya==:sha256:abc', 'Happy to.', '2-maya==', NOW.toISOString()
+    );
+
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
+    const batchId = await store.openBatch(NOW);
+    const claimed = await store.claimNextDueAction(batchId, NOW);
+
+    // Before: the RETURNING clause named none of these three, so the gate was
+    // told there was no campaign (its ramp never bound on a real send), asked
+    // an unscoped replay question, and could not see an override the operator
+    // had already recorded.
+    expect(claimed?.campaignId).toBe('licmp_claim');
+    expect(claimed?.replayScope).toBe('thread:2-maya==:sha256:abc');
+    expect(claimed?.overrideWarmupCeiling).toBe(true);
+  });
+
+  it('reports an ordinary row as unscoped, uncampaigned and un-overridden', async () => {
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
+      VALUES (?,?,'owner','profile_view',?,'planned',?,'export',?)
+    `).run('lact_plain', WORKSPACE_ID, 'https://www.linkedin.com/in/plain/', NOW.toISOString(), NOW.toISOString());
+
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
+    const claimed = await store.claimNextDueAction(await store.openBatch(NOW), NOW);
+
+    expect(claimed?.campaignId).toBeNull();
+    expect(claimed?.replayScope).toBe('legacy');
+    expect(claimed?.overrideWarmupCeiling).toBe(false);
+  });
+
+  it('sees an unaccepted invite to the same person, and does not see an accepted one', async () => {
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
+    const dm = {
+      id: 'lact_dm',
+      workspaceId: WORKSPACE_ID,
+      seatKey: 'owner',
+      kind: 'dm' as const,
+      targetRef: 'https://www.linkedin.com/in/Maya/',
+      plannedFor: NOW.toISOString(),
+      body: 'hello'
+    };
+
+    // Nothing on file at all: no evidence either way, so no excuse for a
+    // missing Message control.
+    expect(await store.hasUnacceptedInvite(dm)).toBe(false);
+
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,recorded_at,source,created_at)
+      VALUES (?,?,'owner','invite',?,'sent',?,'campaign',?)
+    `).run('lact_inv', WORKSPACE_ID, 'https://www.linkedin.com/in/maya/', NOW.toISOString(), NOW.toISOString());
+    // Case-folded, like every other target lookup in this subsystem.
+    expect(await store.hasUnacceptedInvite(dm)).toBe(true);
+
+    await db.prepare("UPDATE linkedin_actions SET status='accepted' WHERE id=?").run('lact_inv');
+    expect(await store.hasUnacceptedInvite(dm)).toBe(false);
+  });
+
+  it('BRANCHES A MANAGER WORKFLOW, whose steps are keyed `action` and not `kind`', async () => {
+    // The parser only understood the 025-era `kind` key, so every manager
+    // campaign parsed to zero steps, `hasBranching` answered false, and the
+    // message step ran against a lead who had never accepted the invite.
+    const steps = [
+      { id: 'step-1', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: null } },
+      { id: 'step-2', action: 'message', delayBefore: { amount: 2, unit: 'days' }, config: { variants: [{ id: 'a', body: 'hi', weight: 100 }] } }
+    ];
+    await db.prepare(`
+      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,started_at,created_at,updated_at)
+      VALUES (?,?,?,'running',?::jsonb,'owner',?,?,?)
+    `).run(
+      'licmp_mgr', WORKSPACE_ID, 'Manager campaign',
+      JSON.stringify({ manager: true, workflowId: 'liwf_1', workflowVersion: 1, steps }),
+      LONG_AGO.toISOString(), LONG_AGO.toISOString(), NOW.toISOString()
+    );
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,status,recorded_at,source,replay_scope,created_at)
+      VALUES (?,?,'owner','invite',?,?,'sent',?,'campaign',?,?)
+    `).run('lact_mgr_inv', WORKSPACE_ID, 'https://www.linkedin.com/in/lead/', 'licmp_mgr', NOW.toISOString(), 'limem_1:step-1', NOW.toISOString());
+    await db.prepare(`
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,status,planned_for,source,replay_scope,body,created_at)
+      VALUES (?,?,'owner','dm',?,?,'planned',?,'campaign',?,?,?)
+    `).run('lact_mgr_dm', WORKSPACE_ID, 'https://www.linkedin.com/in/lead/', 'licmp_mgr', NOW.toISOString(), 'limem_1:step-2', 'hi', NOW.toISOString());
+
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
+    const claimed = await store.claimNextDueAction(await store.openBatch(NOW), NOW);
+    expect(claimed?.id).toBe('lact_mgr_dm');
+
+    // The invite is 'sent' and unanswered: "not yet" is not "no", so the
+    // message waits rather than being sent to a stranger.
+    const pending = await store.branchDecision(claimed as DueLinkedInAction, NOW);
+    expect(pending?.outcome).toBe('pending');
+
+    await db.prepare("UPDATE linkedin_actions SET status='accepted' WHERE id=?").run('lact_mgr_inv');
+    const due = await store.branchDecision(claimed as DueLinkedInAction, NOW);
+    expect(due?.outcome).toBe('due');
+
+    await db.prepare("UPDATE linkedin_actions SET status='declined' WHERE id=?").run('lact_mgr_inv');
+    const dead = await store.branchDecision(claimed as DueLinkedInAction, NOW);
+    expect(dead?.outcome).toBe('skipped');
   });
 });

@@ -76,13 +76,19 @@ export function StopBar({ setToast }: { setToast: (message: string) => void }) {
   const anyStopped = seat.paused || stopping.length > 0;
   const anyLive = seatLive || agentLive;
 
+  // BOTH HALVES POLL, not just the agent's. The seat's state was read once on
+  // mount and then only when something on this tab changed it, so a seat paused
+  // from the account screen in a second tab -- or by a teammate -- left this bar
+  // saying "sending" on every route until a reload. `seat.reload` is the same
+  // re-read the shell's Refresh triggers, and it is stable across renders.
+  const reloadSeat = seat.reload;
   useEffect(() => {
     let cancelled = false;
-    const tick = () => { if (!cancelled) void readRuns(); };
+    const tick = () => { if (!cancelled) { void readRuns(); void reloadSeat(); } };
     tick();
     const timer = window.setInterval(tick, anyLive || anyStopped ? POLL_LIVE_MS : POLL_QUIET_MS);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [anyLive, anyStopped]);
+  }, [anyLive, anyStopped, reloadSeat]);
 
   const state = anyStopped ? 'is-stopped' : anyLive ? 'is-live' : 'is-idle';
 
@@ -137,6 +143,19 @@ export function StopBar({ setToast }: { setToast: (message: string) => void }) {
     setPending(null);
   };
 
+  /**
+   * Resume takes no reason, and the drawer no longer asks for one.
+   *
+   * It used to: the drawer was `requireReason`, so the button stayed disabled
+   * until the operator typed something -- and then `onConfirm` dropped the
+   * argument, because `seat.resume()` takes none and
+   * `POST /api/linkedin/seat/resume` parses `seatKey` and nothing else. The
+   * sentence reached no call, no column and no reader. A required field that is
+   * thrown away is worse than no field: it teaches that the notes on this bar
+   * are decorative, and the pause reason -- which IS stored and IS the note read
+   * three weeks later -- is one of them. See `SEAT_STOP_COPY.resume.noRecord`
+   * for the lc-debt marker on the route that would let it come back.
+   */
   const resume = async () => {
     setBusy('resume');
     setFailure('');
@@ -161,7 +180,11 @@ export function StopBar({ setToast }: { setToast: (message: string) => void }) {
         the H1 on every route, which is how amber stops meaning anything by the
         time it is true. `.stopbar.is-idle` already supplies the muted colour,
         the size and the hairline. */}
-    {state === 'is-idle' && <p className="stopbar-idle">Nothing is running.</p>}
+    {/* "Nothing is running" is a CLAIM, and before the seat read lands nobody
+        has checked. `seat.loading` is the difference between the two, and the
+        bar says which one it is rather than asserting the safe-sounding one
+        while the answer is still on the wire. */}
+    {state === 'is-idle' && <p className="stopbar-idle">{seat.loading ? 'Reading what is running…' : 'Nothing is running.'}</p>}
 
     {seat.configured && <div className={`stopbar-actor${seat.paused ? ' is-seat' : ''}`}>
       <PostureBadge posture={seat.posture} reason={seat.pausedReason} />
@@ -211,7 +234,9 @@ export function StopBar({ setToast }: { setToast: (message: string) => void }) {
       body={pending === 'seat'
         ? <>
             <p>{SEAT_STOP_COPY.running}</p>
-            <p>{SEAT_STOP_COPY.onlyAHumanZeroesASeat}</p>
+            {/* The throttle factor is the server's, not this file's: the
+                sentence used to say "halves" whatever the payload said. */}
+            <p>{SEAT_STOP_COPY.onlyAHumanZeroesASeat(seat.throttleFactor)}</p>
             <p>{SEAT_STOP_COPY.reasonRequired}</p>
           </>
         : pending === 'agent'
@@ -235,12 +260,10 @@ export function StopBar({ setToast }: { setToast: (message: string) => void }) {
 
     {confirmResume && <ConfirmDrawer
       title={SEAT_STOP_COPY.resume.title}
-      requireReason
-      reasonLabel={SEAT_STOP_COPY.resume.reasonLabel}
       body={<>
         <p>{SEAT_STOP_COPY.resume.whatRestarts(seat.pausedReason)}</p>
         <p>{SEAT_STOP_COPY.resume.warmupKeeps}</p>
-        <p>{SEAT_STOP_COPY.resume.noteNotStored}</p>
+        <p>{SEAT_STOP_COPY.resume.noRecord}</p>
       </>}
       confirmLabel={SEAT_STOP_COPY.resume.confirmLabel}
       busy={seat.busy}

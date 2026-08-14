@@ -200,7 +200,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     {accounts.length > 0 && <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>{accounts.length} account(s), hottest first</h3>
+          <h3 aria-level={2}>{accounts.length} account(s), hottest first</h3>
           <p>
             The order is the scorer’s, computed over the signals below it. Every line in “why this score” links to the
             page it was read from — nothing here is asserted without one.
@@ -231,7 +231,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3>{accounts.length > 0 ? 'Add more accounts' : 'Start with the list you already have'}</h3>
+          <h3 aria-level={2}>{accounts.length > 0 ? 'Add more accounts' : 'Start with the list you already have'}</h3>
           <p>
             {accounts.length > 0
               ? 'Same list, same rules: one domain per line, and a domain already here is left alone rather than duplicated.'
@@ -278,7 +278,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
 
       {accounts.length === 0 && !loading && !result && <div className="empty-state">
         <Building2 size={26} />
-        <h4>No accounts yet</h4>
+        <h4 aria-level={3}>No accounts yet</h4>
         <p>The ranked list appears here as soon as this workspace has companies in it.</p>
       </div>}
     </section>
@@ -327,7 +327,7 @@ function AccountRow({ row, open, busy, onToggle, onNotAFit }: {
 
   return <article className={`acc-row${rejected ? ' is-rejected' : ''}`}>
     <div className="acc-row-head">
-      <h4>{account.name}</h4>
+      <h4 aria-level={3}>{account.name}</h4>
       {score && <span className={`li-chip acc-tier-${score.tier}`}>{TIER_LABELS[score.tier]}</span>}
       {score && <span className="acc-score">score {score.score}</span>}
       {rejected && <span className="li-chip acc-tier-rejected">Not a fit</span>}
@@ -400,7 +400,7 @@ function ScorePanel({ score }: { score: AccountScore }) {
       </ul>}
 
     {rationale.combinations.length > 0 && <div className="acc-why-block">
-      <h5>Because they happened together</h5>
+      <h5 aria-level={4}>Because they happened together</h5>
       <ul className="acc-combinations">
         {rationale.combinations.map((combination, index) => <li key={`${combination.kinds.join('+')}-${index}`}>
           <span className="acc-points">{signed(combination.bonus)}</span>
@@ -410,7 +410,7 @@ function ScorePanel({ score }: { score: AccountScore }) {
     </div>}
 
     {rationale.penalties.length > 0 && <div className="acc-why-block">
-      <h5>Taken off</h5>
+      <h5 aria-level={4}>Taken off</h5>
       <ul className="acc-penalties">
         {rationale.penalties.map((penalty, index) => <li key={`${penalty.reason}-${index}`}>
           <span className="acc-points">{penalty.points}</span>

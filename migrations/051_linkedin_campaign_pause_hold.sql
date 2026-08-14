@@ -1,0 +1,45 @@
+-- Migration 051: the ledger status a PAUSED managed campaign parks its work in.
+--
+-- No DDL. `linkedin_actions.status` carries no CHECK constraint (migration 032
+-- says so out loud), so the value below needs no schema change -- but it needs
+-- writing down, because a status nobody documented is a status the next reader
+-- of this table has to reverse-engineer from a WHERE clause.
+--
+-- WHY IT EXISTS. `pauseManagedCampaign` used to write one word into
+-- `linkedin_campaigns.status` and stop. The local worker does not read that
+-- table: it claims from `linkedin_actions` where `status='planned'`. So Pause
+-- paused the PLANNER and not the SENDER, and every invite and DM the runner had
+-- already scheduled for the coming days went out anyway -- which is the exact
+-- opposite of what the operator pressed the button for.
+--
+-- WHY NOT 'skipped', which is what STOP uses. Two reasons, and both are about
+-- pause being reversible where stop is not:
+--
+--   1. `idx_linkedin_actions_target` (migration 047) is partial on
+--      `status <> 'skipped'`. Skipping a row RELEASES the replay guard, so the
+--      runner would be free to plan a second action for the same member+step
+--      the moment the campaign resumed -- a duplicate invite to a stranger,
+--      which is the one failure this whole subsystem is built to avoid. 'held'
+--      keeps the row in the index, so resuming restores work rather than
+--      re-creating it.
+--   2. 'skipped' is the ledger's word for "never happened", and it is what
+--      `stopCampaign`, `removeCampaignMember` and `skipAction` all mean by it.
+--      A paused campaign's rows DID not-happen-yet, which is a different fact,
+--      and filing them the same way would make "resume" indistinguishable from
+--      "un-cancel some rows somebody else cancelled".
+--
+-- WHAT READS IT. Nothing has to. 'held' is not 'planned', so
+-- `claimNextDueAction` cannot claim it; it is not 'skipped', so the replay
+-- index still holds it; it has a NULL `recorded_at`, so every rolling window in
+-- `actions.ts` (all of which require `recorded_at`) ignores it exactly as they
+-- ignored it while it was planned. `startManagedCampaign` is the only writer
+-- that turns it back into 'planned', and it does so for the whole campaign in
+-- one statement, so no row can be half-restored.
+--
+-- CLAIMED ROWS ARE NEVER HELD. `claimed_at IS NULL` bounds the update, for the
+-- same reason `stopCampaign` documents: a claimed row is already in a browser
+-- somewhere and its outcome belongs to the worker holding it. Stopping something
+-- mid-send is the seat kill switch's job, not this one's.
+
+COMMENT ON COLUMN linkedin_actions.status IS
+'planned | held | exported | sent | accepted | replied | declined | withdrawn | skipped. No CHECK constraint by design (see migration 032). ''planned'' is claimable by the local worker; ''held'' is a planned row parked by pauseManagedCampaign and restored to ''planned'' by startManagedCampaign -- unclaimable while held, still covered by the idx_linkedin_actions_target replay guard so resuming cannot duplicate it, and with a NULL recorded_at so it consumes no rolling-window budget. ''skipped'' is the terminal never-happened status used by stop/remove/skip, and it is the only one that releases the replay guard.';

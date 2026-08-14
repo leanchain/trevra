@@ -11,6 +11,26 @@ import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from './db.js
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 import { registerPlaybook } from './playbooks/registry.js';
+import { LINKEDIN_LIMITS, PACED_KINDS, effectiveDailyCeiling } from './linkedin/limits.js';
+import { LEAD_CONTACT_READ_LIMIT } from './linkedin/lead-lists.js';
+import { campaignWarmupFraction } from './linkedin/managed-campaigns.js';
+
+/** Any start works: the campaign ramp is relative to it, never to a calendar. */
+const RAMP_START = '2026-01-01T00:00:00.000Z';
+
+/**
+ * One day row out of a limits report.
+ *
+ * `profile_view` throughout the ceiling-source tests, and deliberately: it is a
+ * PASSIVE kind, so `warmupMultiplierFor` leaves it un-ramped in week 1 and the
+ * assertions are about which of the band and the operator's number bound --
+ * not about a ramp that would flatten both to zero on a fresh seat.
+ */
+function dayCeiling(body: { limits: Array<Record<string, unknown>> }, kind = 'profile_view'): Record<string, unknown> {
+  const row = body.limits.find((limit) => limit.kind === kind && limit.window === 'day');
+  if (!row) throw new Error(`no day ceiling reported for ${kind}`);
+  return row;
+}
 
 
 registerPlaybook({
@@ -786,5 +806,326 @@ describe('Trevra API on PostgreSQL', () => {
 
     // Left off, so this file cannot hand a live schedule to another one.
     await agent.put('/api/agent-setup/schedule').send({ enabled: false }).expect(200);
+  });
+
+  /**
+   * An inverted working window is the ordinary way to get this form wrong --
+   * 18:00 in the start box, 08:00 in the end box -- and each field is valid on
+   * its own, so zod cannot be the one to catch it. It used to reach seats.ts,
+   * throw a plain Error and answer 500, which tells an operator their input was
+   * fine and the server is broken.
+   */
+  it('refuses an inverted LinkedIn working window with a 400 and the rule it broke', async () => {
+    const agent = await agentWithSession();
+    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+
+    const refused = await agent.put('/api/linkedin/seat')
+      .send({ workStartMinute: 1080, workEndMinute: 480 })
+      .expect(400);
+    expect(refused.body.error).toBe('Working hours must be whole minutes in one local day, with the end after the start.');
+
+    // The seat is untouched: a refused patch writes nothing.
+    const seat = await agent.get('/api/linkedin/seat').expect(200);
+    expect(seat.body.seat).toMatchObject({ workStartMinute: 480, workEndMinute: 1080 });
+  });
+
+  /**
+   * The seat's own opt-in, and the three tables a screen would otherwise keep
+   * its own copy of. Every assertion here is against the module that owns the
+   * number, never a literal: a test that restates 50 InMails a month passes
+   * while the API reports something else.
+   */
+  it('reports the operator ranges, the seat bands and the campaign ramp with the limits', async () => {
+    const agent = await agentWithSession();
+    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+
+    const before = await agent.get('/api/linkedin/limits').expect(200);
+    expect(before.body.seat.safetyBandOverride).toBe(false);
+
+    // The ranges the PUT validates against ARE the ranges it reports, which is
+    // what stops a control being built for a number the route refuses.
+    expect(before.body.operatorRanges).toEqual({
+      invite: { min: 0, max: 75, default: 30 },
+      message: { min: 0, max: 75, default: 25 },
+      profileView: { min: 0, max: 100, default: 25 },
+      follow: { min: 0, max: 50, default: 20 }
+    });
+    await agent.put('/api/linkedin/seat').send({ dailyInviteLimit: before.body.operatorRanges.invite.max }).expect(200);
+    await agent.put('/api/linkedin/seat').send({ dailyInviteLimit: before.body.operatorRanges.invite.max + 1 }).expect(400);
+
+    // Read off LINKEDIN_LIMITS for the band this seat is actually in.
+    const band = before.body.seat.band as 'warmup' | 'steady';
+    for (const kind of PACED_KINDS) {
+      expect(before.body.bands[kind]).toEqual(LINKEDIN_LIMITS[kind][band]);
+    }
+
+    // Days 1..5 at 20% a step, ending at the seat's full ceiling.
+    const ramp: number[] = before.body.campaignWarmupFractions;
+    expect(ramp).toHaveLength(5);
+    expect(ramp[0]).toBeCloseTo(0.2, 10);
+    expect(ramp.at(-1)).toBe(1);
+    ramp.forEach((fraction, index) => expect(fraction).toBeCloseTo(campaignWarmupFraction(RAMP_START, new Date(Date.parse(RAMP_START) + index * 86_400_000)), 10));
+
+    // The opt-in is a seat field, saved and read back like every other one.
+    const saved = await agent.put('/api/linkedin/seat').send({ safetyBandOverride: true }).expect(200);
+    expect(saved.body.seat.safetyBandOverride).toBe(true);
+    expect((await agent.get('/api/linkedin/limits').expect(200)).body.seat.safetyBandOverride).toBe(true);
+    expect((await agent.put('/api/linkedin/seat').send({ safetyBandOverride: false }).expect(200)).body.seat.safetyBandOverride).toBe(false);
+  });
+
+  /**
+   * THE NUMBER ON THE SCREEN IS THE NUMBER THAT WILL BE ENFORCED.
+   *
+   * This report used to read the band alone, so an operator who set 5 was shown
+   * 15 -- and `pacing.ts` and `guard.ts`, which both go through
+   * `effectiveDailyCeiling`, would then honour the 5 the screen never mentioned.
+   * A limits screen quoting a ceiling nothing downstream applies is the exact
+   * defect class this pass exists to close.
+   */
+  it('reports the operator ceiling, not the band, when the account sets a stricter one', async () => {
+    const agent = await agentWithSession();
+    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+
+    const band = LINKEDIN_LIMITS.profile_view.warmup.perDay;
+    const mine = 5;
+    expect(mine).toBeLessThan(band);
+    await agent.put('/api/linkedin/seat').send({ dailyProfileViewLimit: mine }).expect(200);
+
+    const day = dayCeiling((await agent.get('/api/linkedin/limits').expect(200)).body);
+    expect(day).toMatchObject({
+      ceiling: effectiveDailyCeiling(band, mine, false),
+      bandCeiling: band,
+      operatorLimit: mine,
+      ceilingSource: 'operator',
+      boundBy: 'operator-daily-limit'
+    });
+    expect(day.ceiling).toBe(mine);
+    expect(day.rule).toContain('stricter');
+  });
+
+  /**
+   * The opt-in, and the one thing it does: the operator's number binds ABOVE
+   * the researched band. Asserted against the same seat before and after, so
+   * the difference can only be the flag.
+   */
+  it('reports the operator ceiling above the band once the account is opted out of the safety bands', async () => {
+    const agent = await agentWithSession();
+    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+
+    const band = LINKEDIN_LIMITS.profile_view.warmup.perDay;
+    const mine = band + 25;
+    await agent.put('/api/linkedin/seat').send({ dailyProfileViewLimit: mine }).expect(200);
+
+    // Opted out: the stricter of the two binds, and it is Trevra's.
+    const capped = dayCeiling((await agent.get('/api/linkedin/limits').expect(200)).body);
+    expect(capped).toMatchObject({
+      ceiling: effectiveDailyCeiling(band, mine, false),
+      operatorLimit: mine,
+      ceilingSource: 'band',
+      boundBy: 'band-ceiling'
+    });
+    expect(capped.ceiling).toBe(band);
+
+    await agent.put('/api/linkedin/seat').send({ safetyBandOverride: true }).expect(200);
+
+    const overridden = dayCeiling((await agent.get('/api/linkedin/limits').expect(200)).body);
+    expect(overridden).toMatchObject({
+      ceiling: effectiveDailyCeiling(band, mine, true),
+      bandCeiling: band,
+      operatorLimit: mine,
+      ceilingSource: 'operator-override',
+      boundBy: 'operator-daily-limit'
+    });
+    expect(overridden.ceiling).toBe(mine);
+    expect(Number(overridden.ceiling)).toBeGreaterThan(band);
+    expect(overridden.rule).toContain('use your own daily limits');
+  });
+
+  /**
+   * HOSTED IS A FACT ON THE RESPONSE, NOT A SHAPE IN THE PROSE.
+   *
+   * The accounts screen was inferring the deployment kind by matching a regular
+   * expression against `blockers`, so rewording a sentence flipped it to the
+   * wrong copy -- and it told a hosted operator to run `npx playwright install`
+   * on a machine they do not have. `hosted` comes off the same config the
+   * server refuses credential custody on, so the two can never disagree.
+   */
+  it('states hosted-versus-self-hosted on the worker status instead of leaving it in the blockers', async () => {
+    const agent = await agentWithSession();
+    const local = await agent.get('/api/linkedin/worker/status').expect(200);
+    expect(local.body.hosted).toBe(false);
+
+    process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
+    try {
+      const hosted = await agent.get('/api/linkedin/worker/status').expect(200);
+      // Hosted is the one kind of off with no switch behind it, so it comes
+      // with `enabled: false` and stays that way whatever else is set.
+      expect(hosted.body).toMatchObject({ hosted: true, enabled: false, ready: false });
+      expect(hosted.body.blockers.length).toBeGreaterThan(0);
+    } finally {
+      delete process.env.TREVRA_DEPLOYMENT_MODE;
+    }
+
+    expect((await agent.get('/api/linkedin/worker/status').expect(200)).body.hosted).toBe(false);
+  });
+
+  /**
+   * AN UNAPPROVED CAMPAIGN CANNOT BE EXPORTED OR QUEUED.
+   *
+   * `placeStepBehindApproval` writes the payload at the moment it STOPS for a
+   * human, so "a payload exists" was true of a campaign sitting at
+   * `waiting_approval` and of one a founder had rejected. Both used to 201 --
+   * and the queue route writes 'planned' rows a local worker will send. The
+   * only thing standing between an undecided campaign and a send must not be a
+   * disabled button.
+   */
+  it('refuses to export or queue a campaign whose approval has not been granted', async () => {
+    const agent = await agentWithSession();
+    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+    // Past the warm-up ramp, so the plan has slots and the run reaches its
+    // approval step rather than failing the guard first. `activated_at` is
+    // write-once through the API by design, which is why this is set in SQL.
+    await db!.prepare("UPDATE linkedin_seats SET activated_at=? WHERE workspace_id=? AND seat_key='owner'")
+      .run(new Date(Date.now() - 90 * 86_400_000).toISOString(), DEMO_WORKSPACE_ID);
+
+    const created = await agent.post('/api/linkedin/campaigns').send({
+      name: 'Q3 founders',
+      input: {
+        targets: ['https://www.linkedin.com/in/ada-lovelace/'],
+        sequenceSteps: [{ id: 'open', day: 0, kind: 'invite', intent: 'Open the conversation', template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.' }]
+      }
+    }).expect(201);
+    const campaignId = created.body.campaign.id;
+    const run = created.body.run;
+    expect(run.status).toBe('waiting_approval');
+
+    for (const path of [`/api/linkedin/campaigns/${campaignId}/export`, `/api/linkedin/campaigns/${campaignId}/queue`]) {
+      const refused = await agent.post(path).send({}).expect(409);
+      expect(refused.body.error).toContain('still waiting for a founder to approve it');
+    }
+
+    // And the check does not over-refuse: once the same payload is approved,
+    // the export is the approved bytes and goes through.
+    const step = run.steps.find((item: { stepType: string }) => item.stepType === 'approval');
+    await agent.post(`/api/playbook-runs/${run.id}/steps/${step.stepId}/decision`).send({ decision: 'approve' }).expect(200);
+    const exported = await agent.post(`/api/linkedin/campaigns/${campaignId}/export`).send({}).expect(201);
+    expect(exported.body.export).toBeTruthy();
+  });
+
+  /**
+   * EDITING A BOUND CAMPAIGN IS NOT A NARROWER ACT THAN CREATING ONE.
+   *
+   * The edit route took `steps` and nothing else, so tone, action kind, horizon
+   * and export format were fixed at creation and the client had to grey those
+   * controls out. Absent still means unchanged -- and it means unchanged across
+   * a SECOND edit too, which is what the re-plan input order buys.
+   */
+  it('lets an edit change what the campaign was created with, and leaves absent fields alone', async () => {
+    const agent = await agentWithSession();
+    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+    await db!.prepare("UPDATE linkedin_seats SET activated_at=? WHERE workspace_id=? AND seat_key='owner'")
+      .run(new Date(Date.now() - 90 * 86_400_000).toISOString(), DEMO_WORKSPACE_ID);
+
+    const steps = [{ id: 'open', day: 0, kind: 'invite', intent: 'Open the conversation', template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.' }];
+    const created = await agent.post('/api/linkedin/campaigns')
+      .send({ name: 'Q3 founders', input: { targets: ['https://www.linkedin.com/in/ada-lovelace/'], sequenceSteps: steps } })
+      .expect(201);
+    const campaignId = created.body.campaign.id;
+    // The playbook's own defaults, which is what the campaign was created with.
+    expect(created.body.run.input).toMatchObject({ tone: 'consultative', kind: 'invite', horizonDays: 14, format: 'dripify' });
+
+    const edited = await agent.patch(`/api/linkedin/campaigns/${campaignId}/sequence`)
+      .send({ steps, tone: 'direct', kind: 'dm', horizonDays: 7, format: 'heyreach', includeInMail: true, inviteNote: 'none' })
+      .expect(200);
+    expect(edited.body.run.input).toMatchObject({
+      tone: 'direct', kind: 'dm', horizonDays: 7, format: 'heyreach', includeInMail: true, inviteNote: 'none'
+    });
+
+    // A second edit that touches only the copy must not revert any of it.
+    const reworded = [{ ...steps[0], template: 'Hi {{firstName}}, noticed {{company}} is scaling RevOps.' }];
+    const again = await agent.patch(`/api/linkedin/campaigns/${campaignId}/sequence`).send({ steps: reworded }).expect(200);
+    expect(again.body.run.input).toMatchObject({ tone: 'direct', kind: 'dm', horizonDays: 7, format: 'heyreach' });
+    expect(again.body.approvalInvalidated).toBe(true);
+  });
+
+  /**
+   * Resuming says WHY, and the account's history keeps it.
+   *
+   * The safety screen asked for a reason and threw it away, because no route
+   * took one. It is optional -- a resume must never be blocked behind a text
+   * box -- and it is recorded in `audit_events` rather than on the seat, whose
+   * `pausedReason` describes a stop that is over by then.
+   */
+  it('records who resumed a LinkedIn account and why, and resumes fine without a reason', async () => {
+    const agent = await agentWithSession();
+    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+
+    await agent.post('/api/linkedin/seat/pause').send({ reason: 'LinkedIn showed a checkpoint' }).expect(200);
+    const resumed = await agent.post('/api/linkedin/seat/resume').send({ reason: 'Checkpoint cleared, session confirmed live' }).expect(200);
+    expect(resumed.body.resumeReason).toBe('Checkpoint cleared, session confirmed live');
+    // The seat carries the state; it does not carry the sentence about starting.
+    expect(resumed.body.seat.pausedReason).toBeNull();
+
+    const recorded = await db!.prepare("SELECT actor_type,actor_id,entity_id,metadata_json FROM audit_events WHERE event_type='linkedin.seat_resumed' ORDER BY created_at DESC LIMIT 1")
+      .get<{ actor_type: string; actor_id: string; entity_id: string; metadata_json: string }>();
+    expect(recorded).toMatchObject({ actor_type: 'user', entity_id: 'owner' });
+    expect(recorded?.actor_id).toBeTruthy();
+    expect(JSON.parse(recorded!.metadata_json)).toMatchObject({
+      reason: 'Checkpoint cleared, session confirmed live',
+      // The pause this resume answers, read before it was cleared.
+      pausedReason: 'LinkedIn showed a checkpoint'
+    });
+
+    // Optional, and still optional.
+    await agent.post('/api/linkedin/seat/pause').send({ reason: 'Taking a week off' }).expect(200);
+    const silent = await agent.post('/api/linkedin/seat/resume').send({}).expect(200);
+    expect(silent.body.resumeReason).toBeNull();
+    expect(silent.body.posture).not.toBe('paused');
+  });
+
+  /**
+   * The Draft-with-AI path takes the same three copy controls the campaign path
+   * does. `.strict()` refused them outright before, so the controls beside the
+   * button did nothing at all.
+   */
+  it('accepts tone, invite-note and InMail controls on the campaign draft route', async () => {
+    const agent = await agentWithSession();
+    // A domain that will not resolve is a 400 from enrichment -- which is past
+    // the schema, and the schema is what this asserts. An unknown field still
+    // fails at 400 with an `Invalid request` body, so the two are told apart by
+    // the error, not the status.
+    const accepted = await agent.post('/api/linkedin/campaigns/draft')
+      .send({ domain: 'not-a-real-domain.invalid', tone: 'direct', inviteNote: 'none', includeInMail: true })
+      .expect(400);
+    expect(accepted.body.error).not.toBe('Invalid request');
+    expect(accepted.body.error).toContain('not-a-real-domain.invalid');
+
+    const refused = await agent.post('/api/linkedin/campaigns/draft')
+      .send({ domain: 'not-a-real-domain.invalid', tone: 'shouty' })
+      .expect(400);
+    expect(refused.body.error).toBe('Invalid request');
+  });
+
+  /**
+   * A lead list longer than one page. `total` is what the screen may say out
+   * loud; `contacts.length` is only ever what it received, and `pageLimit` is
+   * how it tells the two apart without holding its own copy of the bound.
+   */
+  it('returns the lead-list total and page bound alongside the page of contacts', async () => {
+    const agent = await agentWithSession();
+    const list = await agent.post('/api/linkedin/manager/lead-lists').send({ name: 'Series A CTOs' }).expect(201);
+    const listId = list.body.list.id;
+
+    const empty = await agent.get(`/api/linkedin/manager/lead-lists/${listId}/contacts`).expect(200);
+    expect(empty.body).toMatchObject({ contacts: [], total: 0, pageLimit: LEAD_CONTACT_READ_LIMIT });
+
+    const csv = 'first_name,last_name,company\nAda,Lovelace,Analytical\nGrace,Hopper,Navy\n';
+    await agent.post(`/api/linkedin/manager/lead-lists/${listId}/import`)
+      .attach('file', Buffer.from(csv), 'leads.csv')
+      .expect(201);
+
+    const page = await agent.get(`/api/linkedin/manager/lead-lists/${listId}/contacts`).expect(200);
+    expect(page.body.total).toBe(2);
+    expect(page.body.contacts).toHaveLength(2);
   });
 });

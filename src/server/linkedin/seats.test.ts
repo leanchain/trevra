@@ -6,6 +6,8 @@ import {
   effectivePosture,
   getSeat,
   getSeatPosture,
+  linkedinSeatRefs,
+  linkedinWorkspaceIds,
   listSeats,
   pauseSeat,
   resumeSeat,
@@ -73,6 +75,25 @@ describe('upsertSeat', () => {
     expect(updated.accountOpenedOn).toBe('2026-01-01');
     expect(updated.connectionsCount).toBe(640);
     expect(updated.label).toBe('Pankaj (founder)');
+  });
+
+  // The band override is an INFORMED opt-in, so its default has to be the
+  // conservative one and no path may set it by inference. A seat that has
+  // never been told about it must read false.
+  it('defaults the safety-band override to false and round-trips it when set', async () => {
+    const created = await create();
+    expect(created.safetyBandOverride).toBe(false);
+    expect((await getSeat(db, WORKSPACE_ID))?.safetyBandOverride).toBe(false);
+
+    const opted = await upsertSeat(db, WORKSPACE_ID, { safetyBandOverride: true, dailyInviteLimit: 30 }, NOW);
+    expect(opted.safetyBandOverride).toBe(true);
+    expect(opted.dailyInviteLimit).toBe(30);
+    expect((await getSeat(db, WORKSPACE_ID))?.safetyBandOverride).toBe(true);
+
+    // Absent means unchanged here too: editing the timezone does not quietly
+    // revoke an override, and it does not quietly grant one either.
+    expect((await upsertSeat(db, WORKSPACE_ID, { timezone: 'America/New_York' }, NOW)).safetyBandOverride).toBe(true);
+    expect((await upsertSeat(db, WORKSPACE_ID, { safetyBandOverride: false }, NOW)).safetyBandOverride).toBe(false);
   });
 
   it('clears a nullable field when null is passed explicitly', async () => {
@@ -224,5 +245,99 @@ describe('effectivePosture', () => {
     const seat = await getSeat(db, WORKSPACE_ID);
     expect(seat?.activatedAt).toBeNull();
     expect(effectivePosture(seat as LinkedInSeat, NOW)).toBe('warmup');
+  });
+});
+
+/**
+ * SEVERAL ACCOUNTS IN ONE WORKSPACE.
+ *
+ * The module doc used to say "one seat per workspace (DECIDED)" and every
+ * function keyed on `workspace_id` alone with `seat_key` defaulted in. What is
+ * asserted here is that the default is now only a DEFAULT: the owner seat
+ * behaves exactly as it always did, and every other seat is a first-class,
+ * independently paced, independently stoppable account.
+ */
+describe('several seats in one workspace', () => {
+  it('keeps two seats as two rows, each with its own ramp clock', async () => {
+    const owner = await create({}, ACTIVATED);
+    const sales = await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, NOW, 'sales');
+
+    expect(owner.seatKey).toBe(OWNER_SEAT_KEY);
+    expect(sales.seatKey).toBe('sales');
+    // The ramp measures how long THIS ACCOUNT has been automated. A new seat
+    // in an old workspace is a week-1 account, not an established one.
+    expect(owner.activatedAt).toBe(ACTIVATED.toISOString());
+    expect(sales.activatedAt).toBe(NOW.toISOString());
+    expect(effectivePosture(owner, NOW)).toBe('steady');
+    expect(effectivePosture(sales, NOW)).toBe('warmup');
+
+    expect((await listSeats(db, WORKSPACE_ID)).map((seat) => seat.seatKey).sort()).toEqual(['owner', 'sales']);
+    // The workspace is still ONE workspace, however many accounts it drives.
+    expect(await linkedinWorkspaceIds(db)).toContain(WORKSPACE_ID);
+  });
+
+  it('lists every seat as the pair every execution path keys on', async () => {
+    await create({}, ACTIVATED);
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, NOW, 'sales');
+
+    const refs = (await linkedinSeatRefs(db)).filter((ref) => ref.workspaceId === WORKSPACE_ID);
+    expect(refs).toEqual([
+      { workspaceId: WORKSPACE_ID, seatKey: 'owner' },
+      { workspaceId: WORKSPACE_ID, seatKey: 'sales' }
+    ]);
+  });
+
+  it('PAUSES ONE ACCOUNT WITHOUT PAUSING THE OTHER', async () => {
+    await create({}, ACTIVATED);
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, ACTIVATED, 'sales');
+
+    // LinkedIn restricts an ACCOUNT, not a workspace.
+    const paused = await pauseSeat(db, WORKSPACE_ID, 'LinkedIn restricted this account', NOW, 'sales');
+    expect(paused?.seatKey).toBe('sales');
+    expect(paused?.pausedReason).toBe('LinkedIn restricted this account');
+
+    expect(await getSeatPosture(db, WORKSPACE_ID, NOW, 'sales')).toBe('paused');
+    // The owner seat is untouched and still drainable, which is the entire
+    // point of running more than one account.
+    expect(await getSeatPosture(db, WORKSPACE_ID, NOW)).toBe('steady');
+    expect((await getSeat(db, WORKSPACE_ID))?.pausedReason).toBeNull();
+
+    await resumeSeat(db, WORKSPACE_ID, NOW, 'sales');
+    expect(await getSeatPosture(db, WORKSPACE_ID, NOW, 'sales')).toBe('steady');
+  });
+
+  it('cools one account without cooling the other', async () => {
+    await create({}, ACTIVATED);
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, ACTIVATED, 'sales');
+
+    await upsertSeat(db, WORKSPACE_ID, { posture: 'cooldown' }, NOW, 'sales');
+
+    expect(await getSeatPosture(db, WORKSPACE_ID, NOW, 'sales')).toBe('cooldown');
+    expect(await getSeatPosture(db, WORKSPACE_ID, NOW)).toBe('steady');
+  });
+
+  it('deletes one seat and leaves the other, ramp clock and all', async () => {
+    await create({}, ACTIVATED);
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, NOW, 'sales');
+
+    expect(await deleteSeat(db, WORKSPACE_ID, 'sales')).toBe(true);
+    expect(await getSeat(db, WORKSPACE_ID, 'sales')).toBeUndefined();
+
+    const owner = await getSeat(db, WORKSPACE_ID);
+    expect(owner?.seatKey).toBe(OWNER_SEAT_KEY);
+    expect(owner?.activatedAt).toBe(ACTIVATED.toISOString());
+  });
+
+  it('refuses a seat key that could not survive a path or a query', async () => {
+    await expect(upsertSeat(db, WORKSPACE_ID, { label: 'Bad', timezone: 'UTC' }, NOW, '../../etc/passwd'))
+      .rejects.toThrow(/seat_key/);
+    await expect(upsertSeat(db, WORKSPACE_ID, { label: 'Bad', timezone: 'UTC' }, NOW, ''))
+      .rejects.toThrow(/seat_key/);
+  });
+
+  it('resolves nothing for a seat key this workspace has never had', async () => {
+    await create({}, ACTIVATED);
+    expect(await getSeat(db, WORKSPACE_ID, 'never-existed')).toBeUndefined();
+    expect(await getSeatPosture(db, WORKSPACE_ID, NOW, 'never-existed')).toBeNull();
   });
 });

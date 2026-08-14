@@ -114,11 +114,21 @@ services:
     volumes:
       - ./:/app
       - trevra-node-modules:/app/node_modules
-      # The signed-in LinkedIn profile. A NAMED VOLUME rather than container
-      # filesystem, because a recreate would otherwise throw the session away
-      # and the next tick would sign in from scratch -- a fresh login from a
-      # datacentre IP is exactly the event LinkedIn challenges.
-      - trevra-linkedin-profile:/root/.trevra/linkedin-profile
+      # Every seat's signed-in browser profile. A NAMED VOLUME rather than the
+      # container filesystem, because a recreate would otherwise throw the
+      # session away and the next tick would sign in from scratch -- a fresh
+      # login from a browser LinkedIn has never seen before is exactly the
+      # event it answers with "your account shows unusual activity".
+      #
+      # THE WHOLE `~/.trevra`, NOT ONE PROFILE INSIDE IT. `resolveProfileDir`
+      # gives every (workspace, seat) its own
+      # `/root/.trevra/linkedin-<workspace>[-<seat>]-profile` (migration 045),
+      # so a mount pinned at `linkedin-profile` persisted a path nothing writes
+      # any more and left EVERY REAL SEAT on the ephemeral container layer --
+      # a brand-new device fingerprint on every `docker compose up --build`.
+      # The Reddit worker's profile lives under the same base and is persisted
+      # by the same mount, for the same reason.
+      - trevra-browser-profiles:/root/.trevra
     depends_on:
       postgres:
         condition: service_healthy
@@ -213,7 +223,7 @@ services:
 volumes:
   trevra-postgres-data:
   trevra-node-modules:
-  trevra-linkedin-profile:
+  trevra-browser-profiles:
   nango-postgres-data:
   nango-redis-data:
   temporal-data:
