@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import {
   Check,
   CircleAlert,
@@ -210,6 +210,71 @@ export function setActiveSeatKey(next: string): void {
 export function useActiveSeatKey(): [string, (key: string) => void] {
   const key = useSyncExternalStore(subscribeToActiveAccount, activeAccountSnapshot, activeAccountSnapshot);
   return [key, setActiveSeatKey];
+}
+
+/**
+ * The switch itself, on every screen that obeys it -- and the sentence saying
+ * what obeying it means HERE.
+ *
+ * ONE COMPONENT, NOT A COPY PER SCREEN. The switch used to be rendered only on
+ * `/outreach`, while the queue, the campaign list and the funnel each read
+ * their own data with no seat at all: the choice was two clicks away from
+ * every screen it governed, and on those screens nothing said which account
+ * the rows belonged to -- so a workspace with two accounts read the first
+ * one's queue under the second one's name. A screen that shows per-account
+ * rows renders this above them; the account it names and the rows below it are
+ * then the same account, on screen, in one glance.
+ *
+ * `scope` IS REQUIRED AND IT IS THE POINT. Every screen says in its own words
+ * what this choice reaches on it -- and a screen whose data is NOT per-account
+ * says that instead, in the same place, rather than letting a switcher over
+ * workspace-wide rows imply a filter that is not there.
+ *
+ * Renders nothing at all when the workspace has no LinkedIn account yet, or
+ * when the account list cannot be read: an empty picker is not a control, and
+ * every screen that uses this has its own empty state saying to connect one.
+ */
+export function ActiveAccountBar({ scope }: { scope: ReactNode }) {
+  const [seatKey, setSeatKey] = useActiveSeatKey();
+  const [accounts, setAccounts] = useState<LinkedInSeat[] | null>(null);
+
+  const load = useCallback(async () => {
+    // Deliberately silent on failure. This is a control ABOVE the screen's own
+    // read, which has its own error banner; a second banner for the picker
+    // would report the same outage twice and push the actual work down.
+    try { setAccounts(await getLinkedInManagerSeats()); }
+    catch { setAccounts([]); }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+  useOutreachRefresh(load);
+
+  // Same correction the Accounts screen makes: a remembered key can name an
+  // account that has since been deleted, and the first account a workspace adds
+  // is not necessarily `owner`. What the screen below reads must be what this
+  // control shows, so the memory is fixed rather than quietly ignored.
+  const active = accounts?.find((account) => account.seatKey === seatKey) ?? accounts?.[0] ?? null;
+  useEffect(() => {
+    if (active && active.seatKey !== seatKey) setSeatKey(active.seatKey);
+  }, [active, seatKey, setSeatKey]);
+
+  if (!accounts || accounts.length === 0) return null;
+
+  return <section className="page-panel">
+    <div className="li-filter-row">
+      <label>Working in
+        <select
+          value={active?.seatKey ?? ''}
+          aria-label="LinkedIn account this screen is showing"
+          onChange={(event) => setSeatKey(event.target.value)}
+        >
+          {accounts.map((account) => <option key={account.seatKey} value={account.seatKey}>{account.label}</option>)}
+        </select>
+      </label>
+      <a className="li-link" href="/outreach">Accounts</a>
+    </div>
+    <p className="panel-note">{scope}</p>
+  </section>;
 }
 
 /* -------------------------------------------------------------------------
@@ -446,6 +511,18 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
   const [activeKey, setActiveKey] = useActiveSeatKey();
   const [accounts, setAccounts] = useState<LinkedInSeat[] | null>(null);
   const [details, setDetails] = useState<Record<string, LinkedInSeatResponse>>({});
+  /**
+   * The ENFORCED ceilings, per account, straight from the route that enforces
+   * them.
+   *
+   * The table below used to print the account's own configured number as the
+   * ceiling -- "4 / 30" -- while the check immediately before every action was
+   * applying `min(band, operator)` and letting 18 out. That is the silent
+   * trade-off this screen exists to stop being silent about, and the only
+   * honest fix is to print the number the server says will actually go out,
+   * next to the one the operator set. Nothing here is computed from the two.
+   */
+  const [reports, setReports] = useState<Record<string, LinkedInLimitsReport>>({});
   const [worker, setWorker] = useState<LinkedInWorkerStatus | null>(null);
   const [safety, setSafety] = useState<LinkedInLimitsReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -473,6 +550,15 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
       }));
       setDetails(Object.fromEntries(
         reads.filter((entry): entry is readonly [string, LinkedInSeatResponse] => entry[1] !== null)
+      ));
+      // Per account, and a failed one simply leaves that row saying it does not
+      // know rather than falling back to the number the form holds.
+      const ceilings = await Promise.all(list.map(async (account) => {
+        try { return [account.seatKey, await getLinkedInLimits(account.seatKey)] as const; }
+        catch { return [account.seatKey, null] as const; }
+      }));
+      setReports(Object.fromEntries(
+        ceilings.filter((entry): entry is readonly [string, LinkedInLimitsReport] => entry[1] !== null)
       ));
       setFailure('');
     } catch (error) {
@@ -557,11 +643,22 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
                   mirrored into the others, so every screen that reads it changes
                   the moment this does -- but a screen that is not about one
                   account has nothing to change, and claiming otherwise is how a
-                  switch gets blamed for a list that was never per-account. */}
+                  switch gets blamed for a list that was never per-account.
+
+                  THIS LIST IS CHECKED AGAINST THE ROUTES, not against what the
+                  switcher was meant to do. It named Campaigns and the send
+                  queue while both read every account's rows: the queue sent no
+                  seat at all, the campaign list had no filter to send one to,
+                  and the funnel took a seat key only to relabel its days with.
+                  Each of those now filters server-side, and each of those
+                  screens carries the same switch above its rows -- so the four
+                  names below are four routes that answer for one account. */}
               <p>
-                Pick the account you are working in. Every outreach screen that reads or sends as one account — Inbox,
-                Campaigns, the send queue — follows this choice, in this tab and in your other ones. Lead lists and
-                workspace settings are not per-account and do not move.
+                Pick the account you are working in. Every outreach screen that reads or sends as one account follows
+                this choice, in this tab and in your other ones: the Inbox, Approve &amp; export, the send queue, the
+                plan preview, and the daily limits and funnel on this screen. Each of them shows the same picker over
+                its rows. Lead sources, your Never contact list and workspace settings are not per-account — they are
+                shared, and switching does not move them.
               </p>
               </div>
               <button className="secondary-button li-acct-nowrap" type="button" onClick={() => setAdding((open) => !open)}>
@@ -617,6 +714,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
           {accounts.length > 1 && <AccountsTable
             accounts={accounts}
             details={details}
+            reports={reports}
             activeKey={active?.seatKey ?? ''}
             onSelect={setActiveKey}
           />}
@@ -637,9 +735,12 @@ function WorkerNotice({ worker }: { worker: LinkedInWorkerStatus | null }) {
    * its prose.
    *
    * These are the same three fields the server computes `ready` from
-   * (`enabled && playwrightInstalled && browser.canLaunchHeadless`), so this
-   * panel cannot disagree with the flag that made it appear, and no rewording
-   * of a blocker sentence can flip it. It also fixes the half of that guess
+   * (`enabled && playwrightInstalled && (canLaunchHeaded || canLaunchHeadless)`),
+   * so this panel cannot disagree with the flag that made it appear, and no
+   * rewording of a blocker sentence can flip it. A HEADED browser counts, and
+   * counting only the headless one is what had this wall appear on a machine
+   * driving a real Chrome on an Xvfb display -- over the sentence explaining
+   * that it declines to open an INVISIBLE browser. It also fixes the half of that guess
    * that was visible: the `npx playwright install` line is now printed under
    * exactly the condition the server emits that blocker under, rather than at
    * anybody whose blocker happened not to contain the word "hosted" -- which
@@ -1174,9 +1275,11 @@ function AccountPanel({ account, detail, safety, setToast, onChanged, onRemoved 
  * Every account at once, for the comparison the panel above cannot make.
  * ---------------------------------------------------------------------- */
 
-function AccountsTable({ accounts, details, activeKey, onSelect }: {
+function AccountsTable({ accounts, details, reports, activeKey, onSelect }: {
   accounts: LinkedInSeat[];
   details: Record<string, LinkedInSeatResponse>;
+  /** GET /api/linkedin/limits per account: the ceilings that are actually enforced. */
+  reports: Record<string, LinkedInLimitsReport>;
   activeKey: string;
   onSelect: (key: string) => void;
 }) {
@@ -1184,7 +1287,7 @@ function AccountsTable({ accounts, details, activeKey, onSelect }: {
     <div className="section-heading">
       <div>
         <h3 aria-level={2}>All accounts</h3>
-        <p>What each one is allowed to do in 24 hours, and what it has done. Select a name to work in that account.</p>
+        <p>What each one actually sends in 24 hours, and what it has sent. Select a name to work in that account.</p>
       </div>
       <Users size={20} className="li-heading-icon" />
     </div>
@@ -1221,20 +1324,33 @@ function AccountsTable({ accounts, details, activeKey, onSelect }: {
                 <small className="li-acct-row-mail">{minutesToClock(account.workStartMinute)}–{minutesToClock(account.workEndMinute)}</small>
               </td>
               {LIMIT_FIELDS.map((limit) => {
-                const ceiling = account[limit.field];
+                const yours = account[limit.field];
+                /* THE NUMBER THE CHECK WILL USE, from the route that runs the
+                   check. Never `min(...)` of the two here: which one binds is
+                   the server's verdict (`ceilingSource`) and it depends on the
+                   account's posture, its warm-up week and its band override --
+                   none of which this row could see. */
+                const row = reports[account.seatKey]?.limits
+                  .find((entry) => entry.kind === limit.kind && entry.window === 'day') ?? null;
+                const ceiling = row?.ceiling ?? null;
                 const used = usedToday(limit, detail);
-                const share = ceiling > 0 && used !== undefined ? Math.min(1, used / ceiling) : 0;
+                const share = ceiling !== null && ceiling > 0 && used !== undefined ? Math.min(1, used / ceiling) : 0;
+                // BOTH NUMBERS AT THE POINT OF DECISION, and only when they
+                // differ -- "30 · 30" would be noise on the accounts that agree.
+                const overruled = row !== null && ceiling !== null && ceiling !== yours;
                 return <td key={limit.field} className="li-num">
-                  {ceiling === 0
+                  {yours === 0
                     ? <span className="li-unknown">off</span>
                     : <>
-                      {used === undefined ? '—' : used} / {ceiling}
+                      {used === undefined ? '—' : used} / {ceiling ?? yours}
                       <span className="li-acct-usage" aria-hidden="true">
                         <span
                           className={`li-acct-usage-fill${share >= 1 ? ' is-full' : ''}`}
                           style={{ width: `${Math.round(share * 100)}%` }}
                         />
                       </span>
+                      {overruled && <small className="li-acct-row-mail">you set {yours}</small>}
+                      {row === null && <small className="li-acct-row-mail">you set {yours}, enforced number unread</small>}
                     </>}
                 </td>;
               })}
@@ -1244,8 +1360,10 @@ function AccountsTable({ accounts, details, activeKey, onSelect }: {
       </table>
     </div>
     <p className="panel-note">
-      These are your ceilings. Trevra’s own safety limits apply on top and win whenever they are lower — an account
-      easing in will not use all of what is set here.
+      The big number is <b>what will actually go out</b> — Trevra’s researched ceiling for that account today, after
+      its warm-up and whatever else is holding it back. Where your own setting is a different number it is named
+      underneath, so the two are never confused: you set 30, 18 goes out, and this is where you see both. Trevra’s
+      band wins whenever it is the lower of the two, unless you have said otherwise on that account.
       {LIMIT_FIELDS.filter((limit) => limit.pooledKindsLabel).map((limit) => <span key={limit.field}>
         {' '}{limit.column} is one ceiling shared by {limit.pooledKindsLabel}: a reply spends room a new message would
         have used, which is exactly how the gate spends it.
@@ -1270,6 +1388,17 @@ interface AccountDraft {
   dailyFollowLimit: string;
   /** See `BandOverrideField`: whose daily ceiling binds, the operator's or Trevra's. */
   safetyBandOverride: boolean;
+  /**
+   * A NEW proxy URL to store, or ''.
+   *
+   * Always blank on open, even for an account that has one: the server will not
+   * say a stored password back, so there is nothing to prefill and a field that
+   * looked prefilled would be lying about what saving it would write. Blank
+   * means "leave whatever is stored alone".
+   */
+  proxyUrl: string;
+  /** Tick to remove the stored proxy. Explicit, because blank already means "unchanged". */
+  proxyRemove: boolean;
 }
 
 /**
@@ -1294,7 +1423,9 @@ const emptyDraft = (timezone: string, ranges: OperatorRanges | null): AccountDra
   dailyFollowLimit: startingLimit(ranges, 'follow'),
   // A new account never opts out of the researched band on the way in: an
   // opt-out made before the account has sent anything is not an informed one.
-  safetyBandOverride: false
+  safetyBandOverride: false,
+  proxyUrl: '',
+  proxyRemove: false
 });
 
 const draftOf = (account: LinkedInSeat): AccountDraft => ({
@@ -1307,7 +1438,11 @@ const draftOf = (account: LinkedInSeat): AccountDraft => ({
   dailyMessageLimit: String(account.dailyMessageLimit),
   dailyProfileViewLimit: String(account.dailyProfileViewLimit),
   dailyFollowLimit: String(account.dailyFollowLimit),
-  safetyBandOverride: account.safetyBandOverride
+  safetyBandOverride: account.safetyBandOverride,
+  // Never prefilled: the stored URL carries a password and the server has no
+  // route that returns one.
+  proxyUrl: '',
+  proxyRemove: false
 });
 
 /** Refuses in the operator's words before the server refuses in its own. */
@@ -1340,6 +1475,15 @@ function draftToPatch(draft: AccountDraft, ranges: OperatorRanges | null) {
     limits[limit.field] = value;
   }
 
+  // ABSENT MEANS UNCHANGED, all the way to the column. Only a typed URL or an
+  // explicit removal is sent, so saving the name of an account never disturbs
+  // the proxy it routes through.
+  const proxyPatch: { proxyUrl?: string | null } = draft.proxyRemove
+    ? { proxyUrl: null }
+    : draft.proxyUrl.trim()
+      ? { proxyUrl: draft.proxyUrl.trim() }
+      : {};
+
   return {
     label,
     timezone,
@@ -1347,11 +1491,81 @@ function draftToPatch(draft: AccountDraft, ranges: OperatorRanges | null) {
     workStartMinute,
     workEndMinute,
     safetyBandOverride: draft.safetyBandOverride,
+    ...proxyPatch,
     ...limits
   };
 }
 
-function ScheduleFields({ draft, onChange, idPrefix, safety, bandOverride = false }: {
+/* -------------------------------------------------------------------------
+ * The account's own outbound proxy.
+ *
+ * WHY IT IS ON THIS SCREEN AT ALL. Trevra could always route one account's
+ * browser through a proxy, and the only way to say so was an environment
+ * variable on the machine running the worker -- which means an operator with a
+ * second account on a residential line could not configure it, and a change
+ * needed a restart. The proxy is a fact about an account, so it is edited where
+ * the account is.
+ *
+ * WHAT THIS IS NOT: it is not a way to run more accounts than you have people,
+ * and it is not the norm. Trevra's whole custody argument is that you drive your
+ * own account from your own machine and your own address, which is a better
+ * posture than the hosted tools that have to sell you a datacenter IP. Leave it
+ * empty unless you genuinely have a second line to route through.
+ *
+ * AND THE SENTENCE THAT MATTERS MOST IS THE LAST ONE: a proxy Trevra cannot use
+ * stops the account. It never quietly connects directly instead, because the
+ * whole reason to set one is that this account must not be seen coming from
+ * this machine.
+ * ---------------------------------------------------------------------- */
+function ProxyField({ draft, onChange, idPrefix, proxy }: {
+  draft: AccountDraft;
+  onChange: (patch: Partial<AccountDraft>) => void;
+  idPrefix: string;
+  /** What is stored now, redacted by the server. Null for a new account or one with none. */
+  proxy: LinkedInSeat['proxy'] | null;
+}) {
+  return <>
+    <h4 className="li-subhead" aria-level={3}>Outbound connection</h4>
+    <p className="li-hint">
+      {proxy
+        ? <>This account goes out through <b>{proxy.server}</b>{proxy.username ? <> as <b>{proxy.username}</b></> : null}
+          {proxy.hasPassword ? ' with a stored password' : ''}. Leave the box empty to keep it.</>
+        : <>This account goes out from this machine’s own connection, which is usually what you want. Set a proxy only
+          if this account should not be seen coming from here.</>}
+    </p>
+    <label htmlFor={`${idPrefix}-proxy`}>
+      {proxy ? 'Replace the proxy' : 'Proxy'}
+      <input
+        id={`${idPrefix}-proxy`}
+        type="text"
+        autoComplete="off"
+        spellCheck={false}
+        placeholder="http://user:password@host:3128"
+        value={draft.proxyUrl}
+        disabled={draft.proxyRemove}
+        onChange={(event) => onChange({ proxyUrl: event.target.value })}
+      />
+      <small className="li-acct-range">
+        http, https or socks5. A socks5 proxy may not carry a password — Chromium cannot answer its challenge.
+        The password is stored and never shown again.
+      </small>
+    </label>
+    {proxy && <label className="li-inline-check">
+      <input
+        type="checkbox"
+        checked={draft.proxyRemove}
+        onChange={(event) => onChange({ proxyRemove: event.target.checked, proxyUrl: '' })}
+      />
+      <span>Remove it and go out from this machine’s own connection</span>
+    </label>}
+    <p className="li-hint">
+      If Trevra cannot use the proxy you set, <b>this account stops</b> — its work stays queued and nothing goes out.
+      It is never sent directly instead, because that is the one outcome you set a proxy to prevent.
+    </p>
+  </>;
+}
+
+function ScheduleFields({ draft, onChange, idPrefix, safety, bandOverride = false, proxy = null }: {
   draft: AccountDraft;
   onChange: (patch: Partial<AccountDraft>) => void;
   idPrefix: string;
@@ -1359,6 +1573,8 @@ function ScheduleFields({ draft, onChange, idPrefix, safety, bandOverride = fals
   safety: LinkedInLimitsReport | null;
   /** Whether to offer the band override. Off for an account that does not exist yet. */
   bandOverride?: boolean;
+  /** The stored proxy, redacted by the server. Null for an account that does not exist yet. */
+  proxy?: LinkedInSeat['proxy'] | null;
 }) {
   const ranges = safety?.operatorRanges ?? null;
 
@@ -1390,6 +1606,15 @@ function ScheduleFields({ draft, onChange, idPrefix, safety, bandOverride = fals
     <div className="li-form-grid">
       {LIMIT_FIELDS.map((limit) => {
         const range = ranges?.[limit.range] ?? null;
+        /* BOTH NUMBERS BESIDE THE FIELD THAT SETS ONE OF THEM.
+           The form accepts 30 invites a day; the check applies
+           `min(band, operator)` and lets 18 out. Saying only "0–75" here is how
+           an operator came to believe the number they typed was the number
+           being used. The band is the server's own, read from the report -- no
+           literal, and nothing derived from it. */
+        const band: number | undefined = safety?.bands[limit.kind]?.perDay;
+        const mine = Number(draft[limit.field].trim());
+        const overruled = band !== undefined && Number.isFinite(mine) && mine > band && !draft.safetyBandOverride;
         return <label key={limit.field}>
           {limit.label}
           <input
@@ -1402,15 +1627,22 @@ function ScheduleFields({ draft, onChange, idPrefix, safety, bandOverride = fals
           />
           <small className="li-acct-range">
             {range
-              ? <>{range.min}–{range.max} · Trevra suggests {range.default}{range.min === 0 ? ' · 0 turns it off' : ''}</>
+              ? <>{range.min}–{range.max}{range.min === 0 ? ' · 0 turns it off' : ''}</>
               : <>Trevra could not read the allowed range just now. The server still refuses anything outside it.</>}
+            {band !== undefined && <> · Trevra’s researched ceiling {band}</>}
             {limit.pooledKindsLabel && <> · spent by {limit.pooledKindsLabel} together</>}
           </small>
+          {overruled && <small className="li-acct-range">
+            <b>You set {mine} · {band} will go out</b> — Trevra’s researched ceiling is the lower of the two and it is
+            what binds{bandOverride ? '' : ', on this account and on every new one'}.
+          </small>}
         </label>;
       })}
     </div>
 
     {bandOverride && <BandOverrideField draft={draft} onChange={onChange} safety={safety} />}
+
+    <ProxyField draft={draft} onChange={onChange} idPrefix={idPrefix} proxy={proxy} />
   </>;
 }
 
@@ -1675,7 +1907,14 @@ function EditAccountForm({ account, safety, setToast, onSaved }: {
         <TimezoneField value={draft.timezone} onChange={(timezone) => change({ timezone })} />
       </div>
 
-      <ScheduleFields draft={draft} onChange={change} idPrefix={`edit-${account.seatKey}`} safety={safety} bandOverride />
+      <ScheduleFields
+        draft={draft}
+        onChange={change}
+        idPrefix={`edit-${account.seatKey}`}
+        safety={safety}
+        bandOverride
+        proxy={account.proxy}
+      />
 
       <div className="panel-footer">
         <span>The short key <code>{account.seatKey}</code> cannot change — queues, exports and inboxes are filed under it.</span>

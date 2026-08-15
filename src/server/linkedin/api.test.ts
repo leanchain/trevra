@@ -2,12 +2,15 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import request from 'supertest';
 import type { Express } from 'express';
 import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { openDatabase, type Db } from '../db.js';
 import { createApp } from '../app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from '../auth-service.js';
 import { recordAction } from './actions.js';
 import { upsertSeat } from './seats.js';
-import { LinkedInApiError, writeActionStatus } from './campaigns.js';
+import { createCampaign, LinkedInApiError, writeActionStatus } from './campaigns.js';
 import { canonicalPayloadHash } from '../control-plane/payload.js';
 
 /**
@@ -259,6 +262,99 @@ describe('GET /api/linkedin/limits', () => {
     expect(body.signals.dayOverDay.confidence).toBe('REPORTED');
   });
 
+  it('publishes BOTH numbers and says which one bound, so the trade-off is not silent', async () => {
+    // THE DEFECT THIS ASSERTS AGAINST: an operator sets 30, `min(band,
+    // operator)` lets 18 out, and every screen printed one number without ever
+    // naming the other or saying whose it was. Every figure a screen prints has
+    // to come from here, so all three have to be here.
+    await upsertSeat(
+      db,
+      WORKSPACE_A,
+      { label: 'Pankaj (founder)', timezone: 'Europe/Zurich', dailyInviteLimit: 30 },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+
+    const body = (await as(sessionA).get('/api/linkedin/limits').expect(200)).body as {
+      seat: { safetyBandOverride: boolean };
+      limits: Array<{
+        kind: string;
+        window: string;
+        ceiling: number;
+        bandCeiling: number;
+        operatorLimit?: number | null;
+        ceilingSource?: string;
+        rule: string;
+      }>;
+    };
+    const invite = body.limits.find((limit) => limit.kind === 'invite' && limit.window === 'day')!;
+
+    expect(body.seat.safetyBandOverride).toBe(false);
+    expect(invite.operatorLimit).toBe(30);
+    expect(invite.bandCeiling).toBeLessThan(30);
+    // The researched band still binds by default -- that decision is unchanged.
+    expect(invite.ceilingSource).toBe('band');
+    expect(invite.ceiling).toBe(invite.bandCeiling);
+    // And the sentence beside it names both numbers rather than only the one
+    // that won.
+    expect(invite.rule).toContain('30');
+    expect(invite.rule).toContain(String(invite.bandCeiling));
+
+    // The per-account opt-out is what changes which of the two binds, and it
+    // says so on the row rather than only on the seat.
+    await upsertSeat(
+      db,
+      WORKSPACE_A,
+      { label: 'Pankaj (founder)', timezone: 'Europe/Zurich', dailyInviteLimit: 30, safetyBandOverride: true },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+    const overridden = (await as(sessionA).get('/api/linkedin/limits').expect(200)).body as {
+      seat: { safetyBandOverride: boolean };
+      limits: Array<{ kind: string; window: string; ceiling: number; bandCeiling: number; ceilingSource?: string }>;
+    };
+    const raised = overridden.limits.find((limit) => limit.kind === 'invite' && limit.window === 'day')!;
+    expect(overridden.seat.safetyBandOverride).toBe(true);
+    expect(raised.ceilingSource).toBe('operator-override');
+    expect(raised.ceiling).toBe(30);
+    // The band is still reported: an override changes what binds, never what
+    // the research says.
+    expect(raised.bandCeiling).toBeLessThan(30);
+  });
+
+  it('stores an account proxy, never says its password back, and refuses one it could not use', async () => {
+    await seat(WORKSPACE_A, '2026-01-01');
+
+    // REFUSED AT THE WRITE, through the launcher's own resolver: storing a value
+    // the worker would reject is storing an account that silently does no work.
+    const refused = await as(sessionA).put('/api/linkedin/seat')
+      .send({ proxyUrl: 'socks5://relay:hunter2@proxy.example:1080' })
+      .expect(400);
+    expect((refused.body as { error: string }).error).toContain('SOCKS');
+    expect((refused.body as { error: string }).error).not.toContain('hunter2');
+
+    const saved = (await as(sessionA).put('/api/linkedin/seat')
+      .send({ proxyUrl: 'http://relay:hunter2@proxy.example:3128' })
+      .expect(200)).body as { seat: { proxy: { server: string; username: string | null; hasPassword: boolean } | null } };
+    expect(saved.seat.proxy).toEqual({ server: 'http://proxy.example:3128', username: 'relay', hasPassword: true });
+    // The one rule this feature cannot break: a stored password is never
+    // rendered back to a browser, in any field, on any route.
+    expect(JSON.stringify(saved)).not.toContain('hunter2');
+
+    const read = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as {
+      seat: { proxy: { server: string } | null };
+    };
+    expect(read.seat.proxy?.server).toBe('http://proxy.example:3128');
+    expect(JSON.stringify(read)).not.toContain('hunter2');
+
+    // A save that says nothing about the proxy leaves it alone; an explicit
+    // null removes it.
+    const renamed = (await as(sessionA).put('/api/linkedin/seat').send({ label: 'Pankaj (renamed)' }).expect(200))
+      .body as { seat: { proxy: { server: string } | null } };
+    expect(renamed.seat.proxy?.server).toBe('http://proxy.example:3128');
+    const cleared = (await as(sessionA).put('/api/linkedin/seat').send({ proxyUrl: null }).expect(200))
+      .body as { seat: { proxy: unknown } };
+    expect(cleared.seat.proxy).toBeNull();
+  });
+
   it('paces a workspace with no seat as a week-1 account rather than guessing', async () => {
     const body = (await as(sessionA).get('/api/linkedin/limits').expect(200)).body as {
       seat: { configured: boolean };
@@ -292,9 +388,53 @@ describe('POST /api/linkedin/targets/import', () => {
     expect(body.parsed).toBe(2);
     expect(body.contacts[0].company).toBe('Acme, Inc.');
     expect(body.contacts[0].role).toBe('Head of Platform');
-    expect(body.contacts[1].lastName).toBe('Keller, Jr.');
+    // The COLUMN is intact -- `Keller, Jr.` did not shift anything right of it,
+    // which is what this test is about. The value is then scrubbed like every
+    // other name in the product: `Jr` is a suffix, not a surname.
+    expect(body.contacts[1].lastName).toBe('Keller');
     expect(body.contacts[1].company).toBe('The "Good" Company');
     expect(await actionCount(WORKSPACE_A)).toBe(0);
+  });
+
+  it('scrubs a name column through the same path the managed lead import uses', async () => {
+    // THE BUG: this route read its name columns with a bare `.trim()`, so a
+    // LinkedIn display name arrived intact -- "Dr. Maya \u{1F642}" stored as a
+    // FIRST NAME, exported to the file an operator sends from, and rendered
+    // into `Hi {{firstName}}`.
+    await seat(WORKSPACE_A, '2026-01-01');
+    const csv = [
+      'profileUrl,firstName,lastName,company',
+      'https://www.linkedin.com/in/maya,Dr. Maya \u{1F642},"Chen, MBA",Acme',
+      'https://www.linkedin.com/in/anh,Anh,Do,Acme'
+    ].join('\n');
+
+    const body = (await as(sessionA).post('/api/linkedin/targets/import')
+      .attach('file', Buffer.from(csv, 'utf8'), 'targets.csv')
+      .expect(200)).body as { contacts: Array<{ firstName: string; lastName: string }> };
+
+    expect(body.contacts[0].firstName).toBe('Maya');
+    expect(body.contacts[0].lastName).toBe('Chen');
+    // AND THE FALLBACK IS KEPT: `Do` is in the title table and it is also a
+    // surname, and a header that already said "Last name" settles which. A
+    // scrub may not empty a dedicated column.
+    expect(body.contacts[1].lastName).toBe('Do');
+  });
+
+  it('splits a single display-name column rather than storing a title as a first name', async () => {
+    await seat(WORKSPACE_A, '2026-01-01');
+    const csv = [
+      'profileUrl,name,company',
+      'https://www.linkedin.com/in/rossi,"Prof. Maria del Carmen Rossi \u{1F1EA}\u{1F1F8}",Acme'
+    ].join('\n');
+
+    const body = (await as(sessionA).post('/api/linkedin/targets/import')
+      .attach('file', Buffer.from(csv, 'utf8'), 'targets.csv')
+      .expect(200)).body as { contacts: Array<{ firstName: string; lastName: string }> };
+
+    expect(body.contacts[0].firstName).toBe('Maria');
+    // Everything after the given name, particles kept: picking the last token
+    // would rename half of Latin America.
+    expect(body.contacts[0].lastName).toBe('del Carmen Rossi');
   });
 
   it('reports rows it could not use rather than silently dropping them', async () => {
@@ -339,6 +479,53 @@ describe('GET /api/linkedin/worker/status', () => {
     expect(body.browser.canLaunchHeaded).toBe(false);
     expect(body.browser.reasons.length).toBeGreaterThan(0);
     expect(body.ready).toBe(false);
+  });
+
+  /**
+   * A HEADED BROWSER IS A BROWSER.
+   *
+   * `ready` was `enabled && playwrightInstalled && canLaunchHeadless`, which
+   * was a fair proxy for "can this machine open a browser" only while the two
+   * verdicts moved together. `TREVRA_LINKEDIN_HEADLESS=false` separated them --
+   * and a worker driving a real Chrome on an Xvfb display was told it could not
+   * open a browser at all, over the sentence explaining that it declines to
+   * open an INVISIBLE one. Headed is also the BETTER of the two: headless
+   * Chrome reports SwiftShader as its WebGL renderer even on a machine with a
+   * GPU, and names itself in its own user agent.
+   */
+  it('is ready on a machine that can only open a browser somebody can see', async () => {
+    // A machine exactly like the dev container after `Dockerfile.dev` gained
+    // Xvfb: a browser registry, a display, and an explicit refusal to run
+    // headless. `vitest.setup.ts` removes all three for every other test.
+    const registry = mkdtempSync(join(tmpdir(), 'trevra-headed-'));
+    mkdirSync(join(registry, 'chromium-1148'), { recursive: true });
+    const saved = {
+      browsers: process.env.PLAYWRIGHT_BROWSERS_PATH,
+      display: process.env.DISPLAY,
+      headless: process.env.TREVRA_LINKEDIN_HEADLESS
+    };
+    process.env.PLAYWRIGHT_BROWSERS_PATH = registry;
+    process.env.DISPLAY = ':99';
+    process.env.TREVRA_LINKEDIN_HEADLESS = 'false';
+
+    try {
+      const body = await workerStatus();
+
+      expect(body.browser.canLaunchHeaded).toBe(true);
+      // Declining to open an invisible browser is not the same as being unable
+      // to open one, and the screen must not confuse them.
+      expect(body.browser.canLaunchHeadless).toBe(false);
+      expect(body.ready).toBe(true);
+      expect(body.blockers).toEqual([]);
+    } finally {
+      if (saved.browsers === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+      else process.env.PLAYWRIGHT_BROWSERS_PATH = saved.browsers;
+      if (saved.display === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = saved.display;
+      if (saved.headless === undefined) delete process.env.TREVRA_LINKEDIN_HEADLESS;
+      else process.env.TREVRA_LINKEDIN_HEADLESS = saved.headless;
+      rmSync(registry, { recursive: true, force: true });
+    }
   });
 
   it('gives ONE next action per problem, and never names an environment variable', async () => {
@@ -1114,10 +1301,48 @@ describe('campaign lifecycle', () => {
  * and that a refusal says which kind of off it is.
  */
 describe('lead sourcing routes (030)', () => {
-  it('refuses every write while the opt-in is off, and names the switch', async () => {
-    // OFF BY DEFAULT and separately from the worker: harvesting other people's
-    // profiles is a decision with a different name on it than sending from your
-    // own account, so a self-hoster who upgraded must not acquire a crawler.
+  const SOURCING = 'TREVRA_LINKEDIN_LEAD_SOURCING';
+  const MODE = 'TREVRA_DEPLOYMENT_MODE';
+  const before = { sourcing: process.env[SOURCING], mode: process.env[MODE] };
+  afterEach(() => {
+    if (before.sourcing === undefined) delete process.env[SOURCING]; else process.env[SOURCING] = before.sourcing;
+    if (before.mode === undefined) delete process.env[MODE]; else process.env[MODE] = before.mode;
+  });
+
+  it('is ON for a self-hosted deployment without anybody setting anything', async () => {
+    // The switch used to be opt-in, so a self-hoster's Find-leads screen refused
+    // with a sentence naming an environment variable they had no reason to know
+    // existed. `TREVRA_DEPLOYMENT_MODE=local` already says this Trevra serves
+    // one operator driving their own account.
+    delete process.env[SOURCING];
+    delete process.env[MODE];
+    const created = await as(sessionA).post('/api/linkedin/lead-sources')
+      .send({ kind: 'search', url: 'https://www.linkedin.com/search/results/people/?keywords=revops' })
+      .expect(201);
+    expect((created.body as { source: { kind: string } }).source.kind).toBe('search');
+
+    const listed = (await as(sessionA).get('/api/linkedin/lead-sources').expect(200)).body as {
+      enabled: boolean;
+      offReason: string | null;
+    };
+    expect(listed.enabled).toBe(true);
+    expect(listed.offReason).toBeNull();
+  });
+
+  it('is a HARD no on a hosted deployment, and no setting undoes it', async () => {
+    // The refusal this change may never weaken: a hosted, multi-tenant Trevra
+    // reading profiles on one human's session is the exposure the whole design
+    // avoids, and an explicit opt-in does not buy past it.
+    process.env[SOURCING] = 'true';
+    process.env[MODE] = 'hosted';
+    const refused = await as(sessionA).post('/api/linkedin/lead-sources')
+      .send({ kind: 'search', url: 'https://www.linkedin.com/search/results/people/?keywords=revops' })
+      .expect(409);
+    expect((refused.body as { error: string }).error).toContain('cannot be enabled');
+  });
+
+  it('refuses every write when the operator switched it off, and names the switch', async () => {
+    process.env[SOURCING] = 'false';
     const refused = await as(sessionA).post('/api/linkedin/lead-sources')
       .send({ kind: 'search', url: 'https://www.linkedin.com/search/results/people/?keywords=revops' })
       .expect(409);
@@ -1127,6 +1352,7 @@ describe('lead sourcing routes (030)', () => {
   it('still lists sources when the switch is off, reporting why rather than refusing', async () => {
     // A workspace with sources from before the switch was turned off must be
     // able to read what they found. Reading is not harvesting.
+    process.env[SOURCING] = 'false';
     const listed = (await as(sessionA).get('/api/linkedin/lead-sources').expect(200)).body as {
       enabled: boolean;
       offReason: string | null;
@@ -1475,7 +1701,13 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     const body = (await as(sessionA).get('/api/linkedin/analytics').expect(200)).body as {
       windowDays: number;
       total: { sent: number; accepted: number };
-      byCampaign: Array<{ campaignId: string; name: string; acceptanceRate: number | null }>;
+      byCampaign: Array<{
+        campaignId: string;
+        name: string;
+        invitesSent: number;
+        acceptanceRate: number | null;
+        acceptanceRateOfDecided: number | null;
+      }>;
       series: Array<{ date: string }>;
     };
 
@@ -1484,8 +1716,205 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     expect(body.total.sent).toBe(1);
     const campaign = body.byCampaign.find((entry) => entry.campaignId === campaignId);
     expect(campaign?.name).toBe('Platform leads');
-    // 1 accepted of 2 decided. An unanswered invite is not a refusal and is not
-    // in the denominator.
-    expect(campaign?.acceptanceRate).toBeCloseTo(0.5);
+    // 1 accepted of 3 INVITES SENT -- the one denominator a user is shown, on
+    // this screen and on Campaigns. The declined invite is in it because it was
+    // sent; the unanswered one is in it because it was sent too.
+    expect(campaign?.invitesSent).toBe(3);
+    expect(campaign?.acceptanceRate).toBeCloseTo(1 / 3);
+    // The throttle's kinder denominator is still reported, under its own name,
+    // so the two figures cannot be confused for each other: 1 of 2 decided.
+    expect(campaign?.acceptanceRateOfDecided).toBeCloseTo(0.5);
+
+    // ALL TIME IS A WINDOW THE ROUTE ACCEPTS. `days=0` used to be a 400 --
+    // `min(1)` -- which is why the screen sent a constant 7 and printed "every
+    // action ever filed" over the answer.
+    const all = (await as(sessionA).get('/api/linkedin/analytics?days=0').expect(200)).body as { windowDays: number | null };
+    expect(all.windowDays).toBeNull();
+  });
+});
+
+/**
+ * THE ACCOUNT SWITCHER, AT THE ROUTES IT CLAIMS TO REACH.
+ *
+ * `useActiveSeatKey` is one value for the whole browser tab, and the copy on
+ * the Accounts screen tells an operator that picking an account moves the
+ * Inbox, the campaign list, the send queue and the numbers with them. Only the
+ * inbox was true of: the queue sent no `seatKey` at all, the campaign list had
+ * no filter to send one to, and analytics took the key and used it to relabel
+ * the days of a workspace-wide count.
+ *
+ * Every test here is the same shape and it is the shape that matters: TWO
+ * accounts in ONE workspace, a row belonging to each, and an assertion that
+ * the second account's row is ABSENT from the first account's answer. A route
+ * that merely accepts `seatKey` passes nothing here -- a filter that is
+ * ignored returns both rows, which is exactly what these caught.
+ */
+describe('account (seat) scoping', () => {
+  const SECOND_SEAT = 'partner';
+  /** Past the warm-up ramp, so a campaign run reaches its approval step rather than being refused for having no slots. */
+  const ESTABLISHED = new Date(NOW.getTime() - 90 * 86_400_000);
+
+  const SEQUENCE_STEP = {
+    id: 'open',
+    day: 0,
+    kind: 'invite',
+    intent: 'Open the conversation',
+    template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.'
+  };
+
+  /** Two LinkedIn accounts in one workspace, both established. */
+  async function twoAccounts(workspaceId: string): Promise<void> {
+    await upsertSeat(db, workspaceId, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich' }, ESTABLISHED);
+    await upsertSeat(db, workspaceId, { label: 'Partner', timezone: 'America/Los_Angeles' }, ESTABLISHED, SECOND_SEAT);
+  }
+
+  it('answers the send queue for the account asked for, and never with the other one\'s rows', async () => {
+    await twoAccounts(WORKSPACE_A);
+    await recordAction(db, { workspaceId: WORKSPACE_A, kind: 'invite', targetRef: 'in/owner-target', status: 'planned', source: 'export', plannedFor: NOW.toISOString() }, NOW);
+    await recordAction(db, { workspaceId: WORKSPACE_A, seatKey: SECOND_SEAT, kind: 'invite', targetRef: 'in/partner-target', status: 'planned', source: 'export', plannedFor: NOW.toISOString() }, NOW);
+
+    type Queue = { actions: Array<{ targetRef: string; seatKey: string }> };
+    const owner = (await as(sessionA).get('/api/linkedin/actions?seatKey=owner').expect(200)).body as Queue;
+    expect(owner.actions.map((action) => action.targetRef)).toEqual(['in/owner-target']);
+
+    const partner = (await as(sessionA).get(`/api/linkedin/actions?seatKey=${SECOND_SEAT}`).expect(200)).body as Queue;
+    expect(partner.actions.map((action) => action.targetRef)).toEqual(['in/partner-target']);
+
+    // And the filter is a NARROWING, not a new default: a caller that names no
+    // account still gets the workspace, which is what every pre-switcher
+    // caller has always meant.
+    const both = (await as(sessionA).get('/api/linkedin/actions').expect(200)).body as Queue;
+    expect(both.actions.map((action) => action.targetRef).sort()).toEqual(['in/owner-target', 'in/partner-target']);
+  });
+
+  it('lists only the campaigns filed against the account asked for', async () => {
+    await twoAccounts(WORKSPACE_A);
+    await createCampaign(db, { id: 'lcmp_owner_only', workspaceId: WORKSPACE_A, name: 'Owner campaign', status: 'running' }, NOW);
+    await createCampaign(db, { id: 'lcmp_partner_only', workspaceId: WORKSPACE_A, name: 'Partner campaign', status: 'running', seatKey: SECOND_SEAT }, NOW);
+
+    type List = { campaigns: Array<{ id: string; seatKey: string }> };
+    const owner = (await as(sessionA).get('/api/linkedin/campaigns?seatKey=owner').expect(200)).body as List;
+    expect(owner.campaigns.map((campaign) => campaign.id)).toEqual(['lcmp_owner_only']);
+    expect(owner.campaigns[0].seatKey).toBe('owner');
+
+    const partner = (await as(sessionA).get(`/api/linkedin/campaigns?seatKey=${SECOND_SEAT}`).expect(200)).body as List;
+    expect(partner.campaigns.map((campaign) => campaign.id)).toEqual(['lcmp_partner_only']);
+
+    const both = (await as(sessionA).get('/api/linkedin/campaigns').expect(200)).body as List;
+    expect(both.campaigns.map((campaign) => campaign.id).sort()).toEqual(['lcmp_owner_only', 'lcmp_partner_only']);
+  });
+
+  it('files a new campaign against the account it was planned for, not against the owner', async () => {
+    await twoAccounts(WORKSPACE_A);
+
+    const created = (await as(sessionA).post('/api/linkedin/campaigns').send({
+      name: 'Partner outreach',
+      input: {
+        seatKey: SECOND_SEAT,
+        targets: ['https://www.linkedin.com/in/ada-lovelace/'],
+        sequenceSteps: [SEQUENCE_STEP]
+      }
+    }).expect(201)).body as { campaign: { id: string; seatKey: string }; run: { input: { seatKey?: string } } };
+
+    // The row, not just the response: `createCampaign` used to default the
+    // column to the owner whatever the run was planned against.
+    expect(created.campaign.seatKey).toBe(SECOND_SEAT);
+    const stored = await db.prepare('SELECT seat_key FROM linkedin_campaigns WHERE id=?').get<{ seat_key: string }>(created.campaign.id);
+    expect(stored?.seat_key).toBe(SECOND_SEAT);
+    // The plan was paced against the same account, so the campaign and its
+    // schedule cannot describe two different LinkedIn profiles.
+    expect(created.run.input.seatKey).toBe(SECOND_SEAT);
+
+    type List = { campaigns: Array<{ id: string }> };
+    const ownerList = (await as(sessionA).get('/api/linkedin/campaigns?seatKey=owner').expect(200)).body as List;
+    expect(ownerList.campaigns.map((campaign) => campaign.id)).not.toContain(created.campaign.id);
+    const partnerList = (await as(sessionA).get(`/api/linkedin/campaigns?seatKey=${SECOND_SEAT}`).expect(200)).body as List;
+    expect(partnerList.campaigns.map((campaign) => campaign.id)).toContain(created.campaign.id);
+  });
+
+  it('refuses to plan a campaign for an account this workspace does not have', async () => {
+    await twoAccounts(WORKSPACE_A);
+    const refused = await as(sessionA).post('/api/linkedin/campaigns').send({
+      name: 'Ghost outreach',
+      input: { seatKey: 'ghost', targets: ['https://www.linkedin.com/in/ada-lovelace/'], sequenceSteps: [SEQUENCE_STEP] }
+    }).expect(404);
+    expect(refused.body.error).toContain('not configured for this workspace');
+    // Refused BEFORE anything was written: no campaign, no run, no slots.
+    expect(await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_campaigns WHERE workspace_id=?')
+      .get<{ total: number }>(WORKSPACE_A)).toEqual({ total: 0 });
+    expect(await actionCount(WORKSPACE_A)).toBe(0);
+  });
+
+  it('counts analytics for one account only, and says which account it counted', async () => {
+    await twoAccounts(WORKSPACE_A);
+    await createCampaign(db, { id: 'lcmp_owner_stats', workspaceId: WORKSPACE_A, name: 'Owner campaign', status: 'running' }, NOW);
+    await createCampaign(db, { id: 'lcmp_partner_stats', workspaceId: WORKSPACE_A, name: 'Partner campaign', status: 'running', seatKey: SECOND_SEAT }, NOW);
+    await recordAction(db, { workspaceId: WORKSPACE_A, kind: 'invite', targetRef: 'in/owner-sent', campaignId: 'lcmp_owner_stats', status: 'sent', source: 'manual' }, NOW);
+    await recordAction(db, { workspaceId: WORKSPACE_A, seatKey: SECOND_SEAT, kind: 'invite', targetRef: 'in/partner-sent', campaignId: 'lcmp_partner_stats', status: 'sent', source: 'manual' }, NOW);
+    await recordAction(db, { workspaceId: WORKSPACE_A, seatKey: SECOND_SEAT, kind: 'invite', targetRef: 'in/partner-accepted', campaignId: 'lcmp_partner_stats', status: 'accepted', source: 'manual' }, NOW);
+
+    type Funnel = {
+      seatKey: string | null;
+      total: { sent: number; accepted: number };
+      byCampaign: Array<{ campaignId: string }>;
+      series: Array<{ sent: number; accepted: number }>;
+    };
+
+    const owner = (await as(sessionA).get('/api/linkedin/analytics?seatKey=owner').expect(200)).body as Funnel;
+    expect(owner.seatKey).toBe('owner');
+    expect(owner.total.sent).toBe(1);
+    expect(owner.total.accepted).toBe(0);
+    expect(owner.byCampaign.map((row) => row.campaignId)).toEqual(['lcmp_owner_stats']);
+    // The chart under the numbers is cut from the same rows, so it cannot
+    // disagree with them: one sent, none accepted.
+    expect(owner.series.reduce((sum, day) => sum + day.sent, 0)).toBe(1);
+    expect(owner.series.reduce((sum, day) => sum + day.accepted, 0)).toBe(0);
+
+    const partner = (await as(sessionA).get(`/api/linkedin/analytics?seatKey=${SECOND_SEAT}`).expect(200)).body as Funnel;
+    expect(partner.seatKey).toBe(SECOND_SEAT);
+    expect(partner.total.sent).toBe(1);
+    expect(partner.total.accepted).toBe(1);
+    expect(partner.byCampaign.map((row) => row.campaignId)).toEqual(['lcmp_partner_stats']);
+    expect(partner.series.reduce((sum, day) => sum + day.accepted, 0)).toBe(1);
+
+    // Unnamed is still the whole workspace, and says so with a null seat.
+    const workspace = (await as(sessionA).get('/api/linkedin/analytics').expect(200)).body as Funnel;
+    expect(workspace.seatKey).toBeNull();
+    expect(workspace.total.sent).toBe(2);
+    expect(workspace.byCampaign.map((row) => row.campaignId).sort()).toEqual(['lcmp_owner_stats', 'lcmp_partner_stats']);
+  });
+
+  it('reports each account\'s own limits, spent against its own ledger', async () => {
+    await twoAccounts(WORKSPACE_A);
+    // Written at the REAL now, not the fixture's: every ceiling here is a
+    // rolling 24h window measured from the moment the route runs, so a send
+    // dated a week ago is correctly spent against nothing.
+    const justNow = new Date();
+    await recordAction(db, { workspaceId: WORKSPACE_A, seatKey: SECOND_SEAT, kind: 'invite', targetRef: 'in/partner-spent', status: 'sent', source: 'manual' }, justNow);
+
+    type Report = { seat: { label: string; timezone: string }; limits: Array<{ kind: string; window: string; used: number }> };
+    const used = (report: Report) => report.limits.find((limit) => limit.kind === 'invite' && limit.window === 'day')?.used;
+
+    const owner = (await as(sessionA).get('/api/linkedin/limits?seatKey=owner').expect(200)).body as Report;
+    expect(owner.seat.timezone).toBe('Europe/Zurich');
+    expect(used(owner)).toBe(0);
+
+    const partner = (await as(sessionA).get(`/api/linkedin/limits?seatKey=${SECOND_SEAT}`).expect(200)).body as Report;
+    expect(partner.seat.label).toBe('Partner');
+    expect(partner.seat.timezone).toBe('America/Los_Angeles');
+    expect(used(partner)).toBe(1);
+  });
+
+  it('keeps the seat filter inside the workspace it was asked in', async () => {
+    // Two workspaces both using the key 'partner'. `seat_key` is not unique on
+    // its own, so a filter that reached SQL without the workspace predicate
+    // beside it would answer with somebody else's account.
+    await twoAccounts(WORKSPACE_A);
+    await twoAccounts(WORKSPACE_B);
+    await recordAction(db, { workspaceId: WORKSPACE_A, seatKey: SECOND_SEAT, kind: 'invite', targetRef: 'in/a-partner', status: 'planned', source: 'export', plannedFor: NOW.toISOString() }, NOW);
+    await recordAction(db, { workspaceId: WORKSPACE_B, seatKey: SECOND_SEAT, kind: 'invite', targetRef: 'in/b-partner', status: 'planned', source: 'export', plannedFor: NOW.toISOString() }, NOW);
+
+    const mine = (await as(sessionA).get(`/api/linkedin/actions?seatKey=${SECOND_SEAT}`).expect(200)).body as { actions: Array<{ targetRef: string }> };
+    expect(mine.actions.map((action) => action.targetRef)).toEqual(['in/a-partner']);
   });
 });

@@ -190,6 +190,16 @@ import {
 } from './linkedin/export.js';
 import { queueCampaign } from './linkedin/queue.js';
 import {
+  HOSTED_EXECUTION_ACK_REQUIRED,
+  HOSTED_EXECUTION_STATEMENT,
+  HOSTED_EXECUTION_STATEMENT_VERSION,
+  describeHostedExecutionAck,
+  hostedExecutionGate,
+  hostedExecutionMode,
+  recordHostedExecutionAck,
+  revokeHostedExecutionAck
+} from './linkedin/hosted-execution.js';
+import {
   detectLinkedInSeat,
   latestSeatDetectRequest,
   linkedInBrowserReadiness,
@@ -197,6 +207,7 @@ import {
   linkedInOffReason,
   loginLinkedInSeat,
   requestSeatDetect,
+  resolveSeatProxy,
   type LinkedInLocalWorkerConfig
 } from './linkedin/local-worker.js';
 import {
@@ -267,7 +278,7 @@ import {
   isEngagementKind,
   recordEngagement
 } from './linkedin/engagement.js';
-import { syncLinkedInInbox, syncLinkedInPendingInvites, syncLinkedInThread } from './linkedin/jobs.js';
+import { detectLinkedInAcceptances, syncLinkedInInbox, syncLinkedInPendingInvites, syncLinkedInThread } from './linkedin/jobs.js';
 import {
   DEFAULT_SEQUENCE_TEMPLATE_ID,
   SEQUENCE_TEMPLATES,
@@ -278,7 +289,7 @@ import { briefFromProfile, briefIsComplete } from './linkedin/brief.js';
 import { suggestBriefFields } from './linkedin/brief-suggest.js';
 import { enrichCompany } from './skills/enrich.js';
 import { addExclusions, filterExcluded, listExclusions } from './linkedin/exclusions.js';
-import { parseLeadCsv } from './linkedin/lead-import.js';
+import { parseLeadCsv, scrubNameField, splitAndScrubName } from './linkedin/lead-import.js';
 import {
   LEAD_CONTACT_READ_LIMIT,
   countLeadContacts,
@@ -1932,9 +1943,24 @@ export function createApp(db: Db) {
    * THE INVARIANT, restated where the routes live because this is where it
    * would be broken: NO ROUTE HERE SENDS ANYTHING. The API plans, prices the
    * plan against the seat's real ledger, and carries it to a human for
-   * approval. What reaches LinkedIn reaches it either through the operator's
-   * own tool -- from a file they downloaded -- or through the self-hosted
-   * local worker driving the browser they logged into by hand.
+   * approval. Every route below returns before anything reaches LinkedIn.
+   *
+   * WHAT REACHES LINKEDIN, AND FROM WHERE. Three answers now, and the third is
+   * new (docs/hosted-execution.md):
+   *
+   *   1. the operator's own tool, from a file they downloaded;
+   *   2. the self-hosted local worker (`npm run linkedin:worker`), driving the
+   *      browser on their machine that they logged into by hand;
+   *   3. the HOSTED RUNNER -- the same worker loop, in Trevra's own process,
+   *      driving a remote browser over CDP -- for a workspace whose owner has
+   *      recorded an explicit authorisation and whose seat has a proxy.
+   *
+   * The invariant survives all three because it was never "nothing sends": it
+   * is "no ROUTE sends". A route enqueues a planned row and answers; a worker
+   * loop claims it later, behind every safety gate. The comment that used to
+   * sit here said the third case was impossible, which stopped being true the
+   * day the runner shipped -- and a false comment in the file that enforces the
+   * rule is worse than no comment at all.
    *
    * Structurally, not by convention: every status write below goes through
    * `writeActionStatus` in linkedin/campaigns.ts, which refuses a
@@ -1993,6 +2019,7 @@ export function createApp(db: Db) {
   app.put('/api/linkedin/seat', linkedinRoute(async (req, res) => {
     assertWorkspaceOwner(req, "change a LinkedIn account's limits");
     const { seatKey = OWNER_SEAT_KEY, ...input } = linkedinSeatSchema.parse(req.body ?? {});
+    assertSeatProxyUsable(req.auth!.workspaceId, seatKey, input.proxyUrl);
     const now = new Date();
     let seat;
     try {
@@ -2185,8 +2212,17 @@ export function createApp(db: Db) {
       throw new LinkedInApiError('Only the workspace owner can manage the stored LinkedIn credentials', 403);
     }
 
-    // The one unconditional gate, read from the one definition of it.
-    if (linkedInWorkerConfig().hosted) throw new LinkedInApiError(LINKEDIN_CREDENTIALS_HOSTED_REFUSAL, 409);
+    // THE HOSTED GATE, READ FROM THE ONE DEFINITION OF IT -- and it is no
+    // longer unconditional, which is the whole of what hosted execution
+    // changed here. A hosted deployment refuses exactly as it always did, with
+    // the same sentence, UNLESS it has a remote browser to act with AND this
+    // workspace's owner has recorded an authorisation to act on their behalf.
+    // Both halves are checked inside `putLinkedInCredentials` too, structurally
+    // and unconditionally, so a caller that skipped this still stores nothing;
+    // asking here is what turns the refusal into a 409 with one sentence rather
+    // than a 500.
+    const hostedCustody = await hostedExecutionGate(db, workspaceId);
+    if (!hostedCustody.allowed) throw new LinkedInApiError(hostedCustody.reason, 409);
     // A deployment with no key would seal nothing, and `sealSecret` would throw
     // a sentence about environment variables into a 500. Asked first instead.
     if (!secretsConfigured()) throw new LinkedInApiError(LINKEDIN_CREDENTIALS_UNSEALED_REFUSAL, 409);
@@ -2203,7 +2239,10 @@ export function createApp(db: Db) {
     } catch (error) {
       // The store's own refusals are operator-facing facts, not faults. Nothing
       // it throws contains either value.
-      if (error instanceof Error && error.message === LINKEDIN_CREDENTIALS_HOSTED_REFUSAL) {
+      if (
+        error instanceof Error
+        && (error.message === LINKEDIN_CREDENTIALS_HOSTED_REFUSAL || error.message === HOSTED_EXECUTION_ACK_REQUIRED)
+      ) {
         throw new LinkedInApiError(error.message, 409);
       }
       throw error;
@@ -2229,6 +2268,85 @@ export function createApp(db: Db) {
     const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
     await deleteLinkedInCredentials(db, workspaceId, req.auth!.userId, seatKey);
     res.json({ hasCredentials: false, maskedEmail: null });
+  }));
+
+  /* ---------------------------------------------------------------------
+   * Hosted execution: the authorisation, and only the authorisation.
+   *
+   * WHAT THESE THREE ROUTES DO AND DO NOT DO. They record, read and withdraw
+   * ONE workspace-level fact: that this workspace's owner authorises Trevra to
+   * act on their LinkedIn account from Trevra's own servers. They configure
+   * nothing, they enable nothing on their own, and none of them touches a
+   * browser. Hosted execution needs a remote browser provider configured
+   * (deployment-level, environment only, no route can change it), this record,
+   * a stored sign-in, a per-seat proxy, and every pre-existing safety gate
+   * still passing -- see `linkedin/hosted-execution.ts` and
+   * docs/hosted-execution.md.
+   *
+   * OWNER-ONLY, on the same carve-out as the credential routes: this is the
+   * decision to hand an account over, and it is the account holder's alone.
+   *
+   * THE STATEMENT IS RETURNED BY THE GET so that whatever renders the consent
+   * shows the exact wording the version number refers to, rather than a copy
+   * that can drift from it.
+   * ------------------------------------------------------------------ */
+
+  app.get('/api/linkedin/hosted-execution', linkedinRoute(async (req, res) => {
+    const mode = hostedExecutionMode();
+    const ack = await describeHostedExecutionAck(db, req.auth!.workspaceId);
+    const gate = await hostedExecutionGate(db, req.auth!.workspaceId);
+    res.json({
+      // Nothing here is a secret: a provider LABEL (a host name or the
+      // operator's own word for it), never the endpoint, which carries the API
+      // key, and never the key.
+      deployment: { hosted: mode.hosted, remoteBrowser: mode.remoteBrowser, provider: mode.provider, available: mode.available },
+      acknowledgement: ack,
+      statement: HOSTED_EXECUTION_STATEMENT,
+      statementVersion: HOSTED_EXECUTION_STATEMENT_VERSION,
+      // The one fact a screen actually needs: may this workspace's seats be run
+      // here right now, and if not, in one sentence, why not.
+      allowed: gate.allowed,
+      reason: gate.allowed ? null : gate.reason
+    });
+  }));
+
+  app.post('/api/linkedin/hosted-execution', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, 'authorise Trevra to act on this LinkedIn account');
+    const input = z.object({
+      // EXPLICIT, AND THE VERSION MUST MATCH. A client that agreed to wording
+      // it has not seen has not agreed to anything, so a stale version is a 409
+      // telling it to re-read the statement rather than a silently recorded
+      // consent to terms that changed underneath it.
+      acknowledge: z.literal(true),
+      statementVersion: z.number().int()
+    }).parse(req.body ?? {});
+    if (input.statementVersion !== HOSTED_EXECUTION_STATEMENT_VERSION) {
+      throw new LinkedInApiError(
+        `That authorisation refers to version ${input.statementVersion} of the terms and the current version is ${HOSTED_EXECUTION_STATEMENT_VERSION}. Read the current statement and authorise again.`,
+        409
+      );
+    }
+    const ack = await recordHostedExecutionAck(db, { workspaceId: req.auth!.workspaceId, actorUserId: req.auth!.userId });
+    const gate = await hostedExecutionGate(db, req.auth!.workspaceId);
+    res.json({ acknowledgement: ack, allowed: gate.allowed, reason: gate.allowed ? null : gate.reason });
+  }));
+
+  app.delete('/api/linkedin/hosted-execution', linkedinRoute(async (req, res) => {
+    assertWorkspaceOwner(req, 'withdraw the authorisation for hosted LinkedIn execution');
+    const ack = await revokeHostedExecutionAck(db, { workspaceId: req.auth!.workspaceId, actorUserId: req.auth!.userId });
+    /**
+     * WITHDRAWAL IS NOT A KILL SWITCH FOR WORK ALREADY IN FLIGHT, and saying so
+     * is the same honesty the disconnect route already owes: a seat whose batch
+     * is open has a browser mid-action on rows it has already claimed, and
+     * rewriting a row does not close a tab. No NEW seat is served from the next
+     * tick. Pausing the seat is the faster stop, exactly as it always was.
+     */
+    res.json({
+      acknowledgement: ack,
+      allowed: false,
+      stopsNewWorkFrom: 'the next worker tick',
+      message: 'Hosted execution is withdrawn for this workspace. A batch already in flight finishes; no new seat is picked up.'
+    });
   }));
 
   /**
@@ -2351,13 +2469,31 @@ export function createApp(db: Db) {
         if (error instanceof Error && LINKEDIN_SEAT_INPUT_ERROR.test(error.message)) throw new LinkedInApiError(error.message, 400);
         throw error;
       }
+      /**
+       * WHO IS GOING TO PICK THIS UP, said accurately rather than by habit.
+       *
+       * This sentence was always "run the worker on your machine", because
+       * that was the only process that could ever fulfil the request. On a
+       * hosted deployment with a remote browser and this workspace's recorded
+       * authorisation, the hosted runner takes it on its next tick and there
+       * is nothing for the operator to run at all -- telling them otherwise
+       * would send them to install Node and Chromium for a job already in
+       * progress.
+       *
+       * The gate is asked rather than assumed: a hosted deployment whose
+       * workspace has NOT authorised hosted execution still gets the old
+       * instruction, because for them it is still the only thing that works.
+       */
+      const hostedRunner = await hostedExecutionGate(db, req.auth!.workspaceId);
       return res.status(202).json({
         status: 'pending',
         detected: null,
         seat: null,
         degraded: [],
         requestedAt: request.requestedAt,
-        message: 'Run `npm run linkedin:worker` on your machine to finish connecting.'
+        message: hostedRunner.allowed && hostedExecutionMode().available
+          ? 'Queued for the hosted runner; it will finish connecting this seat on its next pass.'
+          : 'Run `npm run linkedin:worker` on your machine to finish connecting.'
       });
     }
 
@@ -2469,8 +2605,21 @@ export function createApp(db: Db) {
     });
   }));
 
+  /**
+   * The sequence-builder campaigns, narrowed to one LinkedIn account when the
+   * caller names one.
+   *
+   * `seatKey` IS A FILTER HERE, unlike the seat hint analytics used to take:
+   * `linkedin_campaigns.seat_key` says which account a campaign sends from,
+   * and this route ignored it -- so the account switcher moved the Inbox and
+   * left this list showing every campaign in the workspace, including ones
+   * that stop, edit and queue against an account the operator was not working
+   * in. Absent still means the whole workspace, which is what a caller with no
+   * switcher has always meant.
+   */
   app.get('/api/linkedin/campaigns', linkedinRoute(async (req, res) => {
-    res.json({ campaigns: await listCampaigns(db, req.auth!.workspaceId) });
+    const filters = linkedinCampaignListSchema.parse(req.query);
+    res.json({ campaigns: await listCampaigns(db, req.auth!.workspaceId, filters) });
   }));
 
   /**
@@ -2588,6 +2737,14 @@ export function createApp(db: Db) {
     // choice is a campaign whose words nobody wrote.
     const sequenceSteps = input.input.sequenceSteps;
     const supplied = input.input as Record<string, unknown>;
+
+    // WHOSE ACCOUNT, checked before anything is written. An unknown seat key
+    // would otherwise plan against a seat that does not exist and file the
+    // campaign under it, and the first symptom is a campaign no screen lists.
+    const seatKey = input.input.seatKey ?? OWNER_SEAT_KEY;
+    if (input.input.seatKey && !(await getSeat(db, workspaceId, seatKey))) {
+      throw new LinkedInApiError('That LinkedIn account is not configured for this workspace', 404);
+    }
     const hasBrief = supplied.icp !== undefined || supplied.offer !== undefined;
     if (sequenceSteps && hasBrief) {
       throw new LinkedInApiError(
@@ -2616,7 +2773,7 @@ export function createApp(db: Db) {
       workspaceId,
       playbookId: LINKEDIN_PLAYBOOK_ID,
       version: input.version,
-      payload: { ...input.input, targets: kept, campaignId },
+      payload: { ...input.input, seatKey, targets: kept, campaignId },
       actorType: 'user',
       actorId: req.auth!.userId
     });
@@ -2627,6 +2784,9 @@ export function createApp(db: Db) {
         id: campaignId,
         workspaceId,
         name: input.name,
+        // The same seat the run was planned against. Defaulted in one place
+        // above, not twice with two different defaults.
+        seatKey,
         status: run.status === 'completed' ? 'completed' : run.status === 'failed' || run.status === 'cancelled' ? 'stopped' : 'running',
         sequence: run.steps.find((step) => step.stepId === 'sequence')?.output ?? {},
         // The inputs, kept on the campaign (029) so a later sequence edit can
@@ -3035,16 +3195,23 @@ export function createApp(db: Db) {
   }));
 
   /**
-   * The funnel, cut in the zone the ceilings were enforced in.
+   * The funnel, for one account or for all of them, cut in the zone the
+   * ceilings were enforced in.
    *
-   * `seatKey` is optional and it is not a filter -- the numbers stay
-   * workspace-wide -- it names WHOSE CLOCK the daily buckets are cut on. Every
-   * limit in this product is applied in `linkedin_seats.timezone`, so a series
-   * bucketed on anything else shows columns that were never any day's total
-   * (see `LinkedInAnalytics.timezone`). With no seat named, `campaigns.ts`
-   * picks the zone most of the workspace's seats are in and sets
-   * `timezoneSpansSeats` when they do not agree, which is the honest answer for
-   * an agency running Berlin and Los Angeles from one screen.
+   * `seatKey` NOW FILTERS, AND IT USED NOT TO. It named whose clock the daily
+   * buckets were cut on and nothing else, so the account switcher re-cut the
+   * days of a chart whose rows never changed: an operator switching to their
+   * second account was shown the whole workspace's sends under that account's
+   * name. It selects the rows AND the clock now, which is the only reading of
+   * "analytics for this account" that is true of both.
+   *
+   * Every limit in this product is applied in `linkedin_seats.timezone`, so a
+   * series bucketed on anything else shows columns that were never any day's
+   * total (see `LinkedInAnalytics.timezone`). With no seat named the counts
+   * stay workspace-wide and `campaigns.ts` picks the zone most of the
+   * workspace's seats are in, setting `timezoneSpansSeats` when they do not
+   * agree -- the honest answer for an agency running Berlin and Los Angeles
+   * from one screen.
    */
   app.get('/api/linkedin/analytics', linkedinRoute(async (req, res) => {
     const filters = linkedinAnalyticsSchema.parse(req.query);
@@ -3058,7 +3225,7 @@ export function createApp(db: Db) {
       workspaceId,
       filters.days,
       new Date(),
-      seat ? { timezone: seat.timezone } : {}
+      seat ? { timezone: seat.timezone, seatKey: seat.seatKey } : {}
     ));
   }));
 
@@ -3074,6 +3241,7 @@ export function createApp(db: Db) {
   app.post('/api/linkedin/manager/seats', linkedinRoute(async (req, res) => {
     assertWorkspaceOwner(req, "change a LinkedIn account's limits");
     const input = linkedinManagerSeatCreateSchema.parse(req.body ?? {});
+    assertSeatProxyUsable(req.auth!.workspaceId, input.seatKey, input.proxyUrl);
     try {
       const seat = await upsertSeat(db, req.auth!.workspaceId, input, new Date(), input.seatKey);
       res.status(201).json({ seat });
@@ -3084,6 +3252,7 @@ export function createApp(db: Db) {
     assertWorkspaceOwner(req, "change a LinkedIn account's limits");
     const seatKey = linkedinSeatKeySchema.parse(String(req.params.seatKey));
     const input = linkedinSeatSchema.parse(req.body ?? {});
+    assertSeatProxyUsable(req.auth!.workspaceId, seatKey, input.proxyUrl);
     if (!(await getSeat(db, req.auth!.workspaceId, seatKey))) throw new LinkedInApiError('LinkedIn account not found', 404);
     try { res.json({ seat: await upsertSeat(db, req.auth!.workspaceId, input, new Date(), seatKey) }); }
     catch (error) { rethrowLinkedInManagerError(error); }
@@ -3599,6 +3768,39 @@ export function createApp(db: Db) {
       log: () => {}
     });
     if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
+    res.json(result);
+  }));
+
+  /**
+   * Find out which vanished invites were accepted.
+   *
+   * A FIFTH ROUTE ON THIS SURFACE, and it belongs beside the withdrawal ones
+   * because it reads the same evidence: `withdrawals/sync` records that an
+   * invite has left LinkedIn's pending list and deliberately concludes nothing
+   * from it, and this is the pass that goes and finds out which of the four
+   * things that could mean actually happened.
+   *
+   * IT OPENS PROFILES, SO IT IS A SEND-SHAPED ROUTE, not a read-shaped one.
+   * Every check is a real profile view against the seat's account: paced,
+   * gated, budgeted and filed as a `profile_view` ledger row by
+   * `detectAcceptedInvites`. It is POST for that reason and it is bounded by
+   * the same `maxChecks` the unattended tick uses -- an operator pressing this
+   * button must not be able to spend an afternoon's profile-view budget in one
+   * request.
+   *
+   * 409 rather than 500 when no browser can open, exactly as its neighbours do.
+   */
+  app.post('/api/linkedin/acceptance/detect', linkedinRoute(async (req, res) => {
+    const input = linkedinAcceptanceDetectSchema.parse(req.body ?? {});
+    const config = linkedinWorkerConfigOrRefuse();
+    const result = await detectLinkedInAcceptances(db, config, {
+      workspaceId: req.auth!.workspaceId,
+      ...(input.seatKey === undefined ? {} : { seatKey: input.seatKey }),
+      ...(input.maxChecks === undefined ? {} : { maxChecks: input.maxChecks }),
+      now: new Date(),
+      log: () => {}
+    });
+    if (result.blockedReason) throw new LinkedInApiError(result.blockedReason, 409);
     res.json(result);
   }));
 
@@ -5145,8 +5347,41 @@ const linkedinSeatSchema = z.object({
    * like every other field here, because it is one human's decision about one
    * LinkedIn account and not a workspace policy.
    */
-  safetyBandOverride: z.boolean().optional()
+  safetyBandOverride: z.boolean().optional(),
+  /**
+   * This account's own outbound proxy, `scheme://user:pass@host:port`.
+   *
+   * Absent leaves whatever is stored alone; null or '' removes it. It is never
+   * returned: a seat carries the redacted `proxy` view instead, so this field
+   * is write-only from a client's point of view and a password cannot come
+   * back down to a browser that will put it in a screenshot.
+   */
+  proxyUrl: z.string().trim().max(500).nullable().optional()
 }).strict();
+
+/**
+ * Refuse a proxy the browser launcher could not use, at the moment it is typed.
+ *
+ * VALIDATED THROUGH THE LAUNCHER'S OWN RESOLVER rather than through a second
+ * copy of the rules here. `resolveSeatProxy` is what the worker calls before
+ * opening Chromium, and its contract is that a configured-but-unusable proxy
+ * STOPS THE SEAT -- it never degrades to a direct connection, because the whole
+ * reason to configure one is that this account must not be seen coming from
+ * this machine. Storing a value it would reject is therefore storing a seat
+ * that silently does no work, so the refusal is moved forward to the write and
+ * arrives with the resolver's own sentence about what is wrong with it.
+ *
+ * A blank env is passed deliberately: this validates THIS string, not whatever
+ * the process happens to have set.
+ */
+function assertSeatProxyUsable(workspaceId: string, seatKey: string, proxyUrl: string | null | undefined): void {
+  if (!proxyUrl?.trim()) return;
+  try {
+    resolveSeatProxy({}, workspaceId, seatKey, proxyUrl);
+  } catch (error) {
+    throw new LinkedInApiError(error instanceof Error ? error.message : 'That proxy could not be used.', 400);
+  }
+}
 
 const linkedinManagerSeatCreateSchema = linkedinSeatSchema.extend({
   seatKey: linkedinSeatKeySchema,
@@ -5411,9 +5646,27 @@ const linkedinCampaignSchema = z.object({
   version: z.string().trim().min(1).max(50).optional(),
   input: z.object({
     targets: z.array(z.string().trim().min(1).max(500)).min(1).max(500),
-    sequenceSteps: linkedinSequenceStepsSchema.optional()
+    sequenceSteps: linkedinSequenceStepsSchema.optional(),
+    /**
+     * WHICH ACCOUNT THIS CAMPAIGN SENDS FROM, declared rather than assumed.
+     *
+     * The playbook has always read `input.seatKey` -- it is how pacing and the
+     * safety gate know whose ledger and whose ceilings to plan against -- but
+     * `passthrough()` let it travel untyped, and the route then filed the
+     * campaign row itself with no seat at all, so `createCampaign` fell to
+     * `OWNER_SEAT_KEY`. A campaign planned against the second account was
+     * therefore STORED as the owner's, which is what made the campaign list
+     * unable to honour the account switcher even once it tried to.
+     */
+    seatKey: linkedinSeatKeySchema.optional()
   }).passthrough()
 }).strict();
+
+/** Which account's campaigns to list. Absent means every one in the workspace -- see the route. */
+const linkedinCampaignListSchema = z.object({
+  seatKey: linkedinSeatKeySchema.optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+});
 
 /**
  * Drafting from a domain.
@@ -5499,8 +5752,15 @@ const linkedinExclusionSchema = z.object({
 }));
 
 const linkedinAnalyticsSchema = z.object({
-  days: z.coerce.number().int().min(1).max(365).default(30),
-  /** Whose clock the daily buckets are cut on. Not a filter -- see the route. */
+  /**
+   * 0 IS "ALL TIME", NOT "NOTHING".
+   *
+   * The funnel offers 7/30/90/all and `linkedinAnalytics` reads a non-positive
+   * window as unbounded, so the floor here is 0 rather than 1 -- `min(1)`
+   * turned the "All time" button into a 400 rather than into a lifetime count.
+   */
+  days: z.coerce.number().int().min(0).max(365).default(30),
+  /** Which account's ledger is counted, and whose clock its days are cut on. See the route. */
   seatKey: linkedinSeatKeySchema.optional()
 });
 
@@ -5610,6 +5870,21 @@ const linkedinWithdrawalListSchema = z.object({
   seatKey: z.string().trim().min(1).max(64).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100)
 });
+
+/**
+ * One acceptance-detection pass.
+ *
+ * `maxChecks` IS CAPPED HARD AND LOW because each unit of it is a real profile
+ * view against a real account. The gate refuses anything over the seat's own
+ * daily ceiling anyway -- that is the ceiling that matters -- but a route that
+ * accepted `maxChecks: 5000` would be inviting an operator to queue a pass that
+ * spends the whole day's budget in one press and then discovers the refusal one
+ * navigation at a time.
+ */
+const linkedinAcceptanceDetectSchema = z.object({
+  seatKey: z.string().trim().min(1).max(64).optional(),
+  maxChecks: z.coerce.number().int().min(1).max(25).optional()
+}).strict();
 
 /**
  * One engagement action.
@@ -6073,6 +6348,7 @@ function linkedinCsvHeader(value: string): string {
 
 const LINKEDIN_TARGET_COLUMNS = ['targetref', 'target', 'handle', 'profileurl', 'profile', 'url', 'linkedin', 'linkedinurl'];
 const LINKEDIN_PROFILE_COLUMNS = ['profileurl', 'profile', 'url', 'linkedin', 'linkedinurl'];
+const LINKEDIN_NAME_COLUMNS = ['name', 'fullname', 'displayname', 'contactname'];
 const LINKEDIN_FIRST_COLUMNS = ['firstname', 'first', 'givenname'];
 const LINKEDIN_LAST_COLUMNS = ['lastname', 'last', 'surname', 'familyname'];
 const LINKEDIN_COMPANY_COLUMNS = ['company', 'companyname', 'organisation', 'organization', 'employer'];
@@ -6149,11 +6425,34 @@ function parseLinkedInTargetCsv(buffer: Buffer): {
     seen.add(key);
 
     const profileUrl = linkedinCsvField(row, LINKEDIN_PROFILE_COLUMNS) || (/^https?:\/\//i.test(targetRef) ? targetRef : '');
+
+    /**
+     * THE SAME SCRUB THE MANAGED LEAD PATH USES, and it was missing here.
+     *
+     * This route read its name columns with a bare `.trim()`, so a LinkedIn
+     * display name -- which is where these CSVs come from -- arrived intact:
+     * `Dr. Maya \u{1F642}` was stored as a FIRST NAME, exported to the file an
+     * operator sends from, and rendered verbatim into `Hi {{firstName}}`.
+     * `lead-import.ts` has owned the answer to that for the managed path all
+     * along (titles, degrees, emoji, flags, keycaps, decoration), and two name
+     * pipelines with two different ideas of what a first name is also means the
+     * same human imported twice is two different people to the dedupe key.
+     *
+     * `scrubNameField` FOR A DEDICATED COLUMN, because it is the one that
+     * refuses to empty a real name: `Do`, `Ma` and `Ba` are removable titles
+     * and they are also surnames, and a header that already said "Last name"
+     * settles which. `splitAndScrubName` for a single joined name column, which
+     * is the shape a scrape or a contact export usually has.
+     */
+    const joined = splitAndScrubName(linkedinCsvField(row, LINKEDIN_NAME_COLUMNS));
+    const firstName = scrubNameField(linkedinCsvField(row, LINKEDIN_FIRST_COLUMNS)) || joined.firstName;
+    const lastName = scrubNameField(linkedinCsvField(row, LINKEDIN_LAST_COLUMNS)) || joined.lastName;
+
     contacts.push({
       targetRef,
       profileUrl: profileUrl || null,
-      firstName: linkedinCsvField(row, LINKEDIN_FIRST_COLUMNS) || null,
-      lastName: linkedinCsvField(row, LINKEDIN_LAST_COLUMNS) || null,
+      firstName: firstName || null,
+      lastName: lastName || null,
       company: linkedinCsvField(row, LINKEDIN_COMPANY_COLUMNS) || null,
       role: linkedinCsvField(row, LINKEDIN_ROLE_COLUMNS) || null
     });
@@ -6237,10 +6536,24 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
     blockers.push(linkedInOffReason(workerConfig));
   } else if (!playwrightInstalled) {
     blockers.push(installPlaywright);
-  } else if (!headless.canLaunchHeadless) {
+  } else if (!headless.canLaunchHeadless && !headed.canLaunchHeaded) {
+    // BOTH, NOT JUST HEADLESS. This branch read `!headless.canLaunchHeadless`
+    // alone, which was a fair proxy for "can this machine open a browser" only
+    // while the two verdicts moved together -- chromium present meant headless
+    // possible meant a browser possible. `TREVRA_LINKEDIN_HEADLESS=false`
+    // separated them, and a worker that drives a REAL headed Chrome on an Xvfb
+    // display was reported to the operator as unable to open a browser at all,
+    // over the sentence explaining that it declines to open an INVISIBLE one.
+    // Both readiness answers are already in `browser` above; this is the one
+    // place that has to consider them together.
     blockers.push(...headless.reasons);
   }
-  const ready = enabled && playwrightInstalled && browser.canLaunchHeadless;
+  // A HEADED BROWSER IS A BROWSER, and it is the better of the two: headless
+  // Chrome reports SwiftShader as its WebGL renderer even on a machine with a
+  // GPU, and puts "HeadlessChrome" in its own user agent (measured; see
+  // `scripts/linkedin-fingerprint-probe.mjs`). Ranking it as "not ready" had
+  // the screen recommending the worse path.
+  const ready = enabled && playwrightInstalled && (browser.canLaunchHeaded || browser.canLaunchHeadless);
 
   return {
     enabled,
