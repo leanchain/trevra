@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { openDatabase, runMigrations, splitSqlStatements } from './db.js';
@@ -127,6 +127,89 @@ describe('migration runner', () => {
       await withMigrationFiles({ '001_first.sql': 'CREATE TABLE mig_first (id TEXT PRIMARY KEY);' }, async (dir) => {
         await runMigrations({ connectionString: url, migrationsPath: dir });
         expect((await runMigrations({ connectionString: url, migrationsPath: dir })).applied).toEqual([]);
+      });
+    });
+  });
+});
+
+/**
+ * The one migration whose whole job is repairing a database somebody else broke.
+ *
+ * Every other migration is tested by the suite simply running it: the shared
+ * test database is built from `migrations/` and a mistake shows up as a failing
+ * feature test. This one is invisible that way -- a fresh database already has
+ * the index, so the file is a no-op everywhere except on the drifted database
+ * it exists for. So the drift is rebuilt here and the REAL file is run against
+ * it.
+ */
+describe('073_workspace_secret_unique_key', () => {
+  // The drifted shape, copied from the database that produced the 42P10: a
+  // `scope_key` column that is in no migration in this repository, and the
+  // unique index widened to include it.
+  const drifted = [
+    'CREATE TABLE workspace_secrets (',
+    '  id TEXT PRIMARY KEY,',
+    '  workspace_id TEXT NOT NULL,',
+    '  kind TEXT NOT NULL,',
+    '  ciphertext BYTEA NOT NULL,',
+    "  scope_key TEXT NOT NULL DEFAULT 'default'",
+    ');',
+    'CREATE UNIQUE INDEX idx_workspace_secrets_kind_scope ON workspace_secrets(workspace_id, kind, scope_key);'
+  ].join('\n');
+
+  const upsert = [
+    "INSERT INTO workspace_secrets (id, workspace_id, kind, ciphertext) VALUES ('wsec_2','w1','linkedin.password','\\x02')",
+    'ON CONFLICT (workspace_id, kind) DO UPDATE SET ciphertext=EXCLUDED.ciphertext'
+  ].join(' ');
+
+  async function withRepair<T>(setup: string, work: (url: string) => Promise<T>): Promise<T> {
+    const file = '073_workspace_secret_unique_key.sql';
+    const sql = await readFile(resolve('migrations', file), 'utf8');
+    return withScratchDatabase(async (url) =>
+      withMigrationFiles({ '001_drift.sql': setup, [file]: sql }, async (dir) => {
+        await runMigrations({ connectionString: url, migrationsPath: dir });
+        return work(url);
+      })
+    );
+  }
+
+  it('restores the key the secret upsert infers on, so storing a credential works again', async () => {
+    await withRepair(drifted, async (url) => {
+      // THE ACTUAL FAILURE, not a proxy for it: this is the statement shape
+      // `putWorkspaceSecret` sends, and before the repair it raised 42P10.
+      await inspect(url, "INSERT INTO workspace_secrets (id, workspace_id, kind, ciphertext) VALUES ('wsec_1','w1','linkedin.password','\\x01')");
+      await inspect(url, upsert);
+      const rows = await inspect(url, 'SELECT id, ciphertext FROM workspace_secrets');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('wsec_1');
+    });
+  });
+
+  it('leaves a database that already has the key exactly as it found it', async () => {
+    const correct = [
+      'CREATE TABLE workspace_secrets (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, kind TEXT NOT NULL, ciphertext BYTEA NOT NULL);',
+      'CREATE UNIQUE INDEX idx_workspace_secrets_kind ON workspace_secrets(workspace_id, kind);'
+    ].join('\n');
+    await withRepair(correct, async (url) => {
+      const indexes = await inspect(url, "SELECT indexname FROM pg_indexes WHERE tablename='workspace_secrets' ORDER BY indexname");
+      expect(indexes.map((row) => row.indexname)).toEqual(['idx_workspace_secrets_kind', 'workspace_secrets_pkey']);
+    });
+  });
+
+  it('refuses rather than picking, when two rows claim the same secret', async () => {
+    const file = '073_workspace_secret_unique_key.sql';
+    const sql = await readFile(resolve('migrations', file), 'utf8');
+    await withScratchDatabase(async (url) => {
+      await withMigrationFiles({
+        '001_drift.sql': [
+          drifted,
+          "INSERT INTO workspace_secrets (id, workspace_id, kind, ciphertext, scope_key) VALUES ('a','w1','linkedin.password','\\x01','default');",
+          "INSERT INTO workspace_secrets (id, workspace_id, kind, ciphertext, scope_key) VALUES ('b','w1','linkedin.password','\\x02','other');"
+        ].join('\n'),
+        [file]: sql
+      }, async (dir) => {
+        await expect(runMigrations({ connectionString: url, migrationsPath: dir }))
+          .rejects.toThrow(/holds 1 \(workspace_id, kind\) pair\(s\) with more than one row/);
       });
     });
   });
