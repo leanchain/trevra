@@ -37,20 +37,24 @@
  * is the real bound and the safety gate is elsewhere.
  */
 
-import { createHash } from 'node:crypto';
-
 import type { Db } from '../db.js';
 import {
+  VISITS_PER_DAY,
+  VISIT_MINUTES,
   dayShapeFor,
   localDateOf,
+  visitsForDay,
   weekdayOf,
   weekdayVolumeFactor,
   workWindowOf,
   zonedToUtc,
   type DayShapeFn,
-  type LocalDate,
+  type Visit,
   type WorkWindowSeat
 } from './pacing.js';
+
+/** Re-exported so the visit model reads as one thing from here. See `pacing.ts`. */
+export { VISITS_PER_DAY, VISIT_MINUTES, visitsForDay, type Visit };
 
 /** The five jobs in `runLinkedInSideTasks`, in the order that function runs them. */
 export type SideTaskName = 'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
@@ -82,20 +86,14 @@ export const SIDE_TASKS_NEEDING_IDENTITY: ReadonlySet<SideTaskName> = new Set<Si
 
 /* ---------------------------------------------------------------------------
  * The visit
- * ------------------------------------------------------------------------ */
-
-/**
- * How many times a day this account is opened at all.
  *
- * UNVERIFIED-VENDOR, and deliberately at the low end of what the operator
- * described: "1-2-3 times a day, maybe up to 5". Two to five bounds nothing
- * safety-critical -- the ceilings do that -- but it is the number that decides
- * whether the access graph looks like a person or a cron table.
- */
-export const VISITS_PER_DAY = { min: 2, max: 5 } as const;
-
-/** How long one visit lasts. "A few minutes, click here and there." */
-export const VISIT_MINUTES = { min: 2, max: 5 } as const;
+ * `visitsForDay` LIVES IN `pacing.ts`, not here, and that is not a filing
+ * decision. The planner has to place its sends inside the same visits this
+ * module reads inside -- that is what "one presence" means -- and `pacing.ts`
+ * is what `guard.ts`, `planPacing` and this module all already depend on.
+ * Putting the schedule there keeps the dependency in one direction; putting it
+ * here would make the planner import the inbox reader.
+ * ------------------------------------------------------------------------ */
 
 /**
  * The most jobs one visit may do.
@@ -129,80 +127,6 @@ export const SIDE_TASK_MIN_HOURS: Record<SideTaskName, number> = {
   withdrawals: 20,
   lead_sources: 5
 };
-
-/** One opening of LinkedIn: local minutes after midnight, end exclusive. */
-export interface Visit {
-  /** 0-based, in the order they occur through the day. */
-  index: number;
-  startMinute: number;
-  endMinute: number;
-}
-
-/**
- * mulberry32 over a sha256 of the seed. Copied, not imported, for the reason
- * `human.ts`, `driver-engage.ts` and `local-worker.ts` all record: `pacing.ts`
- * keeps it private, and widening a public surface to save four lines is the
- * worse trade.
- */
-function seededRandom(seed: string): () => number {
-  const digest = createHash('sha256').update(seed).digest('hex');
-  let state = Number.parseInt(digest.slice(0, 8), 16) >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
-/** The fraction of a slot a visit may start within, which is what guarantees the gap. */
-const SLOT_HEAD = 0.6;
-
-/**
- * When this seat opens LinkedIn on this day.
- *
- * ONE SLOT PER VISIT, AND THE START IS JITTERED INSIDE THE FIRST 60% OF IT.
- * Placing every visit anywhere in the window would let two of them land a
- * minute apart and then leave a nine-hour hole -- which is not "random", it is
- * clumped, and a clump of activity after a long silence is a worse signal than
- * a flat line. Confining each visit to its own slot spreads them; confining
- * the start to the head of the slot leaves at least 40% of a slot between
- * consecutive visits (about 48 minutes on a ten-hour day with five visits).
- *
- * Seeded on the seat and the date, so a day's shape is fixed for that seat and
- * that date rather than redrawn on every tick -- otherwise a visit would
- * flicker in and out of existence sixty seconds at a time.
- */
-export function visitsForDay(
-  seed: string,
-  day: LocalDate,
-  window: { startMinute: number; endMinute: number }
-): Visit[] {
-  const span = window.endMinute - window.startMinute;
-  if (span <= VISIT_MINUTES.max) return [];
-
-  const key = `${seed}:${day.year}-${day.month}-${day.day}`;
-  const random = seededRandom(`visits:${key}`);
-  const count = VISITS_PER_DAY.min + Math.floor(random() * (VISITS_PER_DAY.max - VISITS_PER_DAY.min + 1));
-  const slot = span / count;
-
-  const visits: Visit[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const minutes = VISIT_MINUTES.min + random() * (VISIT_MINUTES.max - VISIT_MINUTES.min);
-    const slotStart = window.startMinute + index * slot;
-    // The head of the slot, less the visit's own length, so a visit never runs
-    // past its slot and into the next one's gap.
-    const headroom = Math.max(0, slot * SLOT_HEAD - minutes);
-    const startMinute = Math.round(slotStart + random() * headroom);
-    visits.push({
-      index,
-      startMinute,
-      endMinute: Math.min(window.endMinute, Math.round(startMinute + minutes))
-    });
-  }
-  return visits;
-}
 
 /* ---------------------------------------------------------------------------
  * Is a visit happening right now?

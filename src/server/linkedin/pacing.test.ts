@@ -3,7 +3,7 @@ import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
 import { evaluateLinkedInSafety } from './guard.js';
 import { ACTION_GAP_SECONDS, BUSINESS_HOURS } from './limits.js';
-import { FLAT_DAY_SHAPE, addLocalDays, dayShapeFor, planPacing, resolveSkillSeatKey, type PacingPlan } from './pacing.js';
+import { FLAT_DAY_SHAPE, VISITS_PER_DAY, addLocalDays, dayShapeFor, planPacing, resolveSkillSeatKey, visitsForDay, type PacingPlan } from './pacing.js';
 import { upsertSeat } from './seats.js';
 
 // Real ephemeral Postgres, per the repo's test harness: the smoothing IS the
@@ -457,24 +457,61 @@ describe('spreading inside a short business-hours window', () => {
     const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(18), horizonDays: 3 }, lateNow, { dayShape: FLAT_DAY_SHAPE });
 
     const today = plan.slots.filter((slot) => slot.plannedFor.startsWith('2026-08-06'));
-    // 300s of window left, ACTION_GAP_SECONDS.max = 120s: room for 3, not 18.
-    expect(today.length).toBe(3);
+    // NOTHING TODAY, and that is the visit model doing its job. The last visit
+    // of the day is long over by 17:55; a person who last opened LinkedIn at
+    // half past three does not fire three invitations at 17:57, and "three
+    // actions in the final five minutes of the window" is the end-of-day burst
+    // this whole file exists to avoid. Before visits, the answer here was 3.
+    expect(today.length).toBe(0);
 
-    // The actual bug: every slot past capacity used to collapse onto the same
-    // clamped second. Distinct timestamps is the assertion that matters.
-    const distinctSeconds = new Set(today.map((slot) => slot.plannedFor));
-    expect(distinctSeconds.size).toBe(today.length);
+    // The original defect: every slot past capacity collapsed onto the same
+    // clamped second. Distinct timestamps is the assertion that matters, and it
+    // holds across the whole plan and not just today.
+    const distinctSeconds = new Set(plan.slots.map((slot) => slot.plannedFor));
+    expect(distinctSeconds.size).toBe(plan.slots.length);
 
-    // Every slot lands inside the window, none of them past its close.
-    for (const slot of today) {
-      expect(new Date(slot.plannedFor).getTime()).toBeLessThanOrEqual(new Date('2026-08-06T18:00:00.000Z').getTime());
+    // Nothing was scheduled behind the clock either.
+    for (const slot of plan.slots) {
       expect(new Date(slot.plannedFor).getTime()).toBeGreaterThanOrEqual(lateNow.getTime());
     }
 
     expect(plan.ceilingsApplied).toContain('business-hours-window-capacity');
-    // The other 15 were not dropped -- they rolled into the next available
+    // The eighteen were not dropped -- they rolled into the next available
     // business day(s) rather than crowding today's close.
-    expect(plan.slots.length).toBeGreaterThan(today.length);
+    expect(plan.slots.length).toBeGreaterThan(0);
+  });
+
+  it('puts every slot inside one of the day\'s visits, not spread across the whole window', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
+
+    // Monday 06:00 UTC, before the window opens, so no visit is behind us.
+    const early = new Date('2026-08-03T06:00:00.000Z');
+    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(18), horizonDays: 1 }, early, { dayShape: FLAT_DAY_SHAPE });
+    expect(plan.slots.length).toBeGreaterThan(0);
+
+    const visits = visitsForDay(`${WORKSPACE_ID}:owner`, { year: 2026, month: 8, day: 3 }, { startMinute: 480, endMinute: 1080 }, {
+      actions: plan.slots.length,
+      earliestMinute: 360
+    });
+
+    for (const slot of plan.slots) {
+      const at = new Date(slot.plannedFor);
+      const minuteOfDay = at.getUTCHours() * 60 + at.getUTCMinutes();
+      const inside = visits.some((visit) => minuteOfDay >= visit.startMinute && minuteOfDay <= visit.endMinute);
+      expect(inside, `${slot.plannedFor} (minute ${minuteOfDay}) is outside every visit ${JSON.stringify(visits)}`).toBe(true);
+    }
+
+    // And the sends are clustered, not evenly smeared: a handful of bursts
+    // rather than one every thirty minutes for ten hours.
+    const occupied = new Set(
+      plan.slots.map((slot) => {
+        const at = new Date(slot.plannedFor);
+        const minuteOfDay = at.getUTCHours() * 60 + at.getUTCMinutes();
+        return visits.findIndex((visit) => minuteOfDay >= visit.startMinute && minuteOfDay <= visit.endMinute);
+      })
+    );
+    expect(occupied.size).toBeLessThanOrEqual(VISITS_PER_DAY.max);
   });
 });
 

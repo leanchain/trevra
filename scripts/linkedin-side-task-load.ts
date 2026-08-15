@@ -9,6 +9,7 @@
  *   npx tsx scripts/linkedin-side-task-load.ts
  */
 
+import { visitsForDay } from '../src/server/linkedin/pacing.js';
 import {
   SIDE_TASKS_NEEDING_IDENTITY,
   VISIT_MARKER,
@@ -94,6 +95,19 @@ for (let tick = 0; tick < (DAYS * 24 * 60 * 60_000) / TICK_MS; tick += 1) {
 const BEFORE_PER_TICK = 6;
 const beforeWeek = BEFORE_PER_TICK * ((DAYS * 24 * 60 * 60_000) / TICK_MS);
 
+/**
+ * THE SAME DAY WITH SENDING IN IT, which is the point of unifying the two.
+ *
+ * The planner places its slots inside these same visits and the visits stretch
+ * to hold them, so an outreach day is not "reads in three bursts plus sends on
+ * a metronome" -- it is the same three bursts, longer.
+ */
+const STEADY_DAILY_INVITES = 18;
+const sendingDay = visitsForDay(`${SEAT.workspaceId}:${SEAT.seatKey}`, { year: 2026, month: 8, day: 4 }, { startMinute: 480, endMinute: 1080 }, { actions: STEADY_DAILY_INVITES });
+const sendingMinutes = sendingDay.reduce((total, visit) => total + (visit.endMinute - visit.startMinute), 0);
+const idleDay = visitsForDay(`${SEAT.workspaceId}:${SEAT.seatKey}`, { year: 2026, month: 8, day: 4 }, { startMinute: 480, endMinute: 1080 });
+const idleMinutes = idleDay.reduce((total, visit) => total + (visit.endMinute - visit.startMinute), 0);
+
 process.stdout.write(`One idle seat, ${DAYS} days of 60s ticks, Mon-Fri 08:00-18:00 UTC\n\n`);
 process.stdout.write(`  visits scheduled             : ${seenVisits.size}  (${(seenVisits.size / 5).toFixed(1)} per working day)\n`);
 process.stdout.write(`  visits that did any work     : ${workingVisits}\n`);
@@ -106,3 +120,17 @@ for (const task of Object.keys(perTask).sort()) {
 }
 process.stdout.write(`\n  before this change           : ${beforeWeek} navigations (${beforeWeek / DAYS}/day)\n`);
 process.stdout.write(`  reduction                    : ${(100 - (navigations / beforeWeek) * 100).toFixed(2)}%\n`);
+
+process.stdout.write(`\nOne day's visits, reading only vs sending ${STEADY_DAILY_INVITES} invites -- SAME visits, longer:\n\n`);
+process.stdout.write(`  reading only  : ${idleDay.length} visits, ${idleMinutes} minutes open\n`);
+for (const visit of idleDay) {
+  process.stdout.write(`      ${clock(visit.startMinute)}-${clock(visit.endMinute)}\n`);
+}
+process.stdout.write(`  sending too   : ${sendingDay.length} visits, ${sendingMinutes} minutes open\n`);
+for (const visit of sendingDay) {
+  process.stdout.write(`      ${clock(visit.startMinute)}-${clock(visit.endMinute)}  ${visit.actions} invite(s)\n`);
+}
+
+function clock(minute: number): string {
+  return `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+}

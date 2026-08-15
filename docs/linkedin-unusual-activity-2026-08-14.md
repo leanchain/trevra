@@ -626,10 +626,56 @@ One idle seat, 7 days of 60s ticks, Mon-Fri 08:00-18:00 UTC
   reduction                    : 99.90%
 ```
 
-**8,640 → 8.3 navigations a day**, in three short bursts instead of 1,440
+**8,640 → ~6 navigations a day**, in two or three short bursts instead of 1,440
 identical ones, none at 03:00, none on the connections page.
 
-## 10.5 What it does not change
+## 10.5 One presence, not two
 
-Nothing about what is *sent*. Every ceiling, gate, posture and warm-up rule is
-untouched — this is only about how often the browser goes and looks.
+The reads became visits; the sends did not. `planPacing` spread its slots evenly
+across the whole working window while `local-worker.ts` ran its own sitting
+rhythm — 3–8 actions, then an independent 25–90 minute break. One account,
+**two unrelated activity patterns from one cookie**: three short read-bursts,
+and a metronome of sends all day long.
+
+A person who sends invitations is a person who is *on* LinkedIn. So:
+
+- `visitsForDay` moved to `pacing.ts`, and the planner, the reader and the
+  sitting break all read one schedule. Visit **starts never depend on volume** —
+  only the end moves — so three callers with three different amounts of
+  knowledge still land in the same place.
+- `spreadWithinVisits` places the day's sends **inside** those visits; each
+  visit stretches by `ACTION_GAP_SECONDS.max` per action it carries.
+- Sends are shared only across visits that **have not already happened**. Giving
+  the morning's visits a share of a plan generated at lunchtime silently drops
+  those slots — and because `previousActual` feeds the next day's ceiling, it
+  ramps the whole rest of the horizon down with it. That was a real defect,
+  caught by ten pacing tests.
+- The sitting break is now "away until this visit ends" rather than an
+  independent draw. The 25–90 minute draw survives as the fallback for a seat
+  with no window to compute a visit from.
+
+The same day, read-only versus sending eighteen invites — the **same** visits,
+longer:
+
+```
+reading only  : 3 visits, 10 minutes open
+    08:47-08:50
+    11:59-12:03
+    15:48-15:51
+sending too   : 3 visits, 46 minutes open
+    08:47-09:02  6 invite(s)
+    11:59-12:15  6 invite(s)
+    15:48-16:03  6 invite(s)
+```
+
+One consequence worth naming: a plan generated at 17:55 now schedules **nothing**
+for that day and rolls it forward. It used to cram three invites into the last
+five minutes of the window — which is the end-of-day burst this file exists to
+avoid.
+
+## 10.6 What it does not change
+
+Nothing about what is *sent*. Every ceiling, band, posture, warm-up rule and
+gate is untouched, and the gate still enforces the configured window — visits
+are a subset of it, so nothing was loosened. This is only about *when* the
+browser is open and how often it goes and looks.

@@ -321,6 +321,173 @@ function seededRandom(seed: string): () => number {
  * `random` is consumed a fixed two draws per slot regardless of which branch
  * is taken, so the sequence cannot desynchronise between runs.
  */
+/* ---------------------------------------------------------------------------
+ * The visit: when this account is open at all
+ * ------------------------------------------------------------------------ */
+
+/**
+ * How many times a day this account is opened.
+ *
+ * UNVERIFIED-VENDOR, and deliberately at the low end of what the operator
+ * described: "1-2-3 times a day, maybe up to 5". It bounds nothing
+ * safety-critical -- the ceilings do that -- but it is the number that decides
+ * whether the access graph looks like a person or a cron table.
+ */
+export const VISITS_PER_DAY = { min: 2, max: 5 } as const;
+
+/** How long a visit with nothing to send lasts. "A few minutes, click here and there." */
+export const VISIT_MINUTES = { min: 2, max: 5 } as const;
+
+/** The fraction of a slot a visit may start within, which is what guarantees the gap. */
+const SLOT_HEAD = 0.6;
+
+/** One opening of LinkedIn: local minutes after midnight, end exclusive. */
+export interface Visit {
+  /** 0-based, in the order they occur through the day. */
+  index: number;
+  startMinute: number;
+  endMinute: number;
+  /**
+   * Actions the plan places inside this visit, and the reason it is as long as
+   * it is.
+   *
+   * ONE PRESENCE, NOT TWO. Reads happened in 2-5 minute visits while sends had
+   * a rhythm of their own -- an independent sitting budget with an independent
+   * 25-90 minute break -- so one account produced two unrelated activity
+   * patterns from one cookie. A person who is doing outreach is a person who
+   * is ON LinkedIn: they open it, look at messages, send a few invitations,
+   * close it. So `planPacing` places its slots inside these visits, and the
+   * visit stretches to hold them.
+   */
+  actions: number;
+}
+
+/**
+ * When this seat opens LinkedIn on this day.
+ *
+ * ONE SLOT PER VISIT, AND THE START IS JITTERED INSIDE THE FIRST 60% OF IT.
+ * Placing every visit anywhere in the window would let two land a minute apart
+ * and then leave a nine-hour hole -- which is not "random", it is clumped, and
+ * a clump after a long silence is a worse signal than a flat line. Confining
+ * each visit to its own slot spreads them; confining the start to the head of
+ * the slot leaves at least 40% of a slot between consecutive visits (about 48
+ * minutes on a ten-hour day with five visits).
+ *
+ * Seeded on the seat and the date, so a day's shape is fixed for that seat and
+ * that date rather than redrawn on every tick -- otherwise a visit would
+ * flicker in and out of existence sixty seconds at a time.
+ */
+export function visitsForDay(
+  seed: string,
+  day: LocalDate,
+  window: { startMinute: number; endMinute: number },
+  options: { actions?: number; earliestMinute?: number } = {}
+): Visit[] {
+  const span = window.endMinute - window.startMinute;
+  if (span <= VISIT_MINUTES.max) return [];
+
+  const random = seededRandom(canonicalPayloadHash({ visits: seed, day: isoDate(day) }));
+  const count = VISITS_PER_DAY.min + Math.floor(random() * (VISITS_PER_DAY.max - VISITS_PER_DAY.min + 1));
+  const slot = span / count;
+
+  // PHASE ONE: WHEN, which never depends on how much there is to send.
+  //
+  // THE HEADROOM IS A CONSTANT, NOT `slot*SLOT_HEAD - minutes`, and that is
+  // load-bearing: the planner asks for visits knowing the day's action count
+  // and both the side-task tick and the sitting break ask without it, so a
+  // start that moved with the duration would put the three callers in three
+  // different places. Only the END moves. The starts are one schedule.
+  const headroom = Math.max(0, slot * SLOT_HEAD - VISIT_MINUTES.max);
+  const drafts = Array.from({ length: count }, (_unused, index) => {
+    const minutes = VISIT_MINUTES.min + random() * (VISIT_MINUTES.max - VISIT_MINUTES.min);
+    const startMinute = Math.round(window.startMinute + index * slot + random() * headroom);
+    return { index, startMinute, minutes };
+  });
+
+  // PHASE TWO: HOW MUCH, across the visits that have not already happened.
+  //
+  // `earliestMinute` IS WHY THIS IS TWO PHASES. A plan generated at lunchtime
+  // still has the morning's visits in its list, and handing them a share of
+  // the day's sends means handing it to a moment that is gone -- the slots are
+  // silently dropped and the day schedules a fraction of its ceiling, which
+  // then ramps the following days down too. Only reachable visits get work.
+  const earliest = options.earliestMinute ?? Number.NEGATIVE_INFINITY;
+  const reachable = drafts.filter((draft) => draft.startMinute + draft.minutes > earliest);
+  const actions = Math.max(0, Math.trunc(options.actions ?? 0));
+  const share = reachable.length === 0 ? 0 : Math.floor(actions / reachable.length);
+  const extra = reachable.length === 0 ? 0 : actions % reachable.length;
+  const assigned = new Map<number, number>();
+  reachable.forEach((draft, position) => {
+    assigned.set(draft.index, share + (position < extra ? 1 : 0));
+  });
+
+  return drafts.map((draft) => {
+    const mine = assigned.get(draft.index) ?? 0;
+    // Worst-case gap per action, so `spreadWithinVisits` can always fit what it
+    // was told to fit without crowding two sends into one second.
+    const sending = (mine * ACTION_GAP_SECONDS.max) / 60;
+    return {
+      index: draft.index,
+      startMinute: draft.startMinute,
+      endMinute: Math.min(window.endMinute, Math.round(draft.startMinute + draft.minutes + sending)),
+      actions: mine
+    };
+  });
+}
+
+/**
+ * Seconds-of-day for `count` actions, placed INSIDE the day's visits.
+ *
+ * ONE PRESENCE. Until this existed the planner spread slots evenly across the
+ * whole working window while the reading side opened LinkedIn 2-5 times a day
+ * -- so a single account produced two unrelated activity patterns from one
+ * cookie: a metronome of sends all day, and three short bursts of reads. A
+ * person who sends invitations is a person who is ON LinkedIn, so the sends go
+ * where the visits are.
+ *
+ * The visits already know how many actions each of them carries and have been
+ * lengthened accordingly (`visitsForDay`), so this only has to lay them out
+ * inside: evenly spaced across the visit, jittered, never closer than
+ * `ACTION_GAP_SECONDS.min`.
+ *
+ * FALLS BACK TO THE WHOLE WINDOW when a day has no visits at all -- a window
+ * too short to hold one, which `visitsForDay` reports as an empty list. The
+ * alternative is a seat whose plan silently schedules nothing.
+ */
+function spreadWithinVisits(
+  count: number,
+  random: () => number,
+  earliestSecond: number,
+  visits: readonly Visit[],
+  window: WorkWindow
+): number[] {
+  if (count <= 0) return [];
+  if (visits.length === 0) return spreadWithinWorkingHours(count, random, earliestSecond, window);
+
+  const seconds: number[] = [];
+  let cursor = Number.NEGATIVE_INFINITY;
+  for (const visit of visits) {
+    if (visit.actions <= 0) continue;
+    const start = Math.max(visit.startMinute * 60, earliestSecond);
+    const end = visit.endMinute * 60;
+    const span = Math.max(0, end - start);
+    // A visit whose whole span is already behind us -- the normal case for a
+    // same-day plan generated at lunchtime -- carries nothing.
+    if (span <= 0) continue;
+
+    const room = span / visit.actions;
+    const jitterRoom = Math.max(0, room - ACTION_GAP_SECONDS.max);
+    for (let index = 0; index < visit.actions && seconds.length < count; index += 1) {
+      const target = start + index * room + random() * jitterRoom;
+      const gap = ACTION_GAP_SECONDS.min + random() * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min);
+      const at = seconds.length === 0 ? target : Math.max(target, cursor + gap);
+      cursor = Math.min(at, end - 1);
+      seconds.push(Math.round(cursor));
+    }
+  }
+  return seconds;
+}
+
 function spreadWithinWorkingHours(count: number, random: () => number, earliestSecond: number, window: WorkWindow): number[] {
   if (count <= 0) return [];
   const windowStart = Math.max(window.startMinute * 60, earliestSecond);
@@ -690,9 +857,17 @@ export async function planPacing(
 
     const count = Math.min(allowed, targets.length - assigned);
 
-    // --- Step 6: spread inside the working window, seat-local, seeded jitter. ---
+    // --- Step 6: spread inside the day's VISITS, seat-local, seeded jitter. ---
+    //
+    // Same seed and same shaped window the reading side uses, so both halves of
+    // this account agree on when it is open. `count` is known here, which is
+    // what lets the visits stretch to hold the sends.
     const earliest = dayIndex === 0 && startsToday ? nowSecondOfDay : 0;
-    const secondsOfDay = spreadWithinWorkingHours(count, random, earliest, dayWindow);
+    const dayVisits = visitsForDay(`${input.workspaceId}:${seatKey}`, day, shape, {
+      actions: count,
+      earliestMinute: earliest / 60
+    });
+    const secondsOfDay = spreadWithinVisits(count, random, earliest, dayVisits, dayWindow);
     // The window itself can hold fewer than `count` slots without crowding
     // (see `spreadWithinWorkingHours`'s own capacity note) -- typically only
     // the first, partial day of a plan generated late in the business-hours

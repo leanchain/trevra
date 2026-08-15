@@ -36,6 +36,7 @@ import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
 import { readPage, setHumanSessionSalt, settle, type HumanPage } from './human.js';
 import { pruneSeatEvents, recordSeatEvent, seatRestingUntil, setSeatRestingUntil } from './seat-events.js';
 import { ACTION_GAP_SECONDS, type PacedKind } from './limits.js';
+import { dayShapeFor, localDateOf, visitsForDay, workWindowOf, zonedToUtc } from './pacing.js';
 import { clearInboxForSeat } from './inbox.js';
 import {
   OWNER_SEAT_KEY,
@@ -573,6 +574,38 @@ export function sessionBreakMs(seed: string): number {
 export function resetLinkedInSessionRhythm(): void {
   seatBreaks.clear();
   seatSessions.clear();
+}
+
+/**
+ * When the visit this seat is currently inside ends, or null when it is not
+ * inside one (or has no window to compute one from).
+ *
+ * Reads the seat rather than taking it, because the one caller is deep inside
+ * a batch loop that does not otherwise need the row, and this runs once per
+ * sitting rather than once per action.
+ */
+async function visitEndsAt(db: Db, workspaceId: string, seatKey: string, now: Date): Promise<Date | null> {
+  try {
+    const seat = await getSeat(db, workspaceId, seatKey);
+    if (!seat) return null;
+    const window = workWindowOf(seat);
+    const local = localDateOf(now, seat.timezone);
+    const shape = dayShapeFor(`${workspaceId}:${seatKey}`, local, window);
+    if (shape.resting) return null;
+    const minuteOfDay = local.hour * 60 + local.minute;
+    // WITHOUT `actions`, so this is the BASE visit: the same schedule the
+    // reading side sees. The planner's stretched end is not knowable here
+    // without recomputing the day's ceiling, and erring short only means the
+    // next sitting starts at the next visit rather than later in this one.
+    const visit = visitsForDay(`${workspaceId}:${seatKey}`, local, shape)
+      .find((candidate) => minuteOfDay >= candidate.startMinute && minuteOfDay < candidate.endMinute);
+    if (!visit) return null;
+    return zonedToUtc(local, visit.endMinute * 60, seat.timezone);
+  } catch {
+    // A seat that cannot be read falls back to the drawn break, which is what
+    // this did before visits existed.
+    return null;
+  }
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
@@ -4648,7 +4681,20 @@ export async function runDueLinkedInActions(
       // pattern than the actions it was refusing to send, and every reason the
       // gate refuses for is one that needs HOURS to change, not a minute.
       if (result.executed > 0 || result.blocked > 0) {
-        const until = Date.now() + sessionBreakMs(sessionSeed);
+        // AWAY UNTIL THE END OF THIS VISIT, WHICH IS THE SAME VISIT THE READS
+        // USE. The break used to be an independent 25-90 minute draw, so an
+        // account had two rhythms: `planPacing` now places every send inside a
+        // visit, and a break that ignored those visits could end mid-way
+        // through the next one or run straight past it. Resting to the end of
+        // the current visit means the next opening of LinkedIn is the next
+        // thing that happens -- one presence, not two.
+        //
+        // The drawn break is the FALLBACK, for a seat with no row, no window
+        // or a window too short to hold a visit. It is also what this did
+        // before, so the degraded path is the old behaviour rather than a new
+        // one.
+        const until = (await visitEndsAt(db, workspaceId, seatKey, new Date()))?.getTime()
+          ?? Date.now() + sessionBreakMs(sessionSeed);
         seatBreaks.set(handleKey, until);
         await setSeatRestingUntil(db, workspaceId, seatKey, new Date(until));
         await recordSeatEvent(
