@@ -49,6 +49,14 @@ interface FakePageOptions {
   wallAfterClick?: 'challenge' | 'limit' | null;
   navFails?: boolean;
   url?: string;
+  /**
+   * People on the page that this driver could not read as cards.
+   *
+   * The difference between "nothing to withdraw" and "we cannot read this
+   * page": an empty sent list offers nobody at all, while a list this driver
+   * has lost the shape of still links to the people on it.
+   */
+  strayProfileLinks?: boolean;
 }
 
 interface FakePage {
@@ -133,6 +141,12 @@ function fakePage(options: FakePageOptions = {}): FakePage {
       }
       if (selector === WITHDRAW_SELECTORS.emptyState) {
         return locator({ count: options.emptyState && cards.length === 0 ? 1 : 0 });
+      }
+      if (selector === WITHDRAW_SELECTORS.invitationProfileLinkAnywhere) {
+        // Cards carry profile links, so a page with cards has them by
+        // definition; `strayProfileLinks` is for the page that has the people
+        // but not the shape.
+        return locator({ count: cards.length > 0 || options.strayProfileLinks ? 1 : 0 });
       }
       if (selector === WITHDRAW_SELECTORS.showMoreButton) {
         return locator({
@@ -241,11 +255,27 @@ describe('listPendingInvites', () => {
     expect(list.truncated).toBe(false);
   });
 
-  it('reports drift when neither a card nor the empty state is on the page', async () => {
+  it('reports drift when the page holds people it could not read as cards', async () => {
     // "You have no pending invites" and "we could not see your pending invites"
     // lead to opposite decisions, so they must never collapse into one answer.
-    const { page } = fakePage({ cards: [], emptyState: false });
+    const { page } = fakePage({ cards: [], emptyState: false, strayProfileLinks: true });
     expect(expectFailure(await listPendingInvites(page, { now: NOW })).failureKind).toBe('selector_drift');
+  });
+
+  /**
+   * THE EMPTY STATE THIS DRIVER CANNOT READ THE WORDS OF.
+   *
+   * LinkedIn renders in the member's language, and the live seat's says `Keine
+   * neuen Einladungen` -- so the English `emptyState` matcher missed, and an
+   * empty list was reported as selector drift, the answer that means "stop".
+   * A page with no cards AND nobody linked on it has nothing to withdraw in any
+   * language.
+   */
+  it('reads an empty list as empty even when it cannot read the words', async () => {
+    const { page } = fakePage({ cards: [], emptyState: false });
+    const list = expectList(await listPendingInvites(page, { now: NOW }));
+    expect(list.invites).toEqual([]);
+    expect(list.degraded).toEqual([]);
   });
 
   it('reads everything the last expansion loaded', async () => {
@@ -394,8 +424,8 @@ describe('withdrawInvite', () => {
     expect(clicks).toEqual([]);
   });
 
-  it('reports drift when neither a card nor the empty state is on the page', async () => {
-    const { page, clicks } = fakePage({ cards: [], emptyState: false });
+  it('reports drift when the page holds people it could not read as cards', async () => {
+    const { page, clicks } = fakePage({ cards: [], emptyState: false, strayProfileLinks: true });
     const result = await withdrawInvite(page, 'maya');
 
     expect(result.failureKind).toBe('selector_drift');

@@ -64,6 +64,7 @@ interface ActionRow {
   variant_id: string | null;
   campaign_member_id: string | null;
   replay_scope: string;
+  source: string;
   planned_for: string | null;
 }
 
@@ -78,7 +79,7 @@ interface MemberRow {
 
 async function actions(): Promise<ActionRow[]> {
   return db.prepare(`
-    SELECT id,kind,status,body,target_ref,workflow_step_id,variant_id,campaign_member_id,replay_scope,
+    SELECT id,kind,status,body,target_ref,workflow_step_id,variant_id,campaign_member_id,replay_scope,source,
            TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO}) AS planned_for
     FROM linkedin_actions WHERE workspace_id=? ORDER BY planned_for ASC NULLS LAST, id ASC
   `).all<ActionRow>(WORKSPACE);
@@ -233,8 +234,32 @@ describe('managed campaign runner', () => {
     expect(member.next_eligible_at).toBeNull();
     expect(await campaignStatus(campaignId)).toBe('completed');
 
-    // Four outbound rows for four outbound steps, and not one more.
-    expect(await actions()).toHaveLength(4);
+    /*
+     * FIVE ROWS FOR FIVE THINGS THAT REACHED LINKEDIN, and the fifth is the
+     * manual message.
+     *
+     * It used to be four: `manual_message` wrote no ledger row at all, on the
+     * grounds that Trevra does not send it. But the operator does -- from the
+     * same account, on the same day, against the same message ceiling -- so
+     * "Trevra did not send it" was being recorded as "nothing was sent", and a
+     * workflow made of human checkpoints reported zero messages forever while
+     * its seat's 24h message count ran short by exactly the messages the
+     * product had asked a human to send.
+     *
+     * Filed as a 'dm' with `source='manual'` at COMPLETION, never at creation:
+     * a pending task is a request, and only completion is the operator saying
+     * it went out. `withdraw_pending` still writes nothing here, because
+     * nothing was withdrawn on this path -- the row is filed by
+     * `executeWithdrawal` when LinkedIn confirms the click.
+     */
+    const finalLedger = await actions();
+    expect(finalLedger).toHaveLength(5);
+    const manual = finalLedger.filter((row) => row.source === 'manual');
+    expect(manual).toHaveLength(1);
+    expect(manual[0].kind).toBe('dm');
+    expect(manual[0].status).toBe('sent');
+    expect(manual[0].workflow_step_id).toBe('manual');
+    expect(manual[0].body).toBe('Ping Maya at Acme');
   });
 
   it('caps day-one planning at the campaign ramp and releases the rest on day two', async () => {
@@ -637,6 +662,10 @@ describe('managed campaign runner', () => {
     expect(analytics.followsSent).toBe(2);
     expect(analytics.invitesWithdrawn).toBe(1);
     expect(analytics.invitesSent).toBe(1);
+    // No 'withdraw' ledger row was filed here, because nothing clicked
+    // anything: the status was set by hand above. The two numbers are counted
+    // off different rows on purpose -- see `withdrawalsPerformed`.
+    expect(analytics.withdrawalsPerformed).toBe(0);
   });
 
   it('stops the workflow when the lead has already replied', async () => {

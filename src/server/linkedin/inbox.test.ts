@@ -241,6 +241,46 @@ describe('reply detection', () => {
     expect(row.recorded_at).toBe('2026-08-04T09:30:00.000Z');
   });
 
+  /**
+   * A REPLY IS ALSO ACCEPTANCE EVIDENCE, and it is the second of the two
+   * writers `accepted` finally has. Before this, a stranger who accepted an
+   * invite and immediately answered it left the ledger with 'replied' and
+   * nothing whatsoever recording that the acceptance had been established, when
+   * it was, or on what evidence -- so every acceptance counter in the product
+   * had to compensate by spelling out `IN ('accepted','replied')`.
+   */
+  it('records the acceptance a reply proves, alongside the reply itself', async () => {
+    const actionId = await ledgerAction({ kind: 'invite', status: 'sent' });
+
+    const result = await syncThreadMessages(
+      db,
+      { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', messages: [inbound('Sure, tell me more.')] },
+      NOW
+    );
+
+    expect(result.acceptedActionIds).toEqual([actionId]);
+    // 'replied' is the stronger statement and wins the status; the acceptance
+    // survives it in its own two columns.
+    const row = await db.prepare(`
+      SELECT status, accepted_source,
+             TO_CHAR(accepted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS accepted_at
+      FROM linkedin_actions WHERE id=?
+    `).get<{ status: string; accepted_source: string; accepted_at: string }>(actionId);
+    expect(row).toMatchObject({ status: 'replied', accepted_source: 'detected' });
+    // Dated at the message that proves it, not at the sync that noticed.
+    expect(row?.accepted_at).toBe('2026-08-04T09:30:00.000Z');
+    expect(result.linkage).toContain('also recorded as accepted');
+  });
+
+  it('does not restate acceptance for an invite a human already ruled on', async () => {
+    const actionId = await ledgerAction({ kind: 'invite', status: 'declined' });
+    const result = await syncThreadMessages(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', messages: [inbound()] }, NOW);
+    // A declined invite is decided. A later message is a conversation, not a
+    // retroactive acceptance, and the detector never walks a ruling backwards.
+    expect(result.acceptedActionIds).toEqual([]);
+    expect((await actionRow(actionId)).status).toBe('declined');
+  });
+
   it('matches a ledger target stored as a bare handle', async () => {
     // `target_ref` is opaque -- whatever a human typed or a CSV supplied.
     const actionId = await ledgerAction({ target: 'maya' });

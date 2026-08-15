@@ -126,6 +126,59 @@ export interface LinkedInSeat {
    * different ceiling, never an absence of one.
    */
   safetyBandOverride: boolean;
+  /**
+   * This account's own outbound proxy, REDACTED. Null when it has none.
+   *
+   * The password is never on this type in any form, for the same reason
+   * `LinkedInSeatAuth` has no password field: this object is serialised
+   * straight onto the wire by three routes, and a credential that is rendered
+   * back to a browser is a credential in a screenshot, a bug report and a
+   * support thread. {@link seatProxyUrl} is the only reader of the stored
+   * string and it is server-side only.
+   */
+  proxy: SeatProxyView | null;
+}
+
+/**
+ * A seat's proxy as a screen may see it: enough to confirm WHICH proxy is
+ * configured, never enough to use it.
+ */
+export interface SeatProxyView {
+  /** `scheme://host:port`, credentials stripped. */
+  server: string;
+  /** The proxy account name, when the URL carries one. */
+  username: string | null;
+  /** Whether a password is stored with it. The password itself never leaves the server. */
+  hasPassword: boolean;
+}
+
+/**
+ * The stored proxy URL as a screen may see it, or null.
+ *
+ * DISPLAY ONLY, AND DELIBERATELY NOT THE AUTHORITY. `resolveSeatProxy` in
+ * local-worker.ts is what decides whether a configured proxy is usable, and it
+ * REFUSES TO OPEN A BROWSER when it is not -- that refusal is the safety
+ * property, and a second copy of the rules here could only ever disagree with
+ * it. A value this cannot even parse comes back null rather than throwing,
+ * because a seat read must not fail over a display field; the launch still
+ * refuses, and the write path (`upsertSeat`, via the route) validates through
+ * the real resolver before anything is stored.
+ */
+export function describeSeatProxy(raw: string | null): SeatProxyView | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (!url.hostname) return null;
+  return {
+    server: `${url.protocol.replace(':', '')}://${url.host}`,
+    username: url.username ? decodeURIComponent(url.username) : null,
+    hasPassword: Boolean(url.password)
+  };
 }
 
 /**
@@ -156,6 +209,18 @@ export interface SeatPatch {
   dailyFollowLimit?: number;
   /** See {@link LinkedInSeat.safetyBandOverride}. Absent means unchanged; a first write defaults to false. */
   safetyBandOverride?: boolean;
+  /**
+   * This account's outbound proxy, as a full `scheme://user:pass@host:port`.
+   *
+   * WRITE-ONLY. Absent means unchanged, and null or an empty string removes
+   * it; it is never read back out of {@link LinkedInSeat}, which carries the
+   * redacted {@link SeatProxyView} instead.
+   *
+   * A STORED PROXY OUTRANKS EVERY `TREVRA_LINKEDIN_PROXY*` VARIABLE for this
+   * seat, and setting one that cannot be used stops that seat rather than
+   * letting it connect directly -- see `resolveSeatProxy`.
+   */
+  proxyUrl?: string | null;
 }
 
 interface SeatRow {
@@ -179,6 +244,7 @@ interface SeatRow {
   daily_profile_view_limit: number;
   daily_follow_limit: number;
   safety_band_override: boolean;
+  proxy_url: string | null;
 }
 
 /**
@@ -214,7 +280,8 @@ const SEAT_COLUMNS = `
   daily_message_limit,
   daily_profile_view_limit,
   daily_follow_limit,
-  safety_band_override
+  safety_band_override,
+  proxy_url
 `;
 
 function parsedWorkingDays(value: unknown): number[] {
@@ -246,8 +313,24 @@ function toSeat(row: SeatRow): LinkedInSeat {
     dailyFollowLimit: Number(row.daily_follow_limit),
     // Fails CLOSED on a row this schema never wrote: an absent flag is not an
     // override, it is a seat nobody has opted in for.
-    safetyBandOverride: row.safety_band_override === true
+    safetyBandOverride: row.safety_band_override === true,
+    // REDACTED HERE, once, so no caller has to remember to do it. Every route
+    // that returns a seat returns this object.
+    proxy: describeSeatProxy(row.proxy_url ?? null)
   };
+}
+
+/**
+ * The seat's proxy URL AS STORED, credentials included. Server-side only.
+ *
+ * Separate from {@link getSeat} on purpose: the seat object goes to a browser
+ * and this string must not. The one caller is the browser launcher, which
+ * needs the whole URL to hand Chromium.
+ */
+export async function seatProxyUrl(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): Promise<string | null> {
+  const row = await db.prepare('SELECT proxy_url FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
+    .get<{ proxy_url: string | null }>(workspaceId, seatKey);
+  return row?.proxy_url?.trim() || null;
 }
 
 /** The workspace's seat, or undefined when none is configured. */
@@ -403,6 +486,12 @@ export async function upsertSeat(
   // Absent means UNCHANGED, like every other field here; a seat that has never
   // been opted in is false. There is no path that turns this on by inference.
   const safetyBandOverride = patch.safetyBandOverride ?? existing?.safetyBandOverride ?? false;
+  // Absent means UNCHANGED, so the existing value is read back out of the
+  // column rather than off `existing` -- the seat object deliberately does not
+  // carry it. Null or blank removes it.
+  const proxyUrl = patch.proxyUrl === undefined
+    ? await seatProxyUrl(db, workspaceId, seatKey)
+    : (patch.proxyUrl?.trim() || null);
   const timestamp = now.toISOString();
 
   const row = await db.prepare(`
@@ -410,8 +499,8 @@ export async function upsertSeat(
       workspace_id, seat_key, label, profile_url, account_opened_on, connections_count,
       timezone, activated_at, detected_at, session_valid_at, posture, paused_reason,
       working_days, work_start_minute, work_end_minute, daily_invite_limit,
-      daily_message_limit, daily_profile_view_limit, daily_follow_limit, safety_band_override, created_at, updated_at
-    ) VALUES (?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?)
+      daily_message_limit, daily_profile_view_limit, daily_follow_limit, safety_band_override, proxy_url, created_at, updated_at
+    ) VALUES (?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, seat_key) DO UPDATE SET
       label = excluded.label,
       profile_url = excluded.profile_url,
@@ -433,6 +522,7 @@ export async function upsertSeat(
       daily_profile_view_limit = excluded.daily_profile_view_limit,
       daily_follow_limit = excluded.daily_follow_limit,
       safety_band_override = excluded.safety_band_override,
+      proxy_url = excluded.proxy_url,
       updated_at = excluded.updated_at
     RETURNING ${SEAT_COLUMNS}
   `).get<SeatRow>(
@@ -456,6 +546,7 @@ export async function upsertSeat(
     dailyProfileViewLimit,
     dailyFollowLimit,
     safetyBandOverride,
+    proxyUrl,
     timestamp,
     timestamp
   );

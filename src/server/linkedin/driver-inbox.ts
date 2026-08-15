@@ -129,9 +129,30 @@ export function threadUrnFrom(raw: string): string | null {
 export const INBOX_SELECTORS = {
   /** The conversation rail. Its presence is how "empty inbox" is told from "drift". */
   conversationList: 'ul.msg-conversations-container__conversations-list',
-  conversationRow: 'ul.msg-conversations-container__conversations-list > li',
-  /** The clickable row. Clicking it is what puts the thread URN in the URL. */
-  rowLink: 'a.msg-conversation-listitem__link',
+  /**
+   * A row that is actually a CONVERSATION.
+   *
+   * The rail's first `<li>` is an empty spacer -- no class, no text, no
+   * children -- so counting bare `> li` counts one conversation that is not
+   * there and shifts every index by one. Measured on the live inbox: two
+   * children, one conversation, and the report read "Conversation 1 has no
+   * link to open" about a blank element.
+   *
+   * Defined by what a row CONTAINS rather than by its own class, because the
+   * class on the row is the thing LinkedIn keeps renaming while the clickable
+   * child has kept its name through every reskin so far.
+   */
+  conversationRow: 'ul.msg-conversations-container__conversations-list > li:has(.msg-conversation-listitem__link)',
+  /**
+   * The clickable row. Clicking it is what puts the thread URN in the URL.
+   *
+   * NO LONGER AN ANCHOR. LinkedIn ships this as a `<div>` with the same class
+   * -- measured on the live inbox, where `a.msg-conversation-listitem__link`
+   * matched nothing and every conversation was reported as "has no link to
+   * open, so its id could not be read". The class survived; the tag did not, so
+   * the tag is no longer part of the question.
+   */
+  rowLink: '.msg-conversation-listitem__link',
   rowName: '.msg-conversation-listitem__participant-names',
   rowSnippet: '.msg-conversation-card__message-snippet',
   rowTimestamp: 'time.msg-conversation-listitem__time-stamp, .msg-conversation-listitem__time-stamp',
@@ -199,7 +220,10 @@ function scoped(prefix: string, selector: string, join: ' ' | '' = ' '): string 
  * "row 3", so CSS does it.
  */
 function rowSelector(index: number, suffix?: string, join: ' ' | '' = ' '): string {
-  const row = `${INBOX_SELECTORS.conversationList} > li:nth-child(${index + 1})`;
+  // `:nth-match` over the FILTERED set, not `:nth-child` over the rail's
+  // children: those two disagree the moment LinkedIn puts a spacer `<li>` in
+  // the list, and it does. Counting and indexing must be the same question.
+  const row = `:nth-match(${INBOX_SELECTORS.conversationRow}, ${index + 1})`;
   return suffix ? scoped(row, suffix, join) : row;
 }
 function messageSelector(index: number, suffix?: string, join: ' ' | '' = ' '): string {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseMessageVariant, delayMilliseconds, renderWorkflowTemplate, unsupportedVariables, workflowStepsSchema } from './workflows.js';
+import { MESSAGE_VARIANT_MAX, chooseMessageVariant, delayMilliseconds, parseWorkflowSteps, renderWorkflowTemplate, unsupportedVariables, workflowStepsSchema } from './workflows.js';
 
 describe('LinkedIn manager workflows', () => {
   it('accepts the supported actions and hour/day delays', () => {
@@ -78,5 +78,139 @@ describe('LinkedIn manager workflows', () => {
   it('assigns an A/B variant deterministically', () => {
     const variants = [{ id: 'a', body: 'A', weight: 50 }, { id: 'b', body: 'B', weight: 50 }];
     expect(chooseMessageVariant(variants, 'member:step')).toEqual(chooseMessageVariant(variants, 'member:step'));
+  });
+
+  // A/B was capped at two arms by the schema alone -- nothing downstream needed
+  // two. The cap is four now, and these are the four properties that make a
+  // four-way split worth having rather than a way to lose a fortnight.
+  describe('four-way A/B', () => {
+    const four = [
+      { id: 'a', body: 'A', weight: 25 },
+      { id: 'b', body: 'B', weight: 25 },
+      { id: 'c', body: 'C', weight: 25 },
+      { id: 'd', body: 'D', weight: 25 }
+    ];
+
+    it('accepts four message variants and still refuses a fifth', () => {
+      expect(MESSAGE_VARIANT_MAX).toBe(4);
+      const parsed = workflowStepsSchema.parse([
+        { id: 'msg', action: 'message', delayBefore: { amount: 0, unit: 'hours' }, config: { variants: four } }
+      ]);
+      expect(parsed[0].action === 'message' && parsed[0].config.variants).toHaveLength(4);
+
+      expect(() => workflowStepsSchema.parse([
+        { id: 'msg', action: 'message', delayBefore: { amount: 0, unit: 'hours' }, config: { variants: [...four, { id: 'e', body: 'E', weight: 20 }] } }
+      ])).toThrow();
+
+      // The uniqueness rule is not weakened by the extra room: four arms, two
+      // of them called `c`, is still a rejected save and not a silent overwrite.
+      expect(() => workflowStepsSchema.parse([
+        { id: 'msg', action: 'message', delayBefore: { amount: 0, unit: 'hours' }, config: { variants: [...four.slice(0, 3), { id: 'c', body: 'D', weight: 25 }] } }
+      ])).toThrow();
+    });
+
+    it('spreads 1000 members across all four arms in roughly the weighted proportions', () => {
+      const counts = new Map(four.map((variant) => [variant.id, 0]));
+      for (let member = 0; member < 1000; member += 1) {
+        const chosen = chooseMessageVariant(four, `member${member}:msg`);
+        counts.set(chosen.id, (counts.get(chosen.id) ?? 0) + 1);
+      }
+      // Every arm is USED -- the bug this replaces could not reach arms 3 and 4
+      // at all -- and none runs away with the split.
+      for (const variant of four) {
+        const share = (counts.get(variant.id) ?? 0) / 1000;
+        expect(share).toBeGreaterThan(0.2);
+        expect(share).toBeLessThan(0.3);
+      }
+      expect([...counts.values()].reduce((sum, count) => sum + count, 0)).toBe(1000);
+    });
+
+    // Weights are the operator's, and they do not have to sum to 100: the split
+    // is taken from the arms' own total, so 60/20/10/10 means 60/20/10/10 and
+    // 6/2/1/1 means the same thing.
+    it('honours uneven weights, and is unchanged when the same ratio is written smaller', () => {
+      const weighted = [
+        { id: 'a', body: 'A', weight: 60 },
+        { id: 'b', body: 'B', weight: 20 },
+        { id: 'c', body: 'C', weight: 10 },
+        { id: 'd', body: 'D', weight: 10 }
+      ];
+      const scaled = weighted.map((variant) => ({ ...variant, weight: variant.weight / 10 }));
+
+      const spread = (arms: typeof weighted) => {
+        const counts = new Map(arms.map((variant) => [variant.id, 0]));
+        for (let member = 0; member < 2000; member += 1) {
+          const chosen = chooseMessageVariant(arms, `member${member}:msg`);
+          counts.set(chosen.id, (counts.get(chosen.id) ?? 0) + 1);
+        }
+        return new Map([...counts].map(([variantId, count]) => [variantId, count / 2000]));
+      };
+
+      // The RATIO is what the two share, not the per-member draw: the sample is
+      // taken modulo the arms' own total, so writing the same split smaller
+      // moves individual members while the shares land in the same place.
+      for (const shares of [spread(weighted), spread(scaled)]) {
+        expect(shares.get('a') ?? 0).toBeGreaterThan(0.55);
+        expect(shares.get('a') ?? 0).toBeLessThan(0.65);
+        expect(shares.get('b') ?? 0).toBeGreaterThan(0.15);
+        expect(shares.get('b') ?? 0).toBeLessThan(0.25);
+        expect(shares.get('c') ?? 0).toBeGreaterThan(0.05);
+        expect(shares.get('c') ?? 0).toBeLessThan(0.15);
+        expect(shares.get('d') ?? 0).toBeGreaterThan(0.05);
+        expect(shares.get('d') ?? 0).toBeLessThan(0.15);
+      }
+    });
+
+    // A retried tick must not move a contact between arms: an A/B split whose
+    // arms reshuffle on retry measures the retry, not the copy.
+    it('re-derives the same arm for the same member:step on every call', () => {
+      for (let member = 0; member < 200; member += 1) {
+        const seed = `member${member}:msg`;
+        const first = chooseMessageVariant(four, seed);
+        expect(chooseMessageVariant(four, seed)).toEqual(first);
+        expect(chooseMessageVariant(four, seed)).toEqual(first);
+        // Different STEP, same member: a workflow with two message steps is two
+        // independent tests, not the same draw twice.
+        expect(chooseMessageVariant(four, `member${member}:msg2`).id).toBeTruthy();
+      }
+    });
+
+    it('never falls off the end of the arms, whatever the seed', () => {
+      const ids = new Set(four.map((variant) => variant.id));
+      for (let seed = 0; seed < 500; seed += 1) {
+        expect(ids.has(chooseMessageVariant(four, `seed-${seed}`).id)).toBe(true);
+      }
+      // One arm is not a draw at all.
+      expect(chooseMessageVariant([{ id: 'only', body: 'O', weight: 50 }], 'anything').id).toBe('only');
+    });
+  });
+
+  // RAISING A MAXIMUM MIGRATES NOTHING. A campaign executes the snapshot it
+  // started with, and those snapshots are one- and two-variant JSON written
+  // before the cap moved -- they have to keep parsing byte-for-byte as they
+  // were stored, weights and all.
+  it('still parses a stored 1- and 2-variant workflow exactly as written', () => {
+    const stored = JSON.stringify([
+      { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
+      { id: 'msg', action: 'message', delayBefore: { amount: 2, unit: 'days' }, config: { variants: [{ id: 'a', body: 'Hey {{first_name}}', weight: 70 }, { id: 'b', body: 'Hi {{first_name}}', weight: 30 }] } },
+      { id: 'solo', action: 'message', delayBefore: { amount: 3, unit: 'days' }, config: { variants: [{ id: 'a', body: 'Following up, {{first_name}}', weight: 50 }] } }
+    ]);
+
+    const steps = parseWorkflowSteps(stored);
+    expect(steps).toHaveLength(3);
+    const ab = steps[1];
+    const solo = steps[2];
+    if (ab.action !== 'message' || solo.action !== 'message') throw new Error('expected two message steps');
+    expect(ab.config.variants.map((variant) => [variant.id, variant.weight])).toEqual([['a', 70], ['b', 30]]);
+    expect(solo.config.variants).toHaveLength(1);
+
+    // And the split those stored weights describe is still the split that runs:
+    // 70/30 out of a total of 100, not a third each because the cap moved.
+    let a = 0;
+    for (let member = 0; member < 1000; member += 1) {
+      if (chooseMessageVariant(ab.config.variants, `member${member}:msg`).id === 'a') a += 1;
+    }
+    expect(a / 1000).toBeGreaterThan(0.65);
+    expect(a / 1000).toBeLessThan(0.75);
   });
 });

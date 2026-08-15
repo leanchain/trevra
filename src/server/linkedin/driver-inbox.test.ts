@@ -95,6 +95,63 @@ function thread(index: number, overrides: Partial<FakeThread> = {}): FakeThread 
   };
 }
 
+/**
+ * The 1-based index out of `:nth-match(<row selector>, N)`, or null.
+ *
+ * The driver indexes rows with `:nth-match` over the FILTERED row set rather
+ * than `:nth-child` over the rail's children, because those two disagree the
+ * moment LinkedIn puts a spacer `<li>` in the list -- and it does.
+ */
+function nthMatchIndex(part: string): number | null {
+  const match = /:nth-match\(.*,\s*(\d+)\)/.exec(part);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The 1-based index a scoped selector asks for, and everything written after
+ * it, for BOTH shapes the driver uses: `:nth-match(<rows>, N)` for conversation
+ * rows and `li:nth-child(N)` for messages inside a thread.
+ *
+ * The suffix is taken from the end of the index expression rather than from the
+ * first bracket in the string, because the row selector contains `:has(...)`
+ * and a naive split cuts it in half.
+ */
+/**
+ * A selector list split into its alternatives, the way a browser splits it:
+ * on TOP-LEVEL commas only.
+ *
+ * `:nth-match(ul > li:has(.x), 3)` contains a comma that belongs to the
+ * function, not to the list. Splitting on every comma tears the row selector in
+ * two and the fixture then answers a question the driver never asked -- which
+ * is precisely the class of mistake this file exists to catch, so the fixture
+ * must not make it itself.
+ */
+function selectorParts(selector: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const character of selector) {
+    if (character === '(') depth += 1;
+    if (character === ')') depth -= 1;
+    if (character === ',' && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+function indexAndSuffix(part: string): { index: number | null; rawSuffix: string } {
+  for (const pattern of [/:nth-match\(.*,\s*(\d+)\)/, /li:nth-child\((\d+)\)/]) {
+    const found = pattern.exec(part);
+    if (found) return { index: Number(found[1]), rawSuffix: part.slice(found.index + found[0].length) };
+  }
+  return { index: null, rawSuffix: '' };
+}
+
 class FakePage implements LinkedInPage {
   current = 'https://www.linkedin.com/feed/';
   readonly sleeps: number[] = [];
@@ -132,6 +189,17 @@ class FakePage implements LinkedInPage {
     return this.openIndex >= 0 ? this.state.threads[this.openIndex] : null;
   }
 
+  /**
+   * The rows a browser would see: the ones with a clickable link.
+   *
+   * A `<li>` with no link is not a conversation the driver can index -- the
+   * real selector filters on exactly that, because LinkedIn's rail opens with
+   * an empty spacer item.
+   */
+  private rows(): FakeThread[] {
+    return this.state.threads.filter((thread) => !thread.noLink);
+  }
+
   private wallShowing(part: string): number {
     if (this.state.wall === 'none') return 0;
     if (this.state.wallAt === 'thread' && threadUrnFrom(this.current) === null) return 0;
@@ -145,7 +213,7 @@ class FakePage implements LinkedInPage {
   resolve(selector: string): { count: number; text: string | null } {
     let count = 0;
     let text: string | null = null;
-    for (const part of selector.split(',').map((piece) => piece.trim())) {
+    for (const part of selectorParts(selector)) {
       const found = this.resolveOne(part);
       count += found.count;
       if (text === null) text = found.text;
@@ -174,23 +242,28 @@ class FakePage implements LinkedInPage {
     }
     if (part.includes('msg-entity-lockup') || part.includes('msg-title-bar')) return none;
 
-    const nth = /li:nth-child\((\d+)\)/.exec(part);
-    // RAW, then trimmed. The whitespace between `li:nth-child(3)` and what
+    // RAW, then trimmed. The whitespace between the row selector and what
     // follows is not formatting: it is the difference between "a class on the
     // item" and "a class on something inside it", and collapsing the two is how
     // this fixture used to agree with a driver that could never have matched a
     // real page -- every message read as ours, and every reply was lost.
-    const rawSuffix = nth ? part.slice(part.indexOf(')') + 1) : '';
+    const { index: nth, rawSuffix } = indexAndSuffix(part);
     const suffix = rawSuffix.trim();
     const descendant = /^\s/.test(rawSuffix);
 
     if (part.includes('msg-conversations-container__conversations-list')) {
       if (!this.onMessaging() || this.state.rail === 'missing') return none;
-      if (!nth) {
-        if (part.trim().endsWith('> li')) return { count: this.state.rail === 'empty' ? 0 : this.state.threads.length, text: null };
+      if (nth === null) {
+        // The rail's own count. `conversationRow` now filters to rows that have
+        // a clickable link, exactly as the page does -- LinkedIn puts an empty
+        // spacer `<li>` in this list, and counting it was reported as a
+        // conversation that could not be opened.
+        if (part.trim().endsWith(':has(.msg-conversation-listitem__link)')) {
+          return { count: this.state.rail === 'empty' ? 0 : this.rows().length, text: null };
+        }
         return { count: 1, text: null };
       }
-      const row = this.state.threads[Number(nth[1]) - 1];
+      const row = this.rows()[nth - 1];
       if (!row || this.state.rail === 'empty') return none;
       if (!suffix) return { count: 1, text: null };
       if (suffix.includes('participant-names')) return { count: 1, text: row.name };
@@ -210,7 +283,7 @@ class FakePage implements LinkedInPage {
         if (part.trim().endsWith('> li')) return { count: open.messages.length, text: null };
         return { count: 1, text: null };
       }
-      const message = open.messages[Number(nth[1]) - 1];
+      const message = open.messages[nth - 1];
       if (!message) return none;
       if (!suffix) return { count: 1, text: null };
       // Real markup: the bubble is a DIV INSIDE the <li>, and `--other` on it
@@ -236,12 +309,12 @@ class FakePage implements LinkedInPage {
   }
 
   click(selector: string): void {
-    for (const part of selector.split(',').map((piece) => piece.trim())) {
+    for (const part of selectorParts(selector)) {
       if (part.includes('msg-conversation-listitem__link')) {
-        const nth = /li:nth-child\((\d+)\)/.exec(part);
-        if (!nth) continue;
-        const index = Number(nth[1]) - 1;
-        const row = this.state.threads[index];
+        const nth = nthMatchIndex(part);
+        if (nth === null) continue;
+        const index = nth - 1;
+        const row = this.rows()[index];
         if (!row) continue;
         this.openIndex = index;
         this.current = threadUrlFor(row.urn) ?? MESSAGING_URL;

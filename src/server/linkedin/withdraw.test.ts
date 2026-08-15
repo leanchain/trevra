@@ -1,14 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { acceptanceRate, countActionsInWindow, hasTarget, recordAction, type SeatRef } from './actions.js';
-import type { LinkedInDriverResult } from './driver.js';
+import { ingestOutcome, linkedinAnalytics, recordDetectedAcceptance, writeActionStatus } from './campaigns.js';
+import type {
+  LinkedInDegreeDriver,
+  LinkedInDegreeRead,
+  LinkedInDriverResult,
+  LinkedInPage
+} from './driver.js';
 import type { LinkedInListPage, LinkedInWithdrawDriver, PendingInviteList } from './driver-withdraw.js';
+import type { LinkedInSafetyVerdict } from './guard.js';
 import { LINKEDIN_LIMITS } from './limits.js';
 import { OWNER_SEAT_KEY, getSeat, upsertSeat } from './seats.js';
 import {
   DEFAULT_STALE_AFTER_DAYS,
   WITHDRAWN_STATUS,
   claimNextWithdrawal,
+  detectAcceptedInvites,
+  selectAcceptanceCandidates,
   countPendingInvites,
   enqueueWithdrawals,
   evaluateWithdrawalSafety,
@@ -1009,5 +1018,396 @@ describe('the batched withdrawal enqueue', () => {
 
   it('is a no-op for an empty candidate list', async () => {
     expect(await enqueueWithdrawals(db, SEAT, [], NOW)).toEqual({ queued: 0, duplicates: 0, ids: [] });
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Acceptance detection
+ *
+ * THE DISAMBIGUATION IS THE WHOLE SUBJECT. An invite that leaves LinkedIn's
+ * pending list was accepted, declined, expired or withdrawn, and the list says
+ * which of the four exactly never. Every test below is about the product
+ * telling those apart on EVIDENCE -- a connection degree read off the target's
+ * own profile -- and about it saying "unknown" whenever the evidence did not
+ * arrive, rather than guessing in the one place a guess changes what the pacing
+ * engine does next.
+ * ------------------------------------------------------------------------ */
+
+/** A profile the degree driver will answer for, keyed by target. */
+function fakeDegreeDriver(answers: Record<string, LinkedInDegreeRead | LinkedInDriverResult>) {
+  const opened: string[] = [];
+  const driver: LinkedInDegreeDriver = {
+    readProfileDegree: async (_page, target) => {
+      opened.push(target);
+      return (
+        answers[target] ?? {
+          ok: true as const,
+          profileUrl: target,
+          degree: null,
+          pending: false,
+          degraded: ['no answer was configured for this target']
+        }
+      );
+    }
+  };
+  return { driver, opened };
+}
+
+function degree(target: string, value: 1 | 2 | 3 | null, pending = false): LinkedInDegreeRead {
+  return { ok: true, profileUrl: target, degree: value, pending, degraded: [] };
+}
+
+const url = (handle: string) => `https://www.linkedin.com/in/${handle}/`;
+
+/**
+ * Put an invite in the exact state the detector cares about: seen on the
+ * pending list, then absent from a LATER complete sync.
+ */
+async function vanishedInvite(handle: string, daysAgo = 30): Promise<string> {
+  const actionId = await pendingInvite(handle, daysAgo);
+  // Seen pending five days ago...
+  await syncPendingInvites(
+    db,
+    SEAT,
+    list([{ profileUrl: url(handle), name: null, sentAt: null }]),
+    new Date(NOW.getTime() - 5 * 86_400_000)
+  );
+  // ...and gone from today's complete read.
+  await syncPendingInvites(db, SEAT, list([]), NOW);
+  return actionId;
+}
+
+function allowedGate(): LinkedInSafetyVerdict {
+  return {
+    allowed: true,
+    reason: null,
+    checks: [],
+    automationMode: 'prepare-only',
+    automationReason: 'LinkedIn forbids unattended automation of its site.'
+  };
+}
+
+const detectorPage = {} as LinkedInPage;
+
+describe('acceptance detection', () => {
+  beforeEach(async () => {
+    await steadySeat();
+  });
+
+  it('calls a 1st-degree profile accepted and leaves a 2nd-degree one unknown', async () => {
+    const acceptedId = await vanishedInvite('accepted-one');
+    const declinedId = await vanishedInvite('declined-one');
+    const { driver, opened } = fakeDegreeDriver({
+      [url('accepted-one')]: degree(url('accepted-one'), 1),
+      // Declined, expired or withdrawn by hand -- LinkedIn will not say which,
+      // and 2nd degree is compatible with all three.
+      [url('declined-one')]: degree(url('declined-one'), 2)
+    });
+
+    const result = await detectAcceptedInvites(db, SEAT, {
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
+    });
+
+    expect(opened).toHaveLength(2);
+    expect(result).toMatchObject({ checked: 2, accepted: 1, unknown: 1, stillPending: 0, blocked: 0, halted: false });
+    expect(await statusOf(acceptedId)).toBe('accepted');
+    // THE UNKNOWN CASE. Not 'declined', not 'withdrawn', not accepted: the
+    // status it already had, because nobody found out.
+    expect(await statusOf(declinedId)).toBe('sent');
+  });
+
+  it('treats an unreadable badge as unknown rather than as a non-acceptance', async () => {
+    const actionId = await vanishedInvite('mystery');
+    const { driver } = fakeDegreeDriver({
+      // A localised or redesigned badge: the read succeeded, the parse did not.
+      [url('mystery')]: { ok: true, profileUrl: url('mystery'), degree: null, pending: false, degraded: ['badge read "1er"'] }
+    });
+
+    const result = await detectAcceptedInvites(db, SEAT, {
+      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+
+    expect(result).toMatchObject({ checked: 1, accepted: 0, unknown: 1 });
+    expect(await statusOf(actionId)).toBe('sent');
+    const row = await db.prepare('SELECT accepted_source, acceptance_checked_at FROM linkedin_actions WHERE id=?')
+      .get<{ accepted_source: string | null; acceptance_checked_at: string | null }>(actionId);
+    expect(row?.accepted_source).toBeNull();
+    // The page view was spent, so it is recorded and the invite is not re-read
+    // on every tick from now until the heat death of the campaign.
+    expect(row?.acceptance_checked_at).toBeTruthy();
+  });
+
+  it('re-files a still-pending invite as pending instead of deciding it', async () => {
+    const actionId = await vanishedInvite('slow-poke');
+    const { driver } = fakeDegreeDriver({ [url('slow-poke')]: degree(url('slow-poke'), 2, true) });
+
+    const result = await detectAcceptedInvites(db, SEAT, {
+      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+
+    expect(result).toMatchObject({ checked: 1, stillPending: 1, accepted: 0, unknown: 0 });
+    expect(await statusOf(actionId)).toBe('sent');
+    // The list read was stale, not the invite decided, so the evidence is
+    // refreshed and the staleness clock starts again from today.
+    const row = await db.prepare('SELECT pending_seen_at FROM linkedin_actions WHERE id=?').get<{ pending_seen_at: string }>(actionId);
+    expect(new Date(row!.pending_seen_at).getTime()).toBe(NOW.getTime());
+  });
+
+  it('records the provenance of a detection, and a human mark outranks it', async () => {
+    const actionId = await vanishedInvite('provenance');
+    const { driver } = fakeDegreeDriver({ [url('provenance')]: degree(url('provenance'), 1) });
+    await detectAcceptedInvites(db, SEAT, {
+      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+
+    let row = await db.prepare('SELECT status, accepted_source, accepted_at FROM linkedin_actions WHERE id=?')
+      .get<{ status: string; accepted_source: string; accepted_at: string }>(actionId);
+    expect(row).toMatchObject({ status: 'accepted', accepted_source: 'detected' });
+    const detectedAt = new Date(row!.accepted_at).toISOString();
+
+    // A person then confirms it by hand through the one sanctioned route.
+    await ingestOutcome(db, { workspaceId: WORKSPACE_ID, actionId, outcome: 'accepted' }, new Date(NOW.getTime() + 3_600_000));
+    row = await db.prepare('SELECT status, accepted_source, accepted_at FROM linkedin_actions WHERE id=?')
+      .get<{ status: string; accepted_source: string; accepted_at: string }>(actionId);
+    // The SOURCE becomes the human's; the DATE stays at the earliest evidence,
+    // which is when the acceptance was actually established rather than when
+    // somebody got round to clicking.
+    expect(row?.accepted_source).toBe('human');
+    expect(new Date(row!.accepted_at).toISOString()).toBe(detectedAt);
+  });
+
+  it('refuses to overwrite a human ruling with a detection', async () => {
+    const actionId = await vanishedInvite('already-judged');
+    // A person reported a reply -- strictly more information than a badge.
+    await ingestOutcome(db, { workspaceId: WORKSPACE_ID, actionId, outcome: 'replied' }, NOW);
+
+    const written = await recordDetectedAcceptance(db, { workspaceId: WORKSPACE_ID, actionId }, NOW);
+    expect(written.applied).toBe(false);
+    expect(await statusOf(actionId)).toBe('replied');
+
+    // And the direct writer refuses it too, so the rule does not depend on the
+    // wrapper having asked first.
+    await expect(
+      writeActionStatus(db, { workspaceId: WORKSPACE_ID, actionId, status: 'accepted', via: 'acceptance-detector' }, NOW)
+    ).rejects.toThrow(/no longer an undecided invite/);
+  });
+
+  it('refuses every status but accepted from the detector', async () => {
+    const actionId = await vanishedInvite('scope');
+    for (const status of ['sent', 'replied'] as const) {
+      await expect(
+        writeActionStatus(db, { workspaceId: WORKSPACE_ID, actionId, status, via: 'acceptance-detector' }, NOW)
+      ).rejects.toThrow(/Trevra plans and approves/);
+    }
+  });
+
+  it('does not move the invite recorded_at, so an old invite keeps its budget day', async () => {
+    const actionId = await vanishedInvite('old-invite', 40);
+    const before = await db.prepare('SELECT recorded_at FROM linkedin_actions WHERE id=?').get<{ recorded_at: string }>(actionId);
+    const { driver } = fakeDegreeDriver({ [url('old-invite')]: degree(url('old-invite'), 1) });
+    await detectAcceptedInvites(db, SEAT, {
+      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+    const after = await db.prepare('SELECT recorded_at FROM linkedin_actions WHERE id=?').get<{ recorded_at: string }>(actionId);
+    // Forty days ago is when it was sent, and every rolling window reads this
+    // column. An acceptance today must not bill today's invite budget.
+    expect(new Date(after!.recorded_at).getTime()).toBe(new Date(before!.recorded_at).getTime());
+  });
+
+  it('makes the acceptance rate non-zero end to end, with no human anywhere', async () => {
+    await vanishedInvite('yes-one');
+    await vanishedInvite('yes-two');
+    await vanishedInvite('no-one');
+    const { driver } = fakeDegreeDriver({
+      [url('yes-one')]: degree(url('yes-one'), 1),
+      [url('yes-two')]: degree(url('yes-two'), 1),
+      [url('no-one')]: degree(url('no-one'), 3)
+    });
+
+    // Zero before -- the state every unattended campaign was stuck in.
+    expect((await acceptanceRate(db, SEAT, 90, NOW)).accepted).toBe(0);
+
+    await detectAcceptedInvites(db, SEAT, {
+      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+
+    const rate = await acceptanceRate(db, SEAT, 90, NOW);
+    expect(rate.accepted).toBe(2);
+    expect(rate.decided).toBe(2);
+    // And the number an operator actually looks at, on the screen that shows it.
+    const analytics = await linkedinAnalytics(db, WORKSPACE_ID, null, NOW, { seatKey: OWNER_SEAT_KEY });
+    expect(analytics.invites.invitesAccepted).toBe(2);
+    expect(analytics.invites.invitesSent).toBe(3);
+    expect(analytics.invites.acceptanceRate).toBeCloseTo(2 / 3);
+  });
+
+  it('files a profile_view ledger row for every page it opens', async () => {
+    await vanishedInvite('viewed');
+    const { driver } = fakeDegreeDriver({ [url('viewed')]: degree(url('viewed'), 1) });
+    await detectAcceptedInvites(db, SEAT, {
+      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+
+    // Reading a degree IS viewing the profile. If this row is missing the seat
+    // spends a view budget nothing charges it for.
+    const views = await db.prepare(`
+      SELECT source, status, target_ref FROM linkedin_actions WHERE workspace_id=? AND kind='profile_view'
+    `).all<{ source: string; status: string; target_ref: string }>(WORKSPACE_ID);
+    expect(views).toHaveLength(1);
+    expect(views[0]).toMatchObject({ source: 'system', status: 'sent', target_ref: url('viewed') });
+    expect(await countActionsInWindow(db, SEAT, 'profile_view', 24, NOW)).toBe(1);
+  });
+
+  it('runs the safety gate before every navigation and stops when it refuses', async () => {
+    await vanishedInvite('gated-one');
+    await vanishedInvite('gated-two');
+    const { driver, opened } = fakeDegreeDriver({});
+    const asked: string[] = [];
+
+    const result = await detectAcceptedInvites(db, SEAT, {
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async (candidate) => {
+        asked.push(candidate.targetRef);
+        return { ...allowedGate(), allowed: false, reason: 'Outside working hours.' };
+      }
+    });
+
+    // Asked once, refused, and NOT ONE PROFILE OPENED.
+    expect(asked).toHaveLength(1);
+    expect(opened).toEqual([]);
+    expect(result).toMatchObject({ blocked: 1, checked: 0, halted: true, haltReason: 'Outside working hours.' });
+  });
+
+  it('cools the seat and halts on a limit wall', async () => {
+    await vanishedInvite('walled');
+    await vanishedInvite('never-reached');
+    const { driver, opened } = fakeDegreeDriver({
+      [url('walled')]: { ok: false, failureKind: 'limit_wall', detail: 'LinkedIn refused.' },
+      [url('never-reached')]: { ok: false, failureKind: 'limit_wall', detail: 'LinkedIn refused.' }
+    });
+
+    const result = await detectAcceptedInvites(db, SEAT, {
+      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+
+    // ONE profile, whichever the ordering put first. LinkedIn said stop, so the
+    // pass is over -- continuing past a limit wall is what turns a temporary
+    // restriction into a permanent one.
+    expect(opened).toHaveLength(1);
+    expect(result.halted).toBe(true);
+    expect((await getSeat(db, WORKSPACE_ID, OWNER_SEAT_KEY))?.posture).toBe('cooldown');
+  });
+
+  it('never reads one seat’s invites with another seat’s browser', async () => {
+    const other: SeatRef = { workspaceId: WORKSPACE_ID, seatKey: 'second' };
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Second', timezone: 'UTC' }, new Date('2026-01-01T09:00:00.000Z'), other.seatKey);
+
+    // One vanished invite on the OWNER seat only.
+    await vanishedInvite('owner-target');
+    const { driver, opened } = fakeDegreeDriver({ [url('owner-target')]: degree(url('owner-target'), 1) });
+
+    const result = await detectAcceptedInvites(db, other, {
+      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+
+    // The second seat has nothing of its own, and the owner's invite is not its
+    // business: a degree is a fact about the SIGNED-IN account's relationship,
+    // so reading it from the wrong browser would file a stranger's connection
+    // as this seat's acceptance.
+    expect(opened).toEqual([]);
+    expect(result).toMatchObject({ checked: 0, accepted: 0, seatKey: 'second' });
+  });
+
+  it('licenses no conclusion from a TRUNCATED pending sync', async () => {
+    const actionId = await pendingInvite('tail-of-a-big-backlog', 30);
+    await syncPendingInvites(
+      db, SEAT,
+      list([{ profileUrl: url('tail-of-a-big-backlog'), name: null, sentAt: null }]),
+      new Date(NOW.getTime() - 5 * 86_400_000)
+    );
+    // Today's read hit LinkedIn's own card bound, so this invite's absence means
+    // "not reached", not "gone".
+    await syncPendingInvites(db, SEAT, list([], true), NOW);
+
+    expect(await selectAcceptanceCandidates(db, SEAT)).toEqual([]);
+    expect(actionId).toBeTruthy();
+  });
+
+  it('does not re-read an invite it has already decided nothing about', async () => {
+    await vanishedInvite('read-once');
+    const answers = { [url('read-once')]: degree(url('read-once'), 3) };
+
+    const first = fakeDegreeDriver(answers);
+    await detectAcceptedInvites(db, SEAT, {
+      driver: first.driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+    expect(first.opened).toHaveLength(1);
+
+    const second = fakeDegreeDriver(answers);
+    await detectAcceptedInvites(db, SEAT, {
+      driver: second.driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+    });
+    expect(second.opened).toEqual([]);
+  });
+});
+
+describe('the withdrawal ledger row', () => {
+  it('files a withdraw action when LinkedIn confirms the click', async () => {
+    await steadySeat();
+    const actionId = await pendingInvite('taken-back', 30);
+    const [candidate] = await selectWithdrawalCandidates(db, SEAT, NOW);
+    const { ids } = await enqueueWithdrawals(db, SEAT, [candidate], NOW);
+    const claimed = await claimNextWithdrawal(db, SEAT, 'lwbatch_test', NOW);
+    expect(claimed?.id).toBe(ids[0]);
+
+    const { driver } = fakeDriver();
+    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed!, NOW);
+    expect(outcome.status).toBe('withdrawn');
+    expect(await statusOf(actionId)).toBe(WITHDRAWN_STATUS);
+
+    /*
+     * THE WITHDRAWAL IS ITS OWN ACTION. The invite's terminal status says the
+     * invite was taken back; it says nothing about the click, which happened
+     * today, on this account, and used to be invisible to every rolling count
+     * in the product.
+     */
+    const rows = await db.prepare(`
+      SELECT kind, status, source, target_ref, external_ref, recorded_at, seat_key
+      FROM linkedin_actions WHERE workspace_id=? AND kind='withdraw'
+    `).all<{ kind: string; status: string; source: string; target_ref: string; external_ref: string; seat_key: string }>(WORKSPACE_ID);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: 'sent',
+      source: 'system',
+      target_ref: url('taken-back'),
+      external_ref: actionId,
+      seat_key: OWNER_SEAT_KEY
+    });
+    expect(await countActionsInWindow(db, SEAT, 'withdraw', 24, NOW)).toBe(1);
+  });
+
+  it('files nothing when nothing was withdrawn', async () => {
+    await steadySeat();
+    await pendingInvite('still-standing', 30);
+    const [candidate] = await selectWithdrawalCandidates(db, SEAT, NOW);
+    await enqueueWithdrawals(db, SEAT, [candidate], NOW);
+    const claimed = await claimNextWithdrawal(db, SEAT, 'lwbatch_test', NOW);
+
+    // The entry was not on the live list: accepted, declined, expired and
+    // already-withdrawn are indistinguishable, so nothing is concluded and
+    // nothing is filed.
+    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'already_connected', detail: 'gone' }));
+    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed!, NOW);
+    expect(outcome.status).toBe('stale');
+
+    const rows = await db.prepare(`SELECT id FROM linkedin_actions WHERE workspace_id=? AND kind='withdraw'`).all<{ id: string }>(WORKSPACE_ID);
+    expect(rows).toEqual([]);
   });
 });

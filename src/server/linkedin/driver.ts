@@ -350,8 +350,27 @@ export const SELECTORS = {
    */
   otpField: 'input[name="pin"], input#input__phone_verification_pin, input[autocomplete="one-time-code"]',
   otpSubmitButton: 'button#two-step-submit-button, button#email-pin-submit-button, form button[type="submit"]',
-  /** The signed-in chrome. On every authenticated page, on no signed-out one. */
-  globalNav: 'header.global-nav, nav.global-nav, .global-nav__me, img.global-nav__me-photo'
+  /**
+   * The signed-in chrome. On every authenticated page, on no signed-out one.
+   *
+   * THE `global-nav` CLASSES ARE GONE. LinkedIn's current chrome is hashed
+   * (`header class="a7971c7d c099d5b6 ..."`) and carries no `global-nav`
+   * anywhere -- measured on the live seat, where all four of the old selectors
+   * matched ZERO elements on a perfectly signed-in feed. What that cost is the
+   * whole system: `isLoggedIn` said no on every pass, every job then tried to
+   * sign in, `/login` redirected the live session straight back to the feed,
+   * and the sign-in reported "the sign-in page shows no input#username". Every
+   * LinkedIn action in the product failed on that sentence, and none of them
+   * had anything wrong with them.
+   *
+   * The classes are KEPT, because an older UI still answers on them, and two
+   * markers are added that do not depend on a class name or on a language:
+   * the member navigation's own React ref id, and a link to /mynetwork/, which
+   * is a destination no signed-out page offers.
+   */
+  globalNav:
+    'header.global-nav, nav.global-nav, .global-nav__me, img.global-nav__me-photo, '
+    + '#primaryNavLinksComponentRef, header a[href*="/mynetwork/"], nav a[href*="/mynetwork/"]'
 } as const;
 
 /** Where a checkpoint lands. URL-level, so it is caught before any selector is read. */
@@ -1124,7 +1143,11 @@ export async function isLoggedIn(page: LinkedInPage): Promise<boolean> {
   if (onLinkedIn(current)) {
     if (CHECKPOINT_PATH.test(current)) return false;
     if (normalisedProfileUrl(current)) return true;
-    return present(page, SELECTORS.globalNav);
+    if (await present(page, SELECTORS.globalNav)) return true;
+    // NOT A NO YET. A miss here used to be the answer, so one reskin of the
+    // navigation turned every signed-in session into a signed-out one. The
+    // feed probe below is the second opinion, and it does not depend on a
+    // class name at all.
   }
 
   try {
@@ -1135,7 +1158,24 @@ export async function isLoggedIn(page: LinkedInPage): Promise<boolean> {
   }
   if (CHECKPOINT_PATH.test(page.url())) return false;
   if (await present(page, SELECTORS.globalNav)) return true;
-  return normalisedProfileUrl(page.url()) !== null;
+  if (normalisedProfileUrl(page.url()) !== null) return true;
+  // WHERE THE FEED LANDED, which is a fact about LinkedIn rather than about
+  // markup: `/feed/` stays `/feed/` for a member and is bounced to the login
+  // page, the authwall or the guest homepage for everybody else. It is the one
+  // signal here that survives any reskin, in any language.
+  return FEED_PATH.test(pathOf(page.url()));
+}
+
+/** `/feed/`, and nothing that merely starts with it. */
+const FEED_PATH = /^\/feed\/?$/;
+
+/** The path of a URL, or '' when it is not one. */
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return '';
+  }
 }
 
 /**

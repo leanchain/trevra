@@ -89,10 +89,18 @@ describe('buildSequence output shape', () => {
     }
   });
 
-  it('adds the InMail step only when asked, and never by default', () => {
+  /**
+   * It used to add one when asked. The kind is retired
+   * (`UNSUPPORTED_ACTION_KINDS` in actions.ts) because nothing in this product
+   * can send an InMail, so the flag is accepted -- old briefs carry it -- and
+   * produces nothing. Asserting the flag STILL PARSES is half the point of this
+   * test; a 400 on a saved brief would be the regression.
+   */
+  it('never drafts an InMail step, with or without the retired flag', () => {
     expect(buildSequence(input()).steps.some((step) => step.kind === 'inmail')).toBe(false);
     const withInMail = buildSequence(input({ includeInMail: true }));
-    expect(withInMail.steps.some((step) => step.kind === 'inmail')).toBe(true);
+    expect(withInMail.steps.some((step) => step.kind === 'inmail')).toBe(false);
+    expect(withInMail.steps.length).toBe(buildSequence(input()).steps.length);
   });
 
   it('is deterministic: the same input produces byte-identical copy', () => {

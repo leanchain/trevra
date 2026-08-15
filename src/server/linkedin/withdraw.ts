@@ -1,6 +1,15 @@
 import { id, type Db } from '../db.js';
-import type { SeatRef } from './actions.js';
-import { normalisedProfileUrl, profileUrlFor, type LinkedInFailureKind } from './driver.js';
+import { recordAction, type SeatRef } from './actions.js';
+import { recordDetectedAcceptance } from './campaigns.js';
+import {
+  normalisedProfileUrl,
+  playwrightDegreeDriver,
+  profileUrlFor,
+  isDegreeRead,
+  type LinkedInDegreeDriver,
+  type LinkedInFailureKind,
+  type LinkedInPage
+} from './driver.js';
 import type { LinkedInListPage, LinkedInWithdrawDriver, PendingInviteList } from './driver-withdraw.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
 import { bandFor } from './limits.js';
@@ -310,6 +319,31 @@ export async function syncPendingInvites(
       AND status IN ('sent', 'exported')
       AND pending_seen_at IS NOT NULL AND pending_seen_at < ?::timestamptz
   `).get<{ total: number }>(seat.workspaceId, seat.seatKey, nowIso);
+
+  /*
+   * THE SYNC CLOCK, AND A TRUNCATED READ DOES NOT MOVE IT.
+   *
+   * `disappeared` above is a COUNT this function reports and interprets not at
+   * all -- see the paragraph on it. The acceptance detector DOES interpret it,
+   * one invite at a time and only ever by going and looking, and the question
+   * it has to answer first is "was the list actually read". Without a recorded
+   * sync moment the only available proxy is the newest `pending_seen_at` on any
+   * row, which is wrong in precisely the case that matters: LinkedIn's page
+   * caps at `MAX_PENDING_INVITES` cards, so a seat with a larger backlog gets a
+   * PREFIX, and every invite in the unread tail looks exactly like an invite
+   * that has left the list.
+   *
+   * So the clock advances only on a complete read. A truncated sync still files
+   * every piece of evidence it gathered -- the UPDATE above already ran -- and
+   * licenses no conclusion whatsoever about anything it did not see. Migration
+   * 070.
+   */
+  if (!list.truncated) {
+    await db.prepare(`
+      UPDATE linkedin_seats SET pending_synced_at=?::timestamptz
+      WHERE workspace_id=? AND seat_key=?
+    `).run(nowIso, seat.workspaceId, seat.seatKey);
+  }
 
   return {
     listed: list.invites.length,
@@ -789,6 +823,92 @@ export async function claimNextWithdrawal(
   };
 }
 
+/**
+ * Rows an action inherits from the invite it is about.
+ *
+ * A withdrawal and an acceptance check are both ABOUT an invite, so both are
+ * about that invite's campaign, member and workflow step -- and an analytics
+ * panel that groups by any of the three would otherwise drop them on the floor.
+ * `recordAction` does not take these columns (no caller had them until now), so
+ * they are copied across in the same shape `runner.ts` uses after its own
+ * insert.
+ */
+interface InviteLineage {
+  campaign_id: string | null;
+  campaign_member_id: string | null;
+  workflow_step_id: string | null;
+}
+
+async function inviteLineage(db: Db, workspaceId: string, actionId: string): Promise<InviteLineage> {
+  const row = await db.prepare(`
+    SELECT campaign_id, campaign_member_id, workflow_step_id FROM linkedin_actions
+    WHERE id=? AND workspace_id=?
+  `).get<InviteLineage>(actionId, workspaceId);
+  return row ?? { campaign_id: null, campaign_member_id: null, workflow_step_id: null };
+}
+
+/**
+ * File one confirmed withdrawal as an action in its own right.
+ *
+ * WHY THIS IS NOT ALREADY COVERED BY `markActionWithdrawn`. That function
+ * writes `status='withdrawn'` onto the INVITE, which is the correct and
+ * complete thing to say about the invite: it went out, nobody answered, it was
+ * taken back. It says nothing at all about the withdrawal, and the withdrawal
+ * is a separate event with its own date, its own place in the day's traffic and
+ * its own risk. Concretely, before this row existed:
+ *
+ *   - `countActionKindsInWindow` could not see a single withdrawal, so a seat
+ *     that spent an afternoon clearing four hundred stale invites had, by every
+ *     rolling count in `actions.ts`, done nothing that afternoon.
+ *   - `managedAnalytics` reported `invitesWithdrawn` off the invite's terminal
+ *     status and dated it by the INVITE's `recorded_at`, so the withdrawals a
+ *     campaign performed this week appeared in the week the invites were sent.
+ *   - the funnel's own "what did this account do today" had a hole in it the
+ *     exact size of the feature that exists to protect the account.
+ *
+ * DATED `now`, WHICH IS THE POINT. The invite keeps its send date; this row
+ * carries the withdrawal's own, so the two facts stop sharing one clock.
+ *
+ * `source: 'system'` -- no human queued it and no approved sequence contains
+ * it; the stale-invite sweep decided it. `replayScope` is the invite's id, so
+ * one invite can produce exactly one withdrawal row and a re-run of a settled
+ * queue row is a no-op rather than a second entry (`recordAction` reports the
+ * duplicate and writes nothing).
+ *
+ * DOES NOT GATE, AND MUST NOT. The click has already happened -- it happened
+ * two lines above this call, after `evaluateWithdrawalSafety` allowed it. A row
+ * that recorded only the withdrawals a gate would still permit would be a
+ * ledger that under-reports precisely when the account is closest to trouble.
+ */
+async function recordWithdrawalAction(
+  db: Db,
+  seat: SeatRef,
+  claimed: ClaimedWithdrawal,
+  now: Date
+): Promise<void> {
+  const lineage = await inviteLineage(db, seat.workspaceId, claimed.actionId);
+  const written = await recordAction(
+    db,
+    {
+      workspaceId: seat.workspaceId,
+      seatKey: seat.seatKey,
+      kind: 'withdraw',
+      targetRef: claimed.targetRef,
+      campaignId: lineage.campaign_id,
+      status: 'sent',
+      source: 'system',
+      replayScope: `withdraw:${claimed.actionId}`,
+      recordedAt: now.toISOString()
+    },
+    now
+  );
+  if (written.duplicate) return;
+  await db.prepare(`
+    UPDATE linkedin_actions SET campaign_member_id=?, workflow_step_id=?, external_ref=?
+    WHERE id=? AND workspace_id=?
+  `).run(lineage.campaign_member_id, lineage.workflow_step_id, claimed.actionId, written.id, seat.workspaceId);
+}
+
 /** Put a claimed withdrawal back in the queue untouched. Nothing was clicked. */
 export async function releaseWithdrawalClaim(db: Db, withdrawalId: string, workspaceId: string): Promise<void> {
   await db.prepare(`
@@ -936,6 +1056,11 @@ export async function executeWithdrawal(
   if (result.ok) {
     // --- 4. The ledger, and only now. ---
     const marked = await markActionWithdrawn(db, seat, claimed.actionId);
+    // The withdrawal ITSELF, as its own action. See `recordWithdrawalAction`
+    // for why the invite's status change is not the same fact. Filed whether or
+    // not the invite row could still be marked: LinkedIn confirmed the click,
+    // and the click is what this row records.
+    await recordWithdrawalAction(db, seat, claimed, now);
     const detail = marked
       ? `Withdrawn after ${claimed.pendingDays ?? '?'} day(s) pending.`
       : 'LinkedIn withdrew the invite, but its ledger row had already moved on and was left exactly as it was. Nothing was overwritten.';
@@ -1115,6 +1240,400 @@ export async function runWithdrawalBatch(
       result.haltReason = outcome.detail;
       break;
     }
+  }
+
+  return result;
+}
+
+/* ---------------------------------------------------------------------------
+ * 7. Acceptance detection
+ * ------------------------------------------------------------------------ */
+
+/**
+ * WHY THIS LIVES IN THE WITHDRAWAL MODULE.
+ *
+ * It is the same evidence, read to answer the other half of the same question.
+ * `syncPendingInvites` already reconciles LinkedIn's sent-invitations list
+ * against the ledger, and the fact it deliberately refuses to interpret --
+ * "this invite is no longer on the list" -- is the exact fact acceptance
+ * detection starts from. The disappearance means accepted, declined, expired
+ * or withdrawn, LinkedIn will not say which, and the sync is right to write
+ * evidence and stop. This section is what goes and finds out.
+ *
+ * THREE RULES, and each one is why a previous attempt at this would have been
+ * wrong:
+ *
+ * 1. THE ANSWER COMES FROM LINKEDIN, NOT FROM ARITHMETIC. A 1st-degree badge on
+ *    the target's profile is LinkedIn stating the connection exists. Everything
+ *    else available here -- an invite vanishing, a Connect button reappearing,
+ *    a message going through -- is circumstantial, and one of them (the
+ *    disappearance) is compatible with three outcomes that are not acceptance.
+ *
+ * 2. "GONE, DEGREE NOT CONFIRMED" IS UNKNOWN AND STAYS UNKNOWN. The invite
+ *    keeps its 'sent' status, the acceptance rate keeps its old denominator,
+ *    and `acceptance_checked_at` records that a page view was spent so the same
+ *    unreadable profile is not re-read on every tick. A detector that guessed
+ *    would be worse than no detector: `acceptanceRate` feeds a throttle, and a
+ *    throttle fed guesses paces a real account on fiction.
+ *
+ * 3. A CHECK IS A PROFILE VIEW AND IS PACED, GATED AND BUDGETED AS ONE. There
+ *    is no cheap way to read a relationship -- the badge is on the profile page
+ *    -- so every check runs `evaluateLinkedInSafety` for `profile_view`
+ *    immediately before it navigates, sleeps the same seeded 30-120s gap the
+ *    invite worker uses, respects the seat's posture and working hours through
+ *    that gate, halts the pass on a limit wall or a challenge, and files a
+ *    `profile_view` ledger row so it charges the seat's own daily view ceiling.
+ *    An unattended loop that opened a thousand profiles a night to protect an
+ *    account would be the fastest way to lose one.
+ *
+ * EVERYTHING IS PER SEAT. The candidate query, the gate, the posture read, the
+ * ledger row and the cooldown all take `seat` and none of them defaults to the
+ * owner: a workspace running three accounts must not detect one account's
+ * acceptances against another account's browser, budget or standing.
+ */
+
+/** How many profiles one detection pass will open. */
+export const DEFAULT_MAX_ACCEPTANCE_CHECKS = 10;
+
+/** An invite that left the pending list and has not been ruled on. */
+export interface AcceptanceCandidate {
+  actionId: string;
+  targetRef: string;
+  campaignId: string | null;
+  campaignMemberId: string | null;
+  workflowStepId: string | null;
+  /** When LinkedIn last showed this invite as pending. */
+  pendingSeenAt: string | null;
+}
+
+interface AcceptanceCandidateRow {
+  id: string;
+  target_ref: string;
+  campaign_id: string | null;
+  campaign_member_id: string | null;
+  workflow_step_id: string | null;
+  pending_seen_at: string | null;
+}
+
+/**
+ * Invites worth spending a page view on.
+ *
+ * FOUR PREDICATES, AND EVERY ONE OF THEM IS THE DIFFERENCE BETWEEN A DETECTOR
+ * AND A CRAWLER:
+ *
+ *   status IN ('sent','exported')  -- undecided. Anything else has an answer.
+ *   pending_seen_at IS NOT NULL    -- we have positive evidence it WAS pending.
+ *                                     An invite nobody ever saw on the list is
+ *                                     not evidence of a disappearance, it is
+ *                                     evidence of never having looked -- the
+ *                                     same rule `syncPendingInvites` applies to
+ *                                     its own `disappeared` count.
+ *   pending_seen_at < pending_synced_at -- it was absent from a COMPLETE read
+ *                                     of the list. The seat's clock, written
+ *                                     only by an untruncated sync (migration
+ *                                     070), is what makes this mean "gone"
+ *                                     rather than "not reached".
+ *   acceptance_checked_at IS NULL     -- not already looked at since it went
+ *     OR < pending_seen_at              missing. An invite that REAPPEARS on
+ *                                       the list and vanishes again moves
+ *                                       `pending_seen_at` forward and is worth
+ *                                       one more look; one that simply stayed
+ *                                       unreadable is not, forever.
+ *
+ * OLDEST DISAPPEARANCE FIRST, so a seat with more candidates than one pass can
+ * afford works through them in a stable order instead of re-reading the head of
+ * an unordered set every tick.
+ */
+export async function selectAcceptanceCandidates(
+  db: Db,
+  seat: SeatRef,
+  options: { limit?: number } = {}
+): Promise<AcceptanceCandidate[]> {
+  const limit = Math.max(1, Math.trunc(options.limit ?? DEFAULT_MAX_ACCEPTANCE_CHECKS));
+  const rows = await db.prepare(`
+    SELECT a.id, a.target_ref, a.campaign_id, a.campaign_member_id, a.workflow_step_id, a.pending_seen_at
+    FROM linkedin_actions a
+    JOIN linkedin_seats s ON s.workspace_id = a.workspace_id AND s.seat_key = a.seat_key
+    WHERE a.workspace_id=? AND a.seat_key=? AND a.kind='invite'
+      AND a.status IN ('sent', 'exported')
+      AND a.target_ref IS NOT NULL
+      AND a.pending_seen_at IS NOT NULL
+      AND s.pending_synced_at IS NOT NULL
+      AND a.pending_seen_at < s.pending_synced_at
+      AND (a.acceptance_checked_at IS NULL OR a.acceptance_checked_at < a.pending_seen_at)
+    ORDER BY a.pending_seen_at ASC, a.id ASC
+    LIMIT ?
+  `).all<AcceptanceCandidateRow>(seat.workspaceId, seat.seatKey, limit);
+
+  return rows.map((row) => ({
+    actionId: row.id,
+    targetRef: row.target_ref,
+    campaignId: row.campaign_id,
+    campaignMemberId: row.campaign_member_id,
+    workflowStepId: row.workflow_step_id,
+    pendingSeenAt: row.pending_seen_at
+  }));
+}
+
+/** Record that a page view was spent on this invite, so it is not re-read every tick. */
+async function markAcceptanceChecked(db: Db, seat: SeatRef, actionId: string, now: Date): Promise<void> {
+  await db.prepare(`
+    UPDATE linkedin_actions SET acceptance_checked_at=?::timestamptz
+    WHERE id=? AND workspace_id=? AND seat_key=?
+  `).run(now.toISOString(), actionId, seat.workspaceId, seat.seatKey);
+}
+
+/** The profile still shows a pending invite: refresh the evidence and leave the status alone. */
+async function markStillPending(db: Db, seat: SeatRef, actionId: string, now: Date): Promise<void> {
+  await db.prepare(`
+    UPDATE linkedin_actions SET pending_seen_at=?::timestamptz, acceptance_checked_at=?::timestamptz
+    WHERE id=? AND workspace_id=? AND seat_key=?
+  `).run(now.toISOString(), now.toISOString(), actionId, seat.workspaceId, seat.seatKey);
+}
+
+/**
+ * File the profile view the check just performed.
+ *
+ * NOT OPTIONAL AND NOT DEFERRABLE. Opening the profile IS the view -- LinkedIn
+ * records it server-side on load, exactly as `viewProfile` does -- so a
+ * detector that skipped this row would spend a seat's profile-view budget
+ * without charging it, and `guard.ts` would keep granting a ceiling that had
+ * already been spent. `replayScope` is per invite so the duplicate guard sees a
+ * re-check as the same action rather than as a forbidden second view, and so
+ * that a campaign's OWN `profile_view` step against the same person is a
+ * different row rather than a collision.
+ */
+async function recordAcceptanceCheckView(
+  db: Db,
+  seat: SeatRef,
+  candidate: AcceptanceCandidate,
+  now: Date
+): Promise<void> {
+  const written = await recordAction(
+    db,
+    {
+      workspaceId: seat.workspaceId,
+      seatKey: seat.seatKey,
+      kind: 'profile_view',
+      targetRef: candidate.targetRef,
+      campaignId: candidate.campaignId,
+      status: 'sent',
+      source: 'system',
+      replayScope: `acceptance:${candidate.actionId}`,
+      recordedAt: now.toISOString()
+    },
+    now
+  );
+  if (written.duplicate) {
+    // A re-check of the same invite. The view happened again and the budget was
+    // spent again, so the row's date moves rather than a second row appearing:
+    // one row per invite, dated at the most recent look.
+    await db.prepare(`
+      UPDATE linkedin_actions SET recorded_at=?::timestamptz
+      WHERE id=? AND workspace_id=?
+    `).run(now.toISOString(), written.id, seat.workspaceId);
+    return;
+  }
+  await db.prepare(`
+    UPDATE linkedin_actions SET campaign_member_id=?, workflow_step_id=?
+    WHERE id=? AND workspace_id=?
+  `).run(candidate.campaignMemberId, candidate.workflowStepId, written.id, seat.workspaceId);
+}
+
+export interface AcceptanceDetectionDeps {
+  /** Defaults to the real Playwright routine. A test supplies a fake. */
+  driver?: LinkedInDegreeDriver;
+  page: LinkedInPage;
+  now?: () => Date;
+  sleep?: (ms: number) => Promise<void>;
+  /** The kill switch, read between every check. Absent means nothing can stop it. */
+  stopRequested?: () => Promise<boolean>;
+  /** Default {@link DEFAULT_MAX_ACCEPTANCE_CHECKS}. */
+  maxChecks?: number;
+  /** Injected so a test can prove the gate ran. Defaults to the real gate. */
+  evaluate?: (candidate: AcceptanceCandidate, at: Date) => Promise<LinkedInSafetyVerdict>;
+  log?: (message: string) => void;
+}
+
+export interface AcceptanceDetectionResult {
+  workspaceId: string;
+  seatKey: string;
+  /** Profiles actually opened. */
+  checked: number;
+  /** Invites LinkedIn confirmed as 1st-degree connections. */
+  accepted: number;
+  /** Still showing a pending invite on the profile: the sync was stale, not the invite decided. */
+  stillPending: number;
+  /** Gone from the list and the degree was NOT confirmed. Nothing was written to the status. */
+  unknown: number;
+  /** The safety gate refused the page view. Nothing was opened. */
+  blocked: number;
+  halted: boolean;
+  haltReason: string | null;
+}
+
+/**
+ * One paced pass over this seat's undecided invites.
+ *
+ * The order inside the loop is the safety property, and it is the invite
+ * worker's order rather than a new one: stop switch, posture, gap, GATE,
+ * browser. The gate is the last thing before the navigation because a verdict
+ * with a two-minute sleep after it is a verdict that is two minutes stale.
+ *
+ * NEVER THROWS FOR A LINKEDIN PROBLEM, for the reason `jobs.ts` rule 2 gives:
+ * half the callers are worker ticks and the other half are HTTP handlers.
+ */
+export async function detectAcceptedInvites(
+  db: Db,
+  seat: SeatRef,
+  deps: AcceptanceDetectionDeps
+): Promise<AcceptanceDetectionResult> {
+  const now = deps.now ?? (() => new Date());
+  const sleep = deps.sleep ?? defaultSleep;
+  const log = deps.log ?? (() => {});
+  const driver = deps.driver ?? playwrightDegreeDriver;
+  const maxChecks = Math.max(1, Math.trunc(deps.maxChecks ?? DEFAULT_MAX_ACCEPTANCE_CHECKS));
+  const result: AcceptanceDetectionResult = {
+    workspaceId: seat.workspaceId,
+    seatKey: seat.seatKey,
+    checked: 0,
+    accepted: 0,
+    stillPending: 0,
+    unknown: 0,
+    blocked: 0,
+    halted: false,
+    haltReason: null
+  };
+
+  const refusal = postureRefusal(await getSeatPosture(db, seat.workspaceId, now(), seat.seatKey));
+  if (refusal) return { ...result, halted: true, haltReason: refusal };
+
+  const candidates = await selectAcceptanceCandidates(db, seat, { limit: maxChecks });
+
+  for (const [index, candidate] of candidates.entries()) {
+    if (deps.stopRequested && (await deps.stopRequested())) {
+      result.halted = true;
+      result.haltReason = 'A stop was requested for this batch.';
+      break;
+    }
+
+    // Re-read per check, and for THIS seat: pausing this account stops this
+    // loop within one page view rather than at the end of the list.
+    const current = postureRefusal(await getSeatPosture(db, seat.workspaceId, now(), seat.seatKey));
+    if (current) {
+      result.halted = true;
+      result.haltReason = current;
+      break;
+    }
+
+    if (index > 0) await sleep(Math.round(actionGapSeconds(`acceptance:${candidate.actionId}`) * 1000));
+
+    const at = now();
+    const evaluate =
+      deps.evaluate ??
+      ((row: AcceptanceCandidate, when: Date) =>
+        evaluateLinkedInSafety(
+          db,
+          {
+            workspaceId: seat.workspaceId,
+            seatKey: seat.seatKey,
+            // A page view, because that is what it is. Business hours, the
+            // weekend rule, the posture, the seat's own daily view ceiling and
+            // the rolling windows all apply, unfiltered.
+            kind: 'profile_view',
+            targetRef: row.targetRef,
+            plannedFor: when.toISOString(),
+            ...(row.campaignId === null ? {} : { campaignId: row.campaignId }),
+            replayScope: `acceptance:${row.actionId}`
+          },
+          when
+        ));
+
+    let verdict: LinkedInSafetyVerdict;
+    try {
+      verdict = await evaluate(candidate, at);
+    } catch (cause) {
+      // "I could not find out whether this is safe" is not "it is safe".
+      result.halted = true;
+      result.haltReason = `The safety gate could not be evaluated: ${cause instanceof Error ? cause.message : String(cause)}`;
+      break;
+    }
+    if (!verdict.allowed) {
+      result.blocked += 1;
+      log(`LinkedIn acceptance check for ${candidate.targetRef} was refused: ${verdict.reason ?? 'the safety gate refused it.'}`);
+      // The refusals that reach here are seat-wide almost every time -- outside
+      // working hours, over the day's view ceiling, posture -- so continuing
+      // would spend the pass discovering the same answer once per candidate.
+      result.halted = true;
+      result.haltReason = verdict.reason ?? 'The safety gate refused this acceptance check.';
+      break;
+    }
+
+    const read = await driver.readProfileDegree(deps.page, candidate.targetRef);
+
+    if (!isDegreeRead(read)) {
+      const failureKind = read.failureKind ?? 'unknown';
+      // `selector_drift` from `openProfile` means the NAVIGATION failed, so no
+      // page was loaded and no view was registered. Every other kind is read
+      // off a page that did load, and a page that loaded was viewed.
+      if (failureKind !== 'selector_drift') await recordAcceptanceCheckView(db, seat, candidate, at);
+
+      if (failureKind === 'limit_wall' || failureKind === 'challenge') {
+        // LINKEDIN SAID STOP. The seat cools and the pass ends -- whatever
+        // produced this needs a person, not another profile.
+        await upsertSeat(db, seat.workspaceId, { posture: 'cooldown' }, at, seat.seatKey);
+        result.halted = true;
+        result.haltReason = read.detail ?? `LinkedIn answered the acceptance check with a ${failureKind}.`;
+        break;
+      }
+      if (failureKind === 'selector_drift') {
+        // One profile that would not open is one thing; the next nine would be
+        // the same navigation failing nine more times.
+        result.halted = true;
+        result.haltReason = read.detail ?? 'A profile could not be opened, so the pass stopped rather than repeating it.';
+        break;
+      }
+      // `not_found` (the profile is gone) and `unknown`. The invite's outcome is
+      // still unknown and is left exactly as it was.
+      result.checked += 1;
+      result.unknown += 1;
+      await markAcceptanceChecked(db, seat, candidate.actionId, at);
+      continue;
+    }
+
+    result.checked += 1;
+    await recordAcceptanceCheckView(db, seat, candidate, at);
+
+    if (read.pending) {
+      // The list read was stale, not the invite decided. The evidence is
+      // refreshed so the next sweep measures staleness from today.
+      result.stillPending += 1;
+      await markStillPending(db, seat, candidate.actionId, at);
+      continue;
+    }
+
+    if (read.degree === 1) {
+      const written = await recordDetectedAcceptance(
+        db,
+        { workspaceId: seat.workspaceId, actionId: candidate.actionId, detectedAt: at.toISOString() },
+        at
+      );
+      await markAcceptanceChecked(db, seat, candidate.actionId, at);
+      if (written.applied) result.accepted += 1;
+      else {
+        result.unknown += 1;
+        log(`LinkedIn acceptance for ${candidate.targetRef} was not filed: ${written.reason}`);
+      }
+      continue;
+    }
+
+    // Gone from the list, not 1st degree or the badge did not read. DECLINED,
+    // EXPIRED, WITHDRAWN BY HAND AND A BADGE WE COULD NOT PARSE ARE ALL IN
+    // HERE, and the ledger says the one thing that is true of all four: we do
+    // not know. Rule 2.
+    result.unknown += 1;
+    await markAcceptanceChecked(db, seat, candidate.actionId, at);
+    if (read.degraded.length > 0) log(`LinkedIn acceptance check for ${candidate.targetRef}: ${read.degraded.join(' ')}`);
   }
 
   return result;

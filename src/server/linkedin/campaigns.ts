@@ -50,14 +50,67 @@ export class LinkedInApiError extends Error {
  * about Trevra, not about LinkedIn, and `exportCampaign` is the sanctioned
  * writer of it. These three are claims about what a stranger's account did.
  */
-export const WORKER_ONLY_STATUSES: readonly LinkedInActionStatus[] = ['sent', 'accepted', 'replied'];
+export const WORKER_ONLY_STATUSES = ['sent', 'accepted', 'replied'] as const satisfies readonly LinkedInActionStatus[];
 
 export function isWorkerOnlyStatus(status: string): boolean {
   return (WORKER_ONLY_STATUSES as readonly string[]).includes(status);
 }
 
-/** Who is asking. 'outcome-ingest' is POST /api/linkedin/actions/outcome, and nothing else. */
-export type StatusWriter = 'api' | 'outcome-ingest';
+/**
+ * Who is asking.
+ *
+ * 'outcome-ingest' is POST /api/linkedin/actions/outcome, and nothing else.
+ *
+ * 'acceptance-detector' IS THE THIRD, AND IT IS DELIBERATELY NARROWER THAN THE
+ * OTHER TWO. It is `detectAcceptedInvites` in `withdraw.ts` -- the pass that
+ * opens a target's profile and reads LinkedIn's own connection-degree badge --
+ * and the ONLY status it may write is 'accepted'. It cannot mark anything
+ * 'sent' (it sends nothing) and it cannot mark anything 'replied' (it reads no
+ * messages); {@link writeActionStatus} enforces both, so this value widens the
+ * choke point by exactly one status rather than opening it.
+ *
+ * WHY THE CHOKE POINT MOVED AT ALL. The invariant this file holds is "Trevra
+ * plans and approves; it never sends", and 'accepted' was swept up in it
+ * because the three worker-only statuses were written down as one list. But an
+ * acceptance is not a send: nothing left the building, a stranger did something
+ * and we observed it. Refusing to record an observation was never what the rule
+ * meant, and the cost of the over-broad refusal was that `accepted` had exactly
+ * one writer in the entire product -- a human clicking a button -- so an
+ * unattended campaign reported 0% acceptance forever and the post-acceptance
+ * branch of every workflow had nothing true to test.
+ */
+export type StatusWriter = 'api' | 'outcome-ingest' | 'acceptance-detector';
+
+/**
+ * How the ledger came to believe an invite was accepted.
+ *
+ * 'human' -- somebody looked and said so, through the outcome-ingest route.
+ * 'detected' -- `detectAcceptedInvites` read a 1st-degree badge on the target's
+ * own profile.
+ *
+ * THEY ARE KEPT APART FOREVER AND 'human' OUTRANKS 'detected'. A person's
+ * report is a person's report; a detection is a selector's reading of a page
+ * LinkedIn may redesign or localise at any time, and an operator auditing a
+ * campaign -- or a future throttle leaning on the acceptance rate -- is
+ * entitled to know which one produced a number. Migration 070 is the column.
+ */
+export type AcceptanceSource = 'human' | 'detected';
+
+/**
+ * Which writers may move an action into a status that asserts something
+ * happened at LinkedIn.
+ *
+ * A TABLE RATHER THAN AN `if`, because the rule is now per (status, writer) and
+ * the previous single condition -- "worker-only status AND not outcome-ingest"
+ * -- had no room to say that one caller may write one of the three. Every
+ * entry is a decision somebody has to defend in review, which is the entire
+ * point of the invariant living in code.
+ */
+const WORKER_ONLY_WRITERS: Readonly<Record<(typeof WORKER_ONLY_STATUSES)[number], readonly StatusWriter[]>> = {
+  sent: ['outcome-ingest'],
+  accepted: ['outcome-ingest', 'acceptance-detector'],
+  replied: ['outcome-ingest']
+};
 
 /**
  * Every status `linkedin_campaigns.status` holds -- ONE UNION FOR ONE COLUMN.
@@ -89,6 +142,17 @@ export interface LinkedInCampaign {
   id: string;
   workspaceId: string;
   name: string;
+  /**
+   * WHICH LINKEDIN ACCOUNT THIS CAMPAIGN SENDS FROM.
+   *
+   * Stored since migration 046 and, until the account switcher was made to
+   * mean something, never read back out: the list route returned every
+   * workspace campaign whoever it was filed against, so an operator working in
+   * their second account was shown -- and could stop, edit and queue -- the
+   * first account's campaigns. It is on the row type now because a screen that
+   * scopes to one account has to be able to say which one each campaign is.
+   */
+  seatKey: string;
   status: CampaignStatus;
   /** The approved sequence, or `{}` for a campaign whose run has not produced one. */
   sequence: unknown;
@@ -102,6 +166,7 @@ interface CampaignRow {
   id: string;
   workspace_id: string;
   name: string;
+  seat_key: string;
   /**
    * THE ONE PLACE THE COLUMN IS NARROWED, and it is a row type rather than a
    * cast on purpose.
@@ -124,7 +189,7 @@ interface CampaignRow {
 }
 
 const CAMPAIGN_COLUMNS = `
-  id, workspace_id, name, status, sequence_json, playbook_run_id,
+  id, workspace_id, name, seat_key, status, sequence_json, playbook_run_id,
   stop_requested_at, created_at, updated_at
 `;
 
@@ -133,6 +198,7 @@ function toCampaign(row: CampaignRow): LinkedInCampaign {
     id: row.id,
     workspaceId: row.workspace_id,
     name: row.name,
+    seatKey: row.seat_key,
     status: row.status,
     sequence: parseJson(row.sequence_json),
     playbookRunId: row.playbook_run_id,
@@ -244,11 +310,35 @@ export async function createCampaign(db: Db, input: CampaignInsert, now: Date): 
  */
 const LEGACY_CAMPAIGN_ONLY = 'AND (lead_list_id IS NULL OR workflow_id IS NULL)';
 
-export async function listCampaigns(db: Db, workspaceId: string, limit = 100): Promise<LinkedInCampaign[]> {
+export interface CampaignListFilters {
+  /**
+   * ONE ACCOUNT'S CAMPAIGNS, and absent still means every one of them.
+   *
+   * The default is deliberately NOT the owner seat. This is a list route, and
+   * a list that silently narrowed to one account would hide rows from every
+   * caller that has always asked a workspace-wide question -- the opposite
+   * failure from the one this filter fixes, and a quieter one. The screens
+   * that follow the account switcher pass the key; anything else keeps the
+   * whole workspace.
+   */
+  seatKey?: string;
+  limit?: number;
+}
+
+export async function listCampaigns(
+  db: Db,
+  workspaceId: string,
+  filters: CampaignListFilters = {}
+): Promise<LinkedInCampaign[]> {
+  const params: unknown[] = [workspaceId];
+  const seatClause = filters.seatKey ? 'AND seat_key=?' : '';
+  if (filters.seatKey) params.push(filters.seatKey);
+  params.push(Math.max(1, Math.min(filters.limit ?? 100, 500)));
+
   const rows = await db.prepare(`
     SELECT ${CAMPAIGN_COLUMNS} FROM linkedin_campaigns
-    WHERE workspace_id=? ${LEGACY_CAMPAIGN_ONLY} ORDER BY created_at DESC LIMIT ?
-  `).all<CampaignRow>(workspaceId, Math.max(1, Math.min(limit, 500)));
+    WHERE workspace_id=? ${LEGACY_CAMPAIGN_ONLY} ${seatClause} ORDER BY created_at DESC LIMIT ?
+  `).all<CampaignRow>(...params);
   return rows.map(toCampaign);
 }
 
@@ -406,6 +496,19 @@ export interface LinkedInActionView {
   claimedAt: string | null;
   createdAt: string;
   /**
+   * When acceptance was first established, and by whom -- migration 070.
+   *
+   * SEPARATE FROM `status` BECAUSE THE STATUS IS OVERWRITTEN AND THIS IS NOT.
+   * An invite that is accepted and then replied to holds `status='replied'`,
+   * which is the truth about the conversation and erases the truth about the
+   * acceptance. Every acceptance counter in the product therefore had to spell
+   * out `IN ('accepted','replied')` and none of them could say when the
+   * acceptance happened or who noticed it. These two columns survive the status
+   * moving on.
+   */
+  acceptedAt: string | null;
+  acceptedSource: AcceptanceSource | null;
+  /**
    * The Trevra user whose live request queued this row -- migration 043,
    * team-workspace-access design (docs/superpowers/specs/2026-08-13-team-
    * workspace-access-design.md). Null for rows queued before that column
@@ -431,12 +534,15 @@ interface ActionRow {
   external_ref: string | null;
   claimed_at: string | null;
   created_at: string;
+  accepted_at: string | null;
+  accepted_source: string | null;
   queued_by_user_id: string | null;
 }
 
 const ACTION_COLUMNS = `
   id, seat_key, kind, target_ref, campaign_id, status, planned_for, recorded_at,
-  source, payload_hash, failure_kind, external_ref, claimed_at, created_at, queued_by_user_id
+  source, payload_hash, failure_kind, external_ref, claimed_at, created_at,
+  accepted_at, accepted_source, queued_by_user_id
 `;
 
 function toActionView(row: ActionRow): LinkedInActionView {
@@ -455,6 +561,8 @@ function toActionView(row: ActionRow): LinkedInActionView {
     externalRef: row.external_ref,
     claimedAt: row.claimed_at,
     createdAt: row.created_at,
+    acceptedAt: row.accepted_at,
+    acceptedSource: row.accepted_source === 'human' || row.accepted_source === 'detected' ? row.accepted_source : null,
     queuedByUserId: row.queued_by_user_id
   };
 }
@@ -510,6 +618,20 @@ export interface StatusWrite {
   status: LinkedInActionStatus;
   /** Only meaningful for a counted status; ignored for 'planned' and 'skipped'. */
   recordedAt?: string;
+  /**
+   * When acceptance was established, for `status: 'accepted'` only.
+   *
+   * DEFAULTS TO `now` AND IS NOT `recordedAt`. `recorded_at` is when the INVITE
+   * went out and every rolling window in `actions.ts` reads it; an acceptance
+   * arriving today against an invite sent three weeks ago must not move it, or
+   * this week's invite budget is charged for last month's invite. Two clocks,
+   * two columns.
+   *
+   * COALESCEd on write: the EARLIEST evidence keeps the date, so a human
+   * confirming what the detector already found does not restate the acceptance
+   * as having happened when they got round to clicking.
+   */
+  acceptedAt?: string;
   via: StatusWriter;
 }
 
@@ -526,12 +648,15 @@ export interface StatusWrite {
  * happened on Tuesday must charge Tuesday's budget, not today's.
  */
 export async function writeActionStatus(db: Db, input: StatusWrite, now: Date): Promise<LinkedInActionView> {
-  if (isWorkerOnlyStatus(input.status) && input.via !== 'outcome-ingest') {
-    throw new LinkedInApiError(
-      `The API cannot mark a LinkedIn action '${input.status}'. Trevra plans and approves; it never sends. `
-        + 'A send is recorded by the local worker that performed it, or reported through POST /api/linkedin/actions/outcome.',
-      409
-    );
+  if (isWorkerOnlyStatus(input.status)) {
+    const permitted = WORKER_ONLY_WRITERS[input.status as keyof typeof WORKER_ONLY_WRITERS] ?? [];
+    if (!permitted.includes(input.via)) {
+      throw new LinkedInApiError(
+        `The API cannot mark a LinkedIn action '${input.status}'. Trevra plans and approves; it never sends. `
+          + 'A send is recorded by the local worker that performed it, or reported through POST /api/linkedin/actions/outcome.',
+        409
+      );
+    }
   }
 
   // `isCountedStatus` rather than a second copy of the rule: 'held' is the
@@ -540,14 +665,130 @@ export async function writeActionStatus(db: Db, input: StatusWrite, now: Date): 
   const counted = isCountedStatus(input.status);
   const recordedAt = counted ? (input.recordedAt ?? now.toISOString()) : null;
 
-  const row = await db.prepare(`
-    UPDATE linkedin_actions SET status=?, recorded_at=?
-    WHERE id=? AND workspace_id=?
-    RETURNING ${ACTION_COLUMNS}
-  `).get<ActionRow>(input.status, recordedAt, input.actionId, input.workspaceId);
+  const accepting = input.status === 'accepted';
+  const acceptedAt = accepting ? (input.acceptedAt ?? now.toISOString()) : null;
+  const acceptedSource: AcceptanceSource | null = accepting
+    ? (input.via === 'acceptance-detector' ? 'detected' : 'human')
+    : null;
 
-  if (!row) throw new LinkedInApiError('LinkedIn action not found', 404);
+  /*
+   * THE DETECTOR'S GUARD IS IN THE STATEMENT, NOT IN ITS CALLER.
+   *
+   * A detected acceptance may only land on an invite that is STILL AWAITING AN
+   * ANSWER and that no human has already ruled on. Three refusals in one
+   * clause, and each one is a specific wrong write:
+   *
+   *   kind='invite'                        -- nothing else can be accepted.
+   *   status IN ('sent','exported')        -- never walks 'replied', 'declined'
+   *                                           or 'withdrawn' backwards. A
+   *                                           person who answered has already
+   *                                           told us more than a badge can.
+   *   accepted_source IS DISTINCT FROM     -- a human's mark is final against a
+   *     'human'                               machine's reading. `IS DISTINCT
+   *                                           FROM` and not `<>`, because the
+   *                                           column is NULL on almost every
+   *                                           row and `NULL <> 'human'` is NULL.
+   *
+   * Put in SQL rather than in a read-then-write in `recordDetectedAcceptance`
+   * so the check and the write are one statement: the pass that calls this has
+   * a browser navigation between reading a row and deciding about it, and a
+   * human can click "they replied" inside that window.
+   */
+  const detectorGuard = input.via === 'acceptance-detector'
+    ? "AND kind='invite' AND status IN ('sent','exported') AND accepted_source IS DISTINCT FROM 'human'"
+    : '';
+
+  const row = await db.prepare(`
+    UPDATE linkedin_actions SET
+      status=?,
+      recorded_at=?,
+      -- COALESCE keeps the EARLIEST evidence; the source is overwritten so a
+      -- human confirming a detection is recorded as the human they are.
+      accepted_at = CASE WHEN ?::text IS NULL THEN accepted_at ELSE COALESCE(accepted_at, ?::timestamptz) END,
+      accepted_source = COALESCE(?::text, accepted_source)
+    WHERE id=? AND workspace_id=? ${detectorGuard}
+    RETURNING ${ACTION_COLUMNS}
+  `).get<ActionRow>(
+    input.status,
+    recordedAt,
+    acceptedAt,
+    acceptedAt,
+    acceptedSource,
+    input.actionId,
+    input.workspaceId
+  );
+
+  if (!row) {
+    throw new LinkedInApiError(
+      input.via === 'acceptance-detector'
+        ? 'That invite is no longer an undecided invite this detector may rule on, so nothing was written.'
+        : 'LinkedIn action not found',
+      input.via === 'acceptance-detector' ? 409 : 404
+    );
+  }
   return toActionView(row);
+}
+
+/** What the detector learned, and whether the ledger took it. */
+export interface DetectedAcceptance {
+  applied: boolean;
+  /** One sentence for the operator reading the pass afterwards. */
+  reason: string;
+  action: LinkedInActionView | undefined;
+}
+
+/**
+ * File an acceptance the detector OBSERVED.
+ *
+ * THE ONE THING IT MUST NOT DO IS MOVE `recorded_at`. The row is an invite and
+ * `recorded_at` is the day it was sent; `writeActionStatus` defaults that
+ * column to `now` for any counted status, so calling it without passing the
+ * existing value would re-date a three-week-old invite as sent today and charge
+ * it to today's rolling 24h, weekly and monthly budgets. The acceptance gets
+ * its own column (`accepted_at`) precisely so this one can stay put.
+ *
+ * RETURNS RATHER THAN THROWS, because its caller is a paced browser loop over
+ * many invites and "this one was already decided" is an ordinary outcome, not a
+ * fault. The 409 from the guarded UPDATE is caught here and reported as
+ * `applied: false` -- the pass carries on to the next invite.
+ */
+export async function recordDetectedAcceptance(
+  db: Db,
+  input: { workspaceId: string; actionId: string; detectedAt?: string },
+  now: Date
+): Promise<DetectedAcceptance> {
+  const existing = await getAction(db, input.workspaceId, input.actionId);
+  if (!existing) return { applied: false, reason: 'That action is no longer in the ledger.', action: undefined };
+
+  try {
+    const action = await writeActionStatus(
+      db,
+      {
+        workspaceId: input.workspaceId,
+        actionId: input.actionId,
+        status: 'accepted',
+        // The invite's own send date, preserved. Undefined only for a row that
+        // never carried one, where `writeActionStatus` falls back to `now` --
+        // which is the same answer it would have given anyway.
+        ...(existing.recordedAt === null ? {} : { recordedAt: existing.recordedAt }),
+        acceptedAt: input.detectedAt ?? now.toISOString(),
+        via: 'acceptance-detector'
+      },
+      now
+    );
+    return { applied: true, reason: `LinkedIn shows a 1st-degree connection, so the invite is recorded as accepted.`, action };
+  } catch (cause) {
+    if (cause instanceof LinkedInApiError && cause.status === 409) {
+      return {
+        applied: false,
+        reason: existing.acceptedSource === 'human'
+          ? 'A person has already ruled on this invite by hand, and a human mark outranks a detection.'
+          : `The invite is '${existing.status}' rather than awaiting an answer, so there was nothing left to decide.`,
+        action: existing
+      };
+    }
+    throw cause;
+  }
 }
 
 /**
@@ -696,12 +937,57 @@ export interface LinkedInFunnel {
   withdrawn: number;
 }
 
-export interface CampaignFunnel extends LinkedInFunnel {
+/**
+ * ONE ACCEPTANCE DENOMINATOR FOR EVERY SCREEN, AND IT IS INVITES SENT.
+ *
+ * There were three, and they disagreed. This module divided by DECIDED
+ * invites, `managed-campaigns.ts` divided by SENT ones, and `actions.ts`
+ * divides by decided ones again for the throttle. Two screens therefore
+ * printed "acceptance" against the same ledger and produced different
+ * percentages, with nothing on either page to say which question had been
+ * asked -- so an operator comparing them concluded one of them was broken,
+ * and they were both right about different things.
+ *
+ * The one a user sees is `acceptanceRate`: accepted out of invites actually
+ * sent. It is the figure an operator can act on, because it counts the
+ * invites they spent, and it cannot exceed 100% for any set of rows.
+ *
+ * `acceptanceRateOfDecided` is the OTHER one, kept and named rather than
+ * deleted: it is what `actions.ts` throttles on and what the account-safety
+ * meter renders, and it is deliberately kinder -- an invite sitting unanswered
+ * is not a refusal, and throttling a fresh seat on evidence that has not
+ * arrived would halve it forever. Two different questions, two field names,
+ * neither of them called "acceptance" on its own.
+ */
+export interface InviteOutcomes {
+  /**
+   * Invites that left the building and were not taken back: statuses 'sent',
+   * 'accepted', 'replied' and 'declined'.
+   *
+   * DECLINED IS IN HERE. It is an invite that was sent -- the recipient just
+   * said no -- and leaving it out inflated every acceptance rate in the
+   * product by exactly the refusals it was measuring.
+   *
+   * 'withdrawn' is NOT: the invite was retracted before it could be answered,
+   * so counting it as a missed acceptance would penalise the withdrawal step
+   * for doing its job. Planned, held, exported and skipped rows never went
+   * out at all.
+   */
+  invitesSent: number;
+  /** Invites accepted, replies included -- a reply implies an acceptance. */
+  invitesAccepted: number;
+  /** Invites that got an answer either way: accepted, replied or declined. */
+  decidedInvites: number;
+  /** `invitesAccepted / invitesSent`, or null at 0-of-0. Never rendered as 0%. */
+  acceptanceRate: number | null;
+  /** LEGACY, THROTTLE-SHAPED: `invitesAccepted / decidedInvites`. See the note above. */
+  acceptanceRateOfDecided: number | null;
+}
+
+export interface CampaignFunnel extends LinkedInFunnel, InviteOutcomes {
   campaignId: string;
   name: string | null;
   status: CampaignStatus | null;
-  /** Accepted over DECIDED invites, or null when nothing has been decided. Never 0-of-0. */
-  acceptanceRate: number | null;
 }
 
 export interface FunnelDay extends Pick<LinkedInFunnel, 'planned' | 'exported' | 'sent' | 'accepted' | 'replied'> {
@@ -730,7 +1016,29 @@ export interface FunnelDay extends Pick<LinkedInFunnel, 'planned' | 'exported' |
 }
 
 export interface LinkedInAnalytics {
-  windowDays: number;
+  /**
+   * The window `total`, `invites` and `byCampaign` were counted over, in days
+   * -- or NULL when the caller asked for all time and got it.
+   *
+   * ALL MEANS ALL. A screen offering an "All time" button that quietly sent 365
+   * would be a fourth wrong number, so a non-positive `windowDays` argument
+   * drops the time predicate entirely rather than clamping it. Null here is
+   * what lets a screen write "every action ever filed" and be right.
+   *
+   * `series` is the one thing this does not describe: see the note on
+   * `linkedinAnalytics` for why an unbounded chart is not a chart.
+   */
+  windowDays: number | null;
+  /**
+   * The LinkedIn account every number below was counted for, or null when they
+   * are the whole workspace's.
+   *
+   * SHIPPED SO THE SCREEN CAN SAY IT. A funnel that silently answers for one
+   * account looks exactly like a funnel that answers for all of them, and the
+   * difference is the entire value of an account switcher. The caller asked;
+   * this is the answer coming back so the words on screen can match it.
+   */
+  seatKey: string | null;
   /**
    * The IANA zone every bucket in `series` was cut in.
    *
@@ -765,9 +1073,28 @@ export interface LinkedInAnalytics {
    */
   timezoneSpansSeats: boolean;
   total: LinkedInFunnel;
+  /**
+   * The invite-only view of the same window, because acceptance is a question
+   * about invites and `total` is a question about every kind.
+   *
+   * The funnel screen used to divide `total.accepted` by
+   * `total.accepted + total.declined` on the client: profile views, follows
+   * and messages all count toward `total.accepted`, so the "acceptance rate"
+   * on the loop screen was a ratio over a population that had nothing to do
+   * with invitations.
+   */
+  invites: InviteOutcomes;
   byCampaign: CampaignFunnel[];
   series: FunnelDay[];
 }
+
+/**
+ * The most buckets an all-time series will draw.
+ *
+ * A cap on the CHART only; `total`, `invites` and `byCampaign` are genuinely
+ * unbounded when the caller asks for all time.
+ */
+const MAX_SERIES_DAYS = 365;
 
 /** Same calendar date, `days` later or earlier. Plain date arithmetic, no zone involved. */
 function shiftLocalDate(date: LocalDate, days: number): LocalDate {
@@ -856,13 +1183,50 @@ function funnelSelect(prefix = ''): string {
   `;
 }
 
-interface CampaignFunnelRow extends LinkedInFunnel {
+/**
+ * The three invite counts every acceptance rate in the product is built from.
+ *
+ * ONE SQL EXPRESSION, SO THE DENOMINATOR CANNOT FORK AGAIN. The status lists
+ * are spelled out in exactly one place here and mirrored by
+ * `managed-campaigns.ts` `managedAnalytics`, which is the other query a user
+ * reads an acceptance rate out of. See `InviteOutcomes` for what each list
+ * means and why 'declined' is inside `invites_sent` and 'withdrawn' is not.
+ */
+function inviteSelect(prefix = ''): string {
+  const kind = `${prefix}kind`;
+  const status = `${prefix}status`;
+  return `
+    COUNT(*) FILTER (WHERE ${kind}='invite' AND ${status} IN ('sent','accepted','replied','declined'))::int AS invites_sent,
+    COUNT(*) FILTER (WHERE ${kind}='invite' AND ${status} IN ('accepted','replied'))::int AS invites_accepted,
+    COUNT(*) FILTER (WHERE ${kind}='invite' AND ${status} IN ('accepted','replied','declined'))::int AS decided_invites
+  `;
+}
+
+interface InviteCountRow {
+  invites_sent: number;
+  invites_accepted: number;
+  decided_invites: number;
+}
+
+/** The two rates, from the three counts, with 0-of-0 reported as null rather than as 0%. */
+function inviteOutcomes(row: InviteCountRow | undefined): InviteOutcomes {
+  const invitesSent = row?.invites_sent ?? 0;
+  const invitesAccepted = row?.invites_accepted ?? 0;
+  const decidedInvites = row?.decided_invites ?? 0;
+  return {
+    invitesSent,
+    invitesAccepted,
+    decidedInvites,
+    acceptanceRate: invitesSent === 0 ? null : invitesAccepted / invitesSent,
+    acceptanceRateOfDecided: decidedInvites === 0 ? null : invitesAccepted / decidedInvites
+  };
+}
+
+interface CampaignFunnelRow extends LinkedInFunnel, InviteCountRow {
   campaign_id: string;
   name: string | null;
   /** Null for an action whose campaign row is gone; otherwise the same column `CampaignRow.status` narrows. */
   campaign_status: CampaignStatus | null;
-  decided_invites: number;
-  accepted_invites: number;
 }
 
 /**
@@ -913,12 +1277,35 @@ interface CampaignFunnelRow extends LinkedInFunnel {
 export async function linkedinAnalytics(
   db: Db,
   workspaceId: string,
-  windowDays: number,
+  windowDays: number | null,
   now: Date,
-  options: { timezone?: string } = {}
+  options: { timezone?: string; seatKey?: string } = {}
 ): Promise<LinkedInAnalytics> {
-  const days = Math.max(1, Math.min(Math.trunc(windowDays), 365));
+  // ALL TIME IS A WINDOW THE CALLER MAY ASK FOR: null, 0 or anything below it.
+  // The alternative -- clamping "all" to the 365 ceiling -- is how a button
+  // labelled "All time" comes to mean "a year", which is the same class of lie
+  // this function was fixed for once already when two of its three queries
+  // took the window and then ignored it.
+  const requested = windowDays === null || !Number.isFinite(windowDays) ? 0 : Math.trunc(windowDays);
+  const days = requested <= 0 ? null : Math.min(requested, 365);
   const { timezone, spansSeats } = await seriesTimezone(db, workspaceId, options.timezone);
+
+  /**
+   * ONE ACCOUNT'S LEDGER, WHEN ONE IS NAMED -- and it did not used to be.
+   *
+   * `seatKey` reached this function only as a timezone hint: the route looked
+   * the seat up, took its zone, and then counted every action in the
+   * workspace. So the account switcher re-cut the CLOCK of a chart whose ROWS
+   * never moved -- an operator switching to their second account read the
+   * first account's sends, in the second account's days, with nothing on
+   * screen saying so. The three queries below now take the same predicate the
+   * ceilings are enforced with (`linkedin_actions.seat_key`), so the numbers
+   * and the zone describe the same seat.
+   *
+   * Absent still means the whole workspace, which is what `/loop` asks for.
+   */
+  const seatClause = options.seatKey ? 'AND seat_key=?' : '';
+  const seatParams = options.seatKey ? [options.seatKey] : [];
 
   // The first bucket is local midnight `days - 1` calendar days before the
   // local date `now` falls on. Computed through `zonedToUtc` rather than by
@@ -926,25 +1313,51 @@ export async function linkedinAnalytics(
   // not a whole number of 24h days and the bound has to land on midnight
   // whichever side of it we are.
   const today: LocalDate = localDateOf(now, timezone);
-  const firstDay = shiftLocalDate(today, -(days - 1));
-  const sinceIso = zonedToUtc(firstDay, 0, timezone).toISOString();
+  const sinceIso = days === null ? null : zonedToUtc(shiftLocalDate(today, -(days - 1)), 0, timezone).toISOString();
+  // Absent rather than `>= '1970-01-01'`: an all-time read has no lower bound,
+  // and inventing one would only be a bound that happens to be old enough.
+  const windowClause = sinceIso === null ? '' : 'AND COALESCE(recorded_at, planned_for, created_at) >= ?';
+  const windowClauseA = sinceIso === null ? '' : 'AND COALESCE(a.recorded_at, a.planned_for, a.created_at) >= ?';
+  const windowParams: string[] = sinceIso === null ? [] : [sinceIso];
 
   const total = await db.prepare(`
-    SELECT ${funnelSelect()} FROM linkedin_actions
-    WHERE workspace_id=? AND COALESCE(recorded_at, planned_for, created_at) >= ?
-  `).get<LinkedInFunnel>(workspaceId, sinceIso);
+    SELECT ${funnelSelect()}, ${inviteSelect()} FROM linkedin_actions
+    WHERE workspace_id=? ${windowClause} ${seatClause}
+  `).get<LinkedInFunnel & InviteCountRow>(workspaceId, ...windowParams, ...seatParams);
 
   const campaignRows = await db.prepare(`
-    SELECT a.campaign_id AS campaign_id, c.name AS name, c.status AS campaign_status, ${funnelSelect('a.')},
-      COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('accepted','replied','declined'))::int AS decided_invites,
-      COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('accepted','replied'))::int AS accepted_invites
+    SELECT a.campaign_id AS campaign_id, c.name AS name, c.status AS campaign_status, ${funnelSelect('a.')}, ${inviteSelect('a.')}
     FROM linkedin_actions a
     LEFT JOIN linkedin_campaigns c ON c.id=a.campaign_id AND c.workspace_id=a.workspace_id
     WHERE a.workspace_id=? AND a.campaign_id IS NOT NULL
-      AND COALESCE(a.recorded_at, a.planned_for, a.created_at) >= ?
+      ${windowClauseA}
+      ${options.seatKey ? 'AND a.seat_key=?' : ''}
     GROUP BY a.campaign_id, c.name, c.status
     ORDER BY a.campaign_id
-  `).all<CampaignFunnelRow>(workspaceId, sinceIso);
+  `).all<CampaignFunnelRow>(workspaceId, ...windowParams, ...seatParams);
+
+  // THE SERIES STAYS BOUNDED EVEN WHEN THE TOTALS ARE NOT, and that is the one
+  // place "all" is not literal. A total over all time is a number; a chart over
+  // all time is eleven hundred columns four pixels wide. An all-time read
+  // therefore charts from the first action this workspace holds, and no further
+  // back than MAX_SERIES_DAYS. `windowDays: null` in the response is what tells
+  // a screen that the totals above are not the chart's period -- the screens
+  // that read the totals do not draw the chart, and the one that draws the
+  // chart never asks for all time.
+  let seriesDays = days;
+  if (seriesDays === null) {
+    const earliest = await db.prepare(`
+      SELECT MIN(COALESCE(recorded_at, planned_for, created_at)) AS first_at FROM linkedin_actions
+      WHERE workspace_id=? ${seatClause}
+    `).get<{ first_at: string | Date | null }>(workspaceId, ...seatParams);
+    const firstAt = earliest?.first_at ? new Date(earliest.first_at) : null;
+    const firstLocal = firstAt && !Number.isNaN(firstAt.getTime()) ? localDateOf(firstAt, timezone) : today;
+    const span = Math.floor(
+      (Date.UTC(today.year, today.month - 1, today.day) - Date.UTC(firstLocal.year, firstLocal.month - 1, firstLocal.day)) / 86_400_000
+    ) + 1;
+    seriesDays = Math.max(1, Math.min(span, MAX_SERIES_DAYS));
+  }
+  const seriesSinceIso = zonedToUtc(shiftLocalDate(today, -(seriesDays - 1)), 0, timezone).toISOString();
 
   // `AT TIME ZONE ?` -- the same zone the bound and the labels use. Postgres
   // reads a timestamptz into the zone's wall clock, DATE_TRUNC cuts the day on
@@ -953,13 +1366,13 @@ export async function linkedinAnalytics(
     SELECT TO_CHAR(DATE_TRUNC('day', COALESCE(recorded_at, planned_for, created_at) AT TIME ZONE ?), 'YYYY-MM-DD') AS day,
       ${funnelSelect()}
     FROM linkedin_actions
-    WHERE workspace_id=? AND COALESCE(recorded_at, planned_for, created_at) >= ?
+    WHERE workspace_id=? AND COALESCE(recorded_at, planned_for, created_at) >= ? ${seatClause}
     GROUP BY 1
-  `).all<LinkedInFunnel & { day: string }>(timezone, workspaceId, sinceIso);
+  `).all<LinkedInFunnel & { day: string }>(timezone, workspaceId, seriesSinceIso, ...seatParams);
 
   const byDay = new Map(seriesRows.map((row) => [row.day, row]));
   const series: FunnelDay[] = [];
-  for (let offset = days - 1; offset >= 0; offset -= 1) {
+  for (let offset = seriesDays - 1; offset >= 0; offset -= 1) {
     // Walked as CALENDAR DATES, not as `now` minus N times 86,400,000: over a
     // DST boundary the millisecond walk skips or repeats a local date, which
     // is how a chart grows two Sundays or loses a Monday.
@@ -980,9 +1393,11 @@ export async function linkedinAnalytics(
 
   return {
     windowDays: days,
+    seatKey: options.seatKey ?? null,
     timezone,
     timezoneSpansSeats: spansSeats,
     total: total ?? { planned: 0, held: 0, exported: 0, sent: 0, accepted: 0, replied: 0, declined: 0, skipped: 0, withdrawn: 0 },
+    invites: inviteOutcomes(total),
     byCampaign: campaignRows.map((row) => ({
       campaignId: row.campaign_id,
       name: row.name ?? null,
@@ -996,11 +1411,10 @@ export async function linkedinAnalytics(
       declined: row.declined,
       skipped: row.skipped,
       withdrawn: row.withdrawn,
-      // Decided invites only, never sent ones -- an invite sitting unanswered
-      // is not a refusal, and counting it as one drags every fresh campaign's
-      // rate toward zero on evidence that has not arrived. Same denominator
-      // actions.ts `acceptanceRate` uses, for the same reason.
-      acceptanceRate: row.decided_invites === 0 ? null : row.accepted_invites / row.decided_invites
+      // Accepted out of invites SENT, which is the one denominator a user is
+      // ever shown -- see `InviteOutcomes`. The decided-invite rate the
+      // throttle reasons on is still here, under its own name.
+      ...inviteOutcomes(row)
     })),
     series
   };

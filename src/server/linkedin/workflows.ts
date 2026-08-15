@@ -55,6 +55,25 @@ export const workflowDelaySchema = z.object({
 }).strict();
 export type WorkflowDelay = z.infer<typeof workflowDelaySchema>;
 
+/**
+ * How many message versions ONE A/B step may carry.
+ *
+ * FOUR, and the ceiling is the READ rather than the storage. The results panel
+ * holds every arm to `MIN_VARIANT_SENDS` (20) messages before it will name a
+ * leader, because naming one off a handful of sends is noise wearing a chip.
+ * Four arms therefore costs 80 sends of a single step before the comparison
+ * says anything at all -- at the daily message allowance a warmed seat runs
+ * at, most of a fortnight. A fifth arm buys a split nobody lives long enough
+ * to read, so the schema stops here and the builder says so on the card.
+ *
+ * RAISING THIS IS SAFE FOR STORED WORKFLOWS AND LOWERING IT IS NOT. Every
+ * 1- and 2-variant workflow already in `linkedin_workflows.steps_json` -- and
+ * every campaign snapshot in `linkedin_campaigns.sequence_json`, which is what
+ * a running campaign actually executes -- still parses unchanged, because the
+ * bound is a maximum and nothing about it is migrated.
+ */
+export const MESSAGE_VARIANT_MAX = 4;
+
 const variantSchema = z.object({
   id: z.string().trim().min(1).max(40),
   body: z.string().min(1).max(8000),
@@ -70,7 +89,7 @@ export const workflowStepSchema = z.discriminatedUnion('action', [
   z.object({ ...common, action: z.literal('connection_request'), config: z.object({ message: z.string().max(300).nullable().optional() }).strict() }).strict(),
   z.object({ ...common, action: z.literal('withdraw_pending'), config: z.object({ afterDays: z.number().int().min(1).max(90) }).strict() }).strict(),
   z.object({ ...common, action: z.literal('profile_view'), config: z.object({}).strict() }).strict(),
-  z.object({ ...common, action: z.literal('message'), config: z.object({ variants: z.array(variantSchema).min(1).max(2) }).strict() }).strict(),
+  z.object({ ...common, action: z.literal('message'), config: z.object({ variants: z.array(variantSchema).min(1).max(MESSAGE_VARIANT_MAX) }).strict() }).strict(),
   z.object({ ...common, action: z.literal('manual_message'), config: z.object({ suggestedTemplate: z.string().max(8000).nullable().optional() }).strict() }).strict(),
   z.object({ ...common, action: z.literal('follow'), config: z.object({}).strict() }).strict()
 ]);
@@ -172,17 +191,32 @@ export function renderWorkflowTemplate(template: string, lead: WorkflowMergeLead
   });
 }
 
-/** Stable A/B assignment: the same campaign member never changes variant after a retry. */
+/**
+ * Stable A/B assignment: the same campaign member never changes variant after a retry.
+ *
+ * SEEDED, NOT RANDOM, and at any arm count. The draw is a hash of the caller's
+ * `member:step` seed laid against the arms' CUMULATIVE weights, so two things
+ * hold that a `Math.random()` split cannot: a retried tick re-derives the same
+ * arm for the same member (the runner also persists the choice in
+ * `assigned_variants`, so this is the second of two guarantees, not the only
+ * one), and the split honours whatever integer weights the operator typed
+ * without them having to sum to anything in particular -- the total is taken
+ * from the arms themselves. 25/25/25/25 and 1/1/1/1 are the same split.
+ */
 export function chooseMessageVariant(
   variants: Extract<WorkflowStep, { action: 'message' }>['config']['variants'],
   seed: string
 ): { id: string; body: string; weight: number } {
   if (variants.length === 1) return variants[0];
-  const total = variants.reduce((sum, variant) => sum + variant.weight, 0);
+  const total = variants.reduce((sum, variant) => sum + Math.max(0, variant.weight), 0);
+  // Weights are `min(1)` in the schema, so this is unreachable through a saved
+  // workflow -- and `% 0` is NaN, which would fall through every arm and read
+  // as a silent "last variant wins" instead of as the bad input it is.
+  if (total <= 0) return variants[0];
   const sample = Number.parseInt(createHash('sha256').update(seed).digest('hex').slice(0, 8), 16) % total;
   let cursor = 0;
   for (const variant of variants) {
-    cursor += variant.weight;
+    cursor += Math.max(0, variant.weight);
     if (sample < cursor) return variant;
   }
   return variants[variants.length - 1];

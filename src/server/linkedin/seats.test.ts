@@ -11,6 +11,7 @@ import {
   listSeats,
   pauseSeat,
   resumeSeat,
+  seatProxyUrl,
   upsertSeat,
   warmupWeekOf,
   type LinkedInSeat
@@ -48,6 +49,45 @@ afterEach(async () => {
 function create(patch: Partial<Parameters<typeof upsertSeat>[2]> = {}, at: Date = NOW): Promise<LinkedInSeat> {
   return upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich', ...patch }, at);
 }
+
+/* =========================================================================
+ * The account's own outbound proxy (migration 062).
+ *
+ * It could only ever be configured through `TREVRA_LINKEDIN_PROXY*` on the
+ * machine running the worker, which put it out of reach of everybody except
+ * the author of the deployment. A proxy is a fact about an ACCOUNT.
+ * ====================================================================== */
+describe('the account proxy', () => {
+  it('stores it and reports it REDACTED -- the password never comes back', async () => {
+    const seat = await create({ proxyUrl: 'http://relay:hunter2@proxy.example:3128' });
+    expect(seat.proxy).toEqual({ server: 'http://proxy.example:3128', username: 'relay', hasPassword: true });
+    // The whole object is what three routes serialise onto the wire.
+    expect(JSON.stringify(seat)).not.toContain('hunter2');
+    // And the launcher, server-side, still gets the URL it has to hand Chromium.
+    expect(await seatProxyUrl(db, WORKSPACE_ID)).toBe('http://relay:hunter2@proxy.example:3128');
+  });
+
+  it('leaves a stored proxy alone when the patch does not mention it', async () => {
+    await create({ proxyUrl: 'http://proxy.example:3128' });
+    // Absent means UNCHANGED, like every other field: renaming an account must
+    // not silently drop the connection it goes out through.
+    const renamed = await create({ label: 'Pankaj (renamed)' });
+    expect(renamed.proxy?.server).toBe('http://proxy.example:3128');
+    expect(await seatProxyUrl(db, WORKSPACE_ID)).toBe('http://proxy.example:3128');
+  });
+
+  it('removes it on an explicit null and reports none', async () => {
+    await create({ proxyUrl: 'http://proxy.example:3128' });
+    const cleared = await create({ proxyUrl: null });
+    expect(cleared.proxy).toBeNull();
+    expect(await seatProxyUrl(db, WORKSPACE_ID)).toBeNull();
+  });
+
+  it('reports none for an account that never had one', async () => {
+    expect((await create()).proxy).toBeNull();
+    expect(await seatProxyUrl(db, WORKSPACE_ID)).toBeNull();
+  });
+});
 
 describe('upsertSeat', () => {
   it('creates the workspace seat and reports it under the owner key', async () => {

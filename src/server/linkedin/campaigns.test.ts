@@ -190,6 +190,111 @@ describe('the analytics funnel', () => {
     expect(year.total.sent).toBe(2);
     expect(year.byCampaign[0].sent).toBe(2);
   });
+
+  /**
+   * "ALL TIME" WAS A HEADING, NOT A QUERY.
+   *
+   * The funnel panel printed "every action ever filed -- not a window" over a
+   * response it had asked for seven days of, because the window was a constant
+   * in the client and every query here honours it. Now that the copy is
+   * generated from what came back, "all" has to actually mean all -- and 365,
+   * the clamp a window is subject to, is not all.
+   */
+  it('reads a non-positive window as all time and says so in windowDays', async () => {
+    const campaignId = await campaign('Older than a year');
+    await action(campaignId, 'sent', new Date(NOW.getTime() - 400 * 86_400_000));
+    await action(campaignId, 'sent', NOW);
+
+    const month = await linkedinAnalytics(db, WORKSPACE, 30, NOW);
+    expect(month.windowDays).toBe(30);
+    expect(month.total.sent).toBe(1);
+
+    // The largest WINDOW still misses an action 400 days old, which is exactly
+    // why "all" cannot be spelled 365.
+    expect((await linkedinAnalytics(db, WORKSPACE, 365, NOW)).total.sent).toBe(1);
+
+    for (const all of [0, -1, null]) {
+      const everything = await linkedinAnalytics(db, WORKSPACE, all, NOW);
+      expect(everything.windowDays).toBeNull();
+      expect(everything.total.sent).toBe(2);
+      expect(everything.byCampaign[0].sent).toBe(2);
+    }
+  });
+
+  /**
+   * The one thing "all" is not literal about, said out loud: a total over all
+   * time is a number, a chart over all time is eleven hundred columns four
+   * pixels wide.
+   */
+  it('charts an all-time read from its first action, capped, while the totals stay unbounded', async () => {
+    const campaignId = await campaign('Long lived');
+    await action(campaignId, 'sent', new Date(NOW.getTime() - 400 * 86_400_000));
+
+    const everything = await linkedinAnalytics(db, WORKSPACE, 0, NOW);
+    expect(everything.total.sent).toBe(1);
+    expect(everything.series).toHaveLength(365);
+    expect(everything.series[everything.series.length - 1].date).toBe('2026-08-06');
+
+    // A young workspace charts only the days it has, not 365 empty ones.
+    await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(WORKSPACE);
+    await action(campaignId, 'sent', new Date(NOW.getTime() - 2 * 86_400_000));
+    const young = await linkedinAnalytics(db, WORKSPACE, 0, NOW);
+    expect(young.series.map((day) => day.date)).toEqual(['2026-08-04', '2026-08-05', '2026-08-06']);
+  });
+});
+
+/**
+ * ONE ACCEPTANCE RATE A USER SEES, AND IT IS ACCEPTED OUT OF INVITES SENT.
+ *
+ * There were three denominators: decided invites here, sent invites in
+ * `managed-campaigns.ts`, decided invites again in the `actions.ts` throttle.
+ * Two of them were rendered on screens an operator can hold side by side, both
+ * labelled "acceptance", both right about different questions and neither
+ * saying which.
+ */
+describe('one acceptance denominator', () => {
+  it('divides accepted invites by invites SENT, and keeps the throttle\'s denominator under its own name', async () => {
+    const campaignId = await campaign('Denominators');
+    await action(campaignId, 'accepted');
+    await action(campaignId, 'replied');
+    await action(campaignId, 'declined');
+    await action(campaignId, 'sent');
+    // Retracted before anybody could answer it, and never sent at all: neither
+    // is an invite that failed to be accepted.
+    await action(campaignId, 'withdrawn');
+    await action(campaignId, 'planned');
+
+    const analytics = await linkedinAnalytics(db, WORKSPACE, 30, NOW);
+
+    expect(analytics.invites.invitesSent).toBe(4);
+    expect(analytics.invites.invitesAccepted).toBe(2);
+    expect(analytics.invites.decidedInvites).toBe(3);
+    expect(analytics.invites.acceptanceRate).toBeCloseTo(0.5);
+    // The numerator is a subset of the denominator, so this can never exceed 1.
+    expect(analytics.invites.acceptanceRate ?? 0).toBeLessThanOrEqual(1);
+    // The legacy figure the throttle reasons on is still computed -- under a
+    // name that cannot be mistaken for the one on the screen.
+    expect(analytics.invites.acceptanceRateOfDecided).toBeCloseTo(2 / 3);
+
+    // And the per-campaign row is the SAME arithmetic, not a second opinion.
+    const row = analytics.byCampaign[0];
+    expect(row.invitesSent).toBe(4);
+    expect(row.invitesAccepted).toBe(2);
+    expect(row.acceptanceRate).toBeCloseTo(0.5);
+    expect(row.acceptanceRateOfDecided).toBeCloseTo(2 / 3);
+  });
+
+  /** 0-of-0 is null all the way to the screen, which renders "not enough data". */
+  it('reports null rather than 0% when no invite has been sent', async () => {
+    const campaignId = await campaign('Nothing sent');
+    await action(campaignId, 'planned');
+
+    const analytics = await linkedinAnalytics(db, WORKSPACE, 30, NOW);
+    expect(analytics.invites.invitesSent).toBe(0);
+    expect(analytics.invites.acceptanceRate).toBeNull();
+    expect(analytics.invites.acceptanceRateOfDecided).toBeNull();
+    expect(analytics.byCampaign[0].acceptanceRate).toBeNull();
+  });
 });
 
 describe('which day the series means', () => {

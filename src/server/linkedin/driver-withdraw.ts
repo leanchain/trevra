@@ -189,7 +189,23 @@ export const WITHDRAW_SELECTORS = {
   /** Infinite scroll's manual escape hatch. Absent once the list is exhausted. */
   showMoreButton: 'button.scaffold-finite-scroll__load-button, button[aria-label*="Show more" i]',
   /** No outstanding invitations at all -- a real and common answer, not a failure. */
-  emptyState: 'text=/No pending invitations|no sent invitations|You have no pending/i'
+  emptyState: 'text=/No pending invitations|no sent invitations|You have no pending/i',
+  /**
+   * THE EMPTY STATE IN A LANGUAGE THIS FILE DOES NOT SPEAK.
+   *
+   * LinkedIn renders its interface in the MEMBER's language, and this seat's is
+   * German: the sent-invitations page says `Keine neuen Einladungen`, which the
+   * English matcher above will never see. The result was the worst of the two
+   * possible wrong answers -- an empty list reported as SELECTOR DRIFT, which
+   * is the answer that means "stop, something is broken", filed against a page
+   * that was working perfectly.
+   *
+   * Every sent invitation carries a link to the person it was sent to (that is
+   * what `invitationProfileLink` reads). So a main region with no cards AND no
+   * profile links anywhere in it has nothing to withdraw, in any language --
+   * whereas profile links WITHOUT cards is genuine drift and still fails.
+   */
+  invitationProfileLinkAnywhere: 'main a[href*="/in/"]'
 } as const;
 
 /** The sent-invitations manager. The only URL this file navigates to. */
@@ -279,6 +295,22 @@ async function present(page: LinkedInListPage, selector: string): Promise<boolea
     // `false` here would let a routine sail past a wall it failed to read.
     return false;
   }
+}
+
+/**
+ * Is this an empty invitation list, rather than a list this driver failed to
+ * read? That distinction decides between "nothing to withdraw" and "stop".
+ *
+ * Two ways to be sure, and either is enough: LinkedIn's own empty-state
+ * sentence (exact, English only), or the structural fact that the page offers
+ * no person at all -- no card, and no profile link anywhere in `main`. The
+ * second is what answers for the twenty-odd languages the first cannot read,
+ * and it was measured on the German page that reported drift while saying
+ * `Keine neuen Einladungen`.
+ */
+async function emptyInviteList(page: LinkedInListPage): Promise<boolean> {
+  if (await present(page, WITHDRAW_SELECTORS.emptyState)) return true;
+  return !(await present(page, WITHDRAW_SELECTORS.invitationProfileLinkAnywhere));
 }
 
 /**
@@ -484,12 +516,12 @@ export async function listPendingInvites(
       // No cards at all. An empty state is the answer; anything else is drift,
       // and the two must not be conflated -- "you have no pending invites" and
       // "we could not see your pending invites" lead to opposite decisions.
-      if (await present(page, WITHDRAW_SELECTORS.emptyState)) {
+      if (await emptyInviteList(page)) {
         return { ok: true, invites: [], truncated: false, degraded: [] };
       }
       return fail(
         'selector_drift',
-        `Neither ${WITHDRAW_SELECTORS.invitationCard} nor ${WITHDRAW_SELECTORS.emptyState} matched on ${SENT_INVITES_URL}, so whether this seat has pending invites is unknown. Repair WITHDRAW_SELECTORS in driver-withdraw.ts.`
+        `Neither ${WITHDRAW_SELECTORS.invitationCard} nor an empty list matched on ${SENT_INVITES_URL} -- the page holds profile links but no cards this driver can read, so whether this seat has pending invites is unknown. Repair WITHDRAW_SELECTORS in driver-withdraw.ts.`
       );
     }
 
@@ -578,7 +610,7 @@ export async function withdrawInvite(page: LinkedInListPage, profileUrl: string)
         `Could not count ${WITHDRAW_SELECTORS.invitationCard} while looking for ${url}: ${cause instanceof Error ? cause.message : String(cause)}`
       );
     }
-    if (count === 0 && cursor === 0 && !(await present(page, WITHDRAW_SELECTORS.emptyState))) {
+    if (count === 0 && cursor === 0 && !(await emptyInviteList(page))) {
       return fail(
         'selector_drift',
         `Neither ${WITHDRAW_SELECTORS.invitationCard} nor ${WITHDRAW_SELECTORS.emptyState} matched on ${SENT_INVITES_URL}, so whether ${url} is still pending is unknown. Nothing was clicked.`

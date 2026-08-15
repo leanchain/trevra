@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
 import { recordAction } from './actions.js';
-import { LinkedInApiError, ingestOutcome } from './campaigns.js';
+import { LinkedInApiError, ingestOutcome, recordDetectedAcceptance } from './campaigns.js';
 import { profileUrlFor } from './driver.js';
 import type { LinkedInInboxMessage, LinkedInThreadSummary } from './driver-inbox.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
@@ -277,6 +277,37 @@ interface LedgerMatch {
  * `.length`. Every caller states the smallest number that answers its own
  * question, and both of them state 1.
  */
+/**
+ * This seat's invites to that person that are still awaiting an answer.
+ *
+ * A SEPARATE QUERY FROM `ledgerMatches` RATHER THAN A FILTER OVER IT, because
+ * the two ask different questions. `ledgerMatches` finds the ONE best row a
+ * reply should be reported against and takes `LIMIT 1` accordingly; this finds
+ * every undecided invite, because a workspace that re-invited somebody after a
+ * withdrawal can legitimately hold more than one and the reply proves all of
+ * them were accepted. Bounded anyway: nobody has an unbounded number of
+ * outstanding invites to one person, and an unbounded query would be a sort
+ * over a person's entire history for a loop that writes at most a handful.
+ */
+async function pendingInvitesFor(
+  db: Db,
+  workspaceId: string,
+  seatKey: string,
+  profileUrl: string | null
+): Promise<Array<{ id: string }>> {
+  if (!profileUrl) return [];
+  const candidates = targetRefCandidates(profileUrl);
+  if (candidates.length === 0) return [];
+  return db.prepare(`
+    SELECT id FROM linkedin_actions
+    WHERE workspace_id=? AND seat_key=? AND kind='invite'
+      AND LOWER(target_ref) = ANY(?::text[])
+      AND status IN ('sent', 'exported')
+    ORDER BY COALESCE(recorded_at, created_at) DESC, id DESC
+    LIMIT 5
+  `).all<{ id: string }>(workspaceId, seatKey, candidates);
+}
+
 async function ledgerMatches(
   db: Db,
   workspaceId: string,
@@ -565,6 +596,15 @@ export interface ThreadMessageSyncResult {
   inbound: number;
   /** The ledger row this reply was reported against, if any. */
   repliedActionId: string | null;
+  /**
+   * Pending invites this reply proved were accepted.
+   *
+   * Usually one, usually the same row `repliedActionId` names -- an invite that
+   * is accepted and then answered ends the sync as 'replied', with
+   * `accepted_at` and `accepted_source='detected'` recording the acceptance the
+   * status no longer has room to say.
+   */
+  acceptedActionIds: string[];
   /** What happened to the campaign linkage, in a sentence an operator can act on. */
   linkage: string;
 }
@@ -668,6 +708,7 @@ export async function syncThreadMessages(
     duplicates,
     inbound,
     repliedActionId: null,
+    acceptedActionIds: [],
     linkage: 'No new inbound message arrived, so no outreach action changed.'
   };
   if (inbound === 0) return result;
@@ -677,6 +718,44 @@ export async function syncThreadMessages(
       'A reply arrived, but this conversation has no resolved profile URL, so there is no campaign target to attach it to. Re-run the inbox sync with profile resolution enabled.';
     return result;
   }
+
+  /*
+   * A REPLY IS ACCEPTANCE EVIDENCE, AND IT IS FILED BEFORE THE REPLY IS.
+   *
+   * Somebody this seat invited is now messaging it. On LinkedIn a message from
+   * a stranger you have an outstanding invite to is, in the overwhelming
+   * ordinary case, a message from somebody who has just accepted it -- the
+   * Message control is shown to connections, and `local-worker.ts` builds its
+   * whole implicit acceptance gate on exactly that fact.
+   *
+   * WHY IT CANNOT WAIT FOR `ingestOutcome` BELOW TO DO IT. That call moves the
+   * invite to 'replied', which is a strictly stronger statement and is what the
+   * funnel should show -- but 'replied' overwrites 'accepted', so the ledger
+   * ends up with no record that the acceptance was ever established, no date
+   * for it, and no provenance. Every acceptance counter in the product had to
+   * compensate by spelling out `IN ('accepted','replied')`, and none of them
+   * could say WHEN or on what evidence. Marking it first fills `accepted_at`
+   * and `accepted_source`, which survive the status moving on (migration 070).
+   *
+   * It goes through `recordDetectedAcceptance`, so a human who already ruled on
+   * this invite by hand outranks it and a decided invite is left alone.
+   */
+  const acceptedByReply: string[] = [];
+  for (const invite of await pendingInvitesFor(db, input.workspaceId, seatKey, thread.profileUrl)) {
+    const written = await recordDetectedAcceptance(
+      db,
+      {
+        workspaceId: input.workspaceId,
+        actionId: invite.id,
+        // Dated at the reply, not at the sync: the acceptance is at least as old
+        // as the message that proves it.
+        ...(latestInboundAt === null ? {} : { detectedAt: latestInboundAt })
+      },
+      now
+    );
+    if (written.applied) acceptedByReply.push(invite.id);
+  }
+  result.acceptedActionIds = acceptedByReply;
 
   // ONE ROW IS THE WHOLE QUESTION. Only `open[0]` is ever reported against --
   // the ORDER BY is what decides which row that is -- so the query says so
@@ -711,7 +790,10 @@ export async function syncThreadMessages(
   result.repliedActionId = view.id;
   result.linkage =
     `${thread.profileUrl} replied, so their ${target.kind} (${target.id}) moved from '${target.status}' to 'replied'`
-    + `${latestInboundAt === null ? ' and was dated at this sync, because the message carried no readable timestamp' : ''}.`;
+    + `${latestInboundAt === null ? ' and was dated at this sync, because the message carried no readable timestamp' : ''}.`
+    + (acceptedByReply.length === 0
+      ? ''
+      : ` Their pending invite is also recorded as accepted, on the reply as evidence: ${acceptedByReply.join(', ')}.`);
 
   // A conversation whose reply landed on a campaign action belongs to that
   // campaign, even if the thread was first synced before the pointer existed.

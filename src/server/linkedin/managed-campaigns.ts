@@ -1,4 +1,5 @@
 import { id, type Db } from '../db.js';
+import { COUNTED_MESSAGE_KINDS, recordAction } from './actions.js';
 import type { CampaignStatus } from './campaigns.js';
 import { getLeadList } from './lead-lists.js';
 import { getSeat, OWNER_SEAT_KEY } from './seats.js';
@@ -590,8 +591,20 @@ export async function completeManualTask(db: Db, workspaceId: string, taskId: st
     // FOR UPDATE, not an UPDATE: it takes the row lock that makes a
     // double-click one completion, without committing anything the member
     // update below might make untrue.
-    const task = await tx.prepare(`SELECT member_id, campaign_id FROM linkedin_manual_tasks WHERE workspace_id=? AND id=? AND status='pending' FOR UPDATE`)
-      .get<{ member_id: string; campaign_id: string }>(workspaceId, taskId);
+    const task = await tx.prepare(`
+      SELECT t.member_id, t.campaign_id, t.seat_key, t.workflow_step_id, t.suggested_body, l.profile_url
+      FROM linkedin_manual_tasks t
+      JOIN linkedin_campaign_members m ON m.id = t.member_id AND m.workspace_id = t.workspace_id
+      JOIN linkedin_lead_contacts l ON l.id = m.contact_id AND l.workspace_id = m.workspace_id
+      WHERE t.workspace_id=? AND t.id=? AND t.status='pending' FOR UPDATE OF t
+    `).get<{
+      member_id: string;
+      campaign_id: string;
+      seat_key: string;
+      workflow_step_id: string | null;
+      suggested_body: string | null;
+      profile_url: string | null;
+    }>(workspaceId, taskId);
     if (!task) return false;
     // RETURNING the NEW step_index, which is the index of the step this member
     // is about to wait for.
@@ -605,8 +618,75 @@ export async function completeManualTask(db: Db, workspaceId: string, taskId: st
     const eligible = new Date(now.getTime() + (nextStep ? delayMilliseconds(nextStep.delayBefore) : 0)).toISOString();
     await tx.prepare(`UPDATE linkedin_campaign_members SET next_eligible_at=?::timestamptz WHERE workspace_id=? AND id=?`).run(eligible, workspaceId, task.member_id);
     await tx.prepare(`UPDATE linkedin_manual_tasks SET status='completed',completed_at=? WHERE workspace_id=? AND id=?`).run(timestamp, workspaceId, taskId);
+    await recordManualMessageAction(tx, workspaceId, task, now);
     return true;
   });
+}
+
+/**
+ * File the message a completed manual task represents.
+ *
+ * A `manual_message` STEP PRODUCES A REAL MESSAGE AND PRODUCED NO ROW. The
+ * runner writes nothing for it -- `kindForStep` returns null, deliberately,
+ * because Trevra does not send it -- and the operator then goes to LinkedIn and
+ * sends it themselves, from the same account, on the same day, against the same
+ * daily message ceiling as everything the worker sends. The ledger is the
+ * denominator of every rolling window in `actions.ts` and of every analytics
+ * panel in the product, and it did not contain those messages: a workflow built
+ * entirely out of human checkpoints reported zero messages sent forever, and
+ * the seat's own 24h message count was short by exactly the messages the
+ * operator had been asked to send.
+ *
+ * FILED ON COMPLETION, NOT ON CREATION, and that is the whole of the
+ * no-double-counting argument. A pending task is a request; only completion is
+ * the operator saying the message went out. A cancelled task
+ * (`releaseSeatWork`, `removeCampaignMember`) never reaches here and files
+ * nothing, which is correct -- nothing was sent.
+ *
+ * KIND 'dm', because that is what it is: a message from this seat to this
+ * person. Not a new kind, because a new kind would need its own band, its own
+ * ceiling and its own place in the operator's message pool, and the honest
+ * answer to all three is "the same as a DM's" -- LinkedIn does not know or care
+ * which of the operator's hands sent it. `source: 'manual'` is what tells the
+ * two apart in the ledger.
+ *
+ * `recorded_at` is NOW, the moment the operator says they sent it, so it lands
+ * in the day it actually consumed.
+ *
+ * A member with no profile URL files nothing: `target_ref` is the replay key
+ * and a null one would collapse every such task onto a single row.
+ */
+async function recordManualMessageAction(
+  db: Db,
+  workspaceId: string,
+  task: { member_id: string; campaign_id: string; seat_key: string; workflow_step_id: string | null; suggested_body: string | null; profile_url: string | null },
+  now: Date
+): Promise<void> {
+  if (!task.profile_url) return;
+  const written = await recordAction(
+    db,
+    {
+      workspaceId,
+      seatKey: task.seat_key,
+      kind: 'dm',
+      targetRef: task.profile_url,
+      campaignId: task.campaign_id,
+      status: 'sent',
+      source: 'manual',
+      // The same member+step scope the runner uses for every other step, so a
+      // manual message is a distinct action from the workflow's other messages
+      // to the same person and a re-completion is a duplicate rather than a
+      // second message.
+      replayScope: `${task.member_id}:${task.workflow_step_id ?? 'manual'}`,
+      recordedAt: now.toISOString()
+    },
+    now
+  );
+  if (written.duplicate) return;
+  await db.prepare(`
+    UPDATE linkedin_actions SET body=?, campaign_member_id=?, workflow_step_id=?
+    WHERE id=? AND workspace_id=?
+  `).run(task.suggested_body, task.member_id, task.workflow_step_id, written.id, workspaceId);
 }
 
 export interface ManagedAnalytics {
@@ -644,10 +724,61 @@ export interface ManagedAnalytics {
    * reported side by side rather than one being derived from the other.
    */
   invitesWithdrawn: number;
+  /**
+   * Withdrawals this campaign's seat actually performed, dated by the click.
+   *
+   * NOT A RENAME OF `invitesWithdrawn` AND NOT DERIVABLE FROM IT. That number
+   * is counted off the invite's terminal status and dated by the invite's
+   * `recorded_at`, so under `sinceDays` it answers "invites sent in this window
+   * that have since been taken back". This one is counted off the withdrawal's
+   * own ledger row (migration 070) and dated by the withdrawal, so it answers
+   * "withdrawals performed in this window". Both are useful and neither is the
+   * other; before the 'withdraw' kind existed only the first was available and
+   * the second was unanswerable.
+   */
+  withdrawalsPerformed: number;
   invitesAccepted: number;
+  /**
+   * Of `invitesAccepted`, the ones a DETECTOR established rather than a person.
+   *
+   * SHIPPED SO A SCREEN CAN SAY WHICH. Until migration 070 `accepted` had one
+   * writer -- a human clicking a button -- so the provenance question could not
+   * arise and the number was zero on every unattended campaign. Now that most
+   * of them will be machine-read off a 1st-degree badge, an operator auditing a
+   * campaign is entitled to know how many of its acceptances rest on a selector
+   * rather than on somebody having looked.
+   */
+  invitesAcceptedDetected: number;
+  /**
+   * `invitesAccepted / invitesSent`, or null at 0-of-0.
+   *
+   * THE SAME DENOMINATOR `campaigns.ts` USES, deliberately: there were three
+   * acceptance rates in this product over two screens and a throttle, and two
+   * of them were shown to a user side by side without either page saying which
+   * question it had answered. Invites sent is the one a user sees, here and in
+   * `InviteOutcomes`; the decided-invite rate `actions.ts` throttles on is
+   * named `acceptanceRateOfDecided` there and is not this number.
+   */
   acceptanceRate: number | null;
+  /**
+   * People who replied to ANYTHING -- an invite that came back with a note
+   * counts, and so does a reply to a message. The headline "replies" figure.
+   */
   repliedLeads: number;
   contactedLeads: number;
+  /**
+   * People who replied AFTER BEING MESSAGED, which is the numerator
+   * `replyRate` needs and `repliedLeads` is not.
+   *
+   * `repliedLeads` counts a reply to any kind of action while `contactedLeads`
+   * counts only leads that were sent a message, so the old
+   * `repliedLeads / contactedLeads` divided one population by another and
+   * could -- and did -- exceed 100%: reply to an invite from somebody who was
+   * never messaged and the numerator grows while the denominator does not.
+   * This column is a strict subset of `contactedLeads`, so the rate cannot.
+   */
+  repliedMessagedLeads: number;
+  /** `repliedMessagedLeads / contactedLeads`, or null when nobody has been messaged. */
   replyRate: number | null;
   variants: Array<{ workflowStepId: string; variantId: string; sent: number; replied: number }>;
 }
@@ -667,21 +798,57 @@ export async function managedAnalytics(db: Db, workspaceId: string, filters: { c
     params.push(String(Math.max(1, Math.floor(filters.sinceDays))));
   }
   const where = clauses.join(' AND ');
+  /*
+   * INLINED AS A SQL LITERAL LIST, NOT BOUND AS A PARAMETER, and the reason is
+   * positional binding: this list appears in the SELECT clause, which comes
+   * before the WHERE, so a `?` here would silently take the workspace id and
+   * shift every filter below it by one. The values are a module constant of
+   * fixed identifiers -- never operator input -- so there is nothing here for a
+   * parameter to protect.
+   */
+  const messageKinds = COUNTED_MESSAGE_KINDS.map((kind) => `'${kind}'`).join(', ');
   const row = await db.prepare(`
     SELECT
-      COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('sent','accepted','replied'))::int AS invites_sent,
-      COUNT(*) FILTER (WHERE a.kind IN ('dm','reply','inmail') AND a.status IN ('sent','accepted','replied'))::int AS messages_sent,
+      -- 'declined' IS AN INVITE THAT WAS SENT. Leaving it out inflated the
+      -- acceptance rate below by exactly the refusals it was measuring. Same
+      -- three lists as inviteSelect in campaigns.ts; 'withdrawn' stays out of
+      -- all of them because a retracted invite never got its chance.
+      COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('sent','accepted','replied','declined'))::int AS invites_sent,
+      -- 'inmail' LEFT THIS FILTER AND ITS TWO SIBLINGS BELOW. Nothing in this
+      -- deployment sends an InMail (UNSUPPORTED_ACTION_KINDS in actions.ts), so
+      -- counting the kind here was a panel reporting delivery that could not
+      -- have occurred. The list is imported rather than restated: it was
+      -- spelled out three times in this one statement.
+      COUNT(*) FILTER (WHERE a.kind IN (${messageKinds}) AND a.status IN ('sent','accepted','replied'))::int AS messages_sent,
       COUNT(*) FILTER (WHERE a.kind='profile_view' AND a.status IN ('sent','accepted','replied'))::int AS profile_views,
       COUNT(*) FILTER (WHERE a.kind='follow' AND a.status IN ('sent','accepted','replied'))::int AS follows_sent,
       COUNT(*) FILTER (WHERE a.kind='invite' AND a.status='withdrawn')::int AS invites_withdrawn,
+      -- The withdrawal's OWN row (migration 070), dated by the WITHDRAWAL
+      -- rather than by the invite it retracted. Kept beside invites_withdrawn
+      -- and not merged into it, because under a sinceDays filter the two answer
+      -- genuinely different questions: "invites sent in this window that have
+      -- since been taken back" and "withdrawals this account performed in this
+      -- window". Merging them would silently change what the older number has
+      -- always meant.
+      COUNT(*) FILTER (WHERE a.kind='withdraw' AND a.status IN ('sent','accepted','replied'))::int AS withdrawals_performed,
       COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('accepted','replied'))::int AS invites_accepted,
+      -- Acceptances the detector established, as opposed to ones a human
+      -- reported. Same rows, split by provenance, so a screen never has to
+      -- present a badge reading and a person's word as the same evidence.
+      COUNT(*) FILTER (WHERE a.kind='invite' AND a.accepted_source='detected')::int AS invites_accepted_detected,
       COUNT(DISTINCT a.target_ref) FILTER (WHERE a.status='replied')::int AS replied_leads,
-      COUNT(DISTINCT a.target_ref) FILTER (WHERE a.kind IN ('dm','reply','inmail') AND a.status IN ('sent','accepted','replied'))::int AS contacted_leads
+      -- The reply-rate numerator: messaged leads who replied. Same kinds and
+      -- the same distinct-target counting as contacted_leads below, which is
+      -- what makes one a subset of the other rather than a ratio between two
+      -- different populations.
+      COUNT(DISTINCT a.target_ref) FILTER (WHERE a.kind IN (${messageKinds}) AND a.status='replied')::int AS replied_messaged_leads,
+      COUNT(DISTINCT a.target_ref) FILTER (WHERE a.kind IN (${messageKinds}) AND a.status IN ('sent','accepted','replied'))::int AS contacted_leads
     FROM linkedin_actions a WHERE ${where}
   `).get<Record<string, number>>(...params);
   const invitesSent = Number(row?.invites_sent ?? 0);
   const invitesAccepted = Number(row?.invites_accepted ?? 0);
   const repliedLeads = Number(row?.replied_leads ?? 0);
+  const repliedMessagedLeads = Number(row?.replied_messaged_leads ?? 0);
   const contactedLeads = Number(row?.contacted_leads ?? 0);
   const variantParams = [...params];
   const variants = await db.prepare(`
@@ -697,11 +864,17 @@ export async function managedAnalytics(db: Db, workspaceId: string, filters: { c
     profileViews: Number(row?.profile_views ?? 0),
     followsSent: Number(row?.follows_sent ?? 0),
     invitesWithdrawn: Number(row?.invites_withdrawn ?? 0),
+    withdrawalsPerformed: Number(row?.withdrawals_performed ?? 0),
     invitesAccepted,
+    invitesAcceptedDetected: Number(row?.invites_accepted_detected ?? 0),
     acceptanceRate: invitesSent === 0 ? null : invitesAccepted / invitesSent,
     repliedLeads,
     contactedLeads,
-    replyRate: contactedLeads === 0 ? null : repliedLeads / contactedLeads,
+    repliedMessagedLeads,
+    // Numerator and denominator over the SAME population -- messaged leads --
+    // so this cannot exceed 1. It used to divide replies to any action kind by
+    // messaged leads only.
+    replyRate: contactedLeads === 0 ? null : repliedMessagedLeads / contactedLeads,
     variants: variants.map((v) => ({ workflowStepId: v.workflow_step_id, variantId: v.variant_id, sent: Number(v.sent), replied: Number(v.replied) }))
   };
 }

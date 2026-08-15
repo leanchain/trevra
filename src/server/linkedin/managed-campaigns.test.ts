@@ -8,6 +8,7 @@ import {
   createManagedCampaign,
   enrolNewContacts,
   listCampaignMembers,
+  managedAnalytics,
   releaseSeatWork,
   startManagedCampaign
 } from './managed-campaigns.js';
@@ -81,6 +82,88 @@ async function queue(seatKey: string, handle: string, status: 'planned' | 'held'
     .run(status, claimed ? NOW.toISOString() : null, WORKSPACE, written.id);
   return written.id;
 }
+
+/** One ledger row, at the status it ended up in. */
+async function ledger(kind: 'invite' | 'dm', handle: string, status: 'sent' | 'accepted' | 'replied' | 'declined' | 'withdrawn'): Promise<void> {
+  await recordAction(db, {
+    workspaceId: WORKSPACE,
+    kind,
+    targetRef: `https://www.linkedin.com/in/${handle}/`,
+    status,
+    source: 'campaign',
+    plannedFor: NOW.toISOString()
+  }, NOW);
+}
+
+/**
+ * THE TWO RATES THIS PANEL SHOWS, AND THE POPULATIONS THEY DIVIDE.
+ *
+ * Both were wrong in the same way -- a numerator counted over one set of rows
+ * and a denominator over another -- and the reply rate could therefore print a
+ * number above 100%, which is the kind of figure that makes an operator stop
+ * believing the whole screen rather than the one tile.
+ */
+describe('the rates on the results panel', () => {
+  it('divides replies by the same population it counted: leads that were messaged', async () => {
+    // Two leads were messaged. One of them replied.
+    await ledger('dm', 'messaged-a', 'replied');
+    await ledger('dm', 'messaged-b', 'sent');
+    // A third replied to an INVITE and was never messaged at all. Under the old
+    // query this grew the numerator and left the denominator alone.
+    await ledger('invite', 'never-messaged', 'replied');
+
+    const analytics = await managedAnalytics(db, WORKSPACE);
+
+    expect(analytics.contactedLeads).toBe(2);
+    // Still the honest headline: everybody who replied to anything.
+    expect(analytics.repliedLeads).toBe(2);
+    // The rate's numerator, which is a strict subset of `contactedLeads`.
+    expect(analytics.repliedMessagedLeads).toBe(1);
+    expect(analytics.replyRate).toBeCloseTo(0.5);
+  });
+
+  it('cannot exceed 100% even when every reply came from something other than a message', async () => {
+    await ledger('dm', 'one', 'sent');
+    await ledger('invite', 'two', 'replied');
+    await ledger('invite', 'three', 'replied');
+
+    const analytics = await managedAnalytics(db, WORKSPACE);
+
+    // The old arithmetic here was 2 replied leads over 1 messaged lead: 200%.
+    expect(analytics.repliedLeads).toBe(2);
+    expect(analytics.repliedMessagedLeads).toBe(0);
+    expect(analytics.replyRate).toBe(0);
+    expect(analytics.replyRate ?? 0).toBeLessThanOrEqual(1);
+    // A denominator of 1 is not a measurement, and the screen says so rather
+    // than printing this 0% -- see `ratePercent` and RATE_MIN_SAMPLE.
+    expect(analytics.contactedLeads).toBeLessThan(10);
+  });
+
+  /**
+   * The same three status lists `inviteSelect` in campaigns.ts uses, so the
+   * funnel and this panel answer "acceptance" with one number.
+   */
+  it('counts a declined invite as one that was sent, and a withdrawn one as neither', async () => {
+    await ledger('invite', 'accepted-one', 'accepted');
+    await ledger('invite', 'declined-one', 'declined');
+    await ledger('invite', 'pending-one', 'sent');
+    await ledger('invite', 'withdrawn-one', 'withdrawn');
+
+    const analytics = await managedAnalytics(db, WORKSPACE);
+
+    expect(analytics.invitesSent).toBe(3);
+    expect(analytics.invitesAccepted).toBe(1);
+    expect(analytics.invitesWithdrawn).toBe(1);
+    // Was 1/2 = 50% while the refusal sat outside the denominator.
+    expect(analytics.acceptanceRate).toBeCloseTo(1 / 3);
+  });
+
+  it('reports null rather than 0% when nothing has been sent or messaged', async () => {
+    const analytics = await managedAnalytics(db, WORKSPACE);
+    expect(analytics.acceptanceRate).toBeNull();
+    expect(analytics.replyRate).toBeNull();
+  });
+});
 
 describe('the derived campaign-member id', () => {
   /**

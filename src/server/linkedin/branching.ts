@@ -126,15 +126,21 @@ export function hasBranching(steps: readonly BranchableStep[]): boolean {
 /**
  * Kinds whose outcome a branch can read.
  *
- * An invite is accepted or declined; a dm, a reply and an InMail are replied
- * to or not. A profile view, a follow, a like, an endorsement and a comment
- * produce no outcome at all -- LinkedIn tells nobody whether a stranger
- * noticed -- so a condition on one of them is a branch that can never be
- * decided, which in a three-way evaluator means a step that stays `pending`
- * for the life of the campaign. That is a sequence with a dead arm in it, and
- * it is refused at write time instead.
+ * An invite is accepted or declined; a dm and a reply are replied to or not. A
+ * profile view, a follow, a like, an endorsement and a comment produce no
+ * outcome at all -- LinkedIn tells nobody whether a stranger noticed -- so a
+ * condition on one of them is a branch that can never be decided, which in a
+ * three-way evaluator means a step that stays `pending` for the life of the
+ * campaign. That is a sequence with a dead arm in it, and it is refused at
+ * write time instead.
+ *
+ * 'inmail' LEFT THIS LIST when it was retired (actions.ts
+ * `UNSUPPORTED_ACTION_KINDS`). A branch may only depend on a step that can
+ * actually run, and an InMail step is a step nothing sends -- so a condition on
+ * one was a branch that could never be decided for exactly the reason the
+ * paragraph above gives, arrived at from the other direction.
  */
-const RESULT_BEARING_KINDS: readonly LinkedInActionKind[] = ['invite', 'dm', 'reply', 'inmail'];
+const RESULT_BEARING_KINDS: readonly LinkedInActionKind[] = ['invite', 'dm', 'reply'];
 
 /** Kind names as an operator reading a refusal would say them. */
 const KIND_NOUNS: Record<LinkedInActionKind, string> = {
@@ -146,7 +152,8 @@ const KIND_NOUNS: Record<LinkedInActionKind, string> = {
   comment: 'comment',
   follow: 'follow',
   like: 'like',
-  endorse: 'skill endorsement'
+  endorse: 'skill endorsement',
+  withdraw: 'invite withdrawal'
 };
 
 /** Branches that ask whether an invite was accepted. Only an invite can answer. */

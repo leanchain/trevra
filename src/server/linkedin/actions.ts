@@ -46,10 +46,60 @@ export const ACTION_KIND_VALUES = [
   'comment',
   'follow',
   'like',
-  'endorse'
+  'endorse',
+  'withdraw'
 ] as const;
 
 export type LinkedInActionKind = (typeof ACTION_KIND_VALUES)[number];
+
+/**
+ * Kinds nothing in this deployment can perform.
+ *
+ * THIS LIST EXISTS SO THAT "WE CANNOT SEND THIS" IS A FACT WITH ONE HOME
+ * rather than a shape you infer from four absences. `inmail` was in the ledger
+ * enumeration, in `LINKEDIN_LIMITS`, in the guard's monthly-quota check, in the
+ * campaign builder's step picker, in three analytics counters and in two label
+ * tables -- and in none of the places that would let one be sent. `driver.ts`
+ * has no InMail routine and `EXECUTABLE_KINDS` in `local-worker.ts` therefore
+ * excludes it, so an InMail step planned by an operator became a row the worker
+ * could never claim: due forever, holding its target's replay claim, counted in
+ * the "messages sent" panel it would never join.
+ *
+ * THE CHOICE WAS IMPLEMENT IT OR RETIRE IT, AND IT IS RETIRED. Implementing it
+ * means driving a compose surface that only exists on a paid Sales Navigator or
+ * Recruiter seat, against a credit balance this product cannot read, with no
+ * way for anyone here to verify a single selector -- i.e. shipping a routine
+ * whose first real execution would be its first test, on an account whose
+ * standing is the thing this whole subsystem protects. A kind that cannot be
+ * sent must not be offered; a kind nobody can test must not be written.
+ *
+ * It is NOT removed from `ACTION_KIND_VALUES`: the column has accepted the
+ * value since migration 022 and old rows may hold it, so the type has to be
+ * able to name what the database can return. What it must not do is let a
+ * screen offer it or a counter imply it was delivered.
+ *
+ * `comment` is deliberately absent from this list even though it is equally
+ * undrivable: it has no band, no UI and no analytics counter, so it claims
+ * nothing that needs retracting.
+ */
+export const UNSUPPORTED_ACTION_KINDS: readonly LinkedInActionKind[] = ['inmail'];
+
+/** False for a kind no driver in this deployment can perform. See {@link UNSUPPORTED_ACTION_KINDS}. */
+export function isSendableActionKind(kind: string): boolean {
+  return !(UNSUPPORTED_ACTION_KINDS as readonly string[]).includes(kind);
+}
+
+/**
+ * The message kinds a "messages sent" number is allowed to count.
+ *
+ * ONE LIST, because it was three: `managed-campaigns.ts` spelled it out in
+ * three separate FILTER clauses and `guard.ts` keeps its own for the operator's
+ * message pool. `inmail` is out of THIS one -- see
+ * {@link UNSUPPORTED_ACTION_KINDS} -- while the guard's pool keeps it, and the
+ * difference is deliberate: a ceiling that counts a kind nobody can send is
+ * merely inert, but a dashboard that does is claiming delivery.
+ */
+export const COUNTED_MESSAGE_KINDS: readonly LinkedInActionKind[] = ['dm', 'reply'];
 
 /**
  * Every status a ledger row can hold.
@@ -120,7 +170,7 @@ export type LinkedInActionStatus = (typeof ACTION_STATUS_VALUES)[number];
  * migration 038 widens its documented enumeration and this union is the other
  * half of that widening.
  */
-export type LinkedInActionSource = 'export' | 'manual' | 'aggregator' | 'campaign';
+export type LinkedInActionSource = 'export' | 'manual' | 'aggregator' | 'campaign' | 'system';
 
 /** Everything a rolling window is counted for. */
 export interface SeatRef {

@@ -134,7 +134,12 @@ export interface SequenceInput {
    */
   targets: readonly string[];
   tone: SequenceTone;
-  /** Include the InMail step. Off by default -- it needs a Sales Navigator seat (plan 1.1). */
+  /**
+   * ACCEPTED AND IGNORED. There is no InMail step to include: the kind is
+   * retired (`UNSUPPORTED_ACTION_KINDS` in actions.ts) because nothing here can
+   * send one. Kept on the input so a brief saved before the retirement still
+   * parses.
+   */
   includeInMail?: boolean;
   /**
    * Whether the connection request carries a note at all.
@@ -469,11 +474,6 @@ function closeMessage(input: SequenceInput): string {
   return `{{firstName}}, closing the loop on ${icp.pain} -- I will leave it here. ${offer.name} is at ${offer.url ?? offer.summary} whenever {{company}} looks at it.`;
 }
 
-function inMailMessage(input: SequenceInput): string {
-  const { icp, offer } = input;
-  return `{{firstName}} -- ${icp.pain} is what ${offer.name} exists for. ${offer.mechanism} ${proofLine(offer)}`.trim();
-}
-
 /**
  * The step skeleton, and why these days.
  *
@@ -537,15 +537,21 @@ export function buildSequence(input: SequenceInput): LinkedInSequence {
     }
   ];
 
-  if (input.includeInMail) {
-    drafts.splice(2, 0, {
-      id: 'inmail',
-      day: 2,
-      kind: 'inmail',
-      intent: 'Sales Navigator InMail for targets who did not accept. Counts against the published 50/month quota.',
-      template: inMailMessage(input)
-    });
-  }
+  /*
+   * THERE IS NO InMail STEP ANY MORE, AND `includeInMail` IS NOW INERT.
+   *
+   * This block drafted a step nothing in the product could send: `driver.ts`
+   * has no InMail routine, so `EXECUTABLE_KINDS` in `local-worker.ts` excludes
+   * the kind, so the ledger row it produced could never be claimed -- it sat
+   * due forever, held its target's replay claim, and appeared in the "messages
+   * sent" panel it would never reach. Drafting copy for it also spent a
+   * critique pass on bytes with no destination.
+   *
+   * `UNSUPPORTED_ACTION_KINDS` in actions.ts carries the reasoning for retiring
+   * the kind rather than implementing it. The FLAG is kept -- accepted, parsed
+   * and ignored -- because it is stored in briefs operators saved months ago
+   * and rejecting it would 400 a screen that has nothing to do with InMail.
+   */
 
   const { steps, antiSlopNotes } = critiqueSteps(drafts, evidence, options);
 

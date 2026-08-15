@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   SELECTORS,
   isDegreeRead,
+  isLoggedIn,
   parseConnectionDegree,
   parseConnectionsCount,
   readProfileDegree,
@@ -263,6 +264,69 @@ describe('readSeat', () => {
     if (!('degraded' in read)) return;
     expect(read.degraded.join(' ')).toContain('no name in its title');
     expect(read.degraded.join(' ')).toContain('no count header in any language');
+  });
+});
+
+/**
+ * IS THIS SESSION SIGNED IN -- the question everything else waits on.
+ *
+ * A wrong `false` here is not a small cost: every job then tries to sign in, a
+ * live session's `/login` redirects straight back to the feed, and the sign-in
+ * reports "the sign-in page shows no input#username". That is what the whole
+ * product failed with while the session was fine the entire time, because the
+ * only thing being asked was whether a `global-nav` class was on the page --
+ * and LinkedIn's chrome is hashed now, so it never is.
+ */
+describe('isLoggedIn', () => {
+  function page(options: { at: string; markers?: string[]; feedLandsAt?: string }): LinkedInPage {
+    let current = options.at;
+    const present = new Set(options.markers ?? []);
+    return {
+      goto: async (url: string) => {
+        current = url.includes('/feed/') ? (options.feedLandsAt ?? url) : url;
+      },
+      url: () => current,
+      locator: (selector: string) => {
+        // The fake answers the way a browser does: the selector is a list, and
+        // it matches when ANY marker on the page is in it.
+        const hit = [...present].some((marker) => selector.includes(marker));
+        const self: LinkedInLocator = {
+          count: async () => (hit ? 1 : 0),
+          first: () => self,
+          click: async () => {},
+          fill: async () => {},
+          textContent: async () => null
+        };
+        return self;
+      },
+      waitForTimeout: async () => {}
+    };
+  }
+
+  it('recognises the current chrome, which carries no global-nav class at all', async () => {
+    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/feed/', markers: ['#primaryNavLinksComponentRef'] }))).toBe(true);
+    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/messaging/', markers: ['/mynetwork/'] }))).toBe(true);
+  });
+
+  it('still recognises the older chrome', async () => {
+    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/feed/', markers: ['header.global-nav'] }))).toBe(true);
+  });
+
+  /** The reskin-proof answer: where the feed lands is a fact about LinkedIn. */
+  it('believes a feed that stayed the feed, even with no marker it knows', async () => {
+    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/messaging/' }))).toBe(true);
+  });
+
+  it('says no when the feed is bounced to the login page or the guest home', async () => {
+    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/messaging/', feedLandsAt: 'https://www.linkedin.com/login' }))).toBe(false);
+    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/messaging/', feedLandsAt: 'https://www.linkedin.com/' }))).toBe(false);
+    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/messaging/', feedLandsAt: 'https://www.linkedin.com/authwall?trk=x' }))).toBe(false);
+  });
+
+  it('says no on a checkpoint, whatever else is on the page', async () => {
+    expect(
+      await isLoggedIn(page({ at: 'https://www.linkedin.com/checkpoint/challenge/', markers: ['#primaryNavLinksComponentRef'] }))
+    ).toBe(false);
   });
 });
 

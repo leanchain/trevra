@@ -388,6 +388,70 @@ describe('loginLinkedInSeat', () => {
     expect(outcome.status).toBe('challenge');
     expect(outcome.message).toContain('only a person at a browser window can finish');
     expect((await getSeat(db, WORKSPACE_ID))?.sessionValidAt).toBeNull();
+
+    // A real challenge now holds off the next login attempt for a while (see
+    // the cooldown test below) -- clear that module-level stamp so it does not
+    // outlive this test and swallow a later, unrelated one on the same seat.
+    await loginLinkedInSeat(
+      db, config,
+      { workspaceId: WORKSPACE_ID, now: NOW, driver: fakeDriver({ loggedIn: true }).driver, page, log: () => {} }
+    );
+  });
+
+  it('does not re-navigate a challenged seat away from itself every tick', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj', timezone: 'Europe/Zurich' }, NOW);
+    await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: EMAIL, password: PASSWORD });
+    const challenge = () => ({ ok: false, failureKind: 'challenge' as const, detail: 'LinkedIn is holding this sign-in for a device check.' });
+
+    const first = fakeDriver({ loggedIn: false, answer: challenge });
+    const firstOutcome = await loginLinkedInSeat(db, config, { workspaceId: WORKSPACE_ID, now: NOW, driver: first.driver, page, log: () => {} });
+    expect(firstOutcome.status).toBe('challenge');
+    expect(first.seen).toHaveLength(1);
+
+    // A second tick, one minute later, well inside the cooldown, on a FRESH
+    // driver instance still reporting `loggedIn: false` -- the human has not
+    // finished yet. If this called `loginWithCredentials` again it would
+    // `page.goto(LOGIN_URL)` out from under them; `seen` staying empty is the
+    // proof it did not touch the page at all.
+    const second = fakeDriver({ loggedIn: false, answer: challenge });
+    const secondOutcome = await loginLinkedInSeat(
+      db, config,
+      { workspaceId: WORKSPACE_ID, now: new Date(NOW.getTime() + 60_000), driver: second.driver, page, log: () => {} }
+    );
+    expect(secondOutcome.status).toBe('challenge');
+    expect(secondOutcome.message).toBe(firstOutcome.message);
+    expect(second.seen).toHaveLength(0);
+
+    // The human clears it mid-cooldown. `isLoggedIn` is asked unconditionally,
+    // so the very next tick picks the session up rather than waiting out the
+    // rest of the window -- and clears the stamp so a later, unrelated
+    // challenge on this seat is not silently swallowed too.
+    const cleared = fakeDriver({ loggedIn: true });
+    const clearedOutcome = await loginLinkedInSeat(
+      db, config,
+      { workspaceId: WORKSPACE_ID, now: new Date(NOW.getTime() + 120_000), driver: cleared.driver, page, log: () => {} }
+    );
+    expect(clearedOutcome.status).toBe('ok');
+    expect(cleared.seen).toHaveLength(0);
+
+    // Cooldown cleared: a fresh challenge right after is reported immediately,
+    // not swallowed by a stale stamp from the one above.
+    const after = fakeDriver({ loggedIn: false, answer: challenge });
+    const afterOutcome = await loginLinkedInSeat(
+      db, config,
+      { workspaceId: WORKSPACE_ID, now: new Date(NOW.getTime() + 180_000), driver: after.driver, page, log: () => {} }
+    );
+    expect(afterOutcome.status).toBe('challenge');
+    expect(after.seen).toHaveLength(1);
+
+    // Clean up the module-level stamp this test just left behind -- it is
+    // keyed only on (workspace, seat), and this file reuses WORKSPACE_ID
+    // across every other `it` below, none of which expect a challenge already
+    // in flight when they start.
+    await loginLinkedInSeat(
+      db, config,
+      { workspaceId: WORKSPACE_ID, now: new Date(NOW.getTime() + 240_000), driver: fakeDriver({ loggedIn: true }).driver, page, log: () => {} }
+    );
   });
 
   it('reports a rejected pair as failed, without repeating it back', async () => {
@@ -443,6 +507,13 @@ describe('loginLinkedInSeat', () => {
     expect(output).not.toContain(EMAIL);
     // Not even a fragment: a truncated password is still a password.
     expect(output).not.toContain(PASSWORD.slice(0, 8));
+
+    // The 'challenge' iteration above stamped a cooldown for this seat; clear
+    // it so it does not silently short-circuit the next test's own call.
+    await loginLinkedInSeat(
+      db, config,
+      { workspaceId: WORKSPACE_ID, now: NOW, driver: fakeDriver({ loggedIn: true }).driver, page, log: () => {} }
+    );
   });
 
   it('will not sign in on a hosted deployment, whatever is in the vault', async () => {
