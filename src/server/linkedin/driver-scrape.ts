@@ -187,6 +187,19 @@ export interface ScrapeResult extends LinkedInDriverResult {
   pagesWalked: number;
   /** Rows seen and NOT returned: over the cap, or with no usable profile link. */
   dropped: number;
+  /**
+   * Did the walk stop because the SURFACE ran out, or because its page budget
+   * did?
+   *
+   * ABSENT MEANS EXHAUSTED, which is what every walk that cannot be resumed
+   * reports by saying nothing. Only the paginated list walks set it false, and
+   * only they can be picked up again from `startPage`.
+   *
+   * It exists because a page budget small enough to fit inside a VISIT -- one
+   * to three fetches, see `leads.ts` -- would otherwise silently truncate every
+   * search to its first few results and mark the source done.
+   */
+  exhausted?: boolean;
 }
 
 export interface ScrapeOptions {
@@ -194,6 +207,14 @@ export interface ScrapeOptions {
   maxResults?: number;
   /** Hard ceiling on page fetches. Defaults to {@link DEFAULT_MAX_PAGES}. */
   maxPages?: number;
+  /**
+   * The page number to resume from, 1-based. Defaults to 1.
+   *
+   * `maxPages` is a BUDGET FROM HERE, not an absolute last page: a caller
+   * resuming at page 4 with a budget of 2 reads pages 4 and 5. That is what
+   * lets one search be read across several visits instead of in one sitting.
+   */
+  startPage?: number;
   /**
    * Seeds the inter-fetch gaps. Defaults to the URL being walked, so the same
    * source produces the same pacing on any machine -- and a test can assert the
@@ -1020,11 +1041,18 @@ async function walkResultList(
   const sleep = opts.sleep ?? defaultSleep;
   const seed = opts.seed ?? base;
   const harvest = new Harvest(maxResults);
+  // RESUME POINT, AND `maxPages` IS A BUDGET FROM IT. A caller reading one
+  // search across several visits hands us page 4 and a budget of 2.
+  const startPage = Math.max(1, Math.trunc(opts.startPage ?? 1));
+  const lastPage = startPage + maxPages - 1;
+  // Assume the budget was the binding constraint; every early exit below is a
+  // surface that ran out, and each of them says so.
+  let exhausted = false;
 
-  for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+  for (let pageNumber = startPage; pageNumber <= lastPage; pageNumber += 1) {
     // The gap goes BEFORE the fetch and not after it, so a run that ends on the
     // cap does not sit sleeping for a minute with nothing left to do.
-    if (pageNumber > 1) await sleep(Math.round(scrapeGapSeconds(`${seed}:page:${pageNumber}`) * 1000));
+    if (pageNumber > startPage) await sleep(Math.round(scrapeGapSeconds(`${seed}:page:${pageNumber}`) * 1000));
 
     const target = new URL(base);
     target.searchParams.set(surface.pageParam, String(pageNumber));
@@ -1038,6 +1066,10 @@ async function walkResultList(
       harvest.degraded.push(
         `Page ${pageNumber} of ${surface.label} could not be opened (${cause instanceof Error ? cause.message : String(cause)}), so the walk stopped there with what it already had.`
       );
+      // DONE, NOT PARKED. A page that will not open is a page that will not
+      // open in the next visit either, and a resumable source would retry it
+      // once a visit for as long as the source existed.
+      exhausted = true;
       break;
     }
     harvest.pagesWalked += 1;
@@ -1066,6 +1098,8 @@ async function walkResultList(
           `Page 1 of ${surface.label} rendered no rows matching ${surface.cardSelector} and no "no results" notice either, which is what a drifted selector looks like. Repair SCRAPE_SELECTORS in driver-scrape.ts.`
         );
       }
+      // The surface itself ran out. This is the one clean "there is no more".
+      exhausted = true;
       break;
     }
 
@@ -1106,7 +1140,7 @@ async function walkResultList(
     }
   }
 
-  return { ok: true, failureKind: null, externalRef: base, ...harvest.done() };
+  return { ok: true, failureKind: null, externalRef: base, ...harvest.done(), exhausted };
 }
 
 /* ---------------------------------------------------------------------------

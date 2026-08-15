@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { id, type Db } from '../db.js';
 import {
@@ -31,9 +32,11 @@ import { OWNER_SEAT_KEY, getSeatPosture, type SeatPosture } from './seats.js';
  * result is SCRAPING, which User Agreement 8.2 names directly -- browser
  * extensions included, by category -- and which hiQ left exposed as breach of
  * contract even after the CFAA claim failed (plan 1.2). Different risk, so a
- * different switch: {@link leadSourcingEnabled} is FALSE unless a self-hoster
- * turns it on by hand, and a hosted deployment can never turn it on at all.
- * Somebody who wanted paced sending has not thereby asked for a crawler.
+ * different switch: {@link leadSourcingEnabled} is a hard NO on a hosted
+ * deployment and nothing can turn it on there. On a self-hosted or local
+ * install it is ON unless the operator switches it off, because a self-hoster
+ * automating their own account on their own machine is the whole product and
+ * the exposure lands on the account they already chose to automate.
  *
  * FOUR RULES, and each one is why a piece of this file exists:
  *
@@ -66,7 +69,11 @@ import { OWNER_SEAT_KEY, getSeatPosture, type SeatPosture } from './seats.js';
  * ------------------------------------------------------------------------ */
 
 export interface LeadSourcingConfig {
-  /** `TREVRA_LINKEDIN_LEAD_SOURCING=true`. Absent means OFF. */
+  /**
+   * `TREVRA_LINKEDIN_LEAD_SOURCING`. Absent means ON for a self-hosted or
+   * local install; only an explicit `false` switches it off. It is `hosted`
+   * that turns it off unconditionally, and no value here can undo that.
+   */
   optIn: boolean;
   /** `TREVRA_DEPLOYMENT_MODE=hosted`. Overrides `optIn` unconditionally. */
   hosted: boolean;
@@ -86,17 +93,28 @@ const leadSourcingEnv = z.object({
 /**
  * Lead sourcing's slice of the environment.
  *
- * OPT-IN, WHERE THE WORKER IS OPT-OUT, and the asymmetry is the whole point.
- * `linkedInWorkerConfig` defaults ON for a self-hoster because automating your
- * own account on your own machine is what the product is for. Harvesting other
- * people's profiles is a decision with a different name on it, and defaulting
- * it on would mean a self-hoster who upgraded acquired a crawler they never
- * asked for.
+ * OPT-OUT ON A SELF-HOSTED INSTALL, EXACTLY LIKE THE WORKER, and hard-off
+ * hosted exactly like the worker too. This used to be opt-in, on the argument
+ * that harvesting profiles is a different decision from sending -- but the
+ * deployment already made that decision: `TREVRA_DEPLOYMENT_MODE=local` says
+ * this Trevra serves one operator, on their own machine, driving their own
+ * LinkedIn account. Every other capability that follows from that (the local
+ * worker itself, `linkedInWorkerConfig`) defaults ON for them, and shipping
+ * the lead half switched off meant a self-hoster's Find-leads screen refused
+ * with a sentence naming an environment variable they had no reason to know
+ * existed. The exposure under User Agreement 8.2 lands on the account they
+ * already chose to automate, and `TREVRA_LINKEDIN_LEAD_SOURCING=false` is
+ * there for an operator who does not want it.
+ *
+ * `hosted` IS UNCHANGED AND IS NOT WEAKENED BY THIS. A hosted, multi-tenant
+ * Trevra scraping LinkedIn on one human's session is refused by
+ * {@link leadSourcingEnabled} whatever this field says.
  */
 export function leadSourcingConfig(env: NodeJS.ProcessEnv = process.env): LeadSourcingConfig {
   const parsed = leadSourcingEnv.parse(env);
   return {
-    optIn: parsed.TREVRA_LINKEDIN_LEAD_SOURCING === 'true',
+    // Only an explicit 'false' switches it off; absent is on.
+    optIn: parsed.TREVRA_LINKEDIN_LEAD_SOURCING !== 'false',
     hosted: parsed.TREVRA_DEPLOYMENT_MODE === 'hosted',
     maxResults: parsed.TREVRA_LINKEDIN_LEAD_MAX_RESULTS ?? DEFAULT_MAX_RESULTS,
     maxPages: parsed.TREVRA_LINKEDIN_LEAD_MAX_PAGES ?? DEFAULT_MAX_PAGES
@@ -126,7 +144,7 @@ export function leadSourcingOffReason(config: Pick<LeadSourcingConfig, 'optIn' |
   if (config.hosted) {
     return 'This deployment is hosted, so LinkedIn lead sourcing is off and cannot be enabled. Reading profiles out of search results is scraping under LinkedIn\'s User Agreement 8.2, and a hosted Trevra will not do it on anyone\'s account.';
   }
-  return 'LinkedIn lead sourcing is switched off. It is a separate opt-in from sending, because harvesting profiles from search results and post engagement is scraping under LinkedIn\'s User Agreement 8.2 and the contractual exposure lands on your own account. Set TREVRA_LINKEDIN_LEAD_SOURCING=true if you accept that.';
+  return 'LinkedIn lead sourcing is switched off for this deployment by TREVRA_LINKEDIN_LEAD_SOURCING=false. It is on by default when you self-host, because reading profiles out of search results and post engagement is scraping under LinkedIn\'s User Agreement 8.2 and the contractual exposure lands on the account you are already automating. Remove that setting, or set TREVRA_LINKEDIN_LEAD_SOURCING=true, to turn it back on.';
 }
 
 /* ---------------------------------------------------------------------------
@@ -164,6 +182,16 @@ export interface LinkedInLeadSource {
   finishedAt: string | null;
   /** People STORED, not people seen. */
   resultCount: number;
+  /**
+   * Search pages already read, across every visit that has touched this source.
+   *
+   * A source used to be walked in ONE GO -- up to ten pages back to back, ten
+   * to twenty minutes of continuous people-search paging -- while everything
+   * else in this subsystem happens inside a 2-5 minute visit. This is the
+   * cursor that lets the same walk be spread across visits: a page or three,
+   * then something else, then back to it later.
+   */
+  pagesDone: number;
   failureReason: string | null;
   createdAt: string;
   updatedAt: string;
@@ -196,6 +224,7 @@ interface LeadSourceRow {
   requested_at: string;
   finished_at: string | null;
   result_count: number;
+  pages_done?: number | null;
   failure_reason: string | null;
   created_at: string;
   updated_at: string;
@@ -218,7 +247,7 @@ interface LeadRow {
 
 const SOURCE_COLUMNS = `
   id, workspace_id, kind, url, status, requested_at, finished_at,
-  result_count, failure_reason, created_at, updated_at
+  result_count, pages_done, failure_reason, created_at, updated_at
 `;
 
 const LEAD_COLUMNS = `
@@ -243,6 +272,7 @@ function toSource(row: LeadSourceRow): LinkedInLeadSource {
     requestedAt: row.requested_at,
     finishedAt: row.finished_at,
     resultCount: row.result_count,
+    pagesDone: Number(row.pages_done ?? 0),
     failureReason: row.failure_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -412,6 +442,53 @@ export async function listLeads(db: Db, workspaceId: string, sourceId: string, l
     WHERE workspace_id=? AND source_id=? ORDER BY created_at DESC, id DESC LIMIT ?
   `).all<LeadRow>(workspaceId, sourceId, Math.max(1, Math.min(LEAD_READ_LIMIT, Math.trunc(limit))));
   return rows.map(toLead);
+}
+
+/**
+ * How many search pages one VISIT may read.
+ *
+ * A person looking through a search result reads a page, maybe the next one,
+ * occasionally a third -- then goes and does something else. Ten pages back to
+ * back at 30-120s gaps is fifteen minutes of uninterrupted paging through
+ * other people's profiles, which is precisely the surface the 2026-08-14
+ * restriction named.
+ *
+ * Seeded per source and per resume point, so the same source reads the same
+ * way on every machine and a test can assert it.
+ */
+export const LEAD_PAGES_PER_VISIT = { min: 1, max: 3 } as const;
+
+export function leadPagesThisVisit(seed: string): number {
+  const digest = createHash('sha256').update(`lead-pages:${seed}`).digest('hex');
+  let state = Number.parseInt(digest.slice(0, 8), 16) >>> 0;
+  state = (state + 0x6d2b79f5) >>> 0;
+  let t = state;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  const random = ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  return LEAD_PAGES_PER_VISIT.min + Math.floor(random * (LEAD_PAGES_PER_VISIT.max - LEAD_PAGES_PER_VISIT.min + 1));
+}
+
+/**
+ * Put a source back with its cursor advanced, for the next visit to continue.
+ *
+ * NOT A TERMINAL STATUS, which is why it is not `finishLeadSource`. The source
+ * goes back to 'pending' -- the state the claim query selects on -- carrying
+ * how far it has read and what it has stored so far. `finished_at` stays null,
+ * because it has not finished.
+ */
+async function parkLeadSource(
+  db: Db,
+  workspaceId: string,
+  sourceId: string,
+  progress: { pagesDone: number; resultCount: number },
+  now: Date
+): Promise<void> {
+  await db.prepare(`
+    UPDATE linkedin_lead_sources
+    SET status='pending', result_count=?, pages_done=?, updated_at=?
+    WHERE workspace_id=? AND id=?
+  `).run(progress.resultCount, progress.pagesDone, now.toISOString(), workspaceId, sourceId);
 }
 
 /** Close a source out. The only writer of a terminal status. */
@@ -664,7 +741,12 @@ export interface LeadSourceRunDeps {
 
 export interface LeadSourceRunResult {
   sourceId: string;
-  status: Extract<LeadSourceStatus, 'completed' | 'failed'>;
+  /**
+   * 'pending' means PARKED, not "never started": this visit read its share of
+   * the search and put the source back for the next one. Only 'completed' and
+   * 'failed' are terminal.
+   */
+  status: Extract<LeadSourceStatus, 'completed' | 'failed' | 'pending'>;
   /** People the walk returned, after the driver's own cap. */
   harvested: number;
   /** Rows written. The number `result_count` records. */
@@ -673,6 +755,8 @@ export interface LeadSourceRunResult {
   filtered: { duplicate: number; excluded: number; contacted: number };
   /** People the walk found and the DAILY cap would not let us keep. */
   capped: number;
+  /** Search pages this source has read in total, including this visit's. */
+  pagesDone: number;
   /** The cap, what it had spent before this run, and what is left after it. */
   dailyCap: DailyLeadAllowance;
   /**
@@ -743,6 +827,7 @@ export async function runLeadSource(
     stored: 0,
     filtered: { duplicate: 0, excluded: 0, contacted: 0 },
     capped: 0,
+    pagesDone: source.pagesDone,
     dailyCap: { limit: DEFAULT_DAILY_LEAD_CAP, used: 0, remaining: DEFAULT_DAILY_LEAD_CAP },
     dailyCapReached: false,
     degraded: [],
@@ -790,16 +875,31 @@ export async function runLeadSource(
     return { ...empty, dailyCap: allowance, dailyCapReached: true, failureReason: reason };
   }
 
+  // ONE VISIT'S WORTH OF READING, RESUMING WHERE THE LAST ONE STOPPED.
+  //
+  // `config.maxPages` is still the ceiling on the WHOLE source; this is how
+  // much of it one visit may do. A person reads a page or three of a search
+  // and then goes and does something else -- and every other part of this
+  // subsystem is already shaped that way, so a harvester that walks ten pages
+  // back to back is the one remaining burst, on the exact surface the account
+  // was restricted for.
+  const startPage = source.pagesDone + 1;
+  const budget = Math.max(0, Math.min(leadPagesThisVisit(`${source.id}:${startPage}`), deps.config.maxPages - source.pagesDone));
   const options = {
     // The walk itself is told to stop at whatever is left of the day, so the
     // cap costs fetches rather than merely discarding their results.
     maxResults: Math.min(deps.config.maxResults, allowance.remaining),
-    maxPages: deps.config.maxPages,
+    maxPages: budget,
+    startPage,
     seed: source.id,
     sleep: deps.sleep,
     log: deps.log
   };
-  const outcome = await walkFor(scraper, deps.page, source, options);
+  const outcome = budget > 0
+    ? await walkFor(scraper, deps.page, source, options)
+    // The source has already read every page it is allowed to. Nothing is
+    // fetched; it is closed out below on the same path a finished walk takes.
+    : { ok: true as const, failureKind: null, externalRef: source.url, leads: [], degraded: [], pagesWalked: 0, dropped: 0, exhausted: true };
 
   // THE ALLOWANCE READ ABOVE BOUNDED THE FETCH; THE ONE THAT COMES BACK HERE
   // IS THE ONE THAT COUNTS. `storeLeads` re-reads the window under a lock and
@@ -811,13 +911,29 @@ export async function runLeadSource(
     ? null
     : `${outcome.failureKind ?? 'unknown'}: ${outcome.detail ?? 'The walk stopped early and said nothing about why.'}`;
 
-  await finishLeadSource(
-    db,
-    source.workspaceId,
-    source.id,
-    { status: outcome.ok ? 'completed' : 'failed', resultCount: stored.stored, failureReason },
-    now()
-  );
+  // WHERE THIS SOURCE NOW STANDS. `result_count` is cumulative across visits --
+  // it is what the operator sees next to the source -- so this visit's rows are
+  // ADDED rather than assigned. Assigning was correct when a source was read
+  // exactly once and would now report only the last visit's harvest.
+  const pagesDone = source.pagesDone + outcome.pagesWalked;
+  const resultCount = source.resultCount + stored.stored;
+  // MORE TO READ, AND SOMETHING LEFT TO READ IT WITH. A wall or a challenge is
+  // never resumed: `outcome.ok` is false and the source is closed, because
+  // coming back for page four after LinkedIn said stop is what turns a
+  // temporary restriction into a permanent one.
+  const parked = outcome.ok && outcome.exhausted === false && pagesDone < deps.config.maxPages;
+
+  if (parked) {
+    await parkLeadSource(db, source.workspaceId, source.id, { pagesDone, resultCount }, now());
+  } else {
+    await finishLeadSource(
+      db,
+      source.workspaceId,
+      source.id,
+      { status: outcome.ok ? 'completed' : 'failed', resultCount, failureReason },
+      now()
+    );
+  }
 
   const dailyCap = stored.allowance;
   const degraded = stored.capped > 0
@@ -829,11 +945,12 @@ export async function runLeadSource(
 
   return {
     sourceId: source.id,
-    status: outcome.ok ? 'completed' : 'failed',
+    status: parked ? 'pending' : outcome.ok ? 'completed' : 'failed',
     harvested: outcome.leads.length,
     stored: stored.stored,
     filtered: stored.filtered,
     capped: stored.capped,
+    pagesDone,
     dailyCap,
     dailyCapReached: dailyCap.remaining <= 0,
     degraded,
@@ -861,9 +978,22 @@ export async function runPendingLeadSources(
   // and a queue of sources is a queue of full page walks.
   const maxSources = Math.max(1, Math.min(10, Math.trunc(options.maxSources ?? 3)));
   const results: LeadSourceRunResult[] = [];
+  // A PARKED SOURCE GOES BACK TO 'pending', AND THE CLAIM WOULD HAND IT
+  // STRAIGHT BACK. `runLeadSource` now reads one visit's worth of a search and
+  // puts the rest back for later; without this the very next iteration would
+  // claim the same source and read another three pages, and the per-visit
+  // budget would mean nothing. One pass touches each source at most once.
+  const seen = new Set<string>();
   for (let index = 0; index < maxSources; index += 1) {
     const source = await claimLeadSource(db, workspaceId, now());
     if (!source) break;
+    if (seen.has(source.id)) {
+      // Put it back untouched: it is parked, not failed, and the next visit is
+      // where it continues.
+      await parkLeadSource(db, source.workspaceId, source.id, { pagesDone: source.pagesDone, resultCount: source.resultCount }, now());
+      break;
+    }
+    seen.add(source.id);
     results.push(await runLeadSource(db, source, deps));
     const last = results[results.length - 1];
     // A wall stops the whole pass, not just this source. Walking the next

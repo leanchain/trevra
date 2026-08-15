@@ -808,7 +808,12 @@ export async function runLinkedInLeadSources(
       now: () => options.now ?? new Date(),
       ...(options.log === undefined ? {} : { log: options.log })
     },
-    options.maxSources === undefined ? {} : { maxSources: options.maxSources }
+    // ONE SOURCE PER VISIT ON THE UNATTENDED PATH. The default is 3, which is
+    // right for an operator who clicked "find leads" and is watching; a visit
+    // is two to five minutes and already reads one to three pages of the
+    // source it picks. Three sources deep would put nine search-page loads in
+    // a window a person spends checking their messages.
+    { maxSources: options.maxSources ?? 1 }
   );
   return { blocked: null, results };
 }
