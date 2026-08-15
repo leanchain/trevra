@@ -310,7 +310,7 @@ async function openBrowser(
   if (existing) await closeRedditBrowser(options.workspaceId);
 
   const profileDir = resolveRedditProfileDir(config.profileDir, options.workspaceId);
-  const opened = await openPersistentBrowser(profileDir, { headless });
+  const opened = await openPersistentBrowser(profileDir, { headless, log });
   if ('failed' in opened) {
     log(`Reddit local worker could not open a browser: ${opened.failed}`);
     return null;

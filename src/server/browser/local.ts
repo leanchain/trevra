@@ -23,9 +23,9 @@
  * `linkedInBrowserReadiness` wrap `browserBlockers` + `displayBlocker` from
  * here, keeping its own `linkedInOffReason` wording.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, readlinkSync, statSync, unlinkSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
 const localRequire = createRequire(import.meta.url);
@@ -155,6 +155,78 @@ export async function loadPlaywright(): Promise<PlaywrightLike | null> {
 }
 
 /**
+ * Drop a `SingletonLock` that no live process is behind, so a profile is not
+ * stranded by its own dead browser.
+ *
+ * WHAT THIS COSTS WHEN IT IS MISSING, observed on the LinkedIn seat: the dev
+ * container was rebuilt, which gave it a new hostname, while the profile
+ * directory lived on in a volume. Chromium's process singleton read
+ * `SingletonLock -> a8411041ec48-403`, compared it to the current host, and
+ * refused with "the profile appears to be in use by another Chromium process
+ * (403) on another computer". It breaks a lock left by a dead pid on the SAME
+ * host by itself; it will never break one attributed to a different machine,
+ * because there it cannot know. Every launch after that died in the same
+ * place, the account could not be opened by anybody, and the only cure was a
+ * human deleting the file -- and a container rebuild, the ordinary way this
+ * project is deployed, was all it took.
+ *
+ * A LIVE LOCK IS LEFT ALONE. Same host and the pid still exists means another
+ * process really is using this profile, and taking its lock corrupts a running
+ * browser's profile. Only a lock whose owner is provably gone, or one that
+ * names a machine that is not this one, is removed -- and on the second, a
+ * rebuilt container IS this machine under a different name, which is exactly
+ * the case Chromium cannot reason about and this can.
+ *
+ * The socket and cookie go with it: Chromium writes all three together and a
+ * half-cleared set is its own kind of confusion.
+ */
+export function releaseStaleProfileLock(
+  profileDir: string,
+  log: (message: string) => void,
+  options: { hostname?: string; alive?: (pid: number) => boolean } = {}
+): boolean {
+  let target: string;
+  try {
+    target = readlinkSync(join(profileDir, 'SingletonLock'));
+  } catch {
+    // No lock, or not a symlink. Either way there is nothing to release, and a
+    // profile that has never been opened is the common case.
+    return false;
+  }
+
+  const split = target.lastIndexOf('-');
+  const lockHost = split > 0 ? target.slice(0, split) : '';
+  const lockPid = Number.parseInt(target.slice(split + 1), 10);
+  const here = options.hostname ?? hostname();
+  const alive =
+    options.alive ??
+    ((pid: number): boolean => {
+      try {
+        // Signal 0 tests for existence without touching the process. EPERM
+        // means it exists and belongs to somebody else -- still alive.
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'EPERM';
+      }
+    });
+
+  if (lockHost === here && Number.isInteger(lockPid) && alive(lockPid)) return false;
+
+  for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    try {
+      unlinkSync(join(profileDir, name));
+    } catch {
+      // Already gone, or never there. Both are the state we wanted.
+    }
+  }
+  log(
+    `Cleared a stale browser profile lock at ${profileDir}: it named process ${Number.isInteger(lockPid) ? lockPid : '?'} on '${lockHost || 'an unnamed machine'}', which is not running here. Chromium would have refused to open this profile.`
+  );
+  return true;
+}
+
+/**
  * Attach to a persistent Chrome profile, launching Chromium if needed.
  *
  * `--no-sandbox` goes on only in a container, where Chromium runs as root and
@@ -168,12 +240,14 @@ export async function loadPlaywright(): Promise<PlaywrightLike | null> {
  */
 export async function openPersistentBrowser(
   profileDir: string,
-  options: { headless: boolean }
+  options: { headless: boolean; log?: (message: string) => void }
 ): Promise<{ context: BrowserContextLike; page: unknown } | { failed: string }> {
   const playwright = await loadPlaywright();
   if (!playwright) {
     return { failed: 'Playwright is not installed here; run `npm i playwright && npx playwright install chromium`.' };
   }
+  // A LOCK LEFT BY A DEAD PROCESS IS NOT A LOCK. See the function.
+  releaseStaleProfileLock(profileDir, options.log ?? (() => {}));
   try {
     const context = await playwright.chromium.launchPersistentContext(profileDir, {
       headless: options.headless,

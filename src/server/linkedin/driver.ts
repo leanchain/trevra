@@ -132,6 +132,12 @@ export interface LinkedInPage {
   keyboard?: {
     press(key: string, options?: { delay?: number }): Promise<void>;
   };
+  /**
+   * OPTIONAL, and the most durable fact on a LinkedIn page: `<Name> | LinkedIn`
+   * in every language, while the markup around it is hashed and reshuffled.
+   * Read only when the heading selector finds nothing.
+   */
+  title?(): Promise<string>;
 }
 
 /**
@@ -240,6 +246,22 @@ export const SELECTORS = {
   inviteModal: 'div[role="dialog"].send-invite, div.artdeco-modal[role="dialog"]',
   /** An invite already awaiting their answer. */
   pendingInvite: 'button[aria-label^="Pending"]',
+  /**
+   * The connection-degree badge on the profile top card -- "1st", "2nd", "3rd+".
+   *
+   * THE ONLY PLACE LINKEDIN STATES A RELATIONSHIP RATHER THAN IMPLYING ONE, and
+   * therefore the only honest answer to "did they accept". Everything else on
+   * the page is circumstantial: the Message control appears for 1st-degree
+   * connections AND for anyone already in the inbox AND on an open-profile
+   * account, and the absence of a Connect button means as many things.
+   *
+   * Matched loosely on purpose. The badge has shipped as `span.dist-value`
+   * inside `span.distance-badge`, as a bare `.distance-badge`, and inside a
+   * hashed top-card container; the class fragment `distance-badge` has outlived
+   * all three. A miss here is reported as an UNREAD degree, never as "not
+   * connected" -- see {@link readProfileDegree}.
+   */
+  degreeBadge: 'span.dist-value, span.distance-badge, span[class*="distance-badge"], .pv-top-card__distance-badge',
   /** Present on 1st-degree profiles; also the DM entry point. */
   messageButton: 'button[aria-label^="Message"]',
   messageComposeBox: 'div.msg-form__contenteditable[contenteditable="true"]',
@@ -252,7 +274,16 @@ export const SELECTORS = {
   /** Captcha, PIN entry, or any other "prove you are a human" interstitial. */
   challengeForm: 'form.challenge, input[name="pin"], #captcha-internal, iframe[title*="challenge" i]',
   profileUnavailable: 'text=/This page doesn.t exist|Profile unavailable|page not found/i',
-  /** The display name on a profile page. LinkedIn's top card carries exactly one h1. */
+  /**
+   * The display name on a profile page.
+   *
+   * KEPT, BUT NO LONGER TRUSTED ALONE. LinkedIn's current profile renders the
+   * name in a `<p>` inside hash-classed divs and the page carries NO `h1` at
+   * all -- measured on a live seat, where this selector matched nothing and the
+   * read came back "the profile page has no readable heading". `readSeat` falls
+   * back to the document title, which names the profile in every language and
+   * survives the class churn this table keeps losing to.
+   */
   profileHeading: 'main h1, h1',
   /**
    * "N connections" on the connections page, matched by TEXT rather than by
@@ -260,6 +291,26 @@ export const SELECTORS = {
    * in this table; the words have not.
    */
   connectionsCount: 'text=/[0-9][0-9.,\\s]*\\s*connections?/i',
+  /**
+   * THE SAME HEADER IN A LANGUAGE NOBODY LISTED.
+   *
+   * The English selector above is exact and stays first, but LinkedIn renders
+   * its interface in the MEMBER's language, not the operator's: the seat that
+   * exposed this reads `1 Kontakt`, and `/connections?/i` will never match it.
+   * Enumerating LinkedIn's two dozen translations would be a table that goes
+   * stale silently, so this matches the SHAPE every one of them shares -- a
+   * number, then one word -- scoped to the page's main region so the navigation
+   * chrome and the ad rail cannot answer.
+   *
+   * `parseConnectionsCount` still has the last word, and caps what it will
+   * believe: see `MAX_CONNECTIONS`.
+   */
+  // The backslashes are DOUBLED because this string is parsed twice: Playwright
+  // unescapes the quoted argument before compiling it as a regular expression,
+  // so a single `\s` here reaches the regex as a literal 's' and the selector
+  // silently matches nothing. Measured against the live page -- the doubled
+  // form finds `1 Kontakt`, the single form finds zero elements.
+  connectionsCountAny: 'main :text-matches("^\\\\s*[0-9][0-9.,\\\\u00a0\\\\u202f ]*\\\\s+\\\\S+\\\\s*$")',
 
   /* --- The sign-in form (see `loginWithCredentials`) ------------------- */
 
@@ -630,6 +681,131 @@ export async function viewProfile(page: LinkedInPage, target: string): Promise<L
 }
 
 /* ---------------------------------------------------------------------------
+ * Reading a relationship out of a profile, for acceptance detection.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * What one profile says about this seat's relationship to its owner.
+ *
+ * `degree: null` IS A FIRST-CLASS ANSWER AND IT MEANS "WE DID NOT READ IT",
+ * never "they are not connected". The whole point of this read is to settle a
+ * question the pending-invitations list cannot -- an invite that left the list
+ * was accepted, declined, expired or withdrawn -- and a badge we failed to
+ * parse must leave that question open. Reporting an unread badge as "not 1st
+ * degree" would file real acceptances as non-acceptances, which is the same
+ * fiction the sync in `withdraw.ts` refuses to invent, arrived at with an extra
+ * step in between.
+ *
+ * `degraded` rather than `ok:false` for the reason `LinkedInSeatRead` gives:
+ * the navigation succeeding and the badge failing is a partial answer, and
+ * `pending` may still be readable when `degree` is not.
+ */
+export interface LinkedInDegreeRead {
+  ok: true;
+  /** Canonical, the form `profileUrlFor` produces, comparable against `target_ref`. */
+  profileUrl: string;
+  /** 1, 2 or 3. Null when the badge was absent or did not parse. */
+  degree: 1 | 2 | 3 | null;
+  /** LinkedIn still shows an invite from this seat awaiting their answer. */
+  pending: boolean;
+  degraded: string[];
+}
+
+/** Narrow a degree read. A read carries no `failureKind`; a failure always does. */
+export function isDegreeRead(value: LinkedInDegreeRead | LinkedInDriverResult): value is LinkedInDegreeRead {
+  return !('failureKind' in value);
+}
+
+/**
+ * "· 1st", "2nd degree connection", "3rd+" -> 1 | 2 | 3.
+ *
+ * ENGLISH ORDINALS ONLY, AND THAT IS A KNOWN BOUND RATHER THAN AN OVERSIGHT.
+ * LinkedIn renders this badge in the viewer's interface language, so a seat
+ * whose LinkedIn is set to French sees "1er" and a German one sees "1.". Every
+ * one of those returns null here, which routes to UNKNOWN and leaves the
+ * ledger saying what it already said. The failure mode of the missing
+ * translations is therefore "detects nothing", never "detects wrongly", which
+ * is the only acceptable way for a detector to be incomplete.
+ */
+export function parseConnectionDegree(text: string | null | undefined): 1 | 2 | 3 | null {
+  if (!text) return null;
+  const match = /\b(1st|2nd|3rd)\b/i.exec(text);
+  if (!match) return null;
+  const ordinal = match[1].charAt(0);
+  return ordinal === '1' ? 1 : ordinal === '2' ? 2 : 3;
+}
+
+/**
+ * Open a profile and read the connection degree off it.
+ *
+ * THIS IS A PROFILE VIEW AND THE CALLER MUST BUDGET IT AS ONE. There is no
+ * cheaper way to ask: LinkedIn publishes no "are we connected" endpoint this
+ * driver may touch, and the relationship badge lives on the profile page.
+ * Opening it registers a view against the viewer's account exactly as
+ * `viewProfile` does -- same navigation, same `openProfile`, same walls -- so
+ * every caller in this repo files a `profile_view` ledger row for it and runs
+ * the safety gate first. A detector that read a thousand profiles a night
+ * without either would be the surge the whole engine exists to prevent, wearing
+ * the name of a safety feature.
+ *
+ * Nothing is clicked, ever. A failure here is therefore always definite about
+ * what did NOT happen, and `unknown` is not among the kinds it can return.
+ */
+export async function readProfileDegree(
+  page: LinkedInPage,
+  target: string
+): Promise<LinkedInDegreeRead | LinkedInDriverResult> {
+  const opened = await openProfile(page, target);
+  if (isResult(opened)) return opened;
+  const { url } = opened;
+
+  const degraded: string[] = [];
+  // Read BEFORE the badge, because it is the cheaper certainty: a profile still
+  // showing "Pending" is one whose invite never left the pending list, whatever
+  // a stale sync concluded, and the caller can stop there.
+  const pending = await present(page, SELECTORS.pendingInvite);
+
+  let degree: 1 | 2 | 3 | null = null;
+  try {
+    const badge = page.locator(SELECTORS.degreeBadge);
+    if ((await badge.count()) === 0) {
+      degraded.push(
+        `No connection-degree badge matched ${SELECTORS.degreeBadge} on ${url}, so the relationship was not read.`
+      );
+    } else {
+      const text = await badge.first().textContent({ timeout: CLICK_TIMEOUT_MS });
+      degree = parseConnectionDegree(text);
+      if (degree === null) {
+        degraded.push(
+          `The connection-degree badge on ${url} read '${(text ?? '').trim().slice(0, 40)}', which is not an English 1st/2nd/3rd ordinal.`
+        );
+      }
+    }
+  } catch (cause) {
+    degraded.push(
+      `The connection-degree badge on ${url} could not be read: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+  }
+
+  return { ok: true, profileUrl: url, degree, pending, degraded };
+}
+
+/**
+ * The degree read, as its own injectable surface.
+ *
+ * NOT A METHOD ON `LinkedInDriver`, and the reason is the same one
+ * `LinkedInWithdrawDriver` and `LinkedInInboxDriver` exist for: the action
+ * worker dispatches against `LinkedInDriver`, this is not one of its actions,
+ * and widening that interface would oblige every fake in every test that drives
+ * the worker to grow a method none of them calls.
+ */
+export interface LinkedInDegreeDriver {
+  readProfileDegree(page: LinkedInPage, target: string): Promise<LinkedInDegreeRead | LinkedInDriverResult>;
+}
+
+export const playwrightDegreeDriver: LinkedInDegreeDriver = { readProfileDegree };
+
+/* ---------------------------------------------------------------------------
  * Reading the operator's own seat out of the live session.
  * ------------------------------------------------------------------------ */
 
@@ -692,14 +868,87 @@ export function normalisedProfileUrl(raw: string): string | null {
   return profileUrlFor(handle);
 }
 
-/** "1,234 connections" -> 1234. Null when the text carries no number at all. */
+/**
+ * LinkedIn's own ceiling on connections. A parse that produces more than this
+ * read something that was not the connection count, and unknown beats wrong:
+ * this number is paced against.
+ */
+const MAX_CONNECTIONS = 30_000;
+
+/**
+ * "1,234 connections" -> 1234, and "1 Kontakt" -> 1.
+ *
+ * TWO PATTERNS, IN ORDER OF CONFIDENCE. The English one may appear anywhere in
+ * the text, because "Showing 1,234 connections" is still a statement about
+ * connections. The language-free one is the whole string or nothing -- a bare
+ * number followed by a single word -- because outside a known noun that shape
+ * is the only evidence there is, and loosening it turns "3 gemeinsame Kontakte"
+ * or an ad's "0 CHF" into a connection count.
+ *
+ * Null for no number, and null for a number too large to be one.
+ */
 export function parseConnectionsCount(text: string): number | null {
-  const match = /([0-9][0-9.,   ]*)\s*connections?/i.exec(text);
+  const match =
+    /([0-9][0-9.,   ]*)\s*connections?/i.exec(text)
+    ?? /^\s*([0-9][0-9.,   ]*)\s+\S+\s*$/.exec(text);
   if (!match) return null;
   const digits = match[1].replace(/[^0-9]/g, '');
   if (!digits) return null;
   const value = Number.parseInt(digits, 10);
-  return Number.isFinite(value) ? value : null;
+  if (!Number.isFinite(value) || value > MAX_CONNECTIONS) return null;
+  return value;
+}
+
+/**
+ * The first of these selectors that reads as text, waiting a little for a page
+ * that is still rendering itself.
+ *
+ * WHY WAITING IS PART OF THE READ. `settle` returns when the document is
+ * quiet, and LinkedIn's connections page hydrates AFTER that: measured on the
+ * live seat, the first snapshot was still the cookie notice and the count only
+ * appeared a few seconds later. A single miss was recorded as "no header",
+ * which is a claim about LinkedIn made from a page that had not finished.
+ *
+ * Bounded and small: this is one extra sentence's worth of patience, not a
+ * retry loop, and a genuinely absent element still comes back null.
+ */
+async function readFirstText(page: LinkedInPage, selectors: readonly string[], attempts = 4): Promise<string | null> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    for (const selector of selectors) {
+      const text = await readText(page, selector);
+      if (text !== null) return text;
+    }
+    if (attempt < attempts - 1) await page.waitForTimeout(1_500);
+  }
+  return null;
+}
+
+/**
+ * The member's name out of the document title, which is `<Name> | LinkedIn`.
+ *
+ * THE ONE SOURCE THAT IS NOT A CLASS NAME. LinkedIn's profile markup is hashed
+ * and reshuffled; the title is the same shape in every language and has been
+ * for years. Used only when the heading selector found nothing -- see
+ * `SELECTORS.profileHeading`.
+ *
+ * The unread-count prefix LinkedIn puts on its own tab (`(3) Name | LinkedIn`)
+ * is stripped, and a title that is nothing but the site name is no name at all.
+ */
+async function readNameFromTitle(page: LinkedInPage): Promise<string | null> {
+  if (typeof page.title !== 'function') return null;
+  let title: string;
+  try {
+    title = await page.title();
+  } catch {
+    return null;
+  }
+  const name = (title ?? '')
+    .replace(/^\s*\(\d+\)\s*/, '')
+    .replace(/\s*[|–-]\s*LinkedIn\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!name || /^linkedin$/i.test(name)) return null;
+  return name;
 }
 
 /** The first match's collapsed text. Null for absent, empty, or unreadable. */
@@ -769,9 +1018,9 @@ export async function readSeat(
     );
   }
 
-  const name = await readText(page, SELECTORS.profileHeading);
+  const name = (await readFirstText(page, [SELECTORS.profileHeading], 2)) ?? (await readNameFromTitle(page));
   if (name === null) {
-    degraded.push(`The profile page at ${profileUrl} has no readable heading, so the display name could not be read.`);
+    degraded.push(`The profile page at ${profileUrl} has no readable heading and no name in its title, so the display name could not be read.`);
   }
 
   // A SECOND PAGE LOAD FOR ONE NUMBER, AND ONLY WHEN THE NUMBER IS MISSING.
@@ -812,13 +1061,13 @@ export async function readSeat(
     return { ok: true, profileUrl, name, connectionsCount: null, degraded };
   }
 
-  const header = await readText(page, SELECTORS.connectionsCount);
+  const header = await readFirstText(page, [SELECTORS.connectionsCount, SELECTORS.connectionsCountAny]);
   const connectionsCount = header === null ? null : parseConnectionsCount(header);
   if (connectionsCount === null) {
     degraded.push(
       header === null
-        ? 'The connections page shows no "N connections" header, so the connection count is unknown. It is left unset rather than recorded as zero.'
-        : `The connections header read '${header}', which carries no number, so the connection count is unknown and is left unset.`
+        ? 'The connections page shows no count header in any language, so the connection count is unknown. It is left unset rather than recorded as zero.'
+        : `The connections header read '${header}', which carries no usable number, so the connection count is unknown and is left unset.`
     );
   }
 

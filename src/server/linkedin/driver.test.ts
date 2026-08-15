@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { viewProfile, type LinkedInLocator, type LinkedInPage } from './driver.js';
+import {
+  SELECTORS,
+  isDegreeRead,
+  parseConnectionDegree,
+  parseConnectionsCount,
+  readProfileDegree,
+  readSeat,
+  viewProfile,
+  type LinkedInLocator,
+  type LinkedInPage
+} from './driver.js';
 
 /**
  * HOW A PROFILE IS REACHED, which is a different question from what happens
@@ -88,5 +98,192 @@ describe('reaching a profile', () => {
     await viewProfile(page, TARGET);
 
     expect(navigations).toEqual([TARGET]);
+  });
+});
+
+/**
+ * READING A RELATIONSHIP OFF A PROFILE.
+ *
+ * The one question the sent-invitations list cannot answer -- accepted,
+ * declined, expired or withdrawn -- is answered by LinkedIn's own degree badge,
+ * and the parse below is the whole of that answer. Its failure mode is the
+ * subject of every test here: a badge this cannot read must come back NULL, so
+ * the caller records "unknown" and leaves the ledger alone. Reading it as "not
+ * connected" would file real acceptances as non-acceptances, in the one number
+ * the pacing engine throttles on.
+ */
+describe('parseConnectionDegree', () => {
+  it('reads the three ordinals in the shapes LinkedIn renders them', () => {
+    expect(parseConnectionDegree('1st')).toBe(1);
+    expect(parseConnectionDegree('· 1st')).toBe(1);
+    expect(parseConnectionDegree('1st degree connection')).toBe(1);
+    expect(parseConnectionDegree('2nd')).toBe(2);
+    expect(parseConnectionDegree('3rd+')).toBe(3);
+  });
+
+  it('answers null for anything it does not understand, never a degree', () => {
+    // A localised badge. The bound is documented rather than papered over: the
+    // failure mode is "detects nothing", never "detects wrongly".
+    expect(parseConnectionDegree('1er')).toBeNull();
+    expect(parseConnectionDegree('1.')).toBeNull();
+    expect(parseConnectionDegree('')).toBeNull();
+    expect(parseConnectionDegree(null)).toBeNull();
+    expect(parseConnectionDegree('Follow')).toBeNull();
+  });
+});
+
+function degreePage(options: { badge?: string | null; pending?: boolean }): LinkedInPage {
+  const locator = (selector: string): LinkedInLocator => {
+    const isBadge = selector === SELECTORS.degreeBadge && options.badge !== undefined;
+    const isPending = selector === SELECTORS.pendingInvite && options.pending === true;
+    const self: LinkedInLocator = {
+      count: async () => (isBadge || isPending ? 1 : 0),
+      first: () => self,
+      click: async () => {},
+      fill: async () => {},
+      textContent: async () => (isBadge ? options.badge ?? null : null)
+    };
+    return self;
+  };
+  let current = 'about:blank';
+  return {
+    goto: async (url: string) => {
+      current = url;
+      return null;
+    },
+    url: () => current,
+    locator,
+    waitForTimeout: async () => {}
+  };
+}
+
+describe('readProfileDegree', () => {
+  it('reports a 1st-degree connection, which is the only acceptance evidence there is', async () => {
+    const read = await readProfileDegree(degreePage({ badge: '· 1st' }), TARGET);
+    expect(isDegreeRead(read)).toBe(true);
+    expect(read).toMatchObject({ ok: true, profileUrl: TARGET, degree: 1, pending: false });
+  });
+
+  it('reports a missing badge as an unread degree and says so in `degraded`', async () => {
+    const read = await readProfileDegree(degreePage({}), TARGET);
+    expect(isDegreeRead(read)).toBe(true);
+    if (!isDegreeRead(read)) return;
+    expect(read.degree).toBeNull();
+    expect(read.degraded.join(' ')).toContain('connection-degree badge');
+  });
+
+  it('reports a still-pending invite, which outranks any reading of the list', async () => {
+    const read = await readProfileDegree(degreePage({ badge: '2nd', pending: true }), TARGET);
+    expect(read).toMatchObject({ ok: true, degree: 2, pending: true });
+  });
+
+  it('refuses a target that is not a LinkedIn profile rather than navigating to it', async () => {
+    const read = await readProfileDegree(degreePage({ badge: '1st' }), 'https://evil.example/steal');
+    expect(isDegreeRead(read)).toBe(false);
+    expect(read).toMatchObject({ ok: false, failureKind: 'not_found' });
+  });
+});
+
+/**
+ * READING THE SEAT'S OWN ACCOUNT, against the page LinkedIn actually serves.
+ *
+ * Both of these were measured on a live seat and both came back empty:
+ *
+ *   - the profile page carries NO `h1` at all -- the name is a `<p>` under
+ *     hashed class names -- so "the profile page has no readable heading";
+ *   - the interface is in the MEMBER's language, so the connections header
+ *     reads `1 Kontakt` and an English-only matcher reports "unknown".
+ *
+ * Neither is a LinkedIn fact about the account; both were Trevra reading the
+ * wrong things. A partial read is still a success, so a wrong "unknown" is
+ * quiet -- the screen just says Connections: Unknown forever.
+ */
+describe('readSeat', () => {
+  const PROFILE = 'https://www.linkedin.com/in/david-hasan-b77a33429/';
+
+  function seatPage(options: { heading?: string; title?: string; connectionsText?: string }): LinkedInPage {
+    let current = 'https://www.linkedin.com/feed/';
+
+    const matching = (selector: string): string | null => {
+      const onConnections = current.includes('/connections');
+      if (selector === SELECTORS.profileHeading) return onConnections ? null : (options.heading ?? null);
+      if (selector === SELECTORS.connectionsCount) {
+        // The English matcher, which is a text= selector: it only answers when
+        // the words are there.
+        return onConnections && /connections?/i.test(options.connectionsText ?? '') ? options.connectionsText! : null;
+      }
+      if (selector === SELECTORS.connectionsCountAny) {
+        return onConnections && /^\s*[0-9][0-9.,   ]*\s+\S+\s*$/.test(options.connectionsText ?? '')
+          ? options.connectionsText!
+          : null;
+      }
+      return null;
+    };
+
+    const locator = (selector: string): LinkedInLocator => {
+      const text = matching(selector);
+      const self: LinkedInLocator = {
+        count: async () => (text === null ? 0 : 1),
+        first: () => self,
+        click: async () => {},
+        fill: async () => {},
+        textContent: async () => text
+      };
+      return self;
+    };
+
+    return {
+      goto: async (url: string) => {
+        // `/in/me/` is a redirect for a signed-in member.
+        current = url.endsWith('/in/me/') ? PROFILE : url;
+      },
+      url: () => current,
+      locator,
+      waitForTimeout: async () => {},
+      ...(options.title === undefined ? {} : { title: async () => options.title! })
+    };
+  }
+
+  it('reads the name from the document title when the page has no heading', async () => {
+    const read = await readSeat(seatPage({ title: '(3) David hasan | LinkedIn', connectionsText: '1 Kontakt' }));
+
+    expect(read).toMatchObject({ ok: true, profileUrl: PROFILE, name: 'David hasan', connectionsCount: 1 });
+    // Nothing was missed, so nothing is reported as missing.
+    expect(read).toMatchObject({ degraded: [] });
+  });
+
+  it('prefers the heading when there is one, and does not need a title at all', async () => {
+    const read = await readSeat(seatPage({ heading: 'David Hasan', connectionsText: '1,234 connections' }));
+    expect(read).toMatchObject({ ok: true, name: 'David Hasan', connectionsCount: 1234 });
+  });
+
+  it('still reports unknown rather than a guess when neither says anything', async () => {
+    const read = await readSeat(seatPage({ title: 'LinkedIn' }));
+    expect(read).toMatchObject({ ok: true, name: null, connectionsCount: null });
+    if (!('degraded' in read)) return;
+    expect(read.degraded.join(' ')).toContain('no name in its title');
+    expect(read.degraded.join(' ')).toContain('no count header in any language');
+  });
+});
+
+describe('parseConnectionsCount', () => {
+  it('reads the count in English and in a language nobody listed', () => {
+    expect(parseConnectionsCount('1,234 connections')).toBe(1234);
+    expect(parseConnectionsCount('Showing 500 connections')).toBe(500);
+    expect(parseConnectionsCount('1 Kontakt')).toBe(1);
+    expect(parseConnectionsCount('1 234 relations')).toBe(1234);
+  });
+
+  it('refuses what is not a count, rather than returning a number that is wrong', () => {
+    // Three words: this is "3 shared connections" on somebody's row, not the
+    // header, and the language-free shape is deliberately too strict for it.
+    expect(parseConnectionsCount('3 gemeinsame Kontakte')).toBeNull();
+    // Above LinkedIn's own ceiling of 30,000, so whatever this was, it was not
+    // a connection count. (A plausible-looking "2026 Jahre" WOULD be believed
+    // -- the defence against that is the selector, which is scoped to the main
+    // region of the connections page and tries the exact English header first.)
+    expect(parseConnectionsCount('45000 Kontakte')).toBeNull();
+    expect(parseConnectionsCount('connections')).toBeNull();
+    expect(parseConnectionsCount('')).toBeNull();
   });
 });

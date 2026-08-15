@@ -19,6 +19,7 @@ import {
   humanCadencePage,
   latestSeatDetectRequest,
   linkedInBrowserReadiness,
+  seatLaunchArgs,
   describeBrowserOpenFailure,
   linkedInHeadlessReadiness,
   linkedInOffReason,
@@ -1024,6 +1025,28 @@ describe('linkedInBrowserReadiness', () => {
     const vague = describeBrowserOpenFailure(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'));
     expect(vague).toContain("log for this attempt");
     expect(vague).not.toMatch(/Chromium|X server/);
+  });
+
+  /**
+   * THE FLAGS, AS ONE ARRAY. They were two keys in one object literal -- a
+   * conditional `args` spread and a literal `args` eleven lines below it -- so
+   * the second silently won and the ANGLE pair never reached a browser. The
+   * measured fix for "WebGL returns null in this container" was dead code from
+   * the day it was written, and nothing warned.
+   */
+  it('passes every container flag in one array, ANGLE included', () => {
+    const inside = seatLaunchArgs(true);
+    expect(inside).toContain('--use-gl=angle');
+    expect(inside).toContain('--use-angle=gl-egl');
+    // Root in a container, headed or headless alike: making this depend on the
+    // mode is how "works headless, dies headed" happens.
+    expect(inside).toContain('--no-sandbox');
+    expect(inside).toContain('--disable-blink-features=AutomationControlled');
+
+    // NOT ON A REAL DESKTOP. Forcing EGL there moves the GL string away from
+    // what every other Chrome on that machine reports, and dropping the sandbox
+    // costs something real for nothing.
+    expect(seatLaunchArgs(false)).toEqual(['--disable-blink-features=AutomationControlled']);
   });
 
   it('FAILS CLOSED, and every reason is one sentence an operator can act on', () => {

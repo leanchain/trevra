@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { releaseStaleProfileLock } from '../browser/local.js';
 import { id, type Db } from '../db.js';
 import {
   browserProviderSettings,
@@ -3408,12 +3409,42 @@ let launchChannelLogged = false;
  * broken install still reports its own error to `openBrowser`'s catch rather
  * than a summary of it.
  */
+/**
+ * THE COMMAND-LINE FLAGS A SEAT'S BROWSER IS LAUNCHED WITH, in ONE array.
+ *
+ * It was two, and that is the bug this function exists to make impossible: the
+ * options object held `...(inContainer() ? { args: [ANGLE flags] } : {})` and,
+ * eleven lines later, a literal `args: [...]`. The second key wins in an object
+ * literal, so the ANGLE flags were silently discarded -- the measured fix for
+ * "WebGL returns null in this container" was never actually passed to a single
+ * browser. A duplicate key is not a merge, and nothing warned.
+ *
+ * `--no-sandbox` NOW APPLIES IN A CONTAINER WHATEVER THE MODE. It was
+ * `headless && inContainer()`, which is the same container and the same root
+ * user in either mode; making the flag depend on the mode is how "it works
+ * headless and dies headed" happens.
+ */
+export function seatLaunchArgs(inside: boolean): string[] {
+  return [
+    '--disable-blink-features=AutomationControlled',
+    // See the ANGLE note on the launch options: without these, WebGL in this
+    // container returns null, which is rarer than a software renderer.
+    ...(inside ? ['--use-gl=angle', '--use-angle=gl-egl', '--no-sandbox', '--disable-dev-shm-usage'] : [])
+  ];
+}
+
+// `releaseStaleProfileLock` is imported from `browser/local.ts`: a dead
+// Chromium's lock is not a LinkedIn fact, and the Reddit worker opens
+// persistent profiles the same way and was stranded the same way.
+
 async function launchSeatBrowser(
   playwright: PlaywrightLike,
   profileDir: string,
   optionsFor: (channel: string) => Record<string, unknown>,
   log: (message: string) => void
 ): Promise<LinkedInBrowserContext> {
+  // A LOCK LEFT BY A DEAD PROCESS IS NOT A LOCK. See the function.
+  releaseStaleProfileLock(profileDir, log);
   let last: unknown;
   for (let index = 0; index < BROWSER_CHANNELS.length; index += 1) {
     const channel = BROWSER_CHANNELS[index] as string;
@@ -3797,7 +3828,6 @@ export async function openBrowser(
       // 'OpenGL ES 3.2' -- still real, still that GPU, but no longer the same
       // answer the member's own browser gives, and matching the neighbours is
       // the whole point.
-      ...(inContainer() ? { args: ['--use-gl=angle', '--use-angle=gl-egl'] } : {}),
       // Headed follows the real window; headless gets the seat's own stable
       // desktop size rather than Playwright's 1280x720, which is both a known
       // automation default and identical for every seat on this machine.
@@ -3814,10 +3844,7 @@ export async function openBrowser(
       // proxy's auth challenge, and so nothing here can accidentally be paired
       // with a `--no-proxy-server` that would undo it.
       ...(proxy ? { proxy } : {}),
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        ...(headless && inContainer() ? ['--no-sandbox', '--disable-dev-shm-usage'] : [])
-      ]
+      args: seatLaunchArgs(inContainer())
     });
     const context = await launchSeatBrowser(playwright, profileDir, contextOptions, log);
     // EVERYTHING PAST THE LAUNCH GETS ITS OWN TRY, AND THE CONTEXT IS CLOSED
