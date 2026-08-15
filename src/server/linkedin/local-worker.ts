@@ -2373,6 +2373,13 @@ export interface LinkedInBrowserReadiness {
   reasons: string[];
 }
 
+/**
+ * Where an X server puts the socket for a local display. Fixed by X itself --
+ * `:N` is served at `X{N}` in this directory on every Linux -- and overridable
+ * only so a test can point at a directory it owns.
+ */
+const X11_SOCKET_DIR = '/tmp/.X11-unix';
+
 /** True when this process is inside a container -- the fact that explains the rest. */
 export function inContainer(): boolean {
   if (existsSync('/.dockerenv')) return true;
@@ -2442,7 +2449,7 @@ function chromiumInstalled(browsersPath: string | null): boolean {
  */
 export function linkedInBrowserReadiness(
   config: LinkedInLocalWorkerConfig,
-  options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
+  options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; xSocketDir?: string } = {}
 ): LinkedInBrowserReadiness {
   if (!config.enabled) return { canLaunchHeaded: false, reasons: [linkedInOffReason(config)] };
 
@@ -2468,8 +2475,32 @@ export function linkedInBrowserReadiness(
   // THE DECISIVE SIGNAL ON LINUX. A headed browser needs somewhere to draw,
   // and neither X11 nor Wayland is reachable without one of these. macOS and
   // Windows have no equivalent variable and always have a window server.
-  if (platform === 'linux' && !(env.DISPLAY?.trim() || env.WAYLAND_DISPLAY?.trim())) {
-    blockers.push('No display is attached to this process, so a browser window cannot open here.');
+  if (platform === 'linux') {
+    const wayland = env.WAYLAND_DISPLAY?.trim();
+    const display = env.DISPLAY?.trim();
+    if (!wayland && !display) {
+      blockers.push('No display is attached to this process, so a browser window cannot open here.');
+    } else if (!wayland && display) {
+      // SET IS NOT SERVED. `DISPLAY=:99` is an address, not a promise that
+      // anything is listening at it, and the two came apart in this project's
+      // own dev container: `docker restart` keeps /tmp, the stale
+      // `/tmp/.X99-lock` made the new Xvfb exit at once, and DISPLAY stayed
+      // set by the image. This probe said yes, the route dispatched the work,
+      // and Playwright died with "you launched a headed browser without having
+      // a XServer running" -- reported to the operator as "check that Chromium
+      // is installed", the one thing that was fine.
+      //
+      // A local display's socket is at a known path and a `stat` is as cheap
+      // as reading the variable, so the honest answer costs nothing. Only
+      // LOCAL displays are checked: `host:0` reaches an X server over TCP and
+      // has no socket here to look for. Wayland is exempted rather than
+      // half-checked -- its socket lives in a runtime directory this process
+      // may not be allowed to stat, and a false blocker is worse than none.
+      const local = /^(?:unix)?:(\d+)(?:\.\d+)?$/.exec(display);
+      if (local && !existsSync(join(options.xSocketDir ?? X11_SOCKET_DIR, `X${local[1]}`))) {
+        blockers.push(`DISPLAY is ${display} but no X server is serving it, so a browser window cannot open here.`);
+      }
+    }
   }
 
   if (blockers.length === 0) return { canLaunchHeaded: true, reasons: [] };
@@ -3863,6 +3894,7 @@ export async function openBrowser(
       log(
         `LinkedIn local worker opened and then closed the browser profile at ${profileDir}: it could not be prepared for use (${cause instanceof Error ? cause.message : String(cause)}). Nothing was left holding the profile lock.`
       );
+      lastBrowserOpenFailure.set(handleKey, cause);
       return null;
     }
   } catch (cause) {
@@ -3872,6 +3904,9 @@ export async function openBrowser(
     log(
       `LinkedIn local worker could not open the browser profile at ${profileDir}${proxy ? ` through ${proxy.server}` : ''}: ${cause instanceof Error ? cause.message : String(cause)}.`
     );
+    // WHY, not just that. The caller has only `null` to work with, and the one
+    // thing an operator needs -- what the browser said -- is here.
+    lastBrowserOpenFailure.set(handleKey, cause);
     return null;
   }
 }
@@ -3903,9 +3938,48 @@ export interface LinkedInLoginOutcome {
   message: string;
 }
 
-/** Every place a browser handle failed to open says this, verbatim. */
-const BROWSER_OPEN_FAILED_MESSAGE =
-  'Could not open a LinkedIn browser session on this machine; check that Chromium is installed and try again.';
+/**
+ * What to tell the operator when a browser handle failed to open.
+ *
+ * IT USED TO NAME A CAUSE IT HAD NOT CHECKED -- "check that Chromium is
+ * installed" -- and the first time it fired for real, Chromium was installed
+ * and fine: the container's Xvfb had died on a stale lock, so Chrome could not
+ * reach the display named in DISPLAY. The operator went looking for a missing
+ * browser that was not missing, which is worse than being told nothing.
+ *
+ * `openBrowser` logs the launch error and returns null, so the sentence is
+ * built from what the launch itself said. Only signatures that are UNAMBIGUOUS
+ * become advice; anything else points at the log rather than guessing, because
+ * a wrong next action costs more than an unspecific one.
+ */
+export function describeBrowserOpenFailure(cause: unknown): string {
+  const text = cause instanceof Error ? `${cause.message}` : String(cause ?? '');
+  const opener = 'Could not open a LinkedIn browser session on this machine';
+  if (/xserver|cannot open display|Missing X server/i.test(text)) {
+    return `${opener}: a display is named but no X server is serving it, so the browser had nowhere to draw.`;
+  }
+  if (/Executable doesn't exist|ENOENT|playwright install/i.test(text)) {
+    return `${opener}: the Chromium build is missing; run \`npx playwright install chromium\` where the worker runs.`;
+  }
+  return `${opener}; this server's log for this attempt has the reason the browser gave.`;
+}
+
+/**
+ * The reason the last launch failed, per seat, so the message above can be
+ * built where the failure is REPORTED rather than where it happened.
+ *
+ * Per seat and not global: two seats fail for two different reasons, and a
+ * sentence about somebody else's proxy is a wrong sentence. Cleared as soon as
+ * it is read -- it describes one attempt, not a state.
+ */
+const lastBrowserOpenFailure = new Map<string, unknown>();
+
+function browserOpenFailedMessage(workspaceId: string, seatKey: string): string {
+  const key = seatHandleKey(workspaceId, seatKey);
+  const cause = lastBrowserOpenFailure.get(key);
+  lastBrowserOpenFailure.delete(key);
+  return describeBrowserOpenFailure(cause);
+}
 
 /** The band a keystroke gap is drawn from. Slow enough to be human, fast enough to finish. */
 const TYPING_GAP_MS = { min: 45, max: 165 } as const;
@@ -4058,7 +4132,7 @@ export async function loginLinkedInSeat(
       headless: mode.headless,
       timezone: options.timezone ?? null
     });
-    if (!handle) return { status: 'failed', message: BROWSER_OPEN_FAILED_MESSAGE };
+    if (!handle) return { status: 'failed', message: browserOpenFailedMessage(options.workspaceId, seatKey) };
     page = handle.page;
   }
 
@@ -4236,7 +4310,7 @@ export async function openLinkedInSession(
     headless: mode.headless,
     timezone: options.timezone ?? null
   });
-  if (!handle) return { ok: false, blocked: BROWSER_OPEN_FAILED_MESSAGE };
+  if (!handle) return { ok: false, blocked: browserOpenFailedMessage(options.workspaceId, seatKey) };
 
   // Every seat signs itself in: the session is reused when it still works, and
   // signed in with the stored email and password when it does not.
@@ -4928,7 +5002,7 @@ export async function detectLinkedInSeat(
       // a first detect is the only one that exists -- there is no seat row yet.
       timezone: options.timezone
     });
-    if (!handle) return refuse(BROWSER_OPEN_FAILED_MESSAGE);
+    if (!handle) return refuse(browserOpenFailedMessage(options.workspaceId, seatKey));
     page = handle.page;
   }
 

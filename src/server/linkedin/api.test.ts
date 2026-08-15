@@ -501,11 +501,16 @@ describe('GET /api/linkedin/worker/status', () => {
     mkdirSync(join(registry, 'chromium-1148'), { recursive: true });
     const saved = {
       browsers: process.env.PLAYWRIGHT_BROWSERS_PATH,
-      display: process.env.DISPLAY,
+      display: process.env.WAYLAND_DISPLAY,
       headless: process.env.TREVRA_LINKEDIN_HEADLESS
     };
     process.env.PLAYWRIGHT_BROWSERS_PATH = registry;
-    process.env.DISPLAY = ':99';
+    // WAYLAND, NOT `DISPLAY=:99`, and the difference is the point: the route
+    // calls the probe with no options, so an X display would be checked
+    // against the real /tmp/.X11-unix and this test would depend on whether
+    // the machine running the suite happens to serve that display. A Wayland
+    // session is the one "this machine has a screen" the probe takes on trust.
+    process.env.WAYLAND_DISPLAY = 'wayland-0';
     process.env.TREVRA_LINKEDIN_HEADLESS = 'false';
 
     try {
@@ -520,8 +525,8 @@ describe('GET /api/linkedin/worker/status', () => {
     } finally {
       if (saved.browsers === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
       else process.env.PLAYWRIGHT_BROWSERS_PATH = saved.browsers;
-      if (saved.display === undefined) delete process.env.DISPLAY;
-      else process.env.DISPLAY = saved.display;
+      if (saved.display === undefined) delete process.env.WAYLAND_DISPLAY;
+      else process.env.WAYLAND_DISPLAY = saved.display;
       if (saved.headless === undefined) delete process.env.TREVRA_LINKEDIN_HEADLESS;
       else process.env.TREVRA_LINKEDIN_HEADLESS = saved.headless;
       rmSync(registry, { recursive: true, force: true });

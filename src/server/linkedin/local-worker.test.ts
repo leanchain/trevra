@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase, type Db } from '../db.js';
@@ -19,6 +19,7 @@ import {
   humanCadencePage,
   latestSeatDetectRequest,
   linkedInBrowserReadiness,
+  describeBrowserOpenFailure,
   linkedInHeadlessReadiness,
   linkedInOffReason,
   linkedInWorkerHealth,
@@ -904,14 +905,21 @@ describe('the optional dependency', () => {
 describe('linkedInBrowserReadiness', () => {
   const registry = mkdtempSync(join(tmpdir(), 'trevra-browsers-'));
   mkdirSync(join(registry, 'chromium-1148'), { recursive: true });
+  // A display is only real if something serves it, so the fixture serves one:
+  // `X0` in a socket directory this test owns. `xSocketDir` exists for exactly
+  // this -- the real path is /tmp/.X11-unix and a test has no business writing
+  // a stray display into it.
+  const sockets = mkdtempSync(join(tmpdir(), 'trevra-x11-'));
+  writeFileSync(join(sockets, 'X0'), '');
+  const served = { platform: 'linux', xSocketDir: sockets } as const;
   const equipped = { PLAYWRIGHT_BROWSERS_PATH: registry, DISPLAY: ':0' } as NodeJS.ProcessEnv;
 
   it('refuses before anything else when the deployment says no', () => {
-    const hosted = linkedInBrowserReadiness({ enabled: false, hosted: true }, { env: equipped, platform: 'linux' });
+    const hosted = linkedInBrowserReadiness({ enabled: false, hosted: true }, { env: equipped, ...served });
     expect(hosted.canLaunchHeaded).toBe(false);
     expect(hosted.reasons).toEqual(['This deployment is hosted, so LinkedIn automation is off and cannot be enabled.']);
 
-    const off = linkedInBrowserReadiness({ enabled: false }, { env: equipped, platform: 'linux' });
+    const off = linkedInBrowserReadiness({ enabled: false }, { env: equipped, ...served });
     expect(off.reasons).toEqual(['LinkedIn automation is switched off on this server.']);
   });
 
@@ -949,20 +957,45 @@ describe('linkedInBrowserReadiness', () => {
   });
 
   it.skipIf(!playwrightInstalled)('says yes on a host with a display and an installed browser', () => {
-    const ready = linkedInBrowserReadiness({ enabled: true }, { env: equipped, platform: 'linux' });
+    const ready = linkedInBrowserReadiness({ enabled: true }, { env: equipped, ...served });
     expect(ready).toEqual({ canLaunchHeaded: true, reasons: [] });
 
     // Wayland counts too; the question is whether anything can be drawn.
     expect(
-      linkedInBrowserReadiness({ enabled: true }, { env: { PLAYWRIGHT_BROWSERS_PATH: registry, WAYLAND_DISPLAY: 'wayland-0' }, platform: 'linux' })
+      linkedInBrowserReadiness({ enabled: true }, { env: { PLAYWRIGHT_BROWSERS_PATH: registry, WAYLAND_DISPLAY: 'wayland-0' }, ...served })
         .canLaunchHeaded
     ).toBe(true);
   });
 
   it.skipIf(!playwrightInstalled)('treats a missing display on linux as decisive', () => {
-    const blind = linkedInBrowserReadiness({ enabled: true }, { env: { PLAYWRIGHT_BROWSERS_PATH: registry }, platform: 'linux' });
+    const blind = linkedInBrowserReadiness({ enabled: true }, { env: { PLAYWRIGHT_BROWSERS_PATH: registry }, ...served });
     expect(blind.canLaunchHeaded).toBe(false);
     expect(blind.reasons.some((reason) => reason.includes('No display'))).toBe(true);
+  });
+
+  /**
+   * THE DEFECT THIS CAUGHT, kept as a test because the wrong answer was so
+   * expensive: `docker restart` left `/tmp/.X99-lock` behind, the new Xvfb
+   * exited with "Server is already active for display 99", and DISPLAY stayed
+   * set by the image. Reading the variable alone, this probe reported a
+   * machine that could open a window; the operator got "check that Chromium is
+   * installed" out of the first launch that tried.
+   */
+  it.skipIf(!playwrightInstalled)('will not call a display real when nothing is serving it', () => {
+    const dead = { PLAYWRIGHT_BROWSERS_PATH: registry, DISPLAY: ':99' } as NodeJS.ProcessEnv;
+    const verdict = linkedInBrowserReadiness({ enabled: true }, { env: dead, ...served });
+    expect(verdict.canLaunchHeaded).toBe(false);
+    expect(verdict.reasons.join(' ')).toContain('DISPLAY is :99 but no X server is serving it');
+
+    // Served, and the same probe says yes -- so the blocker is about the X
+    // server, not about the number in the variable.
+    writeFileSync(join(sockets, 'X99'), '');
+    expect(linkedInBrowserReadiness({ enabled: true }, { env: dead, ...served }).canLaunchHeaded).toBe(true);
+
+    // A remote X server over TCP has no socket on this machine to look for,
+    // and must not be blocked for the lack of one.
+    const forwarded = { PLAYWRIGHT_BROWSERS_PATH: registry, DISPLAY: 'host.docker.internal:0' } as NodeJS.ProcessEnv;
+    expect(linkedInBrowserReadiness({ enabled: true }, { env: forwarded, ...served }).canLaunchHeaded).toBe(true);
   });
 
   it('names the install command when the browser registry is not there', () => {
@@ -971,8 +1004,30 @@ describe('linkedInBrowserReadiness', () => {
     expect(bare.reasons.join(' ')).toContain('npx playwright install chromium');
   });
 
+  /**
+   * THE SENTENCE THAT SENT AN OPERATOR AFTER THE WRONG THING. Chromium was
+   * installed; the container's Xvfb had died on a stale lock and Chrome had
+   * nowhere to draw. A message may name a cause only when the failure named it.
+   */
+  it('tells the operator what the browser actually said, or admits it does not know', () => {
+    const xserver = describeBrowserOpenFailure(
+      new Error('browserType.launchPersistentContext: Target closed\nBrowser logs:\n Looks like you launched a headed browser without having a XServer running.')
+    );
+    expect(xserver).toContain('no X server is serving it');
+    expect(xserver).not.toContain('Chromium build is missing');
+
+    expect(describeBrowserOpenFailure(new Error("Executable doesn't exist at /root/.cache/ms-playwright/chromium-1228/chrome")))
+      .toContain('npx playwright install chromium');
+
+    // Unknown stays unknown: it points at the log rather than inventing a
+    // next action, which is exactly what the old constant did.
+    const vague = describeBrowserOpenFailure(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'));
+    expect(vague).toContain("log for this attempt");
+    expect(vague).not.toMatch(/Chromium|X server/);
+  });
+
   it('FAILS CLOSED, and every reason is one sentence an operator can act on', () => {
-    const blocked = linkedInBrowserReadiness({ enabled: true }, { env: {}, platform: 'linux' });
+    const blocked = linkedInBrowserReadiness({ enabled: true }, { env: {}, ...served });
     expect(blocked.canLaunchHeaded).toBe(false);
     expect(blocked.reasons.length).toBeGreaterThan(0);
     for (const reason of blocked.reasons) {
