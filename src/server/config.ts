@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { browserProviderSettings } from './browser/provider.js';
 
 const booleanString = z.enum(['true', 'false']);
 const optionalUrl = z.preprocess(
@@ -75,7 +76,7 @@ export interface RuntimeConfig {
    * `hosted` rides along so the one-line refusals downstream can say WHY it is
    * off without re-reading the environment.
    */
-  linkedinLocalWorker: { enabled: boolean; profileDir: string | null; hosted: boolean };
+  linkedinLocalWorker: { enabled: boolean; profileDir: string | null; hosted: boolean; remoteBrowser: boolean; headless: boolean };
   /**
    * The self-hosted Reddit worker, on exactly the terms above.
    *
@@ -90,6 +91,16 @@ export interface RuntimeConfig {
    * multi-tenant deployment.
    */
   redditLocalWorker: { enabled: boolean; profileDir: string | null; hosted: boolean };
+  /**
+   * Where this deployment's browsers live (docs/hosted-execution.md).
+   *
+   * REPORTING ONLY, and no secret in it: the label is a host name or the
+   * operator's own word for the provider, never the endpoint (which carries the
+   * API key) and never the key. The decisions are made by
+   * `browserProviderSettings`, which every path reads from the environment
+   * directly, so this field cannot become a second source of truth.
+   */
+  browserProvider: { kind: 'local' | 'remote'; provider: string | null };
 }
 
 /**
@@ -105,14 +116,41 @@ export function linkedInWorkerConfig(env: NodeJS.ProcessEnv = process.env): Runt
   requireExplicitDeploymentMode(env);
   const parsed = z.object({
     TREVRA_LINKEDIN_LOCAL: booleanString.optional(),
+    TREVRA_LINKEDIN_HEADLESS: booleanString.optional(),
     TREVRA_DEPLOYMENT_MODE: z.enum(['local', 'hosted']).default('local'),
     TREVRA_LINKEDIN_PROFILE_DIR: z.string().optional()
   }).parse(env);
+  const hosted = parsed.TREVRA_DEPLOYMENT_MODE === 'hosted';
+  // THE ONE GATE THAT MOVED, AND EXACTLY HOW FAR.
+  //
+  // 'hosted' used to be an unconditional no, because a hosted container has no
+  // display, no Chromium and no profile directory belonging to the person whose
+  // account it is -- so the only browser it could have driven was nobody's. A
+  // remote browser provider (docs/hosted-execution.md) supplies that missing
+  // browser, which is the entire reason this expression may now be true.
+  //
+  // IT IS NOT THE WHOLE PERMISSION. This says the DEPLOYMENT can drive a
+  // browser; it says nothing about any workspace. A hosted seat still cannot be
+  // run, and a hosted credential still cannot be stored, until that workspace's
+  // owner has recorded an explicit authorisation -- `hostedExecutionGate` in
+  // `linkedin/hosted-execution.ts`, enforced at the store and at the runner
+  // rather than here, because it is a per-tenant fact and this file reads only
+  // the environment. Hosted with no provider is the old refusal, unchanged.
+  const remoteBrowser = browserProviderSettings(env).kind === 'remote';
   return {
-    // Hosted is the hard no. Otherwise on, unless explicitly switched off.
-    enabled: parsed.TREVRA_DEPLOYMENT_MODE !== 'hosted' && parsed.TREVRA_LINKEDIN_LOCAL !== 'false',
+    enabled: (!hosted || remoteBrowser) && parsed.TREVRA_LINKEDIN_LOCAL !== 'false',
     profileDir: parsed.TREVRA_LINKEDIN_PROFILE_DIR ?? null,
-    hosted: parsed.TREVRA_DEPLOYMENT_MODE === 'hosted'
+    hosted,
+    remoteBrowser,
+    // MAY THIS PROCESS OPEN A BROWSER NOBODY CAN SEE? Default yes, because a
+    // hosted deployment with a remote browser is headless by definition and a
+    // container that is the ONLY worker is better than no worker. Set false on
+    // the container in a stack where the operator runs `npm run
+    // linkedin:worker` on their own machine: the container then parks the work
+    // for the machine with a display instead of racing it from a GPU-less
+    // container with a SwiftShader WebGL fingerprint. See
+    // `LinkedInLocalWorkerConfig.headless`.
+    headless: parsed.TREVRA_LINKEDIN_HEADLESS !== 'false'
   };
 }
 
@@ -214,7 +252,20 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     // and a SEPARATE browser profile, because one persistent user-data-dir can
     // hold one signed-in Chrome at a time.
     TREVRA_REDDIT_LOCAL: booleanString.optional(),
-    TREVRA_REDDIT_PROFILE_DIR: z.string().optional()
+    TREVRA_REDDIT_PROFILE_DIR: z.string().optional(),
+    // WHERE THE BROWSERS ARE. 'local' is this machine's own Chromium at a
+    // persistent profile directory -- what every deployment did before hosted
+    // execution existed, and still the default. 'remote' attaches to a cloud
+    // browser over CDP, which is the only way a container with no display can
+    // drive one at all. Validated in `browser/provider.ts`, which owns the
+    // shape of every variable below; declared here so `npm start` fails on a
+    // typo rather than silently running local.
+    TREVRA_BROWSER_PROVIDER: z.enum(['local', 'remote']).optional(),
+    TREVRA_BROWSER_CDP_URL: z.string().optional(),
+    TREVRA_BROWSER_API_KEY: z.string().optional(),
+    TREVRA_BROWSER_CONNECT: z.enum(['cdp', 'playwright']).optional(),
+    TREVRA_BROWSER_HEADERS: z.string().optional(),
+    TREVRA_BROWSER_LABEL: z.string().optional()
   }).parse(env);
 
   if (!/^postgres(?:ql)?:\/\//i.test(base.DATABASE_URL)) throw new Error('DATABASE_URL must be a PostgreSQL connection string');
@@ -232,6 +283,9 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
   }
   const origins = base.APP_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean);
   for (const origin of origins) z.string().url().parse(origin);
+  // Read once, before the production block, because three of the checks below
+  // ask about it and `browserProviderSettings` reports rather than throws.
+  const browser = browserProviderSettings(env);
 
   if (production) {
     const problems: string[] = [];
@@ -284,7 +338,38 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     // out loud in production, because an operator who set both meant to enable
     // something, and a feature that is off for a reason nobody told them about
     // is a bug report waiting to happen.
-    if (base.TREVRA_LINKEDIN_LOCAL === 'true' && base.TREVRA_DEPLOYMENT_MODE === 'hosted') problems.push('TREVRA_LINKEDIN_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted; the local LinkedIn worker drives a browser signed into one human account and is self-hosted only');
+    // HOSTED + LINKEDIN IS NO LONGER AN AUTOMATIC CONTRADICTION -- it is one
+    // exactly when there is no remote browser for the hosted deployment to
+    // drive. With a provider configured this combination is the intended
+    // hosted-execution setup and saying nothing is correct; without one it is
+    // the same mistake it always was, and it gets the same sentence plus the
+    // one thing that would fix it.
+    if (base.TREVRA_LINKEDIN_LOCAL === 'true' && base.TREVRA_DEPLOYMENT_MODE === 'hosted' && !browser.remote) {
+      problems.push(
+        'TREVRA_LINKEDIN_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted and no remote browser is configured; '
+        + 'a hosted container has no display, no Chromium and no browser profile of its own, so there is nothing for it to drive. '
+        + 'Set TREVRA_BROWSER_PROVIDER=remote with TREVRA_BROWSER_CDP_URL to run seats server-side (docs/hosted-execution.md), or leave this unset and run `npm run linkedin:worker` on a machine with a display'
+      );
+    }
+    // A REMOTE PROVIDER THAT WAS ASKED FOR AND DOES NOT HOLD TOGETHER stops the
+    // boot, rather than falling back to local. The fallback is the dangerous
+    // outcome here: a hosted deployment that quietly reverts to a local browser
+    // it does not have is a queue that fills up forever with no error anywhere,
+    // which is the exact failure this whole capability exists to end.
+    if (browser.problem) problems.push(browser.problem);
+    // PLAINTEXT CDP IS NOT ACCEPTABLE IN PRODUCTION. The connect URL carries the
+    // provider API key, and on the `{proxyUrl}` form it carries the seat's proxy
+    // password too; the socket then carries the member's own session cookies.
+    if (browser.remote && /^(ws|http):\/\//i.test(browser.remote.endpointTemplate)) {
+      problems.push('TREVRA_BROWSER_CDP_URL must use wss:// or https:// in production: the connect URL carries the provider API key and the session carries LinkedIn cookies');
+    }
+    // A REMOTE BROWSER WITH NO KEY TO SEAL SESSIONS IS A REMOTE BROWSER THAT
+    // CANNOT KEEP A SEAT SIGNED IN. There is no profile directory out there, so
+    // the session round-trips through `linkedin_seat_sessions` encrypted, and
+    // with no key every run would be a brand-new device sign-in.
+    if (browser.remote && !base.TREVRA_SECRETS_KEY) {
+      problems.push('TREVRA_SECRETS_KEY is required when TREVRA_BROWSER_PROVIDER=remote: a browser attached over CDP has no profile directory, so each seat\'s signed-in session is stored encrypted and without a key every run would be a new-device sign-in. Generate one with `openssl rand -base64 32`');
+    }
     if (base.TREVRA_REDDIT_LOCAL === 'true' && base.TREVRA_DEPLOYMENT_MODE === 'hosted') problems.push('TREVRA_REDDIT_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted; the local Reddit worker drives a browser signed into one human account and is self-hosted only');
     if (base.STRIPE_SECRET_KEY && !base.STRIPE_WEBHOOK_SECRET) problems.push('STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is configured');
     if (base.TREVRA_ORCHESTRATOR === 'temporal' && !base.TEMPORAL_ADDRESS) problems.push('TEMPORAL_ADDRESS is required when TREVRA_ORCHESTRATOR=temporal');
@@ -308,6 +393,7 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     automationIntervalMs: base.AUTOMATION_INTERVAL_MS,
     appOrigins: origins,
     linkedinLocalWorker: linkedInWorkerConfig(env),
-    redditLocalWorker: redditWorkerConfig(env)
+    redditLocalWorker: redditWorkerConfig(env),
+    browserProvider: { kind: browser.kind, provider: browser.remote?.label ?? null }
   };
 }

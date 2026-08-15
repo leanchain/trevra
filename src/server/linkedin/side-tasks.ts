@@ -210,8 +210,48 @@ export function visitAt(seat: SideTaskSeat, now: Date, options: { dayShape?: Day
 /** Last run per task. Missing key means never, which means eligible. */
 export type SideTaskRuns = Map<string, Date>;
 
+/**
+ * THE SAME LEDGER, IN THIS PROCESS, AND IT IS NOT AN OPTIMISATION.
+ *
+ * Both functions below swallow their errors, because a cadence row must never
+ * be the reason a worker tick dies. On an UN-MIGRATED database that swallow
+ * used to make things WORSE THAN BEFORE THE CADENCE EXISTED: the read returned
+ * "never run", the write vanished, and so every tick inside a visit was a
+ * fresh pass -- warming up, loading `/in/me/`, running two more jobs, sixty
+ * seconds apart. The cap of two per VISIT silently became two per MINUTE.
+ *
+ * A missing table is not exotic. It is exactly the state of every deployment
+ * between `git pull` and the next container restart, which is the window in
+ * which somebody is most likely to be watching.
+ *
+ * So the Map is the floor. It is per-process and forgotten on restart -- which
+ * is fine, because forgetting means the next visit runs, not that visits run
+ * more often -- and the moment the column is there the column wins, since it
+ * is the one a second worker can also see.
+ *
+ * lc-debt: per-process, so a fleet of workers on an un-migrated database would
+ * each hold their own; upgrade path is running the migration, which is the
+ * point.
+ */
+const localRuns = new Map<string, Date>();
+
+function localKey(workspaceId: string, seatKey: string, task: string): string {
+  return `${workspaceId} ${seatKey} ${task}`;
+}
+
+/** Forget every in-process cadence row. Tests only; a worker never wants this. */
+export function resetSideTaskRuns(): void {
+  localRuns.clear();
+}
+
 export async function sideTaskRuns(db: Db, workspaceId: string, seatKey: string): Promise<SideTaskRuns> {
   const runs: SideTaskRuns = new Map();
+  // The in-process floor first, so a database that cannot answer still bounds
+  // the visit. Anything the column knows overwrites it below.
+  const prefix = `${workspaceId} ${seatKey} `;
+  for (const [key, at] of localRuns) {
+    if (key.startsWith(prefix)) runs.set(key.slice(prefix.length), at);
+  }
   try {
     const rows = await db
       .prepare('SELECT task,last_run_at FROM linkedin_side_task_runs WHERE workspace_id=? AND seat_key=?')
@@ -221,8 +261,8 @@ export async function sideTaskRuns(db: Db, workspaceId: string, seatKey: string)
       if (!Number.isNaN(at.getTime())) runs.set(String(row.task), at);
     }
   } catch {
-    // An un-migrated database reads as "never run", which is the behaviour this
-    // module replaced. It cannot be the reason a tick fails.
+    // Un-migrated, mid-deploy, or a pool closed at shutdown. The Map above is
+    // what stops that becoming a tighter loop than the one this replaced.
   }
   return runs;
 }
@@ -234,6 +274,10 @@ export async function markSideTaskRun(
   task: SideTaskName | typeof VISIT_MARKER,
   at: Date
 ): Promise<void> {
+  // WRITTEN TO MEMORY FIRST AND UNCONDITIONALLY. If the column write throws,
+  // this is the only record that the visit happened -- and it is the record
+  // that keeps the next tick from repeating it.
+  localRuns.set(localKey(workspaceId, seatKey, task), at);
   try {
     await db
       .prepare(

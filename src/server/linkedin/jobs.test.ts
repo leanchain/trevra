@@ -8,7 +8,7 @@ import { syncThreads } from './inbox.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
 import { setSeatRestingUntil } from './seat-events.js';
 import { upsertSeat } from './seats.js';
-import { MAX_TASKS_PER_VISIT, markSideTaskRun, visitsForDay } from './side-tasks.js';
+import { MAX_TASKS_PER_VISIT, markSideTaskRun, resetSideTaskRuns, visitsForDay } from './side-tasks.js';
 import { DEFAULT_STALE_AFTER_DAYS } from './withdraw.js';
 
 /**
@@ -459,6 +459,10 @@ describe('how often the side-task tick touches LinkedIn', () => {
     waitForTimeout: async () => {}
   } as unknown as LinkedInPage;
 
+  // The in-process cadence floor outlives one test's database, exactly as it
+  // outlives one deploy's missing table. Cleared so each test starts cold.
+  beforeEach(() => resetSideTaskRuns());
+
   async function connectedSeat(): Promise<void> {
     await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', profileUrl: CONNECTED }, NOW);
   }
@@ -470,6 +474,22 @@ describe('how often the side-task tick touches LinkedIn', () => {
       { workspaceId: WORKSPACE_ID, seatKey: 'owner', now, page, driver, dayShape: FLAT_DAY_SHAPE, log: () => {} }
     );
   }
+
+  it('holds one pass per visit even when the cadence table does not exist', async () => {
+    await connectedSeat();
+    // EXACTLY THE STATE OF EVERY DEPLOYMENT BETWEEN `git pull` AND THE NEXT
+    // RESTART. Both cadence calls swallow their errors so a tick never dies of
+    // one -- which, without the in-process floor, made an un-migrated database
+    // run a fresh pass every sixty seconds instead of once per visit.
+    await db.prepare('DROP TABLE IF EXISTS linkedin_side_task_runs').run();
+
+    const first = await tick(VISIT_AT, tickDriver().driver);
+    expect(first.ran).toHaveLength(MAX_TASKS_PER_VISIT);
+
+    const second = await tick(new Date(VISIT_AT.getTime() + 60_000), tickDriver().driver);
+    expect(second.ran).toEqual([]);
+    expect(second.skipped).toContain('already happened');
+  });
 
   it('does at most two things per visit, and nothing on the ticks in between', async () => {
     await connectedSeat();

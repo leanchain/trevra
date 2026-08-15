@@ -80,6 +80,22 @@ services:
       #
       # Set to false to switch the feature off entirely.
       TREVRA_LINKEDIN_LOCAL: ${TREVRA_LINKEDIN_LOCAL:-true}
+      # MAY THIS CONTAINER BE THE ONE THAT OPENS THE BROWSER?
+      #
+      # Default yes -- with credentials saved, this container is the whole
+      # story and there is nothing to run on your machine.
+      #
+      # Set to false if you run `npm run linkedin:worker` on your own machine.
+      # This container CAN drive a headless Chromium and, left to itself, will:
+      # it races your headed worker for the seat and usually wins, then talks to
+      # LinkedIn from a GPU-less container whose WebGL reports SwiftShader and
+      # from this machine's container IP. False parks the work instead -- the
+      # queue, the ledger and the API are all unchanged, and the detect route
+      # still answers 202 with "run the worker on your machine", which is now
+      # the truth rather than a guess.
+      #
+      # It does NOT switch the feature off. That is TREVRA_LINKEDIN_LOCAL.
+      TREVRA_LINKEDIN_HEADLESS: ${TREVRA_LINKEDIN_HEADLESS:-true}
       # Lead sourcing -- walking a people-search page or a post into a list of
       # people -- is a SECOND opt-in, and off unless this says otherwise.
       # Sending automates your own seat; harvesting profiles is scraping under

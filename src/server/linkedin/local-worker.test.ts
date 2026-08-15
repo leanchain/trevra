@@ -19,6 +19,7 @@ import {
   humanCadencePage,
   latestSeatDetectRequest,
   linkedInBrowserReadiness,
+  linkedInHeadlessReadiness,
   linkedInOffReason,
   linkedInWorkerHealth,
   linkedinWorkspaceIdsForShard,
@@ -914,6 +915,39 @@ describe('linkedInBrowserReadiness', () => {
     expect(off.reasons).toEqual(['LinkedIn automation is switched off on this server.']);
   });
 
+  /**
+   * THE CONTAINER THAT COULD, AND THEREFORE DID.
+   *
+   * `runDueLinkedInActions` and `runLinkedInSideTasks` both rest on "a worker
+   * in a container has no display and no browser, so it returns immediately
+   * and claims no work away from the operator's own `npm run linkedin:worker`".
+   * Installing Chromium in the image for other features made that false: the
+   * container could launch headless, so it took the seat and drove the account
+   * from a GPU-less container whose WebGL reports SwiftShader while the headed
+   * worker sat idle.
+   */
+  it.skipIf(!playwrightInstalled)('lets a machine with no display decline the work instead of racing for it', () => {
+    const blindButEquipped = { PLAYWRIGHT_BROWSERS_PATH: registry } as NodeJS.ProcessEnv;
+
+    // Left alone, a container with a browser and no display still says yes to
+    // headless -- which is correct where it is the only worker there is.
+    expect(
+      linkedInHeadlessReadiness({ enabled: true }, { env: blindButEquipped, platform: 'linux' }).canLaunchHeadless
+    ).toBe(true);
+
+    const declined = linkedInHeadlessReadiness({ enabled: true, headless: false }, { env: blindButEquipped, platform: 'linux' });
+    expect(declined.canLaunchHeadless).toBe(false);
+    expect(declined.reasons[0]).toContain('TREVRA_LINKEDIN_HEADLESS=false');
+
+    // AND IT IS NOT AN OFF SWITCH. `enabled` stays true, so the feature, the
+    // queue and the API's "run the worker on your machine" 202 are untouched --
+    // which is the whole difference between this and TREVRA_LINKEDIN_LOCAL.
+    expect(linkedInOffReason({ hosted: false })).not.toContain('HEADLESS');
+    expect(
+      linkedInHeadlessReadiness({ enabled: false, headless: false }, { env: blindButEquipped, platform: 'linux' }).reasons
+    ).toEqual(['LinkedIn automation is switched off on this server.']);
+  });
+
   it.skipIf(!playwrightInstalled)('says yes on a host with a display and an installed browser', () => {
     const ready = linkedInBrowserReadiness({ enabled: true }, { env: equipped, platform: 'linux' });
     expect(ready).toEqual({ canLaunchHeaded: true, reasons: [] });
@@ -1584,6 +1618,54 @@ describe('per-seat outbound proxy', () => {
     expect(resolveSeatProxy(env, 'ws_a', 'owner')?.server).toBe('http://tenant-a-default.example:3128');
     expect(resolveSeatProxy(env, 'ws_z', 'support')?.server).toBe('http://support-anywhere.example:3128');
     expect(resolveSeatProxy(env, 'ws_z', 'owner')).toBeNull();
+  });
+
+  it('prefers the ACCOUNT\'S OWN stored proxy over every environment variable', () => {
+    // Migration 062: the proxy is a fact about the account, and the column is
+    // what a second operator can actually reach. The environment stays as the
+    // fallback for seats without one, so an existing deployment is untouched.
+    const env = {
+      TREVRA_LINKEDIN_PROXIES: '{"ws_a/sales": "http://map.example:3128"}',
+      TREVRA_LINKEDIN_PROXY: 'http://everything.example:3128'
+    };
+    expect(resolveSeatProxy(env, 'ws_a', 'sales', 'http://seat.example:3128')?.server).toBe('http://seat.example:3128');
+    expect(resolveSeatProxy(env, 'ws_a', 'sales', '   ')?.server).toBe('http://map.example:3128');
+    expect(resolveSeatProxy(env, 'ws_a', 'sales', null)?.server).toBe('http://map.example:3128');
+    expect(resolveSeatProxy({}, 'ws_a', 'sales', null)).toBeNull();
+  });
+
+  it('carries a stored proxy\'s credentials through, without putting them in the server field', () => {
+    expect(resolveSeatProxy({}, 'ws_a', 'owner', 'http://relay:hunter2@proxy.example:3128')).toEqual({
+      server: 'http://proxy.example:3128',
+      username: 'relay',
+      password: 'hunter2'
+    });
+  });
+
+  it('REFUSES a stored proxy it cannot use rather than connecting directly', () => {
+    // The safety property, and the whole reason this throws instead of
+    // returning null: null means "connect directly", from the very machine this
+    // account was configured not to be seen from.
+    expect(() => resolveSeatProxy({}, 'ws_a', 'owner', 'not a url')).toThrow(/is not a URL/);
+    expect(() => resolveSeatProxy({}, 'ws_a', 'owner', 'ftp://proxy.example:21')).toThrow(/unsupported proxy scheme/);
+    expect(() => resolveSeatProxy({}, 'ws_a', 'owner', 'socks5://relay:hunter2@proxy.example:1080')).toThrow(/SOCKS/);
+    // Nor does it fall through to an environment proxy that WOULD have worked:
+    // "we could not honour what you configured" is never "use something else".
+    expect(() => resolveSeatProxy(
+      { TREVRA_LINKEDIN_PROXY: 'http://everything.example:3128' },
+      'ws_a',
+      'owner',
+      'not a url'
+    )).toThrow(/is not a URL/);
+  });
+
+  it('never quotes a stored proxy value back, because it carries a password', () => {
+    try {
+      resolveSeatProxy({}, 'ws_a', 'owner', 'http://relay:hunter2@');
+      throw new Error('expected a refusal');
+    } catch (error) {
+      expect((error as Error).message).not.toContain('hunter2');
+    }
   });
 
   it('REFUSES an ambiguous legacy variable instead of guessing whose it is', () => {
@@ -2410,7 +2492,12 @@ describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () =>
     // forever": page two starts where page one stopped.
     const firstPage = await seatRefsForShard(db, { limit: 2 });
     const secondPage = await seatRefsForShard(db, { limit: 2, after: firstPage[firstPage.length - 1] });
-    expect(secondPage.map((seat) => seat.seatKey)).not.toEqual(firstPage.map((seat) => seat.seatKey));
+    // COMPARED AS THE PAIR, because the pair is the unit and the seat key alone
+    // is not unique: 'owner' is the key every single-seat workspace has, and
+    // other test files share this database. Projecting the workspace away made
+    // two entirely different pages of seats look identical.
+    expect(secondPage.map(key)).not.toEqual(firstPage.map(key));
+    for (const seat of secondPage) expect(firstPage.map(key)).not.toContain(key(seat));
 
     const workspaces = [
       ...(await linkedinWorkspaceIdsForShard(db, { shard: { index: 0, total: 2 } })),
@@ -2610,7 +2697,7 @@ describe('open browsers are bounded, and a failed open leaks nothing', () => {
 
   const config = { enabled: true, hosted: false, profileDir: '/tmp/trevra-browser-cap-test' };
   const open = (playwright: PlaywrightLike, seatKey: string) =>
-    openBrowser(config, () => {}, { workspaceId: 'ws_cap', seatKey, headless: true, env: {}, playwright });
+    openBrowser(config, () => {}, { db: null, workspaceId: 'ws_cap', seatKey, headless: true, env: {}, playwright });
 
   afterEach(async () => {
     await closeLinkedInBrowser();

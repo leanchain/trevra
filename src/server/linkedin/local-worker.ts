@@ -2247,6 +2247,31 @@ export interface LinkedInLocalWorkerConfig {
    * switch that does not exist is the dead end this flag removes.
    */
   hosted?: boolean;
+  /**
+   * May THIS PROCESS drive a seat with a browser nobody can see?
+   *
+   * ABSENT MEANS YES, which is every deployment that has not thought about it
+   * and the behaviour this flag was added to leave alone.
+   *
+   * IT EXISTS BECAUSE "CAN" AND "SHOULD" CAME APART. The container in a normal
+   * self-hosted stack has no display, and the design assumed that meant no
+   * browser either -- `runDueLinkedInActions` and `runLinkedInSideTasks` both
+   * lean on "a worker in a container returns immediately and claims no work
+   * away from the operator's own `npm run linkedin:worker`". That stopped
+   * being true the moment Chromium was installed in the image for other
+   * features: the container could launch headless, so it did, and it served
+   * the seat from a GPU-less container -- WebGL reporting SwiftShader, from a
+   * container IP -- while the operator's headed worker sat idle.
+   *
+   * NOT `enabled: false`, which is the switch that was already there and is
+   * too blunt: it turns the FEATURE off, so the API stops parking detect
+   * requests for the machine that CAN do the work and answers "LinkedIn
+   * automation is switched off" instead. This says something narrower and
+   * true: this process may not be the one that opens the browser. Everything
+   * else -- the queue, the ledger, the routes, the 202 that hands the job to
+   * the host worker -- carries on.
+   */
+  headless?: boolean;
 }
 
 const DEFAULT_PROFILE_DIR_BASE = '~/.trevra/linkedin';
@@ -2502,6 +2527,14 @@ export function linkedInHeadlessReadiness(
   options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
 ): LinkedInHeadlessReadiness {
   if (!config.enabled) return { canLaunchHeadless: false, reasons: [linkedInOffReason(config)] };
+  if (config.headless === false) {
+    return {
+      canLaunchHeadless: false,
+      reasons: [
+        'This process is configured not to drive LinkedIn with a browser nobody can see (TREVRA_LINKEDIN_HEADLESS=false), so the work waits for a machine with a display.'
+      ]
+    };
+  }
   const env = options.env ?? process.env;
 
   // REMOTE NEEDS THE CLIENT, NOT THE BROWSER. `npx playwright install chromium`
