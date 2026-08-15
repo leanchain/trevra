@@ -47,6 +47,33 @@ RUN npx playwright install --with-deps chrome || \
 # above; both are needed. Same `chromium`-only, same `--with-deps` reasoning.
 RUN npx patchright install --with-deps chromium
 
+# A DISPLAY, BECAUSE HEADLESS IS THE TELL AND A GPU IS NOT.
+#
+# Measured with `scripts/linkedin-fingerprint-probe.mjs` on a host with a real
+# Intel iGPU and an RTX 4090 sitting idle next to it:
+#
+#   headless, real Google Chrome:
+#     renderer  ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)
+#     UA        Mozilla/5.0 (X11; Linux x86_64) ... HeadlessChrome/149.0.0.0 ...
+#
+#   headed under a display, same binary, same machine:
+#     renderer  ANGLE (Intel, Mesa Intel(R) Graphics (RPL-S), OpenGL 4.6)
+#     UA        Mozilla/5.0 (X11; Linux x86_64) ... Chrome/149.0.0.0 ...
+#
+# So headless Chrome reports SwiftShader EVEN WITH A GPU PRESENT, and puts the
+# word "HeadlessChrome" in its own User-Agent. Neither is subtle and neither is
+# fixable by adding hardware. What fixes both is a display -- and Xvfb is a
+# display. It costs ~15MB and it is the difference between a browser that
+# announces itself and one that does not.
+#
+# `libgl1-mesa-dri` is what gives Chrome a real GL driver to talk to: with a
+# GPU device passed into the container it lands on that GPU, and without one it
+# falls back to Mesa's llvmpipe -- which is what a real member on a GPU-less
+# cloud desktop reports too, rather than SwiftShader-behind-headless.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xvfb libgl1-mesa-dri \
+    && rm -rf /var/lib/apt/lists/*
+
 # The subscription CLIs the hosted agent can run instead of a BYOK model key
 # (TREVRA_AGENT_CLI in .env.example). They ship no credential -- the container
 # gets one at runtime through TREVRA_AGENT_CLI_OAUTH_TOKEN, because there is no
@@ -55,4 +82,16 @@ RUN npm install --global @anthropic-ai/claude-code @openai/codex
 
 COPY . .
 EXPOSE 5173 8787
-CMD ["npm", "run", "dev"]
+
+# The virtual display every browser in this container draws into.
+#
+# `linkedInBrowserReadiness` reads DISPLAY and nothing else to decide whether a
+# headed browser is possible here, so setting it -- and actually running an X
+# server on it -- is the whole switch. No code changes; the worker simply stops
+# taking the headless path.
+ENV DISPLAY=:99
+
+# Xvfb first, then the app, in one shell so the app is PID 1's child and Ctrl-C
+# still reaches it. `-nolisten tcp` because nothing outside this container has
+# any business connecting to this X server.
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp >/tmp/xvfb.log 2>&1 & exec npm run dev"]

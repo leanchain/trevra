@@ -22,6 +22,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+    # THE HOST'S GPU, FOR THE BROWSER'S WEBGL AND NOTHING ELSE.
+    #
+    # Chrome draws into this container's Xvfb display (see Dockerfile.dev).
+    # With a render node it reports the real card -- "ANGLE (Intel, Mesa
+    # Intel(R) Graphics ...)" -- exactly as it does on the host. Without one it
+    # falls back to Mesa's llvmpipe, which is what a GPU-less cloud desktop
+    # reports and is still far better than the SwiftShader that headless gives
+    # you on a machine WITH a GPU.
+    #
+    # DELETE THESE TWO LINES on a machine with no /dev/dri -- an Oracle Cloud VM,
+    # most CI. Docker refuses to start a container whose device does not exist,
+    # and llvmpipe needs nothing.
+    devices:
+      - /dev/dri:/dev/dri
     environment:
       NODE_ENV: development
       PORT: 8787
@@ -95,6 +109,12 @@ services:
       # the truth rather than a guess.
       #
       # It does NOT switch the feature off. That is TREVRA_LINKEDIN_LOCAL.
+      #
+      # With the Xvfb display this image now runs (see Dockerfile.dev), the
+      # container drives a HEADED Chrome and this setting stops applying to it:
+      # it only ever gated the headless fallback. Leaving it false means "if the
+      # display is ever missing, park the work rather than going headless",
+      # which is the correct standing instruction.
       TREVRA_LINKEDIN_HEADLESS: ${TREVRA_LINKEDIN_HEADLESS:-true}
       # Lead sourcing -- walking a people-search page or a post into a list of
       # people -- is a SECOND opt-in, and off unless this says otherwise.
@@ -102,6 +122,8 @@ services:
       # LinkedIn's User Agreement 8.2, and that risk is yours to accept
       # deliberately rather than inherit from switching sending on.
       TREVRA_LINKEDIN_LEAD_SOURCING: ${TREVRA_LINKEDIN_LEAD_SOURCING:-false}
+      # Which X display the browsers draw into. Xvfb serves it; see Dockerfile.dev.
+      DISPLAY: ${DISPLAY_INSIDE_CONTAINER:-:99}
       # Opens every sealed secret: model API keys, and the LinkedIn sign-in when
       # you choose that path. Without it credential storage refuses outright
       # rather than writing anything in the clear. Generate one with:

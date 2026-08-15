@@ -3745,6 +3745,28 @@ export async function openBrowser(
       // one line (`innerWidth === documentElement.clientWidth`) and which no
       // desktop Chrome on Linux or Windows would ever report.
       ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
+      // ANGLE OVER EGL, AND ONLY WHERE THE DEFAULT PRODUCES NOTHING.
+      //
+      // Measured with `scripts/linkedin-fingerprint-probe.mjs`, headed Chrome
+      // on an X display inside this container:
+      //
+      //   default                          -> getContext('webgl') returns NULL
+      //   --use-gl=angle --use-angle=gl-egl -> ANGLE (Intel, Mesa Intel(R)
+      //                                        Graphics (RPL-S), OpenGL ES 3.2)
+      //
+      // A browser with NO WebGL AT ALL is rarer than one with a software
+      // renderer, so the default was the worse of the two. With a render node
+      // passed in (compose.dev.yml `devices: /dev/dri`) these two flags reach
+      // the host's real GPU; without one they land on Mesa's llvmpipe, which is
+      // what a GPU-less cloud desktop reports.
+      //
+      // NOT ON THE OPERATOR'S OWN MACHINE. There the default already works and
+      // reports desktop GL ('OpenGL 4.6'), which is exactly what every other
+      // Chrome on that desktop reports. Forcing EGL would move it to
+      // 'OpenGL ES 3.2' -- still real, still that GPU, but no longer the same
+      // answer the member's own browser gives, and matching the neighbours is
+      // the whole point.
+      ...(inContainer() ? { args: ['--use-gl=angle', '--use-angle=gl-egl'] } : {}),
       // Headed follows the real window; headless gets the seat's own stable
       // desktop size rather than Playwright's 1280x720, which is both a known
       // automation default and identical for every seat on this machine.
