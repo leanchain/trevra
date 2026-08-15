@@ -237,7 +237,20 @@ export interface LinkedInScrapeDriver {
 }
 
 /**
- * 100 people, 10 fetches. Both are ceilings, neither is removable.
+ * 30 people, 10 fetches. Both are ceilings, neither is removable.
+ *
+ * `maxResults` IS A VISIT'S WORTH AND `maxPages` IS THE WHOLE SOURCE'S, which
+ * is why they no longer multiply out to the same number. `leads.ts` reads one
+ * to three pages of a search per visit and resumes next time, so 30 is what a
+ * single sitting can plausibly produce (roughly ten cards to a page) while 10
+ * is how deep the source is ever read in total, across every visit.
+ *
+ * THESE WERE 100 AND 500, SIZED FOR A MODEL THAT NO LONGER EXISTS. A run used
+ * to walk ten pages back to back, so a hundred people in one call was the
+ * arithmetic. Under the visit shape that number is not merely generous, it is
+ * unreachable -- and a ceiling nobody can hit is a ceiling that documents
+ * nothing. Worse, it invites the opposite reading: an operator who sees "500"
+ * concludes 500 is a safe number to ask for.
  *
  * A caller may lower them and may not raise them past {@link HARD_MAX_RESULTS}
  * and {@link HARD_MAX_PAGES}. "Unbounded" is not an option this function
@@ -245,10 +258,10 @@ export interface LinkedInScrapeDriver {
  * precisely the burst plan §1.3 describes as preceding a disconnection -- and
  * an operator asking for it has no way to know that.
  */
-export const DEFAULT_MAX_RESULTS = 100;
+export const DEFAULT_MAX_RESULTS = 30;
 export const DEFAULT_MAX_PAGES = 10;
-export const HARD_MAX_RESULTS = 500;
-export const HARD_MAX_PAGES = 25;
+export const HARD_MAX_RESULTS = 100;
+export const HARD_MAX_PAGES = 15;
 
 /** Where a checkpoint lands. Same URL-level read as driver.ts's. */
 const CHECKPOINT_PATH = /\/(checkpoint|uas\/login)\//i;

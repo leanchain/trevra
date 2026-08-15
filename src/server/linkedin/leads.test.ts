@@ -122,28 +122,44 @@ afterEach(async () => {
 });
 
 describe('the gate', () => {
-  it('is off by default, because harvesting is not what opting into sending asked for', () => {
-    expect(leadSourcingEnabled(leadSourcingConfig({}))).toBe(false);
-    // Even a self-hoster who turned the WORKER on has not asked for a crawler.
-    expect(leadSourcingEnabled(leadSourcingConfig({ TREVRA_LINKEDIN_LOCAL: 'true' }))).toBe(false);
+  it('is ON by default for a self-hosted or local deployment', () => {
+    // It used to be opt-in, on the argument that harvesting is a different
+    // decision from sending. The DEPLOYMENT already made that decision:
+    // `TREVRA_DEPLOYMENT_MODE=local` says this Trevra serves one operator
+    // driving their own account, and every other capability that follows from
+    // that defaults on for them.
+    expect(leadSourcingEnabled(leadSourcingConfig({}))).toBe(true);
+    expect(leadSourcingEnabled(leadSourcingConfig({ TREVRA_DEPLOYMENT_MODE: 'local' }))).toBe(true);
+    expect(leadSourcingEnabled(leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_SOURCING: 'true' }))).toBe(true);
   });
 
-  it('turns on only for an explicit self-hosted opt-in', () => {
-    expect(leadSourcingEnabled(leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_SOURCING: 'true' }))).toBe(true);
+  it('is switched off only by an explicit false', () => {
+    const off = leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_SOURCING: 'false' });
+    expect(off.optIn).toBe(false);
+    expect(leadSourcingEnabled(off)).toBe(false);
+    // And the sentence names the setting that did it, so nobody hunts.
+    expect(leadSourcingOffReason(off)).toContain('TREVRA_LINKEDIN_LEAD_SOURCING=false');
   });
 
   it('is forced off by hosted mode, unconditionally', () => {
     const config = leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_SOURCING: 'true', TREVRA_DEPLOYMENT_MODE: 'hosted' });
     expect(config.hosted).toBe(true);
     expect(leadSourcingEnabled(config)).toBe(false);
+    // The default-on change may NOT weaken this: hosted with nothing set at all
+    // is still off, and no value of the opt-in buys past it.
+    expect(leadSourcingEnabled(leadSourcingConfig({ TREVRA_DEPLOYMENT_MODE: 'hosted' }))).toBe(false);
     // And the refusal says WHICH kind of off it is, so nobody hunts for a switch.
     expect(leadSourcingOffReason(config)).toContain('cannot be enabled');
-    expect(leadSourcingOffReason({ optIn: false, hosted: false })).toContain('TREVRA_LINKEDIN_LEAD_SOURCING=true');
   });
 
   it('reads the caps off the environment and never accepts an unbounded one', () => {
-    expect(leadSourcingConfig({}).maxResults).toBe(100);
-    expect(leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_MAX_RESULTS: '250' }).maxResults).toBe(250);
+    // A VISIT'S WORTH, not a run's: one to three pages of ~10 cards. It was
+    // 100 when a run walked ten pages back to back, which the visit model no
+    // longer does.
+    expect(leadSourcingConfig({}).maxResults).toBe(30);
+    expect(leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_MAX_RESULTS: '80' }).maxResults).toBe(80);
+    // Past the hard ceiling, which an operator may not raise.
+    expect(() => leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_MAX_RESULTS: '250' })).toThrow();
     expect(() => leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_MAX_RESULTS: '100000' })).toThrow();
   });
 });

@@ -599,8 +599,8 @@ click something, and leave. So that is what the model is now:
 
 | | |
 |---|---|
-| **Visits** | 2–5 per working day, drawn per seat per date. One slot per visit, start jittered inside the first 60% of its slot — which spreads them and guarantees ~48 minutes between consecutive visits. A clump after a long silence is a worse signal than a flat line. |
-| **Length** | 2–5 minutes. Outside a visit the tick costs two SQL reads and stops. |
+| **Visits** | 2–3 per working day, drawn per seat per date. One slot per visit, start jittered inside the first 60% of its slot — which spreads them and guarantees a wide gap between consecutive visits. A clump after a long silence is a worse signal than a flat line. |
+| **Length** | 5–10 minutes, longer when there are sends in it. Outside a visit the tick costs two SQL reads and stops. |
 | **Arrival** | The feed, via the same `warmUpSession` the sending sittings use — plus notifications or My Network about half the time. A person lands on the feed, not on `/mynetwork/invitation-manager/sent/`. |
 | **Work** | At most **two** of the five jobs per visit, most-overdue first. Three minutes is not enough to walk an inbox, reconcile a sent list, open profiles, drain a queue *and* harvest a source — and an account that appears to is a batch job. |
 | **One pass per visit** | A visit spans 2–5 ticks. Without a marker the second tick finds the first tick's jobs freshly stamped, picks the next two, warms up again and reloads `/in/me/` — and the cap of two per visit silently becomes two per *minute*. The visit's start instant is stamped **before** the browser opens, so a visit that dies half way through is a visit that happened. |
@@ -615,19 +615,44 @@ the real functions:
 ```
 One idle seat, 7 days of 60s ticks, Mon-Fri 08:00-18:00 UTC
 
-  visits scheduled             : 16  (3.2 per working day)
-  visits that did any work     : 16
-  minutes with LinkedIn open   : 47  (9.4 per working day)
-  /in/me/ identity loads       : 16
+  visits scheduled             : 11  (2.2 per working day)
+  visits that did any work     : 11
+  minutes with LinkedIn open   : 83  (16.6 per working day)
+  /in/me/ identity loads       : 9
   connections-page loads       : 0
-  TOTAL navigations            : 58  (8.3/day)
+  TOTAL navigations            : 37  (5.3/day)
 
   before this change           : 60480 navigations (8640/day)
-  reduction                    : 99.90%
+  reduction                    : 99.94%
 ```
 
-**8,640 → ~6 navigations a day**, in two or three short bursts instead of 1,440
-identical ones, none at 03:00, none on the connections page.
+**8,640 → ~5 navigations a day**, in two or three sessions instead of 1,440
+identical ticks, none at 03:00, none on the connections page.
+
+## 10.7 The harvester, resized to match
+
+Lead sourcing was the last burst: one run walked up to **10 search pages back
+to back** — fifteen minutes of continuous paging through other people's
+profiles, on precisely the surface the notice named. A `pages_done` cursor
+(migration 072) makes a source resumable, so it is read the way a person reads
+a search: a page or three, then something else, then back to it later.
+
+| | was | now |
+|---|---|---|
+| pages per sitting | 10, back to back | **1–3**, drawn, then parked |
+| people per sitting | 100 | **30** (~3 pages of ~10 cards) |
+| sources per unattended pass | 3 | **1** |
+| daily leads stored | 100 (max 1000) | **25** (max 100) |
+| hard ceilings | 500 people / 25 pages | **100 people / 15 pages** |
+
+The old numbers were not merely generous, they were **unreachable** under the
+visit model — and a ceiling nobody can hit documents nothing. It does something
+worse: an operator reading "1000" concludes a thousand is a number this is safe
+at. 25/day is at the top of what the browsing shape can actually produce, and
+still ~125 leads a working week against a steady ceiling of 90 invites.
+
+A wall or a challenge is never resumed — the source closes. Going back for page
+four after LinkedIn said stop is what turns a temporary restriction permanent.
 
 ## 10.5 One presence, not two
 

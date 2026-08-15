@@ -529,9 +529,23 @@ async function finishLeadSource(
  * care about and hands a fresh hundred to whoever is awake at 00:01, which is
  * exactly the burst shape the pacing everywhere else in this subsystem exists
  * to avoid.
+ *
+ * 25 AND 100, DOWN FROM 100 AND 1000, BECAUSE THE OLD NUMBERS DESCRIBED A
+ * SHAPE THAT NO LONGER EXISTS. They were sized when one run walked ten search
+ * pages back to back. Under the visit model this account opens LinkedIn two or
+ * three times a day for five to ten minutes, lead sourcing is at most one of
+ * the two jobs a visit does, and it reads one to three pages of ~10 cards --
+ * so somewhere between ten and sixty people are SEEN on a good day, and 100
+ * was a cap nothing could reach.
+ *
+ * A ceiling nobody can hit documents nothing, and it does something worse than
+ * nothing: an operator reading "1000" concludes a thousand is a number this is
+ * safe at. 25 is at the top of what the browsing shape can actually produce,
+ * and it is still ~125 leads a working week against a steady ceiling of 90
+ * invites -- more supply than the sending side can ever consume.
  */
-export const DEFAULT_DAILY_LEAD_CAP = 100;
-export const MAX_DAILY_LEAD_CAP = 1000;
+export const DEFAULT_DAILY_LEAD_CAP = 25;
+export const MAX_DAILY_LEAD_CAP = 100;
 export const DAILY_LEAD_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**

@@ -512,13 +512,20 @@ describe('how often the side-task tick touches LinkedIn', () => {
     expect(between.skipped).toContain('none of them is now');
   });
 
-  it('picks up the rest of the list on the next visit, so nothing is starved', async () => {
+  it('picks up the rest of the list on the following visits, so nothing is starved', async () => {
     await connectedSeat();
 
+    // TWO DAYS, because two or three visits of at most two jobs each cannot
+    // cover five jobs in one. That is the trade the cap buys: no visit does
+    // more than a person would, and the list still drains.
     const done = new Set<string>();
-    for (const at of VISIT_STARTS) {
-      const result = await tick(at, tickDriver().driver);
-      for (const task of result.ran) done.add(task);
+    for (const day of [4, 5, 6]) {
+      const visits = visitsForDay(`${WORKSPACE_ID}:owner`, { year: 2026, month: 8, day }, { startMinute: 480, endMinute: 1080 });
+      for (const visit of visits) {
+        const at = new Date(Date.UTC(2026, 7, day, Math.floor(visit.startMinute / 60), visit.startMinute % 60));
+        const result = await tick(at, tickDriver().driver);
+        for (const task of result.ran) done.add(task);
+      }
     }
 
     expect([...done].sort()).toEqual(['acceptance', 'inbox', 'lead_sources', 'pending_invites', 'withdrawals']);

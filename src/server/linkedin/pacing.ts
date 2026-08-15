@@ -328,15 +328,23 @@ function seededRandom(seed: string): () => number {
 /**
  * How many times a day this account is opened.
  *
- * UNVERIFIED-VENDOR, and deliberately at the low end of what the operator
- * described: "1-2-3 times a day, maybe up to 5". It bounds nothing
- * safety-critical -- the ceilings do that -- but it is the number that decides
- * whether the access graph looks like a person or a cron table.
+ * UNVERIFIED-VENDOR, and it is the operator's own description of their own
+ * use: "2-3 times a day, 5-10 minutes, not continuously throughout the day".
+ * It bounds nothing safety-critical -- the ceilings do that -- but it is the
+ * number that decides whether the access graph looks like a person or a cron
+ * table.
  */
-export const VISITS_PER_DAY = { min: 2, max: 5 } as const;
+export const VISITS_PER_DAY = { min: 2, max: 3 } as const;
 
-/** How long a visit with nothing to send lasts. "A few minutes, click here and there." */
-export const VISIT_MINUTES = { min: 2, max: 5 } as const;
+/**
+ * How long a visit with nothing to send lasts.
+ *
+ * "Two or three times a day for five to ten minutes, not continuously through
+ * the day" -- the operator describing their own use, which is the only
+ * evidence available for a number LinkedIn does not publish. A visit that
+ * SENDS is longer, because the sends are inside it (see `Visit.actions`).
+ */
+export const VISIT_MINUTES = { min: 5, max: 10 } as const;
 
 /** The fraction of a slot a visit may start within, which is what guarantees the gap. */
 const SLOT_HEAD = 0.6;
