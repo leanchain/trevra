@@ -1,17 +1,36 @@
-# Production stack for the Oracle Always Free ARM box.
-#
-# Nothing publishes a host port. cloudflared dials out to Cloudflare and routes
-# app.usetrevra.com to the trevra service over the internal compose network, so
-# the instance needs no inbound rule beyond SSH.
-#
-# Postgres data lives on the attached block volume (/mnt/data) rather than a
-# Docker named volume, so destroying and recreating the instance keeps the data.
+# Hosted Trevra production stack for one Oracle A1 instance.
+# Public traffic arrives only through Cloudflare Tunnel. Postgres data lives on
+# /mnt/data, and a one-shot migration service must succeed before API/worker
+# containers are recreated.
 
 name: trevra
 
+x-trevra-common: &trevra-common
+  image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
+  env_file:
+    - .env.oracle
+  environment:
+    NODE_ENV: production
+    TREVRA_DEPLOYMENT_MODE: hosted
+    DATABASE_AUTO_MIGRATE: "false"
+    DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     environment:
       POSTGRES_DB: trevra
       POSTGRES_USER: trevra
@@ -25,21 +44,33 @@ services:
       retries: 20
     restart: unless-stopped
 
-  trevra:
-    # Built and pushed by .github/workflows/image.yml as a multi-arch manifest
-    # (amd64 + arm64), so the same tag runs on an A1 or an E2 box and neither
-    # has to build anything. Pin TREVRA_IMAGE_TAG to a commit SHA for a
-    # reproducible rollback; 'main' tracks the branch head.
-    image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
-    env_file:
-      - .env.oracle
+  migrate:
+    <<: *trevra-common
+    command: ["node", "dist-server/server/migrate-job.js"]
     environment:
       NODE_ENV: production
-      PORT: 8080
+      TREVRA_DEPLOYMENT_MODE: hosted
+      DATABASE_AUTO_MIGRATE: "false"
+      PORT: 8082
       DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+
+  trevra:
+    <<: *trevra-common
+    environment:
+      NODE_ENV: production
+      TREVRA_DEPLOYMENT_MODE: hosted
+      DATABASE_AUTO_MIGRATE: "false"
+      PORT: 8080
+      DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
       interval: 30s
@@ -47,20 +78,17 @@ services:
       start_period: 30s
       retries: 3
     restart: unless-stopped
+    stop_grace_period: 30s
 
-  # Same image, different entrypoint: the automation/playbook/projection loop.
-  # Runs in its own container so a crash here cannot take the API down.
   worker:
-    image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
+    <<: *trevra-common
     command: ["node", "dist-server/worker/index.js"]
-    env_file:
-      - .env.oracle
     environment:
       NODE_ENV: production
+      TREVRA_DEPLOYMENT_MODE: hosted
+      DATABASE_AUTO_MIGRATE: "false"
       PORT: 8081
       DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
-    # Overrides the image HEALTHCHECK, which probes /api/health -- an API route.
-    # The worker serves /health instead, so the inherited check always fails.
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
       interval: 30s
@@ -68,19 +96,17 @@ services:
       start_period: 40s
       retries: 3
     depends_on:
-      postgres:
-        condition: service_healthy
-      trevra:
-        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
+    stop_grace_period: 30s
 
-  # Ingress. Requires TUNNEL_TOKEN from `cloudflared tunnel create`; the public
-  # hostname mapping is configured Cloudflare-side, pointing at http://trevra:8080.
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
     command: ["tunnel", "--no-autoupdate", "run"]
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      - trevra
+      trevra:
+        condition: service_healthy
     restart: unless-stopped

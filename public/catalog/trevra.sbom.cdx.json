@@ -5,7 +5,7 @@
   "serialNumber": "urn:uuid:***",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-14T09:12:00.508Z",
+    "timestamp": "2026-08-16T10:33:12.972Z",
     "lifecycles": [
       {
         "phase": "build"
@@ -7568,13 +7568,13 @@
       ]
     },
     {
-      "bom-ref": "brace-expansion@5.0.8",
+      "bom-ref": "brace-expansion@5.0.9",
       "type": "library",
       "name": "brace-expansion",
-      "version": "5.0.8",
+      "version": "5.0.9",
       "scope": "optional",
       "description": "Brace expansion as known from sh/bash",
-      "purl": "pkg:npm/brace-expansion@5.0.8",
+      "purl": "pkg:npm/brace-expansion@5.0.9",
       "properties": [
         {
           "name": "cdx:npm:package:development",
@@ -7584,7 +7584,7 @@
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.8.tgz"
+          "url": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.9.tgz"
         },
         {
           "type": "vcs",
@@ -7594,7 +7594,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "259c83caadc3e005227ca4cf381ec310b7fa5ec07759d3ee3710ada1bd6f1573ec49785d0221c1589fed27c1c073d687f3804afb924564b36424ac771bd93342"
+          "content": "49c43822ebc8105d533253fb66dfaf8c9ffff7394f6f64837315b13376e4f2ceade8619d27b28ed5d09c4e274e3c929e3d6df42c4ff6713ef00b23e1a3dfd6c6"
         }
       ],
       "licenses": [
@@ -11159,19 +11159,19 @@
       ]
     },
     {
-      "bom-ref": "fast-uri@3.1.4",
+      "bom-ref": "fast-uri@3.1.5",
       "type": "library",
       "name": "fast-uri",
-      "version": "3.1.4",
+      "version": "3.1.5",
       "scope": "required",
       "author": "Vincent Le Goff <vince.legoff@gmail.com> (https://github.com/zekth)",
       "description": "Dependency-free RFC 3986 URI toolbox",
-      "purl": "pkg:npm/fast-uri@3.1.4",
+      "purl": "pkg:npm/fast-uri@3.1.5",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.4.tgz"
+          "url": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.5.tgz"
         },
         {
           "type": "vcs",
@@ -11189,7 +11189,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "f099db910e23b83caf62ce26805190aa0e32098b450ed52d9a9d90210ab5d5965ee42150e7072a9b5aea0e0021fd074cc92b819cfccc5222543591b937f02243"
+          "content": "807c00d4ef4b0c870aba730a84e6d2fc78a6c2d7a13b59cf50408a02ee53a4a81a3b5f5f716125e1b96259ed635b1545bc85f3b498e34382fc5d0d4453d7fb27"
         }
       ],
       "licenses": [
@@ -12205,19 +12205,19 @@
       ]
     },
     {
-      "bom-ref": "hono@4.12.32",
+      "bom-ref": "hono@4.13.2",
       "type": "library",
       "name": "hono",
-      "version": "4.12.32",
+      "version": "4.13.2",
       "scope": "required",
       "author": "Yusuke Wada <yusuke@kamawada.com> (https://github.com/yusukebe)",
       "description": "Web framework built on Web Standards",
-      "purl": "pkg:npm/hono@4.12.32",
+      "purl": "pkg:npm/hono@4.13.2",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/hono/-/hono-4.12.32.tgz"
+          "url": "https://registry.npmjs.org/hono/-/hono-4.13.2.tgz"
         },
         {
           "type": "vcs",
@@ -12231,7 +12231,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "5dcbb25bda84da4267d3b3e479c30e05de55abf84ccbb9a61b0fa2773d726e56e0f4dd7b8a324e0ebbcf927eff7702f72ae963f0b71127af432ce59ff7575152"
+          "content": "2727518a50d191805032df6a47d53dda65f199b1aab2a4a7fc828eae1e1eeff8046e7fb4cd2afc8a04eed286f0268346378b1ecf6f0322a97b1411d6c9da09a4"
         }
       ],
       "licenses": [
@@ -12915,25 +12915,25 @@
       ]
     },
     {
-      "bom-ref": "js-yaml@4.3.0",
+      "bom-ref": "js-yaml@4.3.1",
       "type": "library",
       "name": "js-yaml",
-      "version": "4.3.0",
+      "version": "4.3.1",
       "scope": "required",
       "author": "Vladimir Zapparov <dervus.grim@gmail.com>",
       "description": "YAML 1.2 parser and serializer",
-      "purl": "pkg:npm/js-yaml@4.3.0",
+      "purl": "pkg:npm/js-yaml@4.3.1",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.3.0.tgz"
+          "url": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.3.1.tgz"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "d6d77bf3c6809e7679aaced5d90211975a308ed6296cab7be3d637c5abaa420c0820617fc575b3d70313101c793b72cade55cb56ea973dd3f18f6068147696f5"
+          "content": "098e9cac6ab7d77317f06930bc1eedce0a7df6f8d0c58d7efb9cb5d3f04a37f1947c7a9668e19030d66406fa92cec64a5a4fe28f01e55b3ce42ee96c18786359"
         }
       ],
       "licenses": [
@@ -14363,25 +14363,25 @@
       ]
     },
     {
-      "bom-ref": "nanoid@3.3.16",
+      "bom-ref": "nanoid@3.3.18",
       "type": "library",
       "name": "nanoid",
-      "version": "3.3.16",
+      "version": "3.3.18",
       "scope": "optional",
       "author": "Andrey Sitnik <andrey@sitnik.ru>",
       "description": "A tiny (116 bytes), secure URL-friendly unique string ID generator",
-      "purl": "pkg:npm/nanoid@3.3.16",
+      "purl": "pkg:npm/nanoid@3.3.18",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.16.tgz"
+          "url": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.18.tgz"
         }
       ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "6f394a4f2349efe2dd188230cbc8a316922a11022f69f6a157b798ca427c0af878d8474978e0e827a814257a5026f7a3d4175d1fc3aa4d764d13f29f6d602ef1"
+          "content": "0d38383096c631691f8ba55915d36ddbf71a31b432e0ebbe3a9fe1250bc611672755fa00d5003ec7344a033c3d8c3ebe19538e798aff98872e0d276e83a17afb"
         }
       ],
       "licenses": [
@@ -21507,7 +21507,7 @@
     {
       "ref": "@hono/node-server@2.0.12",
       "dependsOn": [
-        "hono@4.12.32"
+        "hono@4.13.2"
       ]
     },
     {
@@ -21744,7 +21744,7 @@
         "form-data@4.0.6",
         "hpagent@1.2.0",
         "isomorphic-ws@5.0.0",
-        "js-yaml@4.3.0",
+        "js-yaml@4.3.1",
         "jsonpath-plus@10.4.0",
         "node-fetch@2.7.0",
         "openid-client@6.8.4",
@@ -21774,7 +21774,7 @@
         "eventsource-parser@3.1.0",
         "express@5.2.1",
         "express-rate-limit@8.6.1",
-        "hono@4.12.32",
+        "hono@4.13.2",
         "jose@6.2.4",
         "json-schema-typed@8.0.2",
         "pkce-challenge@5.0.1",
@@ -22439,7 +22439,7 @@
       "ref": "ajv@8.20.0",
       "dependsOn": [
         "fast-deep-equal@3.1.3",
-        "fast-uri@3.1.4",
+        "fast-uri@3.1.5",
         "json-schema-traverse@1.0.0",
         "require-from-string@2.0.2"
       ]
@@ -22757,7 +22757,7 @@
       "dependsOn": []
     },
     {
-      "ref": "brace-expansion@5.0.8",
+      "ref": "brace-expansion@5.0.9",
       "dependsOn": [
         "balanced-match@4.0.4"
       ]
@@ -23328,7 +23328,7 @@
       "dependsOn": []
     },
     {
-      "ref": "fast-uri@3.1.4",
+      "ref": "fast-uri@3.1.5",
       "dependsOn": []
     },
     {
@@ -23491,7 +23491,7 @@
       "dependsOn": []
     },
     {
-      "ref": "hono@4.12.32",
+      "ref": "hono@4.13.2",
       "dependsOn": []
     },
     {
@@ -23591,7 +23591,7 @@
       "dependsOn": []
     },
     {
-      "ref": "js-yaml@4.3.0",
+      "ref": "js-yaml@4.3.1",
       "dependsOn": [
         "argparse@2.0.1"
       ]
@@ -23774,7 +23774,7 @@
     {
       "ref": "minimatch@9.0.9",
       "dependsOn": [
-        "brace-expansion@5.0.8"
+        "brace-expansion@5.0.9"
       ]
     },
     {
@@ -23828,7 +23828,7 @@
       "dependsOn": []
     },
     {
-      "ref": "nanoid@3.3.16",
+      "ref": "nanoid@3.3.18",
       "dependsOn": []
     },
     {
@@ -24078,7 +24078,7 @@
     {
       "ref": "postcss@8.5.23",
       "dependsOn": [
-        "nanoid@3.3.16",
+        "nanoid@3.3.18",
         "picocolors@1.1.1",
         "source-map-js@1.2.1"
       ]
@@ -24228,7 +24228,7 @@
     {
       "ref": "minimatch@5.1.9",
       "dependsOn": [
-        "brace-expansion@5.0.8"
+        "brace-expansion@5.0.9"
       ]
     },
     {

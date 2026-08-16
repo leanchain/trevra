@@ -71,6 +71,10 @@ import {
   type StepCondition
 } from './api';
 import { LinkedInCampaignBreakdown } from './LinkedInAnalyticsScreen';
+// WHICH ACCOUNT THIS SCREEN IS WORKING IN. One value for the whole tab; every
+// read and every campaign created below names it instead of falling to the
+// workspace's first account, which is what all of them silently did.
+import { ActiveAccountBar, useActiveSeatKey } from './LinkedInAccounts';
 import {
   ACTION_KIND_LABELS_ONE,
   EXPORT_FORMAT_LABELS,
@@ -133,7 +137,21 @@ const STEP_KINDS: readonly StepKindMeta[] = [
   },
   { kind: 'invite', label: 'Invite', Icon: UserPlus, carriesCopy: true },
   { kind: 'dm', label: 'Message', Icon: MessageSquare, carriesCopy: true },
-  { kind: 'inmail', label: 'InMail', Icon: Mail, carriesCopy: true },
+  /*
+   * NO InMail CARD, AND ITS ABSENCE IS THE FEATURE.
+   *
+   * It was offered here, it was paced, it was counted in the "messages sent"
+   * panel -- and nothing in the product could send one. `driver.ts` has no
+   * InMail routine, so `EXECUTABLE_KINDS` in `local-worker.ts` excludes it, so
+   * an InMail step planned by an operator produced a ledger row the worker
+   * could never claim: due forever, holding its target's replay claim, and
+   * reported as a message on a dashboard it would never reach.
+   *
+   * Building a card for a step that cannot run is the worst of the three
+   * available options -- worse than the empty state, and much worse than
+   * saying so. It is named in `UNSUPPORTED_ACTION_KINDS` on the server
+   * (actions.ts) with the reasoning for retiring rather than implementing it.
+   */
   {
     kind: 'follow', label: 'Follow', Icon: UserCheck, carriesCopy: false,
     noCopyNote: 'A follow carries no message. It puts you in their notifications without asking for anything.'
@@ -196,8 +214,12 @@ function branchSentence(condition: StepCondition | null | undefined): string | n
   return BRANCH_SENTENCES[condition.on](condition.ofStepId);
 }
 
-/** Kinds whose outcome a branch can read. `reply` is one too, but no step schedules one. */
-const RESULT_BEARING_KINDS: readonly SequenceStepKind[] = ['invite', 'dm', 'inmail'];
+/**
+ * Kinds whose outcome a branch can read. `reply` is one too, but no step
+ * schedules one; `inmail` was one and is retired, because a branch may only
+ * depend on a step that can actually run.
+ */
+const RESULT_BEARING_KINDS: readonly SequenceStepKind[] = ['invite', 'dm'];
 
 /** The earlier steps that could answer `on`. Empty means that branch is not offerable here. */
 function eligibleAnchors(
@@ -659,8 +681,20 @@ function BindingCeiling({ limits, loading, error, kind }: {
       are left today.
     </small>;
   }
+  /* BOTH NUMBERS, WHERE THEY DIFFER AND THE OPERATOR'S IS THE ONE THAT LOST.
+     `ceilingSource === 'band'` with a higher operator number is exactly the
+     silent case: somebody set 30, the researched band is 18, and every screen
+     said 18 without ever saying whose 18 it was or that a 30 existed. Read from
+     the server's own verdict, never re-decided here. */
+  const overruled = ceiling.ceilingSource === 'band'
+    && ceiling.operatorLimit !== null && ceiling.operatorLimit !== undefined
+    && ceiling.operatorLimit > ceiling.bandCeiling;
+
   return <small className="li-hint">
     {ceiling.remaining} of {ceiling.ceiling} {KIND_LABELS[kind].toLowerCase()} left today — {limitReason(ceiling.boundBy)}.
+    {overruled && <> You set {ceiling.operatorLimit} a day for this account and <b>{ceiling.bandCeiling} is what goes
+      out</b> — Trevra’s researched ceiling is the lower of the two, so it binds. Whose number binds is a per-account
+      switch on Safety.</>}{' '}
     Spreading over more days never raises that number, so too few days simply means fewer people get reached.{' '}
     <ConfidenceTag confidence={ceiling.confidence} source={sourceNote(ceiling.confidence)} compact />
   </small>;
@@ -679,7 +713,12 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
   /** From `/outreach/campaigns/:id`. A link to a campaign has to open it. */
   campaignId?: string | null;
 }) {
-  const { limits, loading: limitsLoading, error: limitsError } = useSeatLimits();
+  const [seatKey] = useActiveSeatKey();
+  // The ceilings shown beside the pace controls are the ACTIVE account's, not
+  // the owner's: `useSeatLimits()` with no key asks for the first account, so
+  // an operator building a campaign for their second one was shown a third
+  // account's -- the owner's -- room to send.
+  const { limits, loading: limitsLoading, error: limitsError } = useSeatLimits(seatKey);
   const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
   const [detail, setDetail] = useState<LinkedInCampaignDetail | null>(null);
   const [name, setName] = useState('');
@@ -744,7 +783,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
   const copyRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   const loadList = async () => {
-    try { setCampaigns(await getLinkedInCampaigns()); }
+    try { setCampaigns(await getLinkedInCampaigns(seatKey || undefined)); }
     catch (err) { setError(errorMessage(err, 'Unable to load LinkedIn campaigns')); }
   };
 
@@ -813,7 +852,14 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
     setError('');
   };
 
-  useEffect(() => { void loadList(); }, []);
+  // Re-read on a switch, and drop whatever campaign was open: it belongs to the
+  // account we just left, and leaving it on screen under the new account's name
+  // is exactly the confusion the switcher exists to end.
+  useEffect(() => {
+    void loadList();
+    if (boundId) startNew();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seatKey]);
 
   useEffect(() => {
     // A failed read is not worth an error banner: `branchOnOptions` falls back
@@ -1143,6 +1189,11 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
       kind: brief.kind,
       horizonDays: brief.horizonDays,
       format: brief.format,
+      // THE ACCOUNT THIS CAMPAIGN SENDS FROM. Omitted, the server plans against
+      // the owner seat and files the campaign row against it too -- so a
+      // campaign built while working in the second account was paced against
+      // the first account's ledger and then listed under it.
+      ...(seatKey ? { seatKey } : {}),
       ...(contacts.length > 0 ? { contacts } : {})
     };
 
@@ -1304,6 +1355,10 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
   const lastDay = steps.length > 0 ? steps[steps.length - 1].day : 0;
 
   return <div className="page-stack">
+    <ActiveAccountBar scope={<>
+      The campaigns listed here belong to this account, a new one is planned against its ledger and its daily
+      ceilings, and the numbers below the list count its actions only.
+    </>} />
     {/* WHERE AM I, AND SHOULD I BE HERE. Two surfaces are called campaigns:
         this one, which writes a sequence and hands you a file, and the managed
         one, which runs the sequence for you. Somebody who cannot tell them
@@ -1724,20 +1779,14 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
             — an invite with empty copy IS a noteless invite.
           </small>
 
-          <label className="li-inline-check">
-            <input
-              type="checkbox"
-              checked={brief.includeInMail}
-              disabled={Boolean(boundId)}
-              onChange={(event) => setBrief({ ...brief, includeInMail: event.target.checked })}
-            />
-            <span>Ask the draft for an InMail step</span>
-            <ConfidenceTag confidence="HARD FACT" source={sourceNote('HARD FACT')} compact />
-          </label>
-          <small className="li-hint">
-            InMail is capped at 50 per seat per month by LinkedIn itself — the one published number in this product. To
-            put one in a sequence you are building, add an InMail step below.
-          </small>
+          {/*
+            THE InMail CONTROL IS GONE. It asked the draft for a step nothing in
+            this product can send -- there is no InMail driver routine, so the
+            action was planned, never claimed, and counted as a message on a
+            panel it could never reach. The published 50/month quota is still
+            shown on the limits screen, where it is a fact about LinkedIn rather
+            than an offer from Trevra.
+          */}
         </details>
       </details>
     </section>
@@ -2262,14 +2311,17 @@ const calendarDayLabel = (day: string) =>
  * nothing. Slots become real only downstream of a campaign approval.
  *
  * BOTH READS ON THIS SCREEN ANSWER FOR THE SAME ACCOUNT, which is what makes
- * the zone below the right one: `planLinkedIn` sends no `seatKey` and
- * `getLinkedInLimits` asks for none, so both fall to `OWNER_SEAT_KEY` on the
- * server. There is no account picker here to break that pairing; if one is
- * ever added it has to be passed to both calls, or this calendar starts
- * labelling one account's slots in another account's clock.
+ * the zone below the right one. That used to be true by accident -- neither
+ * call named a seat, so both fell to `OWNER_SEAT_KEY` -- and the pairing was
+ * one account picker away from breaking. It is now true on purpose: the tab's
+ * active account is passed to BOTH `planLinkedIn` and `useSeatLimits`, so the
+ * slots and the clock they are labelled in come from one seat. Adding a
+ * picker that feeds only one of them is what would label one account's slots
+ * in another account's zone.
  */
 export function OutreachPlan({ setToast }: { setToast: (message: string) => void }) {
-  const { limits, loading: limitsLoading, error: limitsError } = useSeatLimits();
+  const [seatKey] = useActiveSeatKey();
+  const { limits, loading: limitsLoading, error: limitsError } = useSeatLimits(seatKey);
   const [kind, setKind] = useState<PacedKind>('invite');
   const [horizonDays, setHorizonDays] = useState(14);
   const [targets, setTargets] = useState('');
@@ -2283,7 +2335,7 @@ export function OutreachPlan({ setToast }: { setToast: (message: string) => void
     setBusy(true);
     setError('');
     try {
-      const response = await planLinkedIn({ kind, targets: list, horizonDays });
+      const response = await planLinkedIn({ kind, targets: list, horizonDays, ...(seatKey ? { seatKey } : {}) });
       setResult(response);
       setToast(`Worked out ${response.plan.slots.length} action(s) across ${horizonDays} days. Nothing was saved.`);
     } catch (err) {
@@ -2312,6 +2364,10 @@ export function OutreachPlan({ setToast }: { setToast: (message: string) => void
   const busiest = Math.max(1, ...days.map(([, slots]) => slots.length));
 
   return <div className="page-stack">
+    <ActiveAccountBar scope={<>
+      The plan below is worked out against this account’s own history, its working hours and its daily ceilings, and
+      the times are shown in its timezone.
+    </>} />
     <section className="li-dryrun">
       <CalendarClock size={20} />
       <div>

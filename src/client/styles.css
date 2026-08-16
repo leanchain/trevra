@@ -831,7 +831,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .page-panel > label { display: grid; gap: 6px; margin-top: 12px; font-size: var(--t-text-xs); font-weight: 700; }
 .page-panel > label input, .page-panel > label textarea, .page-panel > label select { width: 100%; min-height: var(--t-tap); border: 1px solid var(--line); border-radius: var(--t-r-sm); padding: 10px 11px; background: var(--t-field); color: var(--ink); font-size: var(--t-text-xs); }
 @media (max-width: 1100px) { .registry-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
-@media (max-width: 720px) { .registry-grid { grid-template-columns: 1fr; } }
+@media (max-width: 720px) {
+  .registry-grid { grid-template-columns: 1fr; }
+  .onboarding-choice { grid-template-columns: 1fr; }
+  .onboarding-head { flex-direction: column; gap: 8px; }
+  .onboarding-steps li { grid-template-columns: auto minmax(0, 1fr); }
+  .onboarding-steps li > button { grid-column: 1 / -1; width: 100%; justify-content: center; }
+}
 
 /* First-run checklist. Shown only while a workspace is still being set up;
    every step is derived from real data, so it removes itself. */
@@ -839,11 +845,21 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .onboarding-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; margin-bottom: 14px; }
 .onboarding-head :is(h2, h3) { margin-bottom: 5px; font-size: var(--t-text-lg); font-weight: var(--t-w-bold); letter-spacing: var(--t-track-flat); }
 .onboarding-head p { max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); }
+.onboarding-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin: 4px 0 12px; }
+.onboarding-choice button { min-height: 62px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-field); color: var(--ink); text-align: left; cursor: pointer; }
+.onboarding-choice button:hover { border-color: var(--t-line-strong); background: var(--t-surface-2); }
+.onboarding-choice button.is-active { border-color: var(--green); background: var(--green-3); }
+.onboarding-choice strong, .onboarding-choice span { display: block; }
+.onboarding-choice strong { margin-bottom: 3px; font-size: var(--t-text-sm); }
+.onboarding-choice span { color: var(--muted); font-size: var(--t-text-xs); line-height: 1.4; }
+.onboarding-loading { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; color: var(--muted); font-size: var(--t-text-xs); }
 .onboarding-steps { list-style: none; display: grid; gap: 2px; margin: 0; padding: 0; }
 .onboarding-steps li { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 12px 2px; border-top: 1px solid var(--t-line-soft); }
 .onboarding-steps li:first-child { border-top: 0; }
 .onboarding-steps li > svg { color: var(--t-line-strong); }
 .onboarding-steps li.is-done > svg { color: var(--green); }
+.onboarding-steps li.is-next { margin: 2px -8px; padding: 12px 10px; border-radius: var(--t-r-md); background: var(--green-3); }
+.onboarding-steps li.is-next + li { border-top-color: transparent; }
 .onboarding-steps strong { display: block; font-size: var(--t-text-sm); margin-bottom: 3px; }
 .onboarding-steps small { display: block; max-width: var(--t-measure); color: var(--muted); font-size: var(--t-text-xs); line-height: 1.45; }
 .onboarding-steps li.is-done strong { color: var(--muted); text-decoration: line-through; }
@@ -1226,13 +1242,6 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-inline-check { display: flex; align-items: center; gap: 8px; min-height: 24px; font-size: var(--t-text-xs); font-weight: 700; }
 .li-inline-check input { width: 16px; height: 16px; min-height: 0; flex: none; accent-color: var(--t-green-fill); }
 .li-hint { max-width: var(--t-measure); color: var(--muted); font-size: var(--t-text-xs); line-height: 1.45; }
-/* The rail's own top panel is full width with nothing beside it, so a
-   plain .section-heading's flex space-between stretches the Sync button to
-   the far right edge on a wide screen, leaving a long dead gap between it
-   and the title/description it belongs with. Capped so the two stay a
-   single visual group, same reasoning as the other full-width-exposed caps
-   in this file. */
-.li-inbox-head { max-width: 720px; }
 .li-filter-row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 12px; }
 .li-filter-standalone { margin-bottom: 0; align-items: center; }
 .li-filter-label { color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
@@ -1516,6 +1525,14 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-queued { margin-top: 12px; border: 1px solid var(--line); border-left: 3px solid var(--green); background: var(--panel); border-radius: var(--t-r-md); padding: 13px 15px; }
 .li-queued strong { display: flex; gap: 8px; align-items: center; font-size: var(--t-text-sm); color: var(--green); margin-bottom: 8px; }
 .li-queued p { margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.6; max-width: var(--t-measure); }
+/* The bytes that will be typed, quoted back. A queue nobody can read is a
+   queue nobody can correct, so the words sit under the stage chip that says
+   where they got to -- and the two controls beside them are only rendered
+   while the row is still the operator's to change. */
+.li-queued-body { flex: 1 1 100%; margin: 2px 0 0; padding: 8px 11px; border-left: 2px solid var(--line); background: var(--t-surface-2); border-radius: var(--t-r-sm); color: var(--fg); font-size: var(--t-text-xs); line-height: 1.6; max-width: var(--t-measure); white-space: pre-wrap; }
+.li-queued-controls { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+.li-queued-edit { flex: 1 1 100%; display: grid; gap: 8px; margin-top: 2px; }
+.li-queued-edit .li-hint { margin: 0; }
 .li-gate-checks { margin-top: 10px; }
 .li-gate-checks > summary { list-style: none; min-height: var(--t-tap); display: inline-flex; align-items: center; color: var(--green); font-size: var(--t-text-xs); font-weight: 700; cursor: pointer; }
 .li-gate-checks > summary::-webkit-details-marker { display: none; }

@@ -3,7 +3,7 @@ import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
 import { LINKEDIN_CHECK_NAMES, evaluateLinkedInSafety, linkedinGuardSkill, type LinkedInCheckName, type LinkedInSafetyVerdict } from './guard.js';
 import { MAX_OUTSTANDING_INVITES } from './limits.js';
-import { FLAT_DAY_SHAPE } from './pacing.js';
+import { FLAT_DAY_SHAPE, type DayShapeFn } from './pacing.js';
 import { upsertSeat } from './seats.js';
 
 let db: Db;
@@ -736,6 +736,217 @@ describe('the warm-up ceiling override', () => {
     const dm = await guard({ kind: 'dm', overrideWarmupCeiling: true });
     expect(check(dm, 'warmup-ceiling').passed).toBe(false);
     expect(check(dm, 'warmup-ceiling').detail).not.toContain('overrode');
+  });
+});
+
+/**
+ * ANSWERING SOMEBODY WHO WROTE TO YOU IS NOT OUTREACH (migration 074).
+ *
+ * The ramp exists to slow a new seat's outreach. Applied to a reply in a
+ * conversation the other person started, it refused the most ordinary thing
+ * anybody does on LinkedIn -- and the only way past it was an operator override
+ * that no control in the product ever set, so week one had no way to answer a
+ * message at all.
+ */
+describe('a reply to somebody who wrote first', () => {
+  it('is not held by the warm-up ceiling, and says why', async () => {
+    await seat('2026-08-04'); // Week 1: the ramp permits no messages at all.
+    expect(check(await guard({ kind: 'reply' }), 'warmup-ceiling').passed).toBe(false);
+
+    const answered = await guard({ kind: 'reply', replyToInbound: true });
+    expect(check(answered, 'warmup-ceiling').passed).toBe(true);
+    expect(check(answered, 'warmup-ceiling').detail).toContain('wrote to this account first');
+    expect(check(answered, 'warmup-ceiling').detail).toContain('relaxes this ceiling and nothing else');
+    expect(answered.allowed).toBe(true);
+  });
+
+  it('does not excuse a cold message that merely claims to be one', async () => {
+    await seat('2026-08-04');
+    for (const kind of ['dm', 'invite', 'inmail'] as const) {
+      const verdict = await guard({ kind, replyToInbound: true });
+      expect(check(verdict, 'warmup-ceiling').passed).toBe(false);
+      expect(check(verdict, 'warmup-ceiling').detail).not.toContain('wrote to this account first');
+    }
+  });
+
+  /**
+   * WHEN A PERSON IS TYPING, THE CLOCK IS THEIRS. The working window paces what
+   * the account does by itself; people read their messages in the evening.
+   */
+  it('is not held by the hour of the day or the day of the week', async () => {
+    await seat('2026-08-04');
+
+    const nightly = await evaluateLinkedInSafety(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'reply',
+        targetRef: 'https://www.linkedin.com/in/maya/',
+        plannedFor: '2026-08-06T02:00:00.000Z',
+        replyToInbound: true
+      },
+      NOW
+    );
+    expect(check(nightly, 'business-hours').passed).toBe(true);
+    expect(check(nightly, 'business-hours').detail).toContain('a person uses LinkedIn when they are at it');
+    expect(nightly.allowed).toBe(true);
+
+    // 2026-08-08 is a Saturday, which this seat has not configured.
+    const weekend = await evaluateLinkedInSafety(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'reply',
+        targetRef: 'https://www.linkedin.com/in/maya/',
+        plannedFor: '2026-08-08T10:00:00.000Z',
+        replyToInbound: true
+      },
+      NOW
+    );
+    expect(check(weekend, 'weekend').passed).toBe(true);
+    expect(weekend.allowed).toBe(true);
+  });
+
+  it('still refuses everybody else at 02:00', async () => {
+    await seat('2026-08-04');
+    for (const input of [
+      { kind: 'dm' as const, replyToInbound: true },
+      { kind: 'reply' as const, replyToInbound: false }
+    ]) {
+      const nightly = await evaluateLinkedInSafety(
+        db,
+        {
+          workspaceId: WORKSPACE_ID,
+          kind: input.kind,
+          targetRef: 'https://www.linkedin.com/in/maya/',
+          plannedFor: '2026-08-06T02:00:00.000Z',
+          ...(input.replyToInbound ? { replyToInbound: true } : {})
+        },
+        NOW
+      );
+      expect(check(nightly, 'business-hours').passed).toBe(false);
+      expect(nightly.allowed).toBe(false);
+    }
+  });
+
+  it('leaves the checks that are about VOLUME able to refuse it', async () => {
+    // Relaxing WHEN is not relaxing HOW MUCH: the rolling windows, posture and
+    // the duplicate guard all still run.
+    await seat('2026-08-04');
+    const twice = await evaluateLinkedInSafety(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'reply',
+        targetRef: 'https://www.linkedin.com/in/maya/',
+        plannedFor: '2026-08-05T10:00:00.000Z',
+        replyToInbound: true
+      },
+      NOW
+    );
+    expect(twice.checks.map((entry) => entry.check)).toContain('rolling-24h');
+    expect(twice.checks.map((entry) => entry.check)).toContain('duplicate-target');
+  });
+
+  it('spells the refusal it is most likely to be read in', async () => {
+    await seat('2026-08-04');
+    const refused = await guard({ kind: 'reply' });
+    expect(check(refused, 'warmup-ceiling').detail).toContain('permits no replies at all');
+    expect(check(refused, 'warmup-ceiling').detail).not.toContain('replys');
+  });
+});
+
+/**
+ * THE WORKING WINDOW IS A STATEMENT ABOUT THE AUTOMATION, NOT ABOUT THE
+ * OPERATOR.
+ *
+ * It exists so the ACCOUNT does not look like a scheduler when it works by
+ * itself. Enforced against a hand-driven action it refused work a person had
+ * already decided to do -- and the account holder's own answer to that is the
+ * whole of this block: they read and answer LinkedIn on weekends, in the
+ * evening and at midnight, like everybody else.
+ *
+ * SPARSE, STILL. Only the two time checks move; every ceiling below counts a
+ * manual action exactly like any other.
+ */
+describe('an action a person asked for', () => {
+  // 02:00 on a Thursday, and 10:00 on a Saturday this seat has not configured.
+  const NIGHT = '2026-08-06T02:00:00.000Z';
+  const SATURDAY = '2026-08-08T10:00:00.000Z';
+
+  it('is not held by the hour of the day or the day of the week', async () => {
+    await seat('2026-06-01');
+    for (const kind of ['invite', 'dm', 'reply', 'profile_view'] as const) {
+      const nightly = await guard({ kind, plannedFor: NIGHT, manual: true });
+      expect(check(nightly, 'business-hours').passed).toBe(true);
+      expect(check(nightly, 'business-hours').detail).toContain('a person asked for at the moment they asked for it');
+
+      const saturday = await guard({ kind, plannedFor: SATURDAY, manual: true });
+      expect(check(saturday, 'weekend').passed).toBe(true);
+      expect(check(saturday, 'business-hours').passed).toBe(true);
+    }
+  });
+
+  it('leaves the planner inside the window', async () => {
+    // The same instants, with nobody at the keyboard. Nothing about the
+    // scheduled side of this product changed.
+    await seat('2026-06-01');
+    expect(check(await guard({ kind: 'invite', plannedFor: NIGHT }), 'business-hours').passed).toBe(false);
+    expect(check(await guard({ kind: 'invite', plannedFor: SATURDAY }), 'weekend').passed).toBe(false);
+  });
+
+  it('relaxes WHEN and never HOW MUCH', async () => {
+    // Week 1, so the ramp permits no invites at all. A person asking for one at
+    // midnight is still asking for an invite this seat may not send: the hour
+    // is theirs, the volume is not.
+    await seat('2026-08-04');
+    const midnight = await guard({ kind: 'invite', plannedFor: NIGHT, manual: true });
+    expect(check(midnight, 'business-hours').passed).toBe(true);
+    expect(check(midnight, 'warmup-ceiling').passed).toBe(false);
+    expect(midnight.allowed).toBe(false);
+    // And every volume check still ran rather than being skipped.
+    const names = midnight.checks.map((entry) => entry.check);
+    expect(names).toContain('rolling-24h');
+    expect(names).toContain('rolling-7d');
+    expect(names).toContain('duplicate-target');
+  });
+
+  it('does not lift the warm-up ceiling the way an inbound reply does', async () => {
+    // Two different questions. "Somebody wrote to me" is about what the action
+    // IS; "I am at the keyboard" is about when it happens.
+    await seat('2026-08-04');
+    const manualReply = await guard({ kind: 'reply', plannedFor: NIGHT, manual: true });
+    expect(check(manualReply, 'warmup-ceiling').passed).toBe(false);
+    const answered = await guard({ kind: 'reply', plannedFor: NIGHT, manual: true, replyToInbound: true });
+    expect(check(answered, 'warmup-ceiling').passed).toBe(true);
+  });
+
+  it('is not zeroed by a rest day, which is the same rhythm wearing a third name', async () => {
+    // About one working day in eight is drawn empty so the account does not do
+    // the same volume every day. That is the seat's rhythm; applied to a person
+    // typing, it reported a ceiling of zero as "the ramp permits none at all"
+    // and refused an ordinary Tuesday's work for a reason nobody could act on.
+    await seat('2026-06-01');
+    const dayShape: DayShapeFn = (_seed, _day, window) => ({
+      startMinute: window.startMinute,
+      endMinute: window.endMinute,
+      resting: true,
+      draw: 1
+    });
+
+    const planner = await guard({ kind: 'dm' }, { dayShape });
+    expect(check(planner, 'rolling-24h').passed).toBe(false);
+
+    const person = await guard({ kind: 'dm', manual: true }, { dayShape });
+    expect(check(person, 'rolling-24h').passed).toBe(true);
+    expect(check(person, 'warmup-ceiling').passed).toBe(true);
+  });
+
+  it('is refused by a paused seat like anything else', async () => {
+    await seat('2026-06-01', 'paused');
+    const verdict = await guard({ kind: 'dm', plannedFor: NIGHT, manual: true });
+    expect(check(verdict, 'seat-paused').passed).toBe(false);
+    expect(verdict.allowed).toBe(false);
   });
 });
 

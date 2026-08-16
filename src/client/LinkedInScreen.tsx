@@ -71,7 +71,7 @@ import {
 // WHICH ACCOUNT THIS SCREEN IS LOOKING AT. The account switcher owns it for the
 // whole tab; every read and every write below names it rather than defaulting
 // to the workspace's first account, which is what they all silently did.
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { ActiveAccountBar, useActiveSeatKey } from './LinkedInAccounts';
 import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag, LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
@@ -212,6 +212,11 @@ export function OutreachSeat(_props: { setToast: (message: string) => void }) {
 
   useEffect(() => { void loadSeries(); }, [loadSeries]);
   useOutreachRefresh(loadSeries);
+
+  // Account creation already has one canonical empty state immediately above
+  // this operating read on `/outreach`. Rendering Safety's second "no account"
+  // panel underneath it gave a first-time user two doors for one prerequisite.
+  if (limits && !limits.seat.configured) return null;
 
   return <div className="page-stack">
     {error && <div className="error-banner">
@@ -1221,6 +1226,17 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
   // member list the workspace switcher and Team settings read, not a second
   // fetch of who is in this workspace.
   const { nameFor } = useWorkspaceMembers();
+  /**
+   * WHOSE QUEUE THIS IS.
+   *
+   * `GET /api/linkedin/actions` has taken a `seatKey` filter since the ledger
+   * grew a seat column, and this screen sent none -- so a workspace with two
+   * LinkedIn accounts saw both accounts' scheduled sends in one undifferentiated
+   * list, with Skip and Mark-as-sent beside every row, whichever account the
+   * operator had switched to. The switch above the filters is the same one the
+   * Accounts screen renders; the rows below it are now that account's.
+   */
+  const [seatKey] = useActiveSeatKey();
   const [actions, setActions] = useState<LinkedInActionView[]>([]);
   /** For the campaign picker. A filter you have to TYPE an id into is a filter nobody uses twice. */
   const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
@@ -1242,6 +1258,7 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
         ...(status ? { status } : {}),
         ...(kind ? { kind } : {}),
         ...(campaignId ? { campaignId } : {}),
+        ...(seatKey ? { seatKey } : {}),
         limit: 200
       }));
       setSelected(new Set());
@@ -1251,17 +1268,21 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { void load(); }, [status, kind, campaignId]);
+  useEffect(() => { void load(); }, [status, kind, campaignId, seatKey]);
   useOutreachRefresh(load);
 
   useEffect(() => {
     // A picker that cannot be populated simply is not offered; it never blocks
     // the queue, which is the thing this screen is actually for.
+    //
+    // Narrowed to the same account as the rows: a campaign filter offering
+    // campaigns that belong to another account can only ever select an empty
+    // queue, which reads as "this campaign did nothing".
     void (async () => {
-      try { setCampaigns(await getLinkedInCampaigns()); }
+      try { setCampaigns(await getLinkedInCampaigns(seatKey || undefined)); }
       catch { /* the campaign filter is not worth an error banner over the queue */ }
     })();
-  }, []);
+  }, [seatKey]);
 
   const filtered = Boolean(status || kind || campaignId);
   const skippable = actions.filter(isSkippable);
@@ -1336,6 +1357,10 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
   };
 
   return <div className="page-stack">
+    <ActiveAccountBar scope={<>
+      Everything below is scheduled to go out from this account, and every campaign in the filter belongs to it.
+      Skipping a row or marking one sent changes that account's ledger only.
+    </>} />
     <section className="page-panel">
       {/* Status and campaign are what an operator actually scopes by. Kind was
           a sixth dropdown open on arrival next to a field asking them to TYPE

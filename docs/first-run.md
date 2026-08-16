@@ -1,110 +1,120 @@
-# First run: signed up → qualified leads
+# First run: choose one outcome, get to value
 
-Companion to `docs/lead-spine.md`, which says *why* the pieces don't join today.
-This one says what the operator does, screen by screen, and what each step calls.
+This is the current first-run contract for Trevra. It replaces the older lead-spine
+plan that predated the shipped account scorer, managed LinkedIn campaigns, inbox,
+agent access, hosted workspaces, and the five-screen GTM shell.
 
-Design rule for every step below: **the operator supplies context, never
-mechanics.** No URL construction, no facet ids, no "pick a provider". If a step
-can be derived, it is derived and shown for correction rather than asked for.
+The rule is simple: **a new user chooses one outcome first. Trevra never asks them
+to configure both halves of the product before either half becomes useful.**
+Completion is derived from real server state. The choice of which outcome to work
+on first is only a presentation preference.
 
-## The journey, four steps, one funnel
+## Step 0 — sign in
 
-### Step 0 — Sign up (exists)
-Email + workspace. Nothing else. No connector, no key, no LinkedIn seat. The
-first screen after signup is Step 1, not a dashboard.
+Hosted production uses Google OAuth. Self-hosted deployments may also enable
+email/password auth. Authentication creates or resolves the workspace and lands on
+`/loop`.
 
-### Step 1 — "Who do you sell to?" (one fork, both doors converge)
+No provider connection, model key, LinkedIn password, campaign, or import is
+required on the auth screen.
 
-**Door A — no list.** One field: *your* website URL. We read the homepage and
-pricing page (`gtm.watch-signal`'s existing readers, `src/server/skills/signal.ts:184`)
-and propose an ICP in plain words: what you sell, to which vertical, at which
-size. Shown as an editable sentence, not a form:
+## Step 1 — choose the first outcome
 
-> "Companies in **developer tooling**, **20–200 people**, that publish an
-> engineering blog and are hiring **platform engineers**."
+The Loop asks one question:
 
-Edit the bold parts, confirm. That sentence becomes `gtm.source-leads`’ request
-(`keywords`, `vertical`, `countries` — `src/server/research/source.ts:47`) and
-returns `CandidateCompany[]`.
+- **Win new business** — get one outbound campaign ready.
+- **Get paid for work** — connect commercial evidence and surface the first thing
+  that needs a decision.
 
-**Door B — has a list (Guido).** Drop a CSV, or paste domains one per line. No
-column mapping UI: sniff `domain`/`company`/`website` headers, show the first
-three rows parsed, accept. 500 rows is the whole ask.
+Only the selected checklist is expanded. The other outcome remains one click away.
+The preference is remembered locally; it is not business state and it never marks a
+step complete.
 
-Both doors write the same rows into **`accounts`** — the table that does not
-exist yet and that everything downstream needs (`docs/lead-spine.md` §3.1).
-Door A's rows carry `source='sourced'`, Door B's `source='csv'`.
+## Outcome A — win new business
 
-### Step 2 — "What counts as a good moment?" (defaulted, skippable)
+Four verifiable steps, in order:
 
-Three toggles, all on by default, each one signal we can already read:
+1. **Add the LinkedIn account you will send from** → `/outreach`
+   - name the sending account;
+   - set timezone, working days/hours and operator ceilings;
+   - connect/sign in when the deployment supports browser execution.
+2. **Build one lead list** → `/outreach/manager`
+   - import people directly, or use `/outreach/leads` to turn a LinkedIn source
+     into a reviewed list.
+3. **Build one workflow** → `/outreach/manager`
+   - view, invite, message, follow, wait, or stop for a manual message.
+4. **Create the campaign** → `/outreach/manager`
+   - pick one sending account, one lead list and one workflow;
+   - creation sends nothing; Start is a separate decision.
 
-| Toggle | What it reads today |
-| --- | --- |
-| They're hiring for it | careers page diff → `hiring-up` (`signal.ts:350`) |
-| They changed their pitch or pricing | homepage/pricing diff → `headline-changed`, `pricing-changed` |
-| They're talking about it in public | `gtm.scout-threads` over hn, reddit, github, dev.to, lobsters, SO, mastodon |
+The campaign screen repeats these prerequisites when there is no campaign yet and
+highlights exactly one next step. This is deliberate redundancy: Loop answers
+"what should I do next?" and Campaigns answers "what does this campaign still need?"
+without requiring the user to remember the route they came from.
 
-One slider under them: **how strict** — "any one signal" → "two or more in 30
-days". Default: two or more. That default *is* Guido's point about layering,
-and it is the only place the strictness is expressed.
+Every check mark is derived from stored objects: configured LinkedIn account, lead
+list, workflow, campaign. There are no permanently-untracked circles.
 
-"Skip, use sensible defaults" is a first-class button. A user who presses it
-never sees this screen again and still gets a correct product.
+### Related prospecting routes
 
-### Step 3 — The sweep runs, and the operator can leave
+- `/outreach/accounts` — **Target accounts**: ranked companies and the evidence
+  behind their score. This used to be a sixth primary nav destination at `/leads`.
+  `/leads` remains a compatibility alias and is replaced with this route.
+- `/outreach/leads` — **Find people**: turn LinkedIn searches, posts or keyword
+  sources into people, then save reviewed results into lead lists.
 
-We queue a paced signal pass over every account and say so honestly:
+These are ways to produce campaign inputs, not primary app destinations.
 
-> "Reading 500 sites at a paced gap. First results in a few minutes, all of them
-> within the hour. You can close this — we'll email you when the first ten land."
+## Outcome B — get paid for work
 
-This is the existing worker cycle (`src/worker/index.ts:37`) gaining a signal
-pass; no new runtime. The screen streams accounts in as they resolve, so the
-page is never a spinner.
+Three verifiable steps, in order:
 
-### Step 4 — The payoff screen: a ranked list with its evidence attached
+1. **Connect Claude Code or Codex** → `/setup/agent`
+   - Trevra creates the scoped token and the exact MCP command;
+   - the agent may read and prepare but cannot approve or execute.
+2. **Connect the source that knows what happened** → `/setup/data`
+   - email/accounting through Nango, or another supported source.
+3. **Bring in clients and agreements** → `/setup/data`
+   - connected sync, agreement upload, marketplace CSV, or generic import.
 
-One list, sorted by score. Each row is one account and reads as a sentence, not
-a record:
+Once these exist, setup is complete. Recommendations are an outcome of the system,
+not an onboarding checkbox: a healthy workspace is allowed to have nothing that
+needs approval.
 
-> **Kestrel Data** · score 87
-> Posted 3 platform-engineering roles this week, and their pricing page dropped
-> the "Enterprise" tier on 2 Aug. Two signals, both inside 9 days.
-> [ Why this score ] [ Draft the opener ] [ Not a fit ]
+## The recurring journey
 
-- **Why this score** expands into the raw signals with their evidence URLs.
-  Nothing is asserted without a link to what we read.
-- **Draft the opener** runs `gtm.research-brief` + `gtm.outreach-draft` for that
-  one account, lands in approvals — unchanged from today, except the input is an
-  account rather than a typed audience string.
-- **Not a fit** is training data: it down-weights that signal shape and is the
-  cheapest honest feedback loop we have.
+After first run, the five primary destinations are stable:
 
-That screen is the "boom". Everything before it is four questions, two of which
-have defaults.
+1. **Loop** — where is the GTM loop stuck and what is the one next action?
+2. **Outreach** — sending accounts, prospect inputs, campaigns and replies.
+3. **Money** — prepared work at the paid end: agree, deliver, bill, collect.
+4. **Ledger** — what agents and workflows actually did, with evidence.
+5. **Setup** — access, integrations and limits that are changed occasionally.
 
-## What this journey deliberately does NOT do
+A separate sixth nav item is a regression. A one-time configuration surface in
+primary navigation is a regression.
 
-- **No LinkedIn in the first run.** It is opt-in, self-host-only, and legally a
-  different act (`linkedin/leads.ts:100`). It appears later as *one more source
-  that imports into accounts*, never as the front door. Today it is the front
-  door, and that is the single biggest reason the flow feels hard.
-- **No connectors, no API keys at signup.** `source-leads` falls back to the
-  `seed` provider without credentials; Exa improves results, it does not gate
-  them (`research/registry.ts`).
-- **No empty dashboard.** There is no state in this journey where the operator
-  sees a screen with nothing on it and no obvious next click.
+## Failure and recovery rules
 
-## Build order (each step ships usable on its own)
+- A loading request gets a bounded stall state and a retry; no infinite spinner.
+- A missing prerequisite says what is missing and links to the canonical screen
+  that fixes it.
+- A safety refusal is a decision with a reason, not a generic red error.
+- Destructive operations explain what survives before confirmation.
+- A legacy route is replaced, not duplicated into a second information
+  architecture.
+- Hosted capabilities that are not configured fail closed rather than presenting
+  controls that can never work.
 
-1. `accounts` + `account_signals` tables and the CSV/paste import — Door B alone
-   is already a product for Guido.
-2. Signal pass on the worker cycle, writing `account_signals`. Step 3 + 4 become
-   real with no new UI beyond one list.
-3. Scoring over co-occurring signals in a window (`gtm.score-lead` reading the
-   account's rows) + the "why this score" expansion.
-4. Door A: site → ICP sentence → `source-leads` → accounts.
-5. "Draft the opener" wiring account → `research-brief` → `outreach-draft` →
-   approvals.
-6. LinkedIn walk demoted to an importer into `accounts`.
+## What first run deliberately does not require
+
+- Both product outcomes at once.
+- A hosted model API key; BYO-agent remains the safer/default operator path.
+- LinkedIn server-side automation on hosted deployments that do not have a remote
+  browser provider.
+- A recommendation to exist before setup can be considered complete.
+- Raw IDs, token names, JSON, provider internals, or mechanics a machine can fill.
+
+The implementation lives primarily in `src/client/views/LoopView.tsx`, the route
+contract in `src/client/ui/route.ts`, and the local campaign prerequisite flow in
+`src/client/LinkedInManagerRead.tsx`.

@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom';
 import {
   Bot,
   BriefcaseBusiness,
-  Building2,
   CalendarClock,
   Check,
   CheckCircle2,
@@ -99,7 +98,7 @@ import { trackEvent, trackPageView } from './analytics';
 import { ConfirmDrawer, useDialog } from './ui/dialog';
 import { HelpPanel, JumpPalette, ShortcutSheet } from './ui/HelpPanel';
 import { useShortcuts } from './ui/keys';
-import { isAccountsPath, isLoginPath, navigate, usePathname, useRoute, type Route, type Section } from './ui/route';
+import { isAccountsPath, isLoginPath, navigate, replaceNavigate, usePathname, useRoute, type Route, type Section } from './ui/route';
 import { StopBar } from './ui/StopBar';
 import { formatEvery } from './ui/duration';
 import { formatMoment } from './views/inspector';
@@ -148,8 +147,9 @@ const NAV_ITEMS: Array<{ section: Section; path: string; icon: React.ReactNode; 
  * would silently land on the section root.
  */
 const OUTREACH_ROUTES: Array<{ sub: string; label: string; advanced?: true }> = [
-  { sub: '', label: 'Account' },
-  { sub: 'leads', label: 'Find leads' },
+  { sub: '', label: 'LinkedIn accounts' },
+  { sub: 'accounts', label: 'Target accounts' },
+  { sub: 'leads', label: 'Find people' },
   { sub: 'manager', label: 'Campaigns' },
   { sub: 'inbox', label: 'Inbox' },
   // THE ADVANCED THREE, and the order is the order they are used in.
@@ -183,30 +183,17 @@ const UNDO_MS = 9000;
  * than cached: the preference can change while a tab is open.
  */
 const reducedMotion = () => typeof window !== 'undefined'
-  && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
-
 /**
- * `/leads` -- the account spine's ranked list, addressed beside the sections.
+ * `/leads` is the legacy address for the target-account screen.
  *
- * It is NOT a `Section` in ui/route.ts, and the seam is deliberate rather than
- * an oversight. The five sections are the shell's own shape (docs/gtm-shell-
- * shape.md) and reorganising them around a spine that has one screen so far
- * would be settling a question the spine has not answered yet -- so the screen
- * ships at its own path, the router keeps its five, and the day accounts earn
- * a section this hook deletes and a `SECTIONS` entry replaces it.
- *
- * `parseRoute` sends an unknown head to the default route, so this asks the
- * pathname directly. `SHELL_PATHS` in ui/route.ts is what stops the click
- * interceptor and the server treating `/leads` as somebody else's URL.
- *
- * lc-debt: one screen addressed outside the router's Section union; upgrade
- * path is 'accounts' in SECTIONS + SUB_ROUTES, at which point this is an
- * ordinary `route.section === 'accounts'`.
+ * Target accounts now live inside Outreach at `/outreach/accounts`, where the
+ * job has the surrounding context it was missing as a sixth primary nav item.
+ * Keep detecting the old path only so `App` can replace it without breaking
+ * bookmarks or links somebody already shared.
  */
 function useAccountsRoute(): boolean {
   return isAccountsPath(usePathname());
 }
-
 const MARKETING_ONLY = import.meta.env.VITE_MARKETING_ONLY === 'true';
 const HOSTED_APP_URL = import.meta.env.VITE_HOSTED_APP_URL?.trim() ?? '';
 const GITHUB_URL = import.meta.env.VITE_GITHUB_URL?.trim() ?? '';
@@ -241,6 +228,9 @@ export function App() {
   const [route, go] = useRoute();
   // Read beside the route rather than out of it: see `useAccountsRoute`.
   const accountsOpen = useAccountsRoute();
+  // `/leads` was the old top-level address for target-company scoring. Keep
+  // bookmarks working, but put the job where it belongs: inside Outreach.
+  useEffect(() => { if (accountsOpen) replaceNavigate('/outreach/accounts'); }, [accountsOpen]);
   const [activeAction, setActiveAction] = useState<PreparedAction | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toast, setToastState] = useState<ToastMessage | null>(null);
@@ -468,26 +458,15 @@ export function App() {
         <nav>
           {NAV_ITEMS.map((item) => <NavButton
             key={item.section}
-            active={!accountsOpen && route.section === item.section}
+            active={route.section === item.section}
             icon={item.icon}
             label={item.label}
             // The unread count sits where clicking it already goes somewhere.
             badge={item.section === 'money' ? open.length : undefined}
             onClick={() => go(item.path)}
           />)}
-          {/* Beside the five, not inside them, for the reason `useAccountsRoute`
-              gives. Rendered here so the screen has a way in that is not a
-              typed URL. */}
-          <NavButton
-            active={accountsOpen}
-            icon={<Building2 size={18} />}
-            label="Accounts"
-            onClick={() => go('/leads')}
-          />
         </nav>
         <div className="sidebar-promise">
-          <ShieldCheck size={18} />
-          <div><strong>You have the final say</strong><span>Your agent prepares. Nothing goes out until you approve it.</span></div>
         </div>
         <div className="sidebar-bottom">
           <div className="workspace-avatar">{initials(data.workspace.name)}</div>
@@ -503,7 +482,7 @@ export function App() {
 
       <main className="main" id="main" tabIndex={-1}>
         <header className="topbar">
-          <div><h1>{accountsOpen ? 'Accounts' : viewTitle(route)}</h1></div>
+          <div><h1>{viewTitle(route)}</h1></div>
           {/* Sign-out lives here rather than in the sidebar, because below
               760px the sidebar is not on the screen at all. */}
           <div className="top-actions">
@@ -522,18 +501,14 @@ export function App() {
             survives below 760px, where the sidebar does not. */}
         <StopBar setToast={setToast} />
 
-        {/* `/leads` parses to the default section, so it is answered before
-            it -- and only the default section has to know that. */}
-        {accountsOpen && <AccountsScreen setToast={setToast} />}
-
-        {!accountsOpen && route.section === 'loop' && (route.sub === 'cost'
+        {route.section === 'loop' && (route.sub === 'cost'
           ? <LoopCostView onNavigate={go} />
           : <LoopView
-              data={data}
-              recommendations={open}
-              actions={recommendationActions}
-              onNavigate={go}
-            />)}
+            data={data}
+            recommendations={open}
+            actions={recommendationActions}
+            onNavigate={go}
+          />)}
 
         {route.section === 'outreach' && <div className="page-stack">
           {/* Same markup and class family as Setup's strip, because it is the
@@ -558,6 +533,7 @@ export function App() {
               the detail for the active one. */}
           {route.sub === '' && <LinkedInAccounts setToast={setToast} />}
           {route.sub === '' && <OutreachSeat setToast={setToast} />}
+          {route.sub === 'accounts' && <AccountsScreen setToast={setToast} />}
           {route.sub === 'campaigns' && <OutreachCampaigns setToast={setToast} campaignId={route.id} />}
           {route.sub === 'inbox' && <OutreachInbox setToast={setToast} />}
           {route.sub === 'leads' && <OutreachLeads setToast={setToast} />}
@@ -592,16 +568,10 @@ export function App() {
         {NAV_ITEMS.map((item) => <button
           key={item.section}
           type="button"
-          className={!accountsOpen && route.section === item.section ? 'is-active' : undefined}
-          aria-current={!accountsOpen && route.section === item.section ? 'page' : undefined}
+          className={route.section === item.section ? 'is-active' : undefined}
+          aria-current={route.section === item.section ? 'page' : undefined}
           onClick={() => go(item.path)}
         >{item.icon}<span>{item.label}</span></button>)}
-        <button
-          type="button"
-          className={accountsOpen ? 'is-active' : undefined}
-          aria-current={accountsOpen ? 'page' : undefined}
-          onClick={() => go('/leads')}
-        ><Building2 size={18} /><span>Accounts</span></button>
       </nav>
 
       {activeAction && (
@@ -692,7 +662,7 @@ const SETUP_ROUTES: Array<{ sub: string; label: string }> = [
   { sub: 'agent', label: 'Agent access' },
   { sub: 'data', label: 'Connections' },
   { sub: 'research', label: 'Research' },
-  { sub: 'seat', label: 'LinkedIn seat' },
+  { sub: 'seat', label: 'LinkedIn settings' },
   { sub: 'reddit', label: 'Reddit account' },
   { sub: 'skills', label: 'Skills' },
   { sub: 'limits', label: 'Limits' },
@@ -791,9 +761,13 @@ function AuthScreen({ onAuthenticated, onBack }: { onAuthenticated: () => Promis
   const [googleBusy, setGoogleBusy] = useState(false);
   const [authError, setAuthError] = useState('');
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [emailPasswordEnabled, setEmailPasswordEnabled] = useState(false);
 
   useEffect(() => {
-    void getPublicConfig().then((config) => setGoogleEnabled(config.googleAuthEnabled)).catch(() => undefined);
+    void getPublicConfig().then((config) => {
+      setGoogleEnabled(config.googleAuthEnabled);
+      setEmailPasswordEnabled(config.emailPasswordAuthEnabled);
+    }).catch(() => undefined);
   }, []);
 
   const signInWithGoogle = async () => {
@@ -853,14 +827,17 @@ function AuthScreen({ onAuthenticated, onBack }: { onAuthenticated: () => Promis
           <span className="auth-icon"><ShieldCheck /></span>
           <h2>{mode === 'signin' ? 'Sign in to Trevra' : 'Create your workspace'}</h2>
           <p>{mode === 'signin' ? 'Continue to your loop.' : 'Start with a private revenue ledger only you control.'}</p>
-          {googleEnabled && <><button className="google-auth-button" disabled={busy || googleBusy} onClick={() => void signInWithGoogle()}>{googleBusy ? <LoaderCircle className="spin" size={17} /> : <GoogleMark />}Continue with Google</button><div className="auth-divider"><span>Or the email</span></div></>}
-          {mode === 'signup' && <label>Name<input autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Alex Morgan" /></label>}
-          <label>Email<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" /></label>
-          <label>Password<input type="password" autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 10 characters" onKeyDown={(event) => { if (event.key === 'Enter') void submit(); }} /></label>
+          {googleEnabled && <button className="google-auth-button" disabled={busy || googleBusy} onClick={() => void signInWithGoogle()}>{googleBusy ? <LoaderCircle className="spin" size={17} /> : <GoogleMark />}Continue with Google</button>}
+          {googleEnabled && emailPasswordEnabled && <div className="auth-divider"><span>Or the email</span></div>}
+          {emailPasswordEnabled && <>
+            {mode === 'signup' && <label>Name<input autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Alex Morgan" /></label>}
+            <label>Email<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" /></label>
+            <label>Password<input type="password" autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 10 characters" onKeyDown={(event) => { if (event.key === 'Enter') void submit(); }} /></label>
+          </>}
           {authError && <div className="error-banner">{authError}</div>}
-          <button className="primary-button auth-submit" disabled={busy || googleBusy || !email || password.length < 10 || (mode === 'signup' && !name.trim())} onClick={() => void submit()}>{busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{mode === 'signin' ? 'Sign in' : 'Create workspace'}</button>
+          {emailPasswordEnabled && <button className="primary-button auth-submit" disabled={busy || googleBusy || !email || password.length < 10 || (mode === 'signup' && !name.trim())} onClick={() => void submit()}>{busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{mode === 'signin' ? 'Sign in' : 'Create workspace'}</button>}
           {import.meta.env.DEV && <button className="ghost-button auth-submit" disabled={busy || googleBusy} onClick={() => void startDemoSession().then(onAuthenticated)}>Open seeded demo</button>}
-          <button className="auth-switch" onClick={switchMode}>{mode === 'signin' ? 'New to Trevra? Create an account' : 'Already have an account? Sign in'}</button>
+          {emailPasswordEnabled && <button className="auth-switch" onClick={switchMode}>{mode === 'signin' ? 'New to Trevra? Create an account' : 'Already have an account? Sign in'}</button>}
           <button className="auth-switch" onClick={onBack}>← Back to site</button>
           <p className="auth-consent">By creating or using a workspace, you agree to the <a href="/terms">Terms</a> and acknowledge the <a href="/privacy">Privacy Notice</a>.</p>
           <div className="auth-legal-links"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/security">Security</a><a href="/how-it-works">How it works</a></div>
@@ -2256,7 +2233,7 @@ function ActionDrawer({ action, busy, onChange, onClose, onExecute }: {
     <footer><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={() => setConfirming(true)} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : scheduled ? <CalendarClock size={16} /> : <Check size={16} />} {scheduled ? 'Approve & schedule' : 'Approve & send'}</button></footer>
   </section></div>
 
-  {confirming && <ConfirmDrawer
+    {confirming && <ConfirmDrawer
       tone="caution"
       title={scheduled
         ? `Schedule this for ${action.recipient}?`
@@ -2346,13 +2323,14 @@ function viewTitle(route: Route): string {
     // claiming one name is the exact confusion OUTREACH_ROUTES was reorganised
     // to remove: see the comment there for why the managed runner is the one
     // that gets the word.
+    if (route.sub === 'accounts') return 'Target accounts';
     if (route.sub === 'campaigns') return 'Approve & export';
     if (route.sub === 'inbox') return 'Inbox';
-    if (route.sub === 'leads') return 'Lead sources';
+    if (route.sub === 'leads') return 'Find people';
     if (route.sub === 'manager') return 'Campaigns';
     if (route.sub === 'plan') return 'Plan preview';
     if (route.sub === 'queue') return 'Queue';
-    return 'Outreach seat';
+    return 'LinkedIn accounts';
   }
   if (route.section === 'money') return 'What needs you';
   if (route.section === 'ledger') return 'Run ledger';

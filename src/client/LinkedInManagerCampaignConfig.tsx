@@ -323,7 +323,7 @@ export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads
         <h4 aria-level={3}>Two things first</h4>
         <p>A campaign is a lead list plus a workflow, sent from a LinkedIn account. {seats.length === 0 && 'No account is set up. '}{lists.length === 0 && 'No lead list exists yet. '}{workflows.length === 0 && 'No workflow exists yet. '}</p>
         <div className="mgr-actions">
-          {seats.length === 0 && <a className="primary-button" href="/setup/seat">Set up a LinkedIn account</a>}
+          {seats.length === 0 && <a className="primary-button" href="/outreach">Add a LinkedIn account</a>}
           {lists.length === 0 && <button className="secondary-button" type="button" onClick={onNeedLeads}><Users size={14} /> Import leads</button>}
           {workflows.length === 0 && <button className="secondary-button" type="button" onClick={onNeedWorkflows}><WorkflowIcon size={14} /> Build a workflow</button>}
         </div>

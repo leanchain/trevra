@@ -315,6 +315,18 @@ The six-kind `failureKind` vocabulary is **not** widened for this. A rejected pa
 
 #### 4.3 Deployment-mode gate (build day one, not later) — REVISED
 
+> **SUPERSEDED IN PART — see `docs/hosted-execution.md`.** The "hosted ⇒ off,
+> always" rule below was never really about custody: a hosted container has no
+> display, no Chromium and no browser profile belonging to the person whose
+> account it is, so the only browser it could have driven was nobody's. A
+> **remote browser provider** (`TREVRA_BROWSER_PROVIDER=remote`) supplies that
+> missing piece, and hosted execution is now allowed — for a workspace that has
+> recorded an explicit authorisation, on a seat with its own residential proxy,
+> behind every gate below unchanged. A hosted deployment with no provider
+> refuses exactly as this section describes, with the same sentence. The
+> expression in 4.3 and the production validator have both been updated; the
+> paragraphs that follow are kept as the record of what the rule was and why.
+
 A **hosted** Trevra instance must never be able to enable this — that would reintroduce multi-tenant custody and put the rest of the product behind the same exposure. That half is unchanged and unconditional: `TREVRA_DEPLOYMENT_MODE=hosted` forces it off and no other variable can undo that.
 
 **The same gate, unconditionally, on credential custody (§4.1 Path B).** Hosted refuses to *store* a LinkedIn password and refuses to *open* one it somehow inherited. One operator holding their own password is a small, informed, self-inflicted risk they have already accepted by using the product. A multi-tenant service holding many humans' LinkedIn passwords is a different product with a different threat model, and the answer is one sentence that ends the conversation rather than a switch to go and look for.
@@ -324,7 +336,15 @@ The *other* half — "and off by default everywhere else" — was wrong, and has
 Current rule, in `src/server/config.ts`:
 
 ```ts
+// AS SPECIFIED (superseded):
 enabled: env.TREVRA_DEPLOYMENT_MODE !== 'hosted' && env.TREVRA_LINKEDIN_LOCAL !== 'false'
+
+// AS SHIPPED (docs/hosted-execution.md): a hosted deployment with a remote
+// browser has something to drive. Per-workspace authorisation is a separate
+// gate (`hostedExecutionGate`) enforced at the credential store and at the
+// runner, because it is a per-tenant fact and config.ts reads only the env.
+enabled: (env.TREVRA_DEPLOYMENT_MODE !== 'hosted' || remoteBrowserConfigured(env))
+  && env.TREVRA_LINKEDIN_LOCAL !== 'false'
 ```
 
 Hosted ⇒ off, always. Otherwise on, unless a self-hoster explicitly sets `false`. `hosted` is carried alongside `enabled` so a refusal can say *which* kind of off it is: "switched off" has a fix, "hosted" does not, and telling someone to go and find a switch that does not exist is the dead end this removes.

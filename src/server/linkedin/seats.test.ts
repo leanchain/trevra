@@ -9,6 +9,7 @@ import {
   linkedinSeatRefs,
   linkedinWorkspaceIds,
   listSeats,
+  migrateLegacySeatProxies,
   pauseSeat,
   resumeSeat,
   seatProxyUrl,
@@ -33,6 +34,10 @@ const NOW = new Date('2026-08-06T09:00:00.000Z');
 const ACTIVATED = new Date('2026-01-01T09:00:00.000Z');
 
 const WORKSPACE_ID = 'ws_linkedin_seats_test';
+const PROXY_SECRET_ENV = {
+  ...process.env,
+  TREVRA_SECRETS_KEY: Buffer.alloc(32, 9).toString('base64')
+};
 
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
@@ -47,7 +52,7 @@ afterEach(async () => {
 });
 
 function create(patch: Partial<Parameters<typeof upsertSeat>[2]> = {}, at: Date = NOW): Promise<LinkedInSeat> {
-  return upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich', ...patch }, at);
+  return upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich', ...patch }, at, OWNER_SEAT_KEY, PROXY_SECRET_ENV);
 }
 
 /* =========================================================================
@@ -64,7 +69,21 @@ describe('the account proxy', () => {
     // The whole object is what three routes serialise onto the wire.
     expect(JSON.stringify(seat)).not.toContain('hunter2');
     // And the launcher, server-side, still gets the URL it has to hand Chromium.
-    expect(await seatProxyUrl(db, WORKSPACE_ID)).toBe('http://relay:hunter2@proxy.example:3128');
+    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV)).toBe('http://relay:hunter2@proxy.example:3128');
+    const stored = await db.prepare(`
+      SELECT proxy_url,proxy_server,proxy_username,proxy_has_password
+      FROM linkedin_seats WHERE workspace_id=? AND seat_key=?
+    `).get<{ proxy_url: string | null; proxy_server: string | null; proxy_username: string | null; proxy_has_password: boolean }>(WORKSPACE_ID, OWNER_SEAT_KEY);
+    expect(stored).toEqual({
+      proxy_url: null,
+      proxy_server: 'http://proxy.example:3128',
+      proxy_username: 'relay',
+      proxy_has_password: true
+    });
+    expect(JSON.stringify(stored)).not.toContain('hunter2');
+    const sealed = await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_seat_proxy_secrets WHERE workspace_id=? AND seat_key=?')
+      .get<{ total: number }>(WORKSPACE_ID, OWNER_SEAT_KEY);
+    expect(sealed?.total).toBe(1);
   });
 
   it('leaves a stored proxy alone when the patch does not mention it', async () => {
@@ -73,19 +92,32 @@ describe('the account proxy', () => {
     // not silently drop the connection it goes out through.
     const renamed = await create({ label: 'Pankaj (renamed)' });
     expect(renamed.proxy?.server).toBe('http://proxy.example:3128');
-    expect(await seatProxyUrl(db, WORKSPACE_ID)).toBe('http://proxy.example:3128');
+    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV)).toBe('http://proxy.example:3128');
   });
 
   it('removes it on an explicit null and reports none', async () => {
     await create({ proxyUrl: 'http://proxy.example:3128' });
     const cleared = await create({ proxyUrl: null });
     expect(cleared.proxy).toBeNull();
-    expect(await seatProxyUrl(db, WORKSPACE_ID)).toBeNull();
+    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV)).toBeNull();
   });
 
   it('reports none for an account that never had one', async () => {
     expect((await create()).proxy).toBeNull();
-    expect(await seatProxyUrl(db, WORKSPACE_ID)).toBeNull();
+    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV)).toBeNull();
+  });
+
+  it('converts a pre-076 plaintext proxy before hosted traffic can use it', async () => {
+    await create();
+    await db.prepare('UPDATE linkedin_seats SET proxy_url=? WHERE workspace_id=? AND seat_key=?')
+      .run('http://legacy:old-secret@proxy.example:3128', WORKSPACE_ID, OWNER_SEAT_KEY);
+
+    expect(await migrateLegacySeatProxies(db, PROXY_SECRET_ENV)).toBe(1);
+    const legacy = await db.prepare('SELECT proxy_url FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
+      .get<{ proxy_url: string | null }>(WORKSPACE_ID, OWNER_SEAT_KEY);
+    expect(legacy?.proxy_url).toBeNull();
+    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV))
+      .toBe('http://legacy:old-secret@proxy.example:3128');
   });
 });
 

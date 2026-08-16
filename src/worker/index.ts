@@ -8,6 +8,7 @@ import { runDueAgentSchedules } from '../server/agent/schedule.js';
 import { reapStaleAgentRuns } from '../server/agent/runs.js';
 import { orchestrationMode } from '../server/orchestration/client.js';
 import { validateEnvironment } from '../server/config.js';
+import { assertHostedDataReady } from '../server/hosted-readiness.js';
 import {
   closeLinkedInBrowser,
   defaultSeatConcurrency,
@@ -21,6 +22,7 @@ import {
   workerShard
 } from '../server/linkedin/local-worker.js';
 import { runLinkedInCampaignTick, runLinkedInSideTasks } from '../server/linkedin/jobs.js';
+import { hostedExecutionMode, hostedSeatFilter } from '../server/linkedin/hosted-execution.js';
 import { runDueResearchSources } from '../server/research/service.js';
 
 const runtime=validateEnvironment();
@@ -32,6 +34,7 @@ const runtime=validateEnvironment();
 const linkedinShard=workerShard();
 const linkedinWorkerId=workerIdentity();
 const db=await openDatabase();
+await assertHostedDataReady(db);
 const temporalWorker=orchestrationMode()==='temporal'
   ? await (await import('../server/orchestration/worker.js')).startTemporalWorker(db)
   : null;
@@ -50,6 +53,18 @@ app.get('/health',async(_req,res)=>{
   catch{res.status(503).json({ok:false,service:'trevra-worker',linkedin});}
 });
 const server=app.listen(runtime.port,()=>console.log(`Trevra worker health listening on http://localhost:${runtime.port}`));
+
+// SAID ONCE, AT BOOT, BECAUSE IT IS THE SINGLE MOST CONSEQUENTIAL FACT ABOUT
+// THIS PROCESS. "Hosted" used to mean "the LinkedIn queue is never served here"
+// and now means "served here, through a remote browser, for the workspaces that
+// authorised it" -- and an operator who cannot tell those two apart from the
+// log has no way to know whether their queue is moving.
+{
+  const mode=hostedExecutionMode();
+  if(mode.problem)console.error(`LinkedIn hosted execution is misconfigured: ${mode.problem}`);
+  else if(mode.available)console.log(`LinkedIn seats run server-side through ${mode.provider}, for workspaces that have authorised it. Every other safety gate is unchanged.`);
+  else if(mode.hosted)console.log('LinkedIn execution is off on this hosted deployment: no remote browser is configured, so planned actions wait for a worker that can open one.');
+}
 
 // A cycle already in flight when a signal arrives is allowed to finish; no NEW
 // one is started. Bounded, because a hung cycle must not hold a deploy open --
@@ -104,12 +119,24 @@ let linkedinRunning=false;
 async function linkedinCycle():Promise<void>{
   if(linkedinRunning||draining||!runtime.linkedinLocalWorker.enabled)return;
   linkedinRunning=true;
+  // THE HOSTED RUNNER IS THIS LOOP, NOT A SECOND ONE, and that is the whole
+  // design: claiming, leasing, pacing, cooldown, the safety gate and the ledger
+  // are the same code on a hosted deployment as on a laptop, because a second
+  // implementation of any of them is a second place for them to be wrong. What
+  // hosted execution adds is WHERE the browser is (a remote provider, see
+  // `browser/provider.ts`) and WHO may be served (`allowSeat` below).
+  //
+  // Rebuilt every tick rather than once at boot: the filter memoises its
+  // answers for the length of a pass, so a workspace that withdraws its
+  // authorisation stops being served on the next tick rather than at the next
+  // restart. Null on every self-hosted deployment, where the loop is unchanged.
+  const allowSeat=hostedSeatFilter(db);
   // Neither call throws -- a missing optional playwright, a browser that will
   // not open and a halted batch are all outcomes they report. This catch is
   // for the case they are wrong about that.
   try{
     await runPendingSeatDetectRequests(db,runtime.linkedinLocalWorker,{shard:linkedinShard});
-    await runDueLinkedInActions(db,runtime.linkedinLocalWorker,{shard:linkedinShard,workerId:linkedinWorkerId});
+    await runDueLinkedInActions(db,runtime.linkedinLocalWorker,{shard:linkedinShard,workerId:linkedinWorkerId,...(allowSeat?{allowSeat}:{})});
     // THE SEND QUEUE FIRST, THE REST AFTER, and the order is the point: the
     // invite/DM/reply/engagement queue is the only work with a paced SLOT
     // attached, so it must not sit behind an inbox walk that can take minutes.
@@ -134,6 +161,10 @@ async function linkedinCycle():Promise<void>{
     const seats=await seatRefsForShard(db,{shard:linkedinShard,limit:SIDE_TASK_SEATS_PER_TICK,after:seatCursor});
     seatCursor=seats.length<SIDE_TASK_SEATS_PER_TICK?null:seats[seats.length-1]??null;
     await runBounded(seats,defaultSeatConcurrency(true),async(seat)=>{
+      // THE SAME AUTHORISATION GATE AS THE SEND QUEUE. Reading a member's inbox
+      // and reconciling their pending invites is acting on their account too;
+      // gating only the sends would have been a distinction nobody consented to.
+      if(allowSeat&&!(await allowSeat(seat)))return;
       await runLinkedInSideTasks(db,runtime.linkedinLocalWorker,{workspaceId:seat.workspaceId,seatKey:seat.seatKey});
     });
     // Once per workspace, AFTER the side tasks -- see `runLinkedInCampaignTick`.
@@ -143,6 +174,10 @@ async function linkedinCycle():Promise<void>{
     const workspaces=await linkedinWorkspaceIdsForShard(db,{shard:linkedinShard,limit:CAMPAIGN_WORKSPACES_PER_TICK,after:workspaceCursor});
     workspaceCursor=workspaces.length<CAMPAIGN_WORKSPACES_PER_TICK?null:workspaces[workspaces.length-1]??null;
     for(const workspaceId of workspaces){
+      // A campaign tick PLANS rows; it sends nothing. Gated all the same on a
+      // hosted deployment, because filling an unauthorised workspace's queue
+      // with work nothing may execute is a backlog with no reader.
+      if(allowSeat&&!(await allowSeat({workspaceId})))continue;
       await runLinkedInCampaignTick(db,workspaceId);
     }
   }

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
 import { recordAction } from './actions.js';
-import { LinkedInApiError, ingestOutcome, recordDetectedAcceptance } from './campaigns.js';
+import { LinkedInApiError, getAction, ingestOutcome, recordDetectedAcceptance, type LinkedInActionView } from './campaigns.js';
 import { profileUrlFor } from './driver.js';
 import type { LinkedInInboxMessage, LinkedInThreadSummary } from './driver-inbox.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
@@ -1127,6 +1127,11 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
 
   const replayScope = await replyReplayScope(db, input.workspaceId, thread.id, thread.threadUrn);
   const overrideWarmupCeiling = input.overrideWarmupCeiling === true;
+  // READ OFF THE CONVERSATION, NOT ASKED FOR. `hasReply` is the thread's own
+  // record of an inbound message, so this is a fact about who spoke first
+  // rather than a claim anybody makes in a request -- which is exactly why the
+  // API cannot set it and the operator cannot fake it. See migration 074.
+  const replyToInbound = thread.hasReply === true;
 
   const verdict = await evaluateLinkedInSafety(
     db,
@@ -1142,7 +1147,16 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
       // The operator's decision, honoured here so they are told NOW whether the
       // override was enough -- and persisted below so it is honoured again at
       // the moment of execution without anybody having to remember it.
-      ...(overrideWarmupCeiling ? { overrideWarmupCeiling: true } : {})
+      ...(overrideWarmupCeiling ? { overrideWarmupCeiling: true } : {}),
+      // The conversation's own history, honoured for the same reasons.
+      ...(replyToInbound ? { replyToInbound: true } : {}),
+      // A PERSON TYPED THIS, NOW. Every reply this function files is
+      // `source: 'manual'` (below) -- it is the inbox composer and it has no
+      // other caller -- so the working window and the weekend rule, which pace
+      // what the account does by itself, do not refuse it. Nothing else is
+      // relaxed: the rolling windows, the ramps, posture and the duplicate
+      // guard all still run against this reply.
+      manual: true
     },
     now
   );
@@ -1182,8 +1196,8 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
     // decision: this row is an operator's answer to a person, sent under an
     // exception they chose. Migration 044's COMMENT names `enqueueReply` as the
     // only writer, and this is it.
-    await tx.prepare('UPDATE linkedin_actions SET body=?, thread_urn=?, override_warmup_ceiling=? WHERE id=? AND workspace_id=?')
-      .run(body, thread.threadUrn, overrideWarmupCeiling, record.id, input.workspaceId);
+    await tx.prepare('UPDATE linkedin_actions SET body=?, thread_urn=?, override_warmup_ceiling=?, reply_to_inbound=? WHERE id=? AND workspace_id=?')
+      .run(body, thread.threadUrn, overrideWarmupCeiling, replyToInbound, record.id, input.workspaceId);
     return record;
   });
 
@@ -1208,4 +1222,100 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
     plannedFor,
     verdict
   };
+}
+
+/**
+ * Change the words of a message that has not been typed yet.
+ *
+ * WHY THIS IS NOT A NEW WAY TO SEND ANYTHING. A queued reply is a row plus
+ * approved bytes, and until the worker claims it those bytes are just text
+ * sitting in a database this operator owns. Rewriting them changes WHAT will
+ * be typed and nothing else: not the slot it was paced into, not the person,
+ * not the kind, not the count it charges against any ceiling. So there is no
+ * safety question to re-ask and the gate is deliberately not re-run -- the
+ * verdict that let this row exist was about volume and timing, and neither
+ * moved.
+ *
+ * The alternative the product actually shipped was worse in exactly the way
+ * that matters: the only way to fix a typo was to CANCEL the message and queue
+ * a new one, which spends a fresh trip through the replay guard and leaves a
+ * dead row behind, all to change one word nobody had read yet.
+ *
+ * FOUR THINGS MAKE A ROW EDITABLE, and the SQL asks for all four again at the
+ * moment of the write rather than trusting the read above it:
+ *
+ *   - it is this workspace's row (every route here is scoped that way);
+ *   - it is still `planned` -- delivered words cannot be unsaid, and a
+ *     cancelled row is not waiting for anything;
+ *   - nothing has CLAIMED it -- once the worker holds it, the browser may be
+ *     typing these very bytes, and an edit landing mid-keystroke would send
+ *     half of one message and half of another;
+ *   - it was queued by hand (`source='manual'`). A campaign's copy is approved
+ *     copy and belongs to the campaign; editing one member's row here would
+ *     make the campaign's own record of what it sends a lie.
+ *
+ * The read above exists only to say WHICH of the four failed, because "cannot
+ * edit" is not an answer anybody can act on.
+ */
+export interface QueuedMessageEdit {
+  workspaceId: string;
+  actionId: string;
+  /** The new approved bytes. Trimmed-empty is refused, exactly as it is at queue time. */
+  body: string;
+}
+
+const EDITABLE_KINDS = ['reply', 'dm'];
+
+export async function editQueuedMessage(db: Db, input: QueuedMessageEdit): Promise<LinkedInActionView> {
+  const body = input.body ?? '';
+  if (!body.trim()) {
+    throw new LinkedInApiError('A message needs a body. Trevra sends approved bytes and does not compose them, so an empty edit is refused rather than silently queued.', 400);
+  }
+
+  const existing = await getAction(db, input.workspaceId, input.actionId);
+  if (!existing) throw new LinkedInApiError('LinkedIn action not found', 404);
+  if (!EDITABLE_KINDS.includes(existing.kind)) {
+    throw new LinkedInApiError(`A ${existing.kind} carries no message, so there are no words to change.`, 400);
+  }
+  if (existing.source !== 'manual') {
+    throw new LinkedInApiError(
+      'This message was queued by a campaign, so its words are that campaign\'s approved copy. Change it in the campaign, or cancel this one and write a new message here.',
+      409
+    );
+  }
+  if (existing.status !== 'planned') {
+    throw new LinkedInApiError(
+      existing.status === 'sent' || existing.status === 'accepted' || existing.status === 'replied'
+        ? 'This one has already been typed into LinkedIn. Nothing here can unsay it; send another message instead.'
+        : existing.status === 'held'
+          ? 'Its campaign is paused, so this row is held rather than queued. Resume the campaign to put it back in the queue, then edit it.'
+          : 'This one was never sent and is no longer queued, so there is nothing waiting to be changed. Write a new message instead.',
+      409
+    );
+  }
+  if (existing.claimedAt) {
+    throw new LinkedInApiError(
+      'Trevra has picked this message up and is typing it into LinkedIn right now, so its words can no longer be changed.',
+      409
+    );
+  }
+
+  const written = await db.prepare(`
+    UPDATE linkedin_actions SET body=?
+    WHERE id=? AND workspace_id=? AND status='planned' AND claimed_at IS NULL AND source='manual'
+      AND kind IN ('reply','dm')
+  `).run(body, input.actionId, input.workspaceId);
+  if (written.changes === 0) {
+    // The row moved between the read and the write -- almost always the worker
+    // claiming it. Reported rather than retried: the operator has to know their
+    // change did not land.
+    throw new LinkedInApiError(
+      'Trevra picked this message up while you were editing it, so your change was not saved and the message as it was queued is what will be typed.',
+      409
+    );
+  }
+
+  const updated = await getAction(db, input.workspaceId, input.actionId);
+  if (!updated) throw new LinkedInApiError('LinkedIn action not found', 404);
+  return updated;
 }

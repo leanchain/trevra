@@ -34,6 +34,7 @@ import {
   resolveProfileDir,
   resolveSeatProxy,
   runBounded,
+  dueManualWork,
   runDueLinkedInActions,
   runLinkedInLocalBatch,
   runPendingSeatDetectRequests,
@@ -2194,8 +2195,8 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
       VALUES (?,?,?,'running',?::jsonb,'owner',?,?,?)
     `).run('licmp_claim', WORKSPACE_ID, 'Claim facts', JSON.stringify({ steps: [] }), NOW.toISOString(), NOW.toISOString(), NOW.toISOString());
     await db.prepare(`
-      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,status,planned_for,source,replay_scope,override_warmup_ceiling,body,thread_urn,created_at)
-      VALUES (?,?,'owner','reply',?,?,'planned',?,'manual',?,true,?,?,?)
+      INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,status,planned_for,source,replay_scope,override_warmup_ceiling,reply_to_inbound,body,thread_urn,created_at)
+      VALUES (?,?,'owner','reply',?,?,'planned',?,'manual',?,true,true,?,?,?)
     `).run(
       'lact_claimfacts', WORKSPACE_ID, 'https://www.linkedin.com/in/maya/', 'licmp_claim',
       NOW.toISOString(), 'thread:2-maya==:sha256:abc', 'Happy to.', '2-maya==', NOW.toISOString()
@@ -2212,8 +2213,70 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
     expect(claimed?.campaignId).toBe('licmp_claim');
     expect(claimed?.replayScope).toBe('thread:2-maya==:sha256:abc');
     expect(claimed?.overrideWarmupCeiling).toBe(true);
+    // And the other reason the ceiling may not apply (migration 074). A reply
+    // accepted at queue time because the other person wrote first must not be
+    expect(claimed?.replyToInbound).toBe(true);
+    // And the LEDGER's own fact about who put the row here. `source='manual'`
+    // is what let this reply be queued outside the working window, so the
+    // pre-send re-evaluation has to see it or the same gate refuses at 02:00
+    // what it accepted at 02:00.
+    expect(claimed?.manual).toBe(true);
+    expect(claimed?.replyToInbound).toBe(true);
   });
 
+  /**
+   * THE ONE THING THAT MAY OPEN A BROWSER DURING A BREAK.
+   *
+   * A sitting break paces what the account does BY ITSELF. Work a person just
+   * asked for is not that, and holding it for the two hours until the next
+   * sitting is the same refusal the working window used to make, wearing a
+   * different name -- and it would make relaxing the gate for hand-driven work
+   * a change of error message and nothing else.
+   *
+   * Everything else stays asleep, which is what the negative cases pin down:
+   * this must not become a general "urgent" flag an automated action can set.
+   */
+  it('sees work a person asked for, and nothing else', async () => {
+    const due = async (): Promise<boolean> => dueManualWork(db, WORKSPACE_ID, 'owner', NOW);
+    const insert = async (id: string, source: string, columns: string, values: string, ...binds: unknown[]): Promise<void> => {
+      await db.prepare(`
+        INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at${columns})
+        VALUES (?,?,'owner','reply',?,'planned',?,?,?${values})
+      `).run(id, WORKSPACE_ID, `https://www.linkedin.com/in/${id}/`, NOW.toISOString(), source, NOW.toISOString(), ...binds);
+    };
+
+    expect(await due()).toBe(false);
+
+    // The planner's own work. It waits for the next sitting, which is what a
+    // sitting break is for.
+    await insert('lact_planned', 'campaign', '', '');
+    expect(await due()).toBe(false);
+
+    // A campaign row answering somebody who wrote first still wakes the seat:
+    // that is the conversation's fact, not the planner's claim.
+    await insert('lact_inbound', 'campaign', ',reply_to_inbound', ',true');
+    expect(await due()).toBe(true);
+    await db.prepare("UPDATE linkedin_actions SET status='sent' WHERE id=?").run('lact_inbound');
+    expect(await due()).toBe(false);
+
+    // A row the operator queued by hand. This one wakes the seat.
+    await insert('lact_manual', 'manual', '', '');
+    expect(await due()).toBe(true);
+
+    // Already sent, so there is nothing waiting.
+    await db.prepare("UPDATE linkedin_actions SET status='sent' WHERE id=?").run('lact_manual');
+    expect(await due()).toBe(false);
+
+    // Queued for later, which is a plan rather than work waiting now.
+    await db.prepare("UPDATE linkedin_actions SET status='planned', planned_for=? WHERE id=?")
+      .run(new Date(NOW.getTime() + 3_600_000).toISOString(), 'lact_manual');
+    expect(await due()).toBe(false);
+
+    // Another seat's queue is another account's business.
+    await db.prepare("UPDATE linkedin_actions SET planned_for=?, seat_key='sales' WHERE id=?")
+      .run(NOW.toISOString(), 'lact_manual');
+    expect(await due()).toBe(false);
+  });
   it('reports an ordinary row as unscoped, uncampaigned and un-overridden', async () => {
     await db.prepare(`
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
@@ -2226,6 +2289,7 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
     expect(claimed?.campaignId).toBeNull();
     expect(claimed?.replayScope).toBe('legacy');
     expect(claimed?.overrideWarmupCeiling).toBe(false);
+    expect(claimed?.replyToInbound).toBe(false);
   });
 
   it('sees an unaccepted invite to the same person, and does not see an accepted one', async () => {

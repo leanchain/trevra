@@ -170,6 +170,62 @@ export interface LinkedInSafetyInput {
    * reason as the two fields above it.
    */
   overrideWarmupCeiling?: boolean;
+  /**
+   * This reply answers a conversation the OTHER PERSON has written in.
+   *
+   * THE WARM-UP RAMP EXISTS TO SLOW OUTREACH, and answering somebody who wrote
+   * to you is not outreach. It is the single most ordinary thing anybody does
+   * on LinkedIn, it is what a warm-up is supposed to look like from the
+   * outside, and refusing it for a week made the inbox unusable while teaching
+   * the account nothing: week 1 permits `no replys at all`, so every answer to
+   * a real person was refused with "wait for the ramp".
+   *
+   * Migration 044's operator override was the only way past it and no control
+   * in the product ever set it, so in practice there was no way at all.
+   *
+   * Set from the thread's own history by `enqueueReply` -- never by an
+   * operator, never by the worker -- and stored on the row (migration 074,
+   * `linkedin_actions.reply_to_inbound`) so the worker's pre-send re-evaluation
+   * reaches the same verdict rather than refusing what was already queued.
+   *
+   * IT RELAXES EXACTLY ONE CHECK, the same one the override relaxes, and for
+   * replies only. A follow-up to somebody who has never answered is still
+   * outreach and is still ramped.
+   */
+  replyToInbound?: boolean;
+  /**
+   * A PERSON ASKED FOR THIS ACTION, at the moment they asked for it.
+   *
+   * THE WORKING WINDOW IS A STATEMENT ABOUT THE AUTOMATION, NOT ABOUT THE
+   * OPERATOR. It shapes what this account does BY ITSELF -- outreach the
+   * planner places, spread across a working day so the seat never looks like a
+   * scheduler running to a clock. It was never a rule about when a human may
+   * use LinkedIn, and enforcing it against one refused work a person had
+   * already decided to do: a reply typed on a Sunday morning came back as
+   * "this account works on weekday(s) 1,2,3,4,5 between 08:00 and 18:00",
+   * which is true of the automation and false of the person reading it.
+   *
+   * IT RELAXES EXACTLY THE TWO TIME CHECKS -- `business-hours` and `weekend`,
+   * which are one decision wearing two names. Every ceiling still runs and can
+   * still refuse: posture, the seat pause, the warm-up ramp, the campaign
+   * ramp, both rolling windows, the day-over-day clamp, the acceptance
+   * throttle, the InMail quota, the pending-invite backlog and
+   * `duplicate-target`. Hand-driven work stays as SPARSE as everything else;
+   * it is simply no longer confined to office hours.
+   *
+   * SET BY THE HAND-DRIVEN SURFACES AND BY NOTHING ELSE: `enqueueReply` (the
+   * inbox composer), the engagement route's live request, and the worker's
+   * pre-send re-evaluation for a row the LEDGER ALREADY RECORDS as
+   * `source='manual'` -- so a queued manual action is not refused at the
+   * moment of execution by the same clock that let it be queued. The planner,
+   * the campaign runner and every scheduled pass leave it unset and stay
+   * inside the window.
+   *
+   * Absent from the skill's input schema for the same reason as the three
+   * fields above it: an approved payload must not be able to claim a human
+   * typed it.
+   */
+  manual?: boolean;
 }
 
 export interface LinkedInSafetyOptions {
@@ -432,6 +488,17 @@ function campaignDayOf(startedAt: string, now: Date): number {
  * module exists to avoid, and it would hide the fact that the action is also
  * a duplicate, also outside business hours, and also over the InMail quota.
  */
+/**
+ * The plural of an action kind, for a sentence an operator reads.
+ *
+ * `${kind}s` produced "permits no replys at all" on the one refusal an operator
+ * is most likely to be shown, and a gate that cannot spell is a gate that reads
+ * as guesswork. Only `reply` needs the rule; the other seven pluralise by `s`.
+ */
+export function pluralKind(kind: PacedKind): string {
+  return kind === 'reply' ? 'replies' : `${kind}s`;
+}
+
 export async function evaluateLinkedInSafety(
   db: Db,
   input: LinkedInSafetyInput,
@@ -512,6 +579,12 @@ export async function evaluateLinkedInSafety(
   const used7d = ledger.used7d;
   const used30d = ledger.used30d;
 
+  // A PERSON ASKED FOR THIS, and two of the things below are about the
+  // account's own rhythm rather than about safety: the day's shape (here) and
+  // the two time checks (further down). Declared once, read in both places, so
+  // "what a manual action is exempt from" is one list rather than two.
+  const humanInitiated = input.manual === true;
+
   const ceilingBeforeDraw = effectiveDailyCeiling(band.perDay, operatorLimit, overrideBands);
   /**
    * TODAY'S share of that ceiling. See `LinkedInSafetyOptions.dayShape`.
@@ -523,7 +596,30 @@ export async function evaluateLinkedInSafety(
    */
   const shapeDay = options.dayShape ?? dayShapeFor;
   const todayShape = shapeDay(`${input.workspaceId}:${seatKey}`, localDateOf(now, timezone), window);
-  const effectiveDailyLimit = todayShape.resting ? 0 : Math.floor(ceilingBeforeDraw * todayShape.draw);
+  /**
+   * A DAY'S SHAPE IS THE ACCOUNT'S OWN RHYTHM, NOT A BUDGET FOR THE OPERATOR.
+   *
+   * `dayShapeFor` draws two things for the seat's autonomous behaviour: a
+   * fraction of the ceiling to use today, and a one-in-eight chance that today
+   * is a REST DAY and the ceiling is zero. Both exist so an account that works
+   * by itself does not do the same volume every single day, which is what a
+   * scheduler looks like from the outside.
+   *
+   * APPLIED TO A HAND-DRIVEN ACTION IT IS THE WORKING WINDOW AGAIN, WEARING A
+   * THIRD NAME: an operator who answers a message on a day the dice called a
+   * rest day was told "warm-up week N permits no replies at all" -- a ceiling
+   * of zero, reported as a ramp. So a manual action is judged against the
+   * seat's real ceiling: Trevra's band and the operator's own setting, whichever
+   * is stricter, with the warm-up multiplier still applied below.
+   *
+   * IT IS STILL A CEILING, and the count it is compared against is the same
+   * one: everything this seat did in the last 24 hours, autonomous or typed. A
+   * person cannot spend a rest day's zero, but they cannot exceed the band
+   * either, and the 7-day and 30-day windows are untouched.
+   */
+  const effectiveDailyLimit = humanInitiated
+    ? ceilingBeforeDraw
+    : todayShape.resting ? 0 : Math.floor(ceilingBeforeDraw * todayShape.draw);
 
   /**
    * WHERE THE PER-KIND CEILING CAME FROM, in the operator's words.
@@ -557,18 +653,23 @@ export async function evaluateLinkedInSafety(
   // Migration 044, honoured for `reply` and ignored for everything else. See
   // `LinkedInSafetyInput.overrideWarmupCeiling`.
   const overrideWarmup = input.overrideWarmupCeiling === true && input.kind === 'reply';
+  // Migration 074, the same shape and the same single check: this reply answers
+  // a person who wrote first, which is not the outreach the ramp slows.
+  const answeringInbound = input.replyToInbound === true && input.kind === 'reply';
   const warmupDetail =
     warmupCeiling === 0
-      ? `Warm-up week ${warmupWeek} permits no ${input.kind}s at all (${ceilingSource} x ${multiplier}). ${seat === undefined ? 'No seat is configured, so this is paced as a brand-new one; detect the seat to start its ramp.' : 'Wait for the ramp. It is keyed to how long this seat has been automated, not to the account\'s age, so there is nothing to declare that would lift it.'}`
+      ? `Warm-up week ${warmupWeek} permits no ${pluralKind(input.kind)} at all (${ceilingSource} x ${multiplier}). ${seat === undefined ? 'No seat is configured, so this is paced as a brand-new one; detect the seat to start its ramp.' : 'Wait for the ramp. It is keyed to how long this seat has been automated, not to the account\'s age, so there is nothing to declare that would lift it.'}`
       : isPassiveKind(input.kind) && warmupWeek <= WARMUP_WEEKS
-        ? `${used24} of ${warmupCeiling} ${input.kind}s used in the last 24h. Passive activity is not ramped during warm-up; it is what the warm-up consists of.`
-        : `${used24} of ${warmupCeiling} ${input.kind}s used in the last 24h (warm-up week ${warmupWeek}: ${ceilingSource} x ${multiplier}).`;
+        ? `${used24} of ${warmupCeiling} ${pluralKind(input.kind)} used in the last 24h. Passive activity is not ramped during warm-up; it is what the warm-up consists of.`
+        : `${used24} of ${warmupCeiling} ${pluralKind(input.kind)} used in the last 24h (warm-up week ${warmupWeek}: ${ceilingSource} x ${multiplier}).`;
   checks.push({
     check: 'warmup-ceiling',
-    passed: warmupPassed || overrideWarmup,
+    passed: warmupPassed || overrideWarmup || answeringInbound,
     detail: overrideWarmup
       ? `${warmupDetail} The operator explicitly overrode the warm-up ceiling for this one reply, so this check ${warmupPassed ? 'would have passed anyway and the override changed nothing' : 'does not refuse it'}. It relaxes this ceiling and nothing else -- every other check below still runs and can still refuse.`
-      : warmupDetail
+      : answeringInbound
+        ? `${warmupDetail} This reply answers somebody who wrote to this account first, which is not the outreach the warm-up ramp slows, so this check ${warmupPassed ? 'would have passed anyway' : 'does not refuse it'}. It relaxes this ceiling and nothing else -- every other check below still runs and can still refuse.`
+        : warmupDetail
   });
 
   // THE SECOND RAMP, and it is a different clock from the one above.
@@ -594,7 +695,7 @@ export async function evaluateLinkedInSafety(
     passed: campaignLimit === null || campaignUsed24 + 1 <= campaignLimit,
     detail:
       campaign !== undefined && campaignLimit !== null
-        ? `${campaignUsed24} of ${campaignLimit} ${input.kind}s used by this campaign in the last 24 hours: campaign day ${campaignDayOf(campaign.startedAt, now)} is ${(campaignWarmupFraction(campaign.startedAt, now) * 100).toFixed(0)}% of the seat's ${effectiveDailyLimit}/day ceiling. The campaign ramp and the per-seat warm-up both apply; whichever is stricter binds.`
+        ? `${campaignUsed24} of ${campaignLimit} ${pluralKind(input.kind)} used by this campaign in the last 24 hours: campaign day ${campaignDayOf(campaign.startedAt, now)} is ${(campaignWarmupFraction(campaign.startedAt, now) * 100).toFixed(0)}% of the seat's ${effectiveDailyLimit}/day ceiling. The campaign ramp and the per-seat warm-up both apply; whichever is stricter binds.`
         : campaignId === null
           ? `No campaign was named for this action, so the campaign-day ramp does not apply and only the per-seat warm-up week does. The ramp shapes managed campaigns -- the ones this deployment runs itself.`
           : `Campaign '${campaignId}' is not a managed campaign in this workspace (a managed campaign has a workflow and has been started), so the 20/40/60/80/100% campaign-day ramp does not apply to it. The per-seat warm-up above still does.`
@@ -627,13 +728,13 @@ export async function evaluateLinkedInSafety(
    */
   const bandPassed = used24 + 1 <= effectiveDailyLimit;
   const poolPassed = operatorLimit === null || operatorUsed24 + 1 <= operatorLimit;
-  const poolNoun = isMessage ? 'messages (DMs, replies and InMails share one operator ceiling)' : `${input.kind}s`;
+  const poolNoun = isMessage ? 'messages (DMs, replies and InMails share one operator ceiling)' : `${pluralKind(input.kind)}`;
   checks.push({
     check: 'rolling-24h',
     passed: bandPassed && poolPassed,
     detail: operatorLimit === null
-      ? `${used24} of ${effectiveDailyLimit} ${input.kind}s used in the last 24 hours (${posture} band).`
-      : `${used24} of ${ceilingSource} used in the last 24 hours for ${input.kind}s, and ${operatorUsed24} of the operator's ${operatorLimit}/day account-level ${poolNoun}. Two independent ceilings -- the per-kind one and the operator's pool -- and ${bandPassed && poolPassed ? 'both pass' : !bandPassed && !poolPassed ? 'both are full' : bandPassed ? 'the operator pool is full' : 'the per-kind ceiling is full'}.`
+      ? `${used24} of ${effectiveDailyLimit} ${pluralKind(input.kind)} used in the last 24 hours (${posture} band).`
+      : `${used24} of ${ceilingSource} used in the last 24 hours for ${pluralKind(input.kind)}, and ${operatorUsed24} of the operator's ${operatorLimit}/day account-level ${poolNoun}. Two independent ceilings -- the per-kind one and the operator's pool -- and ${bandPassed && poolPassed ? 'both pass' : !bandPassed && !poolPassed ? 'both are full' : bandPassed ? 'the operator pool is full' : 'the per-kind ceiling is full'}.`
   });
 
   checks.push({
@@ -642,7 +743,7 @@ export async function evaluateLinkedInSafety(
     detail:
       band.perWeek === undefined
         ? `No 7-day ceiling is published for ${input.kind}, so none is invented here.`
-        : `${used7d} of ${band.perWeek} ${input.kind}s used in the last 7 days (${posture} band).`
+        : `${used7d} of ${band.perWeek} ${pluralKind(input.kind)} used in the last 7 days (${posture} band).`
   });
 
   checks.push({
@@ -651,7 +752,7 @@ export async function evaluateLinkedInSafety(
     detail:
       band.perMonth === undefined
         ? `No 30-day ceiling is published for ${input.kind}, so none is invented here.`
-        : `${used30d} of ${band.perMonth} ${input.kind}s used in the last 30 days (${posture} band).`
+        : `${used30d} of ${band.perMonth} ${pluralKind(input.kind)} used in the last 30 days (${posture} band).`
   });
 
   // The anti-"slide and spike" check, and the reason this module exists at all
@@ -703,12 +804,38 @@ export async function evaluateLinkedInSafety(
   const insideConfiguredWindow =
     local !== null && dayFactor > 0 && !plannedShape.resting
     && minuteOfDay !== null && minuteOfDay >= plannedShape.startMinute && minuteOfDay < plannedShape.endMinute;
+  // WHEN A PERSON IS AT THE KEYBOARD, THE CLOCK IS THEIRS.
+  //
+  // The working window shapes what this account does BY ITSELF: outreach placed
+  // by the planner, spread across a working day so the account never looks like
+  // a scheduler. It is not a statement about when the operator may use
+  // LinkedIn. People read their messages in the evening and answer them at
+  // weekends, and refusing what one of them just typed told them to come back
+  // on Monday and continue a conversation that had already gone cold.
+  //
+  // TWO WAYS IN, AND BOTH ARE FACTS RATHER THAN CLAIMS. `manual` is set by the
+  // hand-driven surfaces and read back off `source='manual'` at send time;
+  // `replyToInbound` is read off the conversation's own history. Nothing an
+  // automated caller schedules for itself can assert either.
+  //
+  // BOTH TIME CHECKS, because they are one decision wearing two names: the hour
+  // of the day and the day of the week. Every other gate still applies -- the
+  // rolling windows, the duplicate guard, posture, the seat pause -- so this
+  // relaxes WHEN, never HOW MUCH.
+  const outsideHoursIsFine = humanInitiated || answeringInbound;
+  // Said in the operator's own terms, so a relaxed check never reads as a clean
+  // pass it did not earn.
+  const outsideHoursBecause = humanInitiated
+    ? 'an action a person asked for at the moment they asked for it'
+    : 'a reply to somebody who wrote first';
   checks.push({
     check: 'business-hours',
-    passed: insideConfiguredWindow,
+    passed: insideConfiguredWindow || outsideHoursIsFine,
     detail:
       local === null
         ? `'${input.plannedFor}' is not a parseable instant, so it cannot be placed inside a working-hours window.`
+        : !insideConfiguredWindow && outsideHoursIsFine
+          ? `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}, outside this account's working window -- and that does not refuse ${outsideHoursBecause}. The window paces what this account does by itself; a person uses LinkedIn when they are at it. Every other check still runs.`
         : plannedShape.resting
           ? `This seat is not working that day. About one configured working day in eight is left empty on purpose -- an account that works every single day it is allowed to is a scheduler, not a person -- and which days those are is fixed for this seat and this date, not redrawn per attempt.`
           : `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}; this account works on weekday(s) ${window.days.join(',') || 'none'} between ${formatMinuteOfDay(window.startMinute)} and ${formatMinuteOfDay(window.endMinute)}, and today between ${formatMinuteOfDay(plannedShape.startMinute)} and ${formatMinuteOfDay(plannedShape.endMinute)}.`
@@ -724,10 +851,12 @@ export async function evaluateLinkedInSafety(
     // it above zero and unconfigured weekends stop being blocked, with no edit
     // here. Same predicate the planner places slots with, so this check can
     // never refuse an instant the plan just produced.
-    passed: local !== null && (!onWeekend || dayFactor > 0),
+    passed: local !== null && (!onWeekend || dayFactor > 0 || outsideHoursIsFine),
     detail:
       local === null
         ? `'${input.plannedFor}' is not a parseable instant, so its weekday is unknown.`
+        : onWeekend && dayFactor === 0 && outsideHoursIsFine
+          ? `Scheduled on a weekend in ${timezone} that this account has not configured as a working day -- and that does not refuse ${outsideHoursBecause}, for the same reason the hour does not.`
         : onWeekend
           ? configuredDay
             ? `Scheduled on a weekend in ${timezone}, and this account is explicitly configured to work weekday ${weekday}. A configured day is a working day; the weekend factor of ${WEEKEND_FACTOR} shapes only the days nobody configured.`

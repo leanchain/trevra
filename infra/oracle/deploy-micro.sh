@@ -51,24 +51,62 @@ check_host() {
 check_host "ubuntu@${DB_IP}" db
 check_host "ubuntu@${APP_IP}" app
 
+# Hosted custody must exist BEFORE the migration job can convert any legacy
+# credential-bearing rows. Do not echo the value; only verify presence.
+if ! ssh "ubuntu@${APP_IP}" "grep -Eq '^TREVRA_SECRETS_KEY=.+$' ${APP_DIR}/.env.oracle"; then
+  echo "${APP_DIR}/.env.oracle on app is missing TREVRA_SECRETS_KEY; generate 32 random base64 bytes before deploying hosted." >&2
+  exit 1
+fi
+
 echo "==> database instance"
 scp -q "${HERE}/compose.micro-db.yml" "ubuntu@${DB_IP}:${APP_DIR}/"
 # DB_BIND_IP binds Postgres to the private address only -- never 0.0.0.0, which
 # would expose it on the instance's public interface.
-ssh "ubuntu@${DB_IP}" "cd ${APP_DIR} && DB_BIND_IP='${DB_PRIVATE_IP}' docker compose --env-file .env.oracle -f compose.micro-db.yml up -d --remove-orphans"
+# Application releases do not restart a healthy database just because the
+# compose file now pins the same image by digest. Database patching is a
+# separate maintenance action; preserve the live Postgres process here.
+ssh "ubuntu@${DB_IP}" "cd ${APP_DIR} && DB_BIND_IP='${DB_PRIVATE_IP}' docker compose --env-file .env.oracle -f compose.micro-db.yml up -d --no-recreate --remove-orphans"
 
 echo "==> waiting for postgres"
+postgres_ready=false
 for _ in $(seq 1 30); do
-  if ssh "ubuntu@${DB_IP}" "docker exec \$(docker ps -q -f name=postgres) pg_isready -U trevra -d trevra" >/dev/null 2>&1; then
+  if ssh "ubuntu@${DB_IP}" "cd ${APP_DIR} && DB_BIND_IP='${DB_PRIVATE_IP}' docker compose --env-file .env.oracle -f compose.micro-db.yml exec -T postgres pg_isready -U trevra -d trevra" >/dev/null 2>&1; then
     echo "postgres ready"
+    postgres_ready=true
     break
   fi
   sleep 5
 done
+if [ "$postgres_ready" != true ]; then
+  echo "postgres did not become ready" >&2
+  exit 1
+fi
+
+# Every hosted rollout gets a restorable database snapshot BEFORE migrations.
+# It stays on the attached data volume, mode 0600, and old deploy snapshots are
+# pruned after two weeks. A failed migration therefore leaves both the old app
+# still serving and a pre-change database archive available.
+echo "==> pre-deploy database backup"
+BACKUP="/mnt/data/backups/trevra-predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump"
+ssh "ubuntu@${DB_IP}" "sudo install -d -m 700 -o ubuntu -g ubuntu /mnt/data/backups && cd ${APP_DIR} && DB_BIND_IP='${DB_PRIVATE_IP}' docker compose --env-file .env.oracle -f compose.micro-db.yml exec -T postgres pg_dump -U trevra -d trevra -Fc > '${BACKUP}' && chmod 600 '${BACKUP}' && DB_BIND_IP='${DB_PRIVATE_IP}' docker compose --env-file .env.oracle -f compose.micro-db.yml exec -T postgres pg_restore -l < '${BACKUP}' >/dev/null && find /mnt/data/backups -type f -name 'trevra-predeploy-*.dump' -mtime +14 -delete"
+echo "backup: ${BACKUP}"
 
 echo "==> app instance"
 scp -q "${HERE}/compose.micro-app.yml" "ubuntu@${APP_IP}:${APP_DIR}/"
-ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml pull"
+if [ "${TREVRA_SKIP_PULL:-false}" = "true" ]; then
+  echo "==> using preloaded ghcr.io/leanchain/trevra:${TAG}"
+  ssh "ubuntu@${APP_IP}" "docker image inspect 'ghcr.io/leanchain/trevra:${TAG}' >/dev/null"
+else
+  ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml pull"
+fi
+
+echo "==> release migrations and hosted data hardening"
+# Foreground and fail-fast. The currently running app/worker are untouched until
+# this exits 0. The exited migrate container is then the dependency app/worker
+# require below.
+ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml up --no-deps --force-recreate migrate"
+
+echo "==> rolling hosted app and worker"
 ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml up -d --remove-orphans"
 
 echo "==> waiting for health"

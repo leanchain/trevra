@@ -209,8 +209,17 @@ const AAD_PREFIX = 'trevra.secret.v2';
 /** U+001F, unit separator: not producible by any id, seat key or kind. */
 const AAD_SEPARATOR = '';
 
-/** The two tables a sealed value may live in, and nothing else. */
-export type SecretStore = 'workspace_secrets' | 'linkedin_seat_credentials';
+/**
+ * The tables a sealed value may live in, and nothing else.
+ *
+ * `linkedin_seat_sessions` (migration 065) joined the list when hosted
+ * execution did: a browser attached over CDP has no user-data-dir, so the
+ * seat's signed-in state travels as `storageState` and a LinkedIn session
+ * cookie IS the account -- the same custody as the password that produced it,
+ * bound to the same (store, workspace, seat, kind) identity, or it is not
+ * custody at all.
+ */
+export type SecretStore = 'workspace_secrets' | 'linkedin_seat_credentials' | 'linkedin_seat_sessions' | 'linkedin_seat_proxy_secrets';
 
 /**
  * The seat component for a row with no seat dimension.

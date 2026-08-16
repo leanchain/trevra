@@ -15,6 +15,7 @@ import {
   workerShard
 } from '../server/linkedin/local-worker.js';
 import { runLinkedInCampaignTick, runLinkedInSideTasks } from '../server/linkedin/jobs.js';
+import { hostedSeatFilter } from '../server/linkedin/hosted-execution.js';
 
 /**
  * `npm run linkedin:worker` -- the LinkedIn loop, on the machine that has a
@@ -157,6 +158,13 @@ let draining = false;
 async function cycle(): Promise<void> {
   if (running || draining) return;
   running = true;
+  // NULL ON A LAPTOP, WHICH IS EVERY NORMAL RUN OF THIS COMMAND -- the filter
+  // only exists on a hosted deployment. Built anyway, and threaded through
+  // below, so that an operator pointing this process at a hosted database
+  // (a debugging session, a migration between machines) obeys the same
+  // per-workspace authorisation the hosted runner does rather than becoming a
+  // way around it.
+  const allowSeat = hostedSeatFilter(db);
   try {
     // Detection first: a workspace whose seat has just been connected has no
     // pacing history to work from until the seat row exists, so doing this
@@ -167,7 +175,7 @@ async function cycle(): Promise<void> {
     // real Chrome window on the operator's own desktop, and two of those
     // fighting for the foreground is worse than two batches in a row -- the
     // argument this file has always made, now that it has to be made out loud.
-    await runDueLinkedInActions(db, config, { ...(seatKey ? { seatKey } : {}), shard, workerId, host, concurrency: 1 });
+    await runDueLinkedInActions(db, config, { ...(seatKey ? { seatKey } : {}), shard, workerId, host, concurrency: 1, ...(allowSeat ? { allowSeat } : {}) });
     // Then the periodic work: read the inbox, reconcile LinkedIn's own
     // pending-invite list, drain the withdrawal queue, walk a lead source.
     // AFTER the send queue, always -- that is the only work with a paced slot
@@ -192,6 +200,7 @@ async function cycle(): Promise<void> {
     seatCursor = seats.length < SIDE_TASK_SEATS_PER_TICK ? null : seats[seats.length - 1] ?? null;
     for (const seat of seats) {
       if (seatKey && seat.seatKey !== seatKey) continue;
+      if (allowSeat && !(await allowSeat(seat))) continue;
       await runLinkedInSideTasks(db, config, { workspaceId: seat.workspaceId, seatKey: seat.seatKey });
     }
     // Campaigns advance once per WORKSPACE, after the side tasks have recorded

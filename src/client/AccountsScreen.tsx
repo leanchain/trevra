@@ -23,7 +23,8 @@ import { errorMessage } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 
 /**
- * `/leads` -- the ranked list, with its evidence attached.
+ * `/outreach/accounts` -- the ranked target-company list, with its evidence attached.
+ * `/leads` remains a compatibility alias and is replaced by the shell.
  *
  * THIS IS THE ONE SCREEN THAT HAS TO BE BELIEVED. Everything before it is
  * four questions, two of which have defaults (`docs/first-run.md`); this is

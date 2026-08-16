@@ -468,6 +468,7 @@ export async function deletePolicy(id: string): Promise<void> {
 
 export interface PublicConfig {
   googleAuthEnabled: boolean;
+  emailPasswordAuthEnabled: boolean;
   modelExtractionEnabled: boolean;
   supportEmail: string;
   catalogApiUrl: string;
@@ -732,7 +733,7 @@ export { MAX_DAY_OVER_DAY_DELTA, MIN_RAMP_STEP, PACED_KINDS, WARMUP_MULTIPLIERS,
  * typecheck rather than silently leaving an option missing from a filter.
  */
 export const LINKEDIN_ACTION_KINDS: readonly LinkedInActionKind[] =
-  ['invite', 'dm', 'reply', 'inmail', 'profile_view', 'comment', 'follow', 'like', 'endorse'];
+  ['invite', 'dm', 'reply', 'inmail', 'profile_view', 'comment', 'follow', 'like', 'endorse', 'withdraw'];
 /**
  * 'held' IS ON THIS LIST NOW, and its absence was half of a two-sided bug.
  *
@@ -1298,6 +1299,20 @@ export async function skipLinkedInAction(id: string): Promise<LinkedInActionView
 }
 
 /**
+ * Rewrite the words of a message that has not been typed yet.
+ *
+ * Words only. The server refuses anything that is not this workspace's own
+ * hand-queued, still-planned, unclaimed message, and its refusal is a sentence
+ * the operator can act on -- show it rather than a generic failure.
+ */
+export async function editLinkedInActionBody(id: string, body: string): Promise<LinkedInActionView> {
+  const result = await request<{ action: LinkedInActionView }>(`/api/linkedin/actions/${encodeURIComponent(id)}/body`, {
+    method: 'POST', body: JSON.stringify({ body })
+  });
+  return result.action;
+}
+
+/**
  * Report what already happened in the operator's own tool.
  *
  * `occurredAt` is not decoration: every rolling window reads it, so an outcome
@@ -1317,8 +1332,19 @@ export async function recordLinkedInOutcome(input: {
   return result.action;
 }
 
-export async function getLinkedInCampaigns(): Promise<LinkedInCampaign[]> {
-  const result = await request<{ campaigns: LinkedInCampaign[] }>('/api/linkedin/campaigns');
+/**
+ * The sequence-builder campaigns, for one account or for all of them.
+ *
+ * `seatKey` FILTERS. A campaign is filed against the LinkedIn account it sends
+ * from, and this call used to ask for every campaign in the workspace whatever
+ * account the operator had switched to -- so the list offered Stop, Edit and
+ * Queue on campaigns belonging to somebody else's profile. Omit it only where
+ * the question really is workspace-wide.
+ */
+export async function getLinkedInCampaigns(seatKey?: string): Promise<LinkedInCampaign[]> {
+  const result = await request<{ campaigns: LinkedInCampaign[] }>(
+    `/api/linkedin/campaigns${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
+  );
   return result.campaigns;
 }
 
@@ -1594,13 +1620,17 @@ export async function addLinkedInExclusions(
 /**
  * The funnel over a window.
  *
- * `seatKey` DOES NOT FILTER. The counts stay workspace-wide; it names whose
- * clock the daily buckets are cut on, because every ceiling in the product is
- * enforced in the seat's own timezone and a series bucketed on anything else
- * shows columns that were never any day's total. The response says which zone
- * it used (`timezone`) and whether the workspace's seats disagree about it
- * (`timezoneSpansSeats`) -- a screen showing the second must say so rather than
- * presenting one seat's days as everybody's.
+ * `seatKey` FILTERS, AND IT USED NOT TO. It selects the account whose actions
+ * are counted and, with them, the clock their days are cut on -- every ceiling
+ * in the product is enforced in the seat's own timezone, so a series bucketed
+ * on anything else shows columns that were never any day's total. Passing it
+ * once meant only the second half, which is how the account switcher came to
+ * re-label a workspace-wide chart instead of narrowing it.
+ *
+ * Omitted, the counts are the whole workspace's -- what `/loop` asks for. The
+ * response echoes `seatKey` so a screen can say which of the two it is showing,
+ * says which zone it used (`timezone`), and says whether the workspace's seats
+ * disagree about that zone (`timezoneSpansSeats`).
  */
 export async function getLinkedInAnalytics(days = 30, seatKey?: string): Promise<LinkedInAnalytics> {
   const query = new URLSearchParams({ days: String(days) });

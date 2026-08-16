@@ -71,6 +71,7 @@ import {
   type SecretStore
 } from './crypto.js';
 import { seatCredentialContext } from './linkedin.js';
+import { seatProxySecretContext } from '../linkedin/seats.js';
 import { workspaceSecretContext, type WorkspaceSecretKind } from './store.js';
 
 /** One row's standing, with nothing about its value in it. */
@@ -145,6 +146,12 @@ const SEAT_CREDENTIAL_ROWS = `
   FROM linkedin_seat_credentials
   WHERE (?::text IS NULL OR workspace_id = ?::text)
   ORDER BY workspace_id, seat_key, kind
+`;
+const SEAT_PROXY_ROWS = `
+  SELECT id, workspace_id, seat_key, 'linkedin.proxy'::text AS kind, key_version, key_id
+  FROM linkedin_seat_proxy_secrets
+  WHERE (?::text IS NULL OR workspace_id = ?::text)
+  ORDER BY workspace_id, seat_key
 `;
 
 /**
@@ -278,8 +285,12 @@ function custodyRefusal(
   row: CustodyRowData,
   hosted: { linkedInHosted: boolean; redditHosted: boolean }
 ): string | null {
-  const isLinkedIn = row.store === 'linkedin_seat_credentials' || row.kind.startsWith('linkedin.');
-  if (isLinkedIn && hosted.linkedInHosted) {
+  // Password/email custody is gated by per-workspace hosted execution. A proxy
+  // credential is different: the hosted runner must be able to use and rotate
+  // it, and it is stored in its own sealed table precisely for that purpose.
+  const isLinkedInCredential = row.store === 'linkedin_seat_credentials'
+    || (row.store === 'workspace_secrets' && row.kind.startsWith('linkedin.'));
+  if (isLinkedInCredential && hosted.linkedInHosted) {
     return 'This deployment is hosted, so it will not open a LinkedIn credential -- not even to re-encrypt it.';
   }
   if (row.kind.startsWith('reddit.') && hosted.redditHosted) {
@@ -289,18 +300,25 @@ function custodyRefusal(
 }
 
 function contextFor(row: CustodyRowData): SecretContext {
-  return row.store === 'workspace_secrets'
-    ? workspaceSecretContext(row.workspace_id, row.kind as WorkspaceSecretKind)
-    : seatCredentialContext(row.workspace_id, row.seat_key, row.kind as 'linkedin.email' | 'linkedin.password');
+  if (row.store === 'workspace_secrets') {
+    return workspaceSecretContext(row.workspace_id, row.kind as WorkspaceSecretKind);
+  }
+  if (row.store === 'linkedin_seat_proxy_secrets') {
+    return seatProxySecretContext(row.workspace_id, row.seat_key);
+  }
+  return seatCredentialContext(row.workspace_id, row.seat_key, row.kind as 'linkedin.email' | 'linkedin.password');
 }
 
 async function loadCustodyRows(db: Db, workspaceId?: string): Promise<CustodyRowData[]> {
   const scope = workspaceId ?? null;
-  const [workspaceRows, seatRows] = await Promise.all([
+  const [workspaceRows, seatRows, proxyRows] = await Promise.all([
     db.prepare(WORKSPACE_SECRET_ROWS).all<{
       id: string; workspace_id: string; kind: string; key_version: number; key_id: string | null;
     }>(scope, scope),
     db.prepare(SEAT_CREDENTIAL_ROWS).all<{
+      id: string; workspace_id: string; seat_key: string; kind: string; key_version: number; key_id: string | null;
+    }>(scope, scope),
+    db.prepare(SEAT_PROXY_ROWS).all<{
       id: string; workspace_id: string; seat_key: string; kind: string; key_version: number; key_id: string | null;
     }>(scope, scope)
   ]);
@@ -308,7 +326,8 @@ async function loadCustodyRows(db: Db, workspaceId?: string): Promise<CustodyRow
     // `workspace_secrets` rows are the owner seat by definition -- see
     // `store.ts` `workspaceSecretContext` and migration 049.
     ...workspaceRows.map((row) => ({ store: 'workspace_secrets' as const, ...row, seat_key: OWNER_SEAT_COMPONENT })),
-    ...seatRows.map((row) => ({ store: 'linkedin_seat_credentials' as const, ...row }))
+    ...seatRows.map((row) => ({ store: 'linkedin_seat_credentials' as const, ...row })),
+    ...proxyRows.map((row) => ({ store: 'linkedin_seat_proxy_secrets' as const, ...row }))
   ];
 }
 
@@ -344,5 +363,19 @@ async function writeSealed(
  * interpolated and it is interpolated from a two-member type.
  */
 function table(store: SecretStore): string {
-  return store === 'workspace_secrets' ? 'workspace_secrets' : 'linkedin_seat_credentials';
+  // EXHAUSTIVE, NOT A BINARY CHOICE. This used to be `store === 'workspace_secrets'
+  // ? ... : 'linkedin_seat_credentials'`, which quietly answered
+  // 'linkedin_seat_credentials' for any store added later -- so a third store
+  // reaching here would have re-sealed the wrong table's rows. The rotation
+  // sweep does not enumerate `linkedin_seat_sessions` (a session that cannot be
+  // opened after a rotation degrades to "needs re-login", which is a cheap and
+  // safe outcome; a password does not have that luxury), so this branch is
+  // unreachable today and is written to stay correct if that changes.
+  // lc-debt: stored browser sessions are not re-sealed on key rotation and are
+  // dropped as "needs re-login" instead; upgrade path is to add
+  // linkedin_seat_sessions to `collectRows` here and to `table` below.
+  if (store === 'workspace_secrets') return 'workspace_secrets';
+  if (store === 'linkedin_seat_sessions') return 'linkedin_seat_sessions';
+  if (store === 'linkedin_seat_proxy_secrets') return 'linkedin_seat_proxy_secrets';
+  return 'linkedin_seat_credentials';
 }

@@ -11,6 +11,10 @@ import { recordMarketingEvent } from './public-site.js';
 
 const { Pool } = pg;
 const production = process.env.NODE_ENV === 'production';
+// Hosted launch is OAuth-only until Trevra has a transactional email channel
+// that can verify ownership before a password-created account is admitted.
+// Self-hosted remains unchanged: one operator may keep local email/password.
+export const emailPasswordAuthEnabled = process.env.TREVRA_DEPLOYMENT_MODE !== 'hosted';
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error('DATABASE_URL is required; Better Auth uses PostgreSQL only');
 
@@ -209,7 +213,7 @@ export const auth = betterAuth({
   basePath: '/api/auth',
   trustedOrigins,
   emailAndPassword: {
-    enabled: true,
+    enabled: emailPasswordAuthEnabled,
     minPasswordLength: 10,
     maxPasswordLength: 128,
     autoSignIn: true
@@ -221,7 +225,10 @@ export const auth = betterAuth({
   },
   advanced: {
     cookiePrefix: 'trevra',
-    useSecureCookies: production
+    // Production normally means Secure cookies. The one exception is the
+    // loopback-only single-operator deployment validated in config.ts, where no
+    // request leaves the machine and HTTP avoids requiring a private local CA.
+    useSecureCookies: production && process.env.COOKIE_SECURE !== 'false'
   },
   plugins: [
     // Default roles only (owner / admin / member), no custom access-control

@@ -72,6 +72,7 @@
  */
 import { linkedInWorkerConfig } from '../config.js';
 import { id, type Db } from '../db.js';
+import { hostedExecutionGate, type HostedExecutionVerdict } from '../linkedin/hosted-execution.js';
 import { OWNER_SEAT_KEY } from '../linkedin/seats.js';
 import { openSecret, sealSecret, type SecretContext } from './crypto.js';
 import {
@@ -88,8 +89,7 @@ import {
  * One sentence, and it ends the conversation: there is no switch to go and
  * find, so naming one would send the operator looking for it.
  */
-export const LINKEDIN_CREDENTIALS_HOSTED_REFUSAL =
-  'This deployment is hosted, so it will not take custody of a LinkedIn password.';
+export { HOSTED_EXECUTION_REFUSAL as LINKEDIN_CREDENTIALS_HOSTED_REFUSAL } from '../linkedin/hosted-execution.js';
 
 /** Raised when TREVRA_SECRETS_KEY is absent, which is a deployment fact, not a fault. */
 export const LINKEDIN_CREDENTIALS_UNSEALED_REFUSAL =
@@ -118,9 +118,33 @@ export function maskEmail(email: string): string {
   return `${trimmed.slice(0, 1)}•••${trimmed.slice(at)}`;
 }
 
-/** True when this deployment may hold a LinkedIn password at all. */
-function custodyAllowed(env: NodeJS.ProcessEnv): boolean {
-  return !linkedInWorkerConfig(env).hosted;
+/**
+ * May this deployment hold THIS WORKSPACE'S LinkedIn password?
+ *
+ * WHAT CHANGED, AND WHY IT IS STILL THE SAME RULE. This used to be
+ * `!hosted`, full stop -- because a hosted Trevra could not do anything with a
+ * password except hold it: no display, no Chromium, no profile directory, so
+ * the queue filled up and nothing ever sent. Holding a password you cannot use
+ * is pure liability, and refusing was right.
+ *
+ * Hosted execution changes the second half of that sentence and nothing about
+ * the first. A hosted deployment with a remote browser CAN act on the account,
+ * and does so only for a workspace whose owner has authorised it in writing.
+ * So the gate moved from "never, on a hosted box" to "only where it has been
+ * asked for, per tenant, in writing" -- which is a narrowing of who may say yes
+ * (the account holder, not the operator) at the same time as it is a widening
+ * of what is possible.
+ *
+ * THE DECISION IS NOT MADE HERE. It is `hostedExecutionGate`'s, which is also
+ * what the runner and the credential route ask, so there is exactly one
+ * definition of "may Trevra act on this account" and this module cannot drift
+ * from the loop that uses what it stores.
+ *
+ * A HOSTED DEPLOYMENT WITH NO PROVIDER GETS THE OLD SENTENCE, VERBATIM.
+ */
+async function custodyGate(db: Db, workspaceId: string, env: NodeJS.ProcessEnv): Promise<HostedExecutionVerdict> {
+  if (!linkedInWorkerConfig(env).hosted) return { allowed: true };
+  return hostedExecutionGate(db, workspaceId, env);
 }
 
 /** The two halves, named once so no call site spells a kind by hand. */
@@ -345,7 +369,8 @@ export async function putLinkedInCredentials(
 ): Promise<LinkedInCredentialSummary> {
   const env = input.env ?? process.env;
   // THE GATE FIRST, before anything is sealed, written or audited.
-  if (!custodyAllowed(env)) throw new Error(LINKEDIN_CREDENTIALS_HOSTED_REFUSAL);
+  const custody = await custodyGate(db, input.workspaceId, env);
+  if (!custody.allowed) throw new Error(custody.reason);
 
   const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
   assertSeatKey(seatKey);
@@ -474,10 +499,15 @@ export async function readLinkedInCredentials(
   env: NodeJS.ProcessEnv = process.env,
   seatKey: string = OWNER_SEAT_KEY
 ): Promise<{ email: string; password: string } | null> {
-  // The same unconditional gate as the write path. A hosted instance that
+  // The same gate as the write path, asked the same way. A hosted instance that
   // somehow inherited rows from a self-hosted dump still does not open them --
-  // for every seat, not just the owner.
-  if (!custodyAllowed(env)) return null;
+  // for every seat, not just the owner -- unless this workspace has authorised
+  // hosted execution and a remote browser exists to use them in.
+  //
+  // RETURNS NULL RATHER THAN THROWING, unchanged: a caller here is a worker
+  // about to sign a browser in, and "there is no usable credential" is the
+  // answer it already knows how to handle.
+  if (!(await custodyGate(db, workspaceId, env)).allowed) return null;
 
   // `seatKey` comes last so that every existing 2- and 3-argument call site --
   // and the tests that pass a hosted `env` as the third argument -- keeps

@@ -7,6 +7,19 @@ const optionalUrl = z.preprocess(
   z.string().url().optional()
 );
 
+/** HTTP is acceptable in production only when the browser can reach Trevra
+ * exclusively through its own loopback interface. This is the self-hosted,
+ * single-operator deployment: no packet crosses a network and Docker publishes
+ * the port on 127.0.0.1 only. Anything remotely reachable still requires TLS. */
+function isLoopbackHttpUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
 /**
  * The one value Trevra refuses to guess in production.
  *
@@ -289,6 +302,11 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
 
   if (production) {
     const problems: string[] = [];
+    const localLoopback = base.TREVRA_DEPLOYMENT_MODE === 'local'
+      && isLoopbackHttpUrl(base.PUBLIC_SITE_URL)
+      && isLoopbackHttpUrl(base.BETTER_AUTH_URL)
+      && origins.length > 0
+      && origins.every((origin) => isLoopbackHttpUrl(origin));
     // First, because it decides what the rest of this list even means: the
     // guards below fire on TREVRA_*_LOCAL === 'true' being EXPLICIT, which an
     // unset mode never is, so an operator who set nothing got the permissive
@@ -298,7 +316,12 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     if (!(env.TREVRA_DEPLOYMENT_MODE ?? '').trim()) problems.push(DEPLOYMENT_MODE_REQUIRED);
     if (!base.BETTER_AUTH_SECRET || base.BETTER_AUTH_SECRET.length < 32) problems.push('BETTER_AUTH_SECRET must contain at least 32 characters');
     if (!base.BETTER_AUTH_URL) problems.push('BETTER_AUTH_URL is required');
-    if (!base.PUBLIC_SITE_URL?.startsWith('https://')) problems.push('PUBLIC_SITE_URL is required and must use HTTPS');
+    if (base.TREVRA_DEPLOYMENT_MODE === 'hosted' && !(base.GOOGLE_CLIENT_ID && base.GOOGLE_CLIENT_SECRET)) {
+      problems.push('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted because hosted password signup is disabled until verified transactional email is configured');
+    }
+    if (!base.PUBLIC_SITE_URL || (!base.PUBLIC_SITE_URL.startsWith('https://') && !localLoopback)) {
+      problems.push('PUBLIC_SITE_URL is required and must use HTTPS, except for a TREVRA_DEPLOYMENT_MODE=local deployment whose APP_ORIGIN, BETTER_AUTH_URL and PUBLIC_SITE_URL are all loopback HTTP URLs');
+    }
     if (!base.PUBLIC_SUPPORT_EMAIL) problems.push('PUBLIC_SUPPORT_EMAIL is required');
     if (!base.SECURITY_CONTACT_EMAIL) problems.push('SECURITY_CONTACT_EMAIL is required');
     if (!base.MARKETING_HASH_SALT || base.MARKETING_HASH_SALT.length < 32) problems.push('MARKETING_HASH_SALT must contain at least 32 characters');
@@ -329,21 +352,19 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     }
     // Optional: absent means BYOK is off, which is a legitimate deployment. Present and malformed is not.
     if (base.TREVRA_SECRETS_KEY && (!/^[A-Za-z0-9+/]+={0,2}$/.test(base.TREVRA_SECRETS_KEY) || Buffer.from(base.TREVRA_SECRETS_KEY, 'base64').byteLength !== 32)) problems.push('TREVRA_SECRETS_KEY must be 32 random bytes, base64 encoded (openssl rand -base64 32)');
-    if (base.COOKIE_SECURE !== 'true') problems.push('COOKIE_SECURE must be true');
-    if (!base.NANGO_API_KEY) problems.push('NANGO_API_KEY is required for live integrations');
-    if (!base.NANGO_WEBHOOK_SIGNING_KEY) problems.push('NANGO_WEBHOOK_SIGNING_KEY is required for signed integration webhooks');
+    if (base.COOKIE_SECURE !== 'true' && !localLoopback) {
+      problems.push('COOKIE_SECURE must be true except for a loopback-only TREVRA_DEPLOYMENT_MODE=local deployment');
+    }
+    // Nango is a capability, not a prerequisite for a single-operator core
+    // deployment. Hosted always requires signed integration traffic. Local may
+    // omit both values entirely; if either is configured, require the pair so a
+    // half-configured webhook cannot silently become an unsigned production path.
+    const nangoConfigured = Boolean(base.NANGO_API_KEY || base.NANGO_WEBHOOK_SIGNING_KEY);
+    if (base.TREVRA_DEPLOYMENT_MODE === 'hosted' || nangoConfigured) {
+      if (!base.NANGO_API_KEY) problems.push('NANGO_API_KEY is required for live integrations');
+      if (!base.NANGO_WEBHOOK_SIGNING_KEY) problems.push('NANGO_WEBHOOK_SIGNING_KEY is required for signed integration webhooks');
+    }
     if (base.ALLOW_DEMO_AUTH === 'true') problems.push('ALLOW_DEMO_AUTH cannot be true');
-    if (base.ALLOW_SIMULATED_EXECUTION === 'true') problems.push('ALLOW_SIMULATED_EXECUTION cannot be true');
-    // The gate below already refuses this combination silently. This says so
-    // out loud in production, because an operator who set both meant to enable
-    // something, and a feature that is off for a reason nobody told them about
-    // is a bug report waiting to happen.
-    // HOSTED + LINKEDIN IS NO LONGER AN AUTOMATIC CONTRADICTION -- it is one
-    // exactly when there is no remote browser for the hosted deployment to
-    // drive. With a provider configured this combination is the intended
-    // hosted-execution setup and saying nothing is correct; without one it is
-    // the same mistake it always was, and it gets the same sentence plus the
-    // one thing that would fix it.
     if (base.TREVRA_LINKEDIN_LOCAL === 'true' && base.TREVRA_DEPLOYMENT_MODE === 'hosted' && !browser.remote) {
       problems.push(
         'TREVRA_LINKEDIN_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted and no remote browser is configured; '

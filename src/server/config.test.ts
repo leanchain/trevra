@@ -189,3 +189,42 @@ describe('hosted credential custody', () => {
     expect(problems({ ...base, NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'local' })).not.toMatch(/TREVRA_SECRETS_KEY/);
   });
 });
+
+describe('single-operator production on loopback', () => {
+  const production = {
+    ...base,
+    NODE_ENV: 'production',
+    TREVRA_DEPLOYMENT_MODE: 'local',
+    APP_ORIGIN: 'http://localhost:43900',
+    BETTER_AUTH_URL: 'http://localhost:43900',
+    BETTER_AUTH_SECRET: 'a'.repeat(48),
+    PUBLIC_SITE_URL: 'http://localhost:43900',
+    PUBLIC_SUPPORT_EMAIL: 'support@trevra.local',
+    SECURITY_CONTACT_EMAIL: 'security@trevra.local',
+    MARKETING_HASH_SALT: 'b'.repeat(48),
+    TRACTION_ADMIN_TOKEN: 'c'.repeat(48),
+    TREVRA_AGENT_TOKEN_PEPPER: 'd'.repeat(48),
+    INDEXNOW_KEY: 'selfhost-indexnow-key',
+    COOKIE_SECURE: 'false'
+  };
+
+  it('boots without Nango when every browser-facing URL is loopback', () => {
+    expect(() => validateEnvironment(production)).not.toThrow();
+  });
+
+  it('does not turn the loopback exception into an insecure LAN deployment', () => {
+    expect(() => validateEnvironment({
+      ...production,
+      APP_ORIGIN: 'http://192.168.1.20:43900',
+      BETTER_AUTH_URL: 'http://192.168.1.20:43900',
+      PUBLIC_SITE_URL: 'http://192.168.1.20:43900'
+    })).toThrow(/must use HTTPS/);
+  });
+
+  it('requires the Nango key and signing key together when local integrations are enabled', () => {
+    expect(() => validateEnvironment({ ...production, NANGO_API_KEY: 'configured' }))
+      .toThrow(/NANGO_WEBHOOK_SIGNING_KEY/);
+    expect(() => validateEnvironment({ ...production, NANGO_WEBHOOK_SIGNING_KEY: 'configured' }))
+      .toThrow(/NANGO_API_KEY/);
+  });
+});

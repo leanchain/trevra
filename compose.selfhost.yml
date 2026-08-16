@@ -1,0 +1,96 @@
+name: trevra-selfhost
+
+x-trevra-common: &trevra-common
+  image: trevra-selfhost:local
+  env_file:
+    - .env.selfhost
+  environment:
+    NODE_ENV: production
+    PORT: "8080"
+    DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD}@postgres:5432/trevra
+    DATABASE_AUTO_MIGRATE: "false"
+    MIGRATIONS_PATH: /app/migrations
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: trevra
+      POSTGRES_USER: trevra
+      POSTGRES_PASSWORD: ${TREVRA_DB_PASSWORD}
+    volumes:
+      - trevra-selfhost-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trevra -d trevra"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migrate:
+    <<: *trevra-common
+    command: ["node", "dist-server/server/migrate-job.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    <<: *trevra-common
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      # Single-operator means single-machine by default. Changing 127.0.0.1 to
+      # 0.0.0.0 without adding HTTPS turns this into an invalid production
+      # configuration and is intentionally unsupported by config.ts.
+      - "127.0.0.1:${TREVRA_SELFHOST_PORT:-43900}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  worker:
+    <<: *trevra-common
+    command: ["node", "dist-server/worker/index.js"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 4
+      start_period: 15s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  trevra-selfhost-postgres:

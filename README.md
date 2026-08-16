@@ -60,7 +60,7 @@ Architecture and operations are documented in:
 
 Trevra ships a restricted agent API, a local stdio MCP server, and a hosted Streamable HTTP MCP endpoint. Agent tokens can read the evidence-backed revenue brief, run enabled skills, inspect the run ledger, list pending actions, and prepare recommendations. They cannot approve or execute actions.
 
-Create a scoped token in **Autopilot → Claude Code and Codex access**, then connect a local MCP bridge:
+Create a scoped token in **Setup → Agent access**, then connect a local MCP bridge:
 
 ```bash
 claude mcp add trevra --scope user \
@@ -177,7 +177,6 @@ npm run dev
 ```
 
 Open `http://localhost:43173`.
-
 ## Tests and build
 
 The test runner launches a real PostgreSQL 17 Testcontainer. Docker must be running.
@@ -186,6 +185,19 @@ The test runner launches a real PostgreSQL 17 Testcontainer. Docker must be runn
 npm run check
 ```
 
+### Single-operator production
+
+For one operator on one machine, deploy the hardened production build on loopback with:
+
+```bash
+npm run selfhost:deploy
+```
+
+This creates a gitignored `0600` secret file, a dedicated PostgreSQL volume, runs migrations once, and starts separate API and worker containers on `http://localhost:43900` by default. PostgreSQL is not published to the host. Create a custom-format backup with `npm run selfhost:backup`.
+
+See [`docs/self-hosted-production.md`](docs/self-hosted-production.md) before exposing the service beyond the local machine; remote access requires HTTPS and secure cookies.
+
+Individual commands:
 Individual commands:
 
 ```bash

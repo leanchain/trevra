@@ -45,7 +45,7 @@ export const SECTIONS: readonly Section[] = ['loop', 'outreach', 'money', 'ledge
  */
 const SUB_ROUTES: Record<Section, readonly string[]> = {
   loop: ['', 'cost'],
-  outreach: ['', 'campaigns', 'inbox', 'leads', 'manager', 'plan', 'queue'],
+  outreach: ['', 'accounts', 'campaigns', 'inbox', 'leads', 'manager', 'plan', 'queue'],
   money: [''],
   ledger: ['', 'run'],
   setup: ['', 'agent', 'data', 'reddit', 'research', 'seat', 'skills', 'limits', 'spend', 'team']
@@ -54,10 +54,11 @@ const SUB_ROUTES: Record<Section, readonly string[]> = {
 /**
  * First segments the SHELL owns that are not `Section`s.
  *
- * `leads` is the account spine, addressed beside the sections rather than
- * inside one (see `useAccountsRoute` in App.tsx). `login` is the auth screen,
- * which is a place you can be sent to -- from the marketing page, from an
- * expired session, from a link in an email -- and therefore an address.
+ * `leads` is a legacy alias for the target-account screen; App replaces it
+ * with `/outreach/accounts` so old bookmarks survive without keeping a sixth
+ * primary destination. `login` is the auth screen, which is a place you can be
+ * sent to -- from the marketing page, from an expired session, from a link in
+ * an email -- and therefore an address.
  *
  * They are listed here because `isAppPath` is the single answer to "is this
  * URL ours", and both the click interceptor below and the server's fallback
@@ -151,6 +152,14 @@ export function navigate(path: string): void {
   const next = path.startsWith('/') ? path : `/${path}`;
   if (window.location.pathname + window.location.search === next) return;
   window.history.pushState(null, '', next);
+  announce();
+}
+
+/** Replace a legacy/internal address without leaving it behind in Back history. */
+export function replaceNavigate(path: string): void {
+  const next = path.startsWith('/') ? path : `/${path}`;
+  if (window.location.pathname + window.location.search === next) return;
+  window.history.replaceState(null, '', next);
   announce();
 }
 

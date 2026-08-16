@@ -1,21 +1,54 @@
-# API + worker + tunnel on a 1 GB Always Free micro instance.
-#
-# Postgres lives on the sibling instance; DATABASE_URL points at its private IP.
-# Memory limits are explicit so one runaway container cannot take the whole host
-# down with it -- Docker kills the offending container instead.
+# Hosted Trevra API + worker + Cloudflare tunnel on the app micro instance.
+# Postgres lives on the sibling instance and DATABASE_URL is supplied by the
+# instance-local .env.oracle. Hosted releases run the migration service to
+# completion before either long-lived process is recreated.
 
 name: trevra
 
+x-trevra-common: &trevra-common
+  image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
+  env_file:
+    - .env.oracle
+  environment:
+    NODE_ENV: production
+    TREVRA_DEPLOYMENT_MODE: hosted
+    DATABASE_AUTO_MIGRATE: "false"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
 services:
-  trevra:
-    image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
-    env_file:
-      - .env.oracle
+  migrate:
+    <<: *trevra-common
+    command: ["node", "dist-server/server/migrate-job.js"]
     environment:
       NODE_ENV: production
+      TREVRA_DEPLOYMENT_MODE: hosted
+      DATABASE_AUTO_MIGRATE: "false"
+      PORT: 8082
+      NODE_OPTIONS: --max-old-space-size=256
+    healthcheck:
+      disable: true
+    mem_limit: 320m
+    restart: "no"
+
+  trevra:
+    <<: *trevra-common
+    environment:
+      NODE_ENV: production
+      TREVRA_DEPLOYMENT_MODE: hosted
+      DATABASE_AUTO_MIGRATE: "false"
       PORT: 8080
-      # Caps V8's heap below the container limit so Node GCs under pressure
-      # rather than being OOM-killed by the kernel.
       NODE_OPTIONS: --max-old-space-size=320
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
@@ -23,23 +56,23 @@ services:
       timeout: 5s
       start_period: 40s
       retries: 3
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     mem_limit: 400m
     restart: unless-stopped
+    stop_grace_period: 30s
 
   worker:
-    image: ghcr.io/leanchain/trevra:${TREVRA_IMAGE_TAG:-main}
+    <<: *trevra-common
     command: ["node", "dist-server/worker/index.js"]
-    env_file:
-      - .env.oracle
     environment:
       NODE_ENV: production
+      TREVRA_DEPLOYMENT_MODE: hosted
+      DATABASE_AUTO_MIGRATE: "false"
       PORT: 8081
       NODE_OPTIONS: --max-old-space-size=256
-      # Slower than the 60s default: on 1/8 of an OCPU shared with the API,
-      # a minute-by-minute cycle leaves little CPU for serving requests.
       AUTOMATION_INTERVAL_MS: ${AUTOMATION_INTERVAL_MS:-300000}
-    # Overrides the image HEALTHCHECK, which probes /api/health -- an API route.
-    # The worker serves /health instead, so the inherited check always fails.
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
       interval: 30s
@@ -47,17 +80,25 @@ services:
       start_period: 40s
       retries: 3
     depends_on:
-      trevra:
-        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     mem_limit: 320m
     restart: unless-stopped
+    stop_grace_period: 30s
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
     command: ["tunnel", "--no-autoupdate", "run"]
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      - trevra
+      trevra:
+        condition: service_healthy
     mem_limit: 96m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     restart: unless-stopped

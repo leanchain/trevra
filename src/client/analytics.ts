@@ -1,3 +1,39 @@
+/* =====================================================================
+ * Rates, before anything is tracked.
+ *
+ * A LEAF MODULE ON PURPOSE: this file imports nothing, so the rule below can
+ * be read, tested and reused without dragging a screen -- and every outreach
+ * tile that prints a percentage reuses it. When the rule lived inside the
+ * funnel screen, `LinkedInManagerRead` had its own copy that took a
+ * pre-divided rate, so the same empty ledger read "—" on one screen and "0%"
+ * on another.
+ * ================================================================== */
+
+/**
+ * How many observations a percentage needs before it is a measurement.
+ *
+ * 3 accepted of 4 is not 75% acceptance, it is four invites. Printing the
+ * percentage anyway is how a screen turns a coin toss into a trend somebody
+ * re-targets a campaign over -- and the empty case is worse, because 0 of 0
+ * renders as "0%", which reads as total failure rather than as silence.
+ */
+export const RATE_MIN_SAMPLE = 10;
+
+/** Said in words wherever a denominator is too small to divide by. */
+export const NOT_ENOUGH_DATA = 'not enough data';
+
+/**
+ * A percentage, or the reason there is not one.
+ *
+ * TAKES THE TWO COUNTS, NEVER A PRE-DIVIDED RATE, because the denominator is
+ * the whole question: a rate arrives as `0.5` whether it was 1-of-2 or
+ * 500-of-1000, and by then the caller cannot tell which.
+ */
+export function ratePercent(numerator: number, denominator: number, minSample: number = RATE_MIN_SAMPLE): string {
+  if (!Number.isFinite(denominator) || denominator < Math.max(1, minSample)) return NOT_ENOUGH_DATA;
+  return `${Math.round((numerator / denominator) * 100)}%`;
+}
+
 export type ClientMarketingEvent =
   | 'page_view'
   | 'signup_started'

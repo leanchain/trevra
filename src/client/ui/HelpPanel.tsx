@@ -198,10 +198,11 @@ export function ShortcutSheet({ onClose }: { onClose: () => void }) {
 const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   { path: '/loop', label: 'Loop', hint: 'What the loop is doing, and where it is stuck' },
   { path: '/loop/cost', label: 'What this cost', hint: 'Spent, sent, produced — one period' },
-  { path: '/outreach', label: 'Outreach · Account', hint: 'Your LinkedIn accounts, and what may go out today' },
+  { path: '/outreach', label: 'Outreach · LinkedIn accounts', hint: 'The accounts you send from, and what may go out today' },
+  { path: '/outreach/accounts', label: 'Outreach · Target accounts', hint: 'Rank companies by the buying signals Trevra can prove' },
   { path: '/outreach/manager', label: 'Outreach · Campaigns', hint: 'Lead lists, workflows, and running campaigns' },
   { path: '/outreach/inbox', label: 'Outreach · Inbox', hint: 'Replies, and the messages waiting for you to write' },
-  { path: '/outreach/leads', label: 'Outreach · Find leads', hint: 'Turn a search, a post or keywords into a list of people' },
+  { path: '/outreach/leads', label: 'Outreach · Find people', hint: 'Turn a search, a post or keywords into a list of people' },
   { path: '/outreach/campaigns', label: 'Outreach · Approve & export', hint: 'Write a sequence, approve the wording, export it' },
   { path: '/outreach/plan', label: 'Outreach · Plan preview', hint: 'A dry run. Writes nothing' },
   { path: '/money', label: 'Money', hint: 'Agreed, delivered, billed, paid — and what wasn’t' },
@@ -209,7 +210,7 @@ const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   { path: '/setup/agent', label: 'Setup · Agent access', hint: 'Connect Claude Code or Codex' },
   { path: '/setup/spend', label: 'Setup · The spending cap', hint: 'The monthly cap and the switch, inside Agent access' },
   { path: '/setup/data', label: 'Setup · Connections', hint: 'Where your data comes from' },
-  { path: '/setup/seat', label: 'Setup · LinkedIn account', hint: 'Identity, sign-in, worker' },
+  { path: '/setup/seat', label: 'Setup · LinkedIn settings', hint: 'Detailed sign-in, worker and safety settings for the active account' },
   { path: '/setup/skills', label: 'Setup · Skills', hint: 'What your agent can do, and running one by hand' },
   { path: '/setup/limits', label: 'Setup · Limits', hint: 'Automation rules, hard limits, never-contact list' }
 ];

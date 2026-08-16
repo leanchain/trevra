@@ -12,6 +12,9 @@
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "check": "npm test && npm run build",
+    "selfhost:init": "bash scripts/selfhost-init.sh",
+    "selfhost:deploy": "bash scripts/selfhost-deploy.sh",
+    "selfhost:backup": "bash scripts/selfhost-backup.sh",
     "db:reset": "tsx scripts/reset-db.ts",
     "db:migrate": "tsx src/server/migrate-job.ts",
     "db:migrate:built": "node dist-server/server/migrate-job.js",
@@ -89,6 +92,6 @@
   },
   "overrides": {
     "@hono/node-server": "^2.0.5",
-    "brace-expansion": "5.0.8"
+    "brace-expansion": "5.0.9"
   }
 }

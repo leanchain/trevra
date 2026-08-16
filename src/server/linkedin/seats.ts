@@ -1,4 +1,5 @@
-import type { Db } from '../db.js';
+import { id, type Db } from '../db.js';
+import { openSecret, sealSecret, secretsConfigured, type SecretContext } from '../secrets/crypto.js';
 import { WARMUP_WEEKS } from './limits.js';
 
 /**
@@ -244,7 +245,9 @@ interface SeatRow {
   daily_profile_view_limit: number;
   daily_follow_limit: number;
   safety_band_override: boolean;
-  proxy_url: string | null;
+  proxy_server: string | null;
+  proxy_username: string | null;
+  proxy_has_password: boolean;
 }
 
 /**
@@ -281,7 +284,9 @@ const SEAT_COLUMNS = `
   daily_profile_view_limit,
   daily_follow_limit,
   safety_band_override,
-  proxy_url
+  proxy_server,
+  proxy_username,
+  proxy_has_password
 `;
 
 function parsedWorkingDays(value: unknown): number[] {
@@ -314,23 +319,148 @@ function toSeat(row: SeatRow): LinkedInSeat {
     // Fails CLOSED on a row this schema never wrote: an absent flag is not an
     // override, it is a seat nobody has opted in for.
     safetyBandOverride: row.safety_band_override === true,
-    // REDACTED HERE, once, so no caller has to remember to do it. Every route
-    // that returns a seat returns this object.
-    proxy: describeSeatProxy(row.proxy_url ?? null)
+    // Only non-secret metadata crosses the route boundary. The full URL lives
+    // in linkedin_seat_proxy_secrets and is decrypted only by seatProxyUrl().
+    proxy: row.proxy_server ? {
+      server: row.proxy_server,
+      username: row.proxy_username,
+      hasPassword: row.proxy_has_password === true
+    } : null
   };
 }
 
+/** The row identity used to bind a sealed proxy to one tenant + seat. */
+export function seatProxySecretContext(workspaceId: string, seatKey: string): SecretContext {
+  return { store: 'linkedin_seat_proxy_secrets', workspaceId, seatKey, kind: 'linkedin.proxy' };
+}
+
+interface SeatProxySecretRow {
+  ciphertext: Buffer;
+  iv: Buffer;
+  auth_tag: Buffer;
+  key_version: number;
+  key_id: string | null;
+}
+
 /**
- * The seat's proxy URL AS STORED, credentials included. Server-side only.
- *
- * Separate from {@link getSeat} on purpose: the seat object goes to a browser
- * and this string must not. The one caller is the browser launcher, which
- * needs the whole URL to hand Chromium.
+ * The seat's full proxy URL, decrypted at the browser-launch boundary only.
+ * No route calls this. A legacy plaintext row is opportunistically converted
+ * when a key exists; without a key it fails closed instead of continuing to
+ * treat a database credential as ordinary configuration.
  */
-export async function seatProxyUrl(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): Promise<string | null> {
-  const row = await db.prepare('SELECT proxy_url FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
+export async function seatProxyUrl(
+  db: Db,
+  workspaceId: string,
+  seatKey: string = OWNER_SEAT_KEY,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<string | null> {
+  const sealed = await db.prepare(`
+    SELECT ciphertext,iv,auth_tag,key_version,key_id
+    FROM linkedin_seat_proxy_secrets
+    WHERE workspace_id=? AND seat_key=?
+  `).get<SeatProxySecretRow>(workspaceId, seatKey);
+  if (sealed) {
+    return openSecret({
+      ciphertext: sealed.ciphertext,
+      iv: sealed.iv,
+      authTag: sealed.auth_tag,
+      keyVersion: Number(sealed.key_version),
+      keyId: sealed.key_id
+    }, seatProxySecretContext(workspaceId, seatKey), env);
+  }
+
+  const legacy = await db.prepare('SELECT proxy_url FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
     .get<{ proxy_url: string | null }>(workspaceId, seatKey);
-  return row?.proxy_url?.trim() || null;
+  const plaintext = legacy?.proxy_url?.trim() || null;
+  if (!plaintext) return null;
+  if (!secretsConfigured(env)) {
+    throw new Error('This LinkedIn account still has a legacy plaintext proxy credential, but TREVRA_SECRETS_KEY is not configured so Trevra cannot migrate it safely.');
+  }
+  await putSeatProxySecret(db, workspaceId, seatKey, plaintext, env);
+  return plaintext;
+}
+
+/**
+ * Seal or clear one seat's full proxy URL. The seat row stores only metadata
+ * the UI is already allowed to display; the legacy plaintext column is always
+ * nulled in the same transaction as the secret write.
+ */
+export async function putSeatProxySecret(
+  db: Db,
+  workspaceId: string,
+  seatKey: string,
+  raw: string | null,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<void> {
+  const value = raw?.trim() || null;
+  if (!value) {
+    await db.transaction(async (tx) => {
+      await tx.prepare('DELETE FROM linkedin_seat_proxy_secrets WHERE workspace_id=? AND seat_key=?').run(workspaceId, seatKey);
+      await tx.prepare(`
+        UPDATE linkedin_seats
+        SET proxy_url=NULL, proxy_server=NULL, proxy_username=NULL, proxy_has_password=FALSE, updated_at=CURRENT_TIMESTAMP
+        WHERE workspace_id=? AND seat_key=?
+      `).run(workspaceId, seatKey);
+    });
+    return;
+  }
+
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error("This account's own proxy setting is not a URL. Use http://user:pass@host:port, https://... or socks5://host:port."); }
+  const scheme = url.protocol.replace(':', '');
+  if (!['http', 'https', 'socks5'].includes(scheme) || !url.hostname) {
+    throw new Error("This account's own proxy setting must use http, https or socks5 and name a proxy host.");
+  }
+  if (scheme === 'socks5' && (url.username || url.password)) {
+    throw new Error("This account's own proxy setting is a SOCKS proxy with credentials, which Chromium cannot authenticate. Use an http proxy, or a SOCKS proxy that authorises this machine by IP.");
+  }
+
+  const sealed = sealSecret(value, seatProxySecretContext(workspaceId, seatKey), env);
+  const server = `${scheme}://${url.host}`;
+  const username = url.username ? decodeURIComponent(url.username) : null;
+  const hasPassword = Boolean(url.password);
+  const now = new Date().toISOString();
+  await db.transaction(async (tx) => {
+    await tx.prepare(`
+      INSERT INTO linkedin_seat_proxy_secrets
+        (id,workspace_id,seat_key,ciphertext,iv,auth_tag,key_version,key_id,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT (workspace_id,seat_key) DO UPDATE SET
+        ciphertext=EXCLUDED.ciphertext, iv=EXCLUDED.iv, auth_tag=EXCLUDED.auth_tag,
+        key_version=EXCLUDED.key_version, key_id=EXCLUDED.key_id, updated_at=EXCLUDED.updated_at
+    `).run(id('lpxy'), workspaceId, seatKey, sealed.ciphertext, sealed.iv, sealed.authTag, sealed.keyVersion, sealed.keyId, now, now);
+    await tx.prepare(`
+      UPDATE linkedin_seats
+      SET proxy_url=NULL, proxy_server=?, proxy_username=?, proxy_has_password=?, updated_at=?
+      WHERE workspace_id=? AND seat_key=?
+    `).run(server, username, hasPassword, now, workspaceId, seatKey);
+  });
+}
+
+/** Seal every pre-076 plaintext proxy; used by the release migration job. */
+export async function migrateLegacySeatProxies(db: Db, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  const rows = await db.prepare(`
+    SELECT workspace_id,seat_key,proxy_url
+    FROM linkedin_seats
+    WHERE proxy_url IS NOT NULL AND btrim(proxy_url) <> ''
+    ORDER BY workspace_id,seat_key
+  `).all<{ workspace_id: string; seat_key: string; proxy_url: string }>();
+  if (rows.length > 0 && !secretsConfigured(env)) {
+    throw new Error(`Cannot migrate ${rows.length} legacy LinkedIn proxy credential(s): TREVRA_SECRETS_KEY is not configured.`);
+  }
+  for (const row of rows) await putSeatProxySecret(db, row.workspace_id, row.seat_key, row.proxy_url, env);
+  return rows.length;
+}
+
+/** Hosted startup invariant: no proxy credential may remain in plaintext. */
+export async function assertNoLegacySeatProxyPlaintext(db: Db, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (env.TREVRA_DEPLOYMENT_MODE !== 'hosted') return;
+  const row = await db.prepare(`SELECT COUNT(*)::int AS total FROM linkedin_seats WHERE proxy_url IS NOT NULL AND btrim(proxy_url) <> ''`)
+    .get<{ total: number }>();
+  if ((row?.total ?? 0) > 0) {
+    throw new Error(`Hosted startup refused: ${row!.total} LinkedIn seat proxy credential(s) are still stored in the legacy plaintext proxy_url column. Run the migration job before serving traffic.`);
+  }
 }
 
 /** The workspace's seat, or undefined when none is configured. */
@@ -443,9 +573,13 @@ export async function upsertSeat(
   workspaceId: string,
   patch: SeatPatch,
   now: Date,
-  seatKey: string = OWNER_SEAT_KEY
+  seatKey: string = OWNER_SEAT_KEY,
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<LinkedInSeat> {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(seatKey)) throw new Error('seat_key must be 1-64 letters, numbers, underscores or dashes.');
+  if (patch.proxyUrl?.trim() && !secretsConfigured(env)) {
+    throw new Error('TREVRA_SECRETS_KEY is required to store a LinkedIn proxy credential; Trevra will not write it in plaintext.');
+  }
   const existing = await getSeat(db, workspaceId, seatKey);
 
   const label = patch.label ?? existing?.label;
@@ -486,21 +620,15 @@ export async function upsertSeat(
   // Absent means UNCHANGED, like every other field here; a seat that has never
   // been opted in is false. There is no path that turns this on by inference.
   const safetyBandOverride = patch.safetyBandOverride ?? existing?.safetyBandOverride ?? false;
-  // Absent means UNCHANGED, so the existing value is read back out of the
-  // column rather than off `existing` -- the seat object deliberately does not
-  // carry it. Null or blank removes it.
-  const proxyUrl = patch.proxyUrl === undefined
-    ? await seatProxyUrl(db, workspaceId, seatKey)
-    : (patch.proxyUrl?.trim() || null);
   const timestamp = now.toISOString();
 
-  const row = await db.prepare(`
+  await db.prepare(`
     INSERT INTO linkedin_seats (
       workspace_id, seat_key, label, profile_url, account_opened_on, connections_count,
       timezone, activated_at, detected_at, session_valid_at, posture, paused_reason,
       working_days, work_start_minute, work_end_minute, daily_invite_limit,
-      daily_message_limit, daily_profile_view_limit, daily_follow_limit, safety_band_override, proxy_url, created_at, updated_at
-    ) VALUES (?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?,?)
+      daily_message_limit, daily_profile_view_limit, daily_follow_limit, safety_band_override, created_at, updated_at
+    ) VALUES (?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, seat_key) DO UPDATE SET
       label = excluded.label,
       profile_url = excluded.profile_url,
@@ -522,10 +650,9 @@ export async function upsertSeat(
       daily_profile_view_limit = excluded.daily_profile_view_limit,
       daily_follow_limit = excluded.daily_follow_limit,
       safety_band_override = excluded.safety_band_override,
-      proxy_url = excluded.proxy_url,
       updated_at = excluded.updated_at
-    RETURNING ${SEAT_COLUMNS}
-  `).get<SeatRow>(
+    RETURNING workspace_id
+  `).run(
     workspaceId,
     seatKey,
     label.trim(),
@@ -546,12 +673,19 @@ export async function upsertSeat(
     dailyProfileViewLimit,
     dailyFollowLimit,
     safetyBandOverride,
-    proxyUrl,
     timestamp,
     timestamp
   );
 
-  return toSeat(row as SeatRow);
+  // Proxy writes are separate from the seat UPSERT because the full credential
+  // belongs to the encrypted vault, not to the seat row. Absent means leave the
+  // existing secret alone; explicit null/blank deletes it.
+  if (patch.proxyUrl !== undefined) {
+    await putSeatProxySecret(db, workspaceId, seatKey, patch.proxyUrl, env);
+  }
+  const row = await getSeat(db, workspaceId, seatKey);
+  if (!row) throw new Error('LinkedIn seat was not persisted');
+  return row;
 }
 
 /**

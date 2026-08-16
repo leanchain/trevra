@@ -262,6 +262,7 @@ import {
 import {
   clearInboxForSeat,
   clearInboxForWorkspace,
+  editQueuedMessage,
   enqueueReply,
   listThreads,
   readThread as readStoredThread,
@@ -397,10 +398,24 @@ export function createApp(db: Db) {
     res.locals.cspNonce = randomBytes(16).toString('base64');
     next();
   });
+  const loopbackHttpProduction = process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE === 'false';
   app.use(helmet({
     contentSecurityPolicy: process.env.NODE_ENV === 'production'
-      ? { directives: { scriptSrc: ["'self'", (_req, res) => `'nonce-${String((res as unknown as Response).locals.cspNonce)}'`] } }
-      : false
+      ? {
+          directives: {
+            scriptSrc: ["'self'", (_req, res) => `'nonce-${String((res as unknown as Response).locals.cspNonce)}'`],
+            // The single-operator production profile is deliberately loopback
+            // HTTP. Upgrading relative assets there would point the browser at
+            // a TLS endpoint that does not exist. Public production keeps the
+            // default Helmet upgrade directive unchanged.
+            ...(loopbackHttpProduction ? { upgradeInsecureRequests: null } : {})
+          }
+        }
+      : false,
+    // HSTS on an HTTP-only localhost origin teaches the browser to stop using
+    // the only endpoint this deployment exposes. It remains enabled everywhere
+    // production uses secure cookies (the public/HTTPS case).
+    strictTransportSecurity: loopbackHttpProduction ? false : undefined
   }));
   app.use(pinoHttp({
     logger: pino({ level: process.env.NODE_ENV === 'test' ? 'silent' : (process.env.LOG_LEVEL ?? 'info') }),
@@ -458,6 +473,10 @@ export function createApp(db: Db) {
 
   app.get('/api/public-config', (_req, res) => res.json({
     googleAuthEnabled: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
+    // Password signup is intentionally self-hosted-only for now. Hosted users
+    // prove email ownership through Google OAuth instead of creating an
+    // immediately authenticated, unverified password identity.
+    emailPasswordAuthEnabled: process.env.TREVRA_DEPLOYMENT_MODE !== 'hosted',
     modelExtractionEnabled: Boolean(process.env.OPENAI_API_KEY),
     supportEmail: getSiteConfig().supportEmail,
     catalogApiUrl: process.env.PUBLIC_REGISTRY_API_URL?.trim() || '',
@@ -2563,6 +2582,26 @@ export function createApp(db: Db) {
     res.json({ action });
   }));
 
+  /**
+   * Change the words of a message that has not been typed yet.
+   *
+   * SEPARATE FROM EVERY STATUS ROUTE, and it carries exactly one field. There
+   * is nothing here that can move a row's status, its slot, its target or its
+   * kind -- `editQueuedMessage` refuses anything that is not this workspace's
+   * own hand-queued, still-planned, unclaimed message, and rewrites its bytes.
+   * A queue an operator cannot correct is a queue they cancel and retype, which
+   * spends a trip through the replay guard to fix a typo.
+   */
+  app.post('/api/linkedin/actions/:id/body', linkedinRoute(async (req, res) => {
+    const input = linkedinEditBodySchema.parse(req.body ?? {});
+    const action = await editQueuedMessage(db, {
+      workspaceId: req.auth!.workspaceId,
+      actionId: String(req.params.id),
+      body: input.body
+    });
+    res.json({ action });
+  }));
+
   // The ONLY route that may move an action to sent/accepted/replied, and it is
   // a REPORT rather than an instruction: the operator is telling Trevra what
   // already happened in their own tool, so the acceptance-rate throttle and the
@@ -3882,7 +3921,12 @@ export function createApp(db: Db) {
     const plannedFor = input.plannedFor ?? now.toISOString();
     const verdict = await evaluateEngagementSafety(
       db,
-      { workspaceId, kind: input.kind, targetRef: input.targetRef, plannedFor },
+      // `manual`, because this IS the manual surface: a live request from a
+      // signed-in operator, filed below as `source: 'manual'`. It relaxes the
+      // working window and the weekend rule -- a person follows somebody when
+      // they are looking at them -- and nothing else. Every ceiling below still
+      // counts this like any other action.
+      { workspaceId, kind: input.kind, targetRef: input.targetRef, plannedFor, manual: true },
       now
     );
     if (!verdict.allowed) {
@@ -5590,6 +5634,8 @@ const linkedinActionFiltersSchema = z.object({
  * before it reaches the ledger. The API plans and approves; it never sends.
  */
 const linkedinSkipSchema = z.object({}).strict();
+// One field, strict: an edit changes words and nothing else.
+const linkedinEditBodySchema = z.object({ body: z.string().min(1).max(8000) }).strict();
 
 /**
  * The one sanctioned way an HTTP request reports a send.

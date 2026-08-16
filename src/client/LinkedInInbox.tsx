@@ -9,12 +9,15 @@ import {
   ListPlus,
   LoaderCircle,
   MessageSquare,
+  Pencil,
   RefreshCw,
-  ShieldCheck
+  ShieldCheck,
+  X
 } from 'lucide-react';
 import {
   ApiError,
   completeLinkedInManualTask,
+  editLinkedInActionBody,
   getLinkedInActions,
   getLinkedInCampaigns,
   getLinkedInManagedCampaigns,
@@ -23,6 +26,7 @@ import {
   getLinkedInThread,
   getLinkedInThreads,
   replyToLinkedInThread,
+  skipLinkedInAction,
   syncLinkedInInbox,
   syncLinkedInThread,
   type LinkedInActionView,
@@ -298,6 +302,18 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
   /** The safety check's own sentence, verbatim. Not an error: a decision with a reason. */
   const [refusal, setRefusal] = useState('');
   const [queued, setQueued] = useState<{ plannedFor: string; verdict: LinkedInSafetyVerdict } | null>(null);
+  /**
+   * The queued message currently open for rewriting, and the draft of it.
+   *
+   * Kept apart from the composer's own `body`: one is a message that does not
+   * exist yet, the other is bytes already in the ledger with a slot of their
+   * own, and typing in one must never overwrite the other.
+   */
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  /** The row a cancel is in flight for, so only its own button says so. */
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   /** Last request wins, so a fast unfiltered read cannot overwrite a slow filtered one. */
   const listToken = useRef(0);
@@ -447,7 +463,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     ?? taskThreads.find((thread) => thread.threadUrn === threadUrn)?.seatKey
     ?? (conversation?.thread.threadUrn === threadUrn ? conversation.thread.seatKey : undefined)
     ?? (filters.seatKey || undefined),
-  [threads, taskThreads, conversation, filters.seatKey]);
+    [threads, taskThreads, conversation, filters.seatKey]);
 
   const openThread = async (threadUrn: string) => {
     setOpenUrn(threadUrn);
@@ -572,6 +588,58 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     } finally { setCompleting(false); }
   };
 
+  /**
+   * Open a queued message for rewriting, with its own words in the box.
+   *
+   * The draft starts as what is ACTUALLY queued, read off the row, so an
+   * operator edits the message rather than retyping it from memory.
+   */
+  const startEditingQueued = (action: LinkedInActionView) => {
+    setEditingId(action.id);
+    setEditDraft(action.body ?? '');
+    setError('');
+    setRefusal('');
+  };
+
+  /**
+   * Change the words, and nothing else. Same person, same slot, same ledger row.
+   *
+   * A 409 here is the server refusing because the row moved -- almost always
+   * the worker claiming it mid-edit -- so it is shown the way every other
+   * refusal on this screen is: verbatim, as a decision with a reason.
+   */
+  const saveQueuedEdit = async (action: LinkedInActionView) => {
+    if (!editDraft.trim()) return;
+    setSavingEdit(true);
+    setError('');
+    setRefusal('');
+    try {
+      await editLinkedInActionBody(action.id, editDraft);
+      setEditingId(null);
+      setToast('Message updated. Same person, same slot — only the words changed, and nothing has been sent.');
+      await loadReplies();
+    } catch (err) {
+      const message = errorMessage(err, 'Unable to change that message');
+      if (err instanceof ApiError && err.status === 409) setRefusal(message);
+      else setError(message);
+    } finally { setSavingEdit(false); }
+  };
+
+  /** Drop a queued message before it is typed. Nothing reaches them, ever. */
+  const cancelQueued = async (action: LinkedInActionView) => {
+    setCancellingId(action.id);
+    setError('');
+    try {
+      await skipLinkedInAction(action.id);
+      if (editingId === action.id) setEditingId(null);
+      setToast('Cancelled. It was never typed, so nothing reached them — you can write a new one.');
+      await loadReplies();
+      await reloadOutreach();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to cancel that message. Nothing was changed.'));
+    } finally { setCancellingId(null); }
+  };
+
   /** Where each message to this person got to. Read off the queued rows, never guessed. */
   const sendState = (profileUrl: string | null | undefined) => {
     const rows = repliesFor(profileUrl);
@@ -580,9 +648,61 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       <strong><Clock size={14} /> {rows.length === 1 ? 'Your message to them' : `Your last ${rows.length} messages to them`}</strong>
       {rows.map((action) => {
         const stage = replyStage(action);
+        /**
+         * WHAT A WAITING MESSAGE STILL ALLOWS.
+         *
+         * Until the worker claims a row its words are text in a database the
+         * operator owns, so both controls are honest: rewriting changes what
+         * will be typed and nothing else, and cancelling means nothing is ever
+         * typed. A claimed row offers neither -- the browser may be typing
+         * these very bytes -- and neither does a campaign's own copy.
+         */
+        const editable = action.status === 'planned' && !action.claimedAt && action.source === 'manual';
+        const editing = editingId === action.id;
         return <div className="li-chip-row" key={action.id}>
           <span className={`li-chip ${stage.chip}`}>{stage.label}</span>
           <p>{stage.detail}</p>
+          {action.body && !editing && <blockquote className="li-queued-body">{action.body}</blockquote>}
+          {editable && !editing && <div className="li-queued-controls">
+            <button type="button" className="secondary-button" onClick={() => startEditingQueued(action)}>
+              <Pencil size={14} /> Edit these words
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={cancellingId === action.id}
+              onClick={() => void cancelQueued(action)}
+            >
+              <X size={14} /> {cancellingId === action.id ? 'Cancelling…' : 'Cancel it'}
+            </button>
+          </div>}
+          {editing && <div className="li-queued-edit">
+            <label className="li-block-label">The words that will be typed
+              <textarea
+                rows={4}
+                value={editDraft}
+                onChange={(event) => setEditDraft(event.target.value)}
+                placeholder="Write the message you want to send."
+              />
+            </label>
+            <div className="li-queued-controls">
+              <button
+                type="button"
+                className="primary-button"
+                disabled={savingEdit || !editDraft.trim()}
+                onClick={() => void saveQueuedEdit(action)}
+              >
+                {savingEdit ? 'Saving…' : 'Save these words'}
+              </button>
+              <button type="button" className="secondary-button" disabled={savingEdit} onClick={() => setEditingId(null)}>
+                Leave it as it was
+              </button>
+            </div>
+            <p className="li-hint">
+              Words only. Same person, same slot, same safety checks — saving sends nothing, and if Trevra picks the
+              message up while you are typing, your change is refused rather than half-applied.
+            </p>
+          </div>}
         </div>;
       })}
       {repliesTruncated && <p className="li-hint">
@@ -617,7 +737,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     </div>}
 
     <section className="page-panel">
-      <div className="section-heading li-inbox-head">
+      <div className="section-heading">
         <div>
           <h3 aria-level={2}>Inbox</h3>
           <p>
@@ -632,7 +752,6 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       </div>
 
       <div className="li-filter-row">
-        <span className="li-filter-label">Show</span>
         <button
           type="button"
           className={`li-range ${filters.unread ? 'is-active' : ''}`}

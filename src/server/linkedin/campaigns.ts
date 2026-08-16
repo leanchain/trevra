@@ -490,6 +490,17 @@ export interface LinkedInActionView {
   plannedFor: string | null;
   recordedAt: string | null;
   source: string;
+  /**
+   * THE APPROVED BYTES, so the operator can read back what is about to be
+   * typed on their behalf.
+   *
+   * Absent from this view until now, which made the queue a black box: the one
+   * screen that answers "did it go?" could say WHERE a message was and never
+   * WHAT it said, so an operator who wanted to check their own wording had to
+   * cancel it and type it again from memory. Null for the passive kinds, which
+   * have no copy.
+   */
+  body: string | null;
   payloadHash: string | null;
   failureKind: string | null;
   externalRef: string | null;
@@ -529,6 +540,7 @@ interface ActionRow {
   planned_for: string | null;
   recorded_at: string | null;
   source: string;
+  body: string | null;
   payload_hash: string | null;
   failure_kind: string | null;
   external_ref: string | null;
@@ -541,7 +553,7 @@ interface ActionRow {
 
 const ACTION_COLUMNS = `
   id, seat_key, kind, target_ref, campaign_id, status, planned_for, recorded_at,
-  source, payload_hash, failure_kind, external_ref, claimed_at, created_at,
+  source, body, payload_hash, failure_kind, external_ref, claimed_at, created_at,
   accepted_at, accepted_source, queued_by_user_id
 `;
 
@@ -556,6 +568,7 @@ function toActionView(row: ActionRow): LinkedInActionView {
     plannedFor: row.planned_for,
     recordedAt: row.recorded_at,
     source: row.source,
+    body: row.body,
     payloadHash: row.payload_hash,
     failureKind: row.failure_kind,
     externalRef: row.external_ref,

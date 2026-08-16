@@ -146,36 +146,30 @@ not fail in production, because production is one operator.
 
 ## What is still open, and what it costs
 
-1. **A LinkedIn session cannot move between hosts.** The Chrome profile *is* the
-   session, on local disk. A seat is now pinned to the host holding its profile
-   and another host refuses it, which prevents the silent re-login storm --- but
-   a dead host parks its seats until it returns or the profile is copied. The
-   real fix is externalising `storageState` into the secrets envelope, which
-   needs a session-write path in the driver.
-2. **One master key still derives every tenant's key.** Per-workspace derivation
+1. **One master key still derives every tenant's key.** Per-workspace derivation
    limits row portability, not a master-key leak. The honest upgrade is KMS/HSM;
    the derivation function is the single swap point.
-3. **Workers hold the whole multi-tenant database.** A worker is `openDatabase()`
+2. **Workers hold the whole multi-tenant database.** A worker is `openDatabase()`
    on `DATABASE_URL` with no token and no scoped credential. Acceptable only
    while every worker is inside the trust boundary.
-4. **Execution entitlement is per DEPLOYMENT, not per tenant.**
-   `TREVRA_DEPLOYMENT_MODE=hosted` gates credential custody, the workers, lead
-   sourcing and queueing as one process-wide boolean. Selling hosted execution
-   to some tenants and not others means turning that into a per-workspace
-   entitlement -- and every refusal site is load-bearing prose that has to be
-   rewritten honestly, not just re-pointed.
-5. **The OTP/challenge round-trip is process-affine.** The live page lives in a
+3. **The OTP/challenge round-trip is process-affine.** The live page lives in a
    module-level map, and the operator's code arrives on a second HTTP call that
    must reach the same replica. With more than one API pod, seats can wedge in
    `otp_required`. Tests never catch it, because every test injects the page.
-6. **`NOT NULL` and composite parent FKs are staged** for the ten tables that
-   just gained `workspace_id`. Writers fill it now; the constraint tightening is
-   a follow-up migration (`schema_hardening_deferred` carries the statements).
-7. **Retention has no story.** Nothing expires: message bodies, harvested
+4. **Retention has no story.** Nothing expires: message bodies, harvested
    strangers, `original_json` holding the raw CSV row verbatim, export blobs.
    Erasure on request exists; scheduled retention does not.
-8. **Agencies have no client dimension.** Lead dedupe and account uniqueness are
+5. **Agencies have no client dimension.** Lead dedupe and account uniqueness are
    per workspace, so one workspace running two clients holds each person once.
+
+Hosted execution itself is no longer process-affine: migration 065 externalises
+browser `storageState` into the row-bound secrets envelope and records a
+per-workspace acknowledgement, so a remote browser runner can resume a seat on
+another host. Migration 076 also moves credential-bearing per-seat proxy URLs
+out of `linkedin_seats` plaintext and into the same row-bound custody model.
+The release job refuses traffic while `schema_hardening_deferred` is non-empty,
+so staged tenant constraints are now a deployment blocker rather than silent
+technical debt.
 
 ---
 

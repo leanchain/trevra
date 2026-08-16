@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, Inbox,
+  BarChart3, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleAlert, ClipboardList, Copy, Inbox,
   LoaderCircle, Pause, Play, RefreshCw, Square, Trash2, Users, Workflow as WorkflowIcon, Zap
 } from 'lucide-react';
 import {
@@ -39,6 +39,7 @@ import {
   type EnforcedCeiling,
   type ManagedKind
 } from './LinkedInManagerCampaignConfig';
+import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
 import { useActiveSeatKey } from './LinkedInAccounts';
 import { ConfirmDrawer } from './ui/dialog';
 
@@ -58,7 +59,15 @@ import { ConfirmDrawer } from './ui/dialog';
 
 const DAY_MS = 86_400_000;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-/** Both variants need this many messages before a winner is worth naming. */
+/**
+ * EVERY version needs this many messages before a winner is worth naming.
+ *
+ * Per arm, not in total, and that is the whole point now a step may carry up
+ * to four of them: a four-way test is not readable at 20 sends spread over it,
+ * it is readable at 20 sends EACH. Until the thinnest arm clears the bar the
+ * panel says how many more it needs and names nobody -- a leader chip off a
+ * handful of sends is noise with a rosette on.
+ */
 const MIN_VARIANT_SENDS = 20;
 
 type MemberStatus = ManagedCampaignMember['status'];
@@ -102,7 +111,15 @@ const CAMPAIGN_STATUS_LABEL: Record<ManagedCampaign['status'], string> = {
   stopped: 'Stopped'
 };
 
-const percent = (value: number | null) => value === null ? '—' : `${Math.round(value * 100)}%`;
+/*
+ * NO LOCAL `percent` HERE ANY MORE, and that is the point of importing one.
+ *
+ * The old helper took a pre-divided rate and printed it, so 1-of-2 and
+ * 500-of-1000 both came out "50%" and 0-of-0 came out as an em dash on this
+ * screen and as "0%" on another. `ratePercent` takes the two counts and says
+ * "not enough data" whenever the denominator is too small to divide by, which
+ * is the same sentence on every outreach screen.
+ */
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 const clock = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 
@@ -408,7 +425,7 @@ function VariantResults({ analytics, stepsById }: { analytics: ManagedAnalytics;
     return [...map.entries()];
   }, [analytics]);
 
-  if (groups.length === 0) return <p className="empty-copy">No message has gone out with a version attached yet. Once a campaign with two message versions starts sending, the comparison appears here.</p>;
+  if (groups.length === 0) return <p className="empty-copy">No message has gone out with a version attached yet. Once a campaign whose message step carries more than one version starts sending, the comparison appears here.</p>;
 
   return <div className="mgr-ab">
     {groups.map(([stepId, rows]) => {
@@ -444,7 +461,7 @@ function VariantResults({ analytics, stepsById }: { analytics: ManagedAnalytics;
                   ? 'Pick a single campaign above to see the wording this version was sent with.'
                   : 'The wording for this version is no longer in any campaign shown here.'}</p>}
               <p className="mgr-variant-nums">
-                <b>{percent(row.rate)}</b> replied · {row.replied} of {plural(row.sent, 'message')}
+                <b>{ratePercent(row.replied, row.sent, MIN_VARIANT_SENDS)}</b> replied · {row.replied} of {plural(row.sent, 'message')}
               </p>
               <svg className="mgr-rate" viewBox="0 0 100 4" preserveAspectRatio="none" aria-hidden="true" focusable="false">
                 <rect className="mgr-rate-fill" x="0" y="0" width={Math.max(1, ((row.rate ?? 0) / peak) * 100)} height="4" />
@@ -452,11 +469,21 @@ function VariantResults({ analytics, stepsById }: { analytics: ManagedAnalytics;
             </article>;
           })}
         </div>
+        {/*
+          THE GATE IS PER ARM AND IT DOES NOT SOFTEN AS ARMS ARE ADDED. A step
+          may now run up to four versions, and the arithmetic of "one of these
+          looks ahead" gets easier to satisfy by luck with every arm added --
+          so a leader is named only once EVERY version has cleared
+          MIN_VARIANT_SENDS, and until then the panel says which ones are short
+          and by how much rather than pointing at whichever is briefly on top.
+        */}
         {withRate.length < 2
           ? <p className="mgr-tl-note">Only one version has been used at this step, so there is nothing to compare it with.</p>
           : thin.length > 0
-            ? <p className="mgr-tl-note">Not enough data yet. {thin.map((row) => `version ${row.variantId} needs ${MIN_VARIANT_SENDS - row.sent} more`).join(', ')} before a difference here means anything.</p>
-            : !decided ? <p className="mgr-tl-note">Both versions are replying at the same rate so far.</p> : null}
+            ? <p className="mgr-tl-note">Not enough data yet. {thin.map((row) => `version ${row.variantId} needs ${MIN_VARIANT_SENDS - row.sent} more`).join(', ')} before a difference across {plural(withRate.length, 'version')} means anything.</p>
+            : !decided
+              ? <p className="mgr-tl-note">{withRate.length === 2 ? 'Both versions are' : `All ${withRate.length} versions are`} replying at the same rate so far.</p>
+              : null}
       </div>;
     })}
   </div>;
@@ -679,6 +706,13 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
   const pendingTasks = tasks.filter((task) => task.status === 'pending');
   const runningCount = campaigns.filter((campaign) => campaign.status === 'running').length;
   const leadsInFlight = Object.values(membersByCampaign).flat().filter((member) => LIVE_STATUSES.includes(member.status)).length;
+  const firstCampaignSteps = [
+    { done: seats.length > 0, title: 'Add the LinkedIn account you will send from', detail: 'Account, timezone, working hours and limits.', target: 'account' as const },
+    { done: lists.length > 0, title: 'Build a lead list', detail: 'The people this campaign is allowed to contact.', target: 'mgr-lead-lists' as const },
+    { done: workflows.length > 0, title: 'Build a workflow', detail: 'The steps and waits each person will move through.', target: 'mgr-workflows' as const },
+    { done: campaigns.length > 0, title: 'Create the campaign', detail: 'Choose one account, one list and one workflow. Starting it is a separate decision.', target: 'mgr-create' as const }
+  ];
+  const firstCampaignNext = firstCampaignSteps.find((step) => !step.done) ?? null;
   /**
    * Which workflow step a variant result row belongs to.
    *
@@ -713,6 +747,27 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
 
   return <div className="page-stack">
     {error && <div className="error-banner">{error}</div>}
+
+    {!loading && campaigns.length === 0 && <section className="onboarding-card mgr-first-campaign">
+      <div className="onboarding-head">
+        <div><h2>Build your first campaign in this order</h2><p>Each step unlocks the next. Nothing sends while you are building.</p></div>
+        <span className="status-pill">{firstCampaignSteps.filter((step) => step.done).length} of {firstCampaignSteps.length} ready</span>
+      </div>
+      <ol className="onboarding-steps">
+        {firstCampaignSteps.map((step) => {
+          const next = firstCampaignNext?.title === step.title;
+          return <li key={step.title} className={`${step.done ? 'is-done' : ''}${next ? ' is-next' : ''}`.trim()}>
+            {step.done ? <CheckCircle2 size={19} /> : <Circle size={19} />}
+            <div><strong>{step.title}</strong><small>{step.detail}</small></div>
+            {next && (step.target === 'account'
+              ? <a className="primary-button" href="/outreach">Add account <ChevronRight size={14} /></a>
+              : <button className="primary-button" type="button" onClick={() => scrollTo(step.target)}>
+                {step.target === 'mgr-lead-lists' ? 'Build lead list' : step.target === 'mgr-workflows' ? 'Build workflow' : 'Create campaign'} <ChevronRight size={14} />
+              </button>)}
+          </li>;
+        })}
+      </ol>
+    </section>}
 
     <section className="page-panel" id="mgr-campaigns">
       <div className="section-heading">
@@ -877,7 +932,7 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
           </div>}
     </section>
 
-    <div id="mgr-create">
+    {(campaigns.length > 0 || (seats.length > 0 && lists.length > 0 && workflows.length > 0)) && <div id="mgr-create">
       <LinkedInManagerCampaignConfig
         onChanged={refreshAll}
         setToast={setToast}
@@ -885,13 +940,17 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
         onNeedWorkflows={() => scrollTo('mgr-workflows')}
         prefill={prefill}
       />
-    </div>
+    </div>}
 
     <section className="page-panel">
       <div className="section-heading">
         <div>
           <h3 aria-level={2}><BarChart3 size={18} className="li-heading-icon" /> Results</h3>
-          <p>Counted from what your LinkedIn accounts actually did, in the window you choose.</p>
+          <p>
+            Counted from what your LinkedIn accounts actually did, in the window you choose. A percentage reads
+            &ldquo;{NOT_ENOUGH_DATA}&rdquo; until there are at least {RATE_MIN_SAMPLE} in its denominator — three of four
+            is four invites, not 75%.
+          </p>
         </div>
       </div>
 
@@ -918,10 +977,21 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
 
       <div className="li-stat-row mgr-stats">
         <div className="li-stat"><p>Invites sent</p><strong>{analytics?.invitesSent ?? 0}</strong></div>
-        <div className="li-stat"><p>Invites accepted</p><strong>{analytics?.invitesAccepted ?? 0}</strong><span>{percent(analytics?.acceptanceRate ?? null)} of invites sent</span></div>
+        {/* ACCEPTED OUT OF INVITES SENT -- the one acceptance denominator a
+            user is shown, here and on the funnel. "Invites sent" now counts
+            declined invites too: they were sent, and leaving them out inflated
+            this percentage by exactly the refusals it was measuring. */}
+        <div className="li-stat"><p>Invites accepted</p><strong>{analytics?.invitesAccepted ?? 0}</strong><span>{ratePercent(analytics?.invitesAccepted ?? 0, analytics?.invitesSent ?? 0)} of invites sent</span></div>
         <div className="li-stat"><p>Messages sent</p><strong>{analytics?.messagesSent ?? 0}</strong></div>
         <div className="li-stat"><p>Leads messaged</p><strong>{analytics?.contactedLeads ?? 0}</strong><span>People who got at least one message</span></div>
-        <div className="li-stat"><p>Replies</p><strong>{analytics?.repliedLeads ?? 0}</strong><span>{percent(analytics?.replyRate ?? null)} of leads messaged</span></div>
+        {/* TWO TILES, BECAUSE THEY COUNT TWO POPULATIONS. "Replies" is anyone
+            who replied to anything, an invite that came back with a note
+            included. The rate divides messaged leads who replied by messaged
+            leads -- the same population top and bottom, which is what stops it
+            printing 133%, as it did when the numerator counted replies to any
+            action kind and the denominator counted messaged leads only. */}
+        <div className="li-stat"><p>Replies</p><strong>{analytics?.repliedLeads ?? 0}</strong><span>People who replied to anything</span></div>
+        <div className="li-stat"><p>Reply rate</p><strong>{ratePercent(analytics?.repliedMessagedLeads ?? 0, analytics?.contactedLeads ?? 0)}</strong><span>{analytics?.repliedMessagedLeads ?? 0} of {analytics?.contactedLeads ?? 0} leads messaged replied</span></div>
         <div className="li-stat"><p>Profile views</p><strong>{analytics?.profileViews ?? 0}</strong></div>
         {/*
           SIX OF THE WORKFLOW'S ACTIONS CAN RUN; ALL SIX ARE COUNTED HERE.
@@ -1004,13 +1074,13 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
     <section className="page-panel">
       <div className="section-heading"><div>
         <h3 aria-level={2}>LinkedIn accounts</h3>
-        <p>Each account has its own timezone, working hours and daily limits, set on Setup &rarr; LinkedIn account. If an account is not signed in, its campaigns wait instead of sending from another account.</p>
+        <p>Each sending account has its own timezone, working hours and daily limits. Manage them on Outreach &rarr; LinkedIn accounts. If an account is not connected, its campaigns wait instead of sending from another account.</p>
       </div></div>
       {seats.length === 0
         ? <div className="mgr-empty">
           <h4 aria-level={3}>No LinkedIn account yet</h4>
           <p>Campaigns send from a real LinkedIn account. Add one, sign it in, and set the hours it is allowed to work.</p>
-          <div className="mgr-actions"><a className="primary-button" href="/setup/seat">Set up a LinkedIn account</a></div>
+          <div className="mgr-actions"><a className="primary-button" href="/outreach">Add a LinkedIn account</a></div>
         </div>
         : <div className="mgr-wide"><div className="li-table-scroll"><table className="li-table">
           {/*

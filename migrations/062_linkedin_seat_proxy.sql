@@ -1,0 +1,36 @@
+-- Per-account outbound proxy, stored on the seat.
+--
+-- WHY A COLUMN AT ALL. `resolveSeatProxy` (local-worker.ts) has always been
+-- able to route one seat's browser through a proxy, and it could only ever be
+-- told about it through `TREVRA_LINKEDIN_PROXY*` -- process environment, on the
+-- machine running the worker, restarted to change. That is workable for the
+-- author of the deployment and unreachable for everybody else: an operator with
+-- a second account on a residential line had no way to say so, and the feature
+-- was effectively author-only. The proxy is a fact ABOUT AN ACCOUNT, so it
+-- belongs on the account.
+--
+-- PRECEDENCE, AND IT IS NOT NEGOTIABLE: this column wins for the seat it is on;
+-- the environment stays as the fallback for seats without one, so every
+-- existing deployment keeps working untouched. What does NOT change is the
+-- refusal: a seat with a proxy configured and unusable -- a malformed URL, a
+-- scheme Chromium cannot speak, a SOCKS proxy carrying credentials it cannot
+-- authenticate -- never falls back to a direct connection. The browser is not
+-- opened and the work stays due for a worker that can honour it, because the
+-- operator configured a proxy precisely so this account would not be seen
+-- coming from this address, and a silent direct connection is the one outcome
+-- that cannot be undone once LinkedIn has logged it.
+--
+-- NULLABLE AND NULL BY DEFAULT. Absent by design: the custody argument for the
+-- whole subsystem is that a self-hoster drives their own account from their own
+-- machine and their own IP.
+--
+-- The value is the whole URL, credentials included, exactly as
+-- `TREVRA_LINKEDIN_PROXIES` holds it -- so it is readable by anyone who can
+-- read this table, the same audience that can read the environment it replaces.
+-- It is never rendered back to a client: `LinkedInSeat.proxy` carries a
+-- redacted view (host, username, whether a password exists) and the full string
+-- has exactly one reader, `seatProxyUrl`, on the server.
+-- lc-debt: proxy_url is stored in the clear rather than sealed like
+-- linkedin_seat_credentials; upgrade path is to move it into workspace_secrets
+-- once TREVRA_SECRETS_KEY is required of local deployments too.
+ALTER TABLE linkedin_seats ADD COLUMN IF NOT EXISTS proxy_url TEXT;

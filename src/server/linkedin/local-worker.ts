@@ -359,6 +359,29 @@ export interface DueLinkedInAction {
    * Nothing in this worker may set it, and nothing in this worker may infer it.
    */
   overrideWarmupCeiling?: boolean;
+  /**
+   * This reply answers a conversation the other person wrote in first.
+   *
+   * READ OFF THE ROW, NEVER DECIDED HERE, exactly like the field above and for
+   * the same reason: `enqueueReply` read it from the thread's own history at
+   * queue time (migration 074), and the gate this worker re-runs before typing
+   * anything has to reach the same verdict or the reply it already accepted
+   * would be refused at the last moment and sit in the queue forever.
+   */
+  replyToInbound?: boolean;
+  /**
+   * A PERSON put this row here, and the ledger says so.
+   *
+   * READ OFF THE ROW's `source` column, never decided here, exactly like the
+   * two fields above it. `source='manual'` is what the hand-driven surfaces
+   * write (`enqueueReply`, the engagement route) and what the planner and the
+   * campaign runner never write, so the gate's pre-send re-evaluation reaches
+   * the same verdict the queue-time call did: the working window and the
+   * weekend rule pace what this account does BY ITSELF, and refusing a queued
+   * manual action at the moment of execution would strand it in the queue for
+   * a clock that already let it in.
+   */
+  manual?: boolean;
 }
 
 export type BatchStatus = 'completed' | 'halted';
@@ -585,6 +608,36 @@ export function resetLinkedInSessionRhythm(): void {
  * a batch loop that does not otherwise need the row, and this runs once per
  * sitting rather than once per action.
  */
+/**
+ * Is work a PERSON asked for sitting due for this seat right now?
+ *
+ * The one thing that may open a browser during a break, and both halves of it
+ * are facts the ledger holds rather than claims a caller makes:
+ * `source='manual'` is written by the hand-driven surfaces and by nothing the
+ * planner or the campaign runner touches, and `reply_to_inbound` is written by
+ * `enqueueReply` from the conversation's own history (migration 074). So an
+ * automated action cannot reach this by calling itself urgent.
+ *
+ * WITHOUT THIS, RELAXING THE GATE WOULD BE HALF A PROMISE: the safety gate
+ * stops refusing a manual action typed at 22:00, and then the worker sits on it
+ * until the next visit at 08:36 anyway.
+ */
+export async function dueManualWork(db: Db, workspaceId: string, seatKey: string, now: Date): Promise<boolean> {
+  try {
+    const row = await db.prepare(`
+      SELECT 1 AS due FROM linkedin_actions
+      WHERE workspace_id = ? AND seat_key = ? AND status = 'planned' AND planned_for <= ?
+        AND (source = 'manual' OR (kind = 'reply' AND reply_to_inbound = true))
+      LIMIT 1
+    `).get<{ due: number }>(workspaceId, seatKey, now.toISOString());
+    return row !== undefined && row !== null;
+  } catch {
+    // An un-migrated database has no such column. Resting as before is the
+    // safe direction to be wrong in.
+    return false;
+  }
+}
+
 async function visitEndsAt(db: Db, workspaceId: string, seatKey: string, now: Date): Promise<Date | null> {
   try {
     const seat = await getSeat(db, workspaceId, seatKey);
@@ -1085,6 +1138,8 @@ interface DueActionRow {
   campaign_id: string | null;
   replay_scope: string | null;
   override_warmup_ceiling: boolean | null;
+  reply_to_inbound: boolean | null;
+  source: string | null;
 }
 
 const EXECUTABLE_KIND_LIST = EXECUTABLE_KINDS.map((kind) => `'${kind}'`).join(', ');
@@ -1340,9 +1395,16 @@ export function postgresLocalWorkerStore(
         -- told no campaign was named, on every real send), could not ask the
         -- ledger's own scoped replay question, and could not honour an override
         -- an operator had already recorded on the row.
+        -- for ONE consumer: the pre-send re-evaluation of the safety gate.
+        -- Without them that call could not run the campaign-day ramp (it was
+        -- told no campaign was named, on every real send), could not ask the
+        -- ledger's own scoped replay question, could not honour an override an
+        -- operator had already recorded on the row, and could not tell a row a
+        -- person queued by hand from one the planner placed.
         RETURNING id, workspace_id, seat_key, kind, target_ref,
                   TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS planned_for,
-                  body, thread_urn, campaign_id, replay_scope, override_warmup_ceiling
+                  body, thread_urn, campaign_id, replay_scope, override_warmup_ceiling,
+                  reply_to_inbound, source
       `).get<DueActionRow>(
         now.toISOString(),
         batchId,
@@ -1365,7 +1427,9 @@ export function postgresLocalWorkerStore(
         threadUrn: row.thread_urn,
         campaignId: row.campaign_id,
         replayScope: row.replay_scope ?? 'legacy',
-        overrideWarmupCeiling: row.override_warmup_ceiling === true
+        overrideWarmupCeiling: row.override_warmup_ceiling === true,
+        replyToInbound: row.reply_to_inbound === true,
+        manual: row.source === 'manual'
       };
     },
 
@@ -4673,7 +4737,19 @@ export async function runDueLinkedInActions(
     // the only wrong answer here is coming back early.
     const stored = await seatRestingUntil(db, workspaceId, seatKey);
     const restingUntil = Math.max(seatBreaks.get(handleKey) ?? 0, stored ? stored.getTime() : 0);
-    if (restingUntil > now.getTime()) {
+    // A PERSON'S OWN WORK OUTRANKS THE SEAT'S REST. The break paces what this
+    // account does BY ITSELF; a row the ledger records as `source='manual'` is
+    // the operator at the keyboard -- an answer to somebody who just wrote
+    // (migration 074), a follow they just clicked -- and making them wait out a
+    // two-hour gap between sittings is the same refusal the working window used
+    // to make, wearing a different name. It is also the other half of the gate:
+    // relaxing business hours for hand-driven work and then sleeping on it
+    // until the next visit would change the error message and nothing else.
+    //
+    // Asked ONLY of a resting seat and answered by one indexed count, so the
+    // ordinary tick pays nothing for it.
+    const answerWaiting = restingUntil > now.getTime() && (await dueManualWork(db, workspaceId, seatKey, now));
+    if (restingUntil > now.getTime() && !answerWaiting) {
       const reason = `is between sittings until ${new Date(restingUntil).toISOString()}`;
       logOncePerSeat(say, 'session-break', workspaceId, seatKey, reason, now);
       results.push({
@@ -4812,7 +4888,19 @@ export async function runDueLinkedInActions(
               // carries what `enqueueReply` wrote.
               ...(action.campaignId ? { campaignId: action.campaignId } : {}),
               ...(action.replayScope ? { replayScope: action.replayScope } : {}),
-              ...(action.overrideWarmupCeiling ? { overrideWarmupCeiling: true } : {})
+              ...(action.overrideWarmupCeiling ? { overrideWarmupCeiling: true } : {}),
+              // `replyToInbound` is the CONVERSATION's fact about who spoke
+              // first (migration 074), carried the same way and for the same
+              // reason: this worker never sets it and never infers it.
+              ...(action.replyToInbound ? { replyToInbound: true } : {}),
+              // `manual` is the LEDGER's fact about who queued this row
+              // (`source='manual'`), carried for the same reason as the two
+              // above and with the same rule: this worker never sets it and
+              // never infers it. Without it, a reply or a follow a person
+              // queued outside the working window passed the gate when they
+              // typed it and was refused by the same gate at send time -- the
+              // one shape of disagreement this re-evaluation exists to avoid.
+              ...(action.manual ? { manual: true } : {})
             },
             at,
             // The claimed row is the SUBJECT of the question, not an answer to

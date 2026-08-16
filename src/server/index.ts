@@ -5,17 +5,22 @@ import { openDatabase } from './db.js';
 import { createApp } from './app.js';
 import { backfillWorkspaceOrganizations, closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 import { validateEnvironment } from './config.js';
+import { assertHostedDataReady } from './hosted-readiness.js';
 import { getSiteConfig, renderAppIndex, renderNotFoundPage } from './public-site.js';
 
 const runtime = validateEnvironment();
 const port = runtime.port;
-await migrateAuthDatabase();
+const hosted = process.env.TREVRA_DEPLOYMENT_MODE === 'hosted';
+// Hosted schema/data changes belong to migrate-job.ts. Local keeps the
+// convenient single-node boot migration behavior.
+if (!hosted) await migrateAuthDatabase();
 const db = await openDatabase();
-// Every pre-existing workspace (created before the organization plugin) gets
-// a matching better-auth organization + owner member row. Idempotent -- see
-// its doc comment in auth-service.ts -- so this runs on every boot, not just
-// the first one after this migration ships.
-await backfillWorkspaceOrganizations(db);
+if (hosted) {
+  await assertHostedDataReady(db);
+} else {
+  // Hosted runs this in the release migration job to avoid replica boot races.
+  await backfillWorkspaceOrganizations(db);
+}
 const app = createApp(db);
 
 if (process.env.NODE_ENV === 'production') {

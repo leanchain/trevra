@@ -81,6 +81,63 @@ const BODY_MAX = 8000;
 const DELAY_MAX = 2160;
 const MAX_STEPS = 50;
 
+/**
+ * Mirrors MESSAGE_VARIANT_MAX in workflows.ts: message versions per A/B step.
+ *
+ * The number is the READ, not the storage. Results hold every arm to 20
+ * messages before naming a leader, so four arms is already 80 sends of one
+ * step before the comparison means anything -- and that is said on the card,
+ * next to the button that adds the fourth, rather than discovered later on a
+ * results panel that keeps answering "not enough data yet".
+ */
+const VARIANT_MAX = 4;
+
+/** The ids the builder mints, in order. One letter each, so a card header stays short. */
+const VARIANT_IDS = ['a', 'b', 'c', 'd'] as const;
+
+/**
+ * Split-bar fills for the ids styles.css does not already colour.
+ *
+ * `a` takes the sheet's default green fill and `b` its blue; the third and
+ * fourth arms exist now and need to be told apart at a glance, so they carry
+ * the two remaining theme colours inline. Keyed by ID rather than by position
+ * on purpose: removing the middle arm must not repaint the survivors.
+ */
+const VARIANT_FILL: Readonly<Record<string, string>> = { c: 'var(--amber)', d: 'var(--muted)' };
+
+/**
+ * Integer weights, summing to exactly 100, keeping the proportions handed in.
+ *
+ * ADDING OR REMOVING AN ARM HAS TO LEAVE A SPLIT THAT STILL READS AS ONE. Two
+ * arms at 50/50 plus a third left the card claiming 50%, 50% and 50% of leads;
+ * the server would have normalised by the true total and sent 33/33/33, so the
+ * builder was describing a split nobody was running. Every arm keeps a floor
+ * of 1 -- the schema's own minimum -- and the remainder is handed out largest
+ * fraction first, which is deterministic and never needs a second pass.
+ */
+export function renormaliseWeights(weights: readonly number[]): number[] {
+  const count = weights.length;
+  if (count === 0) return [];
+  if (count > 100) return weights.map(() => 1);
+  const safe = weights.map((weight) => Math.max(1, Math.trunc(weight) || 1));
+  const total = safe.reduce((sum, weight) => sum + weight, 0);
+  const pool = 100 - count;
+  const exact = safe.map((weight) => (weight / total) * pool);
+  const out = exact.map((share) => 1 + Math.floor(share));
+  let slack = 100 - out.reduce((sum, share) => sum + share, 0);
+  const byRemainder = exact
+    .map((share, index) => ({ index, remainder: share - Math.floor(share) }))
+    .sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+  for (let at = 0; slack > 0; at += 1, slack -= 1) out[byRemainder[at].index] += 1;
+  return out;
+}
+
+/** The next unused letter, or null when the step is already at {@link VARIANT_MAX}. */
+export function nextVariantId(taken: readonly string[]): string | null {
+  const used = new Set(taken.map((variantId) => variantId.trim().toLowerCase()));
+  return VARIANT_IDS.find((candidate) => !used.has(candidate)) ?? null;
+}
+
 /** Who the previews are rendered for, so merge fields read as sentences and not as tokens. */
 const SAMPLE_LEAD: Record<ManagerVariable, string> = {
   first_name: 'Ada',
@@ -244,6 +301,9 @@ function stepProblems(step: WorkflowStep, index: number, steps: readonly Workflo
   if (step.action === 'message') {
     if (step.config.variants.every((variant) => variant.body.trim().length === 0)) {
       problems.push('A message step needs copy in at least one variant.');
+    }
+    if (step.config.variants.length > VARIANT_MAX) {
+      problems.push(`A message step takes at most ${VARIANT_MAX} versions.`);
     }
     for (const variant of step.config.variants) {
       if (variant.body.length > BODY_MAX) problems.push(`Variant ${variant.id.toUpperCase()} is ${variant.body.length} characters. The ceiling is ${BODY_MAX}.`);
@@ -802,6 +862,22 @@ function MessageVariants({ step, bind, insert, onChange }: {
     return Math.round((Math.max(1, variant.weight) / total) * 100);
   };
 
+  /** Re-spread the weights over whatever arms are left, so the card's split is the one that runs. */
+  const setRenormalised = (next: Variant[]) => {
+    const weights = renormaliseWeights(next.map((variant) => variant.weight));
+    setVariants(next.map((variant, index) => ({ ...variant, weight: weights[index] })));
+  };
+
+  const minted = nextVariantId(variants.map((variant) => variant.id));
+  const addVariant = () => {
+    if (!minted) return;
+    // The new arm starts on the MEAN of the existing ones, so a 70/30 split
+    // stays a 70/30 split with a third arm beside it rather than being flattened
+    // to thirds -- the operator's intent is a ratio, not the two numbers.
+    const mean = Math.max(1, Math.round(variants.reduce((sum, variant) => sum + Math.max(1, variant.weight), 0) / Math.max(1, variants.length)));
+    setRenormalised([...variants, { id: minted, body: '', weight: mean }]);
+  };
+
   return <div className="li-span-2 li-wf-variants">
     {variants.map((variant, at) => {
       const key = `variant-${variant.id}`;
@@ -823,7 +899,8 @@ function MessageVariants({ step, bind, insert, onChange }: {
           {variants.length > 1 && <button
             className="li-mini-button li-mini-danger"
             type="button"
-            onClick={() => setVariants(variants.filter((_, index) => index !== at))}
+            aria-label={`Remove variant ${variant.id.toUpperCase()}`}
+            onClick={() => setRenormalised(variants.filter((_, index) => index !== at))}
           >Remove</button>}
         </div>
         <textarea
@@ -847,21 +924,24 @@ function MessageVariants({ step, bind, insert, onChange }: {
         {written.map((variant) => <span
           className={`li-wf-split-fill li-wf-split-${variant.id.toLowerCase()}`}
           key={variant.id}
-          style={{ width: `${Math.round((Math.max(1, variant.weight) / total) * 100)}%` }}
+          style={{ width: `${Math.round((Math.max(1, variant.weight) / total) * 100)}%`, background: VARIANT_FILL[variant.id.toLowerCase()] }}
         />)}
       </span>
       <span className="li-hint">{written.length === 0
-        ? 'Neither variant has copy yet.'
+        ? 'No version has copy yet.'
         : written.length === 1
           ? `Every lead gets variant ${written[0].id.toUpperCase()}.`
           : written.map((variant) => `${variant.id.toUpperCase()} ${Math.round((Math.max(1, variant.weight) / total) * 100)}%`).join(' · ')}</span>
     </div>
 
-    {variants.length < 2 && <button
-      className="li-mini-button"
-      type="button"
-      onClick={() => setVariants([...variants, { id: variants.some((variant) => variant.id === 'a') ? 'b' : 'a', body: '', weight: 50 }])}
-    ><Plus size={12} /> Add a second variant</button>}
+    {minted
+      ? <div className="li-wf-split">
+        <button className="li-mini-button" type="button" onClick={addVariant}>
+          <Plus size={12} /> Add variant {minted.toUpperCase()}
+        </button>
+        <span className="li-hint">Up to {VARIANT_MAX} versions per step. Each one needs about 20 messages of its own before the results panel will name a winner, so a four-way test takes roughly four times as long to read as a two-way one.</span>
+      </div>
+      : <span className="li-hint">{VARIANT_MAX} versions is the most one step can test. Remove one to try different wording.</span>}
   </div>;
 }
 

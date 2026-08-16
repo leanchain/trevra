@@ -5,6 +5,7 @@ import { LinkedInApiError, createCampaign, newCampaignId } from './campaigns.js'
 import type { LinkedInInboxMessage, LinkedInThreadSummary } from './driver-inbox.js';
 import {
   clearInboxForWorkspace,
+  editQueuedMessage,
   enqueueReply,
   listThreads,
   readThread,
@@ -466,12 +467,49 @@ describe('enqueueReply', () => {
     expect(filed?.total).toBe(0);
   });
 
-  it('refuses a reply outside the seat\'s business hours', async () => {
+  /**
+   * THE COMPOSER IS THE OPERATOR, AND THE OPERATOR'S CLOCK IS THEIR OWN.
+   *
+   * This used to assert the refusal. The working window paces what the account
+   * does BY ITSELF; a person typing an answer at 02:00, or on a Sunday, is a
+   * person using LinkedIn, and telling them to come back on Monday is a
+   * product refusing work its owner had already decided to do.
+   */
+  it('queues a reply the operator typed outside the seat\'s business hours', async () => {
     await steadySeat();
+    const midnight = new Date('2026-08-05T02:00:00.000Z');
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello' }, midnight);
+    expect(queued.verdict.allowed).toBe(true);
+    const hours = queued.verdict.checks.find((entry) => entry.check === 'business-hours');
+    // Passed, and it says why rather than reading as a window this instant sat
+    // inside.
+    expect(hours?.passed).toBe(true);
+    expect(hours?.detail).toContain('a person asked for at the moment they asked for it');
+
+    // They write again before Saturday, so this is a NEW conversational turn,
+    // not a duplicate submit of the reply above. Advancing the replay scope is
+    // important: this test is about the weekend rule and must not weaken the
+    // duplicate-target guard just to reach it.
+    await syncThreadMessages(
+      db,
+      { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', messages: [inbound('One more thing', '2026-08-08T09:30:00.000Z')] },
+      new Date('2026-08-08T09:30:00.000Z')
+    );
+    // 2026-08-08 is a Saturday this seat has not configured.
+    const saturday = new Date('2026-08-08T10:00:00.000Z');
+    const weekendReply = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'and again' }, saturday);
+    expect(weekendReply.verdict.checks.find((entry) => entry.check === 'weekend')?.passed).toBe(true);
+  });
+
+  it('still refuses one the seat has no room for, whatever the hour', async () => {
+    // Relaxing WHEN is not relaxing HOW MUCH. A paused seat at midnight is
+    // refused for being paused, which is the check that is actually about
+    // whether this account may act at all.
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC', posture: 'paused' }, new Date(NOW.getTime() - 60 * 86_400_000));
     const midnight = new Date('2026-08-05T02:00:00.000Z');
     await expect(
       enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello' }, midnight)
-    ).rejects.toThrow(/business-hours/);
+    ).rejects.toThrow(/seat-paused/);
   });
 
   it('answers somebody this seat has already DMd, which is the normal case in an inbox', async () => {
@@ -557,6 +595,50 @@ describe('enqueueReply', () => {
     expect(row?.override_warmup_ceiling).toBe(true);
   });
 
+  /**
+   * THE CASE THE PRODUCT ACTUALLY REFUSED (migration 074).
+   *
+   * Somebody writes to the account in week one. Answering them is the most
+   * ordinary thing on LinkedIn and the least like the outreach the ramp exists
+   * to slow -- and Trevra refused it with "warm-up week 1 permits no replies at
+   * all. Wait for the ramp." The only way past it was an operator override that
+   * no control in the product ever set, so there was no way past it.
+   */
+  it('queues a reply to somebody who wrote first, in warm-up week 1, with no override', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, NOW);
+    await syncThreadMessages(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', messages: [inbound()] }, NOW);
+
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Happy to explain.' }, NOW);
+
+    expect(queued.verdict.allowed).toBe(true);
+    const ceiling = queued.verdict.checks.find((entry) => entry.check === 'warmup-ceiling');
+    expect(ceiling?.passed).toBe(true);
+    expect(ceiling?.detail).toContain('wrote to this account first');
+
+    // PERSISTED, so the worker's pre-send re-evaluation reaches the same
+    // verdict instead of refusing what was already accepted.
+    const row = await db.prepare('SELECT reply_to_inbound, override_warmup_ceiling FROM linkedin_actions WHERE id=?')
+      .get<{ reply_to_inbound: boolean; override_warmup_ceiling: boolean }>(queued.actionId);
+    expect(row?.reply_to_inbound).toBe(true);
+    // NOT an operator override. Two different facts, and the row says which.
+    expect(row?.override_warmup_ceiling).toBe(false);
+  });
+
+  it('still ramps a follow-up to somebody who has never answered', async () => {
+    // No inbound message in this conversation: whatever it is, it is not a
+    // reply to a person who chose to write, so the ramp still applies.
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, NOW);
+    await syncThreadMessages(
+      db,
+      { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', messages: [{ at: '2026-08-04T09:00:00.000Z', direction: 'out', body: 'Hi Maya -- worth a chat?' }] },
+      NOW
+    );
+
+    await expect(
+      enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Just following up.' }, NOW)
+    ).rejects.toThrow(/warmup-ceiling/);
+  });
+
   it('leaves the override off by default, so nothing acquires it by accident', async () => {
     await steadySeat();
     const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello' }, NOW);
@@ -608,6 +690,84 @@ describe('enqueueReply', () => {
     const row = await db.prepare('SELECT seat_key, target_ref FROM linkedin_actions WHERE id=?')
       .get<{ seat_key: string; target_ref: string }>(queued.actionId);
     expect(row).toMatchObject({ seat_key: 'sales', target_ref: SALES_LEAD });
+  });
+});
+
+/**
+ * A QUEUE NOBODY CAN CORRECT IS A QUEUE PEOPLE CANCEL AND RETYPE.
+ *
+ * Until the worker claims a row, its approved bytes are text in a database the
+ * operator owns: rewriting them changes WHAT will be typed and nothing else --
+ * not the slot, not the person, not the count it charges against any ceiling.
+ * What the tests below pin is the other half, which is where the danger is:
+ * every row that is NOT the operator's own waiting message refuses the edit,
+ * and says which of the four reasons refused it.
+ */
+describe('editQueuedMessage', () => {
+  beforeEach(async () => {
+    await syncThreads(db, { workspaceId: WORKSPACE_ID, threads: [summary()] }, NOW);
+    await steadySeat();
+  });
+
+  it('rewrites the words of a message that has not been typed yet, and changes nothing else', async () => {
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Happy to send it over.' }, NOW);
+
+    const edited = await editQueuedMessage(db, { workspaceId: WORKSPACE_ID, actionId: queued.actionId, body: 'Happy to send it over tomorrow.' });
+
+    expect(edited.body).toBe('Happy to send it over tomorrow.');
+    // The row is the SAME row: same slot, same person, same status. An edit
+    // that re-paced or re-filed the message would spend a fresh trip through
+    // the replay guard to fix a typo.
+    expect(edited.id).toBe(queued.actionId);
+    expect(Date.parse(edited.plannedFor ?? '')).toBe(Date.parse(queued.plannedFor));
+    expect(edited.targetRef).toBe(queued.targetRef);
+    expect(edited.status).toBe('planned');
+    expect((await actionRow(queued.actionId)).body).toBe('Happy to send it over tomorrow.');
+  });
+
+  it('refuses an empty edit, exactly as the composer refuses an empty reply', async () => {
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Happy to.' }, NOW);
+    await expect(editQueuedMessage(db, { workspaceId: WORKSPACE_ID, actionId: queued.actionId, body: '   ' }))
+      .rejects.toThrow(/needs a body/);
+    expect((await actionRow(queued.actionId)).body).toBe('Happy to.');
+  });
+
+  it('refuses one the worker has already claimed, because those bytes may be being typed', async () => {
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Happy to.' }, NOW);
+    await db.prepare('UPDATE linkedin_actions SET claimed_at=? WHERE id=?').run(NOW.toISOString(), queued.actionId);
+
+    await expect(editQueuedMessage(db, { workspaceId: WORKSPACE_ID, actionId: queued.actionId, body: 'Second thoughts.' }))
+      .rejects.toThrow(/typing it into LinkedIn right now/);
+    expect((await actionRow(queued.actionId)).body).toBe('Happy to.');
+  });
+
+  it('refuses one that has already been typed', async () => {
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Happy to.' }, NOW);
+    await db.prepare("UPDATE linkedin_actions SET status='sent' WHERE id=?").run(queued.actionId);
+
+    await expect(editQueuedMessage(db, { workspaceId: WORKSPACE_ID, actionId: queued.actionId, body: 'Too late.' }))
+      .rejects.toThrow(/already been typed/);
+  });
+
+  it("refuses a campaign's own copy, which belongs to the campaign", async () => {
+    // Filed the way `queue.ts` files an approved campaign step.
+    const filed = await recordAction(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'dm', targetRef: MAYA, status: 'planned', source: 'campaign', plannedFor: NOW.toISOString() },
+      NOW
+    );
+    await db.prepare('UPDATE linkedin_actions SET body=? WHERE id=?').run('Approved campaign copy.', filed.id);
+
+    await expect(editQueuedMessage(db, { workspaceId: WORKSPACE_ID, actionId: filed.id, body: 'Not the approved copy.' }))
+      .rejects.toThrow(/queued by a campaign/);
+    expect((await actionRow(filed.id)).body).toBe('Approved campaign copy.');
+  });
+
+  it('does not reach into another workspace', async () => {
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Happy to.' }, NOW);
+    await expect(editQueuedMessage(db, { workspaceId: OTHER_WORKSPACE_ID, actionId: queued.actionId, body: 'Not yours.' }))
+      .rejects.toThrow(/not found/);
+    expect((await actionRow(queued.actionId)).body).toBe('Happy to.');
   });
 });
 

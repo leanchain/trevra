@@ -15,6 +15,10 @@ const env = {
   APP_ORIGIN: 'http://localhost:43173,http://localhost:43887',
   BETTER_AUTH_URL: 'http://localhost:43173',
   BETTER_AUTH_SECRET: 'test-only-better-auth-secret-with-more-than-32-characters',
+  // Test routes exercise the same encrypted custody path production uses. A
+  // fixed test-only key keeps those writes sealed while tests that specifically
+  // cover the no-key refusal delete/override it explicitly.
+  TREVRA_SECRETS_KEY: Buffer.alloc(32, 23).toString('base64'),
   COOKIE_SECURE: 'false',
   ALLOW_DEMO_AUTH: 'true',
   ALLOW_SIMULATED_EXECUTION: 'true'

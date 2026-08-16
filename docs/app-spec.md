@@ -44,16 +44,23 @@ it may read and prepare, and it may never approve or execute. See §11.
 
 ---
 
-## 3. The three jobs, in order
+## 3. Two first outcomes, one recurring job
 
-A new user has exactly three tasks. The app should be almost entirely about
-making these fast.
+A new user should not have to configure the whole product before any part becomes
+useful. On Loop they choose the first outcome they want working:
 
-1. **Connect your agent** — one line pasted into a terminal. Nothing works
-   before this, so it comes first and is never buried.
-2. **Connect your data** — email, accounting, or an import. Without it the agent
-   has nothing to reason about.
-3. **Approve the work** — the ongoing job, forever. This is the product.
+1. **Win new business** — add a sending account, build a lead list, build a
+   workflow, create a campaign.
+2. **Get paid for work** — connect Claude Code/Codex, connect commercial data,
+   bring in clients and agreements.
+
+The choice is presentation, not truth. It can be remembered locally; every
+completion mark still comes from a real object on the server.
+
+After either outcome is live, the recurring human job is the same: **decide on
+work Trevra prepared, and tend the exceptions that need a person.** Agents do the
+research/drafting/routine work; Trevra enforces and records; the human approves,
+pauses, replies where a workflow deliberately stops, or changes limits.
 
 ---
 
@@ -112,14 +119,14 @@ An empty state that does not tell you what to do next is a bug.
 ### Loop (default)
 - **Purpose:** what is the loop doing, and where is it stuck. Not “what am I owed”.
 - **Primary action:** the one button in the block sentence, pointing at the single stuck stage.
-- **Empty, new workspace:** the derived checklist, branched — outreach path, money path, or both with outreach first.
+- **Empty, new workspace:** one selected, fully-verifiable first-outcome checklist; the user can switch between outreach and money without configuring both.
 - **Empty, running workspace:** “Nothing needs you right now.”
 - **Never:** draw a stage with no backend as a zero. It says “not connected yet”.
 
 ### Outreach
 - **Purpose:** run the seat — what may go out today, why that number, where the variance is.
 - **Primary action:** none on the seat screen; it is a read. The primary lives on Campaigns.
-- **Empty:** “No seat is configured, so nothing can be paced.” + one button to Setup → LinkedIn seat.
+- **Empty:** “No LinkedIn account is set up yet.” + one button to the canonical account manager at Outreach → LinkedIn accounts.
 - **Never:** drop a `HARD FACT` / `REPORTED` tag on the way to the screen.
 
 ### Money
@@ -142,46 +149,47 @@ An empty state that does not tell you what to do next is a bug.
   four round-trips and four toasts for one decision. Write only what changed,
   and name each part. The exceptions are the switches: an off switch that needs
   a second click to take effect is not an off switch.
-
----
-
-## 6. Copy rules
-
-Write for the person who signs the cheque, not the person who wrote the runtime.
-
-**Banned from the human UI** — these describe the implementation, not the value:
-`control plane` · `append-only event stream` · `payload hash` · `typed modules` ·
-`side-effect class` · `SBOM` · `durable workflow` · `policy verdict` ·
-`commercial graph` · `registry` · `manifest`
-
-**Rules**
-1. Say what it does for them, or what ignoring it costs.
-2. Every empty state ends with the next action.
-3. Never claim work that did not happen.
-4. Numbers need a unit and a meaning: “€13,750 at risk”, not “Revenue at risk: 13750”.
-5. If a sentence would only make sense to someone who read the source, cut it.
-
----
-
-## 7. Input rules
-
-1. **No raw JSON in the human UI.** Ever. Forms are generated from the schemas
-   the server already publishes, so they cannot drift from the contract.
-2. **No field a machine can fill.** Token names, IDs, timestamps — default them.
-3. **One primary button per screen.** If there are two, one is not primary.
-4. **No kicker above a heading.** A word in a pill over a sentence is decoration
-   charging the reader for a line before the line that says something.
-5. **Every screen is a URL.** The hash carries one path, assigned whole, so a
-   screen can be typed, bookmarked, sent to somebody and Back-ed out of — and
-   so that leaving one screen cannot leave a key from it in the address bar.
-6. **A shortcut is discoverable or it does not exist.** `?` lists all of them,
-   and no unmodified key is bound while the caret is in a text field.
-
----
-
 ## 8. First run, exactly
 
 ```
+sign in
+   └▶ Loop
+
+      Get your first outcome working
+
+      [ Win new business ]  [ Get paid for work ]
+
+      Win new business
+      ○ Add the LinkedIn account you will send from   [Add account]
+      ○ Build one lead list                           [Build lead list]
+      ○ Build one workflow                            [Build workflow]
+      ○ Create your first campaign                    [Create campaign]
+
+      — or —
+
+      Get paid for work
+      ○ Connect Claude Code or Codex                  [Connect agent]
+      ○ Connect the source that knows what happened   [Connect data]
+      ○ Bring in clients and agreements               [Bring in clients]
+```
+
+Only the selected outcome is expanded. Exactly one incomplete step gets the
+primary action. Later steps remain visible so the sequence is understandable,
+but the screen does not make seven things look equally urgent.
+
+Every check mark is **derived from real data**: configured LinkedIn account,
+saved lead list, saved workflow, campaign, live agent token, live non-demo data
+connection, imported client. No `onboarding_completed` flag exists.
+
+A recommendation is deliberately not a setup step. A system that found nothing
+requiring a human decision is allowed to be healthy.
+
+The user's selected first outcome may be stored as a local UI preference because
+it asserts nothing about the business. It never completes a step.
+
+The standing LinkedIn risk note is not a step either: there is no fake
+"acknowledged" checkbox. The account screen continues to show the actual limits
+and their evidence.
 sign up
    └▶ Loop, empty, with:
 

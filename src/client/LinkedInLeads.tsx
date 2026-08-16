@@ -27,6 +27,10 @@ import {
   type LinkedInLead,
   type LinkedInLeadSource
 } from './api';
+// The account switcher, rendered here to SAY WHAT IT DOES NOT REACH. See the
+// scope sentence below: lead sources are workspace-wide, and a screen that
+// silently ignored the switch would look exactly like one that honoured it.
+import { ActiveAccountBar } from './LinkedInAccounts';
 import { errorMessage, stageTargets, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 import { navigate } from './ui/route';
@@ -355,6 +359,11 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
   };
 
   return <div className="page-stack">
+    <ActiveAccountBar scope={<>
+      <b>This screen is not per-account.</b> Lead sources, the people they find and the lists you save them into are
+      shared by every LinkedIn account in this workspace — switching above changes nothing here. The account is chosen
+      later, on the campaign that reaches out to them.
+    </>} />
     {error && <div className="error-banner">{error}</div>}
 
     {/* Not an error, and it must not be styled as one: this is a deliberate

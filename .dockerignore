@@ -3,6 +3,11 @@ dist
 dist-server
 .git
 .lemoncrow
+.claude
+.impeccable
+.playwright-mcp
+spike
+infra
 .env
 .env.*
 data

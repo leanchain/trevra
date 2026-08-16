@@ -179,7 +179,19 @@ export interface EngagementSafetyInput {
   /** Opaque handle or profile URL, as supplied by the operator. */
   targetRef: string;
   /** ISO-8601 instant the action is scheduled for. */
+  /** ISO-8601 instant the action is scheduled for. */
   plannedFor: string;
+  /**
+   * A PERSON clicked this, now.
+   *
+   * Set by the live request in `app.ts` -- which files the row as
+   * `source: 'manual'` -- and by nothing that runs on a schedule. It relaxes
+   * the gate's two time checks and nothing else: an operator who follows
+   * somebody on a Sunday evening is a person using LinkedIn, and the working
+   * window paces what the account does BY ITSELF. Every ceiling still applies,
+   * so this is still one follow, counted like every other.
+   */
+  manual?: boolean;
 }
 
 /**
@@ -259,7 +271,10 @@ export async function evaluateEngagementSafety(
       seatKey: input.seatKey ?? OWNER_SEAT_KEY,
       kind: input.kind,
       targetRef: input.targetRef,
-      plannedFor: input.plannedFor
+      plannedFor: input.plannedFor,
+      // Carried, not decided here: this module is the gate's caller, not a
+      // second gate.
+      ...(input.manual === true ? { manual: true } : {})
     },
     now,
     { excludeActionId: options.excludeActionId ?? null }

@@ -44,6 +44,10 @@ if ! ssh "$REMOTE" "test -f ${APP_DIR}/.env.oracle"; then
   echo "Create it from infra/oracle/.env.oracle.example (see gen-secrets.sh), chmod 600." >&2
   exit 1
 fi
+if ! ssh "$REMOTE" "grep -Eq '^TREVRA_SECRETS_KEY=.+$' ${APP_DIR}/.env.oracle"; then
+  echo "${APP_DIR}/.env.oracle is missing TREVRA_SECRETS_KEY; hosted deployment refuses to proceed." >&2
+  exit 1
+fi
 
 # Only the compose files need to be on the box now that the image is prebuilt.
 echo "==> syncing compose files"
@@ -51,8 +55,21 @@ scp -q "${REPO_ROOT}/infra/oracle/compose.oracle.yml" \
        "${REPO_ROOT}/infra/oracle/compose.oracle.nango.yml" \
        "${REMOTE}:${APP_DIR}/"
 
-echo "==> pulling ghcr.io/leanchain/trevra:${TAG}"
-ssh "$REMOTE" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.oracle.yml pull"
+if [ "${TREVRA_SKIP_PULL:-false}" = "true" ]; then
+  echo "==> using preloaded ghcr.io/leanchain/trevra:${TAG}"
+  ssh "$REMOTE" "docker image inspect 'ghcr.io/leanchain/trevra:${TAG}' >/dev/null"
+else
+  echo "==> pulling ghcr.io/leanchain/trevra:${TAG}"
+  ssh "$REMOTE" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.oracle.yml pull"
+fi
+
+# Snapshot the attached-volume database before a schema change.
+echo "==> pre-deploy database backup"
+BACKUP="/mnt/data/backups/trevra-predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump"
+ssh "$REMOTE" "sudo install -d -m 700 -o ubuntu -g ubuntu /mnt/data/backups && cd ${APP_DIR} && docker compose --env-file .env.oracle -f compose.oracle.yml exec -T postgres pg_dump -U trevra -d trevra -Fc > '${BACKUP}' && chmod 600 '${BACKUP}' && docker compose --env-file .env.oracle -f compose.oracle.yml exec -T postgres pg_restore -l < '${BACKUP}' >/dev/null && find /mnt/data/backups -type f -name 'trevra-predeploy-*.dump' -mtime +14 -delete"
+
+echo "==> release migrations and hosted data hardening"
+ssh "$REMOTE" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.oracle.yml up --no-deps --force-recreate migrate"
 
 echo "==> starting stack"
 ssh "$REMOTE" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.oracle.yml up -d --remove-orphans"

@@ -80,17 +80,21 @@ export const KIND_LABELS: Record<PacedKind, string> = {
   invite: 'Connection invites',
   dm: 'Direct messages',
   reply: 'Replies',
-  inmail: 'InMail',
+  inmail: 'InMail (not sent by Trevra)',
   profile_view: 'Profile views',
   follow: 'Follows',
   like: 'Likes',
   endorse: 'Endorsements'
 };
 
-/** Every paced kind, plus the one the ledger records but no sequence schedules. */
+/** Every paced kind, plus the two the ledger records but no sequence schedules. */
 export const ACTION_KIND_LABELS: Record<LinkedInActionKind, string> = {
   ...KIND_LABELS,
-  comment: 'Comments'
+  comment: 'Comments',
+  // Not a step an operator schedules: it is what the stale-invite sweep files
+  // when it takes a pending invite back. It is real LinkedIn traffic, so it is
+  // counted and labelled like everything else the account did.
+  withdraw: 'Invite withdrawals'
 };
 
 /** Singular, for one row in a table, where the plural reads as a count. */
@@ -103,7 +107,8 @@ export const ACTION_KIND_LABELS_ONE: Record<LinkedInActionKind, string> = {
   comment: 'Comment',
   follow: 'Follow',
   like: 'Like',
-  endorse: 'Endorsement'
+  endorse: 'Endorsement',
+  withdraw: 'Invite withdrawal'
 };
 
 export const ACTION_STATUS_LABELS: Record<LinkedInActionStatus, string> = {
@@ -955,10 +960,10 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
             Every number on this screen describes one real account — its days, its hours, its limits and what it has
             already done today. Until there is an account, there is nothing here that would be true.
           </p>
-          {/* A real link, not a callback: the account lives on its own route,
-              so "go and set one up" is a URL a teammate can be sent. */}
-          <a className="primary-button" href="/setup/seat" style={{ textDecoration: 'none' }}>
-            <Settings2 size={15} /> Set up the account
+          {/* A real link, not a callback: account management has one canonical
+              home, so this empty state cannot send a new user to a second setup flow. */}
+          <a className="primary-button" href="/outreach" style={{ textDecoration: 'none' }}>
+            <Settings2 size={15} /> Add a LinkedIn account
           </a>
         </div>
       </section>
@@ -1899,7 +1904,9 @@ function ceilingSentence(limit: LinkedInCeiling, throttleFactor: number): string
       return `This account is set to slow down, so the cautious limit applies: ${limit.ceiling} ${kind} ${window}, instead of the ${unramped} it gets when it is running normally.`;
     case 'monthly-quota':
       return limit.kind === 'inmail'
-        ? `LinkedIn’s own quota: ${limit.ceiling} InMails a month on a Sales Navigator seat. The 51st is refused by LinkedIn, not by Trevra.`
+        ? `LinkedIn’s own quota: ${limit.ceiling} InMails a month on a Sales Navigator seat. The 51st is refused by LinkedIn, not by Trevra. `
+          + 'Trevra does not send InMail — there is no InMail step and no InMail driver — so this ceiling binds nothing here; '
+          + 'it is published because it is a real limit on your account, whatever you send from.'
         : `${limit.ceiling} ${kind} ${window}.`;
     /* `band-ceiling` is ALSO reached with an operator number set -- one that is
        higher than the band, so the band won. Saying only “this is what Trevra

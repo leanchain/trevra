@@ -74,14 +74,32 @@ cd .. && ./deploy.sh "$IP"
 
 ## Updating
 
-Push to `main`, wait for the image workflow, then `./deploy.sh <ip>`. It copies
-the compose files, pulls the new image, and restarts. It refuses to run if
-`/opt/trevra/.env.oracle` is missing and never copies a local env file over it.
+The image workflow is release-gated: dependency audit, the full PostgreSQL test
+suite, and the production build must pass before either architecture is
+published. Prefer an immutable release/commit tag over `main` for production.
+
+`deploy.sh` / `deploy-micro.sh` then perform a hosted-safe rollout in this
+order:
+
+1. verify the instance-local secret file contains `TREVRA_SECRETS_KEY`;
+2. create and validate a mode-0600 custom-format PostgreSQL backup;
+3. pull the requested image;
+4. run `dist-server/server/migrate-job.js` in the one-shot `migrate` service;
+5. refuse the rollout if tenant-isolation hardening is still deferred or a
+   legacy proxy credential remains plaintext;
+6. only after that succeeds, recreate the API and worker and wait for health.
+
+The running API/worker therefore do not race to mutate shared schema on boot.
+They verify the database and refuse if the release job was skipped.
 
 ```sh
 ./deploy.sh "$IP"            # latest main
-./deploy.sh "$IP" sha-abc123 # pin or roll back
+./deploy.sh "$IP" sha-abc123 # immutable tag / rollback target
 ```
+
+For the two-micro layout, use `deploy-micro.sh <app-public-ip> <db-public-ip>
+<db-private-ip> [tag]`; backups are stored under `/mnt/data/backups` on the DB
+instance.
 
 ## Operating
 
@@ -96,9 +114,7 @@ Postgres data is on the attached block volume at `/mnt/data/postgres`, not in a
 Docker volume, so destroying and recreating the instance preserves it. The
 volume is only formatted when it has no filesystem.
 
-Back it up — nothing here does:
-
-```sh
-docker compose -f compose.oracle.yml exec -T postgres \
-  pg_dump -U trevra trevra | gzip > trevra-$(date +%F).sql.gz
-```
+Every deploy now creates and verifies a pre-migration custom-format backup in
+`/mnt/data/backups` and retains deploy snapshots for 14 days. Keep an additional
+off-instance backup schedule as well; a block-volume failure should not be able
+to take both the database and every backup with it.

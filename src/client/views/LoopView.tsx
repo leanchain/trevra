@@ -16,6 +16,9 @@ import {
   getAgentTokens,
   getLinkedInActions,
   getLinkedInAnalytics,
+  getLinkedInManagedCampaigns,
+  getLinkedInManagerLeadLists,
+  getLinkedInManagerWorkflows,
   getPlaybookRuns,
   type LinkedInAnalytics,
   type LinkedInLimitsReport,
@@ -133,7 +136,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
       unit: limits
         ? (seat?.configured ? 'queued' : 'connect one first')
         : seatError ? 'the account could not be read' : 'one moment',
-      href: limits ? (seat?.configured ? '/outreach/queue' : '/setup/seat') : null,
+      href: limits ? (seat?.configured ? '/outreach/queue' : '/outreach') : null,
       unavailable: !limits
     },
     {
@@ -195,7 +198,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
         stage: 'reach',
         sentence: 'No LinkedIn account is connected, so nothing can be scheduled and nothing can go out.',
         action: 'Connect an account',
-        href: '/setup/seat'
+        href: '/outreach'
       };
     }
     if (waitingCount > 0) {
@@ -350,222 +353,170 @@ export function Metric({ icon, label, value, detail }: { icon: React.ReactNode; 
 /* --------------------------------------------------------------------------
  * First run.
  *
- * Every step is DERIVED from real data rather than stored, so it cannot lie: a
- * step is done when the thing actually happened, and the whole card disappears
- * on its own once the workspace is running. There is no `onboarding_completed`
- * flag to get out of sync with reality, and this change does not introduce
- * one.
+ * Completion is derived from things that really exist: a LinkedIn account, a
+ * saved lead list, a saved workflow, a campaign, an active agent token, a live
+ * data connection, and imported clients. No "completed onboarding" flag exists
+ * to drift away from reality.
  *
- * WHICH PATH SHOWS is derived by the same rule. A seat exists -> the outreach
- * path. A connection or a client exists -> the money path. Neither -> both,
- * outreach first, because the outreach engine is the product and somebody who
- * signed up to send LinkedIn messages should not be handed a checklist about
- * accounting software.
+ * The preference is different: it is okay to remember which OUTCOME a person
+ * chose to work on first. A brand-new workspace used to show the outreach and
+ * revenue checklists at the same time, which made signup feel like configuring
+ * two products before either one could be useful. The selector below remembers
+ * only that presentation choice; every check mark still comes from server data.
  * -------------------------------------------------------------------------- */
 
 interface Step {
   done: boolean;
   title: string;
   detail: string;
-  cta: string | null;
-  href: string | null;
-  /**
-   * Nothing this component already reads can say whether this step happened.
-   *
-   * It is shown as an instruction and left out of the count rather than given
-   * a tick derived from something adjacent. A checklist that guesses is worse
-   * than one that admits it does not know: the operator trusts the ticks, and
-   * one wrong tick is one step they never come back to.
-   */
-  untracked?: true;
+  cta: string;
+  href: string;
 }
+
+type FirstRunJourney = 'outreach' | 'money';
 
 function OnboardingChecklist({ data, limits, onNavigate }: {
   data: DashboardPayload;
   limits: LinkedInLimitsReport | null;
   onNavigate: (path: string) => void;
 }) {
-  const [hasAgent, setHasAgent] = useState(true);
-  const [hasCampaign, setHasCampaign] = useState<boolean | null>(null);
+  const [hasAgent, setHasAgent] = useState<boolean | null>(null);
+  const [outreachSetup, setOutreachSetup] = useState<{ leadLists: number; workflows: number; campaigns: number } | null>(null);
   const hasLiveConnection = data.connections.some((connection) => !connection.isDemo && connection.status === 'connected');
   const hasClients = data.clients.length > 0;
-  const hasWork = data.recommendations.length > 0;
   const seat = limits?.seat ?? null;
+  const hasMoneySide = hasLiveConnection || hasClients;
 
-  // Optimistic default above, so the step never flashes “not done” while the
-  // token list is still loading.
+  const [journey, setJourney] = useState<FirstRunJourney>(() => {
+    const remembered = typeof window !== 'undefined' ? window.localStorage.getItem('trevra:first-run-journey') : null;
+    if (remembered === 'outreach' || remembered === 'money') return remembered;
+    return hasMoneySide && !seat?.configured ? 'money' : 'outreach';
+  });
+
+  const chooseJourney = (next: FirstRunJourney) => {
+    setJourney(next);
+    try { window.localStorage.setItem('trevra:first-run-journey', next); } catch { /* preference only */ }
+  };
+
   useEffect(() => {
     void getAgentTokens()
       .then((tokens) => setHasAgent(tokens.some((token) => !token.revokedAt)))
-      .catch(() => setHasAgent(true));
+      .catch(() => setHasAgent(false));
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      const [planned, sent] = await Promise.all([
-        getLinkedInActions({ status: 'planned', limit: 1 }).catch(() => []),
-        getLinkedInActions({ status: 'sent', limit: 1 }).catch(() => [])
-      ]);
-      if (cancelled) return;
-      setHasCampaign(planned.length + sent.length > 0);
-    })();
+    void Promise.all([
+      getLinkedInManagerLeadLists().catch(() => []),
+      getLinkedInManagerWorkflows().catch(() => []),
+      getLinkedInManagedCampaigns().catch(() => [])
+    ]).then(([leadLists, workflows, campaigns]) => {
+      if (!cancelled) setOutreachSetup({ leadLists: leadLists.length, workflows: workflows.length, campaigns: campaigns.length });
+    });
     return () => { cancelled = true; };
   }, []);
 
-  // The order the product actually works in: one account, the hours it may
-  // work, a list of people, the steps to run against them, and then a campaign
-  // that puts the two together and starts. Only the first and the fifth leave a
-  // trace this screen can read; the rest say so.
   const outreach: Step[] = [
     {
       done: Boolean(seat?.configured),
-      title: 'Connect your LinkedIn account',
-      detail: 'The account everything goes out from. Add it, then sign in once through the browser on your machine.',
-      cta: 'Connect it',
-      href: '/setup/seat'
+      title: 'Add the LinkedIn account you will send from',
+      detail: 'Name the account, set its timezone and safe daily limits, and connect it when you are ready.',
+      cta: 'Add account',
+      href: '/outreach'
     },
     {
-      untracked: true,
-      done: false,
-      title: 'Set your working hours and daily limits',
-      detail: 'The days and hours anything may go out, and how many invites, messages, profile views and follows a day.',
-      cta: 'Set them',
-      href: '/setup/seat'
-    },
-    {
-      untracked: true,
-      done: false,
-      title: 'Build a lead list',
-      detail: 'Upload a CSV of profiles, or save the results of a LinkedIn search as a list.',
-      cta: 'Build one',
+      done: (outreachSetup?.leadLists ?? 0) > 0,
+      title: 'Build one lead list',
+      detail: 'Import people you already know, or turn a LinkedIn search into a list you can review before contacting.',
+      cta: 'Build lead list',
       href: '/outreach/manager'
     },
     {
-      untracked: true,
-      done: false,
-      title: 'Build a workflow',
-      detail: 'The steps each person goes through — view, invite, message — and how long to wait between them.',
-      cta: 'Build one',
+      done: (outreachSetup?.workflows ?? 0) > 0,
+      title: 'Build one workflow',
+      detail: 'Choose the order: view, invite, message, follow, wait, or a manual message that stops for you.',
+      cta: 'Build workflow',
       href: '/outreach/manager'
     },
     {
-      done: hasCampaign === true,
-      title: 'Create a campaign and start it',
-      detail: 'A lead list plus a workflow. Press Start and Trevra works through it inside your hours and limits.',
-      cta: 'Create one',
+      done: (outreachSetup?.campaigns ?? 0) > 0,
+      title: 'Create your first campaign',
+      detail: 'Pick the sending account, lead list and workflow. Nothing goes out until you explicitly start it.',
+      cta: 'Create campaign',
       href: '/outreach/manager'
-    },
-    {
-      untracked: true,
-      done: false,
-      title: 'Answer the replies',
-      detail: 'Anyone who answers stops receiving the rest of the workflow, and waits for you in the inbox.',
-      cta: 'Open the inbox',
-      href: '/outreach/inbox'
     }
   ];
 
-  // Order matters and is fixed: the agent comes first because nothing else
-  // works until one can reach the workspace. See docs/app-spec.md §8.
   const moneySteps: Step[] = [
     {
-      done: hasAgent,
+      done: hasAgent === true,
       title: 'Connect Claude Code or Codex',
-      detail: 'Your agent does the work. Paste one line in your terminal and it can reach this workspace.',
-      cta: 'Connect',
+      detail: 'Paste one generated command in your terminal so your agent can reach this workspace and prepare work.',
+      cta: 'Connect agent',
       href: '/setup/agent'
     },
     {
       done: hasLiveConnection,
-      title: 'Connect your email or accounting',
-      detail: 'This is how your agent sees what you agreed, delivered, and billed.',
-      cta: 'Connect',
+      title: 'Connect the source that knows what happened',
+      detail: 'Email, accounting, or another connected tool gives Trevra the evidence behind agreements, delivery and payment.',
+      cta: 'Connect data',
       href: '/setup/data'
     },
     {
       done: hasClients,
-      title: 'Bring in your clients',
-      detail: 'Sync them from a connected tool, upload an agreement, or import a CSV.',
-      cta: 'Import',
+      title: 'Bring in your clients and agreements',
+      detail: 'Sync them, upload an agreement, or import marketplace history. Trevra builds the commercial record from that.',
+      cta: 'Bring in clients',
       href: '/setup/data'
-    },
-    {
-      done: hasWork,
-      title: 'Review what your agent found',
-      detail: hasClients
-        ? 'Money at risk, work ready to invoice, and payments that are overdue.'
-        : 'Once your work is in, this fills in on its own.',
-      cta: hasWork ? 'Review' : null,
-      href: '/money'
     }
   ];
 
-  const hasSeat = Boolean(seat?.configured);
-  const hasMoneySide = hasLiveConnection || hasClients;
-  const showOutreach = hasSeat || !hasMoneySide;
-  const showMoney = hasMoneySide || !hasSeat;
-
-  const shown: Array<{ heading: string; blurb: string; steps: Step[] }> = [];
-  if (showOutreach) {
-    shown.push({
-      heading: 'Start reaching people',
-      blurb: 'An account, a list, a workflow — and a campaign that works through them for you.',
-      steps: outreach
-    });
-  }
-  if (showMoney) {
-    shown.push({
-      heading: 'Get paid for it',
-      blurb: 'The other end of the same loop: what you agreed, delivered, billed and collected.',
-      steps: moneySteps
-    });
-  }
-
-  const all = shown.flatMap((group) => group.steps);
-  // Only the steps something here can actually verify are counted. The rest are
-  // instructions, and counting them would either stall the card forever or make
-  // it claim knowledge it does not have.
-  const tracked = all.filter((step) => !step.untracked);
-  const completed = tracked.filter((step) => step.done).length;
-  if (tracked.length === 0 || completed === tracked.length) return null;
+  const steps = journey === 'outreach' ? outreach : moneySteps;
+  const progressReady = journey === 'outreach' ? outreachSetup !== null : hasAgent !== null;
+  const completed = steps.filter((step) => step.done).length;
+  if (progressReady && completed === steps.length) return null;
+  const nextTitle = steps.find((step) => !step.done)?.title ?? null;
 
   return (
     <section className="onboarding-card">
       <div className="onboarding-head">
         <div>
-          <h2>Let’s get you set up</h2>
-          <p>A few short steps and the loop starts turning on its own.</p>
+          <h2>Get your first outcome working</h2>
+          <p>Pick one job first. Trevra keeps the other one available without making you configure both up front.</p>
         </div>
-        <span className="status-pill">{completed} of {tracked.length} done</span>
+        {progressReady && <span className="status-pill">{completed} of {steps.length} done</span>}
       </div>
 
-      {/* Not a step, because there is nothing to derive it from and a stored
-          “acknowledged” flag is exactly the thing this card refuses to keep.
-          It is a standing line instead, and it is first. */}
-      {showOutreach && <p className="panel-note">
-        Before anything goes out: <button className="li-link" type="button" onClick={() => onNavigate('/outreach')} style={{ background: 'none', border: 0, padding: 0, font: 'inherit', cursor: 'pointer' }}>read what you are risking</button>. It is your own LinkedIn account on the line, and that screen says which of its numbers LinkedIn publishes and which ones people have only measured in practice.
+      <div className="onboarding-choice" role="group" aria-label="First outcome">
+        <button type="button" className={journey === 'outreach' ? 'is-active' : undefined} aria-pressed={journey === 'outreach'} onClick={() => chooseJourney('outreach')}>
+          <strong>Win new business</strong><span>Find people and run a LinkedIn campaign</span>
+        </button>
+        <button type="button" className={journey === 'money' ? 'is-active' : undefined} aria-pressed={journey === 'money'} onClick={() => chooseJourney('money')}>
+          <strong>Get paid for work</strong><span>Connect business data and surface what needs action</span>
+        </button>
+      </div>
+
+      {journey === 'outreach' && <p className="panel-note">
+        Before anything goes out: <button className="li-link" type="button" onClick={() => onNavigate('/outreach')} style={{ background: 'none', border: 0, padding: 0, font: 'inherit', cursor: 'pointer' }}>see the limits Trevra will enforce</button>. Your own LinkedIn account is the thing at risk, so the app shows which numbers are published facts and which are practitioner guidance.
       </p>}
 
-      {shown.map((group) => <div key={group.heading}>
-        {shown.length > 1 && <div className="section-heading"><div><h3>{group.heading}</h3><p>{group.blurb}</p></div></div>}
-        <ol className="onboarding-steps">
-          {group.steps.map((step) => (
-            <li key={step.title} className={step.done ? 'is-done' : undefined}>
+      {!progressReady
+        ? <p className="onboarding-loading"><LoaderCircle className="spin" size={16} /> Checking what is already set up…</p>
+        : <ol className="onboarding-steps">
+          {steps.map((step) => {
+            const next = !step.done && step.title === nextTitle;
+            return <li key={step.title} className={`${step.done ? 'is-done' : ''}${next ? ' is-next' : ''}`.trim()}>
               {step.done ? <CheckCircle2 size={19} /> : <Circle size={19} />}
               <div>
                 <strong>{step.title}</strong>
                 <small>{step.detail}</small>
               </div>
-              {!step.done && step.cta && step.href && (
-                <button className="secondary-button" onClick={() => onNavigate(step.href as string)}>
-                  {step.cta} <ChevronRight size={15} />
-                </button>
-              )}
-            </li>
-          ))}
-        </ol>
-      </div>)}
+              {next && <button className="primary-button" onClick={() => onNavigate(step.href)}>
+                {step.cta} <ChevronRight size={15} />
+              </button>}
+            </li>;
+          })}
+        </ol>}
     </section>
   );
 }
