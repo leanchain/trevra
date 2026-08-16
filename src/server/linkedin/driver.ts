@@ -1121,6 +1121,10 @@ const LOGIN_URL = 'https://www.linkedin.com/login';
  * NEVER THROWS. Anything it could not determine is `false`, which costs a
  * sign-in attempt that was probably unnecessary -- the cheap wrong answer.
  */
+const FEED_PATH = /^\/feed\/?$/;
+const CONNECT_SERVICES_PATH = /^\/connect-services\/?$/;
+const SELF_PROFILE_URL = 'https://www.linkedin.com/in/me/';
+
 export async function isLoggedIn(page: LinkedInPage): Promise<boolean> {
   // ANSWERED FROM THE PAGE THAT IS ALREADY OPEN, WHENEVER THERE IS ONE.
   //
@@ -1159,16 +1163,32 @@ export async function isLoggedIn(page: LinkedInPage): Promise<boolean> {
   if (CHECKPOINT_PATH.test(page.url())) return false;
   if (await present(page, SELECTORS.globalNav)) return true;
   if (normalisedProfileUrl(page.url()) !== null) return true;
+
+  // LinkedIn now puts some signed-in EU members behind `/connect-services/`
+  // until they choose whether its services should stay linked. That is an
+  // account-preference interstitial, not a login page. Do not make the choice
+  // for the member and do not mistake the missing global nav for a logged-out
+  // browser. Only in this exceptional path, use LinkedIn's own `/in/me/`
+  // redirect as a second opinion: a signed-in member resolves to their profile;
+  // a guest does not. The normal tick still avoids profile probes entirely.
+  if (CONNECT_SERVICES_PATH.test(pathOf(page.url()))) {
+    try {
+      await page.goto(SELF_PROFILE_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+      await settle(page, `${SELF_PROFILE_URL}#connect-services-probe`);
+    } catch {
+      return false;
+    }
+    if (CHECKPOINT_PATH.test(page.url())) return false;
+    if (normalisedProfileUrl(page.url()) !== null) return true;
+    return present(page, SELECTORS.globalNav);
+  }
+
   // WHERE THE FEED LANDED, which is a fact about LinkedIn rather than about
   // markup: `/feed/` stays `/feed/` for a member and is bounced to the login
   // page, the authwall or the guest homepage for everybody else. It is the one
   // signal here that survives any reskin, in any language.
   return FEED_PATH.test(pathOf(page.url()));
 }
-
-/** `/feed/`, and nothing that merely starts with it. */
-const FEED_PATH = /^\/feed\/?$/;
-
 /** The path of a URL, or '' when it is not one. */
 function pathOf(url: string): string {
   try {

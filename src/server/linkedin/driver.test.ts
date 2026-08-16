@@ -67,7 +67,6 @@ function fakePage(options: { startAt: string; linkOnPage: boolean }): {
     }
   };
 }
-
 describe('reaching a profile', () => {
   it('clicks a link that is already on the page instead of loading the URL cold', async () => {
     const { page, navigations, clicked } = fakePage({ startAt: 'https://www.linkedin.com/feed/', linkOnPage: true });
@@ -99,6 +98,65 @@ describe('reaching a profile', () => {
     await viewProfile(page, TARGET);
 
     expect(navigations).toEqual([TARGET]);
+  });
+});
+
+describe('isLoggedIn', () => {
+  const emptyLocator = (): LinkedInLocator => {
+    const self: LinkedInLocator = {
+      count: async () => 0,
+      first: () => self,
+      click: async () => {},
+      fill: async () => {},
+      textContent: async () => null
+    };
+    return self;
+  };
+
+  it('recognises the signed-in EU connect-services interstitial without choosing a privacy preference', async () => {
+    const navigations: string[] = [];
+    let current = 'https://www.linkedin.com/connect-services/?session_redirect=https%3A%2F%2Fwww.linkedin.com%2Ffeed%2F';
+    const page: LinkedInPage = {
+      goto: async (url: string) => {
+        navigations.push(url);
+        if (url === 'https://www.linkedin.com/feed/') {
+          current = 'https://www.linkedin.com/connect-services/?session_redirect=https%3A%2F%2Fwww.linkedin.com%2Ffeed%2F';
+        } else if (url === 'https://www.linkedin.com/in/me/') {
+          current = 'https://www.linkedin.com/in/david-hasan-b77a33429/?isSelfProfile=true';
+        } else {
+          current = url;
+        }
+        return null;
+      },
+      url: () => current,
+      locator: emptyLocator,
+      waitForTimeout: async () => {}
+    };
+
+    expect(await isLoggedIn(page)).toBe(true);
+    expect(navigations).toEqual([
+      'https://www.linkedin.com/feed/',
+      'https://www.linkedin.com/in/me/'
+    ]);
+  });
+
+  it('keeps the normal feed probe profile-free', async () => {
+    const navigations: string[] = [];
+    let current = 'https://www.linkedin.com/feed/';
+    const page: LinkedInPage = {
+      goto: async (url: string) => {
+        navigations.push(url);
+        current = url;
+        return null;
+      },
+      url: () => current,
+      locator: emptyLocator,
+      waitForTimeout: async () => {}
+    };
+
+    expect(await isLoggedIn(page)).toBe(true);
+    expect(navigations).toEqual(['https://www.linkedin.com/feed/']);
+    expect(navigations).not.toContain('https://www.linkedin.com/in/me/');
   });
 });
 
