@@ -66,10 +66,10 @@ const KIND_LABELS: Record<LeadSourceKind, string> = {
 };
 
 const KIND_HINTS: Record<LeadSourceKind, string> = {
-  search: 'A LinkedIn people-search results URL — the page you get after running a search, filters and all.',
-  sales_navigator: 'A Sales Navigator people-search URL. Its filters are part of the URL, so paste the search you actually ran.',
-  content: 'Keywords, matched against posts. The walk reads who wrote each matching post and who commented on it, and keeps the post it found them on.',
-  post: 'A LinkedIn post URL. The walk reads who reacted to it and who commented on it.'
+  search: 'Find people from LinkedIn people search.',
+  sales_navigator: 'Use a Sales Navigator people search you already ran.',
+  content: 'Find people writing or commenting about these terms.',
+  post: 'Find people who reacted to or commented on one post.'
 };
 
 const KIND_PLACEHOLDERS: Record<LeadSourceKind, string> = {
@@ -228,7 +228,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
   useOutreachRefresh(load);
 
   const queue = async () => {
-    if (!url.trim()) { setError('Paste the URL of a LinkedIn people search or a post first.'); return; }
+    if (!url.trim()) { setError('Type a search above or paste a LinkedIn URL first.'); return; }
     setBusy(true);
     setError('');
     try {
@@ -402,15 +402,33 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
         <section className="page-panel">
           <div className="section-heading">
             <div>
-              <h3 aria-level={2}>Walk a source</h3>
-              <p>One URL becomes one walk. Nothing is fetched by this screen — the local worker opens the page in a real
-                browser on its own tick, at paced gaps, and stores only what LinkedIn rendered.</p>
+              <h3 aria-level={2}>Find people on LinkedIn</h3>
+              <p>Choose the search type, type what you are looking for, and Trevra builds the LinkedIn URL for you. Queueing it only schedules a local browser walk — it contacts nobody.</p>
             </div>
             <ScanSearch size={20} className="li-heading-icon" />
           </div>
 
-          {KEYWORD_KINDS.includes(kind) && <div className="li-search-builder">
-            <label>{kind === 'content' ? 'What should they be talking about' : 'What are you searching for'}
+          <div className="li-form-grid">
+            <label>Search type
+              <select
+                value={kind}
+                disabled={!enabled}
+                onChange={(event) => {
+                  const next = event.target.value as LeadSourceKind;
+                  setKind(next);
+                  setUrlDirty(false);
+                  setUrl(searchUrlForKeywords(next, keywords) ?? '');
+                }}
+              >
+                <option value="search">{KIND_LABELS.search}</option>
+                <option value="content">{KIND_LABELS.content}</option>
+                <option value="sales_navigator">{KIND_LABELS.sales_navigator}</option>
+                <option value="post">{KIND_LABELS.post}</option>
+              </select>
+              <small className="li-hint">{KIND_HINTS[kind]}</small>
+            </label>
+
+            {KEYWORD_KINDS.includes(kind) && <label>Search
               <input
                 value={keywords}
                 disabled={!enabled}
@@ -418,66 +436,49 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
                 onChange={(event) => {
                   const next = event.target.value;
                   setKeywords(next);
-                  // The URL follows the keywords until the operator takes it over.
                   if (!urlDirty) setUrl(searchUrlForKeywords(kind, next) ?? '');
                 }}
                 onKeyDown={(event) => {
-                  if (event.key !== 'Enter' || busy || !enabled) return;
+                  if (event.key !== 'Enter' || busy || !enabled || !url.trim()) return;
                   event.preventDefault();
                   void queue();
                 }}
               />
-            </label>
-            <p className="li-hint">
-              {kind === 'content'
-                ? <>Type and the URL below writes itself; Enter queues the walk. This walks the posts that match, and
-                  keeps for each person the post they were found on and whether they wrote it or commented on it.</>
-                : <>Type and the URL below writes itself; Enter queues the walk. Filters — industry, seniority,
-                  headcount, connection degree — are LinkedIn’s own internal ids, so a filtered search is one you run on
-                  LinkedIn and paste into that field, which then stops following what you type here. Nothing is invented
-                  to stand in for them.</>}
-            </p>
-          </div>}
+              <small className="li-hint">The LinkedIn URL below is built automatically as you type.</small>
+            </label>}
+          </div>
 
-          <div className="li-form-grid">
-            <label>What kind of page
-              <select
-                value={kind}
-                disabled={!enabled}
-                onChange={(event) => {
-                  const next = event.target.value as LeadSourceKind;
-                  setKind(next);
-                  if (!urlDirty) setUrl(searchUrlForKeywords(next, keywords) ?? '');
-                }}
-              >
-                <option value="search">{KIND_LABELS.search}</option>
-                <option value="sales_navigator">{KIND_LABELS.sales_navigator}</option>
-                <option value="content">{KIND_LABELS.content}</option>
-                <option value="post">{KIND_LABELS.post}</option>
-              </select>
-              <small className="li-hint">{KIND_HINTS[kind]}</small>
-            </label>
-            <label>URL
+          <div className="li-search-builder">
+            <label>LinkedIn URL
               <input
                 value={url}
                 disabled={!enabled}
                 onChange={(event) => { setUrl(event.target.value); setUrlDirty(true); }}
                 placeholder={KIND_PLACEHOLDERS[kind]}
               />
-              <small className="li-hint">
-                The URL is validated before the row exists, not before the fetch: a stored URL is one a worker will
-                later open in a browser you are signed into.
-              </small>
             </label>
+            <p className="li-hint">
+              {KEYWORD_KINDS.includes(kind)
+                ? urlDirty
+                  ? 'Using the URL you pasted or edited. Trevra preserves LinkedIn filters in that URL.'
+                  : 'Built from your search. If you want LinkedIn filters such as industry, seniority or connection degree, run that filtered search on LinkedIn and paste its URL here.'
+                : 'Paste the LinkedIn URL you want Trevra to open.'}
+            </p>
+            {urlDirty && KEYWORD_KINDS.includes(kind) && keywords.trim() && <button
+              className="ghost-button"
+              type="button"
+              disabled={!enabled}
+              onClick={() => {
+                setUrlDirty(false);
+                setUrl(searchUrlForKeywords(kind, keywords) ?? '');
+              }}
+            >Use generated URL</button>}
           </div>
 
           <div className="panel-footer">
-            <span>
-              Queueing writes one row. It contacts nobody, and nobody on the exclusion list is dropped by this step —
-              exclusions are applied where a plan is produced, before anything reaches a payload.
-            </span>
+            <span>Queueing only schedules this source for the local LinkedIn worker. Exclusions are applied later, before anybody can become an outreach target.</span>
             <button className="primary-button" type="button" disabled={busy || !enabled || !url.trim()} onClick={() => void queue()}>
-              {busy ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />} Queue this walk
+              {busy ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />} {kind === 'post' ? 'Queue post' : 'Queue search'}
             </button>
           </div>
         </section>

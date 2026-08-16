@@ -16,7 +16,7 @@ import {
   revokeHostedExecutionAck
 } from './hosted-execution.js';
 import { claimSeatLease, isRemoteSessionHome, remoteSessionHome, seatSessionHome } from './local-worker.js';
-import { createCompanionPairing, exchangeCompanionPairing, markCompanionWebsitePresence } from './companion.js';
+import { authenticateCompanionToken, createCompanionPairing, exchangeCompanionPairing, markCompanionWebsitePresence } from './companion.js';
 
 /**
  * WHEN TREVRA'S OWN SERVERS MAY ACT ON SOMEBODY'S LINKEDIN ACCOUNT.
@@ -114,7 +114,8 @@ describe('the hosted execution gate', () => {
 
     const liveNow = new Date();
     const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_1', now: liveNow });
-    await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: liveNow });
+    const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: liveNow });
+    await authenticateCompanionToken(db, paired.token, liveNow);
     await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_1', liveNow);
 
     // Rebuild the filter: it intentionally memoises one tick, so a workspace

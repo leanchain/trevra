@@ -86,13 +86,15 @@ Hosted Trevra can run LinkedIn through a Chrome profile on the workspace member'
 
 ```bash
 npx trevra linkedin status
+npx trevra linkedin logs
+npx trevra linkedin logs --follow
 npx trevra linkedin start
 npx trevra linkedin stop
 npx trevra linkedin restart
 npx trevra linkedin uninstall
 ```
 
-LinkedIn traffic uses that computer's normal network/IP, the persistent browser profile and cookies stay on that computer, and hosted Trevra does not need the LinkedIn password for this path. A signed-in Trevra tab must still remain open when work should run; if the laptop companion or website disappears, due work stays queued. Returning runs one normal bounded sitting rather than replaying missed timer ticks. See [`docs/linkedin-companion.md`](docs/linkedin-companion.md).
+LinkedIn traffic uses that computer's normal network/IP, the persistent browser profile and cookies stay on that computer, and hosted Trevra does not need the LinkedIn password for this path. Exactly one active companion computer is allowed per workspace; pairing a replacement revokes the previous device. A signed-in Trevra tab must still remain open when work should run; if the laptop companion or website disappears, due work stays queued. `linkedin logs` shows the local lifecycle/browser/relay activity log without tokens, cookies, passwords or message contents. Returning runs one normal bounded sitting rather than replaying missed timer ticks. See [`docs/linkedin-companion.md`](docs/linkedin-companion.md).
 
 ## Fastest local start
 

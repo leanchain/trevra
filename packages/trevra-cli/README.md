@@ -20,15 +20,21 @@ Trevra supports:
 
 ```sh
 npx trevra linkedin status
+npx trevra linkedin logs
+npx trevra linkedin logs --follow
 npx trevra linkedin start
 npx trevra linkedin stop
 npx trevra linkedin restart
 npx trevra linkedin uninstall
 ```
 
+`logs` shows the companion's owner-only local activity log. It records service starts/stops, server reconnects, Chrome open/reuse, and browser-relay sessions/errors. It does **not** record device tokens, cookies, passwords, raw CDP/browser traffic, or LinkedIn message contents. The log rotates locally at roughly 2 MB and keeps one previous file; `logs --follow` streams new entries.
+
+Only one active companion computer is allowed per workspace. Pairing a replacement computer atomically revokes the previous device, and the relay also allows only one live control connection at a time.
+
 `uninstall` removes only the background service and its private npm installation. It deliberately keeps `~/.trevra/companion.json` and the dedicated LinkedIn browser profile so reinstalling does not force a new LinkedIn device/session.
 
-`npx trevra linkedin` remains available as a foreground/debug mode when interactive logs are useful.
+`npx trevra linkedin` remains available as a foreground/debug mode.
 
 ## OS integration
 

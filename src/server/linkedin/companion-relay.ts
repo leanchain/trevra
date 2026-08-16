@@ -54,11 +54,11 @@ function sendJson(ws: WebSocket, value: unknown): void {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(value));
 }
 
-/** Reverse-CDP bridge between the hosted worker and a paired member computer. */
+/** Reverse-CDP bridge between the hosted worker and one paired member computer. */
 export function installLinkedInCompanionRelay(server: Server, db: Db): void {
   const controlServer = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
   const browserServer = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
-  const controls = new Map<string, Map<string, ControlConnection>>();
+  const controls = new Map<string, ControlConnection>();
   const sessions = new Map<string, RelaySession>();
 
   const forgetSession = (session: RelaySession, notifyControl = true): void => {
@@ -79,9 +79,20 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
       connectedAt: Date.now(),
       lastDbTouch: Date.now()
     };
-    let workspace = controls.get(identity.workspaceId);
-    if (!workspace) { workspace = new Map(); controls.set(identity.workspaceId, workspace); }
-    workspace.set(identity.deviceId, connection);
+
+    // Only one live control connection may own a workspace. A replacement or
+    // restarted companion wins immediately and detaches every browser session
+    // owned by the previous socket before becoming selectable by the worker.
+    const prior = controls.get(identity.workspaceId);
+    if (prior) {
+      for (const session of [...sessions.values()]) {
+        if (session.control === prior) forgetSession(session, false);
+      }
+      if (prior.ws.readyState === WebSocket.OPEN || prior.ws.readyState === WebSocket.CONNECTING) {
+        prior.ws.close(4001, 'Another companion connected');
+      }
+    }
+    controls.set(identity.workspaceId, connection);
     sendJson(ws, { type: 'hello', workspaceId: identity.workspaceId, deviceId: identity.deviceId, label: identity.label });
 
     ws.on('message', (raw: RawData) => {
@@ -99,7 +110,7 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
       }
       if (!message.relayId) return;
       const session = sessions.get(message.relayId);
-      if (!session || session.control.deviceId !== connection.deviceId) return;
+      if (!session || session.control !== connection) return;
 
       if (message.type === 'ready') {
         session.ready = true;
@@ -121,11 +132,9 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
     });
 
     ws.on('close', () => {
-      const map = controls.get(connection.workspaceId);
-      map?.delete(connection.deviceId);
-      if (map?.size === 0) controls.delete(connection.workspaceId);
+      if (controls.get(connection.workspaceId) === connection) controls.delete(connection.workspaceId);
       for (const session of [...sessions.values()]) {
-        if (session.control.deviceId === connection.deviceId) forgetSession(session, false);
+        if (session.control === connection) forgetSession(session, false);
       }
     });
   };
@@ -186,17 +195,12 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
       if (!companionRelaySecretMatches(bearer(request))) return reject(socket, 401, 'Unauthorized');
       if (!(await companionWorkspaceReady(db, workspaceId))) return reject(socket, 503, 'Companion unavailable');
 
-      const candidates = [...(controls.get(workspaceId)?.values() ?? [])].sort((a, b) => b.connectedAt - a.connectedAt);
-      let control: ControlConnection | null = null;
-      for (const candidate of candidates) {
-        if (candidate.ws.readyState !== WebSocket.OPEN) continue;
-        if (!(await companionDeviceIsActive(db, candidate.deviceId))) continue;
-        control = candidate;
-        break;
+      const candidate = controls.get(workspaceId);
+      if (!candidate || candidate.ws.readyState !== WebSocket.OPEN || !(await companionDeviceIsActive(db, candidate.deviceId))) {
+        return reject(socket, 503, 'Companion unavailable');
       }
-      if (!control) return reject(socket, 503, 'Companion unavailable');
 
-      browserServer.handleUpgrade(request, socket, head, (ws: WebSocket) => setupBrowser(ws, { workspaceId, seatKey, control: control! }));
+      browserServer.handleUpgrade(request, socket, head, (ws: WebSocket) => setupBrowser(ws, { workspaceId, seatKey, control: candidate }));
     })().catch(() => reject(socket, 500, 'Relay error'));
   });
 }

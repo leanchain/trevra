@@ -22,11 +22,15 @@ Service controls are:
 
 ```bash
 npx trevra linkedin status
+npx trevra linkedin logs
+npx trevra linkedin logs --follow
 npx trevra linkedin start
 npx trevra linkedin stop
 npx trevra linkedin restart
 npx trevra linkedin uninstall
 ```
+
+`npx trevra linkedin logs` reads a small owner-only rolling activity log under `~/.trevra/logs/`; `--follow` streams it. The log records lifecycle/reconnect/browser/relay events only. It never records the device bearer token, LinkedIn cookies or passwords, raw CDP frames, or message contents.
 
 `npx trevra linkedin` remains a foreground/debug mode. `uninstall` removes the OS service and its private npm tree but deliberately preserves the pairing config and dedicated LinkedIn browser profile.
 
@@ -66,7 +70,10 @@ The command shown by the website contains a **one-time pairing code**, not a reu
 - device bearer token: generated only after the exchange;
 - device token stored by Trevra: SHA-256 hash only;
 - device token stored locally: `~/.trevra/companion.json`, owner-only mode where the platform supports POSIX permissions;
-- revoking a computer invalidates its token immediately.
+- revoking a computer invalidates its token immediately;
+- exactly one active companion device is allowed per workspace;
+- exchanging a new pairing code atomically revokes the previous device; merely generating a replacement code does not interrupt it;
+- the relay also permits only one live companion control socket per workspace, so two local processes cannot drive LinkedIn simultaneously.
 
 The CLI never receives `DATABASE_URL`, a Trevra session cookie, `TREVRA_SECRETS_KEY`, a cloud-browser API key or another tenant's identifier.
 

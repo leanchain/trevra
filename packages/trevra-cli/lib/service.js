@@ -225,8 +225,8 @@ export function registerBackgroundService({ home = homedir(), platform = current
     writePrivate(paths.definition, renderLaunchAgent({
       nodePath,
       cliPath: paths.cliPath,
-      stdoutPath: join(paths.logs, 'linkedin-companion.log'),
-      stderrPath: join(paths.logs, 'linkedin-companion-error.log')
+      stdoutPath: join(paths.logs, 'linkedin-companion-service.log'),
+      stderrPath: join(paths.logs, 'linkedin-companion-service-error.log')
     }), 0o600);
     return paths;
   }

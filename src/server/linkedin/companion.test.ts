@@ -68,12 +68,56 @@ describe('LinkedIn companion pairing and presence', () => {
       .rejects.toThrow(/expired or was already used/i);
   });
 
+  it('allows only one active paired computer and revokes the old token only when the replacement actually pairs', async () => {
+    const firstPairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
+    const first = await exchangeCompanionPairing(db, { code: firstPairing.code, label: 'Laptop A', now: new Date(NOW.getTime() + 1000) });
+
+    const secondPairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: new Date(NOW.getTime() + 2000) });
+    // Merely creating a handover code does not interrupt the current computer.
+    expect(await authenticateCompanionToken(db, first.token, new Date(NOW.getTime() + 3000))).not.toBeNull();
+
+    const second = await exchangeCompanionPairing(db, { code: secondPairing.code, label: 'Laptop B', now: new Date(NOW.getTime() + 4000) });
+    expect(await authenticateCompanionToken(db, first.token, new Date(NOW.getTime() + 5000))).toBeNull();
+    expect(await authenticateCompanionToken(db, second.token, new Date(NOW.getTime() + 5000))).toMatchObject({
+      workspaceId: WORKSPACE_ID,
+      deviceId: second.deviceId,
+      label: 'Laptop B'
+    });
+
+    const active = await db.prepare(`
+      SELECT COUNT(*)::int AS total
+      FROM linkedin_companion_devices
+      WHERE workspace_id=? AND revoked_at IS NULL
+    `).get<{ total: number }>(WORKSPACE_ID);
+    expect(active?.total).toBe(1);
+    expect((await listCompanionStatus(db, WORKSPACE_ID, new Date(NOW.getTime() + 5000))).devices)
+      .toEqual([expect.objectContaining({ id: second.deviceId, label: 'Laptop B' })]);
+  });
+
+  it('serializes concurrent replacements so exactly one token remains active', async () => {
+    const first = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
+    const second = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: new Date(NOW.getTime() + 1) });
+    const paired = await Promise.all([
+      exchangeCompanionPairing(db, { code: first.code, label: 'Laptop A', now: new Date(NOW.getTime() + 1000) }),
+      exchangeCompanionPairing(db, { code: second.code, label: 'Laptop B', now: new Date(NOW.getTime() + 1000) })
+    ]);
+    const auth = await Promise.all(paired.map((device) => authenticateCompanionToken(db, device.token, new Date(NOW.getTime() + 2000))));
+    expect(auth.filter(Boolean)).toHaveLength(1);
+    const active = await db.prepare(`SELECT COUNT(*)::int AS total FROM linkedin_companion_devices WHERE workspace_id=? AND revoked_at IS NULL`)
+      .get<{ total: number }>(WORKSPACE_ID);
+    expect(active?.total).toBe(1);
+  });
+
   it('requires both the computer and an open Trevra website lease before work is eligible', async () => {
     const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
     const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });
 
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(false);
     await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', NOW);
+    // Pairing alone is not presence. The device becomes online only when its
+    // bearer token actually authenticates a control connection.
+    expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(false);
+    await authenticateCompanionToken(db, paired.token, NOW);
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(true);
 
     // Website leases age out even if the laptop is still considered recently online.
@@ -88,6 +132,7 @@ describe('LinkedIn companion pairing and presence', () => {
     const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
     const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });
     await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', NOW);
+    await authenticateCompanionToken(db, paired.token, NOW);
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(true);
 
     expect(await revokeCompanionDevice(db, WORKSPACE_ID, paired.deviceId, NOW)).toBe(true);

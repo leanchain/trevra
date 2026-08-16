@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   renderLaunchAgent,
@@ -50,6 +52,25 @@ test('LaunchAgent restarts only unsuccessful exits and runs at login', () => {
   assert.match(plist, /<string>linkedin<\/string>/);
   assert.match(plist, /<string>run<\/string>/);
   assert.doesNotMatch(plist, /trv_cmp_|--pair|password/i);
+});
+
+test('logs command is available without pairing and never needs the service manager', () => {
+  const home = mkdtempSync(join(tmpdir(), 'trevra-logs-test-'));
+  try {
+    mkdirSync(join(home, '.trevra'), { recursive: true });
+    const cli = fileURLToPath(new URL('../bin/trevra.js', import.meta.url));
+    const output = execFileSync(process.execPath, [cli, 'linkedin', 'logs', '--lines', '20'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home }
+    });
+    assert.match(output, /No companion activity has been logged yet/);
+
+    const help = execFileSync(process.execPath, [cli, 'linkedin', '--help'], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+    assert.match(help, /linkedin logs \[--follow\]/);
+    assert.match(help, /--lines N/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('Windows task uses interactive logon and restart-on-failure settings', () => {

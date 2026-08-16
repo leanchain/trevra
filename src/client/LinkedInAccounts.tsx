@@ -638,8 +638,9 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
       </div>
       <code>{pairing.command}</code>
       <button className="secondary-button" type="button" onClick={() => void copy()}><Copy size={14} /> Copy command</button>
+      {status.devices.length > 0 && <p className="panel-note">Finishing this pairing replaces the currently paired computer. Trevra allows only one active LinkedIn companion per workspace.</p>}
     </div> : status?.canManage ? <button className="primary-button" type="button" disabled={busy === 'pair'} onClick={() => void pair()}>
-      {busy === 'pair' ? <LoaderCircle className="spin" size={14} /> : <Laptop size={14} />} Connect this computer
+      {busy === 'pair' ? <LoaderCircle className="spin" size={14} /> : <Laptop size={14} />} {status.devices.length > 0 ? 'Replace computer' : 'Connect this computer'}
     </button> : null}
 
     <p className="panel-note">

@@ -72,7 +72,7 @@ describe('LinkedIn companion HTTP journey', () => {
     const status = await authed().get('/api/linkedin/companion').expect(200);
     expect(JSON.stringify(status.body)).not.toContain(exchange.body.token);
     expect(status.body.devices).toEqual([
-      expect.objectContaining({ id: exchange.body.deviceId, label: 'Pankaj laptop', online: true })
+      expect.objectContaining({ id: exchange.body.deviceId, label: 'Pankaj laptop', online: false })
     ]);
 
     await authed().post('/api/linkedin/companion/presence').send({}).expect(200, { active: true });

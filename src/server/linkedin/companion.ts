@@ -77,13 +77,29 @@ export async function exchangeCompanionPairing(
     `).get<{ workspace_id: string; created_by: string | null }>(iso(now), sha256(normalised), iso(now));
     if (!pairing) throw new Error('That pairing code has expired or was already used. Create a new one in Trevra.');
 
+    // Serialize handovers for this workspace. The partial unique index is the
+    // final invariant; this row lock makes concurrent valid exchanges resolve
+    // as an orderly last-completing-wins replacement instead of a uniqueness
+    // error that leaves the operator unsure which computer won.
+    await tx.prepare('SELECT id FROM workspaces WHERE id=? FOR UPDATE').get<{ id: string }>(pairing.workspace_id);
+
     const label = input.label.trim().slice(0, 120) || 'This computer';
     const token = `${TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
     const deviceId = id('lcdev');
+
+    // One active companion per workspace. Exchanging a new pairing code is the
+    // handover point: the previous device is revoked atomically with creation
+    // of its replacement. Merely generating a code never disconnects it.
+    await tx.prepare(`
+      UPDATE linkedin_companion_devices
+      SET revoked_at=?
+      WHERE workspace_id=? AND revoked_at IS NULL
+    `).run(iso(now), pairing.workspace_id);
+
     await tx.prepare(`
       INSERT INTO linkedin_companion_devices (id, workspace_id, label, token_hash, created_by, created_at, last_seen_at)
       VALUES (?,?,?,?,?,?,?)
-    `).run(deviceId, pairing.workspace_id, label, sha256(token), pairing.created_by, iso(now), iso(now));
+    `).run(deviceId, pairing.workspace_id, label, sha256(token), pairing.created_by, iso(now), null);
     return { token, workspaceId: pairing.workspace_id, deviceId, label };
   });
 }
@@ -102,7 +118,6 @@ export async function authenticateCompanionToken(
   await touchCompanionDevice(db, row.id, now);
   return { deviceId: row.id, workspaceId: row.workspace_id, label: row.label };
 }
-
 export async function touchCompanionDevice(db: Db, deviceId: string, now: Date = new Date()): Promise<void> {
   await db.prepare(`UPDATE linkedin_companion_devices SET last_seen_at=? WHERE id=? AND revoked_at IS NULL`).run(iso(now), deviceId);
 }
