@@ -264,7 +264,9 @@ describe('resealSecrets', () => {
 
     // A re-encrypt loop is a read followed by a write, so a pass that touched
     // these rows would be a way to decrypt a LinkedIn password on hosted --
-    // an override, arrived at sideways, in a maintenance script.
+    // an override, arrived at sideways, in a maintenance script. Unconditional
+    // here regardless of a remote browser provider: `custody.ts` never asks
+    // `hostedExecutionGate`, on purpose (see the module docstring).
     expect(result.resealed).toBe(0);
     expect(result.skipped.length).toBeGreaterThanOrEqual(2);
     for (const skip of result.skipped) {
@@ -273,7 +275,17 @@ describe('resealSecrets', () => {
     }
     // And the report does not pretend the work is done.
     expect(result.remaining).toBeGreaterThanOrEqual(2);
-    // The unconditional read refusal is still in force either way.
-    expect(await readLinkedInCredentials(db, WORKSPACE_ID, hosted, SEAT_KEY)).toBeNull();
+    // Belt and braces, on the ONE hosted shape where the normal read path also
+    // still refuses outright: a remote browser configured with no written
+    // authorisation. (Hosted with NO remote browser now reads exactly as local
+    // does -- see `hostedExecutionGate` -- so it is not this test's concern;
+    // that path is covered in `linkedin/hosted-execution.test.ts`.)
+    const hostedWithBrowser = {
+      ...hosted,
+      TREVRA_BROWSER_PROVIDER: 'remote',
+      TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com/?apiKey={apiKey}&proxy={proxyUrl}',
+      TREVRA_BROWSER_API_KEY: 'sk-test'
+    } as NodeJS.ProcessEnv;
+    expect(await readLinkedInCredentials(db, WORKSPACE_ID, hostedWithBrowser, SEAT_KEY)).toBeNull();
   });
 });

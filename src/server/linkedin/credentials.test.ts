@@ -184,17 +184,41 @@ describe('the store', () => {
     expect(await readLinkedInCredentials(db, WORKSPACE_ID)).toBeNull();
   });
 
-  it('refuses hosted outright, and does not read what a dump might have left behind', async () => {
+  it('hosted with no remote browser stores and reads exactly like local -- there is no cloud browser to refuse on behalf of', async () => {
     const hosted = { ...process.env, TREVRA_DEPLOYMENT_MODE: 'hosted' } as NodeJS.ProcessEnv;
 
-    await expect(putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: EMAIL, password: PASSWORD, env: hosted }))
-      .rejects.toThrow('This deployment is hosted, so it will not take custody of a LinkedIn password.');
-    expect(await describeLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ hasCredentials: false, maskedEmail: null });
+    const saved = await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: EMAIL, password: PASSWORD, env: hosted });
+    expect(saved).toEqual({ hasCredentials: true, maskedEmail: MASKED });
+    expect(await describeLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ hasCredentials: true, maskedEmail: MASKED });
+    expect(await readLinkedInCredentials(db, WORKSPACE_ID, hosted)).toEqual({ email: EMAIL, password: PASSWORD });
+  });
 
-    // And a hosted instance that somehow inherited rows still does not open
-    // them: the gate is on the read path too, unconditionally.
+  it('hosted WITH a remote browser configured still refuses without the workspace\'s written authorisation', async () => {
+    const hostedWithBrowser = {
+      ...process.env,
+      TREVRA_DEPLOYMENT_MODE: 'hosted',
+      TREVRA_BROWSER_PROVIDER: 'remote',
+      TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com/?apiKey={apiKey}&proxy={proxyUrl}',
+      TREVRA_BROWSER_API_KEY: 'sk-test'
+    } as NodeJS.ProcessEnv;
+
+    await expect(putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: EMAIL, password: PASSWORD, env: hostedWithBrowser }))
+      .rejects.toThrow(/authorised Trevra to act on its LinkedIn account/);
+    expect(await describeLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ hasCredentials: false, maskedEmail: null });
+  });
+
+  it('DOES NOT read what a dump might have left behind, when a remote browser is configured and unacknowledged', async () => {
+    const hostedWithBrowser = {
+      ...process.env,
+      TREVRA_DEPLOYMENT_MODE: 'hosted',
+      TREVRA_BROWSER_PROVIDER: 'remote',
+      TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com/?apiKey={apiKey}&proxy={proxyUrl}',
+      TREVRA_BROWSER_API_KEY: 'sk-test'
+    } as NodeJS.ProcessEnv;
+
+    // The gate is on the read path too, unconditionally on this specific case.
     await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: EMAIL, password: PASSWORD });
-    expect(await readLinkedInCredentials(db, WORKSPACE_ID, hosted)).toBeNull();
+    expect(await readLinkedInCredentials(db, WORKSPACE_ID, hostedWithBrowser)).toBeNull();
   });
 
   it('masks an address without inventing one', () => {
@@ -244,12 +268,26 @@ describe('the credential routes', () => {
     expect(await describeLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ hasCredentials: false, maskedEmail: null });
   });
 
-  it('refuses to take custody on a hosted deployment', async () => {
+  it('takes custody on a hosted deployment with no remote browser, exactly as local does', async () => {
     process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
+    const saved = (await as(session).post('/api/linkedin/seat/credentials').send({ email: EMAIL, password: PASSWORD }).expect(200))
+      .body as { hasCredentials: boolean; maskedEmail: string };
+    expect(saved).toEqual({ hasCredentials: true, maskedEmail: MASKED });
+    expect(await describeLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ hasCredentials: true, maskedEmail: MASKED });
+  });
+
+  it('still refuses on a hosted deployment WITH a remote browser and no written authorisation', async () => {
+    process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
+    process.env.TREVRA_BROWSER_PROVIDER = 'remote';
+    process.env.TREVRA_BROWSER_CDP_URL = 'wss://connect.example.com/?apiKey={apiKey}&proxy={proxyUrl}';
+    process.env.TREVRA_BROWSER_API_KEY = 'sk-test';
     const refusal = (await as(session).post('/api/linkedin/seat/credentials').send({ email: EMAIL, password: PASSWORD }).expect(409))
       .body as { error: string };
-    expect(refusal.error).toBe('This deployment is hosted, so it will not take custody of a LinkedIn password.');
+    expect(refusal.error).toMatch(/authorised Trevra to act on its LinkedIn account/);
     expect(await describeLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ hasCredentials: false, maskedEmail: null });
+    delete process.env.TREVRA_BROWSER_PROVIDER;
+    delete process.env.TREVRA_BROWSER_CDP_URL;
+    delete process.env.TREVRA_BROWSER_API_KEY;
   });
 
   it('refuses rather than storing anything in the clear with no server key', async () => {
@@ -516,10 +554,17 @@ describe('loginLinkedInSeat', () => {
     );
   });
 
-  it('will not sign in on a hosted deployment, whatever is in the vault', async () => {
+  it('will not sign in with a remote browser configured and no written authorisation, whatever is in the vault', async () => {
     await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj', timezone: 'Europe/Zurich' }, NOW);
     await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: EMAIL, password: PASSWORD });
     process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
+    // A remote browser IS configured here -- unlike a plain hosted deployment,
+    // which now reads its own client-side worker's stored credential exactly
+    // as local does. What still refuses is Trevra's own servers acting as the
+    // member with no per-workspace written authorisation on file.
+    process.env.TREVRA_BROWSER_PROVIDER = 'remote';
+    process.env.TREVRA_BROWSER_CDP_URL = 'wss://connect.example.com/?apiKey={apiKey}&proxy={proxyUrl}';
+    process.env.TREVRA_BROWSER_API_KEY = 'sk-test';
     const { driver, seen } = fakeDriver({ loggedIn: false });
 
     const outcome = await loginLinkedInSeat(db, config, { workspaceId: WORKSPACE_ID, now: NOW, driver, page, log: () => {} });
@@ -527,6 +572,10 @@ describe('loginLinkedInSeat', () => {
     // The read gate refuses, so the driver is never handed anything.
     expect(seen).toHaveLength(0);
     expect(outcome.status).toBe('failed');
+
+    delete process.env.TREVRA_BROWSER_PROVIDER;
+    delete process.env.TREVRA_BROWSER_CDP_URL;
+    delete process.env.TREVRA_BROWSER_API_KEY;
   });
 });
 

@@ -23,10 +23,12 @@ import { claimSeatLease, isRemoteSessionHome, remoteSessionHome, seatSessionHome
  * Two independent things are proven here, and they fail in different
  * directions:
  *
- *   1. THE AUTHORISATION. Hosted execution needs a remote browser AND this
- *      workspace's recorded consent. Without a browser the deployment gives
- *      the old refusal VERBATIM, because nothing about its situation changed.
- *      Without consent it refuses with the one action that would fix it.
+ *   1. THE AUTHORISATION. Cloud execution -- Trevra's OWN servers driving a
+ *      browser as the member -- needs a remote browser AND this workspace's
+ *      recorded consent. Without a browser there is no cloud execution to
+ *      refuse: custody and the client-side worker behave exactly as local.
+ *      With a browser but without consent, it refuses with the one action
+ *      that would fix it.
  *   2. NO DOUBLE CLAIM. A hosted runner and a local worker must never drive one
  *      LinkedIn account at the same time, and a seat whose session lives on one
  *      operator's laptop must not be picked up by a datacentre that would sign
@@ -81,15 +83,19 @@ describe('the hosted execution gate', () => {
     expect(hostedSeatFilter(db, { TREVRA_DEPLOYMENT_MODE: 'local' })).toBeNull();
   });
 
-  it('gives the OLD refusal, verbatim, when hosted with no remote browser', async () => {
-    await recordHostedExecutionAck(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_1', now: NOW });
-    const verdict = await hostedExecutionGate(db, WORKSPACE_ID, HOSTED_NO_BROWSER);
-    expect(verdict.allowed).toBe(false);
-    if (verdict.allowed) throw new Error('unreachable');
-    // VERBATIM. An acknowledgement cannot conjure a browser, and the sentence a
-    // deployment with no provider gives has not changed by one character.
-    expect(verdict.reason).toBe(HOSTED_EXECUTION_REFUSAL);
-    expect(verdict.reason).toBe('This deployment is hosted, so it will not take custody of a LinkedIn password.');
+  it('allows hosted with no remote browser -- there is no cloud browser to refuse on behalf of', async () => {
+    // No acknowledgement recorded, and none needed: with no remote provider
+    // configured, this is not cloud execution at all -- it is a workspace's own
+    // client-side worker, on the same footing as a self-hosted install.
+    expect(await hostedExecutionGate(db, WORKSPACE_ID, HOSTED_NO_BROWSER)).toEqual({ allowed: true });
+    // The filter is not null (this deployment IS hosted), but it passes every
+    // workspace through -- `linkedInWorkerConfig().enabled` is what actually
+    // keeps a hosted deployment's own bundled worker from opening a browser it
+    // has no display for; this filter answers a different question.
+    const filter = hostedSeatFilter(db, HOSTED_NO_BROWSER);
+    expect(filter).not.toBeNull();
+    expect(await filter!({ workspaceId: WORKSPACE_ID })).toBe(true);
+    expect(await filter!({ workspaceId: OTHER_WORKSPACE_ID })).toBe(true);
   });
 
   it('refuses a hosted workspace that has not acknowledged, and names the next action', async () => {

@@ -134,21 +134,26 @@ export function linkedInWorkerConfig(env: NodeJS.ProcessEnv = process.env): Runt
     TREVRA_LINKEDIN_PROFILE_DIR: z.string().optional()
   }).parse(env);
   const hosted = parsed.TREVRA_DEPLOYMENT_MODE === 'hosted';
-  // THE ONE GATE THAT MOVED, AND EXACTLY HOW FAR.
+  // THIS FLAG IS STILL ABOUT ONE THING: may THIS PROCESS open a browser of its
+  // own, on ITS OWN disk, right here? A hosted container has no display, no
+  // Chromium and no profile directory belonging to the person whose account it
+  // is, so on a hosted deployment with no remote provider the only browser
+  // this process could open is nobody's -- that stays a hard no, and it is what
+  // keeps a hosted deployment's own bundled worker (`src/worker/index.ts`)
+  // from ever trying to sign into a tenant's LinkedIn account from inside the
+  // datacenter container.
   //
-  // 'hosted' used to be an unconditional no, because a hosted container has no
-  // display, no Chromium and no profile directory belonging to the person whose
-  // account it is -- so the only browser it could have driven was nobody's. A
-  // remote browser provider (docs/hosted-execution.md) supplies that missing
-  // browser, which is the entire reason this expression may now be true.
-  //
-  // IT IS NOT THE WHOLE PERMISSION. This says the DEPLOYMENT can drive a
-  // browser; it says nothing about any workspace. A hosted seat still cannot be
-  // run, and a hosted credential still cannot be stored, until that workspace's
-  // owner has recorded an explicit authorisation -- `hostedExecutionGate` in
-  // `linkedin/hosted-execution.ts`, enforced at the store and at the runner
-  // rather than here, because it is a per-tenant fact and this file reads only
-  // the environment. Hosted with no provider is the old refusal, unchanged.
+  // IT DOES NOT SPEAK FOR AN OPERATOR'S OWN CLIENT-SIDE WORKER. Running `npm
+  // run linkedin:worker` on a machine that DOES have a display, pointed at a
+  // hosted deployment's database, is a SEPARATE process reading its OWN
+  // environment -- and unless THAT process's own TREVRA_DEPLOYMENT_MODE is
+  // 'hosted' too, this function answers `enabled: true` for it exactly as it
+  // would for a self-hoster, with no change here required. What changed is
+  // only credential custody (`hostedExecutionGate` in
+  // `linkedin/hosted-execution.ts`): a hosted deployment with no remote
+  // provider now stores and reads a workspace's LinkedIn credential the same
+  // as local does, because THAT capability was never actually about where a
+  // browser runs.
   const remoteBrowser = browserProviderSettings(env).kind === 'remote';
   return {
     enabled: (!hosted || remoteBrowser) && parsed.TREVRA_LINKEDIN_LOCAL !== 'false',
@@ -242,8 +247,9 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     NANGO_WEBHOOK_SIGNING_KEY: z.string().optional(),
     STRIPE_SECRET_KEY: z.string().optional(),
     STRIPE_WEBHOOK_SECRET: z.string().optional(),
-    // Opt-OUT for the local LinkedIn worker. Absent means on, except in hosted
-    // mode where the gate below is unconditional.
+    // Opt-OUT for the local LinkedIn worker. Absent means on, except when this
+    // SAME process is a hosted deployment with no remote browser provider,
+    // where the gate below is unconditional -- see `linkedInWorkerConfig`.
     TREVRA_LINKEDIN_LOCAL: booleanString.optional(),
     // What kind of deployment this is. Defaults to 'local' because that is
     // what a self-hoster running `npm start` has, and because the only thing
@@ -369,7 +375,8 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       problems.push(
         'TREVRA_LINKEDIN_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted and no remote browser is configured; '
         + 'a hosted container has no display, no Chromium and no browser profile of its own, so there is nothing for it to drive. '
-        + 'Set TREVRA_BROWSER_PROVIDER=remote with TREVRA_BROWSER_CDP_URL to run seats server-side (docs/hosted-execution.md), or leave this unset and run `npm run linkedin:worker` on a machine with a display'
+        + 'Set TREVRA_BROWSER_PROVIDER=remote with TREVRA_BROWSER_CDP_URL to run seats server-side (docs/hosted-execution.md), or leave this unset and run `npm run linkedin:worker` on a machine with a display -- '
+        + 'a workspace\'s LinkedIn credential itself may still be stored and used there; only THIS process opening a browser of its own is what this refuses'
       );
     }
     // A REMOTE PROVIDER THAT WAS ASKED FOR AND DOES NOT HOLD TOGETHER stops the

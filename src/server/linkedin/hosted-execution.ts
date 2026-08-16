@@ -1,31 +1,33 @@
 /**
  * When Trevra's own servers may act on somebody's LinkedIn account, and the
- * three things that must all be true before they do.
+ * two things that must both be true before they do.
  *
- * THE DECISION THIS FILE IMPLEMENTS. Every other path in this subsystem drives
- * a browser on the OPERATOR'S machine, from the operator's IP, out of a Chrome
- * profile they signed into by hand -- which is why hosted deployments refused
- * to hold a LinkedIn password at all, and why a hosted queue filled up and
- * never drained. Hosted execution changes that: a cloud browser, attached to
- * over CDP, signed in with a stored credential, acting as the member. The
- * decision to build it has been made; what this file does is make sure it can
- * only happen deliberately.
+ * THE DECISION THIS FILE IMPLEMENTS. `TREVRA_DEPLOYMENT_MODE=hosted` answers
+ * one question -- can this deployment serve workspaces belonging to anyone but
+ * the operator -- and it is not, by itself, a statement about WHERE a browser
+ * runs. Every path in this subsystem that drives a browser from the
+ * OPERATOR'S own machine, out of a Chrome profile they signed into by hand --
+ * `npm run linkedin:worker`, or a workspace's own client-side session -- is on
+ * exactly the same terms whether the deployment is hosted or local: nothing
+ * about running a client-side worker for one's own account requires strangers
+ * to be involved, so nothing about it is gated on tenancy. What IS gated is
+ * the one thing that genuinely only exists on a hosted deployment: Trevra's
+ * OWN SERVERS operating a CLOUD browser, signed in with a stored credential,
+ * acting as the member with nobody's machine and nobody's IP in the loop. That
+ * is the capability this file makes sure only happens deliberately.
  *
- * THREE CONDITIONS, AND ALL THREE ARE CHECKED HERE:
+ * TWO CONDITIONS, AND BOTH ARE CHECKED HERE:
  *
- *   1. THE DEPLOYMENT IS HOSTED. On a self-hosted install none of this applies
- *      -- the local worker already runs and always did, and nothing about it
- *      changes.
- *   2. A REMOTE BROWSER PROVIDER IS CONFIGURED. Without one there is no browser
- *      to drive: a hosted container has no display, no Chromium and no profile.
- *      A hosted deployment with no provider must go on refusing exactly as it
- *      did, with the same sentence, because nothing about its situation has
- *      changed.
- *   3. THE WORKSPACE ACKNOWLEDGED IT, IN WRITING, AND HAS NOT WITHDRAWN.
+ *   1. A REMOTE BROWSER PROVIDER IS CONFIGURED. Without one there is no cloud
+ *      browser for Trevra's servers to drive, so there is nothing for this
+ *      gate to be about: credential custody and the local/client-side worker
+ *      behave exactly as they do on a self-hosted install, hosted or not.
+ *   2. THE WORKSPACE ACKNOWLEDGED IT, IN WRITING, AND HAS NOT WITHDRAWN.
  *      Per workspace, not per deployment: the person who has to agree is the
  *      person whose account it is, not whoever set the environment variables.
  *      Recorded in `linkedin_hosted_execution_ack` (migration 065) with who,
- *      when and which wording.
+ *      when and which wording. Only asked at all once condition 1 is true --
+ *      there is nothing to consent to before then.
  *
  * WHAT THIS FILE DOES NOT TOUCH. Every pre-existing safety gate still applies,
  * unchanged and in the same order: daily and weekly ceilings, the warm-up ramp,
@@ -39,14 +41,19 @@ import { browserProviderSettings } from '../browser/provider.js';
 import { linkedInWorkerConfig } from '../config.js';
 
 /**
- * The refusal a hosted deployment gives when it may not take custody, verbatim
- * and unchanged from the day it was written.
+ * The refusal a hosted deployment gives when a remote browser provider was
+ * asked for and does not hold together -- an operator who set the variables
+ * deserves to know which one is wrong rather than a generic sentence.
  *
- * ONE SENTENCE, AND IT ENDS THE CONVERSATION: there is no switch for the
- * operator to go and find, so naming one would send them looking. It is
- * exported under its old name from `secrets/linkedin.ts`, where every existing
- * caller already imports it -- moved here rather than duplicated because a
- * security-boundary string with two definitions is a string that drifts.
+ * NO LONGER THE DEFAULT ANSWER FOR "HOSTED, NO PROVIDER": that case is now
+ * identical to local (see `hostedExecutionGate`), because a hosted deployment
+ * with no remote browser configured has no cloud execution to refuse -- only
+ * the local/client-side worker, which is on the same terms as self-hosting.
+ * This string survives for the one case that still needs a firm stop: a
+ * provider that was explicitly configured and is broken. It is exported under
+ * its old name from `secrets/linkedin.ts`, where every existing caller already
+ * imports it -- moved here rather than duplicated because a security-boundary
+ * string with two definitions is a string that drifts.
  */
 export const HOSTED_EXECUTION_REFUSAL =
   'This deployment is hosted, so it will not take custody of a LinkedIn password.';
@@ -201,15 +208,24 @@ export type HostedExecutionVerdict = { allowed: true } | { allowed: false; reaso
  * THE ONE FUNCTION EVERY CALLER ASKS, and the order of the questions is the
  * point:
  *
- *   not hosted            -> allowed. Nothing here applies to a self-hoster,
- *                            and answering anything else would break every
- *                            existing install on upgrade.
- *   hosted, no provider   -> the OLD refusal, verbatim. Nothing about this
- *                            deployment's situation has changed, so nothing
- *                            about its answer does either.
- *   hosted, provider, no  -> a refusal that names the next action, because
- *   acknowledgement          here there is one.
- *   hosted, provider, ack -> allowed. Every other gate still applies.
+ *   not hosted             -> allowed. Nothing here applies to a self-hoster,
+ *                             and answering anything else would break every
+ *                             existing install on upgrade.
+ *   hosted, no provider    -> allowed. There is no cloud browser in the
+ *                             picture, so this is the local/client-side
+ *                             worker on the same terms as self-hosting --
+ *                             tenancy alone is not a reason to withhold
+ *                             custody of a credential nothing here can act on
+ *                             unsupervised.
+ *   hosted, provider asked -> refused, naming the broken variable. A remote
+ *   for and broken             provider that does not hold together must stop
+ *                             the boot/the save rather than silently pretend
+ *                             to be "no provider".
+ *   hosted, provider, no   -> a refusal that names the next action, because
+ *   acknowledgement           here there IS a cloud browser Trevra's own
+ *                             servers would drive, and that needs the
+ *                             account holder's written yes.
+ *   hosted, provider, ack  -> allowed. Every other gate still applies.
  */
 export async function hostedExecutionGate(
   db: Db,
@@ -219,11 +235,14 @@ export async function hostedExecutionGate(
   const mode = hostedExecutionMode(env);
   if (!mode.hosted) return { allowed: true };
   if (!mode.remoteBrowser) {
-    // A remote provider that was ASKED FOR and is broken gets its own sentence:
-    // an operator who set the variables deserves to know which one is wrong
-    // rather than the final-sounding refusal meant for a deployment that never
-    // configured one at all.
-    return { allowed: false, reason: mode.problem ?? HOSTED_EXECUTION_REFUSAL };
+    // `mode.problem` is set only when a provider was explicitly asked for
+    // (TREVRA_BROWSER_PROVIDER=remote) and does not hold together -- that
+    // still stops things cold, loudly, rather than quietly falling back. No
+    // provider asked for at all is not a problem: it is a hosted deployment
+    // with nothing to drive a cloud browser, which is precisely the state
+    // local/client-side execution was already built for.
+    if (mode.problem) return { allowed: false, reason: mode.problem };
+    return { allowed: true };
   }
   const ack = await describeHostedExecutionAck(db, workspaceId);
   if (!ack.acknowledged) {

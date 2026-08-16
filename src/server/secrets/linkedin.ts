@@ -13,12 +13,20 @@
  *
  * THE RULES, and every one of them is enforced below rather than remembered:
  *
- *  1. HOSTED REFUSES. `TREVRA_DEPLOYMENT_MODE=hosted` cannot store these and
- *     cannot read them, unconditionally and with no override -- the same gate,
- *     from the same one definition, as the worker itself. One operator holding
- *     their own password is a small, informed, self-inflicted risk; a
- *     multi-tenant service holding many humans' LinkedIn passwords is a
- *     different product with a different threat model.
+ *  1. HOSTED REFUSES ONLY WHAT IT CANNOT SUPERVISE. `TREVRA_DEPLOYMENT_MODE=
+ *     hosted` with a remote browser provider configured stores and reads
+ *     these only for a workspace that has authorised Trevra's own servers to
+ *     act on its account (`hostedExecutionGate`, `linkedin/hosted-execution.ts`)
+ *     -- the same gate, from the same one definition, as the worker itself.
+ *     Hosted with NO remote browser provider is not that case at all: nothing
+ *     here would be acting unsupervised, so it stores and reads exactly as
+ *     local does, for a workspace's own client-side worker
+ *     (`npm run linkedin:worker`) to use. One operator holding their own
+ *     password is a small, informed, self-inflicted risk regardless of
+ *     tenancy; what stays gated is Trevra's OWN SERVERS holding it to act on
+ *     someone else's account from a cloud browser with nobody's machine and
+ *     nobody's IP in the loop -- a different product with a different threat
+ *     model.
  *  2. THE PASSWORD IS WRITE-ONLY. Nothing here returns it, no route returns it,
  *     and `describeLinkedInCredentials` -- the only read a route may call --
  *     cannot: it returns a boolean and the email's masked form and touches no
@@ -53,8 +61,8 @@
  *
  * The custody posture is IDENTICAL across both: the same AES-256-GCM envelope
  * from `crypto.ts`, the same TREVRA_SECRETS_KEY (and the same
- * TREVRA_SECRETS_KEY_PREVIOUS rotation window), the same unconditional hosted
- * refusal on both the read and the write path, the same write-only rule, and
+ * TREVRA_SECRETS_KEY_PREVIOUS rotation window), the same `hostedExecutionGate`
+ * check on both the read and the write path, the same write-only rule, and
  * the same "no plaintext-derived display value" rule -- `linkedin_seat_credentials`
  * has no `last4` column at all. Adding a seat dimension does not widen WHERE a
  * password may live by one inch, and the CHECK on that table (`seat_key <>

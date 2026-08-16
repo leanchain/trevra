@@ -2143,17 +2143,33 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
       expect(await deleteLinkedInCredentials(db, WORKSPACE_ID, null, 'sales')).toBe(false);
     });
 
-    it('refuses hosted custody for EVERY seat, not just the owner', async () => {
+    it('takes hosted custody with no remote browser for EVERY seat, not just the owner', async () => {
       const hosted = { ...process.env, TREVRA_DEPLOYMENT_MODE: 'hosted' } as NodeJS.ProcessEnv;
 
+      const saved = await putLinkedInCredentials(
+        db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales', env: hosted }
+      );
+      expect(saved.hasCredentials).toBe(true);
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID, hosted, 'sales')).toEqual({ email: SALES_EMAIL, password: SALES_PASSWORD });
+    });
+
+    it('still refuses hosted custody WITH a remote browser and no written authorisation, for EVERY seat', async () => {
+      const hostedWithBrowser = {
+        ...process.env,
+        TREVRA_DEPLOYMENT_MODE: 'hosted',
+        TREVRA_BROWSER_PROVIDER: 'remote',
+        TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com/?apiKey={apiKey}&proxy={proxyUrl}',
+        TREVRA_BROWSER_API_KEY: 'sk-test'
+      } as NodeJS.ProcessEnv;
+
       await expect(
-        putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales', env: hosted })
-      ).rejects.toThrow('This deployment is hosted, so it will not take custody of a LinkedIn password.');
+        putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales', env: hostedWithBrowser })
+      ).rejects.toThrow(/authorised Trevra to act on its LinkedIn account/);
 
       // And a hosted instance that inherited rows from a self-hosted dump still
       // does not open them, for any seat.
       await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales' });
-      expect(await readLinkedInCredentials(db, WORKSPACE_ID, hosted, 'sales')).toBeNull();
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID, hostedWithBrowser, 'sales')).toBeNull();
     });
 
     it('scopes a seat key to its workspace', async () => {
