@@ -252,6 +252,39 @@ and product contract still assumed five. Removing the extra primary destination
 restores the intended touch target budget and keeps desktop/mobile information
 architecture aligned.
 
+### H. Setup keeps common and safety-critical choices visible
+
+Setup had grown into eight horizontal destinations. That made the rarest expert
+surfaces consume the same navigation weight as connections, LinkedIn and limits.
+
+The always-visible Setup choices are now:
+
+1. Agent access;
+2. Connections;
+3. LinkedIn;
+4. Limits;
+5. Team.
+
+Research, Reddit and Skills remain directly addressable routes and move under a
+native **More…** selector. Limits deliberately stay visible because a safety
+control is not expert configuration just because it is changed rarely.
+
+### I. Campaign construction is a separate journey from campaign operation
+
+`/outreach/manager` is now the returning-operator surface: campaign status,
+results, manual work, and a collapsed read-only reference to campaign inputs.
+It no longer embeds CSV import, workflow editing and campaign creation in the
+same long page.
+
+`/outreach/manager/new` is the construction journey. It checks the three real
+prerequisites in order — sending account, lead list, workflow — and opens only
+the first missing piece. Once all three exist, the campaign form becomes the
+primary surface. Starting a campaign returns to the operating screen.
+
+"Build it again" on a finished/stopped campaign stages the same account/list/
+workflow in memory and opens the builder. Nothing is recreated until the user
+reviews and submits the new campaign.
+
 ---
 
 ## 5. Autonomous production/security work included in this release
@@ -344,27 +377,20 @@ review and is intentionally preserved in the same release.
 These are not release blockers for this pass, but they are the next highest-value
 journey improvements:
 
-1. **Shorten Setup.** Research, Reddit, Skills and Limits still create a long
-   horizontal sub-navigation. Group rarely used expert configuration without
-   hiding safety controls.
-2. **Split returning Campaigns operations from construction.** First-run guidance
-   is now clear, but a mature workspace still has a very long Campaigns page.
-   Consider campaign list/detail/results as the operating surface and a dedicated
-   campaign builder sub-route.
-3. **Hosted LinkedIn execution onboarding.** The Oracle hosted platform currently
+1. **Hosted LinkedIn execution onboarding.** The Oracle hosted platform currently
    has no remote browser provider configured, so server-side LinkedIn execution
    must continue to fail closed. When a provider is chosen, onboarding should
    explain the hosted session/proxy model before asking for credentials.
-4. **First actual-device mobile pass.** Responsive CSS is present, but the five
+2. **First actual-device mobile pass.** Responsive CSS is present, but the five
    primary tabs, long outreach sub-nav, campaign tables and inbox should be
    exercised on narrow physical devices with touch and safe-area insets.
-5. **Screen-reader journey pass.** Focus trapping, skip links, live-region toasts
+3. **Screen-reader journey pass.** Focus trapping, skip links, live-region toasts
    and labels exist; the end-to-end first-run and campaign flows should still be
    tested with a real screen reader rather than inferred from markup.
-6. **Team onboarding.** Invite/role flows should get the same "one next step"
+4. **Team onboarding.** Invite/role flows should get the same "one next step"
    treatment as first-run setup, especially for members who cannot perform
    owner-only actions.
-7. **Reduce duplicated explanatory copy.** The product deliberately explains
+5. **Reduce duplicated explanatory copy.** The product deliberately explains
    safety decisions, but several LinkedIn screens still carry long paragraphs.
    Move durable education into contextual Help when the same text does not need
    to be visible for every decision.

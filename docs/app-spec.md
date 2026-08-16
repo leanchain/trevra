@@ -126,6 +126,7 @@ An empty state that does not tell you what to do next is a bug.
 ### Outreach
 - **Purpose:** run the seat — what may go out today, why that number, where the variance is.
 - **Primary action:** none on the seat screen; it is a read. The primary lives on Campaigns.
+- **Campaigns:** `/outreach/manager` is the operating surface; `/outreach/manager/new` is the construction journey. Do not put lead-list/workflow editors back into the daily operating page.
 - **Empty:** “No LinkedIn account is set up yet.” + one button to the canonical account manager at Outreach → LinkedIn accounts.
 - **Never:** drop a `HARD FACT` / `REPORTED` tag on the way to the screen.
 
@@ -142,9 +143,11 @@ An empty state that does not tell you what to do next is a bug.
 - **Empty:** “No runs yet” + where to start one.
 
 ### Setup
-- **Purpose:** what can reach the workspace, what it may spend, what it may do.
+- **Purpose:** what can reach the workspace, what may it spend, what may it do.
 - **Primary action:** connect the agent.
-- **Order of the sub-routes:** agent access → spending → connections → seat → skills → limits.
+- **Always visible:** Agent access → Connections → LinkedIn → Limits → Team. Safety limits stay visible even though they are changed rarely.
+- **More:** Research, Reddit and Skills remain direct routes but share one compact secondary selector.
+- **Spending:** `/setup/spend` remains a deep link into Agent access rather than a peer screen.
 - **One save per sitting:** a settings panel that asks for four separate saves is
   four round-trips and four toasts for one decision. Write only what changed,
   and name each part. The exceptions are the switches: an off switch that needs

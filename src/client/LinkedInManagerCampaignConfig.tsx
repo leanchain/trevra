@@ -165,7 +165,27 @@ export interface CampaignPrefill {
   workflowId: string;
 }
 
-export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads, onNeedWorkflows, prefill }: {
+/**
+ * One in-memory handoff from the operating screen to the dedicated builder.
+ *
+ * A rebuild is a suggestion, not a write. Keeping it in memory means Back or a
+ * reload cannot silently recreate an old campaign choice days later, while the
+ * immediate navigation can carry the account/list/workflow the operator just
+ * asked to reuse without putting implementation ids in the URL.
+ */
+let stagedCampaignPrefill: CampaignPrefill | null = null;
+
+export function stageCampaignPrefill(prefill: CampaignPrefill): void {
+  stagedCampaignPrefill = prefill;
+}
+
+export function takeStagedCampaignPrefill(): CampaignPrefill | null {
+  const staged = stagedCampaignPrefill;
+  stagedCampaignPrefill = null;
+  return staged;
+}
+
+export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads, onNeedWorkflows, onStarted, prefill }: {
   onChanged: () => Promise<void>;
   setToast: (message: string) => void;
   /**
@@ -180,6 +200,8 @@ export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads
    */
   onNeedLeads: () => void;
   onNeedWorkflows: () => void;
+  /** After an explicit Start succeeds, the builder can return to operations. */
+  onStarted?: (campaign: ManagedCampaign) => void;
   /** Fills the form from a finished campaign, so "run this list again" is one click. */
   prefill?: CampaignPrefill | null;
 }) {
@@ -302,8 +324,10 @@ export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads
     try {
       await startLinkedInManagedCampaign(created.campaign.id);
       setToast(`“${created.campaign.name}” is running.${dayOneFraction === null ? '' : ` Day one is held to ${Math.round(dayOneFraction * 100)}% of what this account may send.`}`);
+      const started = created.campaign;
       setCreated(null);
       await onChanged();
+      onStarted?.(started);
     } catch (err) { setError(errorMessage(err, 'The campaign was created but could not be started.')); }
     finally { setBusy(''); }
   };

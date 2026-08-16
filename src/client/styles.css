@@ -2144,6 +2144,29 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .setup-nav > *:hover,
 .outreach-nav > *:hover { color: var(--ink); }
 
+/* The five setup decisions people revisit stay visible; specialist surfaces
+   share one native select instead of stretching a rarely-used eight-item strip
+   across the page. The label owns the active underline, the select keeps the
+   platform's keyboard/touch behavior. */
+.setup-more-select { padding-right: 7px; }
+.setup-more-select select {
+  min-height: 28px;
+  max-width: 9rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+}
+.setup-more-select select:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; border-radius: var(--t-r-xs); }
+.setup-more-select option { color: var(--ink); background: var(--panel); }
+
+/* General visually-hidden utility for labels whose native control already
+   carries the visible wording. */
+.sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
 /* The approve-and-export path: still one click away, but read as the deeper
    route rather than the next step. Weight, not colour -- a greyed-out tab
    reads as disabled, and these work perfectly well. */
@@ -2199,6 +2222,9 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   .outreach-nav { gap: 2px; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: thin; }
   .setup-nav > *,
   .outreach-nav > * { flex: none; }
+  .setup-more-select select { max-width: 7.5rem; }
+  .builder-library > .page-panel,
+  .mgr-inputs-body { margin-left: 0; margin-right: 0; }
 }
 
 /* --- The account spine's ranked list (039). -------------------------------
@@ -2465,6 +2491,34 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .mgr-empty h4 { margin: 0; font-size: var(--t-text-lg); font-weight: var(--t-w-bold); }
 .mgr-empty p { max-width: var(--t-measure); margin: 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.6; }
 .mgr-empty .mgr-actions { margin-top: 3px; }
+
+/* Campaign construction lives on /outreach/manager/new. Daily operations keep
+   only a closed reference to the reusable inputs, so a mature workspace opens
+   on live campaigns/results instead of three configuration tables. */
+.builder-back { display: flex; margin-bottom: -6px; }
+.builder-library-panel { display: grid; gap: 10px; }
+.builder-library,
+.mgr-inputs { border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-field); overflow: clip; }
+.builder-library > summary,
+.mgr-inputs > summary {
+  min-height: var(--t-tap);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 13px;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+  cursor: pointer;
+}
+.builder-library > summary span,
+.mgr-inputs > summary span { margin-left: auto; color: var(--muted); font-weight: var(--t-w-body); }
+.builder-library[open] > summary,
+.mgr-inputs[open] > summary { border-bottom: 1px solid var(--line); }
+.builder-library > .page-panel { margin: 12px; box-shadow: none; }
+.mgr-inputs { margin-top: 2px; }
+.mgr-inputs-body { display: grid; gap: 12px; padding: 12px; }
+.mgr-inputs-body > .page-panel { margin: 0; box-shadow: none; }
 
 .mgr-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .92fr); gap: 20px; align-items: start; }
 .mgr-fields { grid-template-columns: minmax(0, 1fr); margin-bottom: 0; }

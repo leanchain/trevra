@@ -17,6 +17,7 @@ describe('parseRoute', () => {
   it('reads a section, a sub-screen and a deep-link id off the pathname', () => {
     expect(parseRoute('/outreach/inbox')).toMatchObject({ section: 'outreach', sub: 'inbox', id: null, path: '/outreach/inbox' });
     expect(parseRoute('/outreach/accounts')).toMatchObject({ section: 'outreach', sub: 'accounts', id: null, path: '/outreach/accounts' });
+    expect(parseRoute('/outreach/manager/new')).toMatchObject({ section: 'outreach', sub: 'manager', id: 'new', path: '/outreach/manager/new' });
     expect(parseRoute('/ledger/run/run_abc')).toMatchObject({ section: 'ledger', sub: 'run', id: 'run_abc', path: '/ledger/run/run_abc' });
   });
 

@@ -87,6 +87,7 @@ import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
 import { OutreachInbox } from './LinkedInInbox';
 import { OutreachLeads } from './LinkedInLeads';
 import { LinkedInAccounts } from './LinkedInAccounts';
+import { OutreachManagerBuilder } from './LinkedInManagerBuilder';
 import { OutreachManagerRead } from './LinkedInManagerRead';
 import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions, LinkedInSeatSetup, OutreachQueue, OutreachSeat } from './LinkedInScreen';
@@ -537,7 +538,9 @@ export function App() {
           {route.sub === 'campaigns' && <OutreachCampaigns setToast={setToast} campaignId={route.id} />}
           {route.sub === 'inbox' && <OutreachInbox setToast={setToast} />}
           {route.sub === 'leads' && <OutreachLeads setToast={setToast} />}
-          {route.sub === 'manager' && <OutreachManagerRead setToast={setToast} />}
+          {route.sub === 'manager' && (route.id === 'new'
+            ? <OutreachManagerBuilder setToast={setToast} onNavigate={go} />
+            : <OutreachManagerRead setToast={setToast} onNavigate={go} />)}
           {route.sub === 'plan' && <OutreachPlan setToast={setToast} />}
           {route.sub === 'queue' && <OutreachQueue setToast={setToast} />}
         </div>}
@@ -658,16 +661,21 @@ const HIDDEN_LIVE_REGION: React.CSSProperties = {
  * screen still points at it, and it still lands on the cap -- and stops
  * pretending to be a peer of the six screens that are real.
  */
-const SETUP_ROUTES: Array<{ sub: string; label: string }> = [
+const SETUP_ROUTES: Array<{ sub: string; label: string; advanced?: true }> = [
   { sub: 'agent', label: 'Agent access' },
   { sub: 'data', label: 'Connections' },
-  { sub: 'research', label: 'Research' },
-  { sub: 'seat', label: 'LinkedIn settings' },
-  { sub: 'reddit', label: 'Reddit account' },
-  { sub: 'skills', label: 'Skills' },
+  { sub: 'seat', label: 'LinkedIn' },
+  // Safety controls stay visible. They are not expert configuration even when
+  // most people change them rarely.
   { sub: 'limits', label: 'Limits' },
-  { sub: 'team', label: 'Team' }
+  { sub: 'team', label: 'Team' },
+  { sub: 'research', label: 'Research', advanced: true },
+  { sub: 'reddit', label: 'Reddit', advanced: true },
+  { sub: 'skills', label: 'Skills', advanced: true }
 ];
+
+const SETUP_PRIMARY_ROUTES = SETUP_ROUTES.filter((entry) => !entry.advanced);
+const SETUP_ADVANCED_ROUTES = SETUP_ROUTES.filter((entry) => entry.advanced);
 
 function SetupView({ route, data, reload, setToast, busyId, setBusyId, onNavigate }: {
   route: Route;
@@ -713,13 +721,24 @@ function SetupView({ route, data, reload, setToast, busyId, setBusyId, onNavigat
 
   return <div className="page-stack">
     <nav className="setup-nav" aria-label="Setup sections">
-      {SETUP_ROUTES.map((entry) => <button
+      {SETUP_PRIMARY_ROUTES.map((entry) => <button
         key={entry.sub}
         type="button"
         className={navSub === entry.sub ? 'is-active' : undefined}
         aria-current={navSub === entry.sub ? 'page' : undefined}
         onClick={() => onNavigate(`/setup/${entry.sub}`)}
       >{entry.label}</button>)}
+      <label className={`setup-more-select${SETUP_ADVANCED_ROUTES.some((entry) => entry.sub === navSub) ? ' is-active' : ''}`}>
+        <span className="sr-only">More setup sections</span>
+        <select
+          aria-label="More setup sections"
+          value={SETUP_ADVANCED_ROUTES.some((entry) => entry.sub === navSub) ? navSub : ''}
+          onChange={(event) => { if (event.target.value) onNavigate(`/setup/${event.target.value}`); }}
+        >
+          <option value="">More…</option>
+          {SETUP_ADVANCED_ROUTES.map((entry) => <option key={entry.sub} value={entry.sub}>{entry.label}</option>)}
+        </select>
+      </label>
     </nav>
 
     {(sub === 'agent' || sub === 'spend') && <>
@@ -2327,7 +2346,7 @@ function viewTitle(route: Route): string {
     if (route.sub === 'campaigns') return 'Approve & export';
     if (route.sub === 'inbox') return 'Inbox';
     if (route.sub === 'leads') return 'Find people';
-    if (route.sub === 'manager') return 'Campaigns';
+    if (route.sub === 'manager') return route.id === 'new' ? 'New campaign' : 'Campaigns';
     if (route.sub === 'plan') return 'Plan preview';
     if (route.sub === 'queue') return 'Queue';
     return 'LinkedIn accounts';

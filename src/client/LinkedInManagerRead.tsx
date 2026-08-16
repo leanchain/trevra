@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleAlert, ClipboardList, Copy, Inbox,
-  LoaderCircle, Pause, Play, RefreshCw, Square, Trash2, Users, Workflow as WorkflowIcon, Zap
+  BarChart3, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, Inbox,
+  LoaderCircle, Pause, Play, Plus, RefreshCw, Square, Trash2, Users, Workflow as WorkflowIcon, Zap
 } from 'lucide-react';
 import {
   completeLinkedInManualTask,
@@ -27,15 +27,12 @@ import type { LinkedInSeat } from '../server/linkedin/seats';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
 import type { ManagedAnalytics, ManagedCampaign, ManagedCampaignMember, ManualTaskView } from '../server/linkedin/managed-campaigns';
 import { errorMessage, useOutreachRefresh } from './LinkedInSafety';
-import { LinkedInManagerLeadConfig } from './LinkedInManagerLeadConfig';
-import { LinkedInManagerWorkflowConfig } from './LinkedInManagerWorkflowConfig';
 import {
-  LinkedInManagerCampaignConfig,
   ceilingSourceNote,
   enforcedCeilings,
   rampFractionForDay,
   rampFractions,
-  type CampaignPrefill,
+  stageCampaignPrefill,
   type EnforcedCeiling,
   type ManagedKind
 } from './LinkedInManagerCampaignConfig';
@@ -493,7 +490,7 @@ function VariantResults({ analytics, stepsById }: { analytics: ManagedAnalytics;
  * The screen.
  * ======================================================================= */
 
-export function OutreachManagerRead({ setToast }: { setToast: (message: string) => void }) {
+export function OutreachManagerRead({ setToast, onNavigate }: { setToast: (message: string) => void; onNavigate: (path: string) => void }) {
   /**
    * The account the operator picked, shared with every other LinkedIn screen.
    *
@@ -522,7 +519,6 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
   const [error, setError] = useState('');
   const [tick, setTick] = useState<ManagedCampaignTickResult | null>(null);
   const [stopping, setStopping] = useState<ManagedCampaign | null>(null);
-  const [prefill, setPrefill] = useState<CampaignPrefill | null>(null);
   const [campaignFilter, setCampaignFilter] = useState('');
   const [seatFilter, setSeatFilter] = useState(activeSeatKey);
   const [windowDays, setWindowDays] = useState<number | null>(30);
@@ -675,10 +671,6 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
     await refreshAll();
   }, 'Unable to advance the running campaigns.');
 
-  const scrollTo = (elementId: string) => {
-    document.getElementById(elementId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
   const pickSeatFilter = (key: string) => {
     setSeatFilter(key);
     if (key) setActiveSeatKey(key);
@@ -694,25 +686,18 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
    * enrolling the leads and starting them stay the operator's decisions.
    */
   const rebuild = (campaign: ManagedCampaign) => {
-    setPrefill({
+    stageCampaignPrefill({
       name: `${campaign.name} (again)`,
       seatKey: campaign.seatKey,
       leadListId: campaign.leadListId,
       workflowId: campaign.workflowId
     });
-    scrollTo('mgr-create');
+    onNavigate('/outreach/manager/new');
   };
 
   const pendingTasks = tasks.filter((task) => task.status === 'pending');
   const runningCount = campaigns.filter((campaign) => campaign.status === 'running').length;
   const leadsInFlight = Object.values(membersByCampaign).flat().filter((member) => LIVE_STATUSES.includes(member.status)).length;
-  const firstCampaignSteps = [
-    { done: seats.length > 0, title: 'Add the LinkedIn account you will send from', detail: 'Account, timezone, working hours and limits.', target: 'account' as const },
-    { done: lists.length > 0, title: 'Build a lead list', detail: 'The people this campaign is allowed to contact.', target: 'mgr-lead-lists' as const },
-    { done: workflows.length > 0, title: 'Build a workflow', detail: 'The steps and waits each person will move through.', target: 'mgr-workflows' as const },
-    { done: campaigns.length > 0, title: 'Create the campaign', detail: 'Choose one account, one list and one workflow. Starting it is a separate decision.', target: 'mgr-create' as const }
-  ];
-  const firstCampaignNext = firstCampaignSteps.find((step) => !step.done) ?? null;
   /**
    * Which workflow step a variant result row belongs to.
    *
@@ -748,27 +733,6 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
   return <div className="page-stack">
     {error && <div className="error-banner">{error}</div>}
 
-    {!loading && campaigns.length === 0 && <section className="onboarding-card mgr-first-campaign">
-      <div className="onboarding-head">
-        <div><h2>Build your first campaign in this order</h2><p>Each step unlocks the next. Nothing sends while you are building.</p></div>
-        <span className="status-pill">{firstCampaignSteps.filter((step) => step.done).length} of {firstCampaignSteps.length} ready</span>
-      </div>
-      <ol className="onboarding-steps">
-        {firstCampaignSteps.map((step) => {
-          const next = firstCampaignNext?.title === step.title;
-          return <li key={step.title} className={`${step.done ? 'is-done' : ''}${next ? ' is-next' : ''}`.trim()}>
-            {step.done ? <CheckCircle2 size={19} /> : <Circle size={19} />}
-            <div><strong>{step.title}</strong><small>{step.detail}</small></div>
-            {next && (step.target === 'account'
-              ? <a className="primary-button" href="/outreach">Add account <ChevronRight size={14} /></a>
-              : <button className="primary-button" type="button" onClick={() => scrollTo(step.target)}>
-                {step.target === 'mgr-lead-lists' ? 'Build lead list' : step.target === 'mgr-workflows' ? 'Build workflow' : 'Create campaign'} <ChevronRight size={14} />
-              </button>)}
-          </li>;
-        })}
-      </ol>
-    </section>}
-
     <section className="page-panel" id="mgr-campaigns">
       <div className="section-heading">
         <div>
@@ -776,6 +740,7 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
           <p>One LinkedIn account, one lead list, one workflow each. Work is queued for the account&rsquo;s own working hours and daily limits, so a campaign never moves faster than the account safely can.</p>
         </div>
         <div className="mgr-actions">
+          <button className="primary-button" type="button" onClick={() => onNavigate('/outreach/manager/new')}><Plus size={14} /> New campaign</button>
           <button className="secondary-button" type="button" disabled={busy !== '' || runningCount === 0} onClick={() => void runNow()}>
             {busy === 'tick' ? <LoaderCircle className="spin" size={14} /> : <Zap size={14} />} Run now
           </button>
@@ -809,12 +774,10 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
         ? <div className="mgr-list" aria-hidden="true">{[0, 1, 2].map((row) => <div className="mgr-skel" key={row} />)}</div>
         : campaigns.length === 0
           ? <div className="mgr-empty">
-            <h4 aria-level={3}>No campaign yet</h4>
-            <p>A campaign needs two things: a list of leads and a workflow for them to follow. {lists.length === 0 && 'You have no lead list yet. '}{workflows.length === 0 && 'You have no workflow yet. '}</p>
+            <h4 aria-level={3}>No campaigns yet</h4>
+            <p>The builder walks through the sending account, lead list and workflow in order. Nothing is sent while you build.</p>
             <div className="mgr-actions">
-              {lists.length === 0 && <button className="secondary-button" type="button" onClick={() => scrollTo('mgr-lead-lists')}><Users size={14} /> Import leads</button>}
-              {workflows.length === 0 && <button className="secondary-button" type="button" onClick={() => scrollTo('mgr-workflows')}><WorkflowIcon size={14} /> Build a workflow</button>}
-              <button className="primary-button" type="button" disabled={lists.length === 0 || workflows.length === 0} onClick={() => scrollTo('mgr-create')}>Create a campaign</button>
+              <button className="primary-button" type="button" onClick={() => onNavigate('/outreach/manager/new')}><Plus size={14} /> Build your first campaign</button>
             </div>
           </div>
           : <div className="mgr-list">
@@ -932,16 +895,7 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
           </div>}
     </section>
 
-    {(campaigns.length > 0 || (seats.length > 0 && lists.length > 0 && workflows.length > 0)) && <div id="mgr-create">
-      <LinkedInManagerCampaignConfig
-        onChanged={refreshAll}
-        setToast={setToast}
-        onNeedLeads={() => scrollTo('mgr-lead-lists')}
-        onNeedWorkflows={() => scrollTo('mgr-workflows')}
-        prefill={prefill}
-      />
-    </div>}
-
+    {campaigns.length > 0 && <>
     <section className="page-panel">
       <div className="section-heading">
         <div>
@@ -1070,7 +1024,11 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
           </tbody>
         </table></div></div>}
     </section>
+    </>}
 
+    <details className="mgr-inputs">
+      <summary>Campaign inputs <span>{seats.length} accounts · {lists.length} lead lists · {workflows.length} workflows</span></summary>
+      <div className="mgr-inputs-body">
     <section className="page-panel">
       <div className="section-heading"><div>
         <h3 aria-level={2}>LinkedIn accounts</h3>
@@ -1112,10 +1070,6 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
       {seats.length > 0 && <p className="li-hint">The three number columns each read invites · messages · profile views · follows. What goes out is the stricter of your setting and Trevra&rsquo;s researched band, and a campaign in its first days is a fraction of even that.</p>}
     </section>
 
-    <div id="mgr-lead-lists">
-      <LinkedInManagerLeadConfig onChanged={refreshAll} setToast={setToast} />
-    </div>
-
     <section className="page-panel">
       <div className="section-heading"><div>
         <h3 aria-level={2}><Users size={18} className="li-heading-icon" /> Lead lists</h3>
@@ -1133,10 +1087,6 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
           </tr>)}</tbody>
         </table></div></div>}
     </section>
-
-    <div id="mgr-workflows">
-      <LinkedInManagerWorkflowConfig onChanged={refreshAll} setToast={setToast} />
-    </div>
 
     <section className="page-panel">
       <div className="section-heading"><div>
@@ -1158,6 +1108,8 @@ export function OutreachManagerRead({ setToast }: { setToast: (message: string) 
           })}</tbody>
         </table></div></div>}
     </section>
+      </div>
+    </details>
 
     {stopping && <ConfirmDrawer
       title={stopping.status === 'draft' ? `Cancel “${stopping.name}”?` : `Stop “${stopping.name}”?`}
