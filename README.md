@@ -82,13 +82,17 @@ Complete setup, CLI commands, API routes, scopes, and operating boundaries are d
 
 ## Hosted LinkedIn from your own computer
 
-Hosted Trevra can run LinkedIn through a Chrome profile on the workspace member's own computer instead of a datacenter browser. Pair once from **Outreach → LinkedIn accounts**, then keep this running while outreach should be eligible:
+Hosted Trevra can run LinkedIn through a Chrome profile on the workspace member's own computer instead of a datacenter browser. Pair once from **Outreach → LinkedIn accounts** with the generated `npx trevra linkedin install --pair ...` command. Trevra installs a per-user background companion that starts at login and restarts after crashes, so no terminal needs to stay open.
 
 ```bash
-npx trevra linkedin
+npx trevra linkedin status
+npx trevra linkedin start
+npx trevra linkedin stop
+npx trevra linkedin restart
+npx trevra linkedin uninstall
 ```
 
-LinkedIn traffic uses that computer's normal network/IP, the persistent browser profile and cookies stay on that computer, and hosted Trevra does not need the LinkedIn password for this path. A signed-in Trevra tab must also remain open; if the laptop or website disappears, due work stays queued. Returning runs one normal bounded sitting rather than replaying missed timer ticks. See [`docs/linkedin-companion.md`](docs/linkedin-companion.md).
+LinkedIn traffic uses that computer's normal network/IP, the persistent browser profile and cookies stay on that computer, and hosted Trevra does not need the LinkedIn password for this path. A signed-in Trevra tab must still remain open when work should run; if the laptop companion or website disappears, due work stays queued. Returning runs one normal bounded sitting rather than replaying missed timer ticks. See [`docs/linkedin-companion.md`](docs/linkedin-companion.md).
 
 ## Fastest local start
 

@@ -2,6 +2,9 @@
   "name": "trevra",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "trevra": "packages/trevra-cli/bin/trevra.js"
+  },
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n api,worker,web -c auto \"tsx watch src/server/index.ts\" \"PORT=43888 tsx watch src/worker/index.ts\" \"vite --host 0.0.0.0\"",

@@ -8,21 +8,27 @@ The hosted platform owns campaigns, due work, pacing, safety decisions, leases a
 
 1. Open **Outreach → LinkedIn accounts** in hosted Trevra.
 2. Choose **Connect this computer**.
-3. Run the generated one-time command:
+3. Run the generated one-time install command:
 
    ```bash
-   npx trevra linkedin --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
+   npx trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
    ```
 
-4. Chrome opens with a Trevra-specific persistent profile. Sign into LinkedIn there if it is not already signed in.
+4. Trevra pairs the computer, installs a private per-user companion package and registers the operating system's background service. Chrome opens with a Trevra-specific persistent profile; sign into LinkedIn there if it is not already signed in.
 5. In Trevra choose **Check this account on LinkedIn**. Trevra verifies which LinkedIn account the local browser is using and records the seat identity.
-6. Leave the CLI and a signed-in Trevra tab open while LinkedIn work should be eligible.
+6. Keep a signed-in Trevra tab open while LinkedIn work should be eligible. The companion itself runs in the background; no terminal has to remain open.
 
-After the first pairing, the command is simply:
+Service controls are:
 
 ```bash
-npx trevra linkedin
+npx trevra linkedin status
+npx trevra linkedin start
+npx trevra linkedin stop
+npx trevra linkedin restart
+npx trevra linkedin uninstall
 ```
+
+`npx trevra linkedin` remains a foreground/debug mode. `uninstall` removes the OS service and its private npm tree but deliberately preserves the pairing config and dedicated LinkedIn browser profile.
 
 No LinkedIn password has to be stored in hosted Trevra for this path. The persistent Chrome profile and its cookies stay under `~/.trevra/linkedin-companion/` on the member computer.
 
@@ -30,10 +36,10 @@ No LinkedIn password has to be stored in hosted Trevra for this path. The persis
 
 A companion workspace is eligible only while **both** of these leases are fresh:
 
-- the paired CLI/WebSocket is online;
+- the paired background companion/WebSocket is online;
 - a signed-in Trevra website tab is refreshing the website-presence lease.
 
-Closing the laptop, stopping the CLI or closing every Trevra tab therefore stops new LinkedIn work without rewriting campaign state.
+Closing the laptop, stopping the background companion or closing every Trevra tab therefore stops new LinkedIn work without rewriting campaign state.
 
 Coming back online does **not** replay scheduler ticks that happened while the computer was away. Timer opportunities are not obligations. Trevra performs one ordinary bounded sitting using the same action budget, visit marker, working hours and rest windows as every other LinkedIn run, then returns to the normal cadence. Business work that is still relevant remains due and is reconsidered on later normal sittings.
 
@@ -115,6 +121,18 @@ TREVRA_COMPANION_RELAY_URL=ws://trevra:8080
 ```
 
 for the API and worker. This is a private Compose-network address. The user's CLI reaches `/api/linkedin/companion/socket` through the existing Cloudflare Tunnel and needs no inbound port on Oracle or the laptop.
+
+## Background service
+
+The install command pins the service to the exact companion version that performed the install and stores it under `~/.trevra/service/`. OS service definitions contain only the local Node executable path and the stable companion CLI path; the device token never appears in systemd, launchd or Task Scheduler configuration.
+
+- Linux: `~/.config/systemd/user/trevra-linkedin.service`, enabled for user login with `Restart=on-failure`.
+- macOS: `~/Library/LaunchAgents/com.trevra.linkedin.plist`, `RunAtLoad` with restart after unsuccessful exits.
+- Windows: per-user **Trevra LinkedIn Companion** scheduled task, triggered at interactive logon with restart-on-failure settings.
+
+The background service connects to Trevra immediately but does not open Chrome merely because the user logged into the computer. Chrome is opened/reused when Trevra actually requests a browser. The initial `install` command opens the dedicated profile once so the member can sign in.
+
+A revoked device exits the background process cleanly rather than entering a crash-restart loop. Network interruptions stay inside the companion's bounded reconnect loop; genuine process crashes are restarted by the operating system.
 
 ## npm package
 

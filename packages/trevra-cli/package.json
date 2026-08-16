@@ -1,6 +1,6 @@
 {
   "name": "trevra",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Trevra companion CLI — run hosted LinkedIn automation through your own computer and browser.",
   "type": "module",
   "license": "UNLICENSED",
@@ -9,8 +9,12 @@
   },
   "files": [
     "bin",
+    "lib",
     "README.md"
   ],
+  "scripts": {
+    "test": "node --test test/service.node.js"
+  },
   "engines": {
     "node": ">=20"
   },

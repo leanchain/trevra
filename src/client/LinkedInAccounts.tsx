@@ -571,7 +571,7 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
     if (!pairing) return;
     try {
       await navigator.clipboard.writeText(pairing.command);
-      setToast('Companion command copied. Run it in Terminal on the computer that should use LinkedIn.');
+      setToast('Install command copied. Run it once on the computer that should use LinkedIn.');
     } catch {
       setToast('Copy was blocked by the browser. Select the command and copy it manually.');
     }
@@ -633,8 +633,8 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
 
     {status?.canManage && pairing ? <div className="li-companion-command">
       <div>
-        <strong>Run this once in Terminal</strong>
-        <p>The code expires {relativeTime(pairing.expiresAt)}. The long device token is created only after this one-time code is exchanged and is never shown in Trevra.</p>
+        <strong>Install once on this computer</strong>
+        <p>The code expires {relativeTime(pairing.expiresAt)}. Trevra installs a per-user background companion that starts at login and restarts after crashes; the long device token is created only after this one-time code is exchanged and is never shown in Trevra.</p>
       </div>
       <code>{pairing.command}</code>
       <button className="secondary-button" type="button" onClick={() => void copy()}><Copy size={14} /> Copy command</button>
@@ -643,7 +643,7 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
     </button> : null}
 
     <p className="panel-note">
-      Leave <b>both</b> the companion command and Trevra open. If either disappears, no new LinkedIn cycle is claimed.
+      The background companion starts when you sign into this computer and restarts after crashes, so no terminal needs to stay open. Keep a signed-in Trevra tab open when LinkedIn work should run; if the background companion or every Trevra tab disappears, no new LinkedIn cycle is claimed.
       The companion Chrome profile is dedicated to LinkedIn and Trevra can control that window while connected, so do not use it for email, banking or other private sites.
       When you return after being offline, Trevra runs one normal bounded sitting and then resumes the ordinary schedule — missed timer ticks are never replayed as a burst.
     </p>

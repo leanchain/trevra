@@ -756,7 +756,7 @@ export function createApp(db: Db) {
       ).replace(/\/$/, '');
       res.status(201).json({
         ...pairing,
-        command: `npx trevra linkedin --pair ${pairing.code}${base ? ` --url ${base}` : ''}`
+        command: `npx trevra linkedin install --pair ${pairing.code}${base ? ` --url ${base}` : ''}`
       });
     } catch (error) { next(error); }
   });

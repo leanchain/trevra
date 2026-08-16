@@ -7,8 +7,17 @@ import { homedir, hostname, platform } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { WebSocket } from 'ws';
+import {
+  installStablePackage,
+  installedServiceStatus,
+  registerBackgroundService,
+  restartBackgroundService,
+  startBackgroundService,
+  stopBackgroundService,
+  uninstallBackgroundService
+} from '../lib/service.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const HOME = join(homedir(), '.trevra');
 const CONFIG = join(HOME, 'companion.json');
 const PROFILES = join(HOME, 'linkedin-companion');
@@ -17,7 +26,7 @@ const LINKEDIN_FEED = 'https://www.linkedin.com/feed/';
 
 function usage(exitCode = 0) {
   const out = exitCode === 0 ? process.stdout : process.stderr;
-  out.write(`Trevra ${VERSION}\n\nUsage:\n  npx trevra linkedin --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com\n  npx trevra linkedin\n\nCommands:\n  linkedin       Lend this computer's Chrome browser to your Trevra workspace\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --help         Show this help\n  --version      Show the version\n`);
+  out.write(`Trevra ${VERSION}\n\nUsage:\n  npx trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com\n  npx trevra linkedin status\n  npx trevra linkedin start\n  npx trevra linkedin stop\n  npx trevra linkedin restart\n  npx trevra linkedin uninstall\n  npx trevra linkedin                 # foreground/debug mode\n\nLinkedIn companion commands:\n  install        Pair if needed, install a per-user background service, and start it\n  status         Show whether this computer is paired, installed, and running\n  start          Start the installed background companion\n  stop           Stop it without removing pairing or the LinkedIn browser profile\n  restart        Restart the installed background companion\n  uninstall      Remove the background service; keep pairing and browser profile\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --help         Show this help\n  --version      Show the version\n`);
   process.exit(exitCode);
 }
 
@@ -221,6 +230,48 @@ async function ensureBrowser(workspaceId, seatKey) {
   throw new Error(`Chrome opened no DevTools endpoint for ${seatKey}. Close the Trevra Chrome window and run the command again.`);
 }
 
+function lockPid() {
+  try { return Number(readFileSync(LOCK, 'utf8').trim()) || 0; }
+  catch { return 0; }
+}
+
+function processLooksLikeCompanion(pid) {
+  if (pid <= 0) return false;
+  try { process.kill(pid, 0); } catch { return false; }
+  try {
+    if (platform() === 'win32') {
+      const ps = process.env.SystemRoot ? join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell.exe';
+      const command = execFileSync(ps, ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
+      });
+      return /trevra[^\r\n]*linkedin/i.test(command);
+    }
+    const command = execFileSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return /trevra[^\r\n]*linkedin/i.test(command);
+  } catch {
+    // If process inspection is unavailable, fail closed: do not decide that an
+    // unrelated live PID is a Trevra process merely because an old lock reused it.
+    return false;
+  }
+}
+
+async function stopExistingCompanion() {
+  const pid = lockPid();
+  if (!pid) { rmSync(LOCK, { force: true }); return; }
+  if (!processLooksLikeCompanion(pid)) {
+    rmSync(LOCK, { force: true });
+    return;
+  }
+  process.stdout.write(`Stopping the existing foreground companion (process ${pid})…\n`);
+  try { process.kill(pid, 'SIGTERM'); } catch { rmSync(LOCK, { force: true }); return; }
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    await sleep(100);
+    try { process.kill(pid, 0); }
+    catch { rmSync(LOCK, { force: true }); return; }
+  }
+  throw new Error(`The existing Trevra LinkedIn process ${pid} did not stop. Close it, then run install again.`);
+}
+
 function acquireLock() {
   ensurePrivateDir(HOME);
   try {
@@ -228,14 +279,11 @@ function acquireLock() {
     writeFileSync(fd, String(process.pid));
     closeSync(fd);
   } catch {
-    let pid = 0;
-    try { pid = Number(readFileSync(LOCK, 'utf8').trim()); } catch { /* stale */ }
-    if (pid > 0) {
-      try { process.kill(pid, 0); throw new Error(`Trevra LinkedIn is already running (process ${pid}).`); }
-      catch (error) {
-        if (error?.message?.includes('already running')) throw error;
-      }
+    const pid = lockPid();
+    if (pid > 0 && processLooksLikeCompanion(pid)) {
+      throw new Error(`Trevra LinkedIn is already running (process ${pid}).`);
     }
+    // The recorded PID is gone or belongs to something else after PID reuse.
     rmSync(LOCK, { force: true });
     const fd = openSync(LOCK, 'wx', 0o600);
     writeFileSync(fd, String(process.pid));
@@ -244,7 +292,7 @@ function acquireLock() {
   return () => rmSync(LOCK, { force: true });
 }
 
-async function runCompanion(config) {
+async function runCompanion(config, options = {}) {
   const releaseLock = acquireLock();
   ensurePrivateDir(PROFILES);
   let stopping = false;
@@ -276,13 +324,16 @@ async function runCompanion(config) {
   process.once('SIGTERM', () => { shutdown(); process.exit(0); });
   process.once('exit', releaseLock);
 
-  // Open the owner profile immediately: pairing is also the sign-in journey,
-  // so a first run should show LinkedIn without waiting for a queued campaign.
-  try {
-    await ensureBrowser(config.workspaceId, 'owner');
-    process.stdout.write('Use this dedicated Chrome window only for LinkedIn; Trevra can control it while the companion is connected. Sign in if needed, then keep this command open.\n');
-  } catch (error) {
-    process.stderr.write(`${error.message}\n`);
+  // Foreground mode opens Chrome immediately because it is also the manual
+  // sign-in/debug journey. The installed service stays quiet at login and
+  // opens/reuses the dedicated profile only when Trevra requests a browser.
+  if (options.openBrowserAtStart !== false) {
+    try {
+      await ensureBrowser(config.workspaceId, 'owner');
+      process.stdout.write('Use this dedicated Chrome window only for LinkedIn; Trevra can control it while the companion is connected. Sign in if needed, then keep this command open.\n');
+    } catch (error) {
+      process.stderr.write(`${error.message}\n`);
+    }
   }
 
   let backoff = 1000;
@@ -380,6 +431,26 @@ async function runCompanion(config) {
   }
 }
 
+const SERVICE_ACTIONS = new Set(['install', 'status', 'start', 'stop', 'restart', 'uninstall', 'run']);
+let serviceInvocation = false;
+
+function requirePairing(config) {
+  if (!config) {
+    throw new Error('This computer is not paired yet. In Trevra open Outreach → LinkedIn accounts → Connect this computer, then run the install command it shows.');
+  }
+  return config;
+}
+
+function printServiceStatus(config) {
+  const status = installedServiceStatus();
+  process.stdout.write(`Trevra LinkedIn companion\n`);
+  process.stdout.write(`  paired:    ${config ? `yes (${config.label || 'this computer'})` : 'no'}\n`);
+  process.stdout.write(`  installed: ${status.installed ? `yes (${status.manager})` : 'no'}\n`);
+  process.stdout.write(`  running:   ${status.running ? 'yes' : 'no'}\n`);
+  if (status.detail) process.stdout.write(`  service:   ${status.detail}\n`);
+  if (status.installed) process.stdout.write(`  package:   ${status.serviceRoot}\n`);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) usage(0);
@@ -387,27 +458,115 @@ async function main() {
   const command = args[0];
   if (command !== 'linkedin') usage(command ? 1 : 0);
 
-  const saved = readConfig();
+  const action = SERVICE_ACTIONS.has(args[1]) ? args[1] : 'foreground';
+  let saved = readConfig();
   const requestedUrl = argValue(args, '--url') || saved?.url || 'https://app.usetrevra.com';
   const base = secureBaseUrl(requestedUrl);
   const code = argValue(args, '--pair');
   const label = argValue(args, '--label') || saved?.label || hostname();
+
+  if (action === 'status') {
+    printServiceStatus(saved);
+    return;
+  }
+  if (action === 'stop') {
+    stopBackgroundService();
+    process.stdout.write('Trevra LinkedIn background companion stopped.\n');
+    printServiceStatus(readConfig());
+    return;
+  }
+  if (action === 'start') {
+    requirePairing(saved);
+    startBackgroundService();
+    process.stdout.write('Trevra LinkedIn background companion started.\n');
+    printServiceStatus(readConfig());
+    return;
+  }
+  if (action === 'restart') {
+    requirePairing(saved);
+    restartBackgroundService();
+    process.stdout.write('Trevra LinkedIn background companion restarted.\n');
+    printServiceStatus(readConfig());
+    return;
+  }
+  if (action === 'uninstall') {
+    uninstallBackgroundService();
+    process.stdout.write('Trevra LinkedIn background service removed. Pairing and the dedicated LinkedIn browser profile were kept.\n');
+    printServiceStatus(readConfig());
+    return;
+  }
 
   let config = saved;
   if (code) {
     process.stdout.write(`Pairing ${label} with ${base}…\n`);
     const paired = await pair(base, code, label);
     config = { ...readConfig(), ...paired, url: base };
-    process.stdout.write(`Paired as ${paired.label}. Future runs are just: npx trevra linkedin\n`);
+    saved = config;
+    process.stdout.write(`Paired as ${paired.label}.\n`);
   }
-  if (!config) {
-    throw new Error('This computer is not paired yet. In Trevra open Outreach → LinkedIn accounts → Connect this computer, then run the command it shows.');
+
+  if (action === 'install') {
+    config = requirePairing(config);
+    if (config.url !== base) {
+      config = { ...config, url: base };
+      saveConfig(config);
+    }
+    // Updating an installed service is intentionally the same command as the
+    // first install. Stop both an existing service and the old foreground mode
+    // before replacing the private npm tree; this makes `install` the seamless
+    // upgrade path for people who paired with the pre-service CLI.
+    stopBackgroundService();
+    await stopExistingCompanion();
+    process.stdout.write(`Installing Trevra ${VERSION} as a per-user background service…\n`);
+    installStablePackage({
+      version: VERSION,
+      // Internal development hook: release builds omit it and therefore pin
+      // the service to this exact registry version rather than `latest`.
+      installSpec: process.env.TREVRA_COMPANION_INSTALL_SPEC?.trim() || undefined
+    });
+    registerBackgroundService();
+
+    // Ask the newly installed service to open the dedicated Chrome profile on
+    // its FIRST start only. The one-time installer must not retain a Chrome
+    // child handle itself: printing "installed" has to mean the terminal can
+    // close immediately. The service clears this before opening, so a broken
+    // desktop environment cannot become a browser-pop restart loop.
+    saveConfig({ ...config, openOnNextStart: true });
+    startBackgroundService();
+    process.stdout.write('Installed. The background service is opening Trevra’s dedicated LinkedIn Chrome profile for first sign-in. It starts when you sign into this computer and restarts automatically after crashes. No terminal needs to stay open.\n');
+    printServiceStatus(readConfig());
+    return;
   }
-  if (config.url !== base) config = { ...config, url: base };
-  await runCompanion(config);
+
+  config = requirePairing(config);
+  if (config.url !== base) {
+    config = { ...config, url: base };
+    saveConfig(config);
+  }
+
+  if (action === 'run') {
+    serviceInvocation = true;
+    const openOnNextStart = config.openOnNextStart === true;
+    if (openOnNextStart) {
+      const next = { ...config };
+      delete next.openOnNextStart;
+      saveConfig(next);
+      config = next;
+    }
+    await runCompanion(config, { openBrowserAtStart: openOnNextStart });
+    return;
+  }
+
+  // Backwards-compatible foreground/debug mode. It remains useful for seeing
+  // logs interactively, but the website now recommends `linkedin install`.
+  await runCompanion(config, { openBrowserAtStart: true });
 }
 
 main().catch((error) => {
-  process.stderr.write(`trevra: ${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`trevra: ${message}\n`);
+  // A revoked device is not a crash. Background managers restart failures, so
+  // exit cleanly here to avoid an infinite restart loop until the user pairs
+  // the computer again. Foreground invocations still report failure normally.
+  process.exitCode = serviceInvocation && /no longer authorised|pair this computer again/i.test(message) ? 0 : 1;
 });
