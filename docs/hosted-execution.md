@@ -17,24 +17,26 @@ belonging to the person whose account it is, so `TREVRA_DEPLOYMENT_MODE=hosted`
 turned the worker off — and planned rows sat at `status='planned' AND claimed_at
 IS NULL` forever.
 
-The owner has decided to close that gap, two ways:
+The gap now has two explicit execution homes:
 
-1. Hosted Trevra can drive a **remote browser** over the DevTools protocol: a
-   cloud browser session that Trevra attaches to, signs in with the seat's
-   stored credential, and acts through. This is the higher-risk capability —
-   Trevra's own servers acting as the member, with nobody's machine and
-   nobody's IP in the loop — and it stays gated on a configured provider plus
-   the workspace's own written authorisation, below.
-2. Separately, **credential custody and the client-side worker were never
-   actually a tenancy question.** A hosted deployment with no remote browser
-   configured now stores and reads a workspace's LinkedIn credential exactly
-   as a local deployment does, for that workspace's own `npm run
-   linkedin:worker` to use — one operator holding their own password is the
-   same small, self-inflicted risk whether `TREVRA_DEPLOYMENT_MODE` says
-   `hosted` or `local`. What stays refused is only Trevra's *own bundled
-   worker* (`src/worker/index.ts`) opening a browser of its own inside the
-   hosted container with no remote provider configured — that would still be
-   nobody's browser to drive.
+1. **Paired member computer — recommended.** `npx trevra linkedin` opens a
+   persistent Chrome profile on the workspace member's own computer and lends
+   that browser to the hosted worker over an outbound reverse-CDP tunnel.
+   LinkedIn traffic leaves from the member's normal network/IP, browser cookies
+   stay on that computer, and no LinkedIn password has to be stored by hosted
+   Trevra. The workspace is eligible only while the companion and a signed-in
+   Trevra tab are both present. See [`linkedin-companion.md`](linkedin-companion.md).
+2. **Cloud remote browser — optional.** Trevra can still attach to a managed
+   browser provider, restore an encrypted server-side session and act through a
+   per-seat residential proxy. This is the higher-risk capability — Trevra's
+   own servers acting as the member with nobody's machine/IP in the loop — and
+   it remains gated on provider configuration plus the workspace's written
+   authorisation below.
+
+The old direct-database `npm run linkedin:worker` remains useful for a
+self-hoster or repository operator. It is no longer the customer-facing hosted
+bridge: hosted customers pair through the scoped companion protocol and never
+receive database access.
 
 ## The operating model
 
@@ -112,7 +114,9 @@ decided. The only place a proxy can be delivered is the connect URL, which is wh
 | Condition | What happens |
 | --- | --- |
 | `TREVRA_DEPLOYMENT_MODE` is not `hosted` | Nothing here applies. The local worker runs exactly as it always did. |
-| Hosted, **no remote browser configured** | Nothing here applies either, as of the tenancy/custody split below: credential save and read behave exactly as local. There is no cloud browser for Trevra's own servers to drive, so a workspace's own client-side worker (`npm run linkedin:worker`) is what runs it — that process is on the same footing as a self-hoster's. Trevra's own bundled worker (`src/worker/index.ts`) still will not open a browser of its own here (`linkedInWorkerConfig().enabled` stays `false` for that process), so nothing tries to drive the account from the datacenter. |
+| Hosted, **companion relay configured and paired computer + website present** | The existing hosted worker runs one bounded normal cycle through the member computer. No cloud-execution acknowledgement is required because the browser/session/IP remain the member's. |
+| Hosted, companion configured but **computer or website absent** | The seat is skipped before lease/browser work. Detect requests remain pending rather than failing. Due business work stays due; missed scheduler ticks are not replayed. |
+| Hosted, **no companion and no remote browser configured** | LinkedIn execution remains off on the hosted worker. A self-hoster/repository operator may still use the direct local worker, but a hosted customer has no browser path until they pair a companion or the operator configures cloud execution. |
 | Hosted, remote browser **asked for and misconfigured** | The server **refuses to boot** in production, naming the variable. It does *not* fall back to local: a hosted box that silently reverts to a browser it does not have is a queue that fills up forever with no error anywhere. |
 | Hosted + provider, **workspace has not acknowledged** | 409 on the credential save; the seat is skipped by the runner. Reason names `POST /api/linkedin/hosted-execution`. |
 | Hosted + provider + acknowledgement **withdrawn** | Same as never acknowledged. A batch already in flight finishes; no new seat is picked up from the next tick. |

@@ -1,0 +1,137 @@
+# LinkedIn companion
+
+The LinkedIn companion is the recommended execution path for hosted Trevra when the member is willing to keep their computer and Trevra open while outreach runs.
+
+The hosted platform owns campaigns, due work, pacing, safety decisions, leases and the ledger. A tiny local CLI owns one thing: the visible Chrome process that is signed into LinkedIn. LinkedIn therefore sees the member's own computer and normal network/IP rather than an Oracle or cloud-browser address.
+
+## User journey
+
+1. Open **Outreach → LinkedIn accounts** in hosted Trevra.
+2. Choose **Connect this computer**.
+3. Run the generated one-time command:
+
+   ```bash
+   npx trevra linkedin --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
+   ```
+
+4. Chrome opens with a Trevra-specific persistent profile. Sign into LinkedIn there if it is not already signed in.
+5. In Trevra choose **Check this account on LinkedIn**. Trevra verifies which LinkedIn account the local browser is using and records the seat identity.
+6. Leave the CLI and a signed-in Trevra tab open while LinkedIn work should be eligible.
+
+After the first pairing, the command is simply:
+
+```bash
+npx trevra linkedin
+```
+
+No LinkedIn password has to be stored in hosted Trevra for this path. The persistent Chrome profile and its cookies stay under `~/.trevra/linkedin-companion/` on the member computer.
+
+## Presence and backlog semantics
+
+A companion workspace is eligible only while **both** of these leases are fresh:
+
+- the paired CLI/WebSocket is online;
+- a signed-in Trevra website tab is refreshing the website-presence lease.
+
+Closing the laptop, stopping the CLI or closing every Trevra tab therefore stops new LinkedIn work without rewriting campaign state.
+
+Coming back online does **not** replay scheduler ticks that happened while the computer was away. Timer opportunities are not obligations. Trevra performs one ordinary bounded sitting using the same action budget, visit marker, working hours and rest windows as every other LinkedIn run, then returns to the normal cadence. Business work that is still relevant remains due and is reconsidered on later normal sittings.
+
+The rule is:
+
+> Catch up state, never catch up clock ticks.
+
+The existing worker already enforces the bounded pieces underneath that rule:
+
+- one seat lease at a time;
+- one sitting action budget rather than drain-the-queue;
+- a rest window between sittings;
+- one side-task pass per natural LinkedIn visit;
+- at most the bounded set of due side tasks for that visit;
+- lead sourcing defaults to one source per unattended visit.
+
+## Pairing security
+
+The command shown by the website contains a **one-time pairing code**, not a reusable device credential.
+
+- pairing code lifetime: 10 minutes;
+- pairing code stored by Trevra: SHA-256 hash only;
+- pairing code: one successful exchange only;
+- device bearer token: generated only after the exchange;
+- device token stored by Trevra: SHA-256 hash only;
+- device token stored locally: `~/.trevra/companion.json`, owner-only mode where the platform supports POSIX permissions;
+- revoking a computer invalidates its token immediately.
+
+The CLI never receives `DATABASE_URL`, a Trevra session cookie, `TREVRA_SECRETS_KEY`, a cloud-browser API key or another tenant's identifier.
+
+## Browser and network boundary
+
+The CLI starts Chrome with:
+
+- a dedicated persistent `user-data-dir` per `(workspace, LinkedIn account)`;
+- a loopback-only ephemeral DevTools port;
+- no public listening socket;
+- the LinkedIn feed as the initial page.
+
+The laptop opens one authenticated outbound WebSocket to Trevra. When the hosted worker needs a browser, Trevra creates a private reverse-CDP channel over that existing socket. The hosted Playwright client speaks CDP through the relay to the loopback Chrome instance.
+
+That means Trevra can control the **dedicated companion Chrome window** while the relay is active. The product and CLI therefore tell the user to keep unrelated private browsing out of that profile. The companion does not attach to the user's normal Chrome profile.
+
+The companion provider deliberately differs from a cloud browser in three ways:
+
+1. **No residential proxy is required or applied.** The point is to use the member computer's own network/IP.
+2. **No `storageState` is restored from or exported to PostgreSQL.** Chrome's local persistent profile is the session.
+3. **The existing persistent CDP context is used.** Trevra does not create a fresh cloud-style context for every sitting.
+
+The reverse relay is in-memory on the API process. Oracle's current one-API-instance topology therefore needs no shared relay state. A future horizontally scaled API would need sticky companion WebSockets or a shared relay coordinator before this assumption changes.
+
+## Server routes
+
+Browser-session routes remain ordinary authenticated LinkedIn routes. Companion management adds:
+
+```text
+POST   /api/linkedin/companion/exchange       one-time CLI pairing exchange
+GET    /api/linkedin/companion                devices + website presence
+POST   /api/linkedin/companion/pair           owner-only pairing code
+DELETE /api/linkedin/companion/devices/:id    owner-only revoke
+POST   /api/linkedin/companion/presence       signed-in website heartbeat
+```
+
+WebSockets:
+
+```text
+/api/linkedin/companion/socket                 public outbound laptop connection
+/api/linkedin/companion/browser/:workspace/:seat  private worker-side CDP connection
+```
+
+The private browser WebSocket uses a relay credential derived with HMAC from `TREVRA_SECRETS_KEY`; that credential is never sent to the laptop.
+
+## Oracle configuration
+
+The two-micro Oracle app Compose file sets:
+
+```env
+TREVRA_COMPANION_RELAY_URL=ws://trevra:8080
+```
+
+for the API and worker. This is a private Compose-network address. The user's CLI reaches `/api/linkedin/companion/socket` through the existing Cloudflare Tunnel and needs no inbound port on Oracle or the laptop.
+
+## npm package
+
+The publishable package lives in `packages/trevra-cli` and owns the public `trevra` binary.
+
+Release checks:
+
+```bash
+cd packages/trevra-cli
+npm pack --dry-run
+npm publish --access public
+```
+
+The intended command is:
+
+```bash
+npx trevra linkedin
+```
+
+The repository root remains `"private": true`; publishing must be performed from `packages/trevra-cli`, never from the application root.

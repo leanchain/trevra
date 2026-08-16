@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { browserProviderSettings } from './browser/provider.js';
-
+import { companionBrowserConfigured } from './linkedin/companion.js';
 const booleanString = z.enum(['true', 'false']);
 const optionalUrl = z.preprocess(
   (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
@@ -73,23 +73,15 @@ export interface RuntimeConfig {
   automationIntervalMs: number;
   appOrigins: string[];
   /**
-   * The self-hosted LinkedIn worker (docs/linkedin-outreach-plan.md §4.3).
+   * LinkedIn browser execution.
    *
-   * FAILS CLOSED WHERE IT MATTERS, AND ONLY THERE. `hosted` is the gate this
-   * exists for and it is unconditional: a hosted, multi-tenant Trevra taking
-   * custody of one human's LinkedIn session is the exposure the whole design
-   * avoids, so no environment variable can turn it back on.
-   *
-   * Everywhere else it defaults ON, because the only deployment that can use
-   * this is a self-hoster on their own machine, automating their own account,
-   * with Trevra never holding a credential (§4.1) -- and an opt-in flag bought
-   * nothing but a checklist step. `TREVRA_LINKEDIN_LOCAL=false` still turns it
-   * off for a self-hoster who wants it off.
-   *
-   * `hosted` rides along so the one-line refusals downstream can say WHY it is
-   * off without re-reading the environment.
+   * A local deployment may open its own browser. A hosted deployment may use
+   * either an explicitly configured cloud provider or the paired member
+   * computer from `docs/linkedin-companion.md`; without either, its bundled
+   * worker stays off. `TREVRA_LINKEDIN_LOCAL=false` remains the explicit master
+   * off switch on every execution home.
    */
-  linkedinLocalWorker: { enabled: boolean; profileDir: string | null; hosted: boolean; remoteBrowser: boolean; headless: boolean };
+  linkedinLocalWorker: { enabled: boolean; profileDir: string | null; hosted: boolean; remoteBrowser: boolean; companionBrowser: boolean; headless: boolean };
   /**
    * The self-hosted Reddit worker, on exactly the terms above.
    *
@@ -134,53 +126,29 @@ export function linkedInWorkerConfig(env: NodeJS.ProcessEnv = process.env): Runt
     TREVRA_LINKEDIN_PROFILE_DIR: z.string().optional()
   }).parse(env);
   const hosted = parsed.TREVRA_DEPLOYMENT_MODE === 'hosted';
-  // THIS FLAG IS STILL ABOUT ONE THING: may THIS PROCESS open a browser of its
-  // own, on ITS OWN disk, right here? A hosted container has no display, no
-  // Chromium and no profile directory belonging to the person whose account it
-  // is, so on a hosted deployment with no remote provider the only browser
-  // this process could open is nobody's -- that stays a hard no, and it is what
-  // keeps a hosted deployment's own bundled worker (`src/worker/index.ts`)
-  // from ever trying to sign into a tenant's LinkedIn account from inside the
-  // datacenter container.
-  //
-  // IT DOES NOT SPEAK FOR AN OPERATOR'S OWN CLIENT-SIDE WORKER. Running `npm
-  // run linkedin:worker` on a machine that DOES have a display, pointed at a
-  // hosted deployment's database, is a SEPARATE process reading its OWN
-  // environment -- and unless THAT process's own TREVRA_DEPLOYMENT_MODE is
-  // 'hosted' too, this function answers `enabled: true` for it exactly as it
-  // would for a self-hoster, with no change here required. What changed is
-  // only credential custody (`hostedExecutionGate` in
-  // `linkedin/hosted-execution.ts`): a hosted deployment with no remote
-  // provider now stores and reads a workspace's LinkedIn credential the same
-  // as local does, because THAT capability was never actually about where a
-  // browser runs.
+  // Browser HOME and deployment mode are separate facts. A hosted process may
+  // not launch a tenant browser on its own disk, but it may attach to a cloud
+  // browser or to a paired member computer. The latter is intentionally not
+  // reported as `remoteBrowser`: cloud execution has different proxy/session/
+  // consent rules, while the companion uses the member's own network and local
+  // persistent profile.
   const remoteBrowser = browserProviderSettings(env).kind === 'remote';
+  const companionBrowser = hosted && !remoteBrowser && companionBrowserConfigured(env);
   return {
-    enabled: (!hosted || remoteBrowser) && parsed.TREVRA_LINKEDIN_LOCAL !== 'false',
+    // Hosted execution can now have either of two remote homes: a cloud browser
+    // (explicitly authorised per workspace) or the workspace member's paired
+    // computer. The latter is still remote from this process, but LinkedIn
+    // traffic and the persistent browser profile stay on the member's machine.
+    enabled: (!hosted || remoteBrowser || companionBrowser) && parsed.TREVRA_LINKEDIN_LOCAL !== 'false',
     profileDir: parsed.TREVRA_LINKEDIN_PROFILE_DIR ?? null,
     hosted,
     remoteBrowser,
-    // MAY THIS PROCESS OPEN A BROWSER NOBODY CAN SEE? Default yes, because a
-    // hosted deployment with a remote browser is headless by definition and a
-    // container that is the ONLY worker is better than no worker. Set false on
-    // the container in a stack where the operator runs `npm run
-    // linkedin:worker` on their own machine: the container then parks the work
-    // for the machine with a display instead of racing it from a GPU-less
-    // container with a SwiftShader WebGL fingerprint. See
-    // `LinkedInLocalWorkerConfig.headless`.
+    companionBrowser,
     headless: parsed.TREVRA_LINKEDIN_HEADLESS !== 'false'
   };
 }
 
-/**
- * Just the Reddit worker's slice of the environment.
- *
- * Split out for the same reason as {@link linkedInWorkerConfig}: the host-side
- * CLI (`npm run reddit:worker`) needs this rule and nothing else, and making an
- * operator supply a DATABASE_URL before they are allowed to open a browser
- * would be a config error standing between them and the one thing they are
- * trying to do. ONE definition of the gate, read from two places.
- */
+/** The Reddit worker remains local-only; the LinkedIn companion does not widen it. */
 export function redditWorkerConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig['redditLocalWorker'] {
   requireExplicitDeploymentMode(env);
   const parsed = z.object({

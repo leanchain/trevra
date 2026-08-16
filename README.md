@@ -80,6 +80,16 @@ codex mcp add trevra \
 
 Complete setup, CLI commands, API routes, scopes, and operating boundaries are documented in [`docs/agent-operation.md`](docs/agent-operation.md).
 
+## Hosted LinkedIn from your own computer
+
+Hosted Trevra can run LinkedIn through a Chrome profile on the workspace member's own computer instead of a datacenter browser. Pair once from **Outreach → LinkedIn accounts**, then keep this running while outreach should be eligible:
+
+```bash
+npx trevra linkedin
+```
+
+LinkedIn traffic uses that computer's normal network/IP, the persistent browser profile and cookies stay on that computer, and hosted Trevra does not need the LinkedIn password for this path. A signed-in Trevra tab must also remain open; if the laptop or website disappears, due work stays queued. Returning runs one normal bounded sitting rather than replaying missed timer ticks. See [`docs/linkedin-companion.md`](docs/linkedin-companion.md).
+
 ## Fastest local start
 
 Requirements:

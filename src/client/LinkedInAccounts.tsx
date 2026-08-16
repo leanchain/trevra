@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import {
   Check,
   CircleAlert,
   CircleStop,
+  Copy,
   KeyRound,
+  Laptop,
   Linkedin,
   LoaderCircle,
   LogIn,
@@ -18,19 +20,24 @@ import {
 } from 'lucide-react';
 import {
   ApiError,
+  createLinkedInCompanionPairing,
   createLinkedInManagerSeat,
   deleteLinkedInCredentials,
   deleteLinkedInSeat,
   detectLinkedInSeat,
+  getLinkedInCompanionStatus,
   getLinkedInLimits,
   getLinkedInManagerSeats,
   getLinkedInSeat,
   getLinkedInWorkerStatus,
   loginLinkedInSeat,
+  markLinkedInCompanionPresence,
   pauseLinkedInSeat,
   resumeLinkedInSeat,
+  revokeLinkedInCompanionDevice,
   saveLinkedInCredentials,
   updateLinkedInManagerSeat,
+  type LinkedInCompanionStatus,
   type LinkedInDetectedProfile,
   type LinkedInLimitsReport,
   type LinkedInSeat,
@@ -461,6 +468,11 @@ function accountState(account: LinkedInSeat, detail: LinkedInSeatResponse | null
   const posture = detail?.posture ?? account.posture;
   if (posture === 'paused') return 'paused';
   if (posture === 'cooldown') return 'cooling-down';
+  // A companion browser may be signed in without Trevra ever holding a
+  // LinkedIn password. A confirmed session is therefore the strongest fact and
+  // outranks credential custody; stored credentials without a confirmed
+  // session still mean the account needs sign-in.
+  if (detail?.auth.sessionValidAt) return posture === 'warmup' ? 'easing-in' : 'connected';
   if (!detail?.auth.hasCredentials) return 'not-connected';
   if (!detail.auth.sessionValidAt) return 'needs-signin';
   return posture === 'warmup' ? 'easing-in' : 'connected';
@@ -501,6 +513,141 @@ function Wall({ title, message, children }: { title: string; message?: string; c
     {message && <p className="li-blocked-message">{message}</p>}
     {children}
   </div>;
+}
+
+/* -------------------------------------------------------------------------
+ * The paired computer: hosted Trevra, local LinkedIn browser.
+ * ---------------------------------------------------------------------- */
+
+function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
+  const [status, setStatus] = useState<LinkedInCompanionStatus | null>(null);
+  const [pairing, setPairing] = useState<{ code: string; expiresAt: string; command: string } | null>(null);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const hadDevice = useRef(false);
+
+  const load = useCallback(async () => {
+    try {
+      const next = await getLinkedInCompanionStatus();
+      setStatus(next);
+      setError('');
+      if (next.devices.length > 0) {
+        // Only the workspace owner can turn browser presence into executable
+        // LinkedIn presence. Members can see which computer is online without
+        // being able to start it indirectly by keeping this screen open.
+        if (next.canManage) {
+          void markLinkedInCompanionPresence().catch(() => undefined);
+          if (!hadDevice.current) {
+            hadDevice.current = true;
+            window.dispatchEvent(new Event('trevra:linkedin-companion-changed'));
+          }
+        }
+      } else {
+        hadDevice.current = false;
+      }
+    } catch (cause) {
+      setError(errorMessage(cause, 'Unable to read connected computers.'));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  const pair = async () => {
+    setBusy('pair');
+    setError('');
+    try {
+      const created = await createLinkedInCompanionPairing();
+      setPairing(created);
+    } catch (cause) {
+      setError(errorMessage(cause, 'Unable to create a pairing code.'));
+    } finally { setBusy(''); }
+  };
+
+  const copy = async () => {
+    if (!pairing) return;
+    try {
+      await navigator.clipboard.writeText(pairing.command);
+      setToast('Companion command copied. Run it in Terminal on the computer that should use LinkedIn.');
+    } catch {
+      setToast('Copy was blocked by the browser. Select the command and copy it manually.');
+    }
+  };
+
+  const revoke = async (deviceId: string, label: string) => {
+    setBusy(deviceId);
+    setError('');
+    try {
+      await revokeLinkedInCompanionDevice(deviceId);
+      setToast(`${label} disconnected. It can no longer lend Trevra a LinkedIn browser.`);
+      window.dispatchEvent(new Event('trevra:linkedin-companion-changed'));
+      await load();
+    } catch (cause) {
+      setError(errorMessage(cause, 'Unable to disconnect that computer.'));
+    } finally { setBusy(''); }
+  };
+
+  const online = status?.devices.find((device) => device.online) ?? null;
+  return <section className="page-panel li-companion-panel">
+    <div className="section-heading">
+      <div>
+        <h3 aria-level={2}>Run LinkedIn from your computer</h3>
+        <p>
+          Recommended for hosted Trevra. LinkedIn opens in Chrome on your computer and uses your normal internet
+          connection and IP. Trevra keeps the campaign queue and safety rules; your LinkedIn browser profile stays on this computer.
+        </p>
+      </div>
+      <Laptop size={20} className="li-heading-icon" />
+    </div>
+
+    {error && <div className="error-banner">{error}</div>}
+
+    <div className="li-companion-status">
+      <span className={`li-acct-state ${online ? 'li-acct-state-ok' : 'li-acct-state-off'}`}>
+        <i className={`li-acct-dot ${online ? 'li-acct-dot-ok' : 'li-acct-dot-off'}`} aria-hidden="true" />
+        {online ? `${online.label} online` : 'No paired computer online'}
+      </span>
+      {status?.devices.length ? <span className="li-hint">
+        {status.websitePresent ? 'This Trevra tab is keeping LinkedIn work active.' : 'Keep this Trevra tab open to allow a cycle.'}
+      </span> : null}
+    </div>
+
+    {status && status.devices.length > 0
+      ? <div className="li-companion-devices">
+        {status.devices.map((device) => <div className="li-companion-device" key={device.id}>
+          <div>
+            <strong>{device.label}</strong>
+            <small>{device.online ? 'Online now' : device.lastSeenAt ? `Last seen ${relativeTime(device.lastSeenAt)}` : 'Never connected'}</small>
+          </div>
+          {status.canManage && <button className="ghost-button danger" type="button" disabled={busy === device.id} onClick={() => void revoke(device.id, device.label)}>
+            {busy === device.id ? <LoaderCircle className="spin" size={13} /> : <Unplug size={13} />} Disconnect
+          </button>}
+        </div>)}
+      </div>
+      : <p className="empty-copy">Pair the computer whose browser and network you normally use for LinkedIn.</p>}
+
+    {!status?.canManage && <p className="panel-note">Only the workspace owner can pair a computer or enable LinkedIn execution from it.</p>}
+
+    {status?.canManage && pairing ? <div className="li-companion-command">
+      <div>
+        <strong>Run this once in Terminal</strong>
+        <p>The code expires {relativeTime(pairing.expiresAt)}. The long device token is created only after this one-time code is exchanged and is never shown in Trevra.</p>
+      </div>
+      <code>{pairing.command}</code>
+      <button className="secondary-button" type="button" onClick={() => void copy()}><Copy size={14} /> Copy command</button>
+    </div> : status?.canManage ? <button className="primary-button" type="button" disabled={busy === 'pair'} onClick={() => void pair()}>
+      {busy === 'pair' ? <LoaderCircle className="spin" size={14} /> : <Laptop size={14} />} Connect this computer
+    </button> : null}
+
+    <p className="panel-note">
+      Leave <b>both</b> the companion command and Trevra open. If either disappears, no new LinkedIn cycle is claimed.
+      The companion Chrome profile is dedicated to LinkedIn and Trevra can control that window while connected, so do not use it for email, banking or other private sites.
+      When you return after being offline, Trevra runs one normal bounded sitting and then resumes the ordinary schedule — missed timer ticks are never replayed as a burst.
+    </p>
+  </section>;
 }
 
 /* -------------------------------------------------------------------------
@@ -613,6 +760,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
     </div>}
 
     <WorkerNotice worker={worker} />
+    {worker?.companionBrowser && <CompanionPanel setToast={setToast} />}
 
     {accounts === null
       ? <section className="page-panel"><p className="empty-copy">{loading ? 'Reading your LinkedIn accounts…' : 'No data.'}</p></section>
@@ -682,7 +830,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
                     <i className={`li-acct-dot li-acct-dot-${STATE_TONES[state]}`} aria-hidden="true" />
                     <strong>{account.label}</strong>
                   </span>
-                  <small>{detail?.auth.maskedEmail ?? 'No sign-in stored'}</small>
+                  <small>{detail?.auth.maskedEmail ?? (detail?.auth.sessionValidAt ? 'Local browser session' : 'No confirmed session')}</small>
                   <small className="li-acct-tab-state">{isActive ? 'Working in this account' : STATE_LABELS[state]}</small>
                 </button>;
               })}
@@ -706,6 +854,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
             account={active}
             detail={details[active.seatKey] ?? null}
             safety={safety}
+            companion={Boolean(worker?.companionBrowser)}
             setToast={setToast}
             onChanged={load}
             onRemoved={() => { setActiveKey(OWNER_ACCOUNT_KEY); void load(); }}
@@ -777,11 +926,13 @@ function WorkerNotice({ worker }: { worker: LinkedInWorkerStatus | null }) {
  * The active account: connect it, read it, change it, stop it, remove it.
  * ---------------------------------------------------------------------- */
 
-function AccountPanel({ account, detail, safety, setToast, onChanged, onRemoved }: {
+function AccountPanel({ account, detail, safety, companion, setToast, onChanged, onRemoved }: {
   account: LinkedInSeat;
   detail: LinkedInSeatResponse | null;
   /** Ranges, bands and the campaign ramp. Null while loading, or if that read failed. */
   safety: LinkedInLimitsReport | null;
+  /** Hosted execution through the paired member computer, with local browser-session custody. */
+  companion: boolean;
   setToast: (message: string) => void;
   onChanged: () => Promise<void>;
   onRemoved: () => void;
@@ -825,7 +976,8 @@ function AccountPanel({ account, detail, safety, setToast, onChanged, onRemoved 
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
 
-  const connected = Boolean(auth?.hasCredentials) && stage === 'credentials';
+  const connected = Boolean(auth?.sessionValidAt) && stage === 'credentials';
+  const storedSignIn = Boolean(auth?.hasCredentials) && stage === 'credentials';
 
   /**
    * A read queued for somebody else's machine.
@@ -1010,11 +1162,10 @@ function AccountPanel({ account, detail, safety, setToast, onChanged, onRemoved 
 
       {blocked && <Wall title="One thing has to happen on your own machine first." message={blocked} />}
 
-      {queued && <Wall title="Waiting on your own worker.">
-        <p>
-          This server cannot open a browser, so the read is parked for the Trevra worker running on your machine.
-          It runs on the next tick and this panel updates itself — leave it open.
-        </p>
+      {queued && <Wall title={companion ? 'Waiting for your connected computer.' : 'Waiting on your own worker.'}>
+        <p>{companion
+          ? 'Keep this Trevra tab and `npx trevra linkedin` open. The pending read stays queued while either is offline and is picked up by the next normal cycle when both are back.'
+          : 'This server cannot open a browser, so the read is parked for the Trevra worker running on your machine. It runs on the next tick and this panel updates itself — leave it open.'}</p>
       </Wall>}
 
       {request?.status === 'failed' && request.failureReason && <Wall
@@ -1039,7 +1190,7 @@ function AccountPanel({ account, detail, safety, setToast, onChanged, onRemoved 
         <dl className="li-seat-facts">
           <div>
             <dt>Signs in as</dt>
-            <dd>{auth?.maskedEmail ?? <span className="li-unknown">Not connected</span>}</dd>
+            <dd>{auth?.maskedEmail ?? (auth?.sessionValidAt ? 'Local browser session' : <span className="li-unknown">Not connected</span>)}</dd>
           </div>
           <div>
             <dt>LinkedIn profile</dt>
@@ -1097,15 +1248,35 @@ function AccountPanel({ account, detail, safety, setToast, onChanged, onRemoved 
         ? <div className="li-signin-row">
           <span className="li-signin-id"><Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}</span>
           <span>{auth?.sessionValidAt
-            ? `Session confirmed ${relativeTime(auth.sessionValidAt)}`
+            ? `${companion ? 'Browser session' : 'Session'} confirmed ${relativeTime(auth.sessionValidAt)}`
             : 'No session yet — the sign-in has not completed.'}</span>
           <div className="li-signin-actions">
-            {!auth?.sessionValidAt && <button
-              className="secondary-button"
-              type="button"
-              disabled={signingIn}
-              onClick={() => void attempt(() => runLogin())}
-            >{signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />} Sign in</button>}
+            {auth?.hasCredentials && <button className="ghost-button danger" type="button" disabled={forgetting} onClick={() => void forgetSignIn()}>
+              {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />} Forget stored password
+            </button>}
+          </div>
+        </div>
+        : companion ? <div className="li-dryrun li-acct-promise">
+          <Laptop size={20} />
+          <div>
+            <strong>No LinkedIn password is needed in Trevra.</strong>
+            <p>
+              Keep <code>npx trevra linkedin</code> running, sign into LinkedIn in the Chrome window it opens on your computer,
+              then use <b>Check this account on LinkedIn</b> below. The browser profile and cookies stay on that computer;
+              LinkedIn sees that computer&rsquo;s normal network and IP.
+            </p>
+            {auth?.hasCredentials && <button className="ghost-button danger" type="button" disabled={forgetting} onClick={() => void forgetSignIn()}>
+              {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />} Remove the old stored password
+            </button>}
+          </div>
+        </div>
+        : storedSignIn ? <div className="li-signin-row">
+          <span className="li-signin-id"><Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}</span>
+          <span>The password is stored, but no live session has been confirmed yet.</span>
+          <div className="li-signin-actions">
+            <button className="secondary-button" type="button" disabled={signingIn} onClick={() => void attempt(() => runLogin())}>
+              {signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />} Sign in
+            </button>
             <button className="ghost-button danger" type="button" disabled={forgetting} onClick={() => void forgetSignIn()}>
               {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />} Forget this sign-in
             </button>
@@ -1312,7 +1483,7 @@ function AccountsTable({ accounts, details, reports, activeKey, onSelect }: {
                 <button className="li-acct-pick" type="button" onClick={() => onSelect(account.seatKey)}>
                   {account.label}
                 </button>
-                <small className="li-acct-row-mail">{detail?.auth.maskedEmail ?? 'No sign-in stored'}</small>
+                <small className="li-acct-row-mail">{detail?.auth.maskedEmail ?? (detail?.auth.sessionValidAt ? 'Local browser session' : 'No confirmed session')}</small>
               </td>
               <td>
                 <span className={`li-acct-state li-acct-state-${STATE_TONES[state]}`}>

@@ -63,7 +63,8 @@ const server=app.listen(runtime.port,()=>console.log(`Trevra worker health liste
   const mode=hostedExecutionMode();
   if(mode.problem)console.error(`LinkedIn hosted execution is misconfigured: ${mode.problem}`);
   else if(mode.available)console.log(`LinkedIn seats run server-side through ${mode.provider}, for workspaces that have authorised it. Every other safety gate is unchanged.`);
-  else if(mode.hosted)console.log('LinkedIn execution is off on this hosted deployment: no remote browser is configured, so planned actions wait for a worker that can open one.');
+  else if(mode.hosted&&runtime.linkedinLocalWorker.companionBrowser)console.log('LinkedIn companion execution is enabled: a workspace is served only while its paired computer and a signed-in Trevra tab are both present. LinkedIn traffic leaves from that computer.');
+  else if(mode.hosted)console.log('LinkedIn execution is off on this hosted deployment: no cloud browser or companion relay is configured, so planned actions wait for a worker that can open one.');
 }
 
 // A cycle already in flight when a signal arrives is allowed to finish; no NEW
@@ -135,7 +136,7 @@ async function linkedinCycle():Promise<void>{
   // not open and a halted batch are all outcomes they report. This catch is
   // for the case they are wrong about that.
   try{
-    await runPendingSeatDetectRequests(db,runtime.linkedinLocalWorker,{shard:linkedinShard});
+    await runPendingSeatDetectRequests(db,runtime.linkedinLocalWorker,{shard:linkedinShard,...(allowSeat?{allowSeat}:{})});
     await runDueLinkedInActions(db,runtime.linkedinLocalWorker,{shard:linkedinShard,workerId:linkedinWorkerId,...(allowSeat?{allowSeat}:{})});
     // THE SEND QUEUE FIRST, THE REST AFTER, and the order is the point: the
     // invite/DM/reply/engagement queue is the only work with a paced SLOT

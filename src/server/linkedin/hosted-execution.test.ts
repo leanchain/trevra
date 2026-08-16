@@ -16,6 +16,7 @@ import {
   revokeHostedExecutionAck
 } from './hosted-execution.js';
 import { claimSeatLease, isRemoteSessionHome, remoteSessionHome, seatSessionHome } from './local-worker.js';
+import { createCompanionPairing, exchangeCompanionPairing, markCompanionWebsitePresence } from './companion.js';
 
 /**
  * WHEN TREVRA'S OWN SERVERS MAY ACT ON SOMEBODY'S LINKEDIN ACCOUNT.
@@ -52,6 +53,11 @@ const HOSTED_WITH_BROWSER = {
 
 /** A hosted deployment as they all were until now: nothing to drive. */
 const HOSTED_NO_BROWSER = { TREVRA_DEPLOYMENT_MODE: 'hosted' } as NodeJS.ProcessEnv;
+const HOSTED_WITH_COMPANION = {
+  TREVRA_DEPLOYMENT_MODE: 'hosted',
+  TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080',
+  TREVRA_SECRETS_KEY: Buffer.alloc(32, 5).toString('base64')
+} as NodeJS.ProcessEnv;
 
 let db: Db;
 let profileDir: string;
@@ -63,6 +69,9 @@ beforeEach(async () => {
       .run(id, 'Hosted execution test', NOW.toISOString());
     await db.prepare('DELETE FROM linkedin_hosted_execution_ack WHERE workspace_id=?').run(id);
     await db.prepare('DELETE FROM linkedin_seat_leases WHERE workspace_id=?').run(id);
+    await db.prepare('DELETE FROM linkedin_companion_presence WHERE workspace_id=?').run(id);
+    await db.prepare('DELETE FROM linkedin_companion_devices WHERE workspace_id=?').run(id);
+    await db.prepare('DELETE FROM linkedin_companion_pairings WHERE workspace_id=?').run(id);
   }
   // A profile directory with CONTENT in it: an empty one is not a session, and
   // `seatProfilePresent` is what tells them apart.
@@ -96,6 +105,24 @@ describe('the hosted execution gate', () => {
     expect(filter).not.toBeNull();
     expect(await filter!({ workspaceId: WORKSPACE_ID })).toBe(true);
     expect(await filter!({ workspaceId: OTHER_WORKSPACE_ID })).toBe(true);
+  });
+
+  it('gates the paired-computer runner on live computer + website presence instead of cloud consent', async () => {
+    const filter = hostedSeatFilter(db, HOSTED_WITH_COMPANION);
+    expect(filter).not.toBeNull();
+    expect(await filter!({ workspaceId: WORKSPACE_ID })).toBe(false);
+
+    const liveNow = new Date();
+    const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_1', now: liveNow });
+    await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: liveNow });
+    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_1', liveNow);
+
+    // Rebuild the filter: it intentionally memoises one tick, so a workspace
+    // coming online is picked up on the next worker tick rather than changing a
+    // decision underneath a pass already in flight.
+    const nextTick = hostedSeatFilter(db, HOSTED_WITH_COMPANION);
+    expect(await nextTick!({ workspaceId: WORKSPACE_ID })).toBe(true);
+    expect(await nextTick!({ workspaceId: OTHER_WORKSPACE_ID })).toBe(false);
   });
 
   it('refuses a hosted workspace that has not acknowledged, and names the next action', async () => {

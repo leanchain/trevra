@@ -2837,6 +2837,54 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-acct-remove { margin-left: auto; }
 .li-acct-error { margin-bottom: 12px; }
 
+/* Hosted LinkedIn companion: one computer, one outbound tunnel, no account
+   cookies copied into the hosted app. Keep the status and command readable on
+   a phone without turning a terminal command into page-width overflow. */
+.li-companion-panel { gap: 14px; }
+.li-companion-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.li-companion-status .li-hint { margin: 0; }
+.li-companion-devices { display: grid; gap: 8px; }
+.li-companion-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+}
+.li-companion-device > div { display: grid; gap: 3px; min-width: 0; }
+.li-companion-device small { color: var(--muted); font-size: var(--t-text-xs); }
+.li-companion-command {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.li-companion-command > div { grid-column: 1 / -1; }
+.li-companion-command p { max-width: var(--t-measure); margin: 4px 0 0; color: var(--muted); font-size: var(--t-text-xs); }
+.li-companion-command code {
+  display: block;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 9px 10px;
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+  font-size: var(--t-text-xs);
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .li-companion-command { grid-template-columns: 1fr; align-items: stretch; }
+  .li-companion-command > div { grid-column: auto; }
+  .li-companion-device { align-items: flex-start; flex-direction: column; }
+}
+
 /* Usage against a ceiling, inside a table cell: the number is the answer and
    the bar is only its shape, so the bar is 3px and carries no label. */
 .li-acct-usage {

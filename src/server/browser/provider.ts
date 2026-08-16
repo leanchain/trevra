@@ -91,18 +91,7 @@ export type BrowserProviderKind = 'local' | 'remote';
 export type RemoteConnectProtocol = 'cdp' | 'playwright';
 
 export interface RemoteBrowserSettings {
-  /**
-   * The connect URL, with placeholders still in it.
-   *
-   * Substituted per session by {@link resolveRemoteEndpoint}:
-   *   {apiKey}         the configured key, URL-encoded
-   *   {proxyUrl}       the whole proxy URL including credentials, URL-encoded
-   *   {proxyServer}    scheme://host:port, URL-encoded
-   *   {proxyUsername}  URL-encoded
-   *   {proxyPassword}  URL-encoded
-   *   {workspace}      the workspace id, URL-encoded
-   *   {seat}           the seat key, URL-encoded
-   */
+  /** Connect URL template; per-session placeholders are resolved by {@link resolveRemoteEndpoint}. */
   endpointTemplate: string;
   apiKey: string | null;
   connect: RemoteConnectProtocol;
@@ -110,20 +99,21 @@ export interface RemoteBrowserSettings {
   headers: Record<string, string>;
   /** What to call this provider in an operator-facing sentence. */
   label: string;
+  /** Cloud browsers require a residential proxy; a companion already exits from the member's own network. */
+  requireProxy?: boolean;
+  /** Cloud sessions round-trip through Postgres; a companion keeps its Chrome profile on the member's disk. */
+  sessionPersistence?: 'server' | 'browser';
+  /** A companion exposes Chrome's already-running persistent default context. */
+  useExistingContext?: boolean;
 }
 
 export interface BrowserProviderSettings {
   kind: BrowserProviderKind;
   /** Present exactly when `kind === 'remote'`. */
   remote: RemoteBrowserSettings | null;
-  /**
-   * Why remote was asked for and is not configured. Non-null ONLY when the
-   * operator selected remote and the settings do not hold together -- so a
-   * caller can refuse with a sentence instead of silently running local.
-   */
+  /** Why remote was asked for and is not configured. */
   problem: string | null;
 }
-
 export const PROVIDER_ENV = 'TREVRA_BROWSER_PROVIDER';
 export const ENDPOINT_ENV = 'TREVRA_BROWSER_CDP_URL';
 export const API_KEY_ENV = 'TREVRA_BROWSER_API_KEY';
@@ -202,7 +192,6 @@ export function browserProviderSettings(env: NodeJS.ProcessEnv = process.env): B
   if (apiKey && !endpoint.includes('{apiKey}') && !Object.keys(headers).some((name) => /^(authorization|x-api-key)$/i.test(name))) {
     headers = { ...headers, 'x-api-key': apiKey };
   }
-
   return {
     kind: 'remote',
     remote: {
@@ -210,18 +199,19 @@ export function browserProviderSettings(env: NodeJS.ProcessEnv = process.env): B
       apiKey,
       connect: connectRaw,
       headers,
-      label: (env[LABEL_ENV] ?? '').trim() || parsed.host
+      label: (env[LABEL_ENV] ?? '').trim() || parsed.host,
+      requireProxy: true,
+      sessionPersistence: 'server',
+      useExistingContext: false
     },
     problem: null
   };
 }
 
-/** True when this deployment has a usable remote browser. The one question `config.ts` asks. */
+/** True when this deployment has a usable remote browser. */
 export function remoteBrowserConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
   return browserProviderSettings(env).kind === 'remote';
 }
-
-/** The proxy shape, repeated here so this module needs no LinkedIn import. */
 export interface ProviderProxy {
   server: string;
   username?: string;
@@ -459,9 +449,7 @@ async function openLocalSeatBrowser(
  * with no way to deliver it is REFUSED, not run: silently connecting anyway is
  * exactly the outcome the whole gate exists to prevent.
  *
- * `chromium.connect` (the Playwright server protocol) is different: the remote
- * launches per connection, so `newContext({ proxy })` is honoured there and no
- * placeholder is needed.
+ * `chromium.connect` (the Playwright server protocol) is different: the remote launches per connection and may accept a context proxy.
  */
 async function openRemoteSeatBrowser(
   driver: ProviderDriver,
@@ -469,10 +457,11 @@ async function openRemoteSeatBrowser(
   request: SeatBrowserRequest,
   log: (message: string) => void
 ): Promise<OpenSeatBrowserResult> {
-  if (!request.proxy) return { refused: noProxyRefusal(remote.label, request.seatKey) };
+  const requireProxy = remote.requireProxy !== false;
+  if (requireProxy && !request.proxy) return { refused: noProxyRefusal(remote.label, request.seatKey) };
 
   const proxyTravelsInUrl = endpointCarriesProxy(remote.endpointTemplate);
-  if (remote.connect === 'cdp' && !proxyTravelsInUrl) {
+  if (requireProxy && remote.connect === 'cdp' && !proxyTravelsInUrl) {
     return {
       refused:
         `Seat '${request.seatKey}' has a proxy and ${remote.label} was given no way to use it, so it will not be run. `
@@ -504,57 +493,50 @@ async function openRemoteSeatBrowser(
       timeout: 60_000
     });
   } catch (cause) {
-    // The ENDPOINT IS REDACTED: it carries the API key and, when the operator
-    // used {proxyUrl}, the proxy password too.
     return { refused: `Could not attach to ${remote.label} at ${redactEndpoint(remote.endpointTemplate)}: ${describe(cause)}.` };
   }
 
   try {
-    const context = await browser.newContext({
+    // A companion launches Chrome with a persistent user-data-dir. Its default
+    // CDP context is therefore the session and remains local to that computer.
+    // A cloud provider starts empty and gets a new context restored from the
+    // server-side encrypted storage state.
+    const existingContext = remote.useExistingContext ? browser.contexts?.()[0] ?? null : null;
+    const context = existingContext ?? await browser.newContext({
       viewport: request.fingerprint.viewport,
       userAgent: request.fingerprint.userAgent,
       locale: request.fingerprint.locale,
       timezoneId: request.fingerprint.timezoneId,
-      // Honoured by the Playwright server protocol, where the remote launches
-      // per connection. Passed only there: on a CDP attach it is silently
-      // ignored, and a silently ignored proxy is the thing the gate above
-      // exists to make impossible.
       ...(remote.connect === 'playwright' && request.proxy ? { proxy: request.proxy } : {}),
-      // THE SESSION, RESTORED BEFORE THE FIRST REQUEST. There is no profile
-      // directory out here; this is the entire reason the seat is still signed
-      // in after a worker restart.
-      ...(request.storageState ? { storageState: request.storageState } : {})
+      ...(request.storageState && remote.sessionPersistence !== 'browser' ? { storageState: request.storageState } : {})
     });
     const page = context.pages()[0] ?? (await context.newPage());
     log(
       `LinkedIn seat browser is remote: attached to ${remote.label} at ${redactEndpoint(remote.endpointTemplate)}`
-      + `${request.storageState ? ' and restored this seat\'s stored session' : ' with no stored session, so it must sign in'}.`
+      + (remote.sessionPersistence === 'browser'
+        ? ' and is using the persistent session on that computer.'
+        : `${request.storageState ? ' and restored this seat\'s stored session' : ' with no stored session, so it must sign in'}.`)
     );
     return {
       session: {
         kind: 'remote',
         context,
         page,
-        exportStorageState: async () => {
-          if (typeof context.storageState !== 'function') return null;
-          return context.storageState();
-        },
+        exportStorageState: remote.sessionPersistence === 'browser'
+          ? null
+          : async () => {
+            if (typeof context.storageState !== 'function') return null;
+            return context.storageState();
+          },
         channel: null,
         close: async () => {
-          // The context first, so the state is still readable up to the moment
-          // the caller stops asking; then the browser, because a connection
-          // left open is a metered session left running.
-          await closeQuietly(context);
+          if (!remote.useExistingContext) await closeQuietly(context);
           await browser.close();
         }
       }
     };
   } catch (cause) {
-    try {
-      await browser.close();
-    } catch {
-      // Already gone, or never really there. Not a reason to withhold the answer.
-    }
+    try { await browser.close(); } catch { /* already gone */ }
     return { refused: `Attached to ${remote.label} but could not prepare a context for seat '${request.seatKey}': ${describe(cause)}.` };
   }
 }

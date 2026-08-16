@@ -7,6 +7,7 @@ import { backfillWorkspaceOrganizations, closeAuthDatabase, migrateAuthDatabase 
 import { validateEnvironment } from './config.js';
 import { assertHostedDataReady } from './hosted-readiness.js';
 import { getSiteConfig, renderAppIndex, renderNotFoundPage } from './public-site.js';
+import { installLinkedInCompanionRelay } from './linkedin/companion-relay.js';
 
 const runtime = validateEnvironment();
 const port = runtime.port;
@@ -121,6 +122,7 @@ if (process.env.NODE_ENV === 'production') {
 const server = app.listen(port, () => {
   console.log(`Trevra API listening on http://localhost:${port}`);
 });
+installLinkedInCompanionRelay(server, db);
 
 async function shutdown(signal: string) {
   console.log(`${signal} received; shutting down`);

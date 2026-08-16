@@ -974,17 +974,10 @@ export interface LinkedInSeatAuth {
 /** Also declared rather than imported: the handler builds this object inline. */
 export interface LinkedInWorkerStatus {
   enabled: boolean;
-  /**
-   * THIS IS A HOSTED DEPLOYMENT, so local execution and lead sourcing are not
-   * available and no setting can make them available.
-   *
-   * The structured form of the distinction `blockers` states in prose: hosted
-   * is a decision about who the automation operator is under LinkedIn's User
-   * Agreement 8.2, and it is the one kind of off with no switch behind it.
-   * Branch on THIS, never on the wording of a blocker -- "install playwright"
-   * is the wrong thing to tell somebody with no machine to install it on.
-   */
+  /** This product runtime serves multiple tenant workspaces. */
   hosted: boolean;
+  /** Hosted execution is attached to a paired member computer instead of a cloud browser. */
+  companionBrowser: boolean;
   playwrightInstalled: boolean;
   playwrightPath: string | null;
   /** The seat's confirmed-session record: true only once a session was CONFIRMED live. */
@@ -1825,6 +1818,41 @@ export async function getLinkedInManagedAnalytics(filters: { campaignId?: string
 /** Never throws on the server side: a missing playwright comes back as an honest false. */
 export async function getLinkedInWorkerStatus(): Promise<LinkedInWorkerStatus> {
   return request('/api/linkedin/worker/status');
+}
+
+export interface LinkedInCompanionDevice {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastSeenAt: string | null;
+  online: boolean;
+}
+
+export interface LinkedInCompanionStatus {
+  devices: LinkedInCompanionDevice[];
+  websitePresent: boolean;
+  websiteLastSeenAt: string | null;
+  canManage: boolean;
+}
+
+export async function getLinkedInCompanionStatus(): Promise<LinkedInCompanionStatus> {
+  return request('/api/linkedin/companion');
+}
+
+export async function createLinkedInCompanionPairing(): Promise<{ code: string; expiresAt: string; command: string }> {
+  return request('/api/linkedin/companion/pair', { method: 'POST', body: '{}' });
+}
+
+export async function revokeLinkedInCompanionDevice(deviceId: string): Promise<{ revoked: boolean }> {
+  return request(`/api/linkedin/companion/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+}
+
+export async function markLinkedInCompanionPresence(): Promise<{ active: true }> {
+  return request('/api/linkedin/companion/presence', { method: 'POST', body: '{}' });
+}
+
+export async function stopLinkedInCompanionPresence(): Promise<{ active: false }> {
+  return request('/api/linkedin/companion/presence/stop', { method: 'POST', body: '{}' });
 }
 
 /* =====================================================================

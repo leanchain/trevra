@@ -180,6 +180,52 @@ describe('choosing a browser provider', () => {
   });
 });
 
+describe('a member-computer remote browser', () => {
+  it('uses the existing persistent CDP context, requires no proxy, and never exports cookies to the server', async () => {
+    const seen: { endpoint?: string; newContext?: boolean; closed?: boolean } = {};
+    const persistent = fakeContext({});
+    const driver: ProviderDriver = {
+      chromium: {
+        launchPersistentContext: async () => { throw new Error('must not launch locally'); },
+        connectOverCDP: async (endpoint) => {
+          seen.endpoint = endpoint;
+          return {
+            contexts: () => [persistent],
+            newContext: async () => { seen.newContext = true; throw new Error('must use the persistent context'); },
+            close: async () => { seen.closed = true; }
+          };
+        }
+      }
+    };
+    const result = await openSeatBrowser(driver, {
+      kind: 'remote',
+      remote: {
+        endpointTemplate: 'ws://trevra:8080/api/linkedin/companion/browser/{workspace}/{seat}',
+        apiKey: null,
+        connect: 'cdp',
+        headers: { authorization: 'Bearer derived-relay-key' },
+        label: 'your connected computer',
+        requireProxy: false,
+        sessionPersistence: 'browser',
+        useExistingContext: true
+      },
+      problem: null
+    }, request({
+      proxy: null,
+      storageState: { cookies: [{ name: 'li_at', value: 'server-copy-must-not-be-used' }], origins: [] }
+    }));
+
+    expect('session' in result).toBe(true);
+    if (!('session' in result)) throw new Error('unreachable');
+    expect(seen.endpoint).toContain('/ws_a/sales');
+    expect(seen.newContext).toBeUndefined();
+    expect(result.session.context).toBe(persistent);
+    expect(result.session.exportStorageState).toBeNull();
+    await result.session.close();
+    expect(seen.closed).toBe(true);
+  });
+});
+
 describe('a remote seat with no usable proxy', () => {
   const remoteEnv = {
     TREVRA_BROWSER_PROVIDER: 'remote',

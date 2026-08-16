@@ -5,7 +5,7 @@
   "serialNumber": "urn:uuid:***",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-16T10:33:12.972Z",
+    "timestamp": "2026-08-16T20:00:49.760Z",
     "lifecycles": [
       {
         "phase": "build"
@@ -4534,6 +4534,48 @@
         {
           "alg": "SHA-512",
           "content": "f16cd7abad845c5849ed0b07dce71bfe2290fd3cbd6555a7573a1329cf6dcb2151445ddaef84e4dbe4cb160685170dfae04adefa7a731ca109ea06b62f320bef"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "@types/ws@8.18.1",
+      "type": "library",
+      "name": "@types/ws",
+      "version": "8.18.1",
+      "scope": "optional",
+      "description": "TypeScript definitions for ws",
+      "purl": "pkg:npm/%40types/ws@8.18.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@types/ws/-/ws-8.18.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/ws"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4e1545e83095840f24506cbe69acc543891743b1354f2ec0df2a4539ed0870957c3bf339d751bdf405b6e22acaad6e7a5ade38c86f7e8a3f056aaa011a4b815e"
         }
       ],
       "licenses": [
@@ -20982,19 +21024,19 @@
       ]
     },
     {
-      "bom-ref": "ws@8.21.1",
+      "bom-ref": "ws@8.21.3",
       "type": "library",
       "name": "ws",
-      "version": "8.21.1",
+      "version": "8.21.3",
       "scope": "required",
       "author": "Einar Otto Stangvik <einaros@gmail.com> (http://2x.io)",
       "description": "Simple to use, blazing fast and thoroughly tested websocket client and server for Node.js",
-      "purl": "pkg:npm/ws@8.21.1",
+      "purl": "pkg:npm/ws@8.21.3",
       "properties": [],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/ws/-/ws-8.21.1.tgz"
+          "url": "https://registry.npmjs.org/ws/-/ws-8.21.3.tgz"
         },
         {
           "type": "vcs",
@@ -21008,7 +21050,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "fb43539d6efb7c537f0e3422ea4fd2abf62f9384a06a3c3bbab5bc57e6ac8d79d1803b3d8321a475bec4ce07e10388285ec44864a136f1fcc85c11c4ce1ba25b"
+          "content": "db4d5367f90f5b1a0faff38a5a3aae651d5258a5dcbf1747f9ed71af1f3d6f761b9b32cc1422df9da1b51c52205b324e11667b32fa4afbea1d66e7e0611e7447"
         }
       ],
       "licenses": [
@@ -21403,6 +21445,7 @@
         "react@19.2.8",
         "react-dom@19.2.8",
         "stripe@22.3.2",
+        "ws@8.21.3",
         "zod@3.25.76",
         "zod-to-json-schema@3.25.2",
         "patchright@1.61.1",
@@ -21416,6 +21459,7 @@
         "@types/react@19.2.17",
         "@types/react-dom@19.2.3",
         "@types/supertest@6.0.3",
+        "@types/ws@8.18.1",
         "@vitejs/plugin-react@6.0.4",
         "concurrently@9.2.4",
         "supertest@7.2.2",
@@ -21752,7 +21796,7 @@
         "socks-proxy-agent@8.0.5",
         "stream-buffers@3.0.3",
         "tar-fs@3.1.3",
-        "ws@8.21.1"
+        "ws@8.21.3"
       ]
     },
     {
@@ -22214,6 +22258,12 @@
       "dependsOn": [
         "@types/methods@1.1.4",
         "@types/superagent@8.1.11"
+      ]
+    },
+    {
+      "ref": "@types/ws@8.18.1",
+      "dependsOn": [
+        "@types/node@24.13.3"
       ]
     },
     {
@@ -23568,7 +23618,7 @@
     {
       "ref": "isomorphic-ws@5.0.0",
       "dependsOn": [
-        "ws@8.21.1"
+        "ws@8.21.3"
       ]
     },
     {
@@ -23896,7 +23946,7 @@
     {
       "ref": "openai@6.49.0",
       "dependsOn": [
-        "ws@8.21.1",
+        "ws@8.21.3",
         "zod@3.25.76"
       ]
     },
@@ -24906,7 +24956,7 @@
       "dependsOn": []
     },
     {
-      "ref": "ws@8.21.1",
+      "ref": "ws@8.21.3",
       "dependsOn": []
     },
     {

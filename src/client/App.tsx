@@ -61,10 +61,12 @@ import {
   getAgentSetup,
   getAgentTokens,
   getDashboard,
+  getLinkedInCompanionStatus,
   getPolicies,
   getPublicConfig,
   importCommercialDocument,
   importMarketplace,
+  markLinkedInCompanionPresence,
   prepareRecommendation,
   revokeAgentToken,
   runAutomation,
@@ -289,6 +291,51 @@ export function App() {
     void load();
     return () => { if (loadStallTimer.current !== null) window.clearTimeout(loadStallTimer.current); };
   }, []);
+
+  /**
+   * A paired LinkedIn computer runs only while a signed-in Trevra tab is alive.
+   *
+   * Presence is a LEASE, not an on/off flag: the server expires it if this tab
+   * vanishes, the laptop sleeps or the network drops. That avoids a pagehide
+   * from one tab turning off a second Trevra tab that is still open. A newly
+   * paired/revoked device announces itself through one small window event so
+   * this shell can start/stop the heartbeat without a reload.
+   */
+  useEffect(() => {
+    if (MARKETING_ONLY || needsAuth !== false) return undefined;
+    let disposed = false;
+    let heartbeat: number | null = null;
+
+    const stopTimer = () => {
+      if (heartbeat !== null) window.clearInterval(heartbeat);
+      heartbeat = null;
+    };
+    const activateIfPaired = async () => {
+      try {
+        const status = await getLinkedInCompanionStatus();
+        if (disposed) return;
+        stopTimer();
+        if (status.devices.length === 0 || !status.canManage) return;
+        await markLinkedInCompanionPresence();
+        if (disposed) return;
+        heartbeat = window.setInterval(() => {
+          void markLinkedInCompanionPresence().catch(() => undefined);
+        }, 45_000);
+      } catch {
+        // Presence is a convenience gate, never something that should make the
+        // whole app fail to load. The server simply lets the lease expire.
+      }
+    };
+    const changed = () => { void activateIfPaired(); };
+    window.addEventListener('trevra:linkedin-companion-changed', changed);
+    void activateIfPaired();
+    return () => {
+      disposed = true;
+      stopTimer();
+      window.removeEventListener('trevra:linkedin-companion-changed', changed);
+    };
+  }, [needsAuth]);
+
   // Fired per screen, not once per session: page views that cannot see
   // navigation cannot tell you anything about navigation.
   useEffect(() => { trackPageView(); }, [route.path]);

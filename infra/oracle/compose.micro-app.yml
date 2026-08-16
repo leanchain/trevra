@@ -48,6 +48,10 @@ services:
       NODE_ENV: production
       TREVRA_DEPLOYMENT_MODE: hosted
       DATABASE_AUTO_MIGRATE: "false"
+      # The API owns the public companion WebSocket; both API and worker attach
+      # back to it over the private Compose network. No browser/CDP port is ever
+      # exposed on the member laptop or the Oracle VM.
+      TREVRA_COMPANION_RELAY_URL: ws://trevra:8080
       PORT: 8080
       NODE_OPTIONS: --max-old-space-size=320
     healthcheck:
@@ -70,6 +74,7 @@ services:
       NODE_ENV: production
       TREVRA_DEPLOYMENT_MODE: hosted
       DATABASE_AUTO_MIGRATE: "false"
+      TREVRA_COMPANION_RELAY_URL: ws://trevra:8080
       PORT: 8081
       NODE_OPTIONS: --max-old-space-size=256
       AUTOMATION_INTERVAL_MS: ${AUTOMATION_INTERVAL_MS:-300000}

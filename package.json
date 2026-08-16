@@ -64,6 +64,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "stripe": "^22.3.2",
+    "ws": "^8.21.3",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.2"
   },
@@ -77,6 +78,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/supertest": "^6.0.2",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.4",
     "concurrently": "^9.1.2",
     "supertest": "^7.0.0",

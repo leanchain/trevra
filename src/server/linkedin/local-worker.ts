@@ -13,6 +13,7 @@ import {
   type ProviderDriver
 } from '../browser/provider.js';
 import { readLinkedInCredentials } from '../secrets/linkedin.js';
+import { companionBrowserSettings } from './companion.js';
 import { clearSeatStorageState, readSeatStorageState, saveSeatStorageState } from './session-state.js';
 import type { LinkedInActionKind, LinkedInActionStatus } from './actions.js';
 import {
@@ -2166,12 +2167,13 @@ export function seatSessionHome(
   seatKey: string,
   env: NodeJS.ProcessEnv = process.env
 ): string {
-  const provider = browserProviderSettings(env);
+  const provider = config.companionBrowser
+    ? companionBrowserSettings(env) ?? browserProviderSettings(env)
+    : browserProviderSettings(env);
   return provider.kind === 'remote'
     ? remoteSessionHome(provider.remote?.label ?? null)
     : resolveProfileDir(config.profileDir, workspaceId, seatKey);
 }
-
 export function seatProfilePresent(profileDir: string): boolean {
   try {
     return statSync(profileDir).isDirectory() && readdirSync(profileDir).length > 0;
@@ -2306,12 +2308,14 @@ export interface LinkedInLocalWorkerConfig {
   /** Absent means the default below. */
   profileDir?: string | null;
   /**
-   * True on a hosted deployment, where `enabled` is false and cannot be made
-   * true. Carried so a refusal can say WHICH kind of off it is: "turned off"
-   * has a fix, "hosted" does not, and telling an operator to go looking for a
-   * switch that does not exist is the dead end this flag removes.
+   * True on a hosted deployment. Carried so refusals can distinguish a
+   * deployment decision from a local off switch.
    */
   hosted?: boolean;
+  /** A cloud browser provider is configured for this process. */
+  remoteBrowser?: boolean;
+  /** A paired member computer is the browser provider for this hosted process. */
+  companionBrowser?: boolean;
   /**
    * May THIS PROCESS drive a seat with a browser nobody can see?
    *
@@ -2521,6 +2525,13 @@ export function linkedInBrowserReadiness(
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
 
+  if (config.companionBrowser) {
+    return {
+      canLaunchHeaded: false,
+      reasons: ['This hosted process drives the visible Chrome window on the paired member computer, not a window on the server.']
+    };
+  }
+
   // A REMOTE BROWSER IS NEVER HEADED, AND THAT IS NOT A BLOCKER -- it is what
   // a cloud browser is. Nobody is at the other end to watch a window, clear a
   // captcha or close it, so the honest answer to "can this process open a
@@ -2632,6 +2643,15 @@ export function linkedInHeadlessReadiness(
     };
   }
   const env = options.env ?? process.env;
+
+  if (config.companionBrowser) {
+    return driverResolvable()
+      ? { canLaunchHeadless: true, reasons: [] }
+      : {
+          canLaunchHeadless: false,
+          reasons: ['No browser driver is installed on this hosted worker, so it cannot attach to the paired computer.']
+        };
+  }
 
   // REMOTE NEEDS THE CLIENT, NOT THE BROWSER. `npx playwright install chromium`
   // downloads a ~400MB binary this process would never launch: the browser it
@@ -3628,7 +3648,10 @@ async function openRemoteSeatHandle(input: {
   // THE SESSION IS READ BEFORE THE BROWSER IS OPENED, so a seat whose stored
   // state has expired pays a column read rather than a remote attach.
   let storageState: BrowserStorageState | null = null;
-  if (input.db) {
+  // A paired computer's persistent Chrome profile IS the session. Do not read
+  // or write a second copy of its cookies in Trevra merely because the worker
+  // reaches that browser over CDP.
+  if (input.settings.remote?.sessionPersistence !== 'browser' && input.db) {
     const stored = await readSeatStorageState(input.db, input.workspaceId, input.seatKey, { env: input.env });
     if (stored.status === 'ok') storageState = stored.state;
     else if (stored.status === 'needs_login') {
@@ -3791,40 +3814,31 @@ export async function openBrowser(
 
   const playwright = options.playwright ?? (await loadLinkedInPlaywright(log, handleKey));
   if (!playwright) return null;
-  if (!playwright) return null;
   const profileDir = resolveProfileDir(config.profileDir, options.workspaceId, seatKey);
+  const providerSettings = config.companionBrowser
+    ? companionBrowserSettings(options.env ?? process.env) ?? browserProviderSettings(options.env ?? process.env)
+    : browserProviderSettings(options.env ?? process.env);
+  const companion = providerSettings.remote?.sessionPersistence === 'browser';
 
-  // THE PROXY IS RESOLVED BEFORE THE LAUNCH, AND A BAD ONE ENDS IT HERE.
-  // Refusing to open a browser at all is the only correct answer to "this seat
-  // must not be seen from this IP, and I cannot honour that": the work stays
-  // due for a worker that can, and nothing reaches LinkedIn from the wrong
-  // address in the meantime.
-  let proxy: SeatProxy | null;
-  try {
-    // THE ACCOUNT'S OWN SETTING FIRST, the environment second. A failure to
-    // read the column lands in the same catch as an unusable proxy: "we could
-    // not find out whether this seat has one" is not "it has none".
-    const stored = options.db ? await seatProxyUrl(options.db, options.workspaceId, seatKey) : null;
-    proxy = resolveSeatProxy(options.env ?? process.env, options.workspaceId, seatKey, stored);
-  } catch (cause) {
-    log(
-      `LinkedIn local worker will not open a browser for seat '${seatKey}': ${cause instanceof Error ? cause.message : String(cause)} A seat with a configured proxy is never connected directly.`
-    );
-    return null;
+  // A companion deliberately uses the member computer's own network. A proxy
+  // configured for cloud execution is therefore ignored here rather than
+  // silently moving the local browser back onto a third-party exit IP.
+  let proxy: SeatProxy | null = null;
+  if (!companion) {
+    try {
+      const stored = options.db ? await seatProxyUrl(options.db, options.workspaceId, seatKey) : null;
+      proxy = resolveSeatProxy(options.env ?? process.env, options.workspaceId, seatKey, stored);
+    } catch (cause) {
+      log(
+        `LinkedIn local worker will not open a browser for seat '${seatKey}': ${cause instanceof Error ? cause.message : String(cause)} A seat with a configured proxy is never connected directly.`
+      );
+      return null;
+    }
   }
 
   const fingerprint = seatContextFingerprint(options.workspaceId, seatKey, options.timezone ?? null);
 
   // WHERE THE BROWSER IS, DECIDED HERE AND NOWHERE ELSE.
-  //
-  // Everything above this line -- the handle map, the mode check, the profile
-  // directory, the proxy resolution, the fingerprint -- is identical for both
-  // providers, because all of it is about the SEAT rather than about the
-  // machine. What differs below is only how a context comes into existence:
-  // launched here at a directory on this disk, or attached to over CDP in
-  // somebody else's datacentre. `browser/provider.ts` owns that difference and
-  // the refusals that come with it.
-  const providerSettings = browserProviderSettings(options.env ?? process.env);
   if (providerSettings.kind === 'remote' || providerSettings.problem) {
     return openRemoteSeatHandle({
       settings: providerSettings,
@@ -5445,6 +5459,8 @@ export async function runPendingSeatDetectRequests(
      * `{ index: 0, total: 1 }`, which selects everything.
      */
     shard?: WorkerShard;
+    /** May this worker serve this workspace/seat now? Used by hosted companion presence. */
+    allowSeat?: (seat: { workspaceId: string; seatKey: string }) => Promise<boolean> | boolean;
   } = {}
 ): Promise<SeatDetectRequest[]> {
   if (!config.enabled) return [];
@@ -5456,7 +5472,7 @@ export async function runPendingSeatDetectRequests(
   // Skipped only when a page was handed in -- always a test -- because the
   // question the probe answers is "can I OPEN a browser", and a caller holding
   // one has already answered it.
-  if (!options.page) {
+  if (!options.page && !config.companionBrowser) {
     const readiness = linkedInBrowserReadiness(config);
     if (!readiness.canLaunchHeaded) {
       reportUnready(log, readiness);
@@ -5492,6 +5508,14 @@ export async function runPendingSeatDetectRequests(
     }
     if (!request) break;
     servedWorkspaces.push(request.workspaceId);
+
+    // A paired computer is deliberately ephemeral. Do not turn "laptop is
+    // asleep" or "Trevra tab is closed" into a failed Connect request: put the
+    // pure-read claim back and let the next real presence window pick it up.
+    if (options.allowSeat && !(await options.allowSeat({ workspaceId: request.workspaceId, seatKey: request.seatKey }))) {
+      await db.prepare(`UPDATE linkedin_seat_detect_requests SET claimed_at=NULL WHERE id=? AND status='pending'`).run(request.id);
+      continue;
+    }
 
     let failureReason: string | null;
     try {

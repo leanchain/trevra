@@ -65,6 +65,19 @@ describe('the hosted LinkedIn worker gate', () => {
     expect(config.remoteBrowser).toBe(false);
   });
 
+  it('is on for a hosted deployment with a paired-computer relay, without pretending that relay is a cloud browser', () => {
+    const config = linkedInWorkerConfig({
+      ...base,
+      TREVRA_DEPLOYMENT_MODE: 'hosted',
+      TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080',
+      TREVRA_SECRETS_KEY: randomBytes(32).toString('base64')
+    });
+    expect(config.enabled).toBe(true);
+    expect(config.hosted).toBe(true);
+    expect(config.remoteBrowser).toBe(false);
+    expect(config.companionBrowser).toBe(true);
+  });
+
   it('is on for a hosted deployment WITH a remote browser', () => {
     const config = linkedInWorkerConfig({ ...base, ...REMOTE, TREVRA_DEPLOYMENT_MODE: 'hosted' });
     expect(config.enabled).toBe(true);
@@ -97,6 +110,14 @@ describe('the hosted LinkedIn worker gate', () => {
 });
 
 describe('booting a production deployment', () => {
+  it('accepts hosted + companion relay with no cloud browser', () => {
+    expect(() => validateEnvironment({
+      ...production,
+      TREVRA_DEPLOYMENT_MODE: 'hosted',
+      TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080'
+    })).not.toThrow();
+  });
+
   it('accepts hosted + remote + an explicit TREVRA_LINKEDIN_LOCAL=true', () => {
     expect(() => validateEnvironment({
       ...production,

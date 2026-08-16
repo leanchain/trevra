@@ -285,6 +285,25 @@ primary surface. Starting a campaign returns to the operating screen.
 workflow in memory and opens the builder. Nothing is recreated until the user
 reviews and submits the new campaign.
 
+### J. Hosted LinkedIn uses the member computer by default
+
+Hosted LinkedIn no longer needs a cloud-browser provider to become usable. The
+owner pairs a computer from **Outreach → LinkedIn accounts** with one command:
+
+```bash
+npx trevra linkedin --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
+```
+
+After pairing, `npx trevra linkedin` opens/reuses a persistent Chrome profile on
+that computer. The browser session and LinkedIn cookies stay local and LinkedIn
+traffic uses that computer's network/IP. A Trevra password vault entry is not a
+prerequisite: the user can sign in directly in the visible local Chrome window.
+
+Execution requires two live leases — the companion and a signed-in Trevra tab.
+If either disappears, work remains queued. Returning after downtime creates one
+ordinary bounded sitting and returns to normal cadence; Trevra never turns
+missed scheduler ticks into a catch-up burst. See `docs/linkedin-companion.md`.
+
 ---
 
 ## 5. Autonomous production/security work included in this release
@@ -377,20 +396,16 @@ review and is intentionally preserved in the same release.
 These are not release blockers for this pass, but they are the next highest-value
 journey improvements:
 
-1. **Hosted LinkedIn execution onboarding.** The Oracle hosted platform currently
-   has no remote browser provider configured, so server-side LinkedIn execution
-   must continue to fail closed. When a provider is chosen, onboarding should
-   explain the hosted session/proxy model before asking for credentials.
-2. **First actual-device mobile pass.** Responsive CSS is present, but the five
+1. **First actual-device mobile pass.** Responsive CSS is present, but the five
    primary tabs, long outreach sub-nav, campaign tables and inbox should be
    exercised on narrow physical devices with touch and safe-area insets.
-3. **Screen-reader journey pass.** Focus trapping, skip links, live-region toasts
+2. **Screen-reader journey pass.** Focus trapping, skip links, live-region toasts
    and labels exist; the end-to-end first-run and campaign flows should still be
    tested with a real screen reader rather than inferred from markup.
-4. **Team onboarding.** Invite/role flows should get the same "one next step"
+3. **Team onboarding.** Invite/role flows should get the same "one next step"
    treatment as first-run setup, especially for members who cannot perform
    owner-only actions.
-5. **Reduce duplicated explanatory copy.** The product deliberately explains
+4. **Reduce duplicated explanatory copy.** The product deliberately explains
    safety decisions, but several LinkedIn screens still carry long paragraphs.
    Move durable education into contextual Help when the same text does not need
    to be visible for every decision.

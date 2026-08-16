@@ -39,6 +39,7 @@
 import type { Db } from '../db.js';
 import { browserProviderSettings } from '../browser/provider.js';
 import { linkedInWorkerConfig } from '../config.js';
+import { companionWorkspaceReady } from './companion.js';
 
 /**
  * The refusal a hosted deployment gives when a remote browser provider was
@@ -300,12 +301,18 @@ export function hostedSeatFilter(
 ): ((seat: { workspaceId: string }) => Promise<boolean>) | null {
   const mode = hostedExecutionMode(env);
   if (!mode.hosted) return null;
+  const worker = linkedInWorkerConfig(env);
   const decided = new Map<string, boolean>();
   return async (seat) => {
     const cached = decided.get(seat.workspaceId);
     if (cached !== undefined) return cached;
-    const verdict = await hostedExecutionGate(db, seat.workspaceId, env);
-    decided.set(seat.workspaceId, verdict.allowed);
-    return verdict.allowed;
+    // Cloud execution is consent-gated. Companion execution is presence-gated:
+    // it may run only while both the paired laptop and a signed-in Trevra tab
+    // are alive. Those are deliberately different permissions.
+    const allowed = worker.companionBrowser && !mode.remoteBrowser
+      ? await companionWorkspaceReady(db, seat.workspaceId)
+      : (await hostedExecutionGate(db, seat.workspaceId, env)).allowed;
+    decided.set(seat.workspaceId, allowed);
+    return allowed;
   };
 }

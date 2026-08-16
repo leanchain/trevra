@@ -200,6 +200,15 @@ import {
   revokeHostedExecutionAck
 } from './linkedin/hosted-execution.js';
 import {
+  clearCompanionWebsitePresence,
+  companionWorkspaceReady,
+  createCompanionPairing,
+  exchangeCompanionPairing,
+  listCompanionStatus,
+  markCompanionWebsitePresence,
+  revokeCompanionDevice
+} from './linkedin/companion.js';
+import {
   detectLinkedInSeat,
   latestSeatDetectRequest,
   linkedInBrowserReadiness,
@@ -572,6 +581,23 @@ export function createApp(db: Db) {
   });
   app.use('/api', (req, res, next) => (carriesSessionCredential(req) ? next() : unattributedLimiter(req, res, next)));
 
+  // One-time pairing exchange. The short code is the only credential a user
+  // ever pastes into a shell; it expires after ten minutes and is replaced here
+  // with a long device token stored only on that computer.
+  app.post('/api/linkedin/companion/exchange', async (req, res, next) => {
+    try {
+      const input = z.object({
+        code: z.string().trim().min(8).max(32),
+        label: z.string().trim().min(1).max(120)
+      }).strict().parse(req.body ?? {});
+      const paired = await exchangeCompanionPairing(db, input);
+      res.status(201).json(paired);
+    } catch (error) {
+      if (error instanceof Error && /pairing code/i.test(error.message)) return res.status(400).json({ error: error.message });
+      next(error);
+    }
+  });
+
   app.post('/api/admin/registry/publishers/:id/verification', async (req, res, next) => {
     try {
       const expected = process.env.TRACTION_ADMIN_TOKEN?.trim();
@@ -701,6 +727,63 @@ export function createApp(db: Db) {
   // workspace spending its own minute; nothing below it can spend anyone
   // else's.
   app.use('/api', workspaceLimiter);
+
+  // ---------------------------------------------------------------------
+  // LinkedIn companion: pair a member computer, keep a short website-presence
+  // lease alive, and revoke a computer without ever exposing its bearer token.
+  // ---------------------------------------------------------------------
+  app.get('/api/linkedin/companion', async (req: AuthedRequest, res, next) => {
+    try {
+      res.json({
+        ...(await listCompanionStatus(db, req.auth!.workspaceId)),
+        canManage: req.auth!.role === 'owner'
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/linkedin/companion/pair', async (req: AuthedRequest, res, next) => {
+    try {
+      assertWorkspaceOwner(req, 'pair a computer for LinkedIn');
+      const pairing = await createCompanionPairing(db, {
+        workspaceId: req.auth!.workspaceId,
+        actorUserId: req.auth!.userId
+      });
+      const base = (
+        process.env.TREVRA_PUBLIC_API_URL?.trim()
+        || process.env.BETTER_AUTH_URL?.trim()
+        || process.env.APP_ORIGIN?.split(',')[0]?.trim()
+        || ''
+      ).replace(/\/$/, '');
+      res.status(201).json({
+        ...pairing,
+        command: `npx trevra linkedin --pair ${pairing.code}${base ? ` --url ${base}` : ''}`
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.delete('/api/linkedin/companion/devices/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      assertWorkspaceOwner(req, 'disconnect a LinkedIn companion computer');
+      const revoked = await revokeCompanionDevice(db, req.auth!.workspaceId, String(req.params.id));
+      res.status(revoked ? 200 : 404).json({ revoked });
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/linkedin/companion/presence', async (req: AuthedRequest, res, next) => {
+    try {
+      assertWorkspaceOwner(req, 'enable LinkedIn work through a paired computer');
+      await markCompanionWebsitePresence(db, req.auth!.workspaceId, req.auth!.userId);
+      res.json({ active: true });
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/linkedin/companion/presence/stop', async (req: AuthedRequest, res, next) => {
+    try {
+      assertWorkspaceOwner(req, 'stop LinkedIn work through a paired computer');
+      await clearCompanionWebsitePresence(db, req.auth!.workspaceId);
+      res.json({ active: false });
+    } catch (error) { next(error); }
+  });
 
   /**
    * Add a teammate (design doc's Team management section -- decision #3
@@ -2476,7 +2559,10 @@ export function createApp(db: Db) {
      * machine, nothing for the operator to run.
      *
      */
-    const canDetectHere = linkedInBrowserReadiness(config).canLaunchHeaded
+    const companionReady = Boolean(config.companionBrowser)
+      && await companionWorkspaceReady(db, req.auth!.workspaceId);
+    const canDetectHere = companionReady
+      || linkedInBrowserReadiness(config).canLaunchHeaded
       || ((await describeLinkedInCredentials(db, req.auth!.workspaceId, input.seatKey)).hasCredentials
         && linkedInHeadlessReadiness(config).canLaunchHeadless);
 
@@ -2512,7 +2598,9 @@ export function createApp(db: Db) {
         requestedAt: request.requestedAt,
         message: hostedRunner.allowed && hostedExecutionMode().available
           ? 'Queued for the hosted runner; it will finish connecting this seat on its next pass.'
-          : 'Run `npm run linkedin:worker` on your machine to finish connecting.'
+          : config.companionBrowser
+            ? 'Run `npx trevra linkedin` on your computer and keep this Trevra tab open. The pending connection will be picked up when both are online.'
+            : 'Run `npm run linkedin:worker` on your machine to finish connecting.'
       });
     }
 
@@ -6581,8 +6669,10 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
   if (!enabled) {
     blockers.push(linkedInOffReason(workerConfig));
   } else if (!playwrightInstalled) {
-    blockers.push(installPlaywright);
-  } else if (!headless.canLaunchHeadless && !headed.canLaunchHeaded) {
+    blockers.push(workerConfig.companionBrowser
+      ? 'This hosted worker is missing Playwright, which it needs to attach to the paired computer. Redeploy the server image with Playwright installed.'
+      : installPlaywright);
+  } else if (!workerConfig.companionBrowser && !headless.canLaunchHeadless && !headed.canLaunchHeaded) {
     // BOTH, NOT JUST HEADLESS. This branch read `!headless.canLaunchHeadless`
     // alone, which was a fair proxy for "can this machine open a browser" only
     // while the two verdicts moved together -- chromium present meant headless
@@ -6599,7 +6689,7 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
   // GPU, and puts "HeadlessChrome" in its own user agent (measured; see
   // `scripts/linkedin-fingerprint-probe.mjs`). Ranking it as "not ready" had
   // the screen recommending the worse path.
-  const ready = enabled && playwrightInstalled && (browser.canLaunchHeaded || browser.canLaunchHeadless);
+  const ready = enabled && playwrightInstalled && (Boolean(workerConfig.companionBrowser) || browser.canLaunchHeaded || browser.canLaunchHeadless);
 
   return {
     enabled,
@@ -6621,6 +6711,7 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
      * nothing.
      */
     hosted: workerConfig.hosted,
+    companionBrowser: Boolean(workerConfig.companionBrowser),
     playwrightInstalled,
     playwrightPath,
     /**
