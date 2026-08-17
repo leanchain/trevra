@@ -222,11 +222,32 @@ jobs:
     permissions:
       contents: read
       packages: read
+    outputs:
+      deployed: ${{ steps.fresh.outputs.current }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - id: fresh
+        name: Verify release is still current main
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --force origin main:refs/remotes/origin/main
+          if [[ "$SHA" == "$(git rev-parse origin/main)" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping superseded Oracle rollout for $SHA; main is $(git rev-parse origin/main)."
+          fi
       - name: Install production SSH identity
+        if: steps.fresh.outputs.current == 'true'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
         run: |
@@ -235,10 +256,12 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/ssh/oracle"
           chmod 600 "$RUNNER_TEMP/ssh/oracle"
       - name: Verify immutable image exists
+        if: steps.fresh.outputs.current == 'true'
         env:
           SHA: ${{ needs.prepare.outputs.sha }}
         run: docker buildx imagetools inspect "ghcr.io/${{ github.repository }}:sha-${SHA}" >/dev/null
       - name: Guarded Oracle rollout
+        if: steps.fresh.outputs.current == 'true'
         env:
           APP_IP: ${{ vars.ORACLE_APP_IP }}
           DB_IP: ${{ vars.ORACLE_DB_IP }}
@@ -251,6 +274,7 @@ jobs:
             ./infra/oracle/deploy-micro.sh \
               "$APP_IP" "$DB_IP" "$DB_PRIVATE_IP" "sha-${SHA}" "$COMPANION_VERSION"
       - name: Public health check
+        if: steps.fresh.outputs.current == 'true'
         run: |
           set -euo pipefail
           body="$(curl --fail --silent --show-error --retry 6 --retry-delay 5 https://app.usetrevra.com/api/health)"
@@ -259,7 +283,7 @@ jobs:
   app_release:
     name: Publish app release
     needs: [prepare, deploy_oracle]
-    if: needs.deploy_oracle.result == 'success'
+    if: needs.deploy_oracle.result == 'success' && needs.deploy_oracle.outputs.deployed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
