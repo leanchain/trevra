@@ -154,6 +154,35 @@ describe('volume ceilings', () => {
     expect(check(verdict, 'rolling-24h').detail).toContain('18 of 18');
   });
 
+  it('lets an explicit manual action bypass Trevra pacing but not account integrity', async () => {
+    await seat('2026-01-01');
+    // Fill the researched daily band and create a poor acceptance signal. These
+    // are Trevra pacing inputs, so a human-driven action may override them.
+    for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 1);
+    for (let index = 0; index < 2; index += 1) await log('invite', 'accepted', 30);
+    for (let index = 0; index < 8; index += 1) await log('invite', 'declined', 30);
+
+    const manual = await guard({ manual: true, plannedFor: '2026-08-08T23:00:00.000Z' }, { dayShape: FLAT_DAY_SHAPE });
+    expect(manual.allowed).toBe(true);
+    for (const name of ['rolling-24h', 'day-over-day-delta', 'acceptance-rate', 'business-hours', 'weekend'] as const) {
+      expect(check(manual, name).passed).toBe(true);
+    }
+    expect(check(manual, 'rolling-24h').detail).toContain('explicitly bypassed Trevra pacing');
+
+    // Replay protection is not pacing. A manual action cannot turn a duplicate
+    // into a new action merely by asking for it interactively.
+    await recordAction(db, {
+      workspaceId: WORKSPACE_ID,
+      kind: 'invite',
+      targetRef: 'https://www.linkedin.com/in/fresh',
+      status: 'sent',
+      source: 'manual'
+    }, NOW);
+    const duplicate = await guard({ manual: true });
+    expect(duplicate.allowed).toBe(false);
+    expect(check(duplicate, 'duplicate-target').passed).toBe(false);
+  });
+
   it('blocks on the rolling 7-day band even when today is quiet', async () => {
     await seat('2026-01-01');
     // 90 invites across the week, none in the last 24 hours.
@@ -302,12 +331,13 @@ describe('timing', () => {
 });
 
 describe('InMail quota and duplicates', () => {
-  it('enforces LinkedIn\'s published 50-a-month InMail quota', async () => {
+  it('enforces LinkedIn\'s published 50-a-month InMail quota, even for a manual action', async () => {
     await seat('2026-01-01');
     for (let index = 0; index < 50; index += 1) await log('inmail', 'sent', 2 + index * 12);
-    const verdict = await guard({ kind: 'inmail' });
+    const verdict = await guard({ kind: 'inmail', manual: true });
     expect(check(verdict, 'inmail-monthly-quota').passed).toBe(false);
     expect(check(verdict, 'inmail-monthly-quota').detail).toContain('50 InMails');
+    expect(verdict.allowed).toBe(false);
   });
 
   it('leaves the InMail quota alone for other kinds', async () => {
@@ -895,28 +925,26 @@ describe('an action a person asked for', () => {
     expect(check(await guard({ kind: 'invite', plannedFor: SATURDAY }), 'weekend').passed).toBe(false);
   });
 
-  it('relaxes WHEN and never HOW MUCH', async () => {
-    // Week 1, so the ramp permits no invites at all. A person asking for one at
-    // midnight is still asking for an invite this seat may not send: the hour
-    // is theirs, the volume is not.
+  it('bypasses Trevra pacing for a manual action, not just the clock', async () => {
+    // Week 1 autonomously permits no invites, but a signed-in person may still
+    // explicitly ask Trevra to perform one now. The gate keeps running all
+    // checks so the non-bypassable account/integrity checks still apply.
     await seat('2026-08-04');
     const midnight = await guard({ kind: 'invite', plannedFor: NIGHT, manual: true });
     expect(check(midnight, 'business-hours').passed).toBe(true);
-    expect(check(midnight, 'warmup-ceiling').passed).toBe(false);
-    expect(midnight.allowed).toBe(false);
-    // And every volume check still ran rather than being skipped.
+    expect(check(midnight, 'warmup-ceiling').passed).toBe(true);
+    expect(check(midnight, 'warmup-ceiling').detail).toContain('explicitly bypassed Trevra pacing');
+    expect(midnight.allowed).toBe(true);
     const names = midnight.checks.map((entry) => entry.check);
     expect(names).toContain('rolling-24h');
     expect(names).toContain('rolling-7d');
     expect(names).toContain('duplicate-target');
   });
 
-  it('does not lift the warm-up ceiling the way an inbound reply does', async () => {
-    // Two different questions. "Somebody wrote to me" is about what the action
-    // IS; "I am at the keyboard" is about when it happens.
+  it('does not need the inbound-reply exception when the action itself is manual', async () => {
     await seat('2026-08-04');
     const manualReply = await guard({ kind: 'reply', plannedFor: NIGHT, manual: true });
-    expect(check(manualReply, 'warmup-ceiling').passed).toBe(false);
+    expect(check(manualReply, 'warmup-ceiling').passed).toBe(true);
     const answered = await guard({ kind: 'reply', plannedFor: NIGHT, manual: true, replyToInbound: true });
     expect(check(answered, 'warmup-ceiling').passed).toBe(true);
   });

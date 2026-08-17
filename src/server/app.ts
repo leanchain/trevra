@@ -740,14 +740,19 @@ export function createApp(db: Db) {
     try {
       res.json({
         ...(await listCompanionStatus(db, req.auth!.workspaceId)),
-        canManage: req.auth!.role === 'owner'
+        // Pair/replace changes which physical machine is trusted for the whole
+        // workspace, so that remains owner-only. Using or disconnecting the
+        // already-paired machine is ordinary workspace operation and every
+        // member may do it.
+        canManage: req.auth!.role === 'owner',
+        canUse: true,
+        canDisconnect: true
       });
     } catch (error) { next(error); }
   });
 
-  app.post('/api/linkedin/companion/pair', async (req: AuthedRequest, res, next) => {
+  app.post('/api/linkedin/companion/pair', ownerOnly('pair a computer for LinkedIn'), async (req: AuthedRequest, res, next) => {
     try {
-      assertWorkspaceOwner(req, 'pair a computer for LinkedIn');
       const pairing = await createCompanionPairing(db, {
         workspaceId: req.auth!.workspaceId,
         actorUserId: req.auth!.userId
@@ -767,7 +772,6 @@ export function createApp(db: Db) {
 
   app.delete('/api/linkedin/companion/devices/:id', async (req: AuthedRequest, res, next) => {
     try {
-      assertWorkspaceOwner(req, 'disconnect a LinkedIn companion computer');
       const revoked = await revokeCompanionDevice(db, req.auth!.workspaceId, String(req.params.id));
       res.status(revoked ? 200 : 404).json({ revoked });
     } catch (error) { next(error); }
@@ -775,7 +779,6 @@ export function createApp(db: Db) {
 
   app.post('/api/linkedin/companion/presence', async (req: AuthedRequest, res, next) => {
     try {
-      assertWorkspaceOwner(req, 'enable LinkedIn work through a paired computer');
       await markCompanionWebsitePresence(db, req.auth!.workspaceId, req.auth!.userId);
       res.json({ active: true });
     } catch (error) { next(error); }
@@ -783,7 +786,6 @@ export function createApp(db: Db) {
 
   app.post('/api/linkedin/companion/presence/stop', async (req: AuthedRequest, res, next) => {
     try {
-      assertWorkspaceOwner(req, 'stop LinkedIn work through a paired computer');
       await clearCompanionWebsitePresence(db, req.auth!.workspaceId);
       res.json({ active: false });
     } catch (error) { next(error); }

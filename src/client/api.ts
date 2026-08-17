@@ -1862,7 +1862,12 @@ export interface LinkedInCompanionStatus {
   websitePresent: boolean;
   websiteLastSeenAt: string | null;
   attention: LinkedInCompanionAttention[];
+  /** Owner-only: pair or replace the workspace's trusted computer. */
   canManage: boolean;
+  /** Any workspace member may keep the already-paired companion active. */
+  canUse: boolean;
+  /** Any workspace member may revoke the already-paired computer. */
+  canDisconnect: boolean;
 }
 
 export async function getLinkedInCompanionStatus(): Promise<LinkedInCompanionStatus> {

@@ -686,14 +686,14 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
             <strong>{device.label}</strong>
             <small>{device.online ? 'Online now' : device.lastSeenAt ? `Last seen ${relativeTime(device.lastSeenAt)}` : 'Never connected'}</small>
           </div>
-          {status.canManage && <button className="ghost-button danger" type="button" disabled={busy === device.id} onClick={() => void revoke(device.id, device.label)}>
+          {status.canDisconnect && <button className="ghost-button danger" type="button" disabled={busy === device.id} onClick={() => void revoke(device.id, device.label)}>
             {busy === device.id ? <LoaderCircle className="spin" size={13} /> : <Unplug size={13} />} Disconnect
           </button>}
         </div>)}
       </div>
       : <p className="empty-copy">Pair the computer whose browser and network you normally use for LinkedIn.</p>}
 
-    {!status?.canManage && <p className="panel-note">Only the workspace owner can pair a computer or enable LinkedIn execution from it.</p>}
+    {!status?.canManage && <p className="panel-note">Only the workspace owner can pair or replace a computer. Workspace members can keep the paired computer active and disconnect it.</p>}
 
     {status?.canManage && pairing ? <div className="li-companion-command">
       <div>
