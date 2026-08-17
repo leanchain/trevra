@@ -93,7 +93,6 @@ import { OutreachManagerBuilder } from './LinkedInManagerBuilder';
 import { OutreachManagerRead } from './LinkedInManagerRead';
 import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions, LinkedInSeatSetup, OutreachQueue, OutreachSeat } from './LinkedInScreen';
-import { MarketingScreen } from './MarketingScreen';
 import { TeamSettingsView } from './TeamScreen';
 import { RedditScreen } from './RedditScreen';
 import { ResearchScreen } from './ResearchScreen';
@@ -101,7 +100,7 @@ import { trackEvent, trackPageView } from './analytics';
 import { ConfirmDrawer, useDialog } from './ui/dialog';
 import { HelpPanel, JumpPalette, ShortcutSheet } from './ui/HelpPanel';
 import { useShortcuts } from './ui/keys';
-import { isAccountsPath, isLoginPath, navigate, replaceNavigate, usePathname, useRoute, type Route, type Section } from './ui/route';
+import { isAccountsPath, navigate, replaceNavigate, usePathname, useRoute, type Route, type Section } from './ui/route';
 import { StopBar } from './ui/StopBar';
 import { formatEvery } from './ui/duration';
 import { formatMoment } from './views/inspector';
@@ -186,6 +185,7 @@ const UNDO_MS = 9000;
  * than cached: the preference can change while a tab is open.
  */
 const reducedMotion = () => typeof window !== 'undefined'
+  && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 /**
  * `/leads` is the legacy address for the target-account screen.
  *
@@ -197,9 +197,10 @@ const reducedMotion = () => typeof window !== 'undefined'
 function useAccountsRoute(): boolean {
   return isAccountsPath(usePathname());
 }
-const MARKETING_ONLY = import.meta.env.VITE_MARKETING_ONLY === 'true';
-const HOSTED_APP_URL = import.meta.env.VITE_HOSTED_APP_URL?.trim() ?? '';
-const GITHUB_URL = import.meta.env.VITE_GITHUB_URL?.trim() ?? '';
+
+const HOSTED_MARKETING_SITE_URL = typeof window !== 'undefined' && window.location.hostname.startsWith('app.')
+  ? `${window.location.protocol}//${window.location.hostname.slice(4)}`
+  : 'https://usetrevra.com';
 
 function GoogleMark() {
   return <svg aria-hidden="true" viewBox="0 0 18 18" width="18" height="18">
@@ -214,17 +215,6 @@ export function App() {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [error, setError] = useState('');
   const [needsAuth, setNeedsAuth] = useState<boolean | null>(null);
-  /**
-   * `/login` -- THE AUTH SCREEN HAS AN ADDRESS, and that is the whole change.
-   *
-   * It used to be a boolean nobody could link to, opened either by clicking
-   * through the marketing page or by the mount-time `#get-started` check. Both
-   * of those made "send me the login page" unanswerable, and the second was a
-   * route wearing an anchor's clothes -- exactly the confusion ui/route.ts's
-   * header is about. A path is bookmarkable, Back-able, typeable, and it is
-   * what `index.html`'s pre-JS Login button can point at and still be right.
-   */
-  const showAuth = isLoginPath(usePathname());
   // Where you are lives in the URL as one path, so every screen is
   // addressable, bookmarkable and Back-able -- and reachable by typing, which
   // is the only escape hatch a phone has when a nav goes missing.
@@ -287,7 +277,6 @@ export function App() {
   };
 
   useEffect(() => {
-    if (MARKETING_ONLY) return;
     void load();
     return () => { if (loadStallTimer.current !== null) window.clearTimeout(loadStallTimer.current); };
   }, []);
@@ -302,7 +291,7 @@ export function App() {
    * this shell can start/stop the heartbeat without a reload.
    */
   useEffect(() => {
-    if (MARKETING_ONLY || needsAuth !== false) return undefined;
+    if (needsAuth !== false) return undefined;
     let disposed = false;
     let heartbeat: number | null = null;
 
@@ -456,11 +445,6 @@ export function App() {
     } finally { setBusyId(null); }
   };
 
-  if (MARKETING_ONLY) return <MarketingScreen
-    hostedAppUrl={HOSTED_APP_URL}
-    githubUrl={GITHUB_URL}
-    onGetStarted={() => document.getElementById('hosted')?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth' })}
-  />;
   // The bare spinner, and what replaces it once a stall has run past the
   // window above: the same error/retry shape every other read failure on this
   // screen already uses, not a second visual language for "still nothing".
@@ -471,9 +455,7 @@ export function App() {
   </div>;
 
   if (needsAuth === null) return loadStalled ? stalledGate : loadingGate;
-  if (needsAuth) return showAuth
-    ? <AuthScreen onAuthenticated={load} onBack={() => navigate('/')} />
-    : <MarketingScreen githubUrl={GITHUB_URL} onGetStarted={() => navigate('/login')} />;
+  if (needsAuth) return <AuthScreen onAuthenticated={load} onBack={() => window.location.assign(HOSTED_MARKETING_SITE_URL)} />;
   if (!data && !error) return loadStalled ? stalledGate : loadingGate;
   if (error) return <div className="center-state error"><p>{error}</p><button onClick={() => void load()}>Try again</button></div>;
   if (!data) return null;
