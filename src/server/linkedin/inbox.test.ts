@@ -3,6 +3,7 @@ import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
 import { LinkedInApiError, createCampaign, newCampaignId } from './campaigns.js';
 import type { LinkedInInboxMessage, LinkedInThreadSummary } from './driver-inbox.js';
+import { addExclusions } from './exclusions.js';
 import {
   clearInboxForWorkspace,
   editQueuedMessage,
@@ -51,6 +52,7 @@ beforeEach(async () => {
     await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM linkedin_batches WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=?').run(workspaceId);
+    await db.prepare('DELETE FROM linkedin_exclusions WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(workspaceId);
   }
 });
@@ -512,6 +514,19 @@ describe('enqueueReply', () => {
     ).rejects.toThrow(/seat-paused/);
   });
 
+  it('never lets a manual reply bypass the workspace Never contact list', async () => {
+    await steadySeat();
+    await addExclusions(db, WORKSPACE_ID, [{ targetRef: MAYA, reason: 'Asked not to be contacted' }], NOW);
+
+    await expect(
+      enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello' }, NOW)
+    ).rejects.toThrow(/Never contact/i);
+
+    const rows = await db.prepare("SELECT COUNT(*)::int AS total FROM linkedin_actions WHERE workspace_id=? AND kind='reply'")
+      .get<{ total: number }>(WORKSPACE_ID);
+    expect(rows?.total).toBe(0);
+  });
+
   it('answers somebody this seat has already DMd, which is the normal case in an inbox', async () => {
     await steadySeat();
     await ledgerAction({ kind: 'dm', status: 'sent' });
@@ -570,15 +585,12 @@ describe('enqueueReply', () => {
     for (const row of scopes) expect(row.replay_scope).toContain('thread:2-maya==');
   });
 
-  it('carries the operator\'s warm-up override onto the row, for replies only', async () => {
-    // A brand-new seat: warm-up week 1 permits no messages at all, which is
-    // exactly the ceiling migration 044's control exists to let a human answer
-    // through -- for ONE reply, explicitly, and for nothing else.
+  it('still persists the legacy warm-up override when an operator supplies it', async () => {
+    // Manual replies now bypass Trevra pacing as a class, so migration 044's
+    // one-check override is no longer required to get a hand-written reply
+    // through week 1. Keep persisting it for backwards compatibility and audit
+    // fidelity when an older client explicitly sends the flag.
     await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, NOW);
-
-    await expect(
-      enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'hello' }, NOW)
-    ).rejects.toThrow(/warmup-ceiling/);
 
     const queued = await enqueueReply(
       db,
@@ -586,10 +598,10 @@ describe('enqueueReply', () => {
       NOW
     );
     expect(queued.verdict.allowed).toBe(true);
-    expect(queued.verdict.checks.find((entry) => entry.check === 'warmup-ceiling')?.detail).toContain('overrode the warm-up ceiling');
+    const detail = queued.verdict.checks.find((entry) => entry.check === 'warmup-ceiling')?.detail ?? '';
+    expect(detail).toContain('overrode the warm-up ceiling');
+    expect(detail).toContain('explicitly bypassed Trevra pacing');
 
-    // PERSISTED, so the worker's pre-send re-evaluation honours the same
-    // decision without anybody having to re-supply it.
     const row = await db.prepare('SELECT override_warmup_ceiling FROM linkedin_actions WHERE id=?')
       .get<{ override_warmup_ceiling: boolean }>(queued.actionId);
     expect(row?.override_warmup_ceiling).toBe(true);
@@ -624,9 +636,7 @@ describe('enqueueReply', () => {
     expect(row?.override_warmup_ceiling).toBe(false);
   });
 
-  it('still ramps a follow-up to somebody who has never answered', async () => {
-    // No inbound message in this conversation: whatever it is, it is not a
-    // reply to a person who chose to write, so the ramp still applies.
+  it('lets a manual follow-up bypass the warm-up ramp even when nobody answered first', async () => {
     await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, NOW);
     await syncThreadMessages(
       db,
@@ -634,9 +644,13 @@ describe('enqueueReply', () => {
       NOW
     );
 
-    await expect(
-      enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Just following up.' }, NOW)
-    ).rejects.toThrow(/warmup-ceiling/);
+    const queued = await enqueueReply(db, { workspaceId: WORKSPACE_ID, threadUrn: '2-maya==', body: 'Just following up.' }, NOW);
+    expect(queued.verdict.allowed).toBe(true);
+    expect(queued.verdict.checks.find((entry) => entry.check === 'warmup-ceiling')?.detail)
+      .toContain('explicitly bypassed Trevra pacing');
+    const row = await db.prepare('SELECT reply_to_inbound FROM linkedin_actions WHERE id=?')
+      .get<{ reply_to_inbound: boolean }>(queued.actionId);
+    expect(row?.reply_to_inbound).toBe(false);
   });
 
   it('leaves the override off by default, so nothing acquires it by accident', async () => {
