@@ -122,7 +122,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
       // cell reading `0` would blame the operator for a switch they cannot
       // reach, so this one names the thing they CAN do.
       value: 'Build a lead list',
-      unit: 'from a CSV or a search',
+      unit: 'CSV or search',
       href: '/outreach/manager'
     },
     {
@@ -134,8 +134,8 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
       // for.
       value: limits ? (seat?.configured ? String(queued) : 'No account') : seatError ? 'Not read' : 'Reading…',
       unit: limits
-        ? (seat?.configured ? 'queued' : 'connect one first')
-        : seatError ? 'the account could not be read' : 'one moment',
+        ? (seat?.configured ? 'queued' : 'connect an account')
+        : seatError ? 'unavailable' : 'loading',
       href: limits ? (seat?.configured ? '/outreach/queue' : '/outreach') : null,
       unavailable: !limits
     },
@@ -148,7 +148,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
       // rather than inventing a count -- and never renders a 0 it did not
       // count.
       value: 'Open the inbox',
-      unit: 'replies to you land there',
+      unit: 'replies',
       href: '/outreach/inbox',
       unavailable: true
     },
@@ -187,8 +187,8 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
       return {
         stage: 'reach',
         sentence: queued > 0
-          ? `${queued} ${queued === 1 ? 'action is' : 'actions are'} scheduled and this LinkedIn account is paused${seat.pausedReason ? ` — ${seat.pausedReason}` : ''}. Resume it, or lower the daily limit.`
-          : `This LinkedIn account is paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'} Nothing will be scheduled until it is resumed.`,
+          ? `${queued} scheduled ${queued === 1 ? 'action is' : 'actions are'} paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'}`
+          : `This LinkedIn account is paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'}`,
         action: 'Open the account',
         href: '/outreach'
       };
@@ -196,7 +196,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
     if (!seat?.configured) {
       return {
         stage: 'reach',
-        sentence: 'No LinkedIn account is connected, so nothing can be scheduled and nothing can go out.',
+        sentence: 'No LinkedIn account is connected.',
         action: 'Connect an account',
         href: '/outreach'
       };
@@ -204,7 +204,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
     if (waitingCount > 0) {
       return {
         stage: metrics.readyToInvoice > 0 ? 'bill' : 'paid',
-        sentence: `${waitingCount} ${waitingCount === 1 ? 'thing needs' : 'things need'} your decision${metrics.revenueAtRisk > 0 ? `, worth ${money(metrics.revenueAtRisk, metrics.currency)}` : ''}. Nothing moves until you decide.`,
+        sentence: `${waitingCount} ${waitingCount === 1 ? 'item needs' : 'items need'} your decision${metrics.revenueAtRisk > 0 ? ` · ${money(metrics.revenueAtRisk, metrics.currency)}` : ''}.`,
         action: 'Review them',
         href: '/money'
       };
@@ -212,7 +212,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
     if (queued === 0) {
       return {
         stage: 'find',
-        sentence: 'Your LinkedIn account is ready and nothing is queued to go out.',
+        sentence: 'Nothing is queued.',
         action: 'Start a campaign',
         href: '/outreach/manager'
       };
@@ -252,7 +252,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
           ? <p>Nothing needs you right now.</p>
           : seatError
             ? <p>{seatError}</p>
-            : <p>Reading where the loop stands…</p>}
+            : <p>Loading…</p>}
     </section>
 
     {!isNew && <OnboardingChecklist data={data} limits={limits} onNavigate={onNavigate} />}
@@ -264,10 +264,10 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
         label="Going out this week"
         value={String(goingOut)}
         detail={!seat?.configured
-          ? 'No LinkedIn account is connected yet'
+          ? 'No LinkedIn account connected'
           : inviteDay
-            ? `of ${inviteDay.ceiling} invites a day this account may send`
-            : 'No daily limit has been worked out for this account yet'}
+            ? `${inviteDay.ceiling} invite daily limit`
+            : 'Daily limit not available'}
       />
       <Metric
         icon={<Inbox />}
@@ -275,28 +275,28 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
         value={String(awaitingReply)}
         detail={decided > 0
           ? `${answered} answered · ${Math.round((answered / decided) * 100)}%`
-          : 'Nothing has gone out in the last 7 days'}
+          : 'No outreach in the last 7 days'}
       />
       <Metric
         icon={<Clock3 />}
         label="Waiting on you"
         value={String(waitingCount)}
         detail={metrics.revenueAtRisk > 0
-          ? `${money(metrics.revenueAtRisk, metrics.currency)} is waiting on your decision`
-          : 'Nothing is held up on a decision'}
+          ? `${money(metrics.revenueAtRisk, metrics.currency)} waiting on approval`
+          : 'No decisions waiting'}
       />
       <Metric
         icon={<CircleDollarSign />}
         label="Waiting to be paid"
         value={money(metrics.readyToInvoice + metrics.revenueAtRisk, metrics.currency)}
-        detail={`${money(metrics.revenueAtRisk, metrics.currency)} billed and unpaid, ${money(metrics.readyToInvoice, metrics.currency)} delivered and unbilled`}
+        detail={`${money(metrics.revenueAtRisk, metrics.currency)} unpaid · ${money(metrics.readyToInvoice, metrics.currency)} unbilled`}
       />
     </section>
 
     {cost && <section className="page-panel">
       <div className="section-heading">
-        <div><h2>What this cost, and what it produced</h2><p>The last 30 days. Three numbers; the rest is one screen away.</p></div>
-        <button className="secondary-button" type="button" onClick={() => onNavigate('/loop/cost')}>See all of it <ChevronRight size={15} /></button>
+        <div><h2>Cost and results</h2><p>Last 30 days.</p></div>
+        <button className="secondary-button" type="button" onClick={() => onNavigate('/loop/cost')}>View details <ChevronRight size={15} /></button>
       </div>
       {/* Model spend is the one figure on this screen that is not in the
           workspace's currency, and it sat unlabelled beside one that is --
@@ -315,7 +315,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
 
     <section className="recommendations-panel">
       <div className="section-heading">
-        <div><h2>What needs you</h2><p>Ranked by what it costs you to ignore. Press <kbd>j</kbd> and <kbd>k</kbd> to move through them.</p></div>
+        <div><h2>What needs you</h2><p>Highest-impact decisions first.</p></div>
         <span className="status-pill">{waitingCount} open</span>
       </div>
 
@@ -325,7 +325,7 @@ export function LoopView({ data, recommendations, actions, onNavigate }: {
       {loop.waitingApprovals.length > 0 && <div className="workflow-approval">
         <div className="approval-banner">
           <CircleAlert size={19} />
-          <p><strong>{loop.waitingApprovals.length} {loop.waitingApprovals.length === 1 ? 'job has' : 'jobs have'} stopped for your approval.</strong> Each one is holding its next step until you decide.</p>
+          <p><strong>{loop.waitingApprovals.length} {loop.waitingApprovals.length === 1 ? 'job needs' : 'jobs need'} approval.</strong></p>
         </div>
         <div>
           {loop.waitingApprovals.map((run) => <button
@@ -419,29 +419,29 @@ function OnboardingChecklist({ data, limits, onNavigate }: {
   const outreach: Step[] = [
     {
       done: Boolean(seat?.configured),
-      title: 'Add the LinkedIn account you will send from',
-      detail: 'Name the account, set its timezone and safe daily limits, and connect it when you are ready.',
+      title: 'Add a LinkedIn account',
+      detail: 'Set the timezone and daily limits.',
       cta: 'Add account',
       href: '/outreach'
     },
     {
       done: (outreachSetup?.leadLists ?? 0) > 0,
       title: 'Build one lead list',
-      detail: 'Import people you already know, or turn a LinkedIn search into a list you can review before contacting.',
+      detail: 'Import leads or build a list from LinkedIn search.',
       cta: 'Build lead list',
       href: '/outreach/manager'
     },
     {
       done: (outreachSetup?.workflows ?? 0) > 0,
       title: 'Build one workflow',
-      detail: 'Choose the order: view, invite, message, follow, wait, or a manual message that stops for you.',
+      detail: 'Choose the outreach steps and timing.',
       cta: 'Build workflow',
       href: '/outreach/manager'
     },
     {
       done: (outreachSetup?.campaigns ?? 0) > 0,
       title: 'Create your first campaign',
-      detail: 'Pick the sending account, lead list and workflow. Nothing goes out until you explicitly start it.',
+      detail: 'Choose the account, lead list, and workflow.',
       cta: 'Create campaign',
       href: '/outreach/manager'
     }
@@ -451,21 +451,21 @@ function OnboardingChecklist({ data, limits, onNavigate }: {
     {
       done: hasAgent === true,
       title: 'Connect Claude Code or Codex',
-      detail: 'Paste one generated command in your terminal so your agent can reach this workspace and prepare work.',
+      detail: 'Connect an agent to this workspace.',
       cta: 'Connect agent',
       href: '/setup/agent'
     },
     {
       done: hasLiveConnection,
-      title: 'Connect the source that knows what happened',
-      detail: 'Email, accounting, or another connected tool gives Trevra the evidence behind agreements, delivery and payment.',
+      title: 'Connect business data',
+      detail: 'Connect email, accounting, or another data source.',
       cta: 'Connect data',
       href: '/setup/data'
     },
     {
       done: hasClients,
-      title: 'Bring in your clients and agreements',
-      detail: 'Sync them, upload an agreement, or import marketplace history. Trevra builds the commercial record from that.',
+      title: 'Add clients and agreements',
+      detail: 'Sync, upload, or import them.',
       cta: 'Bring in clients',
       href: '/setup/data'
     }
@@ -481,27 +481,25 @@ function OnboardingChecklist({ data, limits, onNavigate }: {
     <section className="onboarding-card">
       <div className="onboarding-head">
         <div>
-          <h2>Get your first outcome working</h2>
-          <p>Pick one job first. Trevra keeps the other one available without making you configure both up front.</p>
+          <h2>Choose what to set up first</h2>
+          <p>Start with outreach or revenue.</p>
         </div>
         {progressReady && <span className="status-pill">{completed} of {steps.length} done</span>}
       </div>
 
       <div className="onboarding-choice" role="group" aria-label="First outcome">
         <button type="button" className={journey === 'outreach' ? 'is-active' : undefined} aria-pressed={journey === 'outreach'} onClick={() => chooseJourney('outreach')}>
-          <strong>Win new business</strong><span>Find people and run a LinkedIn campaign</span>
+          <strong>Win new business</strong><span>Run LinkedIn outreach</span>
         </button>
         <button type="button" className={journey === 'money' ? 'is-active' : undefined} aria-pressed={journey === 'money'} onClick={() => chooseJourney('money')}>
-          <strong>Get paid for work</strong><span>Connect business data and surface what needs action</span>
+          <strong>Get paid</strong><span>Connect revenue data</span>
         </button>
       </div>
 
-      {journey === 'outreach' && <p className="panel-note">
-        Before anything goes out: <button className="li-link" type="button" onClick={() => onNavigate('/outreach')} style={{ background: 'none', border: 0, padding: 0, font: 'inherit', cursor: 'pointer' }}>see the limits Trevra will enforce</button>. Your own LinkedIn account is the thing at risk, so the app shows which numbers are published facts and which are practitioner guidance.
-      </p>}
+      {journey === 'outreach' && <p className="panel-note"><button className="li-link" type="button" onClick={() => onNavigate('/outreach')} style={{ background: 'none', border: 0, padding: 0, font: 'inherit', cursor: 'pointer' }}>Review LinkedIn limits</button> before sending.</p>}
 
       {!progressReady
-        ? <p className="onboarding-loading"><LoaderCircle className="spin" size={16} /> Checking what is already set up…</p>
+        ? <p className="onboarding-loading"><LoaderCircle className="spin" size={16} /> Checking setup…</p>
         : <ol className="onboarding-steps">
           {steps.map((step) => {
             const next = !step.done && step.title === nextTitle;

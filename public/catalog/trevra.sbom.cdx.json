@@ -5,7 +5,7 @@
   "serialNumber": "urn:uuid:***",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-16T20:00:49.760Z",
+    "timestamp": "2026-08-17T09:45:05.722Z",
     "lifecycles": [
       {
         "phase": "build"
@@ -21,7 +21,7 @@
     "component": {
       "bom-ref": "trevra@0.1.0",
       "type": "library",
-      "name": "Trevra",
+      "name": "app",
       "version": "0.1.0",
       "scope": "required",
       "purl": "pkg:npm/trevra@0.1.0",
@@ -7796,38 +7796,6 @@
       ]
     },
     {
-      "bom-ref": "buildcheck@0.0.7",
-      "type": "library",
-      "name": "buildcheck",
-      "version": "0.0.7",
-      "scope": "optional",
-      "author": "Brian White <mscdex@mscdex.net>",
-      "description": "Build environment checking (a la autoconf) for node.js",
-      "purl": "pkg:npm/buildcheck@0.0.7",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/buildcheck/-/buildcheck-0.0.7.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "http://github.com/mscdex/buildcheck.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "9476e5cf86a16a6c694e69ec93e30d4d15ac8d82aff7ae4cc0ead2272783e7cf2b47725cbbbb3013ed3037917e3db2f972382effd39b9217f310fba87c43302c"
-        }
-      ]
-    },
-    {
       "bom-ref": "busboy@1.6.0",
       "type": "library",
       "name": "busboy",
@@ -9061,38 +9029,6 @@
           "license": {
             "id": "MIT"
           }
-        }
-      ]
-    },
-    {
-      "bom-ref": "cpu-features@0.0.10",
-      "type": "library",
-      "name": "cpu-features",
-      "version": "0.0.10",
-      "scope": "optional",
-      "author": "Brian White <mscdex@mscdex.net>",
-      "description": "A simple binding to Google's cpu_features library for obtaining information about installed CPU(s)",
-      "purl": "pkg:npm/cpu-features@0.0.10",
-      "properties": [
-        {
-          "name": "cdx:npm:package:development",
-          "value": "true"
-        }
-      ],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/cpu-features/-/cpu-features-0.0.10.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/mscdex/cpu-features.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "f48918aad5f76073c2ce8560d4fcbea3dd39edade2d1fa7b4b9df4516a2409268555373b0b05cf4623a3463050435f1908d69fc7bf187e71be1c02f1b5598e18"
         }
       ]
     },
@@ -22838,10 +22774,6 @@
       "dependsOn": []
     },
     {
-      "ref": "buildcheck@0.0.7",
-      "dependsOn": []
-    },
-    {
       "ref": "busboy@1.6.0",
       "dependsOn": [
         "streamsearch@1.1.0"
@@ -23042,13 +22974,6 @@
       "dependsOn": [
         "object-assign@4.1.1",
         "vary@1.1.2"
-      ]
-    },
-    {
-      "ref": "cpu-features@0.0.10",
-      "dependsOn": [
-        "buildcheck@0.0.7",
-        "nan@2.28.0"
       ]
     },
     {
@@ -24549,7 +24474,6 @@
       "dependsOn": [
         "asn1@0.2.6",
         "bcrypt-pbkdf@1.0.2",
-        "cpu-features@0.0.10",
         "nan@2.28.0"
       ]
     },

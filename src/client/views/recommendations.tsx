@@ -60,7 +60,7 @@ export function RecommendationCard({ item, busy, onPrepare, onSnooze, onDismiss 
           to work out whether they are the same number. */}
       <p>{moneyProse(item.summary)}</p>
       <details className="proof-pack">
-        <summary><FileCheck2 size={14} /> Open Revenue Proof Pack</summary>
+        <summary><FileCheck2 size={14} /> View evidence</summary>
         <p className="proof-summary">{item.proofPack?.summary ? moneyProse(item.proofPack.summary) : null}</p>
         <div className="proof-items">{proofItems.map((evidence) => <div className={`proof-item proof-${evidence.category}`} key={evidence.id}><span>{evidence.label}</span><blockquote>{moneyProse(evidence.excerpt)}</blockquote></div>)}</div>
       </details>
@@ -111,6 +111,6 @@ export function RecommendationList({ items, actions, empty }: {
 
 export function EmptyRecommendations({ isNew }: { isNew: boolean }) {
   return isNew
-    ? <div className="empty-state"><Inbox size={28} /><h4 aria-level={3}>Nothing needs your approval yet</h4><p>Finish your first setup on Loop. When Trevra finds something worth a decision, it appears here.</p></div>
-    : <div className="empty-state"><Check size={28} /><h4 aria-level={3}>You’re all clear</h4><p>Nothing needs you right now. Trevra will speak up when it does.</p></div>;
+    ? <div className="empty-state"><Inbox size={28} /><h4 aria-level={3}>No approvals yet</h4><p>Finish setup to start generating actions.</p></div>
+    : <div className="empty-state"><Check size={28} /><h4 aria-level={3}>Nothing waiting</h4><p>No decisions need you right now.</p></div>;
 }

@@ -65,9 +65,9 @@ import {
 
 /** The three side effects, in the plain words this codebase already wrote for them. */
 const SIDE_EFFECT_COPY: Record<string, string> = {
-  'external-write': 'Sends or changes something outside your business',
-  'network-read': 'Reads something from outside',
-  none: 'Thinks only, nothing leaves Trevra'
+  'external-write': 'Writes outside Trevra',
+  'network-read': 'Reads external data',
+  none: 'No external access'
 };
 
 const sideEffectOf = (module: PublicRegistryModule): string => module.sideEffect;
@@ -103,11 +103,9 @@ export function SkillsView({ setToast, onNavigate }: {
       if (direction === 'uninstall') await uninstallRegistryModule(module.id);
       else await installRegistryModule(module.id, module.version);
       await loadRegistry();
-      setToast(direction === 'uninstall'
-        ? `${module.name} revoked. Your agent can no longer run it.`
-        : `${module.name} installed`);
+      setToast(direction === 'uninstall' ? `${module.name} removed` : `${module.name} installed`);
     } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Could not change that installation. Nothing changed — try again in a moment.');
+      setToast(error instanceof Error ? error.message : 'Could not update this skill. Try again.');
     } finally { setBusy(''); setConfirmRemove(null); }
   };
 
@@ -118,7 +116,7 @@ export function SkillsView({ setToast, onNavigate }: {
       <div className="section-heading">
         <div>
           <h3 aria-level={2}><Boxes size={18} /> Shared skills</h3>
-          <p>Each one is a job Trevra knows how to do, published for every workspace. Anything marked “needs your approval” never acts on its own.</p>
+          <p>Skills are tasks an agent can run. Some require approval.</p>
         </div>
         <span className="status-pill">{modules.length} available</span>
       </div>
@@ -155,9 +153,9 @@ export function SkillsView({ setToast, onNavigate }: {
             </div>
           </article>;
         })}
-        {modules.length === 0 && <div className="empty-state"><Boxes size={28} /><h4 aria-level={3}>Nothing here yet</h4><p>Connect your agent in <strong>Setup → Agent access</strong> and the jobs it can run show up here.</p><button className="secondary-button" onClick={() => onNavigate('/setup/agent')}>Connect an agent <ChevronRight size={15} /></button></div>}
+        {modules.length === 0 && <div className="empty-state"><Boxes size={28} /><h4 aria-level={3}>No skills available</h4><p>Connect an agent to load available skills.</p><button className="secondary-button" onClick={() => onNavigate('/setup/agent')}>Connect an agent <ChevronRight size={15} /></button></div>}
       </div>
-      <p className="panel-note">Writing your own? Publishing needs a signing key on your machine, so it lives in the terminal: <code>npm run module -- help</code>.</p>
+      <p className="panel-note">Publish custom skills with <code>npm run module -- help</code>.</p>
     </section>
 
     <RunOneByHand setToast={setToast} onNavigate={onNavigate} />
@@ -168,9 +166,9 @@ export function SkillsView({ setToast, onNavigate }: {
       title={writes ? `Revoke ${confirmRemove.name}?` : `Uninstall ${confirmRemove.name}?`}
       tone="danger"
       body={<>
-        {writes && <p><strong>This one can send or change something outside your business.</strong> Revoking it takes that reach away from your agent immediately — which is the point, and it is not the same act as removing a scorer that only thinks.</p>}
-        <p>Your agent loses this job. Any standing schedule or playbook step that calls <code>{confirmRemove.id}</code> fails at its next run until you install it again.</p>
-        <p>Everything it already did stays in the run ledger — this removes the capability, not the record.</p>
+        {writes && <p><strong>This skill can write outside Trevra.</strong></p>}
+        <p>Removing it stops future runs that use <code>{confirmRemove.id}</code>.</p>
+        <p>Past runs stay in the ledger.</p>
       </>}
       confirmLabel={writes ? 'Revoke access' : `Uninstall ${confirmRemove.name}`}
       busy={busy === confirmRemove.id}
@@ -239,7 +237,7 @@ function SkillInspector({ module, onClose }: { module: PublicRegistryModule; onC
               />
             // The catalogue route does not publish schemas today. Saying so
             // beats rendering an empty box that reads as "no inputs".
-            : <p className="empty-copy">The catalogue does not publish this skill’s schema, so there is nothing here to show you. A run of it does: open one below and the exact fields it took and returned are on the step.</p>}
+            : <p className="empty-copy">Input and output schema is not published for this skill.</p>}
           {schemas.outputSchema && <SchemaForm
             schema={schemas.outputSchema}
             values={{}}
@@ -251,10 +249,10 @@ function SkillInspector({ module, onClose }: { module: PublicRegistryModule; onC
 
         <RunSection title="Its last ten runs">
           {problem && <div className="error-banner">
-            <strong>{problem}</strong> Everything above is still true — only the run history could not be read. Close this and open it again.
+            <strong>{problem}</strong> Run history could not be loaded.
           </div>}
-          {!problem && runs === null && <div className="empty-state"><LoaderCircle className="spin" size={26} /><h4>Reading its ledger…</h4><p>One moment.</p></div>}
-          {runs !== null && runs.length === 0 && <div className="empty-state"><ListTree size={26} /><h4>It has not run in this workspace</h4><p>The run counter on the card is every workspace. This list is only yours.</p></div>}
+          {!problem && runs === null && <div className="empty-state"><LoaderCircle className="spin" size={26} /><h4>Loading runs…</h4></div>}
+          {runs !== null && runs.length === 0 && <div className="empty-state"><ListTree size={26} /><h4>No runs in this workspace</h4></div>}
           {runs !== null && runs.length > 0 && <dl className="field-list">
             {runs.map((run) => <div className="field-row" key={run.id}>
               <dt><span className={`run-status run-${run.status}`}>{runStatusLabel(run.status)}</span></dt>
@@ -309,9 +307,7 @@ function RunOneByHand({ setToast, onNavigate }: {
     try {
       const payload = buildSchemaValue(selected.inputSchema as SchemaNode, values);
       const run = await startPlaybook(selected.id, payload, selected.version);
-      setToast(run.status === 'waiting_approval'
-        ? 'Started — it is waiting on your approval. Opening it now.'
-        : `Started — the job is ${run.status.replace('_', ' ')}. Opening it now.`);
+      setToast(run.status === 'waiting_approval' ? 'Started · waiting for approval' : `Started · ${run.status.replace('_', ' ')}`);
       // The evidence, not the screen you happened to be on when you pressed it.
       onNavigate(`/ledger/run/${run.id}`);
     } catch (error) {
@@ -325,7 +321,7 @@ function RunOneByHand({ setToast, onNavigate }: {
         <h3 aria-level={2} style={{ display: 'inline' }}><Workflow size={18} /> Run one by hand</h3>
       </summary>
       <div className="section-heading">
-        <div><p>The agent starts jobs. Doing it yourself is the exception — useful when you are testing a change or want one thing done now.</p></div>
+        <div><p>Start a job manually.</p></div>
         <span className="status-pill">{playbooks.length} available</span>
       </div>
       <div className="playbook-launch-grid">
@@ -335,25 +331,25 @@ function RunOneByHand({ setToast, onNavigate }: {
             <p>{playbook.description}</p>
             <code>{playbook.id}@{playbook.version}</code>
           </button>)}
-          {!loaded && <div className="empty-state"><LoaderCircle className="spin" size={28} /><h4 aria-level={3}>Loading what Trevra can run…</h4><p>One moment.</p></div>}
-          {loaded && playbooks.length === 0 && <div className="empty-state"><Workflow size={28} /><h4 aria-level={3}>No jobs available yet</h4><p>Connect your agent in <strong>Setup → Agent access</strong> and the jobs it can run appear here.</p><button className="secondary-button" onClick={() => onNavigate('/setup/agent')}>Connect an agent <ChevronRight size={15} /></button></div>}
+          {!loaded && <div className="empty-state"><LoaderCircle className="spin" size={28} /><h4 aria-level={3}>Loading jobs…</h4></div>}
+          {loaded && playbooks.length === 0 && <div className="empty-state"><Workflow size={28} /><h4 aria-level={3}>No jobs available</h4><p>Connect an agent first.</p><button className="secondary-button" onClick={() => onNavigate('/setup/agent')}>Connect an agent <ChevronRight size={15} /></button></div>}
         </div>
         <div className="playbook-input">
           <div className="playbook-input-head">
-            <div><strong>{selected?.name ?? 'Pick a job'}</strong><span>{selected ? 'Fill this in and Trevra takes it from there.' : 'Choose one on the left to get started.'}</span></div>
+            <div><strong>{selected?.name ?? 'Pick a job'}</strong><span>{selected ? 'Enter the inputs.' : 'Choose a job on the left.'}</span></div>
           </div>
           {selected
             ? <SchemaForm schema={selected.inputSchema as SchemaNode} values={values} onChange={(path, value) => setValues((current) => ({ ...current, [path]: value }))} />
             : <p className="schema-empty">Nothing selected yet.</p>}
           <div className="panel-footer">
-            <span>{selected ? 'It stops at the first thing that needs your decision.' : 'Pick a job on the left first.'}</span>
+            <span>{selected ? 'Approval steps will wait for you.' : 'Pick a job first.'}</span>
             <button className="secondary-button" disabled={!selected || busy} onClick={() => void launch()}>
               {busy ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />} Start run
             </button>
           </div>
         </div>
       </div>
-      <p className="panel-note"><CircleAlert size={15} /> Every run started here lands in the run ledger with its evidence, exactly like one the agent started.</p>
+      <p className="panel-note"><CircleAlert size={15} /> Manual runs are recorded in the ledger.</p>
     </details>
   </section>;
 }

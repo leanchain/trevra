@@ -111,7 +111,7 @@ export function LedgerView({ runId, setToast, onNavigate }: {
     try {
       const updated = await decidePlaybookStep(run.id, stepId, decision);
       await reload();
-      setToast(decision === 'approve' ? `Approved — the job is ${updated.status.replace('_', ' ')}` : 'Rejected. Nothing was sent.');
+      setToast(decision === 'approve' ? `Approved · ${updated.status.replace('_', ' ')}` : 'Rejected.');
     } catch (error) {
       setToast(error instanceof Error ? error.message : 'Unable to record decision');
     } finally { setBusy(''); }
@@ -147,7 +147,7 @@ export function LedgerView({ runId, setToast, onNavigate }: {
 
     <section className="page-panel">
       <div className="section-heading">
-        <div><h3 aria-level={2}>Every run</h3><p>Newest first. Open one to see every step, what went in, what came out, and the proof behind it.</p></div>
+        <div><h3 aria-level={2}>Every run</h3><p>Newest first. Open a run to see steps, inputs, outputs, and evidence.</p></div>
         <button className="secondary-button" onClick={() => void reload()}><RefreshCw size={15} /> Refresh</button>
       </div>
 
@@ -204,7 +204,7 @@ export function LedgerView({ runId, setToast, onNavigate }: {
             {run.error && <div className="error-banner">{run.error}</div>}
             {!run.error && failed && <div className="error-banner"><strong>{humanizeId(failed.stepId)}</strong> failed{failed.error ? ` — ${firstLine(failed.error)}` : '.'}</div>}
             {approval && <div className="workflow-approval">
-              <div className="approval-banner"><ShieldCheck size={19} /><p><strong>Your decision.</strong> Trevra runs exactly what you see below. If a single character changes after you approve, it is rejected instead of sent.</p></div>
+              <div className="approval-banner"><ShieldCheck size={19} /><p><strong>Approval required.</strong> Changes after approval are rejected.</p></div>
               <FieldList value={approval.input} />
               <div><button className="secondary-button" disabled={busy === `${run.id}:${approval.stepId}`} onClick={() => void decide(run, approval.stepId, 'reject')}>Reject</button><button className="primary-button" disabled={busy === `${run.id}:${approval.stepId}`} onClick={() => void decide(run, approval.stepId, 'approve')}>{busy === `${run.id}:${approval.stepId}` ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Approve and run</button></div>
             </div>}
@@ -212,8 +212,8 @@ export function LedgerView({ runId, setToast, onNavigate }: {
           </article>;
         })}
         {!loaded && <div className="empty-state"><LoaderCircle className="spin" size={28} /><h4 aria-level={3}>Loading your runs…</h4><p>One moment.</p></div>}
-        {loaded && activity.length === 0 && <div className="empty-state"><Workflow size={28} /><h4 aria-level={3}>No runs yet</h4><p>Your agent has not done anything here. Start a job by hand in <strong>Setup → Skills</strong>, or give the agent a standing job in <strong>Setup → Agent access</strong>.</p><button className="secondary-button" onClick={() => onNavigate('/setup/skills')}>Run one by hand <ChevronRight size={15} /></button></div>}
-        {loaded && activity.length > 0 && shown.length === 0 && <div className="empty-state"><Workflow size={28} /><h4 aria-level={3}>No run matches these filters</h4><p>{activity.length} {activity.length === 1 ? 'run is' : 'runs are'} on file. Widen the window or clear a filter.</p><button className="secondary-button" onClick={() => { setStatus('all'); setActor('all'); setDays(365); }}>Show everything</button></div>}
+        {loaded && activity.length === 0 && <div className="empty-state"><Workflow size={28} /><h4 aria-level={3}>No runs yet</h4><p>Start a job in <strong>Setup → Skills</strong>.</p><button className="secondary-button" onClick={() => onNavigate('/setup/skills')}>Start a job <ChevronRight size={15} /></button></div>}
+        {loaded && activity.length > 0 && shown.length === 0 && <div className="empty-state"><Workflow size={28} /><h4 aria-level={3}>No matching runs</h4><p>Change or clear the filters.</p><button className="secondary-button" onClick={() => { setStatus('all'); setActor('all'); setDays(365); }}>Show everything</button></div>}
       </div>
     </section>
 
@@ -235,11 +235,11 @@ export function LedgerView({ runId, setToast, onNavigate }: {
  * -------------------------------------------------------------------------- */
 
 const SECTION_COPY: Record<LedgerExportSection, string> = {
-  runs: 'Every run: what it was asked to do, what it did, when, and how it ended.',
-  steps: 'Every step inside those runs, with what went in and what came out.',
-  evidence: 'The sources each step read to reach its conclusion.',
-  approvals: 'What you approved, and the fingerprint each approval was pinned to.',
-  actions: 'Outreach actions: what was planned, what went out, what came back.'
+  runs: 'Run status, timing, and result.',
+  steps: 'Inputs and outputs for each step.',
+  evidence: 'Sources used by each step.',
+  approvals: 'Approved payloads and fingerprints.',
+  actions: 'Planned, sent, and returned outreach actions.'
 };
 
 function LedgerExportPanel({ counts, setToast }: {
@@ -273,13 +273,11 @@ function LedgerExportPanel({ counts, setToast }: {
       setFresh(created.id);
       setHistory(await getLedgerExports().catch(() => history));
       const rows = Object.values(created.counts).reduce((sum, count) => sum + count, 0);
-      setToast(`Your ledger is ready: ${rows.toLocaleString('en-US')} rows across ${Object.keys(created.counts).length} tables. The download is on the panel.`);
+      setToast(`Ledger export ready · ${rows.toLocaleString('en-US')} rows.`);
       // The caret lands on the thing that appeared (see the effect on `fresh`),
       // not back at the button that made it appear.
     } catch (error) {
-      setProblem(error instanceof Error
-        ? `${error.message} Nothing was written and nothing left your workspace — try again, or narrow the window.`
-        : 'Could not render the export. Nothing was written — try again, or narrow the window.');
+      setProblem(error instanceof Error ? error.message : 'Could not create the export. Try again.');
     } finally { setBusy(false); }
   };
 
@@ -288,8 +286,8 @@ function LedgerExportPanel({ counts, setToast }: {
   return <section className="page-panel ledger-export">
     <div className="section-heading">
       <div>
-        <h3 aria-level={2}><FileDown size={18} /> Take your ledger with you</h3>
-        <p>One archive: NDJSON per table plus a <code>manifest.json</code> with the sha256 of every file in it. Not a spreadsheet — the ledger is nested, and flattening it would throw away the evidence, which is the part worth having.</p>
+        <h3 aria-level={2}><FileDown size={18} /> Export ledger</h3>
+        <p>Downloads an NDJSON archive with a signed <code>manifest.json</code>.</p>
       </div>
       <span className="status-pill">{(counts.jobs + counts.agent).toLocaleString('en-US')} runs loaded</span>
     </div>
@@ -318,7 +316,7 @@ function LedgerExportPanel({ counts, setToast }: {
     <div className="panel-footer">
       <span>{include.length === 0
         ? 'Pick at least one thing to put in the file.'
-        : `${include.length} of ${LEDGER_EXPORT_SECTIONS.length} included, ${days} days. Rendered once and stored, so the hashes keep describing the same bytes.`}</span>
+        : `${include.length} of ${LEDGER_EXPORT_SECTIONS.length} included · ${days} days`}</span>
       <button className="primary-button" disabled={busy || include.length === 0} onClick={() => void render()}>
         {busy ? <LoaderCircle className="spin" size={16} /> : <FileDown size={16} />} Render the export
       </button>
@@ -341,7 +339,7 @@ function LedgerExportPanel({ counts, setToast }: {
           <dd><code>{digest.slice(0, 16)}…</code></dd>
         </div>)}
       </dl>
-      <small>These are the hashes inside <code>manifest.json</code>. Re-hash a file after you download it and it must match, or the file is not the one Trevra rendered.</small>
+      <small>Hashes from <code>manifest.json</code>.</small>
     </div>}
 
     {history.length > 0 && <details className="run-raw">
@@ -358,7 +356,7 @@ function LedgerExportPanel({ counts, setToast }: {
     </details>}
 
     {history.length === 0 && !latest && <p className="panel-note">
-      <CircleAlert size={15} /> Nothing exported from this workspace yet. The file is yours: Trevra keeps a copy so the hashes stay meaningful, and downloads it with <code>Cache-Control: no-store</code> so no proxy keeps one.
+      <CircleAlert size={15} /> No exports yet.
     </p>}
   </section>;
 }

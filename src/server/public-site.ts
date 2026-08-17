@@ -7,7 +7,7 @@ import { id } from './db.js';
 import { listPublicModulePopularity, listPublicRegistryModules } from './registry/service.js';
 
 /** The landing page's own <meta name="description">, verbatim. One product sentence, not four. */
-const PRODUCT_DESCRIPTION = 'Trevra is the open-source runtime for agent-run go-to-market. Claude Code or Codex does the work; Trevra records every run and holds anything with a consequence — a send, an invoice — until you approve it.';
+const PRODUCT_DESCRIPTION = 'Trevra is open-source GTM infrastructure for Claude Code and Codex. Agents do the work, external actions require approval, and every run is logged.';
 const PUBLIC_PATHS = ['/', '/how-it-works', '/security', '/privacy', '/terms'] as const;
 
 export type MarketingEventName =

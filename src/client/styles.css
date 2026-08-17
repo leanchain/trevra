@@ -437,6 +437,14 @@ h1 { margin-bottom: 0; font-family: var(--t-display); font-size: var(--t-text-2x
 .icon-button { width: var(--t-tap); height: var(--t-tap); border-radius: var(--t-r-sm); border: 1px solid var(--line); background: var(--t-surface); display: grid; place-items: center; cursor: pointer; position: relative; color: var(--ink); }
 .icon-button i { width: 6px; height: 6px; background: var(--red); border-radius: 50%; position: absolute; right: 8px; top: 8px; border: 1px solid var(--t-surface); }
 .icon-button.danger { color: var(--red); }
+.theme-toggle svg { width: 17px; height: 17px; }
+.theme-toggle .icon-dark { display: none; }
+:root[data-theme="dark"] .theme-toggle .icon-light { display: none; }
+:root[data-theme="dark"] .theme-toggle .icon-dark { display: block; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-toggle .icon-light { display: none; }
+  :root:not([data-theme="light"]) .theme-toggle .icon-dark { display: block; }
+}
 /* One bordered strip with hairline dividers, not N individually-radiused,
    individually-shadowed cards -- see craft-floor.md on same-size icon+heading
    +number+caption cards as page structure. The divider is a border-right on
@@ -665,6 +673,24 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 
 .auth-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(0,1.05fr) minmax(420px,.95fr); background: var(--t-bg); }
 .auth-story { background: var(--t-green-fill); color: var(--t-on-green); padding: clamp(32px,6vw,86px); display: flex; flex-direction: column; justify-content: space-between; gap: 58px; position: relative; overflow: hidden; }
+/* Always the dark-green tile with white text, in both themes -- this panel
+   does not follow the app's dark-mode green/on-green swap. */
+:root[data-theme="dark"] .auth-story {
+  --t-green-fill: #176b45;
+  --t-on-green: #ffffff;
+  --t-on-green-2: rgba(255,255,255,.82);
+  --t-on-green-line: rgba(255,255,255,.45);
+  --t-on-green-wash: rgba(255,255,255,.14);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .auth-story {
+    --t-green-fill: #176b45;
+    --t-on-green: #ffffff;
+    --t-on-green-2: rgba(255,255,255,.82);
+    --t-on-green-line: rgba(255,255,255,.45);
+    --t-on-green-wash: rgba(255,255,255,.14);
+  }
+}
 .auth-story::after { content: ''; position: absolute; width: 520px; height: 520px; right: -210px; bottom: -230px; border: 1px solid var(--t-on-green-wash); border-radius: 50%; }
 .auth-brand { padding: 0; color: var(--t-on-green); }
 .auth-brand .brand-mark { background: var(--t-on-green); color: var(--t-green-fill); }
@@ -2211,6 +2237,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   width: 1px;
   height: 15px;
   margin: 0 7px;
+  padding: 0;
   background: var(--line);
 }
 .setup-nav > .is-active,

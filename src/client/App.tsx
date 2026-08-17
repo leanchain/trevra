@@ -98,6 +98,7 @@ import { RedditScreen } from './RedditScreen';
 import { ResearchScreen } from './ResearchScreen';
 import { trackEvent, trackPageView } from './analytics';
 import { ConfirmDrawer, useDialog } from './ui/dialog';
+import { BrandMark } from './ui/BrandMark';
 import { HelpPanel, JumpPalette, ShortcutSheet } from './ui/HelpPanel';
 import { useShortcuts } from './ui/keys';
 import { isAccountsPath, navigate, replaceNavigate, usePathname, useRoute, type Route, type Section } from './ui/route';
@@ -478,7 +479,7 @@ export function App() {
       >Skip to what is on this screen</a>
 
       <aside className="sidebar">
-        <div className="brand"><span className="brand-mark">T</span><span>Trevra</span></div>
+        <div className="brand"><span className="brand-mark"><BrandMark /></span><span>Trevra</span></div>
         <nav>
           {NAV_ITEMS.map((item) => <NavButton
             key={item.section}
@@ -859,19 +860,17 @@ function AuthScreen({ onAuthenticated, onBack }: { onAuthenticated: () => Promis
   return <main className="marketing-runtime">
     <div className="auth-shell">
       <section className="auth-story">
-        <a className="brand auth-brand" href="/" onClick={(event) => { event.preventDefault(); onBack(); }}><span className="brand-mark">T</span><span>Trevra</span></a>
-        {/* No kicker above the heading: the h1 and the line under it already
-            say what this is, and the marketing page dropped its own. */}
-        <div><h1>Run growth from Claude. Trevra remembers what happened.</h1><p>Ask Claude to source, qualify, reach out, follow up, and bill. Every action is evidence-backed, approval-gated, and logged in one open-source ledger you own.</p></div>
-        <div className="auth-proof-list"><span><Check size={16} /> Every suggestion shows the evidence behind it</span><span><Check size={16} /> Trevra sends exactly what you approved, or nothing</span><span><Check size={16} /> Limits you set that your agent cannot cross</span><span><Check size={16} /> Open source, self-hostable, yours</span></div>
+        <a className="brand auth-brand" href="/" onClick={(event) => { event.preventDefault(); onBack(); }}><span className="brand-mark"><BrandMark /></span><span>Trevra</span></a>
+        <div><h1>Run GTM with Claude Code or Codex.</h1><p>Research, outreach, revenue actions, approvals, and run history in one workspace.</p></div>
+        <div className="auth-proof-list"><span><Check size={16} /> Evidence on every recommendation</span><span><Check size={16} /> Approval before external actions</span><span><Check size={16} /> Hard limits for agents</span><span><Check size={16} /> Open source and self-hostable</span></div>
       </section>
       <section className="auth-panel" id="get-started">
         <div className="auth-card">
           <span className="auth-icon"><ShieldCheck /></span>
           <h2>{mode === 'signin' ? 'Sign in to Trevra' : 'Create your workspace'}</h2>
-          <p>{mode === 'signin' ? 'Continue to your loop.' : 'Start with a private revenue ledger only you control.'}</p>
+          <p>{mode === 'signin' ? 'Continue to your workspace.' : 'Create a Trevra workspace.'}</p>
           {googleEnabled && <button className="google-auth-button" disabled={busy || googleBusy} onClick={() => void signInWithGoogle()}>{googleBusy ? <LoaderCircle className="spin" size={17} /> : <GoogleMark />}Continue with Google</button>}
-          {googleEnabled && emailPasswordEnabled && <div className="auth-divider"><span>Or the email</span></div>}
+          {googleEnabled && emailPasswordEnabled && <div className="auth-divider"><span>or</span></div>}
           {emailPasswordEnabled && <>
             {mode === 'signup' && <label>Name<input autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Alex Morgan" /></label>}
             <label>Email<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" /></label>
@@ -879,17 +878,16 @@ function AuthScreen({ onAuthenticated, onBack }: { onAuthenticated: () => Promis
           </>}
           {authError && <div className="error-banner">{authError}</div>}
           {emailPasswordEnabled && <button className="primary-button auth-submit" disabled={busy || googleBusy || !email || password.length < 10 || (mode === 'signup' && !name.trim())} onClick={() => void submit()}>{busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{mode === 'signin' ? 'Sign in' : 'Create workspace'}</button>}
-          {import.meta.env.DEV && <button className="ghost-button auth-submit" disabled={busy || googleBusy} onClick={() => void startDemoSession().then(onAuthenticated)}>Open seeded demo</button>}
-          {emailPasswordEnabled && <button className="auth-switch" onClick={switchMode}>{mode === 'signin' ? 'New to Trevra? Create an account' : 'Already have an account? Sign in'}</button>}
+          {import.meta.env.DEV && <button className="ghost-button auth-submit" disabled={busy || googleBusy} onClick={() => void startDemoSession().then(onAuthenticated)}>Open demo</button>}
+          {emailPasswordEnabled && <button className="auth-switch" onClick={switchMode}>{mode === 'signin' ? 'Create an account' : 'Sign in instead'}</button>}
           <button className="auth-switch" onClick={onBack}>← Back to site</button>
-          <p className="auth-consent">By creating or using a workspace, you agree to the <a href="/terms">Terms</a> and acknowledge the <a href="/privacy">Privacy Notice</a>.</p>
+          <p className="auth-consent">By continuing, you agree to the <a href="/terms">Terms</a> and <a href="/privacy">Privacy Notice</a>.</p>
           <div className="auth-legal-links"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/security">Security</a><a href="/how-it-works">How it works</a></div>
         </div>
       </section>
     </div>
   </main>;
 }
-
 /**
  * Connect Claude Code or Codex in one click.
  *

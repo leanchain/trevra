@@ -127,7 +127,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       setAccounts(await getRankedAccounts({ limit: 200 }));
       setError('');
     } catch (err) {
-      setError(errorMessage(err, 'Unable to read the account list. Nothing was changed — try again.'));
+      setError(errorMessage(err, 'Unable to load accounts. Try again.'));
     } finally { setLoading(false); }
   }, []);
 
@@ -144,8 +144,8 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       // entirely rejected is the operator's data and their next edit.
       if (imported.created > 0) setText('');
       setToast(imported.created > 0
-        ? `${imported.created} account(s) added. They are in the sweep; scores arrive as their sites are read.`
-        : 'Nothing new was written — every usable line was already here.');
+        ? `${imported.created} account(s) added.`
+        : 'All usable accounts were already imported.');
       await load();
     } catch (err) {
       setError(errorMessage(err, 'Unable to import that list'));
@@ -167,7 +167,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       setText(await file.text());
       setSource('csv');
     } catch {
-      setError('That file could not be read here. Open it and paste its contents instead.');
+      setError('Could not read that file. Paste its contents instead.');
     }
   };
 
@@ -176,7 +176,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     try {
       const updated = await sendAccountFeedback(row.account.id, { verdict: 'not_a_fit' });
       setAccounts((current) => current.map((entry) => entry.account.id === row.account.id ? updated : entry));
-      setToast(`${row.account.name} is out of the sweep, and what its signals looked like was kept. It is not deleted — the next import would only bring it back.`);
+      setToast(`${row.account.name} marked as not a fit.`);
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to record that verdict'));
@@ -187,7 +187,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     setRescoring(true);
     try {
       const { rescored } = await rescoreAccounts();
-      setToast(`${rescored} account(s) scored again against the signals as they stand now.`);
+      setToast(`${rescored} account(s) rescored.`);
       await load();
       setError('');
     } catch (err) {
@@ -201,11 +201,8 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     {accounts.length > 0 && <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3 aria-level={2}>{accounts.length} account(s), hottest first</h3>
-          <p>
-            The order is the scorer’s, computed over the signals below it. Every line in “why this score” links to the
-            page it was read from — nothing here is asserted without one.
-          </p>
+          <h3 aria-level={2}>{accounts.length} account(s), highest score first</h3>
+          <p>Scores use the signals shown under each account. Evidence links to the source.</p>
         </div>
         <div className="acc-heading-actions">
           <button className="secondary-button" type="button" disabled={rescoring} onClick={() => void runRescore()}>
@@ -233,11 +230,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       <div className="section-heading">
         <div>
           <h3 aria-level={2}>{accounts.length > 0 ? 'Add more accounts' : 'Start with the list you already have'}</h3>
-          <p>
-            {accounts.length > 0
-              ? 'Same list, same rules: one domain per line, and a domain already here is left alone rather than duplicated.'
-              : 'One domain per line. Nothing is fetched by this screen — the sweep reads each site on the worker’s own tick, at paced gaps, and the scores appear here as they land.'}
-          </p>
+          <p>{accounts.length > 0 ? 'One domain per line. Existing accounts are skipped.' : 'One domain per line. Accounts are scored after their sites are read.'}</p>
         </div>
         <FileUp size={20} className="li-heading-icon" />
       </div>
@@ -254,22 +247,19 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
           placeholder={'kestrel.dev\nacme.io\nhttps://www.northwind.co.uk/pricing'}
         />
       </label>
-      <p className="li-hint">
-        A URL is fine — the scheme, the <code>www</code> and the path are dropped, and what is kept is the domain, which
-        is what makes two spellings of the same company one account instead of two that each score half.
-      </p>
+      <p className="li-hint">URLs are normalized to the domain.</p>
 
       <div className="li-form-grid acc-import-grid">
         <label>Where this list came from
           <select value={source} disabled={importing} onChange={(event) => setSource(event.target.value as AccountSource)}>
             {SOURCE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
-          <small className="li-hint">Kept with the row for good. Provenance survives a merge: the first door wins.</small>
+          <small className="li-hint">Saved with the account.</small>
         </label>
       </div>
 
       <div className="panel-footer">
-        <span>Importing writes rows and contacts nobody.</span>
+        <span>Import adds accounts. It does not contact anyone.</span>
         <button className="primary-button" type="button" disabled={importing || !text.trim()} onClick={() => void runImport()}>
           {importing ? <LoaderCircle className="spin" size={15} /> : <Building2 size={15} />} Import this list
         </button>
@@ -280,7 +270,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       {accounts.length === 0 && !loading && !result && <div className="empty-state">
         <Building2 size={26} />
         <h4 aria-level={3}>No accounts yet</h4>
-        <p>The ranked list appears here as soon as this workspace has companies in it.</p>
+        <p>Imported accounts will appear here.</p>
       </div>}
     </section>
   </div>;
@@ -338,8 +328,8 @@ function AccountRow({ row, open, busy, onToggle, onNotAFit }: {
       {score
         ? score.rationale.summary
         : signals.length > 0
-          ? `The sweep has stored ${signals.length} signal(s) for this account and has not scored it yet.`
-          : 'The sweep has not read this account yet, so there is no score and nothing to explain.'}
+          ? `${signals.length} signal(s) found. Waiting for a score.`
+          : 'Not read yet.'}
     </p>
 
     <div className="acc-row-actions">
@@ -375,11 +365,7 @@ function AccountRow({ row, open, busy, onToggle, onNotAFit }: {
 function ScorePanel({ score }: { score: AccountScore }) {
   const { rationale } = score;
   return <div className="acc-why">
-    <p className="acc-why-window">
-      Scored over {rationale.windowDays} day(s). {score.distinctKinds} distinct signal kind(s) landed inside that
-      window{score.newestSignalAt ? `, the newest of them ${relativeTime(score.newestSignalAt)}` : ''}. Computed{' '}
-      {relativeTime(score.computedAt)}.
-    </p>
+    <p className="acc-why-window">{score.distinctKinds} signal type(s) over {rationale.windowDays} days. Scored {relativeTime(score.computedAt)}.</p>
 
     {rationale.components.length === 0
       ? <p className="empty-copy">No signal inside the window carried any weight.</p>
@@ -394,14 +380,12 @@ function ScorePanel({ score }: { score: AccountScore }) {
             {ageCopy(component.ageDays)} · weight {component.base} × recency {component.decay} ={' '}
             {component.points}
           </p>
-          <a className="li-link acc-evidence" href={component.evidenceUrl} target="_blank" rel="noreferrer">
-            Read what this came from <ExternalLink size={11} />
-          </a>
+          <a className="li-link acc-evidence" href={component.evidenceUrl} target="_blank" rel="noreferrer">Source <ExternalLink size={11} /></a>
         </li>)}
       </ul>}
 
     {rationale.combinations.length > 0 && <div className="acc-why-block">
-      <h5 aria-level={4}>Because they happened together</h5>
+      <h5 aria-level={4}>Combined signals</h5>
       <ul className="acc-combinations">
         {rationale.combinations.map((combination, index) => <li key={`${combination.kinds.join('+')}-${index}`}>
           <span className="acc-points">{signed(combination.bonus)}</span>
@@ -431,9 +415,7 @@ function ScorePanel({ score }: { score: AccountScore }) {
  */
 function SignalPanel({ row }: { row: RankedAccount }) {
   return <div className="acc-why">
-    <p className="acc-why-window">
-      No score has been computed for this account yet. These are the signals the sweep has stored, newest first.
-    </p>
+    <p className="acc-why-window">Not scored yet. Signals are newest first.</p>
     <ul className="acc-components">
       {row.signals.map((signal) => <li key={signal.id}>
         <div className="acc-component-head">
@@ -441,9 +423,7 @@ function SignalPanel({ row }: { row: RankedAccount }) {
         </div>
         <p className="acc-component-detail">{signal.detail}</p>
         <p className="acc-component-meta">Observed {relativeTime(signal.observedAt)}</p>
-        <a className="li-link acc-evidence" href={signal.evidenceUrl} target="_blank" rel="noreferrer">
-          Read what this came from <ExternalLink size={11} />
-        </a>
+        <a className="li-link acc-evidence" href={signal.evidenceUrl} target="_blank" rel="noreferrer">Source <ExternalLink size={11} /></a>
       </li>)}
     </ul>
   </div>;

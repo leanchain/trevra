@@ -68,21 +68,21 @@ const MODULE_GROUPS = [
   {
     key: 'linkedin',
     label: 'LinkedIn outreach',
-    blurb: 'Sequencing, pacing and seat safety for the outreach engine.',
+    blurb: 'Sequences, pacing, and account limits.',
     system: false,
     match: (id: string) => id.startsWith('gtm.linkedin-')
   },
   {
     key: 'gtm',
     label: 'Go-to-market skills',
-    blurb: 'Sourcing, qualification, and the drafting work an outreach run stands on.',
+    blurb: 'Sourcing, qualification, research, and drafting.',
     system: false,
     match: (id: string) => id.startsWith('gtm.')
   },
   {
     key: 'system',
     label: 'System-facing',
-    blurb: 'Called by other modules rather than composed by hand.',
+    blurb: 'Modules used by other modules.',
     system: true,
     match: () => true
   }
@@ -128,26 +128,26 @@ const SOURCE_FILES: Record<string, string> = {
  * the live registry and is not in this map falls back to its own description.
  */
 const SUMMARIES: Record<string, string> = {
-  'gtm.linkedin-sequence': 'Drafts or critiques a multi-touch sequence, and puts every message through the same anti-slop critic before it counts as written.',
-  'gtm.linkedin-pace': "Spreads one seat's actions across a horizon: warm-up ramp, day-to-day variance, acceptance-rate throttle, business hours.",
-  'gtm.linkedin-guard': "Checks one proposed action against every per-seat ceiling at once, including LinkedIn's own published InMail limit and duplicate targets.",
-  'gtm.channel-plan': 'Ranks channels for a draft by audience overlap and how much reshaping it needs, with a reason for every point scored.',
-  'gtm.channel-prepare': "Reshapes an approved draft into a single channel's format, length and conventions.",
-  'gtm.copy-critique': 'Checks copy against the substitution test, banned machine-outreach phrases, length, ask count, hedging and adverb density.',
-  'gtm.draft-reply': "Writes the reply to one discovered thread in that platform's shape, and reports a failed critique instead of passing the copy through.",
-  'gtm.enrich-company': "Derives firmographics, platform, tech fingerprint and catalog size from the company's own public pages. No credentials, no data broker.",
-  'gtm.find-contact': "Crawls a bounded, robots-respecting set of a domain's own pages for addresses it publishes. Every result carries its source URL.",
-  'gtm.lead-status': 'Says whether a lead may move to the next stage yet, and names the one thing missing if it may not.',
-  'gtm.outreach-draft': 'Writes one outreach email against a specific finding, with the compliance footer the jurisdiction requires.',
-  'gtm.outreach-guard': 'Enforces daily caps, account-age minimums, per-community cooldowns, blacklists and the self-promotion ratio before a reply is prepared.',
-  'gtm.research-brief': 'Joins audit, enrichment, contact and signal output into one checkable observation — or reports that nothing specific was found.',
-  'gtm.score-lead': 'Scores fit from platform, vertical, catalog size and contact quality, and shows what earned each point.',
-  'gtm.score-threads': 'Ranks discovered threads by relevance, freshness and whether a reply would actually be welcome there.',
-  'gtm.scout-threads': 'Finds public threads where the product is genuinely on topic, and records where each one came from.',
-  'gtm.source-leads': 'Builds a candidate list from public sources, with the origin URL kept against every row.',
-  'gtm.visibility-audit': 'Probes a domain for how readable it is to AI shopping assistants and answer engines, and keeps the evidence for each finding.',
-  'gtm.watch-signal': 'Mines public pages for change worth mentioning: hiring, pricing, positioning, stack.',
-  'net.validate-host': 'Refuses any outbound request aimed at a private, internal or loopback address before the network call is made.'
+  'gtm.linkedin-sequence': 'Drafts and checks multi-step LinkedIn sequences.',
+  'gtm.linkedin-pace': 'Schedules LinkedIn actions within warm-up, daily limits, and working hours.',
+  'gtm.linkedin-guard': 'Checks LinkedIn actions against account limits and duplicate targets.',
+  'gtm.channel-plan': 'Ranks channels for a draft and explains the score.',
+  'gtm.channel-prepare': 'Adapts an approved draft to a channel.',
+  'gtm.copy-critique': 'Checks copy for weak, generic, or machine-like writing.',
+  'gtm.draft-reply': 'Drafts and checks a reply for a public thread.',
+  'gtm.enrich-company': 'Reads public company pages for firmographic and technology data.',
+  'gtm.find-contact': 'Finds published contact details on a company domain.',
+  'gtm.lead-status': 'Checks whether a lead can move to the next stage.',
+  'gtm.outreach-draft': 'Drafts an outreach email from a specific finding.',
+  'gtm.outreach-guard': 'Checks outreach against limits, cooldowns, and blacklists.',
+  'gtm.research-brief': 'Combines research into one sourced brief.',
+  'gtm.score-lead': 'Scores lead fit and shows the factors behind it.',
+  'gtm.score-threads': 'Ranks public threads by relevance and freshness.',
+  'gtm.scout-threads': 'Finds relevant public threads and keeps the source.',
+  'gtm.source-leads': 'Builds lead lists from public sources.',
+  'gtm.visibility-audit': 'Checks how a domain appears to AI assistants and answer engines.',
+  'gtm.watch-signal': 'Finds changes in hiring, pricing, positioning, and stack.',
+  'net.validate-host': 'Blocks requests to private, internal, and loopback addresses.'
 };
 
 function groupIndexOf(module: PublicModule): number {
@@ -378,11 +378,11 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
 
       <section className="launch-hero" id="top">
         <div className="hero-copy">
-          <h1>Your agent works on a branch. You do the merge.</h1>
-          <p className="hero-lede">Code review, applied to revenue. Claude Code or Codex does the work — research, scoring, drafts — and all of that runs on its own. Anything that leaves the building (an email, an invoice, a price change) waits like an open pull request until you approve it. Every run lands in the log, and the whole runtime is open source.</p>
+          <h1>Run GTM with Claude Code or Codex.</h1>
+          <p className="hero-lede">Trevra gives agents tools for research, scoring, outreach, and revenue work. External actions wait for your approval. Every run is logged. The runtime is open source.</p>
           <div className="launch-actions">
-            <a className="launch-button" data-hosted-cta href={primaryHref} onClick={handlePrimary}><Play size={17} fill="currentColor" /> Launch hosted workspace</a>
-            <a className="launch-secondary" href="#approval"><ShieldCheck size={17} /> Stand at the gate</a>
+            <a className="launch-button" data-hosted-cta href={primaryHref} onClick={handlePrimary}><Play size={17} fill="currentColor" /> Open Trevra</a>
+            <a className="launch-secondary" href="#approval"><ShieldCheck size={17} /> See approvals</a>
           </div>
           <p className="hero-facts">
             <a href={sourceHref} target="_blank" rel="noreferrer" onClick={() => trackEvent('marketing_source_cta')}>Read the source</a>
@@ -399,16 +399,16 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
           <div className="policy-card">
             <div className="policy-head"><ShieldCheck size={20} /><span>workspace.policy.yaml</span><em>enforced</em></div>
             <pre><code>{POLICY_FILE}</code></pre>
-            <div className="policy-foot"><Check size={16} /> Evaluated before every consequential run</div>
+            <div className="policy-foot"><Check size={16} /> Checked before external actions</div>
           </div>
-          <figcaption>One file decides what your agent may do alone. Everything below is the machinery that enforces it.</figcaption>
+          <figcaption>This file controls what agents can do without approval.</figcaption>
         </figure>
       </section>
 
       <section className="launch-section run-section" id="how-it-works">
         <div className="split-heading">
-          <h2>Most of the work never needs you.</h2>
-          <p>Sourcing, enrichment, scoring, sequencing and drafting change nothing outside your workspace, so they run unattended. Each one is written to the ledger: the per-workspace record of every run, its inputs, the evidence behind its output, and how it ended.</p>
+          <h2>Agents do the work. You approve external actions.</h2>
+          <p>Research, scoring, sequencing, and drafting can run automatically. Trevra records each run, its inputs, evidence, and result.</p>
         </div>
         <figure className="ledger">
           <figcaption className="ledger-cap">
@@ -428,7 +428,7 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
               ))}
             </tbody>
           </table>
-          <p className="ledger-note">Every id above is real: the playbook is defined in <code>src/server/playbooks/registry.ts</code> and each module is in <a href="/catalog/modules.json">the catalog</a>. The run ids and timings are an example.</p>
+          <p className="ledger-note">The playbook and modules are real. Run IDs and timings are examples.</p>
         </figure>
       </section>
 
@@ -438,8 +438,8 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
       <section className="gate" id="approval" aria-labelledby="gate-title">
         <div className="gate-inner">
           <div className="gate-head" id="security">
-            <h2 id="gate-title">Nothing crosses this line without you.</h2>
-            <p>The last step of that run is addressed, written and hashed. It will not execute. Trevra read <code>workspace.policy.yaml</code>, found <code>external_writes: require_approval</code>, and stopped — the same stop, on the same evidence, whether you are watching or asleep.</p>
+            <h2 id="gate-title">External actions require approval.</h2>
+            <p>Trevra checks <code>workspace.policy.yaml</code> before acting. This run is prepared and waiting for approval.</p>
           </div>
 
           <div className="gate-body">
@@ -464,7 +464,7 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
 
             <div className="gate-decide">
               <p className="gate-line"><span>Nothing past this line has been sent</span></p>
-              <p className="gate-brief">The draft exists. It is hashed, it is in the ledger, and it is not on this page — and in a workspace, not in anyone's inbox — until a person decides. Not deciding is a decision: it stays here.</p>
+              <p className="gate-brief">The draft is stored in the ledger and has not been sent.</p>
               <details className="gate-decision">
                 <summary className="gate-summary">
                   <ShieldCheck size={18} aria-hidden="true" />
@@ -479,24 +479,24 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
                     <p>Worth fifteen minutes? I will bring what four assistants currently say your pricing is.</p>
                   </div>
                   <p className="release-ledger"><code>run_8f2e</code> approved · <code>send-outreach</code> released · hash verified · written to the ledger</p>
-                  <p className="release-note">In a workspace that button releases the send. Here it released the draft — the same boundary, and this page has no outbox. Close it and the draft goes back behind the gate.</p>
+                  <p className="release-note">In a workspace, approval releases the send. This demo only reveals the draft.</p>
                 </div>
               </details>
             </div>
           </div>
 
           <div className="gate-points">
-            <div><ScrollText /><span><strong>The ledger is the record</strong><small>Inputs, outputs, evidence, failures and outcomes are written per workspace, and exported whole.</small></span></div>
-            <div><KeyRound /><span><strong>The approval is pinned to a payload</strong><small>The approved bytes are hashed. Work edited after approval is rejected, not quietly sent.</small></span></div>
-            <div><LockKeyhole /><span><strong>Delegation has edges</strong><small>Hand over an action type, a confidence floor, an amount ceiling, a volume and a delay. Widening any of them stays manual.</small></span></div>
+            <div><ScrollText /><span><strong>Full run ledger</strong><small>Inputs, outputs, evidence, failures, and results.</small></span></div>
+            <div><KeyRound /><span><strong>Exact-payload approval</strong><small>Changes after approval are rejected.</small></span></div>
+            <div><LockKeyhole /><span><strong>Set hard limits</strong><small>Control action types, confidence, amounts, volume, and timing.</small></span></div>
           </div>
         </div>
       </section>
 
       <section className="launch-section catalog-section" id="modules">
         <div className="split-heading">
-          <h2>{installable.length} modules. Each one declares what it touches.</h2>
-          <p>A module is one unit of work with a published contract: what it reads, whether it writes anything outside your workspace, and whether it can run without you. Install the judgement you agree with and fork the rest.</p>
+          <h2>{installable.length} modules with clear permissions.</h2>
+          <p>Each module states what it reads, what it writes, and whether it needs approval.</p>
         </div>
         <div className="catalog-bar">
           <p className="catalog-links">
@@ -518,7 +518,7 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
           </label>
         </div>
         {moduleGroups.length === 0
-          ? <p className="catalog-empty">No module matches “{moduleQuery.trim()}”. Clear the filter, or read <a href="/catalog/modules.json">the whole catalog as JSON</a>.</p>
+          ? <p className="catalog-empty">No modules match “{moduleQuery.trim()}”. <a href="/catalog/modules.json">Open the full catalog</a>.</p>
           : moduleGroups.map(({ group, modules }) => (
             <section className="module-group" key={group.key} aria-labelledby={`module-group-${group.key}`}>
               <h3 id={`module-group-${group.key}`}>{group.label}</h3>
@@ -532,8 +532,8 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
 
       <section className="launch-section deploy-section" id="deploy">
         <div className="split-heading">
-          <h2>Hosted, or entirely your own.</h2>
-          <p>The same modules, the same ledger, the same policy file. The difference is who runs PostgreSQL.</p>
+          <h2>Hosted or self-hosted.</h2>
+          <p>Same product. Different infrastructure.</p>
         </div>
         <div className="deploy-grid">
           {/* This card is where every degraded #hosted CTA lands, so its own action
@@ -542,27 +542,27 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
           <article className="deploy-card featured" id="hosted">
             <div className="deploy-icon"><Cloud /></div>
             <span className="deploy-label">Trevra hosted</span>
-            <h3>We run the control plane.</h3>
-            <p>The control plane is the part that decides: it holds the policy file, the approval queue, the ledger and the module catalog. Hosted, it comes with managed PostgreSQL, workspace authentication, integrations and backups.</p>
+            <h3>Managed Trevra.</h3>
+            <p>We run PostgreSQL, authentication, integrations, backups, the ledger, and the approval queue.</p>
             <ul>
               <li><Check /> Managed PostgreSQL, secrets and updates</li>
               <li><Check /> Catalog releases synced from GitHub</li>
               <li><Check /> Bring Claude Code or Codex as the operator</li>
             </ul>
-            <p className="deploy-price">Hosted pricing is not published yet, and this page will not pretend otherwise. Workspaces are opening in batches.</p>
+            <p className="deploy-price">Hosted access is opening in batches.</p>
             <a className="launch-button" href={hostedHref} onClick={() => trackEvent('marketing_founder_cta')}><UsersRound size={17} /> Ask the founder for a workspace</a>
           </article>
           <article className="deploy-card">
             <div className="deploy-icon"><Server /></div>
             <span className="deploy-label">Self-hosted</span>
-            <h3>Or nothing leaves your network at all.</h3>
-            <p>Clone it, bring your own PostgreSQL and providers, and keep the ledger inside your environment. It is the same repository this page is built from — free, and not a stripped edition.</p>
+            <h3>Run Trevra yourself.</h3>
+            <p>Use your own PostgreSQL and providers. Keep the ledger in your environment.</p>
             <pre className="deploy-code"><code>{`git clone https://github.com/leanchain/trevra
 cd trevra
 cp .env.example .env.dev
 docker compose --env-file .env.dev \\
   -f compose.dev.yml up --build`}</code></pre>
-            <p className="deploy-code-note">Trevra comes up on <code>localhost:43173</code>. PostgreSQL only — there is no SQLite fallback.</p>
+            <p className="deploy-code-note">Runs on <code>localhost:43173</code> with PostgreSQL.</p>
             <a className="launch-secondary" href={`${sourceHref}#readme`} target="_blank" rel="noreferrer" onClick={() => trackEvent('marketing_self_host_cta')}><Github size={17} /> Read the deployment guide</a>
           </article>
         </div>
@@ -570,17 +570,17 @@ docker compose --env-file .env.dev \\
 
       <section className="launch-final">
         <div>
-          <h2>Give it the goal. Keep the last word.</h2>
-          <p>Connect a workspace, install the modules you trust, and let your agent prepare the next revenue action — with the evidence attached and the send still yours.</p>
+          <h2>Run the work. Approve the actions.</h2>
+          <p>Connect a workspace, choose modules, and let your agent prepare the next action.</p>
         </div>
         <div className="launch-actions">
-          <a className="launch-button light" data-hosted-cta href={primaryHref} onClick={handlePrimary}>Launch hosted workspace <ArrowRight size={17} /></a>
-          <a className="launch-secondary light" href={sourceHref} target="_blank" rel="noreferrer" onClick={() => trackEvent('marketing_source_cta')}><Github size={17} /> Read the source first</a>
+          <a className="launch-button light" data-hosted-cta href={primaryHref} onClick={handlePrimary}>Open Trevra <ArrowRight size={17} /></a>
+          <a className="launch-secondary light" href={sourceHref} target="_blank" rel="noreferrer" onClick={() => trackEvent('marketing_source_cta')}><Github size={17} /> View source</a>
         </div>
       </section>
 
       <footer className="launch-footer">
-        <div className="footer-brand"><a className="launch-logo" href="/"><span><BrandMark /></span><strong>Trevra</strong></a><p>The open-source runtime, ledger and approval gate for agent-run go-to-market.</p></div>
+        <div className="footer-brand"><a className="launch-logo" href="/"><span><BrandMark /></span><strong>Trevra</strong></a><p>Open-source GTM infrastructure for AI agents.</p></div>
         <div><strong>Product</strong><a href="#how-it-works">How it runs</a><a href="#approval">The approval gate</a><a href="#modules">Module catalog</a><a href="#deploy">Deploy</a></div>
         <div><strong>Source</strong><a href={sourceHref} target="_blank" rel="noreferrer">GitHub repository</a><a href="/catalog/modules.json">Catalog JSON</a><a href="/catalog/trevra.sbom.cdx.json">SBOM (CycloneDX)</a><a href="/llms.txt">Context for language models</a></div>
         <div><strong>Company</strong><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href={founderHref} onClick={() => trackEvent('marketing_founder_cta')}>Talk to the founder</a></div>
