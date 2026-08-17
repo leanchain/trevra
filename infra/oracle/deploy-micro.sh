@@ -55,6 +55,50 @@ check_host() {
 check_host "ubuntu@${DB_IP}" db
 check_host "ubuntu@${APP_IP}" app
 
+# One Oracle stack gets one deployer at a time. GitHub Actions is serialized,
+# but a maintainer can still run this script manually while CI is deploying.
+# Coordinate through an atomic directory on the app VM so both callers see the
+# same lock. A lock older than 45 minutes is considered abandoned and can be
+# reclaimed; normal exits remove only the lock owned by this process.
+DEPLOY_LOCK_DIR="${APP_DIR}/.deploy-lock"
+DEPLOY_LOCK_TOKEN="$(hostname)-$$-$(date +%s)"
+acquire_deploy_lock() {
+  ssh "ubuntu@${APP_IP}" bash -s -- "$DEPLOY_LOCK_DIR" "$DEPLOY_LOCK_TOKEN" <<'REMOTE'
+set -euo pipefail
+lock="$1"
+token="$2"
+claim() {
+  mkdir "$lock"
+  printf '%s\n' "$token" > "$lock/owner"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$lock/started_at"
+}
+if claim 2>/dev/null; then
+  exit 0
+fi
+if [ -d "$lock" ] && find "$lock" -maxdepth 0 -mmin +45 -print -quit | grep -q .; then
+  rm -rf "$lock"
+  claim
+  exit 0
+fi
+owner="$(cat "$lock/owner" 2>/dev/null || printf unknown)"
+started="$(cat "$lock/started_at" 2>/dev/null || printf unknown)"
+echo "another Trevra deploy is already running (owner=${owner}, started=${started})" >&2
+exit 75
+REMOTE
+}
+release_deploy_lock() {
+  ssh "ubuntu@${APP_IP}" bash -s -- "$DEPLOY_LOCK_DIR" "$DEPLOY_LOCK_TOKEN" <<'REMOTE' >/dev/null 2>&1 || true
+set -euo pipefail
+lock="$1"
+token="$2"
+if [ -d "$lock" ] && [ "$(cat "$lock/owner" 2>/dev/null || true)" = "$token" ]; then
+  rm -rf "$lock"
+fi
+REMOTE
+}
+acquire_deploy_lock
+trap release_deploy_lock EXIT
+
 # The companion package is released before the app rollout. Put the exact
 # version into the server-local environment atomically so the new relay only
 # advertises an asset that already exists. The value is non-secret, but the env
