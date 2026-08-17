@@ -587,7 +587,8 @@ export async function evaluateLinkedInSafety(
   // bands, variance/acceptance throttles and time windows), but not the hard
   // account/integrity boundaries kept later in this gate: configured+unpaused
   // seat, LinkedIn's published InMail quota, pending-invite capacity and the
-  // duplicate/replay guard. Workspace exclusions are checked before this gate.
+  // duplicate/replay guard. Workspace exclusions are a separate route-level
+  // boundary and are never relaxed by this override.
   const humanInitiated = input.manual === true;
   const pacingPass = (passed: boolean): boolean => passed || humanInitiated;
   const pacingDetail = (detail: string): string => humanInitiated

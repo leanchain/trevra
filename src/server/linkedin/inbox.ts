@@ -4,6 +4,7 @@ import { recordAction } from './actions.js';
 import { LinkedInApiError, getAction, ingestOutcome, recordDetectedAcceptance, type LinkedInActionView } from './campaigns.js';
 import { profileUrlFor } from './driver.js';
 import type { LinkedInInboxMessage, LinkedInThreadSummary } from './driver-inbox.js';
+import { filterExcluded } from './exclusions.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
 import { OWNER_SEAT_KEY } from './seats.js';
 
@@ -1120,6 +1121,15 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
   }
   const targetRef = thread.profileUrl;
 
+  // Never-contact is an integrity boundary, not pacing. A manual action may
+  // override Trevra's ramps and timing, but it may not turn a workspace-level
+  // exclusion back into a contactable person. Check it before the safety gate
+  // so no planned row or payload is ever created for an excluded target.
+  const { kept } = await filterExcluded(db, input.workspaceId, [targetRef]);
+  if (kept.length === 0) {
+    throw new LinkedInApiError('That person is on the workspace Never contact list, so no reply was queued.', 400);
+  }
+
   const plannedFor = input.plannedFor ?? now.toISOString();
   if (Number.isNaN(new Date(plannedFor).getTime())) {
     throw new LinkedInApiError(`'${plannedFor}' is not a parseable instant, so this reply has no slot to be paced into.`, 400);
@@ -1151,11 +1161,12 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
       // The conversation's own history, honoured for the same reasons.
       ...(replyToInbound ? { replyToInbound: true } : {}),
       // A PERSON TYPED THIS, NOW. Every reply this function files is
-      // `source: 'manual'` (below) -- it is the inbox composer and it has no
-      // other caller -- so the working window and the weekend rule, which pace
-      // what the account does by itself, do not refuse it. Nothing else is
-      // relaxed: the rolling windows, the ramps, posture and the duplicate
-      // guard all still run against this reply.
+      // `source: 'manual'` (below), so it carries the human pacing override at
+      // queue time and again when the worker re-checks the stored row. The
+      // override covers Trevra's ramps/rate shaping/time windows, but the hard
+      // account/integrity checks still run (pause, InMail quota where relevant,
+      // pending-invite capacity and duplicate/replay protection). Never-contact
+      // was already enforced above before any row could be filed.
       manual: true
     },
     now
