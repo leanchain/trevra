@@ -51,7 +51,8 @@ export type ClientMarketingEvent =
   | 'marketing_source_cta'
   | 'marketing_catalog_json'
   | 'marketing_self_host_cta'
-  | 'marketing_founder_cta';
+  | 'marketing_founder_cta'
+  | 'marketing_hosted_cta';
 
 type EventProperties = Record<string, string | number | boolean | null | undefined>;
 

@@ -372,7 +372,7 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
               moment React replaces the static markup. `handlePrimary` still
               decides: a configured hosted workspace wins, and on the
               marketing-only build it scrolls to the deploy card. */}
-          <a className="launch-nav-cta" data-hosted-cta href={hostedAppUrl || '/login'} onClick={handlePrimary}>Login <ArrowRight size={16} /></a>
+          <a className="launch-nav-cta" data-hosted-cta href={hostedAppUrl ? `${hostedAppUrl}/login` : '/login'} onClick={handlePrimary}>Login <ArrowRight size={16} /></a>
         </div>
       </header>
 
@@ -549,8 +549,10 @@ export function MarketingScreen({ onGetStarted, hostedAppUrl = '', githubUrl = '
               <li><Check /> Catalog releases synced from GitHub</li>
               <li><Check /> Bring Claude Code or Codex as the operator</li>
             </ul>
-            <p className="deploy-price">Hosted access is opening in batches.</p>
-            <a className="launch-button" href={hostedHref} onClick={() => trackEvent('marketing_founder_cta')}><UsersRound size={17} /> Ask the founder for a workspace</a>
+            <p className="deploy-price">{hostedAppUrl ? 'Self-serve. Sign in or create a workspace.' : 'Hosted access is opening in batches.'}</p>
+            {hostedAppUrl
+              ? <a className="launch-button" href={`${hostedAppUrl}/login`} onClick={() => trackEvent('marketing_hosted_cta')}><Play size={17} fill="currentColor" /> Launch managed workspace</a>
+              : <a className="launch-button" href={hostedHref} onClick={() => trackEvent('marketing_founder_cta')}><UsersRound size={17} /> Ask the founder for a workspace</a>}
           </article>
           <article className="deploy-card">
             <div className="deploy-icon"><Server /></div>

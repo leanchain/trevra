@@ -27,7 +27,8 @@ export type MarketingEventName =
   | 'marketing_source_cta'
   | 'marketing_catalog_json'
   | 'marketing_self_host_cta'
-  | 'marketing_founder_cta';
+  | 'marketing_founder_cta'
+  | 'marketing_hosted_cta';
 
 export interface SiteConfig {
   origin: string;
@@ -75,7 +76,8 @@ const eventNameSchema = z.enum([
   'marketing_source_cta',
   'marketing_catalog_json',
   'marketing_self_host_cta',
-  'marketing_founder_cta'
+  'marketing_founder_cta',
+  'marketing_hosted_cta'
 ]);
 
 const marketingEventSchema = z.object({
