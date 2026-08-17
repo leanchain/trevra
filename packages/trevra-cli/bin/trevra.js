@@ -18,8 +18,9 @@ import {
   uninstallBackgroundService
 } from '../lib/service.js';
 import { isNewerVersion, officialCompanionPackage } from '../lib/update.js';
+import { chromeLaunchArgs } from '../lib/browser.js';
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOME = join(homedir(), '.trevra');
 const CONFIG = join(HOME, 'companion.json');
@@ -33,7 +34,7 @@ const LINKEDIN_FEED = 'https://www.linkedin.com/feed/';
 
 function usage(exitCode = 0) {
   const out = exitCode === 0 ? process.stdout : process.stderr;
-  out.write(`Trevra ${VERSION}\n\nUsage:\n  <install command copied from Trevra>\n  trevra linkedin status\n  trevra linkedin logs [--follow] [--lines 200]\n  trevra linkedin start\n  trevra linkedin stop\n  trevra linkedin restart\n  trevra linkedin uninstall\n  trevra linkedin                     # foreground/debug mode\n\nLinkedIn companion commands:\n  install        Pair if needed, install a per-user background service, and start it\n  status         Show whether this computer is paired, installed, and running\n  logs           Show local companion activity; --follow streams new entries\n  start          Start the installed background companion\n  stop           Stop it without removing pairing or the LinkedIn browser profile\n  restart        Restart the installed background companion\n  uninstall      Remove the background service; keep pairing and browser profile\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --lines N      Number of recent log lines to show (default: 200)\n  --follow, -f   Continue streaming new log entries\n  --help         Show this help\n  --version      Show the version\n`);
+  out.write(`Trevra ${VERSION}\n\nUsage:\n  <install command copied from Trevra>\n  trevra linkedin status\n  trevra linkedin logs [--follow] [--lines 200]\n  trevra linkedin reconnect [--seat owner]\n  trevra linkedin start\n  trevra linkedin stop\n  trevra linkedin restart\n  trevra linkedin uninstall\n  trevra linkedin                     # foreground/debug mode\n\nLinkedIn companion commands:\n  install        Pair if needed, install a per-user background service, and start it\n  status         Show whether this computer is paired, installed, and running\n  logs           Show local companion activity; --follow streams new entries\n  reconnect      Temporarily open the same LinkedIn profile visibly for login/CAPTCHA/2FA recovery\n  start          Start the installed background companion\n  stop           Stop it without removing pairing or the LinkedIn browser profile\n  restart        Restart the installed background companion\n  uninstall      Remove the background service; keep pairing and browser profile\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --seat KEY     LinkedIn account profile to recover (default: owner)\n  --lines N      Number of recent log lines to show (default: 200)\n  --follow, -f   Continue streaming new log entries\n  --help         Show this help\n  --version      Show the version\n`);
   process.exit(exitCode);
 }
 
@@ -246,7 +247,7 @@ async function endpointResponds(endpoint) {
 const browsers = new Map();
 let browserExecutable = null;
 
-async function ensureBrowser(workspaceId, seatKey) {
+async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
   const key = `${workspaceId}/${seatKey}`;
   const old = browsers.get(key);
   if (old?.endpoint && await endpointResponds(old.endpoint)) {
@@ -265,18 +266,15 @@ async function ensureBrowser(workspaceId, seatKey) {
   }
 
   browserExecutable ??= systemChrome() ?? await playwrightChromium();
-  activity('browser_opening', `seat=${seatKey}`);
-  process.stdout.write(`Opening LinkedIn in Chrome for ${seatKey === 'owner' ? 'your account' : `account ${seatKey}`}…\n`);
-  const child = spawn(browserExecutable, [
-    '--remote-debugging-port=0',
-    '--remote-debugging-address=127.0.0.1',
-    `--user-data-dir=${profileDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-background-mode',
-    '--start-maximized',
-    LINKEDIN_FEED
-  ], { stdio: 'ignore', windowsHide: false });
+  const browserMode = headless ? 'background' : 'visible';
+  activity('browser_opening', `seat=${seatKey} mode=${browserMode}`);
+  if (!headless) {
+    process.stdout.write(`Opening LinkedIn in Chrome for ${seatKey === 'owner' ? 'your account' : `account ${seatKey}`}…\n`);
+  }
+  const child = spawn(browserExecutable, chromeLaunchArgs({ profileDir, headless, startUrl: LINKEDIN_FEED }), {
+    stdio: 'ignore',
+    windowsHide: headless
+  });
 
   const handle = { endpoint: null, child, profileDir };
   browsers.set(key, handle);
@@ -366,6 +364,57 @@ function acquireLock() {
   return () => rmSync(LOCK, { force: true });
 }
 
+async function runVisibleRecovery(config, seatKey = 'owner') {
+  const releaseLock = acquireLock();
+  ensurePrivateDir(PROFILES);
+  let stopping = false;
+  let handle = null;
+
+  const finish = (code) => {
+    if (stopping) return;
+    stopping = true;
+    releaseLock();
+    process.exit(code);
+  };
+  process.once('SIGINT', () => {
+    stopping = true;
+    try { handle?.child?.kill(); } catch { /* already gone */ }
+    releaseLock();
+    process.exit(0);
+  });
+  process.once('SIGTERM', () => {
+    stopping = true;
+    try { handle?.child?.kill(); } catch { /* already gone */ }
+    releaseLock();
+    process.exit(0);
+  });
+  process.once('exit', releaseLock);
+
+  activity('recovery_browser_opening', `seat=${seatKey}`);
+  process.stdout.write('Opening the dedicated LinkedIn profile visibly. Complete LinkedIn sign-in, CAPTCHA, 2FA or device verification, then close this Chrome window. Background mode will resume automatically.\n');
+  handle = await ensureBrowser(config.workspaceId, seatKey, { headless: false });
+  activity('recovery_browser_ready', `seat=${seatKey}`);
+
+  if (handle.child) {
+    if (handle.child.exitCode !== null) finish(75);
+    else handle.child.once('exit', () => {
+      if (stopping) return;
+      activity('recovery_browser_closed', `seat=${seatKey}`);
+      finish(75);
+    });
+    await new Promise(() => {});
+  }
+
+  // If Chrome was already open for this dedicated profile, there is no child
+  // handle to watch. Poll only the loopback DevTools endpoint; once the member
+  // closes that window the service exits with the normal restart code.
+  while (!stopping && await endpointResponds(handle.endpoint)) await sleep(750);
+  if (!stopping) {
+    activity('recovery_browser_closed', `seat=${seatKey}`);
+    finish(75);
+  }
+}
+
 async function runCompanion(config, options = {}) {
   const releaseLock = acquireLock();
   ensurePrivateDir(PROFILES);
@@ -405,7 +454,7 @@ async function runCompanion(config, options = {}) {
   // opens/reuses the dedicated profile only when Trevra requests a browser.
   if (options.openBrowserAtStart !== false) {
     try {
-      await ensureBrowser(config.workspaceId, 'owner');
+      await ensureBrowser(config.workspaceId, 'owner', { headless: false });
       process.stdout.write('Use this dedicated Chrome window only for LinkedIn; Trevra can control it while the companion is connected. Sign in if needed, then keep this command open.\n');
     } catch (error) {
       process.stderr.write(`${error.message}\n`);
@@ -466,7 +515,7 @@ async function runCompanion(config, options = {}) {
             const relayShort = String(message.relayId).slice(0, 8);
             activity('relay_requested', `relay=${relayShort} seat=${message.seatKey}`);
             try {
-              const handle = await ensureBrowser(config.workspaceId, message.seatKey);
+              const handle = await ensureBrowser(config.workspaceId, message.seatKey, { headless: options.headlessBrowser === true });
               const local = new WebSocket(handle.endpoint);
               const relay = { ws: local, expectClose: false };
               relays.set(message.relayId, relay);
@@ -550,7 +599,7 @@ async function runCompanion(config, options = {}) {
   }
 }
 
-const SERVICE_ACTIONS = new Set(['install', 'status', 'logs', 'start', 'stop', 'restart', 'uninstall', 'run']);
+const SERVICE_ACTIONS = new Set(['install', 'status', 'logs', 'reconnect', 'start', 'stop', 'restart', 'uninstall', 'run']);
 let serviceInvocation = false;
 
 function requirePairing(config) {
@@ -616,6 +665,20 @@ async function main() {
     restartBackgroundService();
     process.stdout.write('Trevra LinkedIn background companion restarted.\n');
     printServiceStatus(readConfig());
+    return;
+  }
+  if (action === 'reconnect') {
+    const config = requirePairing(saved);
+    const status = installedServiceStatus();
+    if (!status.installed) throw new Error('The Trevra background service is not installed. Run the install command from Trevra first.');
+    const seatKey = argValue(args, '--seat') || 'owner';
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(seatKey)) throw new Error('That LinkedIn account key is not valid.');
+    const next = { ...config, recoveryOnNextStart: { seatKey } };
+    delete next.openOnNextStart;
+    saveConfig(next);
+    activity('recovery_requested', `seat=${seatKey}`);
+    restartBackgroundService();
+    process.stdout.write('Opening LinkedIn visibly on the paired computer. Complete the human check, then close that Trevra Chrome window; background mode resumes automatically.\n');
     return;
   }
   if (action === 'uninstall') {
@@ -685,20 +748,27 @@ async function main() {
 
   if (action === 'run') {
     serviceInvocation = true;
-    const openOnNextStart = config.openOnNextStart === true;
-    if (openOnNextStart) {
+    const requestedRecoverySeat = typeof config.recoveryOnNextStart?.seatKey === 'string'
+      ? config.recoveryOnNextStart.seatKey
+      : null;
+    const firstSignIn = config.openOnNextStart === true;
+    const visibleSeatKey = requestedRecoverySeat ?? (firstSignIn ? 'owner' : null);
+    if (visibleSeatKey) {
       const next = { ...config };
       delete next.openOnNextStart;
+      delete next.recoveryOnNextStart;
       saveConfig(next);
       config = next;
+      await runVisibleRecovery(config, visibleSeatKey);
+      return;
     }
-    await runCompanion(config, { openBrowserAtStart: openOnNextStart });
+    await runCompanion(config, { openBrowserAtStart: false, headlessBrowser: true });
     return;
   }
 
   // Backwards-compatible foreground/debug mode. It remains useful for seeing
   // logs interactively, but the website now recommends `linkedin install`.
-  await runCompanion(config, { openBrowserAtStart: true });
+  await runCompanion(config, { openBrowserAtStart: true, headlessBrowser: false });
 }
 
 main().catch((error) => {

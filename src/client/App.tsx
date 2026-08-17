@@ -88,7 +88,7 @@ import { AccountsScreen } from './AccountsScreen';
 import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
 import { OutreachInbox } from './LinkedInInbox';
 import { OutreachLeads } from './LinkedInLeads';
-import { LinkedInAccounts } from './LinkedInAccounts';
+import { LinkedInAccounts, LinkedInCompanionAttention } from './LinkedInAccounts';
 import { OutreachManagerBuilder } from './LinkedInManagerBuilder';
 import { OutreachManagerRead } from './LinkedInManagerRead';
 import { reloadOutreach } from './LinkedInSafety';
@@ -530,6 +530,7 @@ export function App() {
         {/* One incident surface, on every route. It is never a nav item and it
             survives below 760px, where the sidebar does not. */}
         <StopBar setToast={setToast} />
+        <LinkedInCompanionAttention setToast={setToast} />
 
         {route.section === 'loop' && (route.sub === 'cost'
           ? <LoopCostView onNavigate={go} />

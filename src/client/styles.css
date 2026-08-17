@@ -2841,6 +2841,26 @@ button:disabled { opacity: .55; cursor: not-allowed; }
    cookies copied into the hosted app. Keep the status and command readable on
    a phone without turning a terminal command into page-width overflow. */
 .li-companion-panel { gap: 14px; }
+.li-companion-attention {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--line));
+  background: color-mix(in srgb, var(--warning) 7%, var(--t-surface));
+}
+.li-companion-attention .section-heading h3 { display: flex; align-items: center; gap: 7px; }
+.li-companion-attention-list { display: grid; gap: 10px; }
+.li-companion-attention-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+}
+.li-companion-attention-row p { margin: 4px 0; }
+.li-companion-attention-row small { color: var(--muted); }
+.li-companion-reconnect-command { display: flex; align-items: center; gap: 8px; }
+.li-companion-reconnect-command code { white-space: nowrap; font-size: var(--t-text-xs); }
 .li-companion-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .li-companion-status .li-hint { margin: 0; }
 .li-companion-devices { display: grid; gap: 8px; }
@@ -2883,6 +2903,9 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   .li-companion-command { grid-template-columns: 1fr; align-items: stretch; }
   .li-companion-command > div { grid-column: auto; }
   .li-companion-device { align-items: flex-start; flex-direction: column; }
+  .li-companion-attention-row { grid-template-columns: 1fr; }
+  .li-companion-reconnect-command { align-items: stretch; flex-direction: column; }
+  .li-companion-reconnect-command code { overflow-x: auto; }
 }
 
 /* Usage against a ceiling, inside a table cell: the number is the answer and

@@ -4271,6 +4271,34 @@ export async function loginLinkedInSeat(
     return { status: 'ok', message: 'That LinkedIn session is still live, so nothing had to be signed in.' };
   }
 
+  // Hosted companion sessions deliberately keep LinkedIn credentials out of
+  // Trevra. If that persistent local profile is no longer authenticated, the
+  // correct fallback is therefore a HUMAN recovery in the same profile, not a
+  // request to save a password on the server. Record one durable attention
+  // event; a later `session_reused`/`login` event is the proof that clears it.
+  if (config.companionBrowser) {
+    const recovery = await driver.sessionRecoveryReason?.(page) ?? 'signed_out';
+    const command = seatKey === OWNER_SEAT_KEY
+      ? 'trevra linkedin reconnect'
+      : `trevra linkedin reconnect --seat ${seatKey}`;
+    const message = recovery === 'challenge'
+      ? `LinkedIn needs a human check on the paired computer. Run \`${command}\` to open the dedicated profile visibly, finish the CAPTCHA, verification or sign-in, then close that Chrome window. Background mode resumes automatically.`
+      : `The LinkedIn session on the paired computer needs to be reconnected. Run \`${command}\` to open the dedicated profile visibly, sign in if asked, then close that Chrome window. Background mode resumes automatically.`;
+    challengedSeats.set(seatHandleKey(options.workspaceId, seatKey), { until: now.getTime() + CHALLENGE_RETRY_COOLDOWN_MS, message });
+    await recordSeatEvent(
+      db,
+      {
+        workspaceId: options.workspaceId,
+        seatKey,
+        kind: recovery === 'challenge' ? 'challenge' : 'reconnect_required',
+        url: typeof page.url === 'function' ? page.url() : null,
+        detail: message
+      },
+      now
+    );
+    return { status: 'challenge', message };
+  }
+
   // A challenge from an earlier tick is still open in this same page. Say so
   // again, verbatim, rather than re-navigating to LOGIN_URL underneath the
   // person trying to clear it -- see CHALLENGE_RETRY_COOLDOWN_MS above.

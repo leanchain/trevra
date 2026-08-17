@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
+import { recordSeatEvent } from './seat-events.js';
 import {
   authenticateCompanionToken,
   companionBrowserConfigured,
@@ -126,6 +127,31 @@ describe('LinkedIn companion pairing and presence', () => {
     const status = await listCompanionStatus(db, WORKSPACE_ID, NOW);
     expect(status.websitePresent).toBe(true);
     expect(status.devices).toEqual([expect.objectContaining({ id: paired.deviceId, online: true, label: 'Laptop' })]);
+  });
+
+  it('surfaces a human-required reconnect until a later healthy session clears it', async () => {
+    await recordSeatEvent(db, {
+      workspaceId: WORKSPACE_ID,
+      seatKey: 'owner',
+      kind: 'reconnect_required',
+      detail: 'LinkedIn needs a visible sign-in on the paired computer.'
+    }, NOW);
+    const blocked = await listCompanionStatus(db, WORKSPACE_ID, NOW);
+    expect(blocked.attention).toEqual([
+      expect.objectContaining({
+        seatKey: 'owner',
+        kind: 'reconnect_required',
+        message: 'LinkedIn needs a visible sign-in on the paired computer.'
+      })
+    ]);
+
+    await recordSeatEvent(db, {
+      workspaceId: WORKSPACE_ID,
+      seatKey: 'owner',
+      kind: 'session_reused',
+      detail: 'The stored session was still live.'
+    }, new Date(NOW.getTime() + 1000));
+    expect((await listCompanionStatus(db, WORKSPACE_ID, new Date(NOW.getTime() + 1000))).attention).toEqual([]);
   });
 
   it('revocation invalidates the device token and immediately removes readiness', async () => {

@@ -515,6 +515,68 @@ function Wall({ title, message, children }: { title: string; message?: string; c
   </div>;
 }
 
+/**
+ * Human-required companion recovery, shown across every Outreach route rather
+ * than only on the Accounts screen. The server derives this from the latest
+ * auth event for each seat, so a successful session check removes the banner
+ * without a separate dismiss/clear write that could lie about browser state.
+ */
+export function LinkedInCompanionAttention({ setToast }: { setToast: (message: string) => void }) {
+  const [status, setStatus] = useState<LinkedInCompanionStatus | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [next, worker] = await Promise.all([getLinkedInCompanionStatus(), getLinkedInWorkerStatus()]);
+      setStatus(worker.companionBrowser ? next : null);
+    } catch { setStatus(null); }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+  useOutreachRefresh(load);
+
+  if (!status?.attention.length) return null;
+
+  const copy = async (command: string) => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setToast('Reconnect command copied. Run it on the paired computer.');
+    } catch {
+      setToast('Copy was blocked. Select the reconnect command and copy it manually.');
+    }
+  };
+
+  return <section className="page-panel li-companion-attention" role="alert" aria-live="polite">
+    <div className="section-heading">
+      <div>
+        <h3 aria-level={2}><CircleAlert size={17} /> LinkedIn needs your attention</h3>
+        <p>Background work is held for the affected account until its local LinkedIn session is healthy again.</p>
+      </div>
+    </div>
+    <div className="li-companion-attention-list">
+      {status.attention.map((item) => {
+        const command = item.seatKey === OWNER_ACCOUNT_KEY
+          ? 'trevra linkedin reconnect'
+          : `trevra linkedin reconnect --seat ${item.seatKey}`;
+        return <div className="li-companion-attention-row" key={item.seatKey}>
+          <div>
+            <strong>{item.label}</strong>
+            <p>{item.message}</p>
+            <small>Raised {relativeTime(item.since)}. Complete the LinkedIn check in the visible Trevra Chrome window, then close that window; the background service resumes automatically.</small>
+          </div>
+          <div className="li-companion-reconnect-command">
+            <code>{command}</code>
+            <button className="secondary-button" type="button" onClick={() => void copy(command)}><Copy size={14} /> Copy</button>
+          </div>
+        </div>;
+      })}
+    </div>
+  </section>;
+}
+
 /* -------------------------------------------------------------------------
  * The paired computer: hosted Trevra, local LinkedIn browser.
  * ---------------------------------------------------------------------- */
@@ -644,8 +706,8 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
     </button> : null}
 
     <p className="panel-note">
-      The background companion starts when you sign into this computer and restarts after crashes, so no terminal needs to stay open. Keep a signed-in Trevra tab open when LinkedIn work should run; if the background companion or every Trevra tab disappears, no new LinkedIn cycle is claimed.
-      The companion Chrome profile is dedicated to LinkedIn and Trevra can control that window while connected, so do not use it for email, banking or other private sites.
+      The background companion starts when you sign into this computer and restarts after crashes, so no terminal needs to stay open. Normal work uses the dedicated LinkedIn profile in background Chrome with no window in front of you. Keep a signed-in Trevra tab open when LinkedIn work should run; if the background companion or every Trevra tab disappears, no new LinkedIn cycle is claimed.
+      If LinkedIn asks for sign-in, CAPTCHA, 2FA or a device check, Trevra holds work and shows a reconnect alert. The reconnect command opens the same dedicated profile visibly just for that human step; close the window afterward and background mode resumes automatically.
       When you return after being offline, Trevra runs one normal bounded sitting and then resumes the ordinary schedule — missed timer ticks are never replayed as a burst.
     </p>
   </section>;

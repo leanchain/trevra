@@ -2,7 +2,7 @@
 
 The LinkedIn companion is the recommended execution path for hosted Trevra when the member is willing to keep their computer and Trevra open while outreach runs.
 
-The hosted platform owns campaigns, due work, pacing, safety decisions, leases and the ledger. A tiny local CLI owns one thing: the visible Chrome process that is signed into LinkedIn. LinkedIn therefore sees the member's own computer and normal network/IP rather than an Oracle or cloud-browser address.
+The hosted platform owns campaigns, due work, pacing, safety decisions, leases and the ledger. A tiny local CLI owns one thing: the dedicated Chrome process that is signed into LinkedIn. Normal background-service work runs headless; the same profile is opened visibly only for first sign-in or human-required recovery/debugging. LinkedIn therefore sees the member's own computer and normal network/IP rather than an Oracle or cloud-browser address.
 
 ## User journey
 
@@ -11,7 +11,7 @@ The hosted platform owns campaigns, due work, pacing, safety decisions, leases a
 3. Run the generated one-time install command:
 
    ```bash
-   npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.1/trevra-0.2.1.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
+   npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.2/trevra-0.2.2.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
    ```
 
 4. Trevra pairs the computer, installs a private per-user companion package and registers the operating system's background service. Chrome opens with a Trevra-specific persistent profile; sign into LinkedIn there if it is not already signed in.
@@ -26,6 +26,7 @@ Service controls are:
 trevra linkedin status
 trevra linkedin logs
 trevra linkedin logs --follow
+trevra linkedin reconnect
 trevra linkedin start
 trevra linkedin stop
 trevra linkedin restart
@@ -34,7 +35,7 @@ trevra linkedin uninstall
 
 `trevra linkedin logs` reads a small owner-only rolling activity log under `~/.trevra/logs/`; `--follow` streams it. The log records lifecycle/reconnect/browser/relay events only. It never records the device bearer token, LinkedIn cookies or passwords, raw CDP frames, or message contents.
 
-`npx trevra linkedin` remains a foreground/debug mode. `uninstall` removes the OS service and its private npm tree but deliberately preserves the pairing config and dedicated LinkedIn browser profile.
+`trevra linkedin reconnect` is the human-recovery path. When a headless session is signed out or hits a LinkedIn checkpoint, the worker records a reconnect-required seat event and stops work for that account. Outreach shows the alert until a later successful session check proves the seat healthy. The reconnect command restarts the service into a one-time visible Chrome window using the same local profile; closing that window restarts the service in headless mode. CAPTCHA/2FA answers stay entirely inside LinkedIn's page. `npx trevra linkedin` remains a foreground/debug mode. `uninstall` removes the OS service and its private npm tree but deliberately preserves the pairing config and dedicated LinkedIn browser profile.
 
 No LinkedIn password has to be stored in hosted Trevra for this path. The persistent Chrome profile and its cookies stay under `~/.trevra/linkedin-companion/` on the member computer.
 
@@ -90,7 +91,7 @@ The CLI starts Chrome with:
 
 The laptop opens one authenticated outbound WebSocket to Trevra. When the hosted worker needs a browser, Trevra creates a private reverse-CDP channel over that existing socket. The hosted Playwright client speaks CDP through the relay to the loopback Chrome instance.
 
-That means Trevra can control the **dedicated companion Chrome window** while the relay is active. The product and CLI therefore tell the user to keep unrelated private browsing out of that profile. The companion does not attach to the user's normal Chrome profile.
+That means Trevra can control the **dedicated companion Chrome profile** while the relay is active; in normal service mode it has no visible window. The product and CLI therefore tell the user to keep unrelated private browsing out of that profile. The companion does not attach to the user's normal Chrome profile.
 
 The companion provider deliberately differs from a cloud browser in three ways:
 
@@ -139,7 +140,7 @@ The install command pins the service to the exact companion version that perform
 - macOS: `~/Library/LaunchAgents/com.trevra.linkedin.plist`, `RunAtLoad` with restart after unsuccessful exits.
 - Windows: per-user **Trevra LinkedIn Companion** scheduled task, triggered at interactive logon with restart-on-failure settings.
 
-The background service connects to Trevra immediately but does not open Chrome merely because the user logged into the computer. Chrome is opened/reused when Trevra actually requests a browser. The initial `install` command opens the dedicated profile once so the member can sign in.
+The background service connects to Trevra immediately but does not open Chrome merely because the user logged into the computer. When Trevra actually requests a browser, the service opens/reuses the dedicated profile in Chrome headless mode, so no window is placed in front of the user. The initial `install` command opens that profile visibly once so the member can sign in; closing that onboarding window restarts the service into headless mode. Later login, CAPTCHA/2FA or device-check recovery uses `trevra linkedin reconnect`: the service temporarily opens the same profile visibly and automatically returns to background mode when that window closes.
 
 A revoked device exits the background process cleanly rather than entering a crash-restart loop. Network interruptions stay inside the companion's bounded reconnect loop; genuine process crashes are restarted by the operating system.
 

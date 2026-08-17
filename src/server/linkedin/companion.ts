@@ -29,10 +29,24 @@ export interface CompanionDeviceView {
   online: boolean;
 }
 
+export interface CompanionAttention {
+  seatKey: string;
+  label: string;
+  kind: 'challenge' | 'reconnect_required';
+  message: string;
+  since: string;
+}
+
 export interface CompanionStatus {
   devices: CompanionDeviceView[];
   websitePresent: boolean;
   websiteLastSeenAt: string | null;
+  /**
+   * Human-required LinkedIn recovery, one latest state per seat. A later
+   * session_reused/login event clears it implicitly, so no separate mutable
+   * alert flag can get stuck after the browser is healthy again.
+   */
+  attention: CompanionAttention[];
 }
 
 export async function createCompanionPairing(
@@ -140,6 +154,20 @@ export async function listCompanionStatus(db: Db, workspaceId: string, now: Date
     SELECT to_char(last_seen_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_seen_at
     FROM linkedin_companion_presence WHERE workspace_id=?
   `).get<{ last_seen_at: string }>(workspaceId);
+  const latestAuthEvents = await db.prepare(`
+    SELECT DISTINCT ON (e.seat_key)
+           e.seat_key,
+           e.kind,
+           e.detail,
+           to_char(e.occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS occurred_at,
+           COALESCE(s.label, e.seat_key) AS label
+    FROM linkedin_seat_events e
+    LEFT JOIN linkedin_seats s ON s.workspace_id=e.workspace_id AND s.seat_key=e.seat_key
+    WHERE e.workspace_id=?
+      AND e.kind IN ('challenge','reconnect_required','session_reused','login')
+    ORDER BY e.seat_key, e.occurred_at DESC
+  `).all<{ seat_key: string; kind: string; detail: string | null; occurred_at: string; label: string }>(workspaceId);
+
   const threshold = now.getTime() - COMPANION_DEVICE_ONLINE_MS;
   const presenceAt = presence?.last_seen_at ?? null;
   return {
@@ -151,7 +179,16 @@ export async function listCompanionStatus(db: Db, workspaceId: string, now: Date
       online: Boolean(device.last_seen_at && new Date(device.last_seen_at).getTime() >= threshold)
     })),
     websitePresent: Boolean(presenceAt && new Date(presenceAt).getTime() >= now.getTime() - COMPANION_WEB_PRESENCE_MS),
-    websiteLastSeenAt: presenceAt
+    websiteLastSeenAt: presenceAt,
+    attention: latestAuthEvents
+      .filter((event): event is typeof event & { kind: 'challenge' | 'reconnect_required' } => event.kind === 'challenge' || event.kind === 'reconnect_required')
+      .map((event) => ({
+        seatKey: event.seat_key,
+        label: event.label,
+        kind: event.kind,
+        message: event.detail ?? 'LinkedIn needs your attention on the paired computer.',
+        since: event.occurred_at
+      }))
   };
 }
 

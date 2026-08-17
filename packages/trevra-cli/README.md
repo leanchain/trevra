@@ -2,17 +2,17 @@
 
 The official Trevra companion CLI.
 
-For hosted LinkedIn execution, Trevra keeps campaigns, pacing and safety rules in the hosted platform while Chrome runs on your own computer. LinkedIn traffic therefore uses your computer's normal network/IP, and the persistent LinkedIn browser profile stays on your computer.
+For hosted LinkedIn execution, Trevra keeps campaigns, pacing and safety rules in the hosted platform while Chrome runs on your own computer. The installed service uses Chrome in background/headless mode for normal work, so no browser window needs to sit in front of your desktop. LinkedIn traffic therefore uses your computer's normal network/IP, and the persistent LinkedIn browser profile stays on your computer.
 
 ## Install once
 
 In Trevra, open **Outreach → LinkedIn accounts → Connect this computer** and copy the generated command. It looks like:
 
 ```sh
-npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.1/trevra-0.2.1.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
+npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.2/trevra-0.2.2.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
 ```
 
-The command pairs the computer, installs the exact Trevra companion version into a private per-user directory, registers an OS background service, opens the dedicated LinkedIn Chrome profile for first sign-in, and starts the service.
+The command pairs the computer, installs the exact Trevra companion version into a private per-user directory, registers an OS background service, opens the dedicated LinkedIn Chrome profile visibly once for first sign-in, and starts the service. After onboarding, normal service-driven LinkedIn work uses that same persistent profile in headless/background Chrome.
 
 After that **no terminal needs to stay open**. The service starts when you sign into the computer, reconnects after network interruptions, and is restarted by the OS if the process crashes. On Linux and macOS the installer also creates `~/.local/bin/trevra`, so service controls use the installed companion version instead of whatever version `npx` currently resolves.
 
@@ -24,6 +24,7 @@ Trevra supports:
 trevra linkedin status
 trevra linkedin logs
 trevra linkedin logs --follow
+trevra linkedin reconnect
 trevra linkedin start
 trevra linkedin stop
 trevra linkedin restart
@@ -36,7 +37,7 @@ Only one active companion computer is allowed per workspace. Pairing a replaceme
 
 `uninstall` removes only the background service and its private npm installation. It deliberately keeps `~/.trevra/companion.json` and the dedicated LinkedIn browser profile so reinstalling does not force a new LinkedIn device/session.
 
-`npx trevra linkedin` remains available as a foreground/debug mode.
+`trevra linkedin` remains available as a foreground/debug mode. Normal recovery is simpler: when the headless browser reaches an expired sign-in, CAPTCHA, 2FA or device check, Trevra holds LinkedIn work and shows an alert in Outreach. Run `trevra linkedin reconnect` (or `--seat <key>` for another LinkedIn account). The background service restarts into a one-time visible recovery window using the same persistent profile. Complete the human step and close that Trevra Chrome window; the OS service immediately restarts in headless/background mode. No LinkedIn password, CAPTCHA answer or 2FA code is sent through Trevra.
 
 ## OS integration
 

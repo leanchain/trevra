@@ -206,6 +206,12 @@ export interface LinkedInDriver {
   readSeat(page: LinkedInPage, options?: { skipConnections?: boolean }): Promise<LinkedInSeatRead | LinkedInDriverResult>;
   /** Is this profile already signed in? Asked BEFORE any sign-in is attempted. */
   isLoggedIn(page: LinkedInPage): Promise<boolean>;
+  /**
+   * Why a companion session that failed the signed-in probe needs a human.
+   * Optional so test doubles and non-companion callers do not have to know
+   * about the recovery UI.
+   */
+  sessionRecoveryReason?(page: LinkedInPage): Promise<'challenge' | 'signed_out'>;
   loginWithCredentials(
     page: LinkedInPage,
     credentials: { email: string; password: string; otp?: string }
@@ -1189,6 +1195,18 @@ export async function isLoggedIn(page: LinkedInPage): Promise<boolean> {
   // signal here that survives any reskin, in any language.
   return FEED_PATH.test(pathOf(page.url()));
 }
+
+/**
+ * Classify the one recovery question the hosted companion cares about after
+ * `isLoggedIn` has already returned false. A checkpoint/captcha/device check is
+ * stronger than an ordinary expired/sign-out state; both require the member's
+ * visible browser, and neither is something the headless worker should push
+ * through on its own.
+ */
+export async function sessionRecoveryReason(page: LinkedInPage): Promise<'challenge' | 'signed_out'> {
+  return (await detectWall(page)) === 'challenge' ? 'challenge' : 'signed_out';
+}
+
 /** The path of a URL, or '' when it is not one. */
 function pathOf(url: string): string {
   try {
@@ -1422,5 +1440,6 @@ export const playwrightDriver: LinkedInDriver = {
   endorseSkills,
   readSeat,
   isLoggedIn,
+  sessionRecoveryReason,
   loginWithCredentials
 };

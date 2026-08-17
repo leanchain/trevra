@@ -30,6 +30,7 @@ export type LinkedInSeatEventKind =
   | 'navigate'
   | 'login'
   | 'session_reused'
+  | 'reconnect_required'
   | 'challenge'
   | 'limit_wall'
   | 'sitting_start'

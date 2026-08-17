@@ -1828,10 +1828,19 @@ export interface LinkedInCompanionDevice {
   online: boolean;
 }
 
+export interface LinkedInCompanionAttention {
+  seatKey: string;
+  label: string;
+  kind: 'challenge' | 'reconnect_required';
+  message: string;
+  since: string;
+}
+
 export interface LinkedInCompanionStatus {
   devices: LinkedInCompanionDevice[];
   websitePresent: boolean;
   websiteLastSeenAt: string | null;
+  attention: LinkedInCompanionAttention[];
   canManage: boolean;
 }
 
