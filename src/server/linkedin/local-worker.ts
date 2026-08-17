@@ -2343,6 +2343,19 @@ export interface LinkedInLocalWorkerConfig {
   headless?: boolean;
 }
 
+/**
+ * One paired computer, one active LinkedIn account at a time. Each seat still
+ * has its own browser profile/session; this only serializes their active use so
+ * the laptop does not drive several accounts simultaneously from one machine.
+ */
+export function seatConcurrencyForConfig(
+  config: LinkedInLocalWorkerConfig,
+  headless: boolean,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  return config.companionBrowser ? 1 : defaultSeatConcurrency(headless, env);
+}
+
 const DEFAULT_PROFILE_DIR_BASE = '~/.trevra/linkedin';
 
 /**

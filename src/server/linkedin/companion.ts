@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { id, type Db } from '../db.js';
 import type { BrowserProviderSettings } from '../browser/provider.js';
+import { markWorkspaceAvailabilityReturn } from './side-tasks.js';
 
 const PAIRING_TTL_MS = 10 * 60_000;
 export const COMPANION_DEVICE_ONLINE_MS = 90_000;
@@ -125,11 +126,18 @@ export async function authenticateCompanionToken(
 ): Promise<{ deviceId: string; workspaceId: string; label: string } | null> {
   if (!token.startsWith(TOKEN_PREFIX) || token.length < TOKEN_PREFIX.length + 32) return null;
   const row = await db.prepare(`
-    SELECT id, workspace_id, label FROM linkedin_companion_devices
+    SELECT id, workspace_id, label,
+           to_char(last_seen_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_seen_at
+    FROM linkedin_companion_devices
     WHERE token_hash=? AND revoked_at IS NULL
-  `).get<{ id: string; workspace_id: string; label: string }>(sha256(token));
+  `).get<{ id: string; workspace_id: string; label: string; last_seen_at: string | null }>(sha256(token));
   if (!row) return null;
+  const previousSeen = row.last_seen_at ? new Date(row.last_seen_at) : null;
+  const returnedAfterOffline = !previousSeen
+    || Number.isNaN(previousSeen.getTime())
+    || now.getTime() - previousSeen.getTime() >= COMPANION_DEVICE_ONLINE_MS;
   await touchCompanionDevice(db, row.id, now);
+  if (returnedAfterOffline) await markWorkspaceAvailabilityReturn(db, row.workspace_id, now);
   return { deviceId: row.id, workspaceId: row.workspace_id, label: row.label };
 }
 export async function touchCompanionDevice(db: Db, deviceId: string, now: Date = new Date()): Promise<void> {
@@ -200,11 +208,20 @@ export async function revokeCompanionDevice(db: Db, workspaceId: string, deviceI
 }
 
 export async function markCompanionWebsitePresence(db: Db, workspaceId: string, actorUserId: string | null, now: Date = new Date()): Promise<void> {
+  const previous = await db.prepare(`
+    SELECT to_char(last_seen_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_seen_at
+    FROM linkedin_companion_presence WHERE workspace_id=?
+  `).get<{ last_seen_at: string }>(workspaceId);
+  const previousSeen = previous?.last_seen_at ? new Date(previous.last_seen_at) : null;
+  const returnedAfterAbsence = !previousSeen
+    || Number.isNaN(previousSeen.getTime())
+    || now.getTime() - previousSeen.getTime() >= COMPANION_WEB_PRESENCE_MS;
   await db.prepare(`
     INSERT INTO linkedin_companion_presence (workspace_id,last_seen_at,updated_by,updated_at)
     VALUES (?,?,?,?)
     ON CONFLICT (workspace_id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at
   `).run(workspaceId, iso(now), actorUserId, iso(now));
+  if (returnedAfterAbsence) await markWorkspaceAvailabilityReturn(db, workspaceId, now);
 }
 
 export async function clearCompanionWebsitePresence(db: Db, workspaceId: string): Promise<void> {

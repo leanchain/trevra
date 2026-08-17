@@ -962,7 +962,7 @@ export interface LinkedInBackgroundRunSchedule {
   startAt: string;
   endAt: string;
   timezone: string;
-  source: 'maintenance' | 'actions';
+  source: 'maintenance' | 'actions' | 'catchup';
   waitingFor: LinkedInQueueWaitReason | null;
 }
 

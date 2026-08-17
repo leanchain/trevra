@@ -8,7 +8,16 @@ import { syncThreads } from './inbox.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
 import { parseBackgroundRunDetail, setSeatRestingUntil } from './seat-events.js';
 import { upsertSeat } from './seats.js';
-import { MAX_TASKS_PER_VISIT, markSideTaskRun, resetSideTaskRuns, visitsForDay } from './side-tasks.js';
+import {
+  AVAILABILITY_CATCHUP_MARKER,
+  AVAILABILITY_RETURN_MARKER,
+  MAX_CATCHUP_TASKS_PER_VISIT,
+  MAX_TASKS_PER_VISIT,
+  markSideTaskRun,
+  resetSideTaskRuns,
+  sideTaskRuns,
+  visitsForDay
+} from './side-tasks.js';
 import { DEFAULT_STALE_AFTER_DAYS } from './withdraw.js';
 
 /**
@@ -467,31 +476,45 @@ describe('how often the side-task tick touches LinkedIn', () => {
     await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', profileUrl: CONNECTED }, NOW);
   }
 
-  function tick(now: Date, driver: LinkedInDriver) {
+  function tick(now: Date, driver: LinkedInDriver, companionBrowser = false, database: Db = db) {
     return runLinkedInSideTasks(
-      db,
-      { enabled: true } as unknown as Parameters<typeof runLinkedInSideTasks>[1],
+      database,
+      { enabled: true, companionBrowser } as unknown as Parameters<typeof runLinkedInSideTasks>[1],
       { workspaceId: WORKSPACE_ID, seatKey: 'owner', now, page, driver, dayShape: FLAT_DAY_SHAPE, log: () => {} }
     );
   }
 
-  it('holds one pass per visit even when the cadence table does not exist', async () => {
+  it('holds one pass per visit even when the cadence table is unavailable', async () => {
     await connectedSeat();
-    // EXACTLY THE STATE OF EVERY DEPLOYMENT BETWEEN `git pull` AND THE NEXT
-    // RESTART. Both cadence calls swallow their errors so a tick never dies of
-    // one -- which, without the in-process floor, made an un-migrated database
-    // run a fresh pass every sixty seconds instead of once per visit.
-    await db.prepare('DROP TABLE IF EXISTS linkedin_side_task_runs').run();
+    // Simulate the exact mid-deploy failure without dropping a table shared by
+    // other Vitest files. Both cadence calls swallow their own DB error and the
+    // in-process floor must still make one visit one pass.
+    const realPrepare = db.prepare.bind(db);
+    const unavailable = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === 'prepare') {
+          return (sql: string) => {
+            if (sql.includes('linkedin_side_task_runs')) {
+              const fail = async () => { throw new Error('cadence table unavailable'); };
+              return { get: fail, all: fail, run: fail };
+            }
+            return realPrepare(sql);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    }) as Db;
 
-    const first = await tick(VISIT_AT, tickDriver().driver);
+    const first = await tick(VISIT_AT, tickDriver().driver, false, unavailable);
     expect(first.ran).toHaveLength(MAX_TASKS_PER_VISIT);
 
-    const second = await tick(new Date(VISIT_AT.getTime() + 60_000), tickDriver().driver);
+    const second = await tick(new Date(VISIT_AT.getTime() + 60_000), tickDriver().driver, false, unavailable);
     expect(second.ran).toEqual([]);
     expect(second.skipped).toContain('already happened');
   });
 
-  it('does at most two things per visit, and nothing on the ticks in between', async () => {
+  it('does at most the bounded normal visit budget, and nothing on the ticks in between', async () => {
     await connectedSeat();
 
     const first = await tick(VISIT_AT, tickDriver().driver);
@@ -518,6 +541,23 @@ describe('how often the side-task tick touches LinkedIn', () => {
     const between = await tick(new Date(VISIT_AT.getTime() + 30 * 60_000), tickDriver().driver);
     expect(between.ran).toEqual([]);
     expect(between.skipped).toContain('none of them is now');
+  });
+
+  it('does one richer catch-up when a companion returns outside the normal visit schedule', async () => {
+    await connectedSeat();
+    const returnedAt = new Date(VISIT_AT.getTime() + 30 * 60_000);
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', AVAILABILITY_RETURN_MARKER, returnedAt);
+
+    const first = await tick(returnedAt, tickDriver().driver, true);
+    expect(first.ran).toHaveLength(MAX_CATCHUP_TASKS_PER_VISIT);
+    expect(new Set(first.ran)).toEqual(new Set(['inbox', 'pending_invites', 'acceptance', 'withdrawals', 'lead_sources']));
+
+    const runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
+    expect(runs.get(AVAILABILITY_CATCHUP_MARKER)?.getTime()).toBe(returnedAt.getTime());
+
+    const second = await tick(new Date(returnedAt.getTime() + 60_000), tickDriver().driver, true);
+    expect(second.ran).toEqual([]);
+    expect(second.skipped).toContain('none of them is now');
   });
 
   it('picks up the rest of the list on the following visits, so nothing is starved', async () => {

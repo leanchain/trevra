@@ -40,6 +40,7 @@ import {
   runPendingSeatDetectRequests,
   resetLinkedInSessionRhythm,
   seatContextFingerprint,
+  seatConcurrencyForConfig,
   seatProfilePresent,
   sessionActionBudget,
   sessionBreakMs,
@@ -53,6 +54,13 @@ import {
   type LocalWorkerStore,
   type PlaywrightLike
 } from './local-worker.js';
+
+describe('seatConcurrencyForConfig', () => {
+  it('serializes every LinkedIn account behind one paired companion', () => {
+    expect(seatConcurrencyForConfig({ enabled: true, companionBrowser: true }, true, { TREVRA_LINKEDIN_SEAT_CONCURRENCY: '9' })).toBe(1);
+    expect(seatConcurrencyForConfig({ enabled: true, companionBrowser: false }, true, { TREVRA_LINKEDIN_SEAT_CONCURRENCY: '4' })).toBe(4);
+  });
+});
 import type { LinkedInLocator } from './driver.js';
 import {
   deleteLinkedInCredentials,

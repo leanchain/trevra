@@ -181,7 +181,7 @@ import {
   warmupWeekOf,
   type SeatPatch
 } from './linkedin/seats.js';
-import { SIDE_TASK_NAMES, nextSideTaskOpportunities, nextVisitOpportunities, sideTaskRuns, type SideTaskName } from './linkedin/side-tasks.js';
+import { SIDE_TASK_NAMES, availabilityCatchUpPending, nextSideTaskOpportunities, nextVisitOpportunities, sideTaskRuns, type SideTaskName } from './linkedin/side-tasks.js';
 import { listSeatEvents, parseBackgroundRunDetail } from './linkedin/seat-events.js';
 import { MAX_HORIZON_DAYS, planPacing } from './linkedin/pacing.js';
 import {
@@ -5477,7 +5477,7 @@ type SideTaskScheduleView = {
 };
 
 type LinkedInBackgroundScheduleView = SideTaskScheduleView & {
-  source: 'maintenance' | 'actions';
+  source: 'maintenance' | 'actions' | 'catchup';
   waitingFor: LinkedInQueueWaitReason | null;
 };
 
@@ -5535,7 +5535,14 @@ async function nextLinkedInBackgroundRun(
   if (!seat) return null;
   const waitingFor = await linkedinQueueWaitReason(db, workspaceId, seatKey, now);
   const runs = await sideTaskRuns(db, workspaceId, seatKey);
-  const candidates: Array<{ startAt: Date; endAt: Date; source: 'maintenance' | 'actions' }> = [];
+  const candidates: Array<{ startAt: Date; endAt: Date; source: 'maintenance' | 'actions' | 'catchup' }> = [];
+
+  // A companion return is eligible immediately once both presence gates are
+  // back. Represent it as NOW rather than pretending the next deterministic
+  // visit is the next thing the worker will do.
+  if (availabilityCatchUpPending(runs)) {
+    candidates.push({ startAt: now, endAt: now, source: 'catchup' });
+  }
 
   // A read-only visit is real work only when at least one side task is due in
   // that visit. Take the earliest of the five task schedules rather than

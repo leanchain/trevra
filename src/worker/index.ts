@@ -11,7 +11,7 @@ import { validateEnvironment } from '../server/config.js';
 import { assertHostedDataReady } from '../server/hosted-readiness.js';
 import {
   closeLinkedInBrowser,
-  defaultSeatConcurrency,
+  seatConcurrencyForConfig,
   linkedInWorkerHealth,
   linkedinWorkspaceIdsForShard,
   runBounded,
@@ -132,12 +132,16 @@ async function linkedinCycle():Promise<void>{
   // authorisation stops being served on the next tick rather than at the next
   // restart. Null on every self-hosted deployment, where the loop is unchanged.
   const allowSeat=hostedSeatFilter(db);
+  // One paired laptop may own many isolated LinkedIn profiles, but it should
+  // drive only one account at a time. Cloud/browser fleets keep the bounded
+  // headless concurrency; the local companion is serialized across seats.
+  const seatConcurrency=seatConcurrencyForConfig(runtime.linkedinLocalWorker,true);
   // Neither call throws -- a missing optional playwright, a browser that will
   // not open and a halted batch are all outcomes they report. This catch is
   // for the case they are wrong about that.
   try{
     await runPendingSeatDetectRequests(db,runtime.linkedinLocalWorker,{shard:linkedinShard,...(allowSeat?{allowSeat}:{})});
-    await runDueLinkedInActions(db,runtime.linkedinLocalWorker,{shard:linkedinShard,workerId:linkedinWorkerId,...(allowSeat?{allowSeat}:{})});
+    await runDueLinkedInActions(db,runtime.linkedinLocalWorker,{shard:linkedinShard,workerId:linkedinWorkerId,concurrency:seatConcurrency,...(allowSeat?{allowSeat}:{})});
     // THE SEND QUEUE FIRST, THE REST AFTER, and the order is the point: the
     // invite/DM/reply/engagement queue is the only work with a paced SLOT
     // attached, so it must not sit behind an inbox walk that can take minutes.
@@ -161,7 +165,7 @@ async function linkedinCycle():Promise<void>{
     // of the shard, so the cursor goes back to the start.
     const seats=await seatRefsForShard(db,{shard:linkedinShard,limit:SIDE_TASK_SEATS_PER_TICK,after:seatCursor});
     seatCursor=seats.length<SIDE_TASK_SEATS_PER_TICK?null:seats[seats.length-1]??null;
-    await runBounded(seats,defaultSeatConcurrency(true),async(seat)=>{
+    await runBounded(seats,seatConcurrency,async(seat)=>{
       // THE SAME AUTHORISATION GATE AS THE SEND QUEUE. Reading a member's inbox
       // and reconciling their pending invites is acting on their account too;
       // gating only the sends would have been a distinction nobody consented to.

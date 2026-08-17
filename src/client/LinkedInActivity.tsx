@@ -85,8 +85,9 @@ export function OutreachActivity() {
   if (loading && !data) return <div className="center-state"><LoaderCircle className="spin" size={22} /><p>Loading LinkedIn activity…</p></div>;
 
   const next = data?.nextRun ?? null;
-  const nextWindow = next ? formatVisitWindow(next.startAt, next.endAt, next.timezone) : null;
+  const nextWindow = next && next.source !== 'catchup' ? formatVisitWindow(next.startAt, next.endAt, next.timezone) : null;
   const blocker = next ? queueWaitCopy(next.waitingFor) : null;
+  const readyNow = Boolean(next?.source === 'catchup' && !blocker);
 
   return <div className="page-stack li-activity-page">
     <section className="page-panel li-activity-next">
@@ -99,8 +100,9 @@ export function OutreachActivity() {
       </div>
       {error && <div className="error-banner">{error}</div>}
       {next ? <div className="li-activity-next-value">
-        <strong>{blocker ?? nextWindow ?? 'Scheduled'}</strong>
-        <span>{next.seatLabel} · {next.source === 'actions' ? 'scheduled outreach' : 'background checks'}</span>
+        <strong>{blocker ?? (readyNow ? 'Ready now · catch-up' : nextWindow ?? 'Scheduled')}</strong>
+        <span>{next.seatLabel} · {next.source === 'actions' ? 'scheduled outreach' : next.source === 'catchup' ? 'availability catch-up' : 'background checks'}</span>
+        {blocker && next.source === 'catchup' && <small>The catch-up will run as soon as this prerequisite is back.</small>}
         {blocker && nextWindow && <small>Next normal window: {nextWindow}</small>}
       </div> : <div className="empty-state compact">
         <Clock3 size={20} />

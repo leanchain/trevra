@@ -95,21 +95,24 @@ export const SIDE_TASKS_NEEDING_IDENTITY: ReadonlySet<SideTaskName> = new Set<Si
  * ------------------------------------------------------------------------ */
 
 /**
- * The most jobs one visit may do.
+ * The most maintenance jobs one normal visit may do.
  *
- * TWO, because a visit is two to five minutes long. Walking an inbox is
- * already most of that, and an account that reconciles its sent invitations,
- * opens profiles, drains a withdrawal queue AND harvests a lead source inside
- * one three-minute window is not somebody checking their messages -- it is a
- * batch job, which is what this stopped being.
+ * THREE is still a bounded sitting, but it gives a laptop that is available
+ * only once or twice a day a realistic chance to keep the account current.
+ * The availability-return path below may do every stale maintenance category
+ * once; neither path replays missed visits or raises send limits.
  */
-export const MAX_TASKS_PER_VISIT = 2;
+export const MAX_TASKS_PER_VISIT = 3;
+export const MAX_CATCHUP_TASKS_PER_VISIT = SIDE_TASK_NAMES.length;
+export const AVAILABILITY_RETURN_MARKER = 'availability_return';
+export const AVAILABILITY_CATCHUP_MARKER = 'availability_catchup';
 
 /**
  * The least time that may pass before a job is worth doing again, in hours.
  *
  * NOT A SCHEDULE -- A FLOOR. Nothing runs because its floor elapsed; a visit
- * has to happen first, and then at most two of the eligible jobs are chosen.
+ * has to happen first. A normal visit takes at most three stale jobs; an
+ * availability-return visit may take each stale category once.
  * The floor only stops a job being repeated in the next visit when there is
  * obviously nothing new to see.
  *
@@ -148,9 +151,9 @@ export interface VisitVerdict {
    * caller. A visit is two to five minutes and a tick is sixty seconds, so
    * every visit is seen by two to five consecutive ticks. Without a stable id
    * for "this visit", the second tick finds the first tick's jobs freshly
-   * stamped, picks the next two off the list, warms up again and loads
-   * `/in/me/` again -- and the cap of two per visit quietly becomes two per
-   * MINUTE. Recording this instant is what makes one visit one pass.
+   * stamped, picks the next stale jobs off the list, warms up again and loads
+   * `/in/me/` again -- and the bounded per-visit budget quietly becomes a
+   * per-MINUTE budget. Recording this instant is what makes one visit one pass.
    */
   startedAt: Date | null;
   /** Null exactly when `visit` is set. One sentence, for the worker log. */
@@ -266,11 +269,16 @@ export async function sideTaskRuns(db: Db, workspaceId: string, seatKey: string)
   return runs;
 }
 
+export type SideTaskCadenceMarker = SideTaskName
+  | typeof VISIT_MARKER
+  | typeof AVAILABILITY_RETURN_MARKER
+  | typeof AVAILABILITY_CATCHUP_MARKER;
+
 export async function markSideTaskRun(
   db: Db,
   workspaceId: string,
   seatKey: string,
-  task: SideTaskName | typeof VISIT_MARKER,
+  task: SideTaskCadenceMarker,
   at: Date
 ): Promise<void> {
   // WRITTEN TO MEMORY FIRST AND UNCONDITIONALLY. If the column write throws,
@@ -291,7 +299,36 @@ export async function markSideTaskRun(
 }
 
 /**
- * What this visit does, at most two things, most-overdue first.
+ * Stamp every LinkedIn account when the paired computer or Trevra tab returns
+ * after its presence lease had expired. The worker consumes this once per seat
+ * as a consolidated state catch-up, never as replay of the missed clock ticks.
+ */
+export async function markWorkspaceAvailabilityReturn(db: Db, workspaceId: string, at: Date): Promise<void> {
+  try {
+    const seats = await db.prepare('SELECT seat_key FROM linkedin_seats WHERE workspace_id=?')
+      .all<{ seat_key: string }>(workspaceId);
+    for (const seat of seats) localRuns.set(localKey(workspaceId, seat.seat_key, AVAILABILITY_RETURN_MARKER), at);
+    if (seats.length === 0) return;
+    await db.prepare(`
+      INSERT INTO linkedin_side_task_runs (workspace_id,seat_key,task,last_run_at)
+      SELECT workspace_id,seat_key,?,? FROM linkedin_seats WHERE workspace_id=?
+      ON CONFLICT (workspace_id,seat_key,task) DO UPDATE SET last_run_at=EXCLUDED.last_run_at
+    `).run(AVAILABILITY_RETURN_MARKER, at.toISOString(), workspaceId);
+  } catch {
+    // Availability recovery is a convenience, never a reason pairing/presence
+    // should fail on an un-migrated or shutting-down database.
+  }
+}
+
+export function availabilityCatchUpPending(runs: SideTaskRuns): Date | null {
+  const returnedAt = runs.get(AVAILABILITY_RETURN_MARKER);
+  if (!returnedAt) return null;
+  const consumedAt = runs.get(AVAILABILITY_CATCHUP_MARKER);
+  return !consumedAt || consumedAt.getTime() < returnedAt.getTime() ? returnedAt : null;
+}
+
+/**
+ * What this visit does, most-overdue first and under the caller's bounded cap.
  *
  * PURE, and separate from the two database calls around it, because the whole
  * value of this module is in a decision that has to be assertable without a

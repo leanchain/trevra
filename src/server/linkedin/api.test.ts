@@ -13,6 +13,7 @@ import { upsertSeat } from './seats.js';
 import { createCampaign, LinkedInApiError, writeActionStatus } from './campaigns.js';
 import { canonicalPayloadHash } from '../control-plane/payload.js';
 import { encodeBackgroundRunDetail, recordSeatEvent } from './seat-events.js';
+import { AVAILABILITY_RETURN_MARKER, markSideTaskRun } from './side-tasks.js';
 
 /**
  * The LinkedIn HTTP surface (docs/linkedin-outreach-plan.md section 5).
@@ -1650,6 +1651,19 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
       expect.objectContaining({ kind: 'maintenance', tasks: ['inbox', 'lead_sources'], status: 'completed' }),
       expect.objectContaining({ kind: 'actions', executedCount: 2, status: 'completed' })
     ]));
+  });
+
+  it('reports an availability return as a catch-up ready now instead of a later normal window', async () => {
+    await upsertSeat(db, WORKSPACE_A, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich' }, new Date());
+    const returnedAt = new Date();
+    await markSideTaskRun(db, WORKSPACE_A, 'owner', AVAILABILITY_RETURN_MARKER, returnedAt);
+
+    const body = (await as(sessionA).get('/api/linkedin/activity?limit=20').expect(200)).body as {
+      nextRun: { source: string; startAt: string; endAt: string } | null;
+    };
+    expect(body.nextRun?.source).toBe('catchup');
+    expect(body.nextRun?.endAt).toBe(body.nextRun?.startAt);
+    expect(Math.abs(Date.parse(body.nextRun?.startAt ?? '') - Date.now())).toBeLessThan(10_000);
   });
 
   it('queues detection for a host-side worker when this process cannot open a browser', async () => {

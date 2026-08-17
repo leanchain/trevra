@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { recordSeatEvent } from './seat-events.js';
+import { upsertSeat } from './seats.js';
 import {
+  AVAILABILITY_CATCHUP_MARKER,
+  AVAILABILITY_RETURN_MARKER,
+  markSideTaskRun,
+  sideTaskRuns
+} from './side-tasks.js';
+import {
+  COMPANION_DEVICE_ONLINE_MS,
+  COMPANION_WEB_PRESENCE_MS,
   authenticateCompanionToken,
   companionBrowserConfigured,
   companionBrowserSettings,
@@ -29,6 +38,8 @@ beforeEach(async () => {
   await db.prepare('DELETE FROM linkedin_companion_presence WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_companion_devices WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_companion_pairings WHERE workspace_id=?').run(WORKSPACE_ID);
+  await db.prepare('DELETE FROM linkedin_side_task_runs WHERE workspace_id=?').run(WORKSPACE_ID);
+  await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
 });
 
 afterEach(async () => {
@@ -127,6 +138,45 @@ describe('LinkedIn companion pairing and presence', () => {
     const status = await listCompanionStatus(db, WORKSPACE_ID, NOW);
     expect(status.websitePresent).toBe(true);
     expect(status.devices).toEqual([expect.objectContaining({ id: paired.deviceId, online: true, label: 'Laptop' })]);
+  });
+
+  it('marks one catch-up opportunity when the companion truly returns, not on ordinary heartbeats', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, NOW);
+    const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
+    const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });
+
+    await authenticateCompanionToken(db, paired.token, NOW);
+    let runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
+    expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(NOW.getTime());
+
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', AVAILABILITY_CATCHUP_MARKER, new Date(NOW.getTime() + 1));
+    const heartbeat = new Date(NOW.getTime() + 30_000);
+    await authenticateCompanionToken(db, paired.token, heartbeat);
+    runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
+    expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(NOW.getTime());
+
+    const returned = new Date(heartbeat.getTime() + COMPANION_DEVICE_ONLINE_MS + 1);
+    await authenticateCompanionToken(db, paired.token, returned);
+    runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
+    expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(returned.getTime());
+  });
+
+  it('marks one catch-up opportunity when the Trevra tab returns after its presence lease expired', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, NOW);
+    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', NOW);
+    let runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
+    expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(NOW.getTime());
+
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', AVAILABILITY_CATCHUP_MARKER, new Date(NOW.getTime() + 1));
+    const heartbeat = new Date(NOW.getTime() + 30_000);
+    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', heartbeat);
+    runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
+    expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(NOW.getTime());
+
+    const returned = new Date(heartbeat.getTime() + COMPANION_WEB_PRESENCE_MS + 1);
+    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', returned);
+    runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
+    expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(returned.getTime());
   });
 
   it('surfaces a human-required reconnect until a later healthy session clears it', async () => {

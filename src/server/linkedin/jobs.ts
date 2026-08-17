@@ -33,8 +33,11 @@ import type { DayShapeFn } from './pacing.js';
 import { encodeBackgroundRunDetail, recordSeatEvent, seatRestingUntil } from './seat-events.js';
 import { OWNER_SEAT_KEY, effectivePosture, getSeat } from './seats.js';
 import {
+  AVAILABILITY_CATCHUP_MARKER,
+  MAX_CATCHUP_TASKS_PER_VISIT,
   SIDE_TASKS_NEEDING_IDENTITY,
   VISIT_MARKER,
+  availabilityCatchUpPending,
   dueSideTasks,
   markSideTaskRun,
   sideTaskRuns,
@@ -921,50 +924,53 @@ export async function runLinkedInSideTasks(
   if (!seat) return result;
   if (effectivePosture(seat, now) === 'paused') return result;
 
-  // IS LINKEDIN EVEN OPEN RIGHT NOW? Two to five times on a working day, for
-  // two to five minutes, inside the seat's own drawn window and never on a
-  // rest day. Asked FIRST, because a job that came due at 04:00 is not a job
-  // to run at 04:00 -- it waits for the next visit, exactly as a sent action
-  // waits for its slot. Same `dayShapeFor` the sender draws its day from, so
-  // the reads and the sends are one presence rather than two actors sharing a
-  // cookie.
-  const { visit, startedAt, reason } = visitAt(seat, now, options.dayShape === undefined ? {} : { dayShape: options.dayShape });
-  if (!visit || !startedAt) return { ...result, skipped: reason };
+  // A NORMAL VISIT follows the deterministic daily rhythm. A COMPANION RETURN
+  // may additionally create one consolidated state catch-up after the laptop
+  // or the signed-in Trevra tab was genuinely absent long enough for its lease
+  // to expire. That catch-up is one visit NOW -- never replay of every visit
+  // the machine slept through.
+  const runs = await sideTaskRuns(db, options.workspaceId, seatKey);
+  const returnedAt = config.companionBrowser ? availabilityCatchUpPending(runs) : null;
+  const verdict = visitAt(seat, now, options.dayShape === undefined ? {} : { dayShape: options.dayShape });
+  const normalVisit = Boolean(verdict.visit && verdict.startedAt);
+  const catchUp = Boolean(returnedAt);
+  if (!normalVisit && !catchUp) return { ...result, skipped: verdict.reason };
+  const startedAt = normalVisit ? verdict.startedAt! : now;
+  const visitIndex = normalVisit ? verdict.visit!.index : -1;
 
-  // MID-SITTING-BREAK. `local-worker.ts` closes the browser and stands the seat
-  // down for 25-90 minutes after a sitting; a client that stops sending but
-  // keeps polling its inbox through the break has not gone anywhere, and the
-  // break was the point.
+  // MID-SITTING-BREAK. A reconnect does not outrank a break set by a sitting
+  // that just used the account. The availability marker remains pending and is
+  // consumed later, so nothing is lost and the browser is not reopened early.
   const resting = await seatRestingUntil(db, options.workspaceId, seatKey);
   if (resting && resting.getTime() > now.getTime()) {
     return { ...result, skipped: `This seat is between sittings until ${resting.toISOString()}, so nothing was read.` };
   }
 
-  // ONE PASS PER VISIT, NOT ONE PER TICK INSIDE IT. A visit is 2-5 minutes and
-  // a tick is 60 seconds, so every visit is seen 2-5 times. Without this the
-  // second tick would find the first tick's jobs freshly stamped, pick the
-  // next two off the list, warm up again and load `/in/me/` again -- and
-  // `MAX_TASKS_PER_VISIT` would silently mean two per MINUTE.
-  const runs = await sideTaskRuns(db, options.workspaceId, seatKey);
+  // ONE PASS PER NORMAL VISIT, plus at most ONE availability-return catch-up.
+  // If reconnect happens inside a visit that already ran, only stale tasks can
+  // be selected because every completed task has its own cadence stamp.
   const lastVisit = runs.get(VISIT_MARKER);
-  if (lastVisit && lastVisit.getTime() === startedAt.getTime()) {
+  if (normalVisit && !catchUp && lastVisit && lastVisit.getTime() === startedAt.getTime()) {
     return { ...result, skipped: 'This visit has already happened; the tab is open and nothing new is being loaded.' };
   }
 
-  // WHAT THIS VISIT DOES -- at most two of the five, most overdue first. Three
-  // minutes is not enough time to do all five, and an account that appears to
-  // is a batch job rather than somebody checking their messages.
-  const due = new Set(dueSideTasks(seat, runs, now));
+  // Normal visits may do three stale maintenance jobs. A return after real
+  // absence may do all five categories ONCE so an occasionally-online laptop
+  // can get current without manufacturing the missed visits as a burst.
+  const due = new Set(dueSideTasks(seat, runs, now, { limit: catchUp ? MAX_CATCHUP_TASKS_PER_VISIT : undefined }));
   if (due.size === 0) {
+    if (catchUp) await markSideTaskRun(db, options.workspaceId, seatKey, AVAILABILITY_CATCHUP_MARKER, now);
     return { ...result, skipped: 'LinkedIn is open, but nothing has gone stale since the last visit.' };
   }
 
   // STAMPED BEFORE THE BROWSER OPENS, so a visit that dies half way through --
   // a challenge, a crash, a browser that will not launch -- is a visit that
-  // HAPPENED. The alternative is a seat that failed at 09:14 retrying at
-  // 09:15, 09:16 and 09:17, which is the polling loop again wearing the visit
-  // model's clothes.
-  await markSideTaskRun(db, options.workspaceId, seatKey, VISIT_MARKER, startedAt);
+  // HAPPENED. A failed catch-up is also consumed: hammering the same checkpoint
+  // every minute is worse than waiting for the next normal visit or reconnect.
+  if (normalVisit && (!lastVisit || lastVisit.getTime() !== startedAt.getTime())) {
+    await markSideTaskRun(db, options.workspaceId, seatKey, VISIT_MARKER, startedAt);
+  }
+  if (catchUp) await markSideTaskRun(db, options.workspaceId, seatKey, AVAILABILITY_CATCHUP_MARKER, now);
 
   // ONE SESSION AND AT MOST ONE IDENTITY CHECK FOR THE WHOLE PASS, rather than
   // one per job. Each job called `openLinkedInSession` itself and two of them
@@ -995,7 +1001,7 @@ export async function runLinkedInSideTasks(
   // the sending sittings use, so a read visit and a send visit begin the same
   // way; it also wanders to notifications or My Network about half the time.
   // Decoration, never correctness: a page that cannot navigate drops it.
-  await warmUpSession(session.page, `${options.workspaceId}:${seatKey}:visit${visit.index}:${now.toISOString().slice(0, 10)}`, log);
+  await warmUpSession(session.page, `${options.workspaceId}:${seatKey}:${catchUp ? 'return' : `visit${visitIndex}`}:${now.toISOString().slice(0, 10)}`, log);
 
   // AND NOT AT ALL WHEN NOTHING IN THIS PASS NEEDS IT. Only the inbox walk and
   // acceptance detection file data whose meaning depends on who is signed in;
@@ -1129,7 +1135,7 @@ export async function runLinkedInSideTasks(
   // An operator asking "is it alive" needs a heartbeat; at 1,440 ticks a day a
   // line per tick is not a heartbeat, it is the log.
   if (result.ran.length > 0) {
-    log(`LinkedIn visit ${visit.index + 1} for ${options.workspaceId}/${seatKey}: ${result.ran.join(', ')}.`);
+    log(`LinkedIn ${catchUp ? 'availability catch-up' : `visit ${visitIndex + 1}`} for ${options.workspaceId}/${seatKey}: ${result.ran.join(', ')}.`);
   }
 
   return result;
