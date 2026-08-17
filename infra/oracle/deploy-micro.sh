@@ -101,13 +101,34 @@ else
 fi
 
 echo "==> release migrations and hosted data hardening"
-# Foreground and fail-fast. The currently running app/worker are untouched until
-# this exits 0. The exited migrate container is then the dependency app/worker
-# require below.
-ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml up --no-deps --force-recreate migrate"
+# The app micro is deliberately small. Keep the OLD API serving, but quiesce the
+# old worker while the one-shot migration/readiness process runs so the two
+# memory-heavy Node workers never compete with it. Remember whether a worker
+# actually existed/running so a failed migration can restore the previous
+# release before this script exits.
+WORKER_WAS_RUNNING="$(ssh "ubuntu@${APP_IP}" "docker inspect -f '{{.State.Running}}' trevra-worker-1 2>/dev/null || true")"
+if [ "$WORKER_WAS_RUNNING" = "true" ]; then
+  echo "==> pausing old worker for migration headroom"
+  ssh "ubuntu@${APP_IP}" "docker stop -t 30 trevra-worker-1 >/dev/null"
+fi
+
+# `docker compose up migrate` can print `exited with code 137` and still return
+# zero itself. --exit-code-from makes the container's exit code the SSH command
+# exit code, so set -e can finally mean fail-fast. Do NOT replace API/worker on
+# anything except an explicit migration exit 0.
+if ! ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml up --no-deps --force-recreate --abort-on-container-exit --exit-code-from migrate migrate"; then
+  echo "migration/readiness failed; keeping the old API and restoring the old worker" >&2
+  if [ "$WORKER_WAS_RUNNING" = "true" ]; then
+    ssh "ubuntu@${APP_IP}" "docker start trevra-worker-1 >/dev/null" || true
+  fi
+  exit 1
+fi
 
 echo "==> rolling hosted app and worker"
-ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml up -d --remove-orphans"
+# Migration has already succeeded. Target only the long-lived processes so
+# Compose does not recreate the one-shot migration container a second time.
+# Cloudflared remains up and reconnects to the newly healthy API.
+ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml up -d --no-deps --force-recreate trevra worker"
 
 echo "==> waiting for health"
 # --env-file is required even to read status: the compose file uses ${VAR:?}

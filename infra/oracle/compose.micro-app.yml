@@ -36,10 +36,13 @@ services:
       TREVRA_DEPLOYMENT_MODE: hosted
       DATABASE_AUTO_MIGRATE: "false"
       PORT: 8082
-      NODE_OPTIONS: --max-old-space-size=256
+      NODE_OPTIONS: --max-old-space-size=384
     healthcheck:
       disable: true
-    mem_limit: 320m
+    # The release job can briefly need more heap than the steady-state worker.
+    # deploy-micro.sh pauses the old worker first, so this larger one-shot ceiling
+    # still fits the 1 GB app micro without competing with two worker processes.
+    mem_limit: 480m
     restart: "no"
 
   trevra:
