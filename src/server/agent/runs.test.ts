@@ -223,6 +223,16 @@ describe('reading the ledger', () => {
     const first = await start({ goal: 'first' });
     const second = await start({ goal: 'second' });
     const third = await start({ goal: 'third', trigger: 'schedule' });
+    // CURRENT_TIMESTAMP can be identical for several inserts in the same
+    // database transaction. Give this ordering test distinct times explicitly
+    // so it tests "newest first" rather than depending on statement timing.
+    for (const [runId, startedAt] of [
+      [first.id, '2026-01-01T00:00:01Z'],
+      [second.id, '2026-01-01T00:00:02Z'],
+      [third.id, '2026-01-01T00:00:03Z']
+    ] as const) {
+      await db.prepare('UPDATE agent_runs SET started_at=? WHERE id=?').run(startedAt, runId);
+    }
     await startAgentRun(db, {
       workspaceId: OTHER_WORKSPACE_ID,
       trigger: 'manual',
