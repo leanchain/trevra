@@ -7,7 +7,12 @@ import { getMigrations } from 'better-auth/db/migration';
 import { organization } from 'better-auth/plugins';
 import type { Db } from './db.js';
 import { DEMO_WORKSPACE_ID, id } from './db.js';
-import { sendOrganizationInvitationEmail, smtpConfigured } from './email.js';
+import {
+  sendInvitationAcceptedEmail,
+  sendOrganizationInvitationEmail,
+  sendWorkspaceAccessRemovedEmail,
+  smtpConfigured
+} from './email.js';
 import { recordMarketingEvent } from './public-site.js';
 
 const { Pool } = pg;
@@ -246,7 +251,8 @@ export const auth = betterAuth({
               inviterName: data.inviter.user.name,
               inviterEmail: data.inviter.user.email,
               organizationName: data.organization.name,
-              role: data.role
+              role: data.role,
+              expiresAt: data.invitation.expiresAt
             });
           } catch (error) {
             // The invitation itself remains usable through the copy-link fallback.
@@ -324,9 +330,48 @@ export const auth = betterAuth({
         // own auto-mounted `/organization/remove-member` and
         // `/organization/update-member-role` from day one -- see the doc comment
         // on `assertOwnerChangeAllowed`.
+        afterAcceptInvitation: async ({ invitation, user, organization }) => {
+          if (!smtpConfigured()) return;
+          try {
+            const inviter = await authPool.query<{ email: string; name: string }>(
+              'SELECT email,name FROM "user" WHERE id=$1',
+              [String(invitation.inviterId)]
+            );
+            const recipient = inviter.rows[0];
+            if (!recipient?.email) return;
+            await sendInvitationAcceptedEmail({
+              to: recipient.email,
+              memberName: user.name?.trim() || user.email,
+              memberEmail: user.email,
+              organizationName: organization.name,
+              role: invitation.role,
+              manageTeamUrl: `${baseURL}/setup/team`
+            });
+          } catch (error) {
+            // Membership is already accepted at this point; notification failure
+            // must never turn a successful join into an HTTP error.
+            console.error('Failed to deliver Trevra invitation-accepted email', error);
+          }
+        },
         beforeRemoveMember: async ({ member, organization }) => {
           const members = await listOrganizationMembers(organization.id);
           assertOwnerChangeAllowed(members, member.userId, false);
+        },
+        afterRemoveMember: async ({ user, organization }) => {
+          if (!smtpConfigured()) return;
+          try {
+            await sendWorkspaceAccessRemovedEmail({
+              to: user.email,
+              memberName: user.name?.trim() || user.email,
+              organizationName: organization.name,
+              signInUrl: baseURL,
+              supportEmail: process.env.PUBLIC_SUPPORT_EMAIL
+            });
+          } catch (error) {
+            // Access removal is the security action; notification is best effort
+            // and must not resurrect or obscure the completed membership change.
+            console.error('Failed to deliver Trevra workspace-access-removed email', error);
+          }
         },
         beforeUpdateMemberRole: async ({ member, newRole, organization }) => {
           const members = await listOrganizationMembers(organization.id);

@@ -4,6 +4,7 @@ import { id } from './db.js';
 import { appendDomainEvent } from './control-plane/events.js';
 import { executeConnectedAction, recordOutcome } from './integration-service.js';
 import { serializeAction } from './serializers.js';
+import { notifyActionFailure } from './notifications.js';
 
 function hashPayload(recipient: string, subject: string, body: string, structuredPayloadJson = '{}'): string {
   return createHash('sha256').update(JSON.stringify({ recipient, subject, body, structuredPayloadJson })).digest('hex');
@@ -275,7 +276,10 @@ export async function executeAction(db: Db, workspaceId: string, actionId: strin
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await db.transaction(async (tx) => {
+    const firstFailure = await db.transaction(async (tx) => {
+      const previous = await tx.prepare(
+        "SELECT id FROM audit_events WHERE workspace_id=? AND event_type='action.failed' AND entity_type='action' AND entity_id=? LIMIT 1"
+      ).get<{ id: string }>(workspaceId, actionId);
       await tx.prepare("UPDATE actions SET status='failed',last_error=?,updated_at=? WHERE id=?")
         .run(message, new Date().toISOString(), actionId);
       await audit(tx, workspaceId, 'system', null, 'action.failed', 'action', actionId, { error: message });
@@ -288,7 +292,22 @@ export async function executeAction(db: Db, workspaceId: string, actionId: strin
         correlationId: String(action.recommendation_id),
         payload: { error: message }
       });
+      return !previous;
     });
+    if (firstFailure) {
+      try {
+        await notifyActionFailure(db, {
+          workspaceId,
+          actionType: String(action.type),
+          recipient: String(action.recipient),
+          messageSubject: String(action.subject),
+          provider: String(action.execution_provider),
+          error
+        });
+      } catch (notificationError) {
+        console.error('Failed to deliver Trevra action-failure notification', notificationError);
+      }
+    }
     throw error;
   }
 

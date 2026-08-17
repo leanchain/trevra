@@ -3,6 +3,7 @@ import { Nango } from '@nangohq/node';
 import { parse } from 'csv-parse/sync';
 import Stripe from 'stripe';
 import { z } from 'zod';
+import { notifyIntegrationNeedsReauth } from './notifications.js';
 import type { AvailableIntegration } from '../shared/types.js';
 import type { Db } from './db.js';
 import { id } from './db.js';
@@ -206,8 +207,8 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
       const now = new Date().toISOString();
       const providerConfigKey = String(payload.providerConfigKey);
       const connectionId = String(payload.connectionId);
-      const existing = await db.prepare('SELECT id FROM connections WHERE workspace_id=? AND provider_config_key=? AND external_connection_id=?')
-        .get(workspaceId, providerConfigKey, connectionId) as { id: string } | undefined;
+      const existing = await db.prepare('SELECT id,status FROM connections WHERE workspace_id=? AND provider_config_key=? AND external_connection_id=?')
+        .get(workspaceId, providerConfigKey, connectionId) as { id: string; status: string } | undefined;
       const localId = existing?.id ?? id('conn');
       await db.prepare(`
         INSERT INTO connections (id,workspace_id,provider,provider_config_key,external_connection_id,display_name,status,is_demo,last_error,created_at,updated_at)
@@ -220,6 +221,24 @@ export async function handleNangoWebhook(db: Db, rawBody: string, headers: Recor
         success ? null : JSON.stringify(payload.error ?? 'Connection failed'), now, now
       );
       await completeWebhook(db, 'nango', externalEventId, 'processed', null, workspaceId);
+      if (!success && existing?.status !== 'needs_reauth') {
+        try {
+          const providerError = typeof payload.error === 'string' ? payload.error : '';
+          const reason = /expired|invalid_grant|revoked/i.test(providerError)
+            ? 'The provider authorization expired or was revoked.'
+            : /denied|unauthori[sz]ed|forbidden/i.test(providerError)
+              ? 'The provider rejected the authorization.'
+              : 'The provider authorization could not be refreshed.';
+          await notifyIntegrationNeedsReauth(db, {
+            workspaceId: String(workspaceId),
+            provider: String(payload.provider ?? providerConfigKey),
+            accountLabel: tags.end_user_email ? String(tags.end_user_email) : null,
+            reason
+          });
+        } catch (notificationError) {
+          console.error('Failed to deliver Trevra integration reauthorization notification', notificationError);
+        }
+      }
       return { duplicate: false, processed: success ? 'connection-upserted' : 'connection-needs-reauth' };
     }
 
