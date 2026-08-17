@@ -188,8 +188,13 @@ fi
 echo "==> rolling hosted app and worker"
 # Migration has already succeeded. Target only the long-lived processes so
 # Compose does not recreate the one-shot migration container a second time.
-# Cloudflared remains up and reconnects to the newly healthy API.
-ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml up -d --no-deps --force-recreate trevra worker"
+# A changed TREVRA_IMAGE_TAG already makes Compose recreate these services;
+# forcing recreation as well can trigger Docker Compose's temporary-rename bug
+# (`trevra-trevra-1` still owns the canonical name while its replacement is
+# being renamed), which turns an otherwise healthy rollout into a 502. Let the
+# image change be the recreation signal. Cloudflared stays up and reconnects to
+# the newly healthy API.
+ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml up -d --no-deps trevra worker"
 
 echo "==> waiting for health"
 # --env-file is required even to read status: the compose file uses ${VAR:?}
