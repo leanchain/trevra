@@ -1,19 +1,5 @@
-# Marketing edge: the Vite static build served from Cloudflare's edge.
-#
-# This is a Workers static-assets deployment, not a Pages project. The apex
-# usetrevra.com is attached as a Worker custom domain, which is the only
-# mechanism that also writes the apex DNS record -- a Pages custom domain
-# leaves the record to be created by hand and sits at "pending" until it is.
-# _headers and _redirects in dist/ are honoured here exactly as on Pages.
+# Marketing site: static Vite output deployed to the existing Cloudflare Pages
+# project. The apex usetrevra.com is already attached to that Pages project.
 name = "trevra-site"
 compatibility_date = "2026-07-01"
-
-[assets]
-directory = "./dist"
-# The site has no 404.html; serve a real 404 rather than masking unknown paths
-# behind index.html, which would make every typo look like a 200 to crawlers.
-not_found_handling = "none"
-
-[[routes]]
-pattern = "usetrevra.com"
-custom_domain = true
+pages_build_output_dir = "./dist"
