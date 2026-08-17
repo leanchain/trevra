@@ -56,15 +56,15 @@ test('background companion auto-updates before accepting relay work', async () =
   try {
     mkdirSync(join(updatePackage, 'bin'), { recursive: true });
     writeFileSync(join(updatePackage, 'package.json'), JSON.stringify({
-      name: 'trevra', version: '0.2.1', type: 'module', bin: { trevra: 'bin/trevra.js' }, files: ['bin']
+      name: 'trevra', version: '0.2.2', type: 'module', bin: { trevra: 'bin/trevra.js' }, files: ['bin']
     }));
-    writeFileSync(join(updatePackage, 'bin', 'trevra.js'), '#!/usr/bin/env node\nconsole.log("0.2.1")\n');
+    writeFileSync(join(updatePackage, 'bin', 'trevra.js'), '#!/usr/bin/env node\nconsole.log("0.2.2")\n');
 
     await new Promise((resolve) => server.once('listening', resolve));
     const address = server.address();
     assert.ok(address && typeof address !== 'string');
     server.on('connection', (socket) => {
-      socket.send(JSON.stringify({ type: 'hello', companionVersion: '0.2.1' }));
+      socket.send(JSON.stringify({ type: 'hello', companionVersion: '0.2.2' }));
     });
 
     mkdirSync(join(home, '.trevra'), { recursive: true });
@@ -91,10 +91,10 @@ test('background companion auto-updates before accepting relay work', async () =
     assert.deepEqual(exit, { code: 75, signal: null });
 
     const installed = JSON.parse(readFileSync(join(home, '.trevra', 'service', 'node_modules', 'trevra', 'package.json'), 'utf8'));
-    assert.equal(installed.version, '0.2.1');
+    assert.equal(installed.version, '0.2.2');
     const log = readFileSync(join(home, '.trevra', 'logs', 'linkedin-companion.log'), 'utf8');
-    assert.match(log, /update_available from=0\.2\.0 to=0\.2\.1/);
-    assert.match(log, /update_installed version=0\.2\.1/);
+    assert.match(log, /update_available from=0\.2\.1 to=0\.2\.2/);
+    assert.match(log, /update_installed version=0\.2\.2/);
   } finally {
     server.close();
     rmSync(home, { recursive: true, force: true });

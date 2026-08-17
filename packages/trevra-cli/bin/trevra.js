@@ -19,7 +19,7 @@ import {
 } from '../lib/service.js';
 import { isNewerVersion, officialCompanionPackage } from '../lib/update.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOME = join(homedir(), '.trevra');
 const CONFIG = join(HOME, 'companion.json');

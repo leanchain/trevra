@@ -11,7 +11,7 @@ The hosted platform owns campaigns, due work, pacing, safety decisions, leases a
 3. Run the generated one-time install command:
 
    ```bash
-   npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.0/trevra-0.2.0.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
+   npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.1/trevra-0.2.1.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
    ```
 
 4. Trevra pairs the computer, installs a private per-user companion package and registers the operating system's background service. Chrome opens with a Trevra-specific persistent profile; sign into LinkedIn there if it is not already signed in.

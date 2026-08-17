@@ -9,7 +9,7 @@ For hosted LinkedIn execution, Trevra keeps campaigns, pacing and safety rules i
 In Trevra, open **Outreach → LinkedIn accounts → Connect this computer** and copy the generated command. It looks like:
 
 ```sh
-npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.0/trevra-0.2.0.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
+npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.1/trevra-0.2.1.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
 ```
 
 The command pairs the computer, installs the exact Trevra companion version into a private per-user directory, registers an OS background service, opens the dedicated LinkedIn Chrome profile for first sign-in, and starts the service.
