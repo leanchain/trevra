@@ -186,6 +186,41 @@ describe('POST /api/team/members (add teammate: always a real invitation, must b
   });
 });
 
+describe('companion member permissions', () => {
+  const previousSecretsKey = process.env.TREVRA_SECRETS_KEY;
+
+  afterEach(() => {
+    if (previousSecretsKey === undefined) delete process.env.TREVRA_SECRETS_KEY;
+    else process.env.TREVRA_SECRETS_KEY = previousSecretsKey;
+  });
+
+  it('lets a member use and disconnect the paired computer but not pair or replace it', async () => {
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+    const database = await freshDb();
+    const app = createApp(database);
+
+    const owner = await signUp(app, 'companion-owner', 'Companion Owner');
+    const ownerAuth = await currentAuth(owner.agent);
+    const member = await signUp(app, 'companion-member', 'Companion Member');
+    await betterAuth.api.addMember({ body: { userId: member.userId, organizationId: ownerAuth.workspaceId, role: 'member' } });
+    await member.agent.post('/api/auth/organization/set-active').send({ organizationId: ownerAuth.workspaceId }).expect(200);
+    expect((await currentAuth(member.agent)).role).toBe('member');
+
+    const pairing = await owner.agent.post('/api/linkedin/companion/pair').send({}).expect(201);
+    const exchange = await request(app).post('/api/linkedin/companion/exchange').send({
+      code: pairing.body.code,
+      label: 'Shared laptop'
+    }).expect(201);
+
+    const status = await member.agent.get('/api/linkedin/companion').expect(200);
+    expect(status.body).toMatchObject({ canManage: false, canUse: true, canDisconnect: true });
+
+    await member.agent.post('/api/linkedin/companion/presence').send({}).expect(200, { active: true });
+    await member.agent.post('/api/linkedin/companion/pair').send({}).expect(403);
+    await member.agent.delete(`/api/linkedin/companion/devices/${exchange.body.deviceId}`).expect(200, { revoked: true });
+  });
+});
+
 describe('credential route gate', () => {
   const previousDeploymentMode = process.env.TREVRA_DEPLOYMENT_MODE;
   const previousSecretsKey = process.env.TREVRA_SECRETS_KEY;

@@ -301,7 +301,7 @@ export function App() {
         const status = await getLinkedInCompanionStatus();
         if (disposed) return;
         stopTimer();
-        if (status.devices.length === 0 || !status.canManage) return;
+        if (status.devices.length === 0 || !status.canUse) return;
         await markLinkedInCompanionPresence();
         if (disposed) return;
         heartbeat = window.setInterval(() => {

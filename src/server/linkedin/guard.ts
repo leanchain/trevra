@@ -205,13 +205,13 @@ export interface LinkedInSafetyInput {
    * "this account works on weekday(s) 1,2,3,4,5 between 08:00 and 18:00",
    * which is true of the automation and false of the person reading it.
    *
-   * IT RELAXES EXACTLY THE TWO TIME CHECKS -- `business-hours` and `weekend`,
-   * which are one decision wearing two names. Every ceiling still runs and can
-   * still refuse: posture, the seat pause, the warm-up ramp, the campaign
-   * ramp, both rolling windows, the day-over-day clamp, the acceptance
-   * throttle, the InMail quota, the pending-invite backlog and
-   * `duplicate-target`. Hand-driven work stays as SPARSE as everything else;
-   * it is simply no longer confined to office hours.
+   * IT RELAXES TREVRA PACING FOR THIS ONE ACTION. A person may choose to act
+   * now even when the autonomous warm-up/campaign ramps, researched rolling
+   * bands, day-over-day smoothing, acceptance throttle, working hours or
+   * weekend rhythm would have delayed it. The hard account/integrity checks
+   * remain: the seat must exist and not be paused, LinkedIn's published InMail
+   * quota still binds, the pending-invite capacity still binds, exclusions are
+   * still applied by the route, and duplicate/replay protection still binds.
    *
    * SET BY THE HAND-DRIVEN SURFACES AND BY NOTHING ELSE: `enqueueReply` (the
    * inbox composer), the engagement route's live request, and the worker's
@@ -579,11 +579,20 @@ export async function evaluateLinkedInSafety(
   const used7d = ledger.used7d;
   const used30d = ledger.used30d;
 
-  // A PERSON ASKED FOR THIS, and two of the things below are about the
-  // account's own rhythm rather than about safety: the day's shape (here) and
-  // the two time checks (further down). Declared once, read in both places, so
-  // "what a manual action is exempt from" is one list rather than two.
+  // A PERSON ASKED FOR THIS ACTION.
+  //
+  // `manual` is durable provenance, not a caller hint: hand-driven routes write
+  // `source='manual'`, and the worker reads that source back before execution.
+  // Manual work may bypass Trevra's soft pacing (ramps, researched rolling
+  // bands, variance/acceptance throttles and time windows), but not the hard
+  // account/integrity boundaries kept later in this gate: configured+unpaused
+  // seat, LinkedIn's published InMail quota, pending-invite capacity and the
+  // duplicate/replay guard. Workspace exclusions are checked before this gate.
   const humanInitiated = input.manual === true;
+  const pacingPass = (passed: boolean): boolean => passed || humanInitiated;
+  const pacingDetail = (detail: string): string => humanInitiated
+    ? `${detail} Manual action: the user explicitly bypassed Trevra pacing for this one action.`
+    : detail;
 
   const ceilingBeforeDraw = effectiveDailyCeiling(band.perDay, operatorLimit, overrideBands);
   /**
@@ -664,12 +673,12 @@ export async function evaluateLinkedInSafety(
         : `${used24} of ${warmupCeiling} ${pluralKind(input.kind)} used in the last 24h (warm-up week ${warmupWeek}: ${ceilingSource} x ${multiplier}).`;
   checks.push({
     check: 'warmup-ceiling',
-    passed: warmupPassed || overrideWarmup || answeringInbound,
-    detail: overrideWarmup
+    passed: pacingPass(warmupPassed || overrideWarmup || answeringInbound),
+    detail: pacingDetail(overrideWarmup
       ? `${warmupDetail} The operator explicitly overrode the warm-up ceiling for this one reply, so this check ${warmupPassed ? 'would have passed anyway and the override changed nothing' : 'does not refuse it'}. It relaxes this ceiling and nothing else -- every other check below still runs and can still refuse.`
       : answeringInbound
         ? `${warmupDetail} This reply answers somebody who wrote to this account first, which is not the outreach the warm-up ramp slows, so this check ${warmupPassed ? 'would have passed anyway' : 'does not refuse it'}. It relaxes this ceiling and nothing else -- every other check below still runs and can still refuse.`
-        : warmupDetail
+        : warmupDetail)
   });
 
   // THE SECOND RAMP, and it is a different clock from the one above.
@@ -692,13 +701,14 @@ export async function evaluateLinkedInSafety(
   const campaignUsed24 = campaign === undefined || campaignId === null ? 0 : ledger.campaignUsed24;
   checks.push({
     check: 'campaign-warmup',
-    passed: campaignLimit === null || campaignUsed24 + 1 <= campaignLimit,
-    detail:
+    passed: pacingPass(campaignLimit === null || campaignUsed24 + 1 <= campaignLimit),
+    detail: pacingDetail(
       campaign !== undefined && campaignLimit !== null
         ? `${campaignUsed24} of ${campaignLimit} ${pluralKind(input.kind)} used by this campaign in the last 24 hours: campaign day ${campaignDayOf(campaign.startedAt, now)} is ${(campaignWarmupFraction(campaign.startedAt, now) * 100).toFixed(0)}% of the seat's ${effectiveDailyLimit}/day ceiling. The campaign ramp and the per-seat warm-up both apply; whichever is stricter binds.`
         : campaignId === null
           ? `No campaign was named for this action, so the campaign-day ramp does not apply and only the per-seat warm-up week does. The ramp shapes managed campaigns -- the ones this deployment runs itself.`
           : `Campaign '${campaignId}' is not a managed campaign in this workspace (a managed campaign has a workflow and has been started), so the 20/40/60/80/100% campaign-day ramp does not apply to it. The per-seat warm-up above still does.`
+    )
   });
 
   /**
@@ -731,28 +741,30 @@ export async function evaluateLinkedInSafety(
   const poolNoun = isMessage ? 'messages (DMs, replies and InMails share one operator ceiling)' : `${pluralKind(input.kind)}`;
   checks.push({
     check: 'rolling-24h',
-    passed: bandPassed && poolPassed,
-    detail: operatorLimit === null
+    passed: pacingPass(bandPassed && poolPassed),
+    detail: pacingDetail(operatorLimit === null
       ? `${used24} of ${effectiveDailyLimit} ${pluralKind(input.kind)} used in the last 24 hours (${posture} band).`
-      : `${used24} of ${ceilingSource} used in the last 24 hours for ${pluralKind(input.kind)}, and ${operatorUsed24} of the operator's ${operatorLimit}/day account-level ${poolNoun}. Two independent ceilings -- the per-kind one and the operator's pool -- and ${bandPassed && poolPassed ? 'both pass' : !bandPassed && !poolPassed ? 'both are full' : bandPassed ? 'the operator pool is full' : 'the per-kind ceiling is full'}.`
+      : `${used24} of ${ceilingSource} used in the last 24 hours for ${pluralKind(input.kind)}, and ${operatorUsed24} of the operator's ${operatorLimit}/day account-level ${poolNoun}. Two independent ceilings -- the per-kind one and the operator's pool -- and ${bandPassed && poolPassed ? 'both pass' : !bandPassed && !poolPassed ? 'both are full' : bandPassed ? 'the operator pool is full' : 'the per-kind ceiling is full'}.`)
   });
 
   checks.push({
     check: 'rolling-7d',
-    passed: band.perWeek === undefined || used7d + 1 <= band.perWeek,
-    detail:
+    passed: pacingPass(band.perWeek === undefined || used7d + 1 <= band.perWeek),
+    detail: pacingDetail(
       band.perWeek === undefined
         ? `No 7-day ceiling is published for ${input.kind}, so none is invented here.`
         : `${used7d} of ${band.perWeek} ${pluralKind(input.kind)} used in the last 7 days (${posture} band).`
+    )
   });
 
   checks.push({
     check: 'rolling-30d',
-    passed: band.perMonth === undefined || used30d + 1 <= band.perMonth,
-    detail:
+    passed: pacingPass(band.perMonth === undefined || used30d + 1 <= band.perMonth),
+    detail: pacingDetail(
       band.perMonth === undefined
         ? `No 30-day ceiling is published for ${input.kind}, so none is invented here.`
         : `${used30d} of ${band.perMonth} ${pluralKind(input.kind)} used in the last 30 days (${posture} band).`
+    )
   });
 
   // The anti-"slide and spike" check, and the reason this module exists at all
@@ -762,8 +774,8 @@ export async function evaluateLinkedInSafety(
   const deltaCeiling = Math.max(previous + MIN_RAMP_STEP, Math.floor(previous * (1 + MAX_DAY_OVER_DAY_DELTA)));
   checks.push({
     check: 'day-over-day-delta',
-    passed: used24 + 1 <= deltaCeiling,
-    detail: `Previous business day carried ${previous} ${input.kind}(s), so today's ceiling is ${deltaCeiling} (+${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%); ${used24} used so far.`
+    passed: pacingPass(used24 + 1 <= deltaCeiling),
+    detail: pacingDetail(`Previous business day carried ${previous} ${input.kind}(s), so today's ceiling is ${deltaCeiling} (+${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%); ${used24} used so far.`)
   });
 
   const acceptance = {
@@ -776,11 +788,12 @@ export async function evaluateLinkedInSafety(
   };
   checks.push({
     check: 'acceptance-rate',
-    passed: acceptance.rate === null || acceptance.rate >= MIN_ACCEPTANCE_RATE,
-    detail:
+    passed: pacingPass(acceptance.rate === null || acceptance.rate >= MIN_ACCEPTANCE_RATE),
+    detail: pacingDetail(
       acceptance.rate === null
         ? `No invite has been accepted or declined in the last ${ACCEPTANCE_WINDOW_DAYS} days, so there is no rate to judge. An absent signal is not a bad one.`
         : `${ACCEPTANCE_WINDOW_DAYS}-day invite acceptance is ${(acceptance.rate * 100).toFixed(0)}% (${acceptance.accepted} of ${acceptance.decided} decided); floor is ${(MIN_ACCEPTANCE_RATE * 100).toFixed(0)}%.`
+    )
   });
 
   const plannedAt = new Date(input.plannedFor);
