@@ -181,7 +181,8 @@ import {
   warmupWeekOf,
   type SeatPatch
 } from './linkedin/seats.js';
-import { SIDE_TASK_NAMES, nextSideTaskOpportunities, sideTaskRuns, type SideTaskName } from './linkedin/side-tasks.js';
+import { SIDE_TASK_NAMES, nextSideTaskOpportunities, nextVisitOpportunities, sideTaskRuns, type SideTaskName } from './linkedin/side-tasks.js';
+import { listSeatEvents, parseBackgroundRunDetail } from './linkedin/seat-events.js';
 import { MAX_HORIZON_DAYS, planPacing } from './linkedin/pacing.js';
 import {
   exportCampaign,
@@ -2104,6 +2105,7 @@ export function createApp(db: Db) {
         });
       })()
       : [];
+    const backgroundRun = seat ? await nextLinkedInBackgroundRun(db, workspaceId, seat.seatKey, now) : null;
 
     res.json({
       seat: seat ?? null,
@@ -2124,11 +2126,85 @@ export function createApp(db: Db) {
         waitingFor
       } : detect,
       execution: { ready: waitingFor === null, waitingFor },
+      backgroundRun: backgroundRun ? {
+        startAt: backgroundRun.startAt.toISOString(),
+        endAt: backgroundRun.endAt.toISOString(),
+        timezone: backgroundRun.timezone,
+        source: backgroundRun.source,
+        waitingFor: backgroundRun.waitingFor
+      } : null,
       maintenance,
       posture: seat ? effectivePosture(seat, now) : null,
       warmupWeek: warmupWeekOf(seat?.activatedAt ?? null, now),
       warmupWeeks: WARMUP_WEEKS,
       today: Object.fromEntries(PACED_KINDS.map((kind, index) => [kind, counts[index]]))
+    });
+  }));
+
+  app.get('/api/linkedin/activity', linkedinRoute(async (req, res) => {
+    const workspaceId = req.auth!.workspaceId;
+    const limit = z.coerce.number().int().min(1).max(200).default(50).parse(req.query.limit ?? 50);
+    const now = new Date();
+    const seats = await listSeats(db, workspaceId);
+    const labels = new Map(seats.map((seat) => [seat.seatKey, seat.label] as const));
+    const schedules = (await Promise.all(seats.map((seat) => nextLinkedInBackgroundRun(db, workspaceId, seat.seatKey, now))))
+      .filter((run): run is LinkedInBackgroundScheduleView => run !== null)
+      .sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
+    const nextRun = schedules.find((run) => run.waitingFor === null) ?? schedules[0] ?? null;
+
+    const batches = await db.prepare(`
+      SELECT id,seat_key,status,executed_count,halt_reason,started_at,finished_at
+      FROM linkedin_batches
+      WHERE workspace_id=?
+      ORDER BY started_at DESC
+      LIMIT ?
+    `).all<Record<string, unknown>>(workspaceId, limit);
+
+    const events = await listSeatEvents(db, workspaceId, { limit: Math.min(500, limit * 4) });
+    const maintenanceRuns = events.flatMap((event) => {
+      if (event.kind !== 'background_run') return [];
+      const detail = parseBackgroundRunDetail(event.detail);
+      if (!detail) return [];
+      return [{
+        id: event.id,
+        kind: 'maintenance' as const,
+        seatKey: event.seatKey,
+        seatLabel: labels.get(event.seatKey) ?? event.seatKey,
+        startedAt: detail.startedAt,
+        finishedAt: detail.finishedAt,
+        status: detail.status,
+        tasks: detail.tasks,
+        executedCount: 0,
+        reason: detail.reason
+      }];
+    });
+    const actionRuns = batches.map((row) => ({
+      id: String(row.id),
+      kind: 'actions' as const,
+      seatKey: String(row.seat_key),
+      seatLabel: labels.get(String(row.seat_key)) ?? String(row.seat_key),
+      startedAt: new Date(String(row.started_at)).toISOString(),
+      finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : null,
+      status: String(row.status),
+      tasks: [] as string[],
+      executedCount: Number(row.executed_count ?? 0),
+      reason: row.halt_reason === null || row.halt_reason === undefined ? null : String(row.halt_reason)
+    }));
+    const runs = [...maintenanceRuns, ...actionRuns]
+      .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
+      .slice(0, limit);
+
+    res.json({
+      nextRun: nextRun ? {
+        startAt: nextRun.startAt.toISOString(),
+        endAt: nextRun.endAt.toISOString(),
+        timezone: nextRun.timezone,
+        seatKey: nextRun.seatKey,
+        seatLabel: nextRun.seatLabel,
+        source: nextRun.source,
+        waitingFor: nextRun.waitingFor
+      } : null,
+      runs
     });
   }));
 
@@ -5400,6 +5476,11 @@ type SideTaskScheduleView = {
   seatKey: string;
 };
 
+type LinkedInBackgroundScheduleView = SideTaskScheduleView & {
+  source: 'maintenance' | 'actions';
+  waitingFor: LinkedInQueueWaitReason | null;
+};
+
 /**
  * One shared answer to “why is due LinkedIn work not moving?”. The queue screens
  * render this vocabulary instead of each inventing their own explanation.
@@ -5444,6 +5525,58 @@ async function linkedinQueueWaitReason(
  * Past visits are never returned, so sleeping through a window advances the ETA
  * rather than creating catch-up traffic on reconnect.
  */
+async function nextLinkedInBackgroundRun(
+  db: Db,
+  workspaceId: string,
+  seatKey: string,
+  now: Date
+): Promise<LinkedInBackgroundScheduleView | null> {
+  const seat = await getSeat(db, workspaceId, seatKey);
+  if (!seat) return null;
+  const waitingFor = await linkedinQueueWaitReason(db, workspaceId, seatKey, now);
+  const runs = await sideTaskRuns(db, workspaceId, seatKey);
+  const candidates: Array<{ startAt: Date; endAt: Date; source: 'maintenance' | 'actions' }> = [];
+
+  // A read-only visit is real work only when at least one side task is due in
+  // that visit. Take the earliest of the five task schedules rather than
+  // labelling a bare visit window as a fetch that might never open a browser.
+  for (const task of SIDE_TASK_NAMES) {
+    const [next] = nextSideTaskOpportunities(seat, runs, task, now, 1);
+    if (next) candidates.push({ startAt: next.startAt, endAt: next.endAt, source: 'maintenance' });
+  }
+
+  // Campaign/automated actions can make an earlier sitting than the next
+  // maintenance read. Manual work is intentionally excluded: it is the person
+  // asking Trevra to act now, not a background run.
+  const planned = await db.prepare(`
+    SELECT planned_for
+    FROM linkedin_actions
+    WHERE workspace_id=? AND seat_key=? AND status='planned' AND source <> 'manual' AND planned_for IS NOT NULL
+    ORDER BY planned_for ASC
+    LIMIT 1
+  `).get<{ planned_for: string }>(workspaceId, seatKey);
+  if (planned?.planned_for) {
+    const plannedAt = new Date(planned.planned_for);
+    if (!Number.isNaN(plannedAt.getTime())) {
+      const target = Math.max(now.getTime(), plannedAt.getTime());
+      const visits = nextVisitOpportunities(seat, runs, now, 20);
+      const visit = visits.find((candidate) => candidate.endAt.getTime() >= target);
+      if (visit) candidates.push({ startAt: visit.startAt, endAt: visit.endAt, source: 'actions' });
+    }
+  }
+
+  candidates.sort((left, right) => left.startAt.getTime() - right.startAt.getTime() || left.endAt.getTime() - right.endAt.getTime());
+  const next = candidates[0];
+  if (!next) return null;
+  return {
+    ...next,
+    timezone: seat.timezone,
+    seatLabel: seat.label,
+    seatKey: seat.seatKey,
+    waitingFor
+  };
+}
+
 async function sideTaskSchedule(
   db: Db,
   workspaceId: string,

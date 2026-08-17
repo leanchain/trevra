@@ -340,6 +340,45 @@ export interface SideTaskOpportunity {
 }
 
 /**
+ * Future LinkedIn visit windows for one seat, regardless of whether the visit
+ * ends up sending, reading, or doing both. A visit already stamped in the
+ * cadence ledger is skipped, and a visit whose end is in the past is never
+ * replayed after a sleeping laptop wakes up.
+ */
+export function nextVisitOpportunities(
+  seat: SideTaskSeat,
+  runs: SideTaskRuns,
+  now: Date,
+  count = 1,
+  options: { dayShape?: DayShapeFn; horizonDays?: number } = {}
+): SideTaskOpportunity[] {
+  const wanted = Math.max(1, Math.min(50, Math.trunc(count)));
+  const horizonDays = Math.max(1, Math.min(31, Math.trunc(options.horizonDays ?? 14)));
+  const shapeDay = options.dayShape ?? dayShapeFor;
+  const window = workWindowOf(seat);
+  const localToday = localDateOf(now, seat.timezone);
+  const seed = `${seat.workspaceId}:${seat.seatKey}`;
+  const opportunities: SideTaskOpportunity[] = [];
+
+  for (let offset = 0; offset < horizonDays && opportunities.length < wanted; offset += 1) {
+    const day = addLocalDays(localToday, offset);
+    if (weekdayVolumeFactor(window, weekdayOf(day)) <= 0) continue;
+    const shape = shapeDay(seed, day, window);
+    if (shape.resting) continue;
+
+    for (const visit of visitsForDay(seed, day, shape)) {
+      const startAt = zonedToUtc(day, visit.startMinute * 60, seat.timezone);
+      const endAt = zonedToUtc(day, visit.endMinute * 60, seat.timezone);
+      if (endAt.getTime() <= now.getTime()) continue;
+      if (runs.get(VISIT_MARKER)?.getTime() === startAt.getTime()) continue;
+      opportunities.push({ startAt, endAt, visitIndex: visit.index });
+      if (opportunities.length >= wanted) break;
+    }
+  }
+  return opportunities;
+}
+
+/**
  * Future visit windows in which one side task is expected to be selected.
  *
  * This is the read-only mirror of the worker's scheduling decision. It advances

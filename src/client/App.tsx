@@ -89,6 +89,7 @@ import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
 import { OutreachInbox } from './LinkedInInbox';
 import { OutreachLeads } from './LinkedInLeads';
 import { LinkedInAccounts, LinkedInCompanionAttention } from './LinkedInAccounts';
+import { OutreachActivity } from './LinkedInActivity';
 import { OutreachManagerBuilder } from './LinkedInManagerBuilder';
 import { OutreachManagerRead } from './LinkedInManagerRead';
 import { reloadOutreach } from './LinkedInSafety';
@@ -155,6 +156,7 @@ const OUTREACH_ROUTES: Array<{ sub: string; label: string; advanced?: true }> = 
   { sub: 'leads', label: 'Find people' },
   { sub: 'manager', label: 'Campaigns' },
   { sub: 'inbox', label: 'Inbox' },
+  { sub: 'activity', label: 'Activity' },
   // THE ADVANCED THREE, and the order is the order they are used in.
   //
   // These are the ORIGINAL path: build a sequence, get its exact wording
@@ -562,6 +564,7 @@ export function App() {
           {route.sub === 'accounts' && <AccountsScreen setToast={setToast} />}
           {route.sub === 'campaigns' && <OutreachCampaigns setToast={setToast} campaignId={route.id} />}
           {route.sub === 'inbox' && <OutreachInbox setToast={setToast} />}
+          {route.sub === 'activity' && <OutreachActivity />}
           {route.sub === 'leads' && <OutreachLeads setToast={setToast} />}
           {route.sub === 'manager' && (route.id === 'new'
             ? <OutreachManagerBuilder setToast={setToast} onNavigate={go} />
@@ -2367,6 +2370,7 @@ function viewTitle(route: Route): string {
     if (route.sub === 'accounts') return 'Target accounts';
     if (route.sub === 'campaigns') return 'Approve & export';
     if (route.sub === 'inbox') return 'Inbox';
+    if (route.sub === 'activity') return 'LinkedIn activity';
     if (route.sub === 'leads') return 'Find people';
     if (route.sub === 'manager') return route.id === 'new' ? 'New campaign' : 'Campaigns';
     if (route.sub === 'plan') return 'Plan preview';

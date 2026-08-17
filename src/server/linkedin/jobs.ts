@@ -30,7 +30,7 @@ import {
 } from './local-worker.js';
 import { runManagedCampaigns, type RunnerResult } from './runner.js';
 import type { DayShapeFn } from './pacing.js';
-import { seatRestingUntil } from './seat-events.js';
+import { encodeBackgroundRunDetail, recordSeatEvent, seatRestingUntil } from './seat-events.js';
 import { OWNER_SEAT_KEY, effectivePosture, getSeat } from './seats.js';
 import {
   SIDE_TASKS_NEEDING_IDENTITY,
@@ -973,7 +973,22 @@ export async function runLinkedInSideTasks(
   // in the same browser, a question with one answer. The page is threaded
   // down; a job handed a page opens no browser of its own.
   const session = await openLinkedInSession(db, config, { ...options, timezone: seat.timezone, now });
-  if (!session.ok) return { ...result, skipped: session.blocked };
+  if (!session.ok) {
+    await recordSeatEvent(db, {
+      workspaceId: options.workspaceId,
+      seatKey,
+      kind: 'background_run',
+      detail: encodeBackgroundRunDetail({
+        startedAt: startedAt.toISOString(),
+        finishedAt: now.toISOString(),
+        tasks: [...due],
+        status: 'blocked',
+        failedTasks: [],
+        reason: session.blocked
+      })
+    }, now);
+    return { ...result, skipped: session.blocked };
+  }
 
   // A VISIT STARTS ON THE FEED, because that is where a person lands when they
   // open LinkedIn -- not on `/mynetwork/invitation-manager/sent/`. Same helper
@@ -991,7 +1006,22 @@ export async function runLinkedInSideTasks(
   const needsIdentity = [...due].some((task) => SIDE_TASKS_NEEDING_IDENTITY.has(task));
   if (needsIdentity) {
     const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
-    if (wrongAccount) return { ...result, skipped: wrongAccount };
+    if (wrongAccount) {
+      await recordSeatEvent(db, {
+        workspaceId: options.workspaceId,
+        seatKey,
+        kind: 'background_run',
+        detail: encodeBackgroundRunDetail({
+          startedAt: startedAt.toISOString(),
+          finishedAt: now.toISOString(),
+          tasks: [...due],
+          status: 'blocked',
+          failedTasks: [],
+          reason: wrongAccount
+        })
+      }, now);
+      return { ...result, skipped: wrongAccount };
+    }
   }
 
   const shared: LinkedInJobOptions & { maxThreads?: number; maxWithdrawals?: number; maxSources?: number } = {
@@ -1047,12 +1077,14 @@ export async function runLinkedInSideTasks(
     ]
   ];
 
+  const failedTasks: SideTaskName[] = [];
   for (const [task, name, run] of jobs) {
     if (!due.has(task)) continue;
     result.ran.push(task);
     try {
       await run();
     } catch (cause) {
+      failedTasks.push(task);
       log(`LinkedIn ${name} failed for ${options.workspaceId}: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
     // STAMPED WHATEVER HAPPENED, including a failure. A job that could not read
@@ -1078,6 +1110,20 @@ export async function runLinkedInSideTasks(
   // the sending loop for the browser handle, which is why this is a `goto` and
   // not a `closeLinkedInBrowser`.
   await leaveLinkedIn(session.page, log);
+
+  await recordSeatEvent(db, {
+    workspaceId: options.workspaceId,
+    seatKey,
+    kind: 'background_run',
+    detail: encodeBackgroundRunDetail({
+      startedAt: startedAt.toISOString(),
+      finishedAt: new Date().toISOString(),
+      tasks: result.ran,
+      status: failedTasks.length > 0 ? 'partial' : 'completed',
+      failedTasks,
+      reason: failedTasks.length > 0 ? `${failedTasks.length} background task(s) failed; later visits continue normally.` : null
+    })
+  }, new Date());
 
   // ONE LINE PER VISIT THAT DID SOMETHING, and none for the ticks that did not.
   // An operator asking "is it alive" needs a heartbeat; at 1,440 ticks a day a

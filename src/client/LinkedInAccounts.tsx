@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Re
 import {
   Check,
   CircleAlert,
+  Clock3,
   CircleStop,
   Copy,
   KeyRound,
@@ -1241,6 +1242,15 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
         title="The last read of this account did not finish."
         message={request.failureReason}
       />}
+
+      {detail?.backgroundRun && <div className="li-next-background-run">
+        <Clock3 size={17} aria-hidden="true" />
+        <div>
+          <span>Next LinkedIn background run</span>
+          <strong>{queueWaitCopy(detail.backgroundRun.waitingFor) ?? formatVisitWindow(detail.backgroundRun.startAt, detail.backgroundRun.endAt, detail.backgroundRun.timezone) ?? 'No scheduled window'}</strong>
+          {detail.backgroundRun.waitingFor && <small>Scheduled window: {formatVisitWindow(detail.backgroundRun.startAt, detail.backgroundRun.endAt, detail.backgroundRun.timezone)}</small>}
+        </div>
+      </div>}
 
       {detail?.maintenance && detail.maintenance.length > 0 && <details className="li-maintenance-schedule">
         <summary>Next LinkedIn background activity</summary>

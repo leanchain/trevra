@@ -6,7 +6,7 @@ import type { LinkedInInboxDriver } from './driver-inbox.js';
 import { runLinkedInSideTasks, runLinkedInWithdrawals, syncLinkedInInbox, syncLinkedInThread } from './jobs.js';
 import { syncThreads } from './inbox.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
-import { setSeatRestingUntil } from './seat-events.js';
+import { parseBackgroundRunDetail, setSeatRestingUntil } from './seat-events.js';
 import { upsertSeat } from './seats.js';
 import { MAX_TASKS_PER_VISIT, markSideTaskRun, resetSideTaskRuns, visitsForDay } from './side-tasks.js';
 import { DEFAULT_STALE_AFTER_DAYS } from './withdraw.js';
@@ -497,6 +497,14 @@ describe('how often the side-task tick touches LinkedIn', () => {
     const first = await tick(VISIT_AT, tickDriver().driver);
     expect(first.skipped).toBeNull();
     expect(first.ran).toHaveLength(MAX_TASKS_PER_VISIT);
+    const event = await db.prepare(`
+      SELECT detail FROM linkedin_seat_events
+      WHERE workspace_id=? AND seat_key='owner' AND kind='background_run'
+      ORDER BY occurred_at DESC LIMIT 1
+    `).get<{ detail: string | null }>(WORKSPACE_ID);
+    const detail = parseBackgroundRunDetail(event?.detail ?? null);
+    expect(detail?.tasks).toEqual(first.ran);
+    expect(detail?.status).toBe('completed');
 
     // The next worker tick, sixty seconds later and STILL INSIDE THE SAME
     // VISIT. This is where the cap silently became "two per minute": the two

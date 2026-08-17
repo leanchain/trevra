@@ -34,7 +34,44 @@ export type LinkedInSeatEventKind =
   | 'challenge'
   | 'limit_wall'
   | 'sitting_start'
-  | 'sitting_end';
+  | 'sitting_end'
+  | 'background_run';
+
+export interface LinkedInBackgroundRunDetail {
+  startedAt: string;
+  finishedAt: string;
+  tasks: string[];
+  status: 'completed' | 'partial' | 'blocked';
+  failedTasks: string[];
+  reason: string | null;
+}
+
+/** Structured detail for one read-only background visit; contains no page data. */
+export function encodeBackgroundRunDetail(detail: LinkedInBackgroundRunDetail): string {
+  return JSON.stringify(detail);
+}
+
+export function parseBackgroundRunDetail(raw: string | null): LinkedInBackgroundRunDetail | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof value.startedAt !== 'string' || typeof value.finishedAt !== 'string') return null;
+    if (!Array.isArray(value.tasks) || !value.tasks.every((task) => typeof task === 'string')) return null;
+    if (!Array.isArray(value.failedTasks) || !value.failedTasks.every((task) => typeof task === 'string')) return null;
+    if (value.status !== 'completed' && value.status !== 'partial' && value.status !== 'blocked') return null;
+    if (value.reason !== null && typeof value.reason !== 'string') return null;
+    return {
+      startedAt: value.startedAt,
+      finishedAt: value.finishedAt,
+      tasks: value.tasks,
+      status: value.status,
+      failedTasks: value.failedTasks,
+      reason: value.reason as string | null
+    };
+  } catch {
+    return null;
+  }
+}
 
 export interface LinkedInSeatEvent {
   id: string;

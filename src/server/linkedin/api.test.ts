@@ -12,6 +12,7 @@ import { recordAction } from './actions.js';
 import { upsertSeat } from './seats.js';
 import { createCampaign, LinkedInApiError, writeActionStatus } from './campaigns.js';
 import { canonicalPayloadHash } from '../control-plane/payload.js';
+import { encodeBackgroundRunDetail, recordSeatEvent } from './seat-events.js';
 
 /**
  * The LinkedIn HTTP surface (docs/linkedin-outreach-plan.md section 5).
@@ -94,6 +95,9 @@ beforeEach(async () => {
     await db.prepare('DELETE FROM linkedin_lead_sources WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM linkedin_withdrawals WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(workspaceId);
+    await db.prepare('DELETE FROM linkedin_batches WHERE workspace_id=?').run(workspaceId);
+    await db.prepare('DELETE FROM linkedin_seat_events WHERE workspace_id=?').run(workspaceId);
+    await db.prepare('DELETE FROM linkedin_side_task_runs WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM linkedin_exclusions WHERE workspace_id=?').run(workspaceId);
     await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(workspaceId);
@@ -1580,6 +1584,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     const body = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as {
       seat: { label: string; activatedAt: string | null; detectedAt: string | null } | null;
       execution: { ready: boolean; waitingFor: string | null };
+      backgroundRun: { startAt: string; endAt: string; timezone: string; source: string; waitingFor: string | null } | null;
       maintenance: Array<{ task: string; nextRunAt: string | null; nextRunWindowEndAt: string | null; timezone: string }>;
       posture: string;
       warmupWeek: number;
@@ -1591,12 +1596,60 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     expect(body.warmupWeek).toBe(1);
     expect(body.today.invite).toBe(1);
     expect(body.execution).toEqual({ ready: true, waitingFor: null });
+    expect(body.backgroundRun).not.toBeNull();
+    expect(body.backgroundRun?.timezone).toBe('Europe/Zurich');
+    expect(Date.parse(body.backgroundRun?.endAt ?? '')).toBeGreaterThan(Date.now() - 60_000);
     expect(body.maintenance.map((entry) => entry.task)).toEqual(['inbox', 'pending_invites', 'acceptance', 'withdrawals', 'lead_sources']);
     expect(body.maintenance.every((entry) => entry.timezone === 'Europe/Zurich')).toBe(true);
     expect(body.maintenance.every((entry) => entry.nextRunAt === null || Date.parse(entry.nextRunAt) > Date.now() - 60_000)).toBe(true);
     // The two clocks the setup screen reads instead of asking for a date.
     expect(body.seat?.activatedAt).toBe(activatedAt.toISOString());
     expect(body.seat?.detectedAt).toBeNull();
+  });
+
+  it('shows the next background run and merges send sittings with read-only visit history', async () => {
+    const now = new Date();
+    await upsertSeat(db, WORKSPACE_A, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich' }, now);
+    const maintenanceStart = new Date(now.getTime() - 10 * 60_000);
+    const maintenanceEnd = new Date(now.getTime() - 8 * 60_000);
+    await recordSeatEvent(db, {
+      workspaceId: WORKSPACE_A,
+      seatKey: 'owner',
+      kind: 'background_run',
+      detail: encodeBackgroundRunDetail({
+        startedAt: maintenanceStart.toISOString(),
+        finishedAt: maintenanceEnd.toISOString(),
+        tasks: ['inbox', 'lead_sources'],
+        status: 'completed',
+        failedTasks: [],
+        reason: null
+      })
+    }, maintenanceEnd);
+    await db.prepare(`
+      INSERT INTO linkedin_batches (id,workspace_id,seat_key,status,executed_count,started_at,finished_at)
+      VALUES (?,?,?,?,?,?,?)
+    `).run(
+      'lbatch_activity_test',
+      WORKSPACE_A,
+      'owner',
+      'completed',
+      2,
+      new Date(now.getTime() - 20 * 60_000).toISOString(),
+      new Date(now.getTime() - 15 * 60_000).toISOString()
+    );
+
+    const body = (await as(sessionA).get('/api/linkedin/activity?limit=20').expect(200)).body as {
+      nextRun: { seatKey: string; seatLabel: string; startAt: string; endAt: string; waitingFor: string | null } | null;
+      runs: Array<{ kind: string; seatLabel: string; tasks: string[]; executedCount: number; status: string }>;
+    };
+    expect(body.nextRun).not.toBeNull();
+    expect(body.nextRun?.seatKey).toBe('owner');
+    expect(body.nextRun?.seatLabel).toBe('Pankaj (founder)');
+    expect(Date.parse(body.nextRun?.endAt ?? '')).toBeGreaterThan(now.getTime());
+    expect(body.runs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'maintenance', tasks: ['inbox', 'lead_sources'], status: 'completed' }),
+      expect.objectContaining({ kind: 'actions', executedCount: 2, status: 'completed' })
+    ]));
   });
 
   it('queues detection for a host-side worker when this process cannot open a browser', async () => {

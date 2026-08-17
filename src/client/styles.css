@@ -1463,6 +1463,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-connect-blocked p { margin: 0 0 9px; color: var(--t-amber-ink); font-size: var(--t-text-xs); line-height: 1.65; max-width: var(--t-measure); }
 .li-connect-blocked p:last-child { margin-bottom: 0; }
 .li-blocked-message { border-left: 1px solid var(--t-amber-line); padding-left: 11px; white-space: pre-wrap; }
+.li-next-background-run { display: flex; align-items: flex-start; gap: 10px; margin: 12px 0; border: 1px solid var(--t-green-200); border-radius: var(--t-r-md); background: var(--green-3); padding: 12px 14px; }
+.li-next-background-run > svg { flex: none; margin-top: 2px; color: var(--green); }
+.li-next-background-run > div { display: grid; gap: 3px; min-width: 0; }
+.li-next-background-run span { color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
+.li-next-background-run strong { color: var(--ink); font-size: var(--t-text-sm); }
+.li-next-background-run small { color: var(--muted); font-size: var(--t-text-xs); }
+
 .li-maintenance-schedule { margin: 12px 0; border: 1px solid var(--line); border-radius: var(--t-r-md); background: var(--t-field); padding: 11px 13px; }
 .li-maintenance-schedule > summary { cursor: pointer; color: var(--ink); font-size: var(--t-text-xs); font-weight: 700; }
 .li-maintenance-list { display: grid; gap: 0; margin-top: 10px; border-top: 1px solid var(--t-line-soft); }
@@ -1473,6 +1480,37 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-maintenance-row > small { grid-column: 2; color: var(--muted); font-size: var(--t-text-chip); }
 .li-maintenance-schedule .li-hint { margin: 8px 0 0; }
 @media (max-width: 640px) { .li-maintenance-row { grid-template-columns: 1fr; } .li-maintenance-row > small { grid-column: 1; } }
+
+/* ---- LinkedIn background activity ---------------------------------------
+   One upcoming sitting and an actual history. These rows deliberately look
+   like an operations ledger rather than an analytics chart: time, account,
+   outcome, and what the browser did are the answers. */
+.li-activity-page { gap: 16px; }
+.li-activity-next .section-heading h2,
+.li-activity-page .section-heading h2 { display: flex; align-items: center; gap: 7px; }
+.li-activity-next-value { display: grid; gap: 5px; padding: 15px 16px; border: 1px solid var(--t-green-200); border-radius: var(--t-r-md); background: var(--green-3); }
+.li-activity-next-value > strong { font-family: var(--t-display); font-size: var(--t-text-xl); line-height: 1.25; }
+.li-activity-next-value > span,
+.li-activity-next-value > small { color: var(--muted); font-size: var(--t-text-xs); }
+.li-activity-runs { display: grid; }
+.li-activity-run { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 14px 2px; border-top: 1px solid var(--t-line-soft); }
+.li-activity-run:first-child { border-top: 0; }
+.li-activity-run-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: var(--t-r-pill); background: var(--t-surface-2); color: var(--muted); }
+.li-activity-run-icon.is-good { background: var(--green-3); color: var(--green); }
+.li-activity-run-icon.is-warn { background: var(--amber-bg); color: var(--amber); }
+.li-activity-run-main { min-width: 0; }
+.li-activity-run-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.li-activity-run-head strong { font-size: var(--t-text-sm); }
+.li-activity-run-head span { color: var(--muted); font-size: var(--t-text-xs); }
+.li-activity-run-main p { margin: 5px 0 0; color: var(--ink); font-size: var(--t-text-sm); line-height: 1.45; }
+.li-activity-run-main small { display: block; margin-top: 5px; color: var(--muted); font-size: var(--t-text-xs); }
+.li-activity-run-time { display: grid; gap: 3px; min-width: 150px; text-align: right; }
+.li-activity-run-time strong { font-size: var(--t-text-xs); }
+.li-activity-run-time small { color: var(--muted); font-size: var(--t-text-chip); }
+@media (max-width: 700px) {
+  .li-activity-run { grid-template-columns: auto minmax(0, 1fr); }
+  .li-activity-run-time { grid-column: 2; min-width: 0; text-align: left; }
+}
 .li-seat-card { border: 1px solid var(--line); border-radius: var(--t-r-md); padding: 15px 17px; background: var(--t-field); }
 .li-seat-head { display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap; margin-bottom: 13px; }
 .li-seat-head strong { font-size: var(--t-text-lg); }

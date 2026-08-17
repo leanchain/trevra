@@ -958,12 +958,21 @@ export interface LinkedInMaintenanceTiming {
   waitingFor: LinkedInQueueWaitReason | null;
 }
 
+export interface LinkedInBackgroundRunSchedule {
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  source: 'maintenance' | 'actions';
+  waitingFor: LinkedInQueueWaitReason | null;
+}
+
 export interface LinkedInSeatResponse {
   seat: LinkedInSeat | null;
   auth: LinkedInSeatAuth;
   /** What became of the last detect handed to a worker that can open a browser. */
   detectRequest: SeatDetectRequest | null;
   execution: { ready: boolean; waitingFor: LinkedInQueueWaitReason | null };
+  backgroundRun: LinkedInBackgroundRunSchedule | null;
   maintenance: LinkedInMaintenanceTiming[];
   posture: SeatPosture | null;
   warmupWeek: number;
@@ -1858,6 +1867,29 @@ export interface LinkedInCompanionStatus {
 
 export async function getLinkedInCompanionStatus(): Promise<LinkedInCompanionStatus> {
   return request('/api/linkedin/companion');
+}
+
+export interface LinkedInBackgroundRunHistoryItem {
+  id: string;
+  kind: 'maintenance' | 'actions';
+  seatKey: string;
+  seatLabel: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  tasks: string[];
+  executedCount: number;
+  reason: string | null;
+}
+
+export interface LinkedInActivityResponse {
+  nextRun: (LinkedInBackgroundRunSchedule & { seatKey: string; seatLabel: string }) | null;
+  runs: LinkedInBackgroundRunHistoryItem[];
+}
+
+export async function getLinkedInActivity(limit = 50): Promise<LinkedInActivityResponse> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  return request(`/api/linkedin/activity?${query}`);
 }
 
 export async function createLinkedInCompanionPairing(): Promise<{ code: string; expiresAt: string; command: string }> {

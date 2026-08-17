@@ -8,6 +8,7 @@ import {
   VISIT_MINUTES,
   dueSideTasks,
   nextSideTaskOpportunities,
+  nextVisitOpportunities,
   visitAt,
   visitsForDay,
   type SideTaskRuns,
@@ -180,6 +181,19 @@ describe('dueSideTasks', () => {
     const [opportunity] = nextSideTaskOpportunities(SEAT, runs, 'lead_sources', now, 1, { dayShape: FLAT_DAY_SHAPE });
     expect(opportunity?.startAt.toISOString()).toBe(expected.toISOString());
     expect(opportunity?.endAt.getTime()).toBeGreaterThan(opportunity!.startAt.getTime());
+  });
+
+  it('exposes the next overall LinkedIn visit and skips a visit already stamped as run', () => {
+    const now = new Date('2026-08-04T07:00:00.000Z');
+    const visits = visitsForDay('ws_side_tasks:owner', TUESDAY, WINDOW);
+    const first = visits[0]!;
+    const firstStart = new Date(Date.UTC(2026, 7, 4, 0, first.startMinute));
+    expect(nextVisitOpportunities(SEAT, new Map(), now, 1, { dayShape: FLAT_DAY_SHAPE })[0]?.startAt.toISOString())
+      .toBe(firstStart.toISOString());
+
+    const runs: SideTaskRuns = new Map([['visit', firstStart]]);
+    const [next] = nextVisitOpportunities(SEAT, runs, now, 1, { dayShape: FLAT_DAY_SHAPE });
+    expect(next?.startAt.getTime()).toBeGreaterThan(firstStart.getTime());
   });
 
   it('never replays a visit the laptop already slept through', () => {
