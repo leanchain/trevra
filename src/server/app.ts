@@ -199,6 +199,7 @@ import {
   recordHostedExecutionAck,
   revokeHostedExecutionAck
 } from './linkedin/hosted-execution.js';
+import { companionReleasePackage } from './linkedin/companion-release.js';
 import {
   clearCompanionWebsitePresence,
   companionWorkspaceReady,
@@ -756,7 +757,7 @@ export function createApp(db: Db) {
       ).replace(/\/$/, '');
       res.status(201).json({
         ...pairing,
-        command: `npx trevra linkedin install --pair ${pairing.code}${base ? ` --url ${base}` : ''}`
+        command: `npx --yes --package=${companionReleasePackage()} trevra linkedin install --pair ${pairing.code}${base ? ` --url ${base}` : ''}`
       });
     } catch (error) { next(error); }
   });

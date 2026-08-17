@@ -1067,7 +1067,7 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
               <WorkerCheck ok={worker.enabled} label="Turned on for this install"
                 detail={worker.enabled
                   ? 'On. This copy of Trevra is allowed to drive a browser.'
-                  : 'Off. A hosted Trevra cannot turn this on — run Trevra yourself and it can.'} />
+                  : 'Off. On hosted Trevra, connect your computer with the LinkedIn companion so browser work runs locally.'} />
               <WorkerCheck ok={worker.playwrightInstalled} label="Browser automation installed"
                 detail={worker.playwrightInstalled
                   ? 'Found on this machine.'

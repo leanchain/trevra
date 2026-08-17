@@ -11,26 +11,28 @@ The hosted platform owns campaigns, due work, pacing, safety decisions, leases a
 3. Run the generated one-time install command:
 
    ```bash
-   npx trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
+   npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.0/trevra-0.2.0.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
    ```
 
 4. Trevra pairs the computer, installs a private per-user companion package and registers the operating system's background service. Chrome opens with a Trevra-specific persistent profile; sign into LinkedIn there if it is not already signed in.
 5. In Trevra choose **Check this account on LinkedIn**. Trevra verifies which LinkedIn account the local browser is using and records the seat identity.
 6. Keep a signed-in Trevra tab open while LinkedIn work should be eligible. The companion itself runs in the background; no terminal has to remain open.
 
+The background companion also auto-updates on reconnect. Hosted Trevra advertises the required version before it offers any browser relay work. A newer version is installed from Trevra's official versioned GitHub release asset and the OS service restarts; pairing and the local Chrome profile are preserved. If an update cannot be installed, the existing working version stays in place and the failure is written to the local companion log.
+
 Service controls are:
 
 ```bash
-npx trevra linkedin status
-npx trevra linkedin logs
-npx trevra linkedin logs --follow
-npx trevra linkedin start
-npx trevra linkedin stop
-npx trevra linkedin restart
-npx trevra linkedin uninstall
+trevra linkedin status
+trevra linkedin logs
+trevra linkedin logs --follow
+trevra linkedin start
+trevra linkedin stop
+trevra linkedin restart
+trevra linkedin uninstall
 ```
 
-`npx trevra linkedin logs` reads a small owner-only rolling activity log under `~/.trevra/logs/`; `--follow` streams it. The log records lifecycle/reconnect/browser/relay events only. It never records the device bearer token, LinkedIn cookies or passwords, raw CDP frames, or message contents.
+`trevra linkedin logs` reads a small owner-only rolling activity log under `~/.trevra/logs/`; `--follow` streams it. The log records lifecycle/reconnect/browser/relay events only. It never records the device bearer token, LinkedIn cookies or passwords, raw CDP frames, or message contents.
 
 `npx trevra linkedin` remains a foreground/debug mode. `uninstall` removes the OS service and its private npm tree but deliberately preserves the pairing config and dedicated LinkedIn browser profile.
 

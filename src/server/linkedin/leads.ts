@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { id, type Db } from '../db.js';
+import { browserProviderSettings } from '../browser/provider.js';
+import { companionBrowserConfigured } from './companion.js';
 import {
   DEFAULT_MAX_PAGES,
   DEFAULT_MAX_RESULTS,
@@ -32,11 +34,10 @@ import { OWNER_SEAT_KEY, getSeatPosture, type SeatPosture } from './seats.js';
  * result is SCRAPING, which User Agreement 8.2 names directly -- browser
  * extensions included, by category -- and which hiQ left exposed as breach of
  * contract even after the CFAA claim failed (plan 1.2). Different risk, so a
- * different switch: {@link leadSourcingEnabled} is a hard NO on a hosted
- * deployment and nothing can turn it on there. On a self-hosted or local
- * install it is ON unless the operator switches it off, because a self-hoster
- * automating their own account on their own machine is the whole product and
- * the exposure lands on the account they already chose to automate.
+ * different gate. Browser custody is the boundary: a hosted Trevra may source
+ * only through the workspace member's paired local companion; Trevra-operated
+ * cloud browsers do not run this path. Self-hosted/local remains on unless the
+ * operator explicitly switches it off.
  *
  * FOUR RULES, and each one is why a piece of this file exists:
  *
@@ -69,17 +70,17 @@ import { OWNER_SEAT_KEY, getSeatPosture, type SeatPosture } from './seats.js';
  * ------------------------------------------------------------------------ */
 
 export interface LeadSourcingConfig {
-  /**
-   * `TREVRA_LINKEDIN_LEAD_SOURCING`. Absent means ON for a self-hosted or
-   * local install; only an explicit `false` switches it off. It is `hosted`
-   * that turns it off unconditionally, and no value here can undo that.
-   */
+  /** `TREVRA_LINKEDIN_LEAD_SOURCING`. Absent means ON unless explicitly disabled. */
   optIn: boolean;
-  /** `TREVRA_DEPLOYMENT_MODE=hosted`. Overrides `optIn` unconditionally. */
+  /** `TREVRA_DEPLOYMENT_MODE=hosted`. Hosting alone no longer disables sourcing. */
   hosted: boolean;
-  /** Ceiling on people per run. */
+  /** Hosted browser work is routed through the member's paired local companion. */
+  companionBrowser: boolean;
+  /** Hosted browser work is routed through a Trevra-operated remote/cloud browser. */
+  remoteBrowser: boolean;
+  /** Ceiling on people per source. */
   maxResults: number;
-  /** Ceiling on page fetches per run. */
+  /** Ceiling on page fetches per source across visits. */
   maxPages: number;
 }
 
@@ -93,29 +94,25 @@ const leadSourcingEnv = z.object({
 /**
  * Lead sourcing's slice of the environment.
  *
- * OPT-OUT ON A SELF-HOSTED INSTALL, EXACTLY LIKE THE WORKER, and hard-off
- * hosted exactly like the worker too. This used to be opt-in, on the argument
- * that harvesting profiles is a different decision from sending -- but the
- * deployment already made that decision: `TREVRA_DEPLOYMENT_MODE=local` says
- * this Trevra serves one operator, on their own machine, driving their own
- * LinkedIn account. Every other capability that follows from that (the local
- * worker itself, `linkedInWorkerConfig`) defaults ON for them, and shipping
- * the lead half switched off meant a self-hoster's Find-leads screen refused
- * with a sentence naming an environment variable they had no reason to know
- * existed. The exposure under User Agreement 8.2 lands on the account they
- * already chose to automate, and `TREVRA_LINKEDIN_LEAD_SOURCING=false` is
- * there for an operator who does not want it.
- *
- * `hosted` IS UNCHANGED AND IS NOT WEAKENED BY THIS. A hosted, multi-tenant
- * Trevra scraping LinkedIn on one human's session is refused by
- * {@link leadSourcingEnabled} whatever this field says.
+ * OPT-OUT ON SELF-HOSTED/LOCAL, and available on hosted only when browser
+ * custody stays on the workspace member's paired computer. This keeps the
+ * execution boundary consistent with the companion design: hosted Trevra owns
+ * scheduling and queue state, while the member's Chrome/network performs the
+ * LinkedIn page reads. A Trevra-operated cloud browser remains excluded from
+ * lead sourcing. `TREVRA_LINKEDIN_LEAD_SOURCING=false` is still the explicit
+ * deployment-wide off switch.
  */
 export function leadSourcingConfig(env: NodeJS.ProcessEnv = process.env): LeadSourcingConfig {
   const parsed = leadSourcingEnv.parse(env);
+  const hosted = parsed.TREVRA_DEPLOYMENT_MODE === 'hosted';
+  const browser = browserProviderSettings(env);
+  const remoteBrowser = hosted && browser.kind === 'remote';
+  const companionBrowser = hosted && !remoteBrowser && companionBrowserConfigured(env);
   return {
-    // Only an explicit 'false' switches it off; absent is on.
     optIn: parsed.TREVRA_LINKEDIN_LEAD_SOURCING !== 'false',
-    hosted: parsed.TREVRA_DEPLOYMENT_MODE === 'hosted',
+    hosted,
+    companionBrowser,
+    remoteBrowser,
     maxResults: parsed.TREVRA_LINKEDIN_LEAD_MAX_RESULTS ?? DEFAULT_MAX_RESULTS,
     maxPages: parsed.TREVRA_LINKEDIN_LEAD_MAX_PAGES ?? DEFAULT_MAX_PAGES
   };
@@ -124,27 +121,26 @@ export function leadSourcingConfig(env: NodeJS.ProcessEnv = process.env): LeadSo
 /**
  * May this deployment harvest leads? THE ONE PLACE THAT ANSWERS IT.
  *
- * `hosted` is the hard no, exactly as it is for the local worker: a hosted,
- * multi-tenant Trevra scraping LinkedIn on one human's session is the exposure
- * the whole design avoids, and no environment variable may undo it. Everything
- * else is a self-hoster's own explicit yes.
+ * Browser custody is the boundary. Hosted sourcing is allowed through the
+ * workspace member's paired companion because the page is opened by that
+ * member's local Chrome/network. Trevra-operated cloud browsers do not source
+ * leads. Local/self-hosted remains opt-out.
  */
-export function leadSourcingEnabled(config: Pick<LeadSourcingConfig, 'optIn' | 'hosted'>): boolean {
-  return config.optIn && !config.hosted;
+export function leadSourcingEnabled(config: Pick<LeadSourcingConfig, 'optIn' | 'hosted' | 'companionBrowser'>): boolean {
+  return config.optIn && (!config.hosted || config.companionBrowser);
 }
 
-/**
- * Why lead sourcing is off, in one sentence.
- *
- * TWO KINDS OF OFF, same distinction as `linkedInOffReason`: hosted is a
- * decision the deployment made and no setting can undo it; anything else has a
- * switch, and the sentence names it so nobody goes hunting.
- */
-export function leadSourcingOffReason(config: Pick<LeadSourcingConfig, 'optIn' | 'hosted'>): string {
-  if (config.hosted) {
-    return 'This deployment is hosted, so LinkedIn lead sourcing is off and cannot be enabled. Reading profiles out of search results is scraping under LinkedIn\'s User Agreement 8.2, and a hosted Trevra will not do it on anyone\'s account.';
+export function leadSourcingOffReason(config: Pick<LeadSourcingConfig, 'optIn' | 'hosted' | 'companionBrowser' | 'remoteBrowser'>): string {
+  if (!config.optIn) {
+    return 'LinkedIn lead sourcing is switched off for this deployment by TREVRA_LINKEDIN_LEAD_SOURCING=false.';
   }
-  return 'LinkedIn lead sourcing is switched off for this deployment by TREVRA_LINKEDIN_LEAD_SOURCING=false. It is on by default when you self-host, because reading profiles out of search results and post engagement is scraping under LinkedIn\'s User Agreement 8.2 and the contractual exposure lands on the account you are already automating. Remove that setting, or set TREVRA_LINKEDIN_LEAD_SOURCING=true, to turn it back on.';
+  if (config.hosted && config.remoteBrowser) {
+    return 'LinkedIn lead sourcing is not run from a Trevra-operated cloud browser. Connect your computer with the LinkedIn companion so searches run in your local Chrome instead.';
+  }
+  if (config.hosted && !config.companionBrowser) {
+    return 'LinkedIn lead sourcing needs the local LinkedIn companion on hosted Trevra. Connect your computer first so the search runs in your Chrome and on your network.';
+  }
+  return 'LinkedIn lead sourcing is unavailable for this execution mode.';
 }
 
 /* ---------------------------------------------------------------------------
@@ -467,6 +463,11 @@ export function leadPagesThisVisit(seed: string): number {
   t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
   const random = ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
   return LEAD_PAGES_PER_VISIT.min + Math.floor(random * (LEAD_PAGES_PER_VISIT.max - LEAD_PAGES_PER_VISIT.min + 1));
+}
+
+/** Hosted companion sourcing advances exactly one result page per normal visit. */
+export function leadPagesForConfig(config: Pick<LeadSourcingConfig, 'companionBrowser'>, seed: string): number {
+  return config.companionBrowser ? 1 : leadPagesThisVisit(seed);
 }
 
 /**
@@ -898,7 +899,7 @@ export async function runLeadSource(
   // back to back is the one remaining burst, on the exact surface the account
   // was restricted for.
   const startPage = source.pagesDone + 1;
-  const budget = Math.max(0, Math.min(leadPagesThisVisit(`${source.id}:${startPage}`), deps.config.maxPages - source.pagesDone));
+  const budget = Math.max(0, Math.min(leadPagesForConfig(deps.config, `${source.id}:${startPage}`), deps.config.maxPages - source.pagesDone));
   const options = {
     // The walk itself is told to stop at whatever is left of the day, so the
     // cap costs fetches rather than merely discarding their results.

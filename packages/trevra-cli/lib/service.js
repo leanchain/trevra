@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, platform as currentPlatform, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -89,11 +89,13 @@ export function servicePaths(home = homedir(), platform = currentPlatform()) {
   const serviceRoot = join(home, '.trevra', 'service');
   const cliPath = join(serviceRoot, 'node_modules', 'trevra', 'bin', 'trevra.js');
   const logs = join(home, '.trevra', 'logs');
+  const userCommand = platform === 'win32' ? null : join(home, '.local', 'bin', 'trevra');
   if (platform === 'darwin') {
     return {
       serviceRoot,
       cliPath,
       logs,
+      userCommand,
       definition: join(home, 'Library', 'LaunchAgents', 'com.trevra.linkedin.plist'),
       manager: 'launchd'
     };
@@ -103,6 +105,7 @@ export function servicePaths(home = homedir(), platform = currentPlatform()) {
       serviceRoot,
       cliPath,
       logs,
+      userCommand,
       definition: join(serviceRoot, 'trevra-linkedin-task.ps1'),
       manager: 'Task Scheduler'
     };
@@ -111,6 +114,7 @@ export function servicePaths(home = homedir(), platform = currentPlatform()) {
     serviceRoot,
     cliPath,
     logs,
+    userCommand,
     definition: join(home, '.config', 'systemd', 'user', `${SERVICE_ID}.service`),
     manager: 'systemd --user'
   };
@@ -196,15 +200,66 @@ export function installedServiceStatus({ home = homedir(), platform = currentPla
 
 export function installStablePackage({ version, installSpec, home = homedir(), platform = currentPlatform() }) {
   const paths = servicePaths(home, platform);
-  privateDir(join(home, '.trevra'));
-  rmSync(paths.serviceRoot, { recursive: true, force: true });
-  privateDir(paths.serviceRoot);
-
+  const trevraHome = join(home, '.trevra');
+  privateDir(trevraHome);
   const npm = npmCommand(platform);
-  const spec = installSpec || `trevra@${version}`;
-  run(npm.file, [...npm.prefixArgs, 'install', '--prefix', paths.serviceRoot, '--omit=dev', '--no-audit', '--no-fund', spec]);
-  if (!existsSync(paths.cliPath)) throw new Error(`Trevra installed, but its service executable is missing at ${paths.cliPath}.`);
-  return paths;
+  let spec = installSpec || `trevra@${version}`;
+  let packStage = null;
+  const installStage = mkdtempSync(join(trevraHome, 'service-stage-'));
+  const stagedCli = join(installStage, 'node_modules', 'trevra', 'bin', 'trevra.js');
+  const previousRoot = `${paths.serviceRoot}.previous`;
+
+  // npm treats a local directory as a link dependency. That is wrong for an
+  // npx-launched installer because the directory belongs to npm's temporary
+  // cache and may disappear. Pack it first so the private service receives a
+  // real copy with normal dependency resolution.
+  if (installSpec && existsSync(installSpec) && lstatSync(installSpec).isDirectory()) {
+    packStage = mkdtempSync(join(trevraHome, 'install-'));
+    const packed = String(run(npm.file, [...npm.prefixArgs, 'pack', '--silent', '--pack-destination', packStage, installSpec], { capture: true }) ?? '')
+      .split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+    if (!packed?.endsWith('.tgz')) throw new Error('Trevra could not prepare its background-service package.');
+    spec = join(packStage, packed);
+  }
+
+  try {
+    // Install and verify completely off to the side. A failed network fetch or
+    // broken package must never delete the currently working companion.
+    run(npm.file, [...npm.prefixArgs, 'install', '--prefix', installStage, '--omit=dev', '--no-audit', '--no-fund', spec]);
+    if (!existsSync(stagedCli)) throw new Error(`Trevra installed, but its service executable is missing from the staged package.`);
+
+    rmSync(previousRoot, { recursive: true, force: true });
+    if (existsSync(paths.serviceRoot)) renameSync(paths.serviceRoot, previousRoot);
+    try {
+      renameSync(installStage, paths.serviceRoot);
+    } catch (error) {
+      if (existsSync(previousRoot) && !existsSync(paths.serviceRoot)) renameSync(previousRoot, paths.serviceRoot);
+      throw error;
+    }
+    rmSync(previousRoot, { recursive: true, force: true });
+    installUserCommand({ home, platform });
+    return paths;
+  } finally {
+    if (packStage) rmSync(packStage, { recursive: true, force: true });
+    rmSync(installStage, { recursive: true, force: true });
+  }
+}
+
+/** Make service controls independent from whichever version `npx` currently resolves. */
+export function installUserCommand({ home = homedir(), platform = currentPlatform() } = {}) {
+  const paths = servicePaths(home, platform);
+  if (!paths.userCommand || !existsSync(paths.cliPath)) return null;
+  privateDir(dirname(paths.userCommand));
+
+  if (existsSync(paths.userCommand)) {
+    try {
+      if (!lstatSync(paths.userCommand).isSymbolicLink()) return null;
+      const target = readlinkSync(paths.userCommand);
+      if (target === paths.cliPath) return paths.userCommand;
+    } catch { return null; }
+    rmSync(paths.userCommand, { force: true });
+  }
+  symlinkSync(paths.cliPath, paths.userCommand);
+  return paths.userCommand;
 }
 
 export function registerBackgroundService({ home = homedir(), platform = currentPlatform(), nodePath = process.execPath } = {}) {
@@ -317,6 +372,13 @@ export function uninstallBackgroundService({ home = homedir(), platform = curren
     tryRun(powershell(), ['-NoProfile', '-NonInteractive', '-Command', `Unregister-ScheduledTask -TaskName ${psQuote(WINDOWS_TASK_NAME)} -Confirm:$false -ErrorAction SilentlyContinue`]);
   }
 
+  if (paths.userCommand && existsSync(paths.userCommand)) {
+    try {
+      if (lstatSync(paths.userCommand).isSymbolicLink() && readlinkSync(paths.userCommand) === paths.cliPath) {
+        rmSync(paths.userCommand, { force: true });
+      }
+    } catch { /* leave an unrelated user command alone */ }
+  }
   rmSync(paths.serviceRoot, { recursive: true, force: true });
   return paths;
 }

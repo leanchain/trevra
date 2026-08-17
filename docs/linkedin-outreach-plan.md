@@ -413,8 +413,8 @@ The queue is `linkedin_seat_detect_requests` (migration 027), with the same clai
 
 **Message register.** Server-side LinkedIn refusals are **one imperative sentence, plus at most one command**. The explanation lives here, in this document, not in an error string, and no user-facing string names `TREVRA_LINKEDIN_LOCAL` — it defaults correctly now, and naming it is noise between the operator and the thing they have to do.
 
-> Save your LinkedIn email and password here to sign in.
-> This deployment is hosted, so LinkedIn automation is off and cannot be enabled.
+> Connect your computer with the LinkedIn companion and sign in in the dedicated Chrome profile.
+> On hosted Trevra, LinkedIn browser work runs through that paired computer; without a companion or an explicitly configured execution home, new browser work stays queued.
 
 ---
 

@@ -4,7 +4,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, closeSync, chmodSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, hostname, platform } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { WebSocket } from 'ws';
 import {
@@ -16,8 +17,10 @@ import {
   stopBackgroundService,
   uninstallBackgroundService
 } from '../lib/service.js';
+import { isNewerVersion, officialCompanionPackage } from '../lib/update.js';
 
 const VERSION = '0.2.0';
+const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOME = join(homedir(), '.trevra');
 const CONFIG = join(HOME, 'companion.json');
 const PROFILES = join(HOME, 'linkedin-companion');
@@ -30,7 +33,7 @@ const LINKEDIN_FEED = 'https://www.linkedin.com/feed/';
 
 function usage(exitCode = 0) {
   const out = exitCode === 0 ? process.stdout : process.stderr;
-  out.write(`Trevra ${VERSION}\n\nUsage:\n  npx trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com\n  npx trevra linkedin status\n  npx trevra linkedin logs [--follow] [--lines 200]\n  npx trevra linkedin start\n  npx trevra linkedin stop\n  npx trevra linkedin restart\n  npx trevra linkedin uninstall\n  npx trevra linkedin                 # foreground/debug mode\n\nLinkedIn companion commands:\n  install        Pair if needed, install a per-user background service, and start it\n  status         Show whether this computer is paired, installed, and running\n  logs           Show local companion activity; --follow streams new entries\n  start          Start the installed background companion\n  stop           Stop it without removing pairing or the LinkedIn browser profile\n  restart        Restart the installed background companion\n  uninstall      Remove the background service; keep pairing and browser profile\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --lines N      Number of recent log lines to show (default: 200)\n  --follow, -f   Continue streaming new log entries\n  --help         Show this help\n  --version      Show the version\n`);
+  out.write(`Trevra ${VERSION}\n\nUsage:\n  <install command copied from Trevra>\n  trevra linkedin status\n  trevra linkedin logs [--follow] [--lines 200]\n  trevra linkedin start\n  trevra linkedin stop\n  trevra linkedin restart\n  trevra linkedin uninstall\n  trevra linkedin                     # foreground/debug mode\n\nLinkedIn companion commands:\n  install        Pair if needed, install a per-user background service, and start it\n  status         Show whether this computer is paired, installed, and running\n  logs           Show local companion activity; --follow streams new entries\n  start          Start the installed background companion\n  stop           Stop it without removing pairing or the LinkedIn browser profile\n  restart        Restart the installed background companion\n  uninstall      Remove the background service; keep pairing and browser profile\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --lines N      Number of recent log lines to show (default: 200)\n  --follow, -f   Continue streaming new log entries\n  --help         Show this help\n  --version      Show the version\n`);
   process.exit(exitCode);
 }
 
@@ -430,6 +433,35 @@ async function runCompanion(config, options = {}) {
         socket.on('message', async (raw) => {
           let message;
           try { message = JSON.parse(raw.toString()); } catch { return; }
+          if (message.type === 'hello' && serviceInvocation && typeof message.companionVersion === 'string') {
+            const targetVersion = message.companionVersion.trim();
+            if (isNewerVersion(VERSION, targetVersion)) {
+              activity('update_available', `from=${VERSION} to=${targetVersion}`);
+              try {
+                // The relay sends hello before any browser work. Updating here
+                // means no LinkedIn action is interrupted halfway through.
+                installStablePackage({
+                  version: targetVersion,
+                  // Test/development hook only. Production services do not set
+                  // this, so remote updates always come from the official,
+                  // version-derived Trevra GitHub release URL.
+                  installSpec: process.env.TREVRA_COMPANION_UPDATE_SPEC?.trim()
+                    || officialCompanionPackage(targetVersion)
+                });
+                activity('update_installed', `version=${targetVersion}`);
+                process.stderr.write(`Trevra companion updated to ${targetVersion}; restarting background service…\n`);
+                // All supported service managers restart non-zero exits. The
+                // executable path is stable, so the next process is the newly
+                // installed version without touching pairing or browser state.
+                process.exit(75);
+              } catch (error) {
+                const detail = error instanceof Error ? error.message : String(error);
+                activity('update_failed', `target=${targetVersion} ${detail}`);
+                process.stderr.write(`Trevra companion update to ${targetVersion} failed; continuing on ${VERSION}.\n`);
+              }
+            }
+            return;
+          }
           if (message.type === 'open' && message.relayId && message.seatKey) {
             const relayShort = String(message.relayId).slice(0, 8);
             activity('relay_requested', `relay=${relayShort} seat=${message.seatKey}`);
@@ -619,11 +651,16 @@ async function main() {
     await stopExistingCompanion();
     activity('service_install_started', `version=${VERSION}`);
     process.stdout.write(`Installing Trevra ${VERSION} as a per-user background service…\n`);
+    const installedRoot = join(HOME, 'service');
+    const runningFromInstalledService = PACKAGE_ROOT === join(installedRoot, 'node_modules', 'trevra');
     installStablePackage({
       version: VERSION,
-      // Internal development hook: release builds omit it and therefore pin
-      // the service to this exact registry version rather than `latest`.
-      installSpec: process.env.TREVRA_COMPANION_INSTALL_SPEC?.trim() || undefined
+      // First install may be running from npm's npx cache or a release tarball.
+      // Install directly from that exact package directory so background setup
+      // does not depend on the registry's current `latest` tag. An installed
+      // service update still resolves the exact version from npm.
+      installSpec: process.env.TREVRA_COMPANION_INSTALL_SPEC?.trim()
+        || (runningFromInstalledService ? undefined : PACKAGE_ROOT)
     });
     registerBackgroundService();
 

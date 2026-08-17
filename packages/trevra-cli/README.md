@@ -9,23 +9,25 @@ For hosted LinkedIn execution, Trevra keeps campaigns, pacing and safety rules i
 In Trevra, open **Outreach → LinkedIn accounts → Connect this computer** and copy the generated command. It looks like:
 
 ```sh
-npx trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
+npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.0/trevra-0.2.0.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
 ```
 
 The command pairs the computer, installs the exact Trevra companion version into a private per-user directory, registers an OS background service, opens the dedicated LinkedIn Chrome profile for first sign-in, and starts the service.
 
-After that **no terminal needs to stay open**. The service starts when you sign into the computer, reconnects after network interruptions, and is restarted by the OS if the process crashes.
+After that **no terminal needs to stay open**. The service starts when you sign into the computer, reconnects after network interruptions, and is restarted by the OS if the process crashes. On Linux and macOS the installer also creates `~/.local/bin/trevra`, so service controls use the installed companion version instead of whatever version `npx` currently resolves.
+
+The background companion also **auto-updates**. On reconnect, hosted Trevra advertises the required companion version before any browser work is accepted. If a newer version exists, the service installs that exact official GitHub release and exits with a restart code so the OS starts the new version. Pairing, the local LinkedIn profile and cookies are preserved. A failed update leaves the current working version in place and records `update_failed` in `trevra linkedin logs`.
 
 Trevra supports:
 
 ```sh
-npx trevra linkedin status
-npx trevra linkedin logs
-npx trevra linkedin logs --follow
-npx trevra linkedin start
-npx trevra linkedin stop
-npx trevra linkedin restart
-npx trevra linkedin uninstall
+trevra linkedin status
+trevra linkedin logs
+trevra linkedin logs --follow
+trevra linkedin start
+trevra linkedin stop
+trevra linkedin restart
+trevra linkedin uninstall
 ```
 
 `logs` shows the companion's owner-only local activity log. It records service starts/stops, server reconnects, Chrome open/reuse, and browser-relay sessions/errors. It does **not** record device tokens, cookies, passwords, raw CDP/browser traffic, or LinkedIn message contents. The log rotates locally at roughly 2 MB and keeps one previous file; `logs --follow` streams new entries.

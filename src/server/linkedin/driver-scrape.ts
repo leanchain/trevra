@@ -34,10 +34,10 @@ import { ACTION_GAP_SECONDS } from './limits.js';
  *
  * FOUR CONSEQUENCES, and they are the whole design of this file:
  *
- * 1. ITS OWN OPT-IN, SEPARATE FROM SENDING. Nothing here is reachable without
- *    `leadSourcingEnabled()` in `leads.ts`, which is FALSE by default and which
- *    a hosted deployment can never turn on. Sending is a different decision
- *    from harvesting and gets a different switch.
+ * 1. ITS OWN GATE, SEPARATE FROM SENDING. Nothing here is reachable without
+ *    `leadSourcingEnabled()` in `leads.ts`. Hosted sourcing is allowed only
+ *    through the member's paired local companion; Trevra-operated cloud
+ *    browsers do not run this path.
  * 2. A PAGE FETCH IS AN ACTION. Walking ten search pages is ten automated
  *    requests in a burst, which is the "+120% surge within 24-48h" shape that
  *    plan §1.3 says precedes a disconnection. So every fetch after the first is

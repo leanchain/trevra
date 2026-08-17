@@ -372,14 +372,8 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
     {!enabled && <section className="li-leads-off">
       <ShieldCheck size={20} />
       <div>
-        <strong>Lead sourcing is off, on purpose.</strong>
-        <p className="li-blocked-message">{offReason ?? 'Lead sourcing is switched off for this deployment.'}</p>
-        <p>
-          Everything else in outreach automates <em>your own</em> account. Harvesting profiles out of a search page is
-          scraping someone else’s data, which carries a different contractual risk from acting on your own seat — so it
-          is a separate opt-in made in config by whoever runs this deployment, and there is no switch for it on this
-          screen.
-        </p>
+        <strong>Lead sourcing is unavailable right now.</strong>
+        <p className="li-blocked-message">{offReason ?? 'Connect the local LinkedIn companion to enable this feature.'}</p>
       </div>
     </section>}
 

@@ -1556,9 +1556,9 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
           deliberate posture set in config, not a fault of this click. */}
       {leadSources !== null && <div className="li-lead-picker">
         {leadSourcingOff && <div className="li-degraded">
-          <strong>Lead sourcing is off, on purpose.</strong>
+          <strong>Lead sourcing is unavailable right now.</strong>
           <p>{leadSourcingOff}</p>
-          <p>Searches you have already run are still listed below; only starting a new one is refused.</p>
+          <p>Searches you already ran stay available below.</p>
         </div>}
         {leadSources.length === 0
           ? <p className="empty-copy">No search has been run yet. Start one on Find leads, then pull the results in here.</p>

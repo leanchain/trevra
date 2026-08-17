@@ -9,6 +9,7 @@ import {
   markCompanionWebsitePresence
 } from './companion.js';
 import { installLinkedInCompanionRelay } from './companion-relay.js';
+import { COMPANION_RELEASE_VERSION } from './companion-release.js';
 
 const WORKSPACE_ID = 'ws_companion_relay_test';
 const NOW = new Date();
@@ -62,6 +63,18 @@ afterEach(async () => {
 });
 
 describe('LinkedIn companion reverse CDP relay', () => {
+  it('advertises the required companion version before browser work', async () => {
+    const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
+    const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });
+    const hello = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const ws = new WebSocket(`${base}/api/linkedin/companion/socket`, { headers: { authorization: `Bearer ${paired.token}` } });
+      sockets.push(ws);
+      ws.once('message', (raw) => resolve(JSON.parse(raw.toString()) as Record<string, unknown>));
+      ws.once('error', reject);
+    });
+    expect(hello).toMatchObject({ type: 'hello', workspaceId: WORKSPACE_ID, companionVersion: COMPANION_RELEASE_VERSION });
+  });
+
   it('bridges raw browser frames only after a paired laptop and website presence are both active', async () => {
     const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
     const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });

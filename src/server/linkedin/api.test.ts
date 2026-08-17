@@ -1308,10 +1308,12 @@ describe('campaign lifecycle', () => {
 describe('lead sourcing routes (030)', () => {
   const SOURCING = 'TREVRA_LINKEDIN_LEAD_SOURCING';
   const MODE = 'TREVRA_DEPLOYMENT_MODE';
-  const before = { sourcing: process.env[SOURCING], mode: process.env[MODE] };
+  const RELAY = 'TREVRA_COMPANION_RELAY_URL';
+  const before = { sourcing: process.env[SOURCING], mode: process.env[MODE], relay: process.env[RELAY] };
   afterEach(() => {
     if (before.sourcing === undefined) delete process.env[SOURCING]; else process.env[SOURCING] = before.sourcing;
     if (before.mode === undefined) delete process.env[MODE]; else process.env[MODE] = before.mode;
+    if (before.relay === undefined) delete process.env[RELAY]; else process.env[RELAY] = before.relay;
   });
 
   it('is ON for a self-hosted deployment without anybody setting anything', async () => {
@@ -1334,16 +1336,28 @@ describe('lead sourcing routes (030)', () => {
     expect(listed.offReason).toBeNull();
   });
 
-  it('is a HARD no on a hosted deployment, and no setting undoes it', async () => {
-    // The refusal this change may never weaken: a hosted, multi-tenant Trevra
-    // reading profiles on one human's session is the exposure the whole design
-    // avoids, and an explicit opt-in does not buy past it.
+  it('allows hosted lead sourcing when browser custody is the local companion', async () => {
     process.env[SOURCING] = 'true';
     process.env[MODE] = 'hosted';
+    process.env[RELAY] = 'ws://trevra:8080';
+    const created = await as(sessionA).post('/api/linkedin/lead-sources')
+      .send({ kind: 'search', url: 'https://www.linkedin.com/search/results/people/?keywords=hosted-companion' })
+      .expect(201);
+    expect((created.body as { source: { kind: string } }).source.kind).toBe('search');
+
+    const listed = (await as(sessionA).get('/api/linkedin/lead-sources').expect(200)).body as { enabled: boolean; offReason: string | null };
+    expect(listed.enabled).toBe(true);
+    expect(listed.offReason).toBeNull();
+  });
+
+  it('still refuses hosted lead sourcing when no local companion execution home exists', async () => {
+    process.env[SOURCING] = 'true';
+    process.env[MODE] = 'hosted';
+    delete process.env[RELAY];
     const refused = await as(sessionA).post('/api/linkedin/lead-sources')
-      .send({ kind: 'search', url: 'https://www.linkedin.com/search/results/people/?keywords=revops' })
+      .send({ kind: 'search', url: 'https://www.linkedin.com/search/results/people/?keywords=no-companion' })
       .expect(409);
-    expect((refused.body as { error: string }).error).toContain('cannot be enabled');
+    expect((refused.body as { error: string }).error).toContain('local LinkedIn companion');
   });
 
   it('refuses every write when the operator switched it off, and names the switch', async () => {
@@ -1364,7 +1378,7 @@ describe('lead sourcing routes (030)', () => {
       sources: unknown[];
     };
     expect(listed.enabled).toBe(false);
-    expect(listed.offReason).toContain('scraping');
+    expect(listed.offReason).toContain('TREVRA_LINKEDIN_LEAD_SOURCING=false');
     expect(listed.sources).toEqual([]);
   });
 

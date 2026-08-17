@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { COMPANION_RELEASE_VERSION } from './companion-release.js';
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
@@ -93,7 +94,13 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
       }
     }
     controls.set(identity.workspaceId, connection);
-    sendJson(ws, { type: 'hello', workspaceId: identity.workspaceId, deviceId: identity.deviceId, label: identity.label });
+    sendJson(ws, {
+      type: 'hello',
+      workspaceId: identity.workspaceId,
+      deviceId: identity.deviceId,
+      label: identity.label,
+      companionVersion: COMPANION_RELEASE_VERSION
+    });
 
     ws.on('message', (raw: RawData) => {
       let message: { type?: string; relayId?: string; data?: string; binary?: boolean; message?: string };

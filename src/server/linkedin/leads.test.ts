@@ -44,7 +44,7 @@ const page = {} as LinkedInScrapePage;
 
 /** Opted in, self-hosted. The only configuration in which anything happens. */
 function on(overrides: Partial<LeadSourcingConfig> = {}): LeadSourcingConfig {
-  return { optIn: true, hosted: false, maxResults: 100, maxPages: 10, ...overrides };
+  return { optIn: true, hosted: false, companionBrowser: false, remoteBrowser: false, maxResults: 100, maxPages: 10, ...overrides };
 }
 
 function lead(handle: string, name: string, extra: Partial<ScrapedLead> = {}): ScrapedLead {
@@ -141,15 +141,30 @@ describe('the gate', () => {
     expect(leadSourcingOffReason(off)).toContain('TREVRA_LINKEDIN_LEAD_SOURCING=false');
   });
 
-  it('is forced off by hosted mode, unconditionally', () => {
-    const config = leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_SOURCING: 'true', TREVRA_DEPLOYMENT_MODE: 'hosted' });
-    expect(config.hosted).toBe(true);
-    expect(leadSourcingEnabled(config)).toBe(false);
-    // The default-on change may NOT weaken this: hosted with nothing set at all
-    // is still off, and no value of the opt-in buys past it.
-    expect(leadSourcingEnabled(leadSourcingConfig({ TREVRA_DEPLOYMENT_MODE: 'hosted' }))).toBe(false);
-    // And the refusal says WHICH kind of off it is, so nobody hunts for a switch.
-    expect(leadSourcingOffReason(config)).toContain('cannot be enabled');
+  it('allows hosted sourcing only through the member computer companion', () => {
+    const companion = leadSourcingConfig({
+      TREVRA_DEPLOYMENT_MODE: 'hosted',
+      TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080',
+      TREVRA_SECRETS_KEY: 'test-key'
+    });
+    expect(companion.hosted).toBe(true);
+    expect(companion.companionBrowser).toBe(true);
+    expect(leadSourcingEnabled(companion)).toBe(true);
+
+    const noCompanion = leadSourcingConfig({ TREVRA_DEPLOYMENT_MODE: 'hosted' });
+    expect(leadSourcingEnabled(noCompanion)).toBe(false);
+    expect(leadSourcingOffReason(noCompanion)).toContain('local LinkedIn companion');
+
+    const cloud = leadSourcingConfig({
+      TREVRA_DEPLOYMENT_MODE: 'hosted',
+      TREVRA_BROWSER_PROVIDER: 'remote',
+      TREVRA_BROWSER_CDP_URL: 'wss://browser.example.test/cdp',
+      TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080',
+      TREVRA_SECRETS_KEY: 'test-key'
+    });
+    expect(cloud.remoteBrowser).toBe(true);
+    expect(leadSourcingEnabled(cloud)).toBe(false);
+    expect(leadSourcingOffReason(cloud)).toContain('cloud browser');
   });
 
   it('reads the caps off the environment and never accepts an unbounded one', () => {
@@ -325,19 +340,36 @@ describe('the refusals', () => {
 
     expect(harness.calls).toEqual([]);
     expect(result.status).toBe('failed');
-    expect(result.failureReason).toContain('8.2');
+    expect(result.failureReason).toContain('TREVRA_LINKEDIN_LEAD_SOURCING=false');
     // Recorded on the row, not silently dropped: an operator can see why.
     expect((await getLeadSource(db, WORKSPACE_ID, claimed.id))?.status).toBe('failed');
   });
 
-  it('refuses on a hosted deployment even with the opt-in set', async () => {
+  it('refuses hosted sourcing without a local companion, but allows the companion path', async () => {
     await seat();
     await source();
-    const claimed = (await claimLeadSource(db, WORKSPACE_ID, NOW))!;
-    const harness = fakeScraper();
-    const result = await runLeadSource(db, claimed, { page, config: on({ hosted: true }), scraper: harness.scraper, now: () => NOW });
-    expect(harness.calls).toEqual([]);
-    expect(result.failureReason).toContain('hosted');
+    const blockedSource = (await claimLeadSource(db, WORKSPACE_ID, NOW))!;
+    const blockedHarness = fakeScraper();
+    const blocked = await runLeadSource(db, blockedSource, {
+      page,
+      config: on({ hosted: true, companionBrowser: false }),
+      scraper: blockedHarness.scraper,
+      now: () => NOW
+    });
+    expect(blockedHarness.calls).toEqual([]);
+    expect(blocked.failureReason).toContain('local LinkedIn companion');
+
+    await source('search', 'https://www.linkedin.com/search/results/people/?keywords=founder');
+    const allowedSource = (await claimLeadSource(db, WORKSPACE_ID, NOW))!;
+    const allowedHarness = fakeScraper();
+    const allowed = await runLeadSource(db, allowedSource, {
+      page,
+      config: on({ hosted: true, companionBrowser: true }),
+      scraper: allowedHarness.scraper,
+      now: () => NOW
+    });
+    expect(allowedHarness.calls).toHaveLength(1);
+    expect(allowed.failureReason).toBeNull();
   });
 
   it('refuses when no seat is configured, and when the seat is cooling down', async () => {

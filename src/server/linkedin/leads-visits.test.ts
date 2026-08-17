@@ -5,6 +5,7 @@ import {
   LEAD_PAGES_PER_VISIT,
   createLeadSource,
   getLeadSource,
+  leadPagesForConfig,
   leadPagesThisVisit,
   runPendingLeadSources,
   type LeadSourcingConfig
@@ -27,7 +28,7 @@ let db: Db;
 const NOW = new Date('2026-08-04T09:00:00.000Z');
 const WORKSPACE_ID = 'ws_linkedin_lead_visits';
 const SEARCH_URL = 'https://www.linkedin.com/search/results/people/?keywords=founder';
-const CONFIG: LeadSourcingConfig = { optIn: true, hosted: false, maxResults: 100, maxPages: 10 };
+const CONFIG: LeadSourcingConfig = { optIn: true, hosted: false, companionBrowser: false, remoteBrowser: false, maxResults: 100, maxPages: 10 };
 
 /** A search that never runs out until `pagesAvailable`, and records what it was asked for. */
 function pagedScraper(pagesAvailable: number) {
@@ -108,10 +109,17 @@ describe('leadPagesThisVisit', () => {
     }
   });
 
-  it('is a band and not a constant, and is reproducible', () => {
+  it('is a band and not a constant, and is reproducible for local/self-hosted browsing', () => {
     const drawn = new Set(Array.from({ length: 40 }, (_unused, index) => leadPagesThisVisit(`s${index}`)));
     expect(drawn.size).toBeGreaterThan(1);
     expect(leadPagesThisVisit('x')).toBe(leadPagesThisVisit('x'));
+  });
+
+  it('uses exactly one results page per visit through the hosted companion', () => {
+    const companion = { ...CONFIG, hosted: true, companionBrowser: true };
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      expect(leadPagesForConfig(companion, `source-${attempt}`)).toBe(1);
+    }
   });
 });
 

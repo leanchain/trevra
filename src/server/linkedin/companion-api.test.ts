@@ -59,7 +59,8 @@ describe('LinkedIn companion HTTP journey', () => {
   it('pairs with one short code, exposes no device token to the browser session, and can be revoked', async () => {
     const created = await authed().post('/api/linkedin/companion/pair').send({}).expect(201);
     expect(created.body.code).toMatch(/^[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}$/);
-    expect(created.body.command).toContain(`npx trevra linkedin install --pair ${created.body.code}`);
+    expect(created.body.command).toContain('npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.0/trevra-0.2.0.tgz trevra linkedin install --pair');
+    expect(created.body.command).toContain(created.body.code);
 
     // The exchange is deliberately a CLI route: no session cookie, just the
     // short-lived one-time code. A browser CSRF token is not the credential.
