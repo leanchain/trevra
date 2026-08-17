@@ -26,6 +26,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - run: npm install --global npm@11.6.2
       - run: npm ci
       - name: Dependency audit
         run: npm audit
