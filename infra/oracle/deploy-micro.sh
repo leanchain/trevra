@@ -2,8 +2,8 @@
 # Deploys the split two-micro layout: Postgres on one instance, app + worker +
 # tunnel on the other. Both pull prebuilt images from ghcr.io; neither builds.
 #
-# Usage:  ./deploy-micro.sh <app-ip> <db-ip> <db-private-ip> [image-tag]
-#         (terraform-micro prints the exact command as `deploy_command`)
+# Usage:  ./deploy-micro.sh <app-ip> <db-ip> <db-private-ip> [image-tag] [companion-version]
+#         (terraform-micro prints the base command as `deploy_command`)
 #
 # Each instance needs its own /opt/trevra/.env.oracle:
 #   db  -- TREVRA_DB_PASSWORD
@@ -15,9 +15,14 @@ APP_IP="${1:-}"
 DB_IP="${2:-}"
 DB_PRIVATE_IP="${3:-}"
 TAG="${4:-main}"
+COMPANION_VERSION="${5:-}"
 
 if [ -z "$APP_IP" ] || [ -z "$DB_IP" ] || [ -z "$DB_PRIVATE_IP" ]; then
-  echo "usage: $0 <app-ip> <db-ip> <db-private-ip> [image-tag]" >&2
+  echo "usage: $0 <app-ip> <db-ip> <db-private-ip> [image-tag] [companion-version]" >&2
+  exit 1
+fi
+if [ -n "$COMPANION_VERSION" ] && [[ ! "$COMPANION_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "companion-version must look like 0.2.3" >&2
   exit 1
 fi
 
@@ -35,7 +40,6 @@ if [ ! -f "$SSH_KEY" ]; then
   echo "SSH key not found at ${SSH_KEY}; set SSH_KEY=/path/to/key" >&2
   exit 1
 fi
-
 check_host() {
   local remote="$1" label="$2"
   if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$remote" true 2>/dev/null; then
@@ -50,6 +54,14 @@ check_host() {
 
 check_host "ubuntu@${DB_IP}" db
 check_host "ubuntu@${APP_IP}" app
+
+# The companion package is released before the app rollout. Put the exact
+# version into the server-local environment atomically so the new relay only
+# advertises an asset that already exists. The value is non-secret, but the env
+# file also contains secrets and therefore stays mode 0600.
+if [ -n "$COMPANION_VERSION" ]; then
+  ssh "ubuntu@${APP_IP}" "set -eu; f='${APP_DIR}/.env.oracle'; tmp=\$(mktemp); grep -v '^TREVRA_COMPANION_RELEASE_VERSION=' \"\$f\" > \"\$tmp\"; printf '%s\\n' 'TREVRA_COMPANION_RELEASE_VERSION=${COMPANION_VERSION}' >> \"\$tmp\"; chmod 600 \"\$tmp\"; mv \"\$tmp\" \"\$f\""
+fi
 
 # Hosted custody must exist BEFORE the migration job can convert any legacy
 # credential-bearing rows. Do not echo the value; only verify presence.

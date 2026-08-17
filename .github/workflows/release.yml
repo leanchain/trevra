@@ -1,0 +1,286 @@
+name: Release and deploy
+
+on:
+  workflow_run:
+    workflows: ["Container image"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA whose sha-<SHA> image is already in GHCR (blank = current commit)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      app_version: ${{ steps.release.outputs.app_version }}
+      companion_changed: ${{ steps.release.outputs.companion_changed }}
+      companion_version: ${{ steps.release.outputs.companion_version }}
+      npm_publish_needed: ${{ steps.release.outputs.npm_publish_needed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - id: release
+        name: Resolve immutable release versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          SHA="$(git rev-parse HEAD)"
+
+          next_patch() {
+            local version="$1" major minor patch
+            IFS=. read -r major minor patch <<<"$version"
+            if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ || ! "$patch" =~ ^[0-9]+$ ]]; then
+              echo "invalid semver: $version" >&2
+              exit 1
+            fi
+            printf '%s.%s.%s\n' "$major" "$minor" "$((patch + 1))"
+          }
+
+          existing_app_tag="$(git tag --points-at "$SHA" --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+          if [[ -n "$existing_app_tag" ]]; then
+            app_version="${existing_app_tag#v}"
+          else
+            latest_app_tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+            app_base="${latest_app_tag#v}"
+            [[ -n "$app_base" ]] || app_base="$(jq -r .version package.json)"
+            app_version="$(next_patch "$app_base")"
+          fi
+
+          existing_companion_tag="$(git tag --points-at "$SHA" --list 'companion-v*' --sort=-v:refname | head -n1)"
+          latest_companion_tag="$(git tag --list 'companion-v*' --sort=-v:refname | head -n1)"
+          if [[ -n "$existing_companion_tag" ]]; then
+            companion_changed=false
+            companion_version="${existing_companion_tag#companion-v}"
+          elif [[ -n "$latest_companion_tag" ]] && git diff --quiet "$latest_companion_tag"..HEAD -- \
+            packages/trevra-cli/bin \
+            packages/trevra-cli/lib \
+            packages/trevra-cli/package.json \
+            packages/trevra-cli/README.md; then
+            companion_changed=false
+            companion_version="${latest_companion_tag#companion-v}"
+          else
+            companion_changed=true
+            companion_base="${latest_companion_tag#companion-v}"
+            [[ -n "$companion_base" ]] || companion_base="$(jq -r .version packages/trevra-cli/package.json)"
+            companion_version="$(next_patch "$companion_base")"
+          fi
+
+          if npm view "trevra@${companion_version}" version >/dev/null 2>&1; then
+            npm_publish_needed=false
+          else
+            npm_publish_needed=true
+          fi
+
+          {
+            echo "sha=$SHA"
+            echo "app_version=$app_version"
+            echo "companion_changed=$companion_changed"
+            echo "companion_version=$companion_version"
+            echo "npm_publish_needed=$npm_publish_needed"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "App release: v$app_version"
+          if [[ "$companion_changed" == true ]]; then
+            echo "Companion release: companion-v$companion_version (new)"
+          else
+            echo "Companion release: companion-v$companion_version (unchanged)"
+          fi
+          echo "npm publish needed: $npm_publish_needed"
+
+  companion_release:
+    name: Companion GitHub release
+    needs: prepare
+    if: needs.prepare.outputs.companion_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/trevra-cli/package-lock.json
+      - run: npm install --global npm@11.6.2
+      - name: Build exact companion package
+        id: package
+        working-directory: packages/trevra-cli
+        env:
+          VERSION: ${{ needs.prepare.outputs.companion_version }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm test
+          npm audit --omit=dev
+          filename="$(npm pack --silent --pack-destination "$RUNNER_TEMP")"
+          echo "asset=$RUNNER_TEMP/$filename" >> "$GITHUB_OUTPUT"
+      - name: Create or repair companion release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.companion_version }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          ASSET: ${{ steps.package.outputs.asset }}
+        run: |
+          set -euo pipefail
+          tag="companion-v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$ASSET" --clobber
+          else
+            gh release create "$tag" "$ASSET" \
+              --target "$SHA" \
+              --title "Trevra LinkedIn Companion ${VERSION}" \
+              --notes "Automated companion release from ${SHA}. The hosted relay advertises this version only after the production deployment succeeds."
+          fi
+
+  npm_publish:
+    name: Publish companion to npm
+    needs: [prepare, companion_release]
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.npm_publish_needed == 'true' &&
+      (needs.companion_release.result == 'success' || needs.companion_release.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: packages/trevra-cli/package-lock.json
+      - run: npm install --global npm@11.6.2
+      - name: Publish with npm Trusted Publishing
+        working-directory: packages/trevra-cli
+        env:
+          VERSION: ${{ needs.prepare.outputs.companion_version }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          if npm view "trevra@${VERSION}" version >/dev/null 2>&1; then
+            echo "trevra@${VERSION} already exists; publish is idempotently complete."
+            exit 0
+          fi
+          npm publish --access public --provenance
+
+  deploy_oracle:
+    name: Deploy Oracle production
+    needs: [prepare, companion_release]
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.companion_release.result == 'success' || needs.companion_release.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Install production SSH identity
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.ORACLE_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/ssh/oracle"
+          chmod 600 "$RUNNER_TEMP/ssh/oracle"
+      - name: Verify immutable image exists
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: docker buildx imagetools inspect "ghcr.io/${{ github.repository }}:sha-${SHA}" >/dev/null
+      - name: Guarded Oracle rollout
+        env:
+          APP_IP: ${{ vars.ORACLE_APP_IP }}
+          DB_IP: ${{ vars.ORACLE_DB_IP }}
+          DB_PRIVATE_IP: ${{ vars.ORACLE_DB_PRIVATE_IP }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          COMPANION_VERSION: ${{ needs.prepare.outputs.companion_version }}
+        run: |
+          set -euo pipefail
+          SSH_KEY="$RUNNER_TEMP/ssh/oracle" \
+            ./infra/oracle/deploy-micro.sh \
+              "$APP_IP" "$DB_IP" "$DB_PRIVATE_IP" "sha-${SHA}" "$COMPANION_VERSION"
+      - name: Public health check
+        run: |
+          set -euo pipefail
+          body="$(curl --fail --silent --show-error --retry 6 --retry-delay 5 https://app.usetrevra.com/api/health)"
+          jq -e '.ok == true' <<<"$body" >/dev/null
+
+  app_release:
+    name: Publish app release
+    needs: [prepare, deploy_oracle]
+    if: needs.deploy_oracle.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Add release aliases to the immutable image
+        env:
+          VERSION: ${{ needs.prepare.outputs.app_version }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${{ github.repository }}"
+          docker buildx imagetools create \
+            -t "${image}:${VERSION}" \
+            -t "${image}:v${VERSION}" \
+            "${image}:sha-${SHA}"
+      - name: Create immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.app_version }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag already exists."
+          else
+            gh release create "$tag" --target "$SHA" --generate-notes --title "Trevra ${VERSION}"
+          fi

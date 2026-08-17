@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: App quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm install --global npm@11.6.2
+      - run: npm ci
+      - name: Dependency audit
+        run: npm audit
+      - name: Full PostgreSQL suite
+        run: npm test
+      - name: Production build
+        run: npm run build
+
+  companion:
+    name: Companion package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/trevra-cli/package-lock.json
+      - run: npm install --global npm@11.6.2
+      - name: Install companion dependencies
+        working-directory: packages/trevra-cli
+        run: npm ci
+      - name: Test companion
+        working-directory: packages/trevra-cli
+        run: npm test
+      - name: Audit companion production dependencies
+        working-directory: packages/trevra-cli
+        run: npm audit --omit=dev
+      - name: Verify package contents
+        working-directory: packages/trevra-cli
+        run: npm pack --dry-run
+      - name: Verify CLI starts
+        working-directory: packages/trevra-cli
+        run: node bin/trevra.js --version
+
+  selfhost:
+    name: Self-host configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate disposable self-host environment
+        run: TREVRA_SELFHOST_PORT=43900 ./scripts/selfhost-init.sh
+      - name: Validate self-host compose
+        run: docker compose --env-file .env.selfhost -f compose.selfhost.yml config --quiet

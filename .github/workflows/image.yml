@@ -121,10 +121,20 @@ jobs:
 
       - name: Create manifest list
         working-directory: /tmp/digests
+        shell: bash
         run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+          set -euo pipefail
+          args=()
+          while IFS= read -r tag; do
+            args+=( -t "$tag" )
+          done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+
+          sources=()
+          for digest in *; do
+            sources+=( "${REGISTRY}/${IMAGE_NAME}@sha256:${digest}" )
+          done
+
+          docker buildx imagetools create "${args[@]}" "${sources[@]}"
 
       - name: Inspect
         run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
