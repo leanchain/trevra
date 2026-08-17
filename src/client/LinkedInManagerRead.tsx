@@ -996,7 +996,7 @@ export function OutreachManagerRead({ setToast, onNavigate }: { setToast: (messa
                     operator they had sent a message that was called off.
                   */}
                   <td>{task.status === 'pending'
-                    ? ago(task.createdAt, now)
+                    ? <>Waiting for you · {ago(task.createdAt, now)}</>
                     : task.status === 'cancelled'
                       ? <span className="mgr-state"><i className="mgr-dot-removed" aria-hidden="true" />Cancelled</span>
                       : <span className="mgr-state"><i className="mgr-dot-completed" aria-hidden="true" />Done</span>}</td>

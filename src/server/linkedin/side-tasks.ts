@@ -41,6 +41,7 @@ import type { Db } from '../db.js';
 import {
   VISITS_PER_DAY,
   VISIT_MINUTES,
+  addLocalDays,
   dayShapeFor,
   localDateOf,
   visitsForDay,
@@ -52,8 +53,6 @@ import {
   type Visit,
   type WorkWindowSeat
 } from './pacing.js';
-
-/** Re-exported so the visit model reads as one thing from here. See `pacing.ts`. */
 export { VISITS_PER_DAY, VISIT_MINUTES, visitsForDay, type Visit };
 
 /** The five jobs in `runLinkedInSideTasks`, in the order that function runs them. */
@@ -331,4 +330,66 @@ export function dueSideTasks(
   // cap of two would mean the last three jobs never ran at all.
   overdue.sort((left, right) => right.by - left.by);
   return overdue.slice(0, limit).map((entry) => entry.task);
+}
+
+export interface SideTaskOpportunity {
+  /** The deterministic LinkedIn visit window in which this task is expected. */
+  startAt: Date;
+  endAt: Date;
+  visitIndex: number;
+}
+
+/**
+ * Future visit windows in which one side task is expected to be selected.
+ *
+ * This is the read-only mirror of the worker's scheduling decision. It advances
+ * the same cadence map as `runLinkedInSideTasks`, so an operator can see WHEN a
+ * queued read is expected without creating a second scheduler in the client.
+ * Past visits are deliberately ignored: a laptop that slept through 10:22 does
+ * not replay 10:22 at wake-up; the answer becomes the next normal visit.
+ */
+export function nextSideTaskOpportunities(
+  seat: SideTaskSeat,
+  runs: SideTaskRuns,
+  task: SideTaskName,
+  now: Date,
+  count = 1,
+  options: { dayShape?: DayShapeFn; horizonDays?: number } = {}
+): SideTaskOpportunity[] {
+  const wanted = Math.max(1, Math.min(50, Math.trunc(count)));
+  const horizonDays = Math.max(1, Math.min(31, Math.trunc(options.horizonDays ?? 14)));
+  const shapeDay = options.dayShape ?? dayShapeFor;
+  const window = workWindowOf(seat);
+  const localToday = localDateOf(now, seat.timezone);
+  const simulated = new Map(runs);
+  const seed = `${seat.workspaceId}:${seat.seatKey}`;
+  const opportunities: SideTaskOpportunity[] = [];
+
+  for (let offset = 0; offset < horizonDays && opportunities.length < wanted; offset += 1) {
+    const day = addLocalDays(localToday, offset);
+    if (weekdayVolumeFactor(window, weekdayOf(day)) <= 0) continue;
+    const shape = shapeDay(seed, day, window);
+    if (shape.resting) continue;
+
+    for (const visit of visitsForDay(seed, day, shape)) {
+      const startAt = zonedToUtc(day, visit.startMinute * 60, seat.timezone);
+      const endAt = zonedToUtc(day, visit.endMinute * 60, seat.timezone);
+      if (endAt.getTime() <= now.getTime()) continue;
+      if (simulated.get(VISIT_MARKER)?.getTime() === startAt.getTime()) continue;
+
+      // If the browser reconnects during a visit, the next worker tick may use
+      // the remainder of that visit. Otherwise the visit's start is the
+      // scheduling instant. Either way, never manufacture a missed tick.
+      const decisionAt = new Date(Math.max(now.getTime(), startAt.getTime()));
+      const due = dueSideTasks(seat, simulated, decisionAt);
+      simulated.set(VISIT_MARKER, startAt);
+      for (const selected of due) simulated.set(selected, decisionAt);
+
+      if (due.includes(task)) {
+        opportunities.push({ startAt, endAt, visitIndex: visit.index });
+        if (opportunities.length >= wanted) break;
+      }
+    }
+  }
+  return opportunities;
 }

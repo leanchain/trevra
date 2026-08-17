@@ -1494,7 +1494,7 @@ export function OutreachCampaigns({ setToast, campaignId = null }: {
         ? <p className="empty-copy">Nothing is scheduled for this campaign yet. Actions are scheduled when an approved plan is exported.</p>
         : <div className="li-table-scroll">
           <table className="li-table">
-            <thead><tr><th>Person</th><th>Action</th><th>Status</th><th>Goes out</th></tr></thead>
+            <thead><tr><th>Person</th><th>Action</th><th>Status</th><th>Planned for</th></tr></thead>
             <tbody>{detail.actions.slice(0, 50).map((action) => <tr key={action.id}>
               <td className="li-target">{action.targetRef ?? '—'}</td>
               <td>{ACTION_KIND_LABELS_ONE[action.kind]}</td>

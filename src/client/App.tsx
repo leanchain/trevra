@@ -177,15 +177,9 @@ type ToastMessage = { message: string; undo?: () => void };
 /** How long a snooze or a dismissal can still be taken back. */
 const UNDO_MS = 9000;
 
-/**
- * The one motion preference the shell reads in script.
- *
- * The stylesheet handles everything it declares; a smooth `scrollIntoView` is
- * not declared anywhere, so it has to be asked here. Read at call time rather
- * than cached: the preference can change while a tab is open.
- */
 const reducedMotion = () => typeof window !== 'undefined'
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
 /**
  * `/leads` is the legacy address for the target-account screen.
  *
@@ -530,7 +524,6 @@ export function App() {
         {/* One incident surface, on every route. It is never a nav item and it
             survives below 760px, where the sidebar does not. */}
         <StopBar setToast={setToast} />
-        <LinkedInCompanionAttention setToast={setToast} />
 
         {route.section === 'loop' && (route.sub === 'cost'
           ? <LoopCostView onNavigate={go} />
@@ -542,6 +535,7 @@ export function App() {
           />)}
 
         {route.section === 'outreach' && <div className="page-stack">
+          <LinkedInCompanionAttention setToast={setToast} />
           {/* Same markup and class family as Setup's strip, because it is the
               same control and a second dialect would be a second thing to
               learn. The one addition is the divider: the last three tabs are

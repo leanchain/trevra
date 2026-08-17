@@ -579,6 +579,11 @@ export interface WithdrawalRecord {
   claimedAt: string | null;
   queuedAt: string;
   finishedAt: string | null;
+  /** Read-only scheduler decoration. Recomputed on every queue read. */
+  nextRunAt?: string | null;
+  nextRunWindowEndAt?: string | null;
+  nextRunTimezone?: string | null;
+  waitingFor?: import('./leads.js').LinkedInQueueWaitReason | null;
 }
 
 interface WithdrawalRow {

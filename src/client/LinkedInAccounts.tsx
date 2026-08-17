@@ -47,6 +47,7 @@ import {
 } from './api';
 import { errorMessage, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
+import { MAINTENANCE_TASK_LABELS, formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
 import { LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 
@@ -1225,16 +1226,37 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
 
       {blocked && <Wall title="One thing has to happen on your own machine first." message={blocked} />}
 
-      {queued && <Wall title={companion ? 'Waiting for your connected computer.' : 'Waiting on your own worker.'}>
-        <p>{companion
-          ? 'Keep this Trevra tab and `npx trevra linkedin` open. The pending read stays queued while either is offline and is picked up by the next normal cycle when both are back.'
-          : 'This server cannot open a browser, so the read is parked for the Trevra worker running on your machine. It runs on the next tick and this panel updates itself — leave it open.'}</p>
+      {queued && <Wall title={queueWaitCopy(request?.waitingFor) ?? (companion ? 'Waiting for your connected computer.' : 'Waiting on your own worker.')}>
+        <p>
+          {request?.nextAttemptAt
+            ? `Expected by ${new Date(request.nextAttemptAt).toLocaleString()}. `
+            : request?.waitingFor
+              ? 'There is no honest clock time until that prerequisite is back. '
+              : ''}
+          Queued {request?.requestedAt ? relativeTime(request.requestedAt) : 'now'}. Missed worker checks are not replayed; once the prerequisite is ready, the next normal worker cycle picks it up.
+        </p>
       </Wall>}
 
       {request?.status === 'failed' && request.failureReason && <Wall
         title="The last read of this account did not finish."
         message={request.failureReason}
       />}
+
+      {detail?.maintenance && detail.maintenance.length > 0 && <details className="li-maintenance-schedule">
+        <summary>Next LinkedIn background activity</summary>
+        <div className="li-maintenance-list">
+          {detail.maintenance.map((timing) => {
+            const visit = formatVisitWindow(timing.nextRunAt, timing.nextRunWindowEndAt, timing.timezone);
+            const wait = queueWaitCopy(timing.waitingFor);
+            return <div className="li-maintenance-row" key={timing.task}>
+              <span>{MAINTENANCE_TASK_LABELS[timing.task]}</span>
+              <strong>{wait ?? visit ?? 'No eligible visit in the next two weeks'}</strong>
+              {wait && visit && <small>Next normal visit {visit}</small>}
+            </div>;
+          })}
+        </div>
+        <p className="li-hint">If this computer sleeps through a visit, Trevra skips that window and shows the next normal one. Missed visits are never replayed as a catch-up burst.</p>
+      </details>}
 
       <div className="li-seat-card">
         <div className="li-seat-head">

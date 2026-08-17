@@ -181,6 +181,7 @@ import {
   warmupWeekOf,
   type SeatPatch
 } from './linkedin/seats.js';
+import { SIDE_TASK_NAMES, nextSideTaskOpportunities, sideTaskRuns, type SideTaskName } from './linkedin/side-tasks.js';
 import { MAX_HORIZON_DAYS, planPacing } from './linkedin/pacing.js';
 import {
   exportCampaign,
@@ -267,7 +268,8 @@ import {
   LEAD_READ_LIMIT,
   LEAD_SOURCE_KINDS,
   MAX_DAILY_LEAD_CAP,
-  type LeadSourceKind
+  type LeadSourceKind,
+  type LinkedInQueueWaitReason
 } from './linkedin/leads.js';
 import {
   clearInboxForSeat,
@@ -2079,10 +2081,30 @@ export function createApp(db: Db) {
     const seat = await getSeat(db, workspaceId, seatKey);
     const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : { workspaceId, seatKey };
     const counts = await Promise.all(PACED_KINDS.map((kind) => countActionsInWindow(db, seatRef, kind, 24, now)));
-    // A boolean and a masked address. There is no shape of this response that
-    // carries the password, and no privilege level that changes that -- the
-    // store has no function that could produce it here (secrets/linkedin.ts).
     const credentials = await describeLinkedInCredentials(db, workspaceId, seatKey);
+    const waitingFor = await linkedinQueueWaitReason(db, workspaceId, seatKey, now);
+    const detect = await latestSeatDetectRequest(db, workspaceId, seatKey);
+    const workerIntervalMs = (() => {
+      try { return validateEnvironment().automationIntervalMs; }
+      catch { return 300_000; }
+    })();
+
+    const maintenance = seat
+      ? await (async () => {
+        const runs = await sideTaskRuns(db, workspaceId, seat.seatKey);
+        return SIDE_TASK_NAMES.map((task) => {
+          const [next] = nextSideTaskOpportunities(seat, runs, task, now, 1);
+          return {
+            task,
+            nextRunAt: next?.startAt.toISOString() ?? null,
+            nextRunWindowEndAt: next?.endAt.toISOString() ?? null,
+            timezone: seat.timezone,
+            waitingFor
+          };
+        });
+      })()
+      : [];
+
     res.json({
       seat: seat ?? null,
       auth: {
@@ -2090,19 +2112,22 @@ export function createApp(db: Db) {
         maskedEmail: credentials.maskedEmail,
         sessionValidAt: seat?.sessionValidAt ?? null
       },
-      // What became of the last detect handed to a host-side worker (027). The
-      // client polls this route while a request is outstanding, and a request
-      // that FAILED has to reach the operator here -- otherwise a detect the
-      // worker could not perform is indistinguishable from one still queued,
-      // and the screen spins forever.
-      detectRequest: await latestSeatDetectRequest(db, workspaceId, seatKey),
+      detectRequest: detect?.status === 'pending' ? {
+        ...detect,
+        nextAttemptAt: waitingFor === null ? (() => {
+          const requested = Date.parse(detect.requestedAt);
+          if (!Number.isFinite(requested)) return new Date(now.getTime() + workerIntervalMs).toISOString();
+          const elapsed = Math.max(0, now.getTime() - requested);
+          const cycles = Math.floor(elapsed / workerIntervalMs) + 1;
+          return new Date(requested + cycles * workerIntervalMs).toISOString();
+        })() : null,
+        waitingFor
+      } : detect,
+      execution: { ready: waitingFor === null, waitingFor },
+      maintenance,
       posture: seat ? effectivePosture(seat, now) : null,
-      // Week 1 for a workspace with no seat: an unknown ramp clock is paced as
-      // a new seat, never as an established one (seats.ts).
       warmupWeek: warmupWeekOf(seat?.activatedAt ?? null, now),
       warmupWeeks: WARMUP_WEEKS,
-      // Rolling 24h, not "since midnight": midnight in whose timezone was never
-      // defined, and a calendar cap of 20 delivers 40 across the boundary.
       today: Object.fromEntries(PACED_KINDS.map((kind, index) => [kind, counts[index]]))
     });
   }));
@@ -3722,19 +3747,45 @@ export function createApp(db: Db) {
     // create anything, and the live row is the honest answer.
     res.status(created.duplicate ? 200 : 201).json({ source: created.source, duplicate: created.duplicate });
   }));
-
   app.get('/api/linkedin/lead-sources', linkedinRoute(async (req, res) => {
     const filters = linkedinLeadListSchema.parse(req.query);
+    const workspaceId = req.auth!.workspaceId;
     const config = leadSourcingConfig();
+    const sources = await listLeadSources(db, workspaceId, filters.limit);
+    const pending = sources
+      .filter((source) => source.status === 'pending')
+      .sort((left, right) => left.requestedAt.localeCompare(right.requestedAt));
+    const schedule = new Map<string, SideTaskScheduleView>();
+    const now = new Date();
+    const waitingFor = pending.length > 0 ? await linkedinQueueWaitReason(db, workspaceId, null, now) : null;
+
+    if (pending.length > 0 && leadSourcingEnabled(config)) {
+      const opportunities = await sideTaskSchedule(db, workspaceId, 'lead_sources', now, pending.length);
+      pending.forEach((source, index) => {
+        const opportunity = opportunities[index];
+        if (opportunity) schedule.set(source.id, opportunity);
+      });
+    }
+
     res.json({
-      // Reported rather than refused: a workspace with sources from before the
-      // switch was turned off must still be able to read what they found.
       enabled: leadSourcingEnabled(config),
       offReason: leadSourcingEnabled(config) ? null : leadSourcingOffReason(config),
-      sources: await listLeadSources(db, req.auth!.workspaceId, filters.limit)
+      sources: sources.map((source) => {
+        const next = schedule.get(source.id);
+        if (source.status !== 'pending') return source;
+        return {
+          ...source,
+          ...(next ? {
+            nextRunAt: next.startAt.toISOString(),
+            nextRunWindowEndAt: next.endAt.toISOString(),
+            nextRunTimezone: next.timezone,
+            nextRunSeatLabel: next.seatLabel
+          } : {}),
+          waitingFor
+        };
+      })
     });
   }));
-
   /**
    * The daily lead ceiling, read and set.
    *
@@ -3970,7 +4021,34 @@ export function createApp(db: Db) {
 
   app.get('/api/linkedin/withdrawals', linkedinRoute(async (req, res) => {
     const filters = linkedinWithdrawalListSchema.parse(req.query);
-    res.json({ withdrawals: await listWithdrawals(db, req.auth!.workspaceId, filters) });
+    const workspaceId = req.auth!.workspaceId;
+    const withdrawals = await listWithdrawals(db, workspaceId, filters);
+    const now = new Date();
+    const timingBySeat = new Map<string, { next: SideTaskScheduleView | null; waitingFor: LinkedInQueueWaitReason | null }>();
+
+    for (const seatKey of new Set(withdrawals.filter((row) => row.status === 'queued').map((row) => row.seatKey))) {
+      const [next] = await sideTaskSchedule(db, workspaceId, 'withdrawals', now, 1, seatKey);
+      timingBySeat.set(seatKey, {
+        next: next ?? null,
+        waitingFor: await linkedinQueueWaitReason(db, workspaceId, seatKey, now)
+      });
+    }
+
+    res.json({
+      withdrawals: withdrawals.map((row) => {
+        if (row.status !== 'queued') return row;
+        const timing = timingBySeat.get(row.seatKey);
+        return {
+          ...row,
+          ...(timing?.next ? {
+            nextRunAt: timing.next.startAt.toISOString(),
+            nextRunWindowEndAt: timing.next.endAt.toISOString(),
+            nextRunTimezone: timing.next.timezone
+          } : {}),
+          waitingFor: timing?.waitingFor ?? null
+        };
+      })
+    });
   }));
 
   /* ---------------------------------------------------------------------
@@ -5312,6 +5390,85 @@ function linkedinWorkerConfigOrRefuse(): LinkedInLocalWorkerConfig {
 function assertLeadSourcingOn(): void {
   const config = leadSourcingConfig();
   if (!leadSourcingEnabled(config)) throw new LinkedInApiError(leadSourcingOffReason(config), 409);
+}
+
+type SideTaskScheduleView = {
+  startAt: Date;
+  endAt: Date;
+  timezone: string;
+  seatLabel: string;
+  seatKey: string;
+};
+
+/**
+ * One shared answer to “why is due LinkedIn work not moving?”. The queue screens
+ * render this vocabulary instead of each inventing their own explanation.
+ */
+async function linkedinQueueWaitReason(
+  db: Db,
+  workspaceId: string,
+  seatKey: string | null,
+  now: Date
+): Promise<LinkedInQueueWaitReason | null> {
+  if (seatKey) {
+    const seat = await getSeat(db, workspaceId, seatKey);
+    if (seat) {
+      const posture = effectivePosture(seat, now);
+      if (posture === 'paused') return 'account_paused';
+      if (posture === 'cooldown') return 'account_cooldown';
+    }
+  } else {
+    const seats = await listSeats(db, workspaceId);
+    if (seats.length > 0) {
+      const postures = seats.map((seat) => effectivePosture(seat, now));
+      if (postures.every((posture) => posture === 'paused')) return 'account_paused';
+      if (postures.every((posture) => posture === 'paused' || posture === 'cooldown')) return 'account_cooldown';
+    }
+  }
+
+  let worker: LinkedInLocalWorkerConfig;
+  try { worker = validateEnvironment().linkedinLocalWorker; }
+  catch { return 'worker'; }
+  if (!worker.enabled) return 'worker';
+
+  if (worker.companionBrowser) {
+    const companion = await listCompanionStatus(db, workspaceId, now);
+    if (!companion.devices.some((device) => device.online)) return 'computer';
+    if (!companion.websitePresent) return 'trevra_tab';
+  }
+  return null;
+}
+
+/**
+ * Future deterministic visit windows for one recurring LinkedIn side task.
+ * Past visits are never returned, so sleeping through a window advances the ETA
+ * rather than creating catch-up traffic on reconnect.
+ */
+async function sideTaskSchedule(
+  db: Db,
+  workspaceId: string,
+  task: SideTaskName,
+  now: Date,
+  count = 1,
+  seatKey?: string
+): Promise<SideTaskScheduleView[]> {
+  const opportunities: SideTaskScheduleView[] = [];
+  for (const seat of await listSeats(db, workspaceId)) {
+    if (seatKey && seat.seatKey !== seatKey) continue;
+    const posture = effectivePosture(seat, now);
+    if (posture === 'paused' || posture === 'cooldown') continue;
+    const runs = await sideTaskRuns(db, workspaceId, seat.seatKey);
+    for (const opportunity of nextSideTaskOpportunities(seat, runs, task, now, count)) {
+      opportunities.push({
+        ...opportunity,
+        timezone: seat.timezone,
+        seatLabel: seat.label,
+        seatKey: seat.seatKey
+      });
+    }
+  }
+  opportunities.sort((left, right) => left.startAt.getTime() - right.startAt.getTime() || left.seatKey.localeCompare(right.seatKey));
+  return opportunities.slice(0, Math.max(1, count));
 }
 
 /**

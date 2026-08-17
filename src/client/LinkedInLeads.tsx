@@ -4,6 +4,7 @@ import {
   CircleAlert,
   ExternalLink,
   LoaderCircle,
+  Pencil,
   Play,
   RefreshCw,
   Gauge,
@@ -33,6 +34,7 @@ import {
 import { ActiveAccountBar } from './LinkedInAccounts';
 import { errorMessage, stageTargets, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
+import { formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
 import { navigate } from './ui/route';
 
 /**
@@ -184,6 +186,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
   const [keywords, setKeywords] = useState('');
   /** True once the URL was hand-edited, after which keywords stop touching it. */
   const [urlDirty, setUrlDirty] = useState(false);
+  const [urlEditing, setUrlEditing] = useState(false);
   const [busy, setBusy] = useState(false);
 
   /** The source being drilled into. Null on the list. */
@@ -225,6 +228,23 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useOutreachRefresh(load);
+
+  // Pending/running sources are live queue rows. Refresh them quietly so an
+  // ETA that was missed while the laptop slept advances on its own after wake,
+  // and a completed walk appears without making the operator press Refresh.
+  const hasLiveSources = sources.some((source) => source.status === 'pending' || source.status === 'running');
+  useEffect(() => {
+    if (!hasLiveSources) return;
+    const timer = window.setInterval(() => {
+      void getLinkedInLeadSources(200).then((result) => {
+        setSources(result.sources);
+        setEnabled(result.enabled);
+        setOffReason(result.offReason);
+      }).catch(() => undefined);
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [hasLiveSources]);
   useOutreachRefresh(load);
 
   const queue = async () => {
@@ -443,14 +463,34 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
           </div>
 
           <div className="li-search-builder">
-            <label>LinkedIn URL
-              <input
-                value={url}
-                disabled={!enabled}
-                onChange={(event) => { setUrl(event.target.value); setUrlDirty(true); }}
-                placeholder={KIND_PLACEHOLDERS[kind]}
-              />
-            </label>
+            <div className="li-url-field">
+              <div className="li-url-label-row">
+                <span className="li-url-label">LinkedIn URL</span>
+                {!urlEditing && <button
+                  className="li-url-edit"
+                  type="button"
+                  disabled={!enabled}
+                  aria-label="Edit LinkedIn URL"
+                  title="Edit LinkedIn URL"
+                  onClick={() => setUrlEditing(true)}
+                ><Pencil size={14} /> Edit</button>}
+              </div>
+              {urlEditing
+                ? <div className="li-url-editor-row">
+                  <textarea
+                    rows={2}
+                    autoFocus
+                    value={url}
+                    disabled={!enabled}
+                    onChange={(event) => { setUrl(event.target.value); setUrlDirty(true); }}
+                    placeholder={KIND_PLACEHOLDERS[kind]}
+                  />
+                  <button className="secondary-button" type="button" onClick={() => setUrlEditing(false)}>Done</button>
+                </div>
+                : <div className="li-url-display" title={url || KIND_PLACEHOLDERS[kind]}>
+                  <code>{url || KIND_PLACEHOLDERS[kind]}</code>
+                </div>}
+            </div>
             <p className="li-hint">
               {KEYWORD_KINDS.includes(kind)
                 ? urlDirty
@@ -508,9 +548,17 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
                 to print "Still allowed 0", which reads as a hard block that
                 does not exist and sends an operator looking for a limit to
                 raise. A number nobody read is not a number this screen has. */}
-            <div className="li-stat-row">
-              <div><span>Collected today</span><strong>{allowance ? allowance.used : <span className="li-unknown">—</span>}</strong></div>
-              <div><span>Still allowed</span><strong>{allowance ? allowance.remaining : <span className="li-unknown">—</span>}</strong></div>
+            <div className="li-lead-cap-stats">
+              <div className="li-stat">
+                <p>Collected today</p>
+                <strong>{allowance ? allowance.used : <span className="li-unknown">—</span>}</strong>
+                <span>Rolling 24 hours</span>
+              </div>
+              <div className="li-stat li-stat-ok">
+                <p>Still allowed</p>
+                <strong>{allowance ? allowance.remaining : <span className="li-unknown">—</span>}</strong>
+                <span>Before this daily cap</span>
+              </div>
             </div>
           </div>
           {!allowance && !loading && <p className="li-hint">
@@ -540,7 +588,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
           <div className="section-heading">
             <div>
               <h3 aria-level={2}>Sources</h3>
-              <p>Result counts are people <em>stored</em>, not people seen.</p>
+              <p>Result counts are people <em>stored</em>, not people seen. Queued rows show the next expected LinkedIn visit. If your computer or Trevra tab misses that window, Trevra moves the work to the next normal visit — missed visits are never replayed as a catch-up burst.</p>
             </div>
             <button className="secondary-button" type="button" disabled={loading} onClick={() => void load()}>
               {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Refresh
@@ -568,6 +616,13 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
                   Queued {relativeTime(source.requestedAt)}
                   {source.finishedAt && ` · finished ${relativeTime(source.finishedAt)}`}
                 </span>
+                {source.status === 'pending' && <span className="li-source-next-run">
+                  {queueWaitCopy(source.waitingFor)
+                    ? <><strong>{queueWaitCopy(source.waitingFor)}</strong>{formatVisitWindow(source.nextRunAt, source.nextRunWindowEndAt, source.nextRunTimezone) ? ` · next normal visit ${formatVisitWindow(source.nextRunAt, source.nextRunWindowEndAt, source.nextRunTimezone)}` : ''}</>
+                    : formatVisitWindow(source.nextRunAt, source.nextRunWindowEndAt, source.nextRunTimezone)
+                      ? <>Expected in LinkedIn visit · {formatVisitWindow(source.nextRunAt, source.nextRunWindowEndAt, source.nextRunTimezone)}</>
+                      : <>Waiting for the next eligible LinkedIn visit</>}
+                </span>}
                 {source.failureReason && <span className="li-source-failure">
                   <CircleAlert size={12} /> {source.failureReason}
                 </span>}

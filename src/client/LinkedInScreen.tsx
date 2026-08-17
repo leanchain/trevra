@@ -74,6 +74,7 @@ import {
 import { ActiveAccountBar, useActiveSeatKey } from './LinkedInAccounts';
 import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag, LiStat } from './LinkedInViz';
+import { formatPlannedTime, formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
 import { ConfirmDrawer } from './ui/dialog';
 
 /**
@@ -383,6 +384,12 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
 
   useEffect(() => { void load(); }, [load]);
   useOutreachRefresh(load);
+  const hasQueuedWithdrawals = queue.some((record) => record.status === 'queued');
+  useEffect(() => {
+    if (!hasQueuedWithdrawals) return;
+    const timer = window.setInterval(() => { void load(); }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [hasQueuedWithdrawals, load]);
 
   const sync = async () => {
     setBusy('sync');
@@ -543,17 +550,27 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
       <h4 className="li-subhead" aria-level={3}>The withdrawal queue</h4>
       <div className="li-table-scroll">
         <table className="li-table">
-          <thead><tr><th>Person</th><th>Status</th><th>Waited</th><th>Queued</th><th>Finished</th></tr></thead>
-          <tbody>{queue.map((record) => <tr key={record.id}>
-            <td className="li-target">{record.targetRef}</td>
-            <td>
-              <span className={`li-chip li-wd-${record.status}`}>{WITHDRAWAL_STATUS_LABELS[record.status] ?? record.status}</span>
-              {record.detail && <small className="li-failure">{record.detail}</small>}
-            </td>
-            <td className="li-num">{record.pendingDays === null ? '—' : `${record.pendingDays}d`}</td>
-            <td>{new Date(record.queuedAt).toLocaleString()}</td>
-            <td>{record.finishedAt ? new Date(record.finishedAt).toLocaleString() : '—'}</td>
-          </tr>)}</tbody>
+          <thead><tr><th>Person</th><th>Status</th><th>Waited</th><th>Timing</th><th>Finished</th></tr></thead>
+          <tbody>{queue.map((record) => {
+            const visit = formatVisitWindow(record.nextRunAt, record.nextRunWindowEndAt, record.nextRunTimezone);
+            const wait = queueWaitCopy(record.waitingFor);
+            return <tr key={record.id}>
+              <td className="li-target">{record.targetRef}</td>
+              <td>
+                <span className={`li-chip li-wd-${record.status}`}>{WITHDRAWAL_STATUS_LABELS[record.status] ?? record.status}</span>
+                {record.detail && <small className="li-failure">{record.detail}</small>}
+              </td>
+              <td className="li-num">{record.pendingDays === null ? '—' : `${record.pendingDays}d`}</td>
+              <td className="li-queue-timing">
+                {record.status === 'queued' && record.claimedAt
+                  ? <><strong>Running now</strong><small>Picked up {relativeTime(record.claimedAt)}</small></>
+                  : record.status === 'queued'
+                    ? <><strong>{wait ?? (visit ? 'Expected in LinkedIn visit' : 'Waiting for next eligible visit')}</strong>{visit && <small>{visit}</small>}</>
+                    : <><strong>Queued {relativeTime(record.queuedAt)}</strong></>}
+              </td>
+              <td>{record.finishedAt ? new Date(record.finishedAt).toLocaleString() : '—'}</td>
+            </tr>;
+          })}</tbody>
         </table>
       </div>
     </>}
@@ -866,8 +883,12 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
           ? <div className="li-connect-blocked">
             <strong><CircleAlert size={14} /> A profile read is already waiting on your machine.</strong>
             <p className="li-blocked-message">
-              Queued {relativeTime(detectRequest.requestedAt)} for the worker that can open a browser. Nothing has been
-              read yet, and pressing the button again queues nothing new.
+              {queueWaitCopy(detectRequest.waitingFor)
+                ? `${queueWaitCopy(detectRequest.waitingFor)}. `
+                : detectRequest.nextAttemptAt
+                  ? `Expected by ${new Date(detectRequest.nextAttemptAt).toLocaleString()}. `
+                  : ''}
+              Queued {relativeTime(detectRequest.requestedAt)}. Nothing has been read yet, and pressing the button again queues nothing new.
             </p>
           </div>
           : detectRequest?.status === 'failed' && detectRequest.failureReason
@@ -1210,6 +1231,19 @@ const OUTCOME_LABELS: Record<typeof OUTCOMES[number], string> = {
 /** The two statuses an action can still be pulled out of. Everything else has happened. */
 const isSkippable = (action: LinkedInActionView) => action.status === 'planned' || action.status === 'exported';
 
+function actionTiming(action: LinkedInActionView, execution: LinkedInSeatResponse['execution'] | null): { primary: string; secondary: string | null } {
+  if (action.claimedAt) return { primary: 'Running now', secondary: `Picked up ${relativeTime(action.claimedAt)}` };
+  const planned = formatPlannedTime(action.plannedFor);
+  if (action.status === 'held') return { primary: 'Waiting for campaign resume', secondary: planned ? `Original slot ${planned}` : null };
+  if (!action.plannedFor) return { primary: 'No run time', secondary: null };
+  const due = Date.parse(action.plannedFor);
+  if (Number.isFinite(due) && due > Date.now()) return { primary: `Planned for ${planned}`, secondary: null };
+  const wait = queueWaitCopy(execution?.waitingFor);
+  return wait
+    ? { primary: wait, secondary: planned ? `Planned for ${planned}` : null }
+    : { primary: 'Due now', secondary: planned ? `Planned for ${planned}` : null };
+}
+
 /**
  * The `linkedin_actions` ledger, filterable, with per-row skip and manual
  * outcome marking.
@@ -1238,6 +1272,7 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
    */
   const [seatKey] = useActiveSeatKey();
   const [actions, setActions] = useState<LinkedInActionView[]>([]);
+  const [seatDetail, setSeatDetail] = useState<LinkedInSeatResponse | null>(null);
   /** For the campaign picker. A filter you have to TYPE an id into is a filter nobody uses twice. */
   const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
   const [status, setStatus] = useState<LinkedInActionStatus | ''>('');
@@ -1254,13 +1289,18 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
   const load = async () => {
     setLoading(true);
     try {
-      setActions(await getLinkedInActions({
-        ...(status ? { status } : {}),
-        ...(kind ? { kind } : {}),
-        ...(campaignId ? { campaignId } : {}),
-        ...(seatKey ? { seatKey } : {}),
-        limit: 200
-      }));
+      const [nextActions, nextSeat] = await Promise.all([
+        getLinkedInActions({
+          ...(status ? { status } : {}),
+          ...(kind ? { kind } : {}),
+          ...(campaignId ? { campaignId } : {}),
+          ...(seatKey ? { seatKey } : {}),
+          limit: 200
+        }),
+        getLinkedInSeat(seatKey || undefined)
+      ]);
+      setActions(nextActions);
+      setSeatDetail(nextSeat);
       setSelected(new Set());
       setError('');
     } catch (err) {
@@ -1270,6 +1310,12 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
 
   useEffect(() => { void load(); }, [status, kind, campaignId, seatKey]);
   useOutreachRefresh(load);
+  const hasLiveActions = actions.some((action) => action.status === 'planned' || action.status === 'exported' || action.status === 'held' || Boolean(action.claimedAt));
+  useEffect(() => {
+    if (!hasLiveActions) return;
+    const timer = window.setInterval(() => { void load(); }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [hasLiveActions, status, kind, campaignId, seatKey]);
 
   useEffect(() => {
     // A picker that cannot be populated simply is not offered; it never blocks
@@ -1458,7 +1504,7 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
                   onChange={() => setSelected(allSelected ? new Set() : new Set(skippable.map((action) => action.id)))}
                 />
               </th>
-              <th>Person</th><th>Action</th><th>Status</th><th>Goes out</th><th>Recorded</th><th>Came from</th><th>Queued by</th><th>Mark as</th>
+              <th>Person</th><th>Action</th><th>Status</th><th>Timing</th><th>Recorded</th><th>Came from</th><th>Queued by</th><th>Mark as</th>
             </tr></thead>
             <tbody>{actions.map((action) => <tr key={action.id}>
               <td>
@@ -1478,7 +1524,10 @@ export function OutreachQueue({ setToast }: { setToast: (message: string) => voi
                 <span className={`li-chip li-status-${action.status}`}>{actionStatusLabel(action.status)}</span>
                 {action.failureKind && <small className="li-failure">{action.failureKind}</small>}
               </td>
-              <td>{action.plannedFor ? new Date(action.plannedFor).toLocaleString() : '—'}</td>
+              <td className="li-queue-timing">{(() => {
+                const timing = actionTiming(action, seatDetail?.execution ?? null);
+                return <><strong>{timing.primary}</strong>{timing.secondary && <small>{timing.secondary}</small>}</>;
+              })()}</td>
               <td>{action.recordedAt ? new Date(action.recordedAt).toLocaleString() : '—'}</td>
               <td>{ACTION_SOURCE_LABELS[action.source] ?? action.source}</td>
               <td>{nameFor(action.queuedByUserId) ?? '—'}</td>

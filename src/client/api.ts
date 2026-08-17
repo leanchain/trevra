@@ -948,11 +948,23 @@ export interface LinkedInLimitsReport {
  * `seat.detectedAt` is when the profile was last read out of the logged-in
  * session. Both come off `LinkedInSeat`, which owns them.
  */
+export type LinkedInQueueWaitReason = 'computer' | 'trevra_tab' | 'account_paused' | 'account_cooldown' | 'worker';
+
+export interface LinkedInMaintenanceTiming {
+  task: 'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
+  nextRunAt: string | null;
+  nextRunWindowEndAt: string | null;
+  timezone: string;
+  waitingFor: LinkedInQueueWaitReason | null;
+}
+
 export interface LinkedInSeatResponse {
   seat: LinkedInSeat | null;
   auth: LinkedInSeatAuth;
   /** What became of the last detect handed to a worker that can open a browser. */
   detectRequest: SeatDetectRequest | null;
+  execution: { ready: boolean; waitingFor: LinkedInQueueWaitReason | null };
+  maintenance: LinkedInMaintenanceTiming[];
   posture: SeatPosture | null;
   warmupWeek: number;
   warmupWeeks: number;

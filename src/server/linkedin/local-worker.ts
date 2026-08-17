@@ -5302,6 +5302,9 @@ export interface SeatDetectRequest {
   finishedAt: string | null;
   /** The one sentence to act on. Null unless `status` is 'failed'. */
   failureReason: string | null;
+  /** Read-only API decoration for a pending request; never persisted. */
+  nextAttemptAt?: string | null;
+  waitingFor?: import('./leads.js').LinkedInQueueWaitReason | null;
 }
 
 /**

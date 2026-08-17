@@ -168,6 +168,9 @@ export const LEAD_SOURCE_KINDS = ['search', 'post', 'sales_navigator', 'content'
 
 export type LeadSourceStatus = 'pending' | 'running' | 'completed' | 'failed';
 
+/** A small wire vocabulary shared by queue rows and account status. */
+export type LinkedInQueueWaitReason = 'computer' | 'trevra_tab' | 'account_paused' | 'account_cooldown' | 'worker';
+
 export interface LinkedInLeadSource {
   id: string;
   workspaceId: string;
@@ -189,6 +192,18 @@ export interface LinkedInLeadSource {
    */
   pagesDone: number;
   failureReason: string | null;
+  /**
+   * Read-only scheduler decoration returned by the list route for pending rows.
+   * It is not persisted on the source: if a laptop sleeps through the window,
+   * the next read recomputes this to the next normal LinkedIn visit instead of
+   * replaying the missed visit.
+   */
+  nextRunAt?: string | null;
+  nextRunWindowEndAt?: string | null;
+  nextRunTimezone?: string | null;
+  nextRunSeatLabel?: string | null;
+  /** Why the expected visit cannot execute yet. Null/absent when execution is ready. */
+  waitingFor?: LinkedInQueueWaitReason | null;
   createdAt: string;
   updatedAt: string;
 }

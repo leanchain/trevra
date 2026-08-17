@@ -7,6 +7,7 @@ import {
   VISITS_PER_DAY,
   VISIT_MINUTES,
   dueSideTasks,
+  nextSideTaskOpportunities,
   visitAt,
   visitsForDay,
   type SideTaskRuns,
@@ -167,6 +168,26 @@ describe('dueSideTasks', () => {
     const floor = SIDE_TASK_MIN_HOURS.inbox * 3_600_000;
     expect(dueSideTasks(SEAT, runs, new Date(NOW.getTime() + floor - 1), { tasks })).toEqual([]);
     expect(dueSideTasks(SEAT, runs, new Date(NOW.getTime() + floor), { tasks })).toEqual(['inbox']);
+  });
+
+  it('shows the next real visit for a queued task instead of an invented cron time', () => {
+    const now = new Date('2026-08-04T07:00:00.000Z');
+    const runs: SideTaskRuns = new Map(
+      SIDE_TASK_NAMES.filter((task) => task !== 'lead_sources').map((task) => [task, now] as const)
+    );
+    const visit = visitsForDay('ws_side_tasks:owner', TUESDAY, WINDOW)[0]!;
+    const expected = new Date(Date.UTC(2026, 7, 4, 0, visit.startMinute));
+    const [opportunity] = nextSideTaskOpportunities(SEAT, runs, 'lead_sources', now, 1, { dayShape: FLAT_DAY_SHAPE });
+    expect(opportunity?.startAt.toISOString()).toBe(expected.toISOString());
+    expect(opportunity?.endAt.getTime()).toBeGreaterThan(opportunity!.startAt.getTime());
+  });
+
+  it('never replays a visit the laptop already slept through', () => {
+    const now = new Date('2026-08-04T19:00:00.000Z');
+    const [opportunity] = nextSideTaskOpportunities(SEAT, new Map(), 'lead_sources', now, 1, { dayShape: FLAT_DAY_SHAPE });
+    expect(opportunity).toBeDefined();
+    expect(opportunity!.startAt.getTime()).toBeGreaterThan(now.getTime());
+    expect(opportunity!.startAt.toISOString().slice(0, 10)).toBe('2026-08-05');
   });
 
   it('treats a backwards clock as "just ran" rather than making everything eligible', () => {

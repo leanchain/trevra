@@ -23,6 +23,7 @@ import {
   getLinkedInManagedCampaigns,
   getLinkedInManagerSeats,
   getLinkedInManualTasks,
+  getLinkedInSeat,
   getLinkedInThread,
   getLinkedInThreads,
   replyToLinkedInThread,
@@ -34,12 +35,14 @@ import {
   type LinkedInConversation,
   type LinkedInSafetyVerdict,
   type LinkedInSeat,
+  type LinkedInSeatResponse,
   type LinkedInThreadRecord
 } from './api';
 import type { ManagedCampaign, ManualTaskView } from '../server/linkedin/managed-campaigns';
 import { useActiveSeatKey } from './LinkedInAccounts';
 import { errorMessage, reloadOutreach, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
+import { queueWaitCopy } from './LinkedInTiming';
 import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag } from './LinkedInViz';
 
@@ -178,7 +181,7 @@ const profileKey = (url: string | null | undefined) =>
  * Held is a pause parking it, and it is the one state where "waiting" would be
  * a lie: see its branch below.
  */
-const replyStage = (action: LinkedInActionView): { label: string; chip: string; detail: string } => {
+const replyStage = (action: LinkedInActionView, waitingFor?: LinkedInSeatResponse['execution']['waitingFor']): { label: string; chip: string; detail: string } => {
   if (action.status === 'sent' || action.status === 'accepted' || action.status === 'replied') {
     return {
       label: 'Delivered',
@@ -238,10 +241,13 @@ const replyStage = (action: LinkedInActionView): { label: string; chip: string; 
       detail: `Not before ${new Date(due).toLocaleString()} — inside this account’s working hours, at a human-looking gap.`
     };
   }
+  const wait = queueWaitCopy(waitingFor);
   return {
-    label: 'Due now',
+    label: wait ? 'Waiting' : 'Due now',
     chip: 'li-status-planned',
-    detail: 'Waiting for Trevra to be running on the computer that holds this LinkedIn session. Nothing has reached them yet.'
+    detail: wait
+      ? `${wait}. Its planned time has arrived; Trevra will not replay missed clock ticks when the prerequisite returns.`
+      : 'Its planned time has arrived and it is eligible for the next worker cycle. Nothing has reached them yet.'
   };
 };
 
@@ -262,6 +268,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
   const [threads, setThreads] = useState<LinkedInThreadRecord[]>([]);
   const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
   const [seats, setSeats] = useState<LinkedInSeat[]>([]);
+  const [seatDetails, setSeatDetails] = useState<Record<string, LinkedInSeatResponse>>({});
   const [managed, setManaged] = useState<ManagedCampaign[]>([]);
   /** Campaign steps waiting on a human. Pending only: a closed task is not a to-do. */
   const [tasks, setTasks] = useState<ManualTaskView[]>([]);
@@ -375,16 +382,31 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     await Promise.allSettled([loadThreads(), loadTasks(), loadReplies()]);
   }, [loadThreads, loadTasks, loadReplies]);
   useOutreachRefresh(reloadAll);
+  const hasLiveReplies = replies.some((action) => LIVE_REPLY_STATUSES.has(action.status));
+  useEffect(() => {
+    if (!hasLiveReplies) return;
+    const timer = window.setInterval(() => { void reloadAll(); }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [hasLiveReplies, reloadAll]);
 
   useEffect(() => {
-    // A picker that cannot be populated simply is not offered, and none of
-    // these ever block the conversations, which is what this screen is for.
+    // A picker that cannot be populated simply is not offered; none of these
+    // reads ever block the conversations, which is what this screen is for.
     void (async () => {
       try { setCampaigns(await getLinkedInCampaigns()); } catch { /* no error banner over the inbox for a filter */ }
       try { setSeats(await getLinkedInManagerSeats()); } catch { /* one account is the honest assumption when we cannot tell */ }
       try { setManaged(await getLinkedInManagedCampaigns()); } catch { /* a task still names its person without a campaign name */ }
     })();
   }, []);
+
+  useEffect(() => {
+    if (seats.length === 0) { setSeatDetails({}); return; }
+    let cancelled = false;
+    void Promise.all(seats.map(async (seat) => [seat.seatKey, await getLinkedInSeat(seat.seatKey)] as const))
+      .then((pairs) => { if (!cancelled) setSeatDetails(Object.fromEntries(pairs)); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [seats]);
 
   /**
    * Follow the account the operator picked -- but only once it is a real one.
@@ -411,6 +433,10 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
   const campaignName = useCallback(
     (campaignId: string) => managed.find((campaign) => campaign.id === campaignId)?.name ?? 'A campaign',
     [managed]
+  );
+  const replyStageFor = useCallback(
+    (action: LinkedInActionView) => replyStage(action, seatDetails[action.seatKey]?.execution.waitingFor),
+    [seatDetails]
   );
 
   const visibleTasks = useMemo(
@@ -647,7 +673,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     return <div className="li-queued">
       <strong><Clock size={14} /> {rows.length === 1 ? 'Your message to them' : `Your last ${rows.length} messages to them`}</strong>
       {rows.map((action) => {
-        const stage = replyStage(action);
+        const stage = replyStageFor(action);
         /**
          * WHAT A WAITING MESSAGE STILL ALLOWS.
          *
@@ -962,7 +988,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
               </div>}
 
               {queued && <div className="li-queued">
-                <strong><ShieldCheck size={14} /> Queued — not before {new Date(queued.plannedFor).toLocaleString()}.</strong>
+                <strong><ShieldCheck size={14} /> Queued — planned for {new Date(queued.plannedFor).toLocaleString()}.</strong>
                 <p>
                   Nothing has been sent yet. Trevra runs every check below again the moment it is due, then types the
                   message into LinkedIn in a real browser at a human-looking gap. It reads as Delivered here once it has.
@@ -981,7 +1007,6 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
               {/*
                 WHY THERE ARE TWO DIFFERENT LEFT-HAND BUTTONS HERE.
 
-                Queueing goes through `POST .../inbox/threads/:urn/reply`, and
                 that route is addressed by CONVERSATION: it looks the thread up,
                 refuses one with no resolved profile URL, and paces the message
                 against it. So a task whose person has no synced conversation
@@ -1009,7 +1034,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                       {taskThreadsTruncated && <> Only the {THREAD_MAX} most recently active conversations were read,
                         so an older one with them would not have been seen.</>}</>}
                   {taskThread && taskLiveReply && <> One message to {openTask.firstName} is already queued and has not
-                    been typed yet — it reads as <b>{replyStage(taskLiveReply).label}</b> above. Queueing a second
+                    been typed yet — it reads as <b>{replyStageFor(taskLiveReply).label}</b> above. Queueing a second
                     answer to the same message is refused; once that one is typed in, or once they write again, the
                     next is a different answer and goes through.</>}
                   {' '}Marking it as sent is what releases {openTask.firstName} to the campaign’s next step; nothing
@@ -1114,7 +1139,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                 </div>}
 
                 {queued && <div className="li-queued">
-                  <strong><ShieldCheck size={14} /> Queued — not before {new Date(queued.plannedFor).toLocaleString()}.</strong>
+                  <strong><ShieldCheck size={14} /> Queued — planned for {new Date(queued.plannedFor).toLocaleString()}.</strong>
                   <p>
                     Nothing has been sent yet. Trevra runs every check below again the moment it is due, then types the
                     reply into LinkedIn in a real browser at a human-looking gap. It reads as Delivered here once it has.
@@ -1133,7 +1158,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                 {/* THE COPY STATES THE LEDGER'S RULE; THE BUTTON DOES NOT
                     PRETEND TO ENFORCE IT. The guard is keyed on the message
                     being answered, so "you already have an unsent answer to
-                    that one" is the whole of what is refused -- and neither the
+                    this person" is checked by the server. Neither a stored
                     conversation nor that message rides out on a ledger row, so
                     this screen cannot evaluate the predicate. What it can do is
                     say the rule before the press and show the server's sentence
@@ -1146,7 +1171,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                     it move from <b>Waiting to send</b> to <b>Delivered</b> right here — and if it is held back to keep
                     the account safe, you get the reason in place of silence.
                     {threadLiveReply
-                      ? <> One answer to them is in flight already — it reads as <b>{replyStage(threadLiveReply).label}</b>{' '}
+                      ? <> One answer to them is in flight already — it reads as <b>{replyStageFor(threadLiveReply).label}</b>{' '}
                         above. <b>A second answer to the same message is refused</b>, in the server’s own words; once
                         that one is typed in, or once they write again, the next is a different answer and is
                         queued.</>

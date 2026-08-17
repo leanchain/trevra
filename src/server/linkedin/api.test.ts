@@ -1340,14 +1340,22 @@ describe('lead sourcing routes (030)', () => {
     process.env[SOURCING] = 'true';
     process.env[MODE] = 'hosted';
     process.env[RELAY] = 'ws://trevra:8080';
+    await seat(WORKSPACE_A, '2026-01-01');
     const created = await as(sessionA).post('/api/linkedin/lead-sources')
       .send({ kind: 'search', url: 'https://www.linkedin.com/search/results/people/?keywords=hosted-companion' })
       .expect(201);
     expect((created.body as { source: { kind: string } }).source.kind).toBe('search');
 
-    const listed = (await as(sessionA).get('/api/linkedin/lead-sources').expect(200)).body as { enabled: boolean; offReason: string | null };
+    const listed = (await as(sessionA).get('/api/linkedin/lead-sources').expect(200)).body as {
+      enabled: boolean;
+      offReason: string | null;
+      sources: Array<{ nextRunAt?: string | null; nextRunWindowEndAt?: string | null; waitingFor?: string | null }>;
+    };
     expect(listed.enabled).toBe(true);
     expect(listed.offReason).toBeNull();
+    expect(listed.sources[0]?.waitingFor).toBe('computer');
+    expect(Date.parse(listed.sources[0]?.nextRunAt ?? '')).toBeGreaterThan(Date.now() - 60_000);
+    expect(Date.parse(listed.sources[0]?.nextRunWindowEndAt ?? '')).toBeGreaterThan(Date.parse(listed.sources[0]?.nextRunAt ?? ''));
   });
 
   it('still refuses hosted lead sourcing when no local companion execution home exists', async () => {
@@ -1499,9 +1507,13 @@ describe('withdrawal routes (032)', () => {
     expect(enqueued.withdrawn).toBe(0);
 
     const listed = (await as(sessionA).get('/api/linkedin/withdrawals').expect(200)).body as {
-      withdrawals: Array<{ targetRef: string; status: string }>;
+      withdrawals: Array<{ targetRef: string; status: string; nextRunAt?: string | null; nextRunWindowEndAt?: string | null; nextRunTimezone?: string | null; waitingFor?: string | null }>;
     };
     expect(listed.withdrawals.map((entry) => [entry.targetRef, entry.status])).toEqual([['in/stale', 'queued']]);
+    expect(listed.withdrawals[0]?.nextRunTimezone).toBe('Europe/Zurich');
+    expect(Date.parse(listed.withdrawals[0]?.nextRunAt ?? '')).toBeGreaterThan(Date.now() - 60_000);
+    expect(Date.parse(listed.withdrawals[0]?.nextRunWindowEndAt ?? '')).toBeGreaterThan(Date.parse(listed.withdrawals[0]?.nextRunAt ?? ''));
+    expect(listed.withdrawals[0]?.waitingFor ?? null).toBeNull();
 
     const other = (await as(sessionB).get('/api/linkedin/withdrawals').expect(200)).body as { withdrawals: unknown[] };
     expect(other.withdrawals).toEqual([]);
@@ -1567,6 +1579,8 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
 
     const body = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as {
       seat: { label: string; activatedAt: string | null; detectedAt: string | null } | null;
+      execution: { ready: boolean; waitingFor: string | null };
+      maintenance: Array<{ task: string; nextRunAt: string | null; nextRunWindowEndAt: string | null; timezone: string }>;
       posture: string;
       warmupWeek: number;
       warmupWeeks: number;
@@ -1576,6 +1590,10 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     expect(body.posture).toBe('warmup');
     expect(body.warmupWeek).toBe(1);
     expect(body.today.invite).toBe(1);
+    expect(body.execution).toEqual({ ready: true, waitingFor: null });
+    expect(body.maintenance.map((entry) => entry.task)).toEqual(['inbox', 'pending_invites', 'acceptance', 'withdrawals', 'lead_sources']);
+    expect(body.maintenance.every((entry) => entry.timezone === 'Europe/Zurich')).toBe(true);
+    expect(body.maintenance.every((entry) => entry.nextRunAt === null || Date.parse(entry.nextRunAt) > Date.now() - 60_000)).toBe(true);
     // The two clocks the setup screen reads instead of asking for a date.
     expect(body.seat?.activatedAt).toBe(activatedAt.toISOString());
     expect(body.seat?.detectedAt).toBeNull();
@@ -1601,11 +1619,13 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
 
     // And it is visible on the route the client already polls.
     const seatBody = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as {
-      detectRequest: { status: string; timezone: string; failureReason: string | null } | null;
+      detectRequest: { status: string; timezone: string; failureReason: string | null; nextAttemptAt?: string | null; waitingFor?: string | null } | null;
     };
     expect(seatBody.detectRequest?.status).toBe('pending');
     expect(seatBody.detectRequest?.timezone).toBe('Europe/Zurich');
     expect(seatBody.detectRequest?.failureReason).toBeNull();
+    expect(seatBody.detectRequest?.waitingFor ?? null).toBeNull();
+    expect(Date.parse(seatBody.detectRequest?.nextAttemptAt ?? '')).toBeGreaterThan(Date.parse(queued.requestedAt));
 
     // A timezone this runtime does not know is caller input, and is refused
     // HERE rather than queued for another machine to fail on minutes later.
