@@ -7,13 +7,14 @@ import { getMigrations } from 'better-auth/db/migration';
 import { organization } from 'better-auth/plugins';
 import type { Db } from './db.js';
 import { DEMO_WORKSPACE_ID, id } from './db.js';
+import { sendOrganizationInvitationEmail, smtpConfigured } from './email.js';
 import { recordMarketingEvent } from './public-site.js';
 
 const { Pool } = pg;
 const production = process.env.NODE_ENV === 'production';
-// Hosted launch is OAuth-only until Trevra has a transactional email channel
-// that can verify ownership before a password-created account is admitted.
-// Self-hosted remains unchanged: one operator may keep local email/password.
+// Hosted launch remains OAuth-only: SMTP below covers organization invitations,
+// not account ownership verification/password recovery yet. Self-hosted keeps
+// local email/password auth unchanged.
 export const emailPasswordAuthEnabled = process.env.TREVRA_DEPLOYMENT_MODE !== 'hosted';
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error('DATABASE_URL is required; Better Auth uses PostgreSQL only');
@@ -236,6 +237,24 @@ export const auth = betterAuth({
     // two of the three: 'owner' (the credential-management carve-out) and
     // 'member' (everyone else, full data parity).
     organization({
+      ...(smtpConfigured() ? {
+        sendInvitationEmail: async (data) => {
+          try {
+            await sendOrganizationInvitationEmail({
+              to: data.email,
+              inviteLink: `${baseURL}/setup/team/${encodeURIComponent(data.id)}`,
+              inviterName: data.inviter.user.name,
+              inviterEmail: data.inviter.user.email,
+              organizationName: data.organization.name,
+              role: data.role
+            });
+          } catch (error) {
+            // The invitation itself remains usable through the copy-link fallback.
+            // Do not turn a transient SMTP failure into a failed membership write.
+            console.error('Failed to deliver Trevra organization invitation email', error);
+          }
+        }
+      } : {}),
       organizationHooks: {
         // Pins `organization.id` to the workspace id the caller chose -- see the
         // block comment above this section for the full mechanism.

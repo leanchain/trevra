@@ -61,12 +61,17 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-development-only-trevra-secret-change-before-production}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      SMTP_SERVER: ${SMTP_SERVER:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Trevra}
       PUBLIC_SITE_URL: http://localhost:${TREVRA_WEB_PORT:-43173}
       PUBLIC_LEGAL_NAME: ${PUBLIC_LEGAL_NAME:-Trevra}
       PUBLIC_SUPPORT_EMAIL: ${PUBLIC_SUPPORT_EMAIL:-support@trevra.local}
       SECURITY_CONTACT_EMAIL: ${SECURITY_CONTACT_EMAIL:-security@trevra.local}
       GOOGLE_SITE_VERIFICATION: ${GOOGLE_SITE_VERIFICATION:-}
-      BING_SITE_VERIFICATION: ${BING_SITE_VERIFICATION:-}
       MARKETING_HASH_SALT: ${MARKETING_HASH_SALT:-development-marketing-salt-change-before-production}
       TRACTION_ADMIN_TOKEN: ${TRACTION_ADMIN_TOKEN:-development-traction-token-change-before-production}
       TREVRA_AGENT_TOKEN_PEPPER: ${TREVRA_AGENT_TOKEN_PEPPER:-development-agent-token-pepper-change-before-production}
