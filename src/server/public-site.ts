@@ -361,6 +361,12 @@ export async function getTractionReport(db: Db, days = 90) {
  */
 export function renderAppIndex(template: string, nonce: string): string {
   const config = getSiteConfig();
+  // The hosted product build has its own HTML shell. Do not turn it back into
+  // a marketing document on the server: no marketing title, JSON-LD, CTA
+  // rewrite, or public-site metadata belongs on app.usetrevra.com.
+  if (template.includes('data-trevra-app-shell')) {
+    return template.replaceAll('http://localhost:43173', config.origin);
+  }
   const jsonLd = JSON.stringify(structuredData(config)).replaceAll('<', '\\u003c');
   const verification = [
     config.googleVerification ? `<meta name="google-site-verification" content="${escapeAttr(config.googleVerification)}" />` : '',

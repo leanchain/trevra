@@ -33,9 +33,9 @@ if (process.env.NODE_ENV === 'production') {
   // raw -- without the JSON-LD, verification tags and hosted-CTA rewrite.
   app.get('/', (_req, res) => {
     res.type('html').set({
-      'Cache-Control': 'public, max-age=0, must-revalidate',
+      'Cache-Control': 'no-store',
       'Content-Language': 'en',
-      Link: `<${siteConfig.origin}/>; rel="canonical"`
+      'X-Robots-Tag': 'noindex, nofollow'
     });
     res.send(renderAppIndex(indexTemplate, String(res.locals.cspNonce ?? '')));
   });

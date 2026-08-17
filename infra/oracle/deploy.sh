@@ -69,6 +69,10 @@ BACKUP="/mnt/data/backups/trevra-predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump"
 ssh "$REMOTE" "sudo install -d -m 700 -o ubuntu -g ubuntu /mnt/data/backups && cd ${APP_DIR} && docker compose --env-file .env.oracle -f compose.oracle.yml exec -T postgres pg_dump -U trevra -d trevra -Fc > '${BACKUP}' && chmod 600 '${BACKUP}' && docker compose --env-file .env.oracle -f compose.oracle.yml exec -T postgres pg_restore -l < '${BACKUP}' >/dev/null && find /mnt/data/backups -type f -name 'trevra-predeploy-*.dump' -mtime +14 -delete"
 
 echo "==> release migrations and hosted data hardening"
+# Clear only the completed one-shot migration service before recreating it. This
+# avoids Docker's temporary-name conflict after an interrupted previous deploy
+# without touching the running API or worker.
+ssh "$REMOTE" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.oracle.yml rm -sf migrate >/dev/null 2>&1 || true"
 ssh "$REMOTE" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.oracle.yml up --no-deps --force-recreate migrate"
 
 echo "==> starting stack"

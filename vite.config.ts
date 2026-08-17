@@ -3,6 +3,39 @@ import { resolve } from 'node:path';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const APP_SHELL_HTML = `<!doctype html>
+<html lang="en" dir="ltr" data-trevra-app-shell>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trevra — Sign in or open your workspace</title>
+  <meta name="description" content="Open your Trevra hosted workspace." />
+  <meta name="robots" content="noindex,nofollow" />
+  <meta name="theme-color" content="#1f6f4a" />
+  <meta name="referrer" content="no-referrer" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <script src="/theme.js"></script>
+</head>
+<body>
+  <div id="root"><main class="center-state">Opening Trevra…</main></div>
+  <noscript>Trevra requires JavaScript to open your workspace.</noscript>
+  <script type="module" src="/src/client/main.tsx"></script>
+</body>
+</html>`;
+
+/** Replace the marketing pre-render with an app-only shell outside marketing builds. */
+function appShellHtml(mode: string): Plugin {
+  return {
+    name: 'trevra-app-shell-html',
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html) {
+        return mode === 'marketing' ? html : APP_SHELL_HTML;
+      }
+    }
+  };
+}
+
 /**
  * Serve `public/<page>/index.html` at `/<page>` in dev, the way the production
  * server does (src/server/index.ts).
@@ -51,7 +84,7 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
-    plugins: [react(), staticDocuments(Object.keys(proxy))],
+    plugins: [appShellHtml(mode), react(), staticDocuments(Object.keys(proxy))],
     server: {
       host: '0.0.0.0',
       allowedHosts: ['.trycloudflare.com'],

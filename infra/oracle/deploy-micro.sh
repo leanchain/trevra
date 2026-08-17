@@ -112,6 +112,11 @@ if [ "$WORKER_WAS_RUNNING" = "true" ]; then
   ssh "ubuntu@${APP_IP}" "docker stop -t 30 trevra-worker-1 >/dev/null"
 fi
 
+# A completed one-shot migrate container can survive an interrupted Compose
+# replacement under a temporary name. Remove only that service before the new
+# one-shot run; the old API remains serving throughout this gate.
+ssh "ubuntu@${APP_IP}" "cd ${APP_DIR} && TREVRA_IMAGE_TAG='${TAG}' docker compose --env-file .env.oracle -f compose.micro-app.yml rm -sf migrate >/dev/null 2>&1 || true"
+
 # `docker compose up migrate` can print `exited with code 137` and still return
 # zero itself. --exit-code-from makes the container's exit code the SSH command
 # exit code, so set -e can finally mean fail-fast. Do NOT replace API/worker on

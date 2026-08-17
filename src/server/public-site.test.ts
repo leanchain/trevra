@@ -122,6 +122,17 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
     // The nav's Login keeps naming the auth screen rather than a scroll target.
     expect(marked.filter((tag) => tag.includes('href="/login"'))).toHaveLength(1);
   });
+
+  it('leaves the hosted app shell as an app document rather than marketing it', () => {
+    process.env.VITE_HOSTED_APP_URL = HOSTED;
+    process.env.PUBLIC_SITE_URL = 'https://usetrevra.example';
+    const shell = '<!doctype html><html data-trevra-app-shell><head><title>Trevra — Sign in</title><meta name="description" content="Open your workspace." /></head><body><div id="root">Opening Trevra…</div></body></html>';
+    const rendered = renderAppIndex(shell, 'test-nonce');
+    expect(rendered).toContain('<title>Trevra — Sign in</title>');
+    expect(rendered).toContain('Open your workspace.');
+    expect(rendered).not.toContain('application/ld+json');
+    expect(rendered).not.toContain(HOSTED);
+  });
 });
 
 describe('the server-rendered public documents', () => {
