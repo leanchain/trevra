@@ -32,8 +32,10 @@ import {
 import { isNewerVersion, officialCompanionPackage } from '../lib/update.js';
 import { chromeLaunchArgs } from '../lib/browser.js';
 
-const VERSION = '0.2.2';
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const VERSION = String(
+  JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8')).version
+);
 const HOME = join(homedir(), '.trevra');
 const CONFIG = join(HOME, 'companion.json');
 const PROFILES = join(HOME, 'linkedin-companion');
