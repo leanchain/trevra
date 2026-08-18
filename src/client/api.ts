@@ -297,6 +297,33 @@ export async function getSkillRun(id: string): Promise<SkillRun> {
   return result.run;
 }
 
+/** One row `gtm.scout-threads`/`gtm.score-threads` discovered, across every platform. */
+export interface OutreachThreadRow {
+  id: string;
+  platform: string;
+  external_id: string;
+  url: string;
+  title: string;
+  author: string | null;
+  community: string | null;
+  score: number;
+  num_comments: number;
+  thread_created_at: string | null;
+  first_seen_at: string;
+}
+
+export async function getOutreachThreads(
+  filters: { platform?: string; limit?: number } = {}
+): Promise<OutreachThreadRow[]> {
+  const query = new URLSearchParams();
+  if (filters.platform) query.set('platform', filters.platform);
+  if (filters.limit) query.set('limit', String(filters.limit));
+  const result = await request<{ threads?: OutreachThreadRow[] }>(
+    `/api/outreach/threads${query.size ? `?${query}` : ''}`
+  );
+  return result.threads ?? [];
+}
+
 /**
  * What Trevra's own agent did, if this deployment runs one.
  *
