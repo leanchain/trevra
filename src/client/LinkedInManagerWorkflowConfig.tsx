@@ -361,47 +361,50 @@ interface Starter {
 /**
  * One-click sequences.
  *
- * Each is a shape an operator would otherwise assemble by hand, with copy
- * already written against the three supported variables so the first save is
- * not blocked on writing three messages.
+ * Each is a shape an operator would otherwise assemble by hand. Where a
+ * message needs words, they are written against the three supported
+ * variables so the first save is not blocked on writing three messages.
+ * Where a note would only read as automated -- a cold invite is the worst
+ * place for one -- it is left blank on purpose, same as the product's own
+ * cold-outreach default (see `templates.ts`).
  */
 const STARTERS: readonly Starter[] = [
   {
     key: 'view-invite-followup',
     label: 'View → Invite → Follow-up message',
-    blurb: 'Warm the profile, ask to connect with a short note, then follow up two days after they accept.',
+    blurb: 'View the profile, send a short invite note, then follow up two days after they accept.',
     build: (mint) => [
       { id: mint(), delayBefore: { amount: 0, unit: 'hours' }, action: 'profile_view', config: {} },
       {
         id: mint(),
         delayBefore: { amount: 1, unit: 'days' },
         action: 'connection_request',
-        config: { message: 'Hi {{first_name}} — I have been following what {{company}} is building. Worth connecting?' }
+        config: { message: '{{first_name}} — connecting because of what {{company}} is doing. No pitch.' }
       },
       {
         id: mint(),
         delayBefore: { amount: 2, unit: 'days' },
         action: 'message',
-        config: { variants: [{ id: 'a', body: 'Thanks for connecting, {{first_name}}. What is the hardest part of that problem at {{company}} right now?', weight: 50 }] }
+        config: { variants: [{ id: 'a', body: 'Thanks for connecting, {{first_name}}. What are you focused on at {{company}} right now?', weight: 50 }] }
       }
     ]
   },
   {
     key: 'invite-followup-withdraw',
     label: 'Invite → Follow-up → Withdraw stale',
-    blurb: 'Invite straight away, follow up once accepted, and cancel invitations nobody answered so the pending backlog stays clear.',
+    blurb: 'Invite with no note, follow up once they accept, and withdraw invites nobody answers after two weeks.',
     build: (mint) => [
       {
         id: mint(),
         delayBefore: { amount: 0, unit: 'hours' },
         action: 'connection_request',
-        config: { message: 'Hi {{first_name}} — we both work on the same problem. Happy to connect.' }
+        config: { message: '' }
       },
       {
         id: mint(),
         delayBefore: { amount: 3, unit: 'days' },
         action: 'message',
-        config: { variants: [{ id: 'a', body: 'Good to be connected, {{first_name}}. How is {{company}} handling this today?', weight: 50 }] }
+        config: { variants: [{ id: 'a', body: "Good to be connected, {{first_name}}. What's {{company}} working on these days?", weight: 50 }] }
       },
       { id: mint(), delayBefore: { amount: 14, unit: 'days' }, action: 'withdraw_pending', config: { afterDays: 14 } }
     ]
@@ -409,7 +412,7 @@ const STARTERS: readonly Starter[] = [
   {
     key: 'warm-touch',
     label: 'View → Follow → Manual note',
-    blurb: 'No automated copy at all: two passive touches, then a checkpoint where a human writes the message.',
+    blurb: 'No automated copy: two passive touches, then a human writes the message.',
     build: (mint) => [
       { id: mint(), delayBefore: { amount: 0, unit: 'hours' }, action: 'profile_view', config: {} },
       { id: mint(), delayBefore: { amount: 1, unit: 'days' }, action: 'follow', config: {} },

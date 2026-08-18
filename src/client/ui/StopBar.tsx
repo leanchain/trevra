@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { CircleStop, LoaderCircle, Play } from 'lucide-react';
 import type { AgentRunSummary } from '../../shared/types';
 import { ApiError, getAgentRuns, stopAgentRun } from '../api';
-import { PostureBadge, SEAT_STOP_COPY, useSeatStop } from '../LinkedInSafety';
+import { SEAT_STOP_COPY, useSeatStop } from '../LinkedInSafety';
 import { ConfirmDrawer } from './dialog';
 
 /* --------------------------------------------------------------------------
@@ -57,7 +57,34 @@ const agentReach = (error: unknown) => error instanceof ApiError && error.status
   ? 'this workspace is on a build that does not run Trevra’s own agent, so there was nothing to stop there.'
   : error instanceof Error ? error.message : 'the agent was not reached.';
 
-export function StopBar({ setToast }: { setToast: (message: string) => void }) {
+export interface StopControls {
+  seat: ReturnType<typeof useSeatStop>;
+  live: AgentRunSummary[];
+  stopping: AgentRunSummary[];
+  agentLive: boolean;
+  seatLive: boolean;
+  state: 'is-live' | 'is-stopped' | 'is-idle';
+  pending: Pending | null;
+  setPending: (pending: Pending | null) => void;
+  confirmResume: boolean;
+  setConfirmResume: (open: boolean) => void;
+  busy: string;
+  failure: string;
+  setFailure: (failure: string) => void;
+  run: (what: Pending, reason: string) => Promise<void>;
+  resume: () => Promise<void>;
+  agentDetail: string;
+}
+
+/**
+ * Everything the bar and the header's seat button both need, read once.
+ *
+ * `useSeatStop` polls; a second instance of it is a second poller reading and
+ * writing the same seat, out of step with the first. So this is called once,
+ * by `ShellTop` in App.tsx, and its return value is threaded to both --
+ * `StopBar` for the agent/everything rows, `SeatPauseButton` for the header.
+ */
+export function useStopControls(setToast: (message: string) => void): StopControls {
   const seat = useSeatStop();
   const [runs, setRuns] = useState<AgentRunSummary[]>([]);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -174,7 +201,66 @@ export function StopBar({ setToast }: { setToast: (message: string) => void }) {
     ? `step ${live[0].stepCount} of ${live[0].maxSteps}`
     : `${live.length} runs going`;
 
-  return <section className={`stopbar ${state}`} aria-label="What is running, and how to stop it">
+  return {
+    seat, live, stopping, agentLive, seatLive, state,
+    pending, setPending, confirmResume, setConfirmResume,
+    busy, failure, setFailure, run, resume, agentDetail
+  };
+}
+
+/**
+ * The seat's own control, compact enough for the header.
+ *
+ * The badge, the full "stop everything at once..." sentence and the
+ * `Pause outreach` / `Resume outreach` button used to be a whole row inside
+ * the bar below. That row is gone from there -- this button, and the reason
+ * drawers `StopBar` still renders (they portal to `document.body`, so where
+ * they are declared does not matter), are the whole of it now. The sentence
+ * is not gone, it is the title: hover or focus still gets you "stop
+ * everything at once, ceilings drop to zero..." -- it just no longer sits
+ * under the H1 on every route by default.
+ */
+export function SeatPauseButton({ controls }: { controls: StopControls }) {
+  const { seat } = controls;
+  if (!seat.configured) return null;
+  if (seat.paused) {
+    return <button
+      className="secondary-button"
+      type="button"
+      title={SEAT_STOP_COPY.paused(seat.pausedReason)}
+      disabled={seat.busy}
+      onClick={() => controls.setConfirmResume(true)}
+    >
+      {controls.busy === 'resume' ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />} {SEAT_STOP_COPY.resumeLabel}
+    </button>;
+  }
+  return <button
+    className="li-danger-button"
+    type="button"
+    title={`Outreach seat · sending. ${SEAT_STOP_COPY.running}`}
+    disabled={seat.busy || controls.busy !== ''}
+    onClick={() => controls.setPending('seat')}
+  >
+    <CircleStop size={15} /> {SEAT_STOP_COPY.pauseLabel}
+  </button>;
+}
+
+export function StopBar({ controls }: { controls: StopControls }) {
+  const {
+    seat, live, stopping, agentLive, seatLive, state,
+    pending, setPending, confirmResume, setConfirmResume,
+    busy, failure, setFailure, run, resume, agentDetail
+  } = controls;
+
+  // The seat's own row moved to the header (`SeatPauseButton`); what is left
+  // here is the agent row, the combined "Stop everything" row, and failure
+  // banners. A seat sending normally -- the common case -- now leaves this
+  // section with nothing of its own to say, and it renders nothing rather
+  // than an empty coloured bar under the H1.
+  const hasBarContent = state === 'is-idle' || live.length > 0 || Boolean(failure || seat.failure || seat.readError);
+
+  return <>
+    {hasBarContent && <section className={`stopbar ${state}`} aria-label="What is running, and how to stop it">
     {/* Not `.stopbar-actor`: that class carries the amber outline an actor row
         needs, and idle is not an actor. Wearing it put a 1px amber alert under
         the H1 on every route, which is how amber stops meaning anything by the
@@ -185,18 +271,6 @@ export function StopBar({ setToast }: { setToast: (message: string) => void }) {
         bar says which one it is rather than asserting the safe-sounding one
         while the answer is still on the wire. */}
     {state === 'is-idle' && <p className="stopbar-idle">{seat.loading ? 'Reading what is running…' : 'Nothing is running.'}</p>}
-
-    {seat.configured && <div className={`stopbar-actor${seat.paused ? ' is-seat' : ''}`}>
-      <PostureBadge posture={seat.posture} reason={seat.pausedReason} />
-      <span>{seat.paused ? SEAT_STOP_COPY.paused(seat.pausedReason) : `Outreach seat · sending. ${SEAT_STOP_COPY.running}`}</span>
-      {seat.paused
-        ? <button className="secondary-button" type="button" disabled={seat.busy} onClick={() => setConfirmResume(true)}>
-            {busy === 'resume' ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />} {SEAT_STOP_COPY.resumeLabel}
-          </button>
-        : <button className="li-danger-button" type="button" disabled={seat.busy || busy !== ''} onClick={() => setPending('seat')}>
-            <CircleStop size={15} /> {SEAT_STOP_COPY.pauseLabel}
-          </button>}
-    </div>}
 
     {live.length > 0 && <div className="stopbar-actor">
       <span className="run-status run-running">Agent</span>
@@ -223,6 +297,7 @@ export function StopBar({ setToast }: { setToast: (message: string) => void }) {
 
     {(failure || seat.failure || seat.readError) && !confirmResume
       && <div className="error-banner">{failure || seat.failure || seat.readError}</div>}
+  </section>}
 
     {pending && <ConfirmDrawer
       title={pending === 'seat' ? 'Pause the outreach seat?'
@@ -271,5 +346,5 @@ export function StopBar({ setToast }: { setToast: (message: string) => void }) {
       onCancel={() => { if (!seat.busy) { setConfirmResume(false); seat.clearFailure(); } }}
       onConfirm={() => void resume()}
     />}
-  </section>;
+  </>;
 }

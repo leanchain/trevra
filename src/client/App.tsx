@@ -103,7 +103,7 @@ import { BrandMark } from './ui/BrandMark';
 import { HelpPanel, JumpPalette, ShortcutSheet } from './ui/HelpPanel';
 import { useShortcuts } from './ui/keys';
 import { isAccountsPath, navigate, replaceNavigate, usePathname, useRoute, type Route, type Section } from './ui/route';
-import { StopBar } from './ui/StopBar';
+import { SeatPauseButton, StopBar, useStopControls } from './ui/StopBar';
 import { formatEvery } from './ui/duration';
 import { formatMoment } from './views/inspector';
 import { LedgerView } from './views/LedgerView';
@@ -206,6 +206,46 @@ function GoogleMark() {
     <path fill="#FBBC05" d="M3.963 10.705A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.167.281-1.705V4.962H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.038l3.007-2.333Z" />
     <path fill="#EA4335" d="M9 3.58c1.321 0 2.507.454 3.441 1.346l2.581-2.581C13.463.892 11.426 0 9 0A9 9 0 0 0 .956 4.962l3.007 2.333C4.672 5.165 6.656 3.58 9 3.58Z" />
   </svg>;
+}
+
+/**
+ * The header plus the incident bar below it, sharing one seat read.
+ *
+ * `useStopControls` polls the seat and the agent runs; calling it twice --
+ * once for a header button, once for the bar -- would be two pollers racing
+ * to describe the same seat. This is the one place it is called, and both
+ * `SeatPauseButton` (in `.top-actions`, beside sign-out) and `StopBar` (the
+ * agent/everything rows below) are handed the same result.
+ */
+function ShellTop({ route, setOverlay, signOut, setToast }: {
+  route: Route;
+  setOverlay: (overlay: 'help' | 'shortcuts' | 'jump' | null) => void;
+  signOut: () => Promise<void>;
+  setToast: (message: string) => void;
+}) {
+  const controls = useStopControls(setToast);
+  return <>
+    <header className="topbar">
+      <div><h1>{viewTitle(route)}</h1></div>
+      {/* Sign-out lives here rather than in the sidebar, because below
+          760px the sidebar is not on the screen at all. */}
+      <div className="top-actions">
+        <SeatPauseButton controls={controls} />
+        <button
+          className="icon-button"
+          aria-label="What this screen is for"
+          title="What this screen is for"
+          onClick={() => setOverlay('help')}
+        ><CircleHelp size={18} /></button>
+        <ThemeToggle />
+        <button className="icon-button" aria-label="Sign out" title="Sign out" onClick={() => void signOut()}><LogOut size={18} /></button>
+      </div>
+    </header>
+
+    {/* One incident surface, on every route. It is never a nav item and it
+        survives below 760px, where the sidebar does not. */}
+    <StopBar controls={controls} />
+  </>;
 }
 
 export function App() {
@@ -508,25 +548,7 @@ export function App() {
       </aside>
 
       <main className="main" id="main" tabIndex={-1}>
-        <header className="topbar">
-          <div><h1>{viewTitle(route)}</h1></div>
-          {/* Sign-out lives here rather than in the sidebar, because below
-              760px the sidebar is not on the screen at all. */}
-          <div className="top-actions">
-            <button
-              className="icon-button"
-              aria-label="What this screen is for"
-              title="What this screen is for"
-              onClick={() => setOverlay('help')}
-            ><CircleHelp size={18} /></button>
-            <ThemeToggle />
-            <button className="icon-button" aria-label="Sign out" title="Sign out" onClick={() => void signOut()}><LogOut size={18} /></button>
-          </div>
-        </header>
-
-        {/* One incident surface, on every route. It is never a nav item and it
-            survives below 760px, where the sidebar does not. */}
-        <StopBar setToast={setToast} />
+        <ShellTop route={route} setOverlay={setOverlay} signOut={signOut} setToast={setToast} />
 
         {route.section === 'loop' && (route.sub === 'cost'
           ? <LoopCostView onNavigate={go} />
