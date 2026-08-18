@@ -33,16 +33,17 @@ import { useCallback, useEffect, useState } from 'react';
  * exceptions to stay true at all.
  */
 
-export type Section = 'loop' | 'outreach' | 'ledger' | 'setup';
+export type Section = 'loop' | 'outreach' | 'ledger' | 'research' | 'setup';
 
-export const SECTIONS: readonly Section[] = ['loop', 'outreach', 'ledger', 'setup'];
+export const SECTIONS: readonly Section[] = ['loop', 'outreach', 'ledger', 'research', 'setup'];
 
 /** Which second segments each section answers to. */
 const SUB_ROUTES: Record<Section, readonly string[]> = {
   loop: ['', 'cost'],
   outreach: ['', 'accounts', 'activity', 'campaigns', 'inbox', 'leads', 'manager', 'plan'],
   ledger: ['', 'run'],
-  setup: ['', 'agent', 'data', 'reddit', 'research', 'seat', 'skills', 'limits', 'spend', 'team']
+  research: [''],
+  setup: ['', 'agent', 'data', 'reddit', 'seat', 'skills', 'limits', 'spend', 'team']
 };
 
 /**

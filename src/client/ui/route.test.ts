@@ -33,6 +33,12 @@ describe('parseRoute', () => {
       id: null,
       path: '/outreach/accounts'
     });
+    expect(parseRoute('/research')).toMatchObject({
+      section: 'research',
+      sub: '',
+      id: null,
+      path: '/research'
+    });
     expect(parseRoute('/outreach/manager/new')).toMatchObject({
       section: 'outreach',
       sub: 'manager',
@@ -91,6 +97,12 @@ describe('parseRoute', () => {
    */
   it('does not honour an old hash-route URL', () => {
     expect(parseRoute('/').path).toBe('/loop');
+  });
+});
+
+describe('isAppPath', () => {
+  it('claims /research as an app route', () => {
+    expect(isAppPath('/research')).toBe(true);
   });
 });
 

@@ -71,6 +71,7 @@ if (process.env.NODE_ENV === 'production') {
     'loop',
     'outreach',
     'ledger',
+    'research',
     'setup', // SECTIONS in ui/route.ts
     'leads',
     'login' // SHELL_PATHS in ui/route.ts

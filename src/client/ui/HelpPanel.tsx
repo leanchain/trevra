@@ -89,6 +89,23 @@ const HELP: Record<Section, HelpTopic> = {
       </p>
     )
   },
+  research: {
+    heading: 'Research',
+    does: 'One feed over discovered community threads and company research briefs, across every connected platform.',
+    vocabulary: [
+      { term: 'Thread', meaning: 'A community post scouted and scored for reply-worthiness.' },
+      {
+        term: 'Research brief',
+        meaning: 'A company-level finding produced by the research-brief skill.'
+      }
+    ],
+    more: (
+      <p>
+        The sources this feed combines are documented in{' '}
+        <code>docs/superpowers/specs/2026-08-18-research-hub-design.md</code>.
+      </p>
+    )
+  },
   setup: {
     heading: 'Setup',
     does: 'What can reach your workspace, what it may spend, and what it may do. Visited rarely after the first week. Agent access comes first because nothing else in Trevra works until an agent can reach the workspace.',

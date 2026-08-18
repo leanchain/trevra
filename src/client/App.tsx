@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleAlert,
   CircleHelp,
+  Compass,
   Copy,
   FileUp,
   KeyRound,
@@ -78,7 +79,7 @@ import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions } from './LinkedInScreen';
 import { TeamSettingsView } from './TeamScreen';
 import { RedditScreen } from './RedditScreen';
-import { ResearchScreen } from './ResearchScreen';
+import { ResearchView } from './views/ResearchView';
 import { trackEvent, trackPageView } from './analytics';
 import { ConfirmDrawer } from './ui/dialog';
 import { BrandMark } from './ui/BrandMark';
@@ -111,6 +112,7 @@ const NAV_ITEMS: Array<{ section: Section; path: string; icon: React.ReactNode; 
     label: 'Outreach'
   },
   { section: 'ledger', path: '/ledger', icon: <Workflow size={18} />, label: 'Ledger' },
+  { section: 'research', path: '/research', icon: <Compass size={18} />, label: 'Research' },
   { section: 'setup', path: '/setup', icon: <Settings2 size={18} />, label: 'Setup' }
 ];
 
@@ -544,6 +546,10 @@ export function App() {
           <LedgerView runId={route.id} setToast={setToast} onNavigate={go} />
         )}
 
+        {route.section === 'research' && (
+          <ResearchView connections={data.connections} setToast={setToast} />
+        )}
+
         {route.section === 'setup' && (
           <SetupView
             route={route}
@@ -685,7 +691,6 @@ const SETUP_ROUTES: Array<{ sub: string; label: string; advanced?: true }> = [
   // most people change them rarely.
   { sub: 'limits', label: 'Limits' },
   { sub: 'team', label: 'Team' },
-  { sub: 'research', label: 'Research', advanced: true },
   { sub: 'reddit', label: 'Reddit', advanced: true },
   { sub: 'skills', label: 'Skills', advanced: true }
 ];
@@ -725,6 +730,12 @@ function SetupView({
   useEffect(() => {
     if (sub === 'seat') onNavigate('/outreach');
   }, [sub, onNavigate]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.pathname === '/setup/research') {
+      onNavigate('/research');
+    }
+  }, [onNavigate]);
 
   useEffect(() => {
     if (sub !== 'spend') return;
@@ -803,8 +814,6 @@ function SetupView({
           setBusyId={setBusyId}
         />
       )}
-
-      {sub === 'research' && <ResearchScreen connections={data.connections} setToast={setToast} />}
 
       {sub === 'reddit' && <RedditScreen setToast={setToast} />}
 
@@ -2908,6 +2917,7 @@ function viewTitle(route: Route): string {
     return 'Settings';
   }
   if (route.section === 'ledger') return 'Run ledger';
+  if (route.section === 'research') return 'Research';
   const sub = route.sub === 'spend' ? 'agent' : route.sub;
   const setup = SETUP_ROUTES.find((entry) => entry.sub === sub);
   return setup ? `Setup · ${setup.label}` : 'Setup';
