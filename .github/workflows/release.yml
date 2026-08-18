@@ -2,12 +2,12 @@ name: Release and deploy
 
 on:
   workflow_run:
-    workflows: ["Container image"]
+    workflows: ['Container image']
     types: [completed]
   workflow_dispatch:
     inputs:
       sha:
-        description: "Commit SHA whose sha-<SHA> image is already in GHCR (blank = current commit)"
+        description: 'Commit SHA whose sha-<SHA> image is already in GHCR (blank = current commit)'
         required: false
         type: string
 
@@ -199,14 +199,12 @@ jobs:
         working-directory: packages/trevra-cli
         env:
           VERSION: ${{ needs.prepare.outputs.companion_version }}
-          # First publish of a brand-new package name cannot go through OIDC
-          # Trusted Publishing alone -- npm has no package settings page to
-          # attach a trusted publisher to until the package exists. A classic
-          # token authenticates that first publish; --provenance still attaches
-          # signed OIDC provenance from this run on top of it. Once the
-          # package exists, configure Trusted Publishing on npmjs.com and this
-          # secret can be retired.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Trusted Publishing (OIDC) is configured on npmjs.com for this
+          # package (leanchain/trevra, workflow release.yml, npm publish).
+          # No NODE_AUTH_TOKEN here on purpose: npm CLI only attempts the OIDC
+          # exchange when no classic token is already resolved for the
+          # registry -- setting NODE_AUTH_TOKEN (even to a dead/rotated
+          # secret) makes it skip OIDC and fail with a 404 on publish.
         run: |
           set -euo pipefail
           npm ci

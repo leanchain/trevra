@@ -9,7 +9,7 @@ Trevra releases are driven from `main` and use immutable Git SHAs as the deploym
    - production build and dependency audit;
    - companion CLI tests, audit and package-content check;
    - self-hosted Compose configuration validation.
-2. Pushes to `main` run `.github/workflows/image.yml`. Its own release gate repeats the full PostgreSQL suite, audit and production build before publishing the amd64 + arm64 GHCR manifest under `sha-<full-git-sha>`, `main` and `latest`.
+2. Pushes to `main` run `.github/workflows/image.yml`. Its release gate runs a dependency audit and production build (the full PostgreSQL suite itself runs pre-push via `.githooks/pre-push`, not in this workflow) before publishing the amd64 + arm64 GHCR manifest under `sha-<full-git-sha>`, `main` and `latest`.
 3. A successful `Container image` run on `main` triggers `.github/workflows/release.yml`:
    - resolves the next app patch release from existing `v*` tags;
    - detects whether publishable companion files changed since the latest `companion-v*` tag;
