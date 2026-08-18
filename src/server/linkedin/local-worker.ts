@@ -14,7 +14,11 @@ import {
 } from '../browser/provider.js';
 import { readLinkedInCredentials } from '../secrets/linkedin.js';
 import { companionBrowserSettings } from './companion.js';
-import { clearSeatStorageState, readSeatStorageState, saveSeatStorageState } from './session-state.js';
+import {
+  clearSeatStorageState,
+  readSeatStorageState,
+  saveSeatStorageState
+} from './session-state.js';
 import type { LinkedInActionKind, LinkedInActionStatus } from './actions.js';
 import {
   evaluateBranches,
@@ -34,10 +38,20 @@ import {
   type LinkedInLocator,
   type LinkedInPage
 } from './driver.js';
-import { isThreadListing, isThreadTranscript, type LinkedInInboxMessage, type LinkedInThreadSummary } from './driver-inbox.js';
+import {
+  isThreadListing,
+  isThreadTranscript,
+  type LinkedInInboxMessage,
+  type LinkedInThreadSummary
+} from './driver-inbox.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
 import { readPage, setHumanSessionSalt, settle, type HumanPage } from './human.js';
-import { pruneSeatEvents, recordSeatEvent, seatRestingUntil, setSeatRestingUntil } from './seat-events.js';
+import {
+  pruneSeatEvents,
+  recordSeatEvent,
+  seatRestingUntil,
+  setSeatRestingUntil
+} from './seat-events.js';
 import { ACTION_GAP_SECONDS, type PacedKind } from './limits.js';
 import { dayShapeFor, localDateOf, visitsForDay, workWindowOf, zonedToUtc } from './pacing.js';
 import { clearInboxForSeat, syncThreadMessages, syncThreads } from './inbox.js';
@@ -130,7 +144,8 @@ import {
  * cheap to perform is not a reason to be ungated, and liking two hundred posts
  * in an hour is a ban signal however harmless one like is.
  */
-export type ExecutableKind = 'invite' | 'dm' | 'reply' | 'profile_view' | 'follow' | 'like' | 'endorse';
+export type ExecutableKind =
+  'invite' | 'dm' | 'reply' | 'profile_view' | 'follow' | 'like' | 'endorse';
 export const EXECUTABLE_KINDS: readonly ExecutableKind[] = [
   'invite',
   'dm',
@@ -219,7 +234,9 @@ export function workerShard(env: NodeJS.ProcessEnv = process.env): WorkerShard {
     throw new Error('TREVRA_LINKEDIN_WORKER_COUNT must be a whole number of workers, 1 or more.');
   }
   if (!Number.isFinite(index) || index < 0 || index >= total) {
-    throw new Error(`TREVRA_LINKEDIN_WORKER_INDEX must be between 0 and ${total - 1} when TREVRA_LINKEDIN_WORKER_COUNT is ${total}.`);
+    throw new Error(
+      `TREVRA_LINKEDIN_WORKER_INDEX must be between 0 and ${total - 1} when TREVRA_LINKEDIN_WORKER_COUNT is ${total}.`
+    );
   }
   return { index, total };
 }
@@ -302,7 +319,10 @@ export const LEGACY_CLAIM_GRACE_MS = 24 * 60 * 60_000;
  * Bounded rather than unbounded because each in-flight seat is a whole
  * Chromium at ~350-500MB; the ceiling is memory, not patience.
  */
-export function defaultSeatConcurrency(headless: boolean, env: NodeJS.ProcessEnv = process.env): number {
+export function defaultSeatConcurrency(
+  headless: boolean,
+  env: NodeJS.ProcessEnv = process.env
+): number {
   const configured = Number.parseInt(env.TREVRA_LINKEDIN_SEAT_CONCURRENCY ?? '', 10);
   if (Number.isFinite(configured) && configured > 0) return configured;
   return headless ? 3 : 1;
@@ -435,7 +455,11 @@ export interface LocalWorkerStore {
   seatPosture(now: Date): Promise<SeatPosture | null>;
   /** Open a stoppable batch and return its id. */
   openBatch(now: Date): Promise<string>;
-  closeBatch(batchId: string, outcome: { status: BatchStatus; haltReason: string | null; executed: number }, now: Date): Promise<void>;
+  closeBatch(
+    batchId: string,
+    outcome: { status: BatchStatus; haltReason: string | null; executed: number },
+    now: Date
+  ): Promise<void>;
   /** True when this batch must stop -- see `isAgentRunStopRequested` for the shape. */
   stopRequested(batchId: string): Promise<boolean>;
   /**
@@ -446,7 +470,11 @@ export interface LocalWorkerStore {
    * planned, and without this the very next claim would hand back the same
    * row, forever, and no other action in the queue would ever be reached.
    */
-  claimNextDueAction(batchId: string, now: Date, exclude?: readonly string[]): Promise<DueLinkedInAction | null>;
+  claimNextDueAction(
+    batchId: string,
+    now: Date,
+    exclude?: readonly string[]
+  ): Promise<DueLinkedInAction | null>;
   /** Nothing was sent: put the action back in the queue, recording why. */
   releaseClaim(actionId: string, failureKind: LinkedInFailureKind | null): Promise<void>;
   /**
@@ -496,7 +524,11 @@ export interface LocalWorkerStore {
    * that never exercises this) simply skips it -- the send this follows has
    * already settled either way, and a failure here must never undo that.
    */
-  recordReplyMessages?(threadUrn: string, messages: readonly LinkedInInboxMessage[], now: Date): Promise<void>;
+  recordReplyMessages?(
+    threadUrn: string,
+    messages: readonly LinkedInInboxMessage[],
+    now: Date
+  ): Promise<void>;
   /**
    * File the conversation a first message just opened, so it exists to hold
    * the reply it did not have a moment ago. Always called before
@@ -617,12 +649,16 @@ const seatSessions = new Map<string, number>();
 
 export function sessionActionBudget(seed: string): number {
   const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
-  return SESSION_ACTIONS.min + Math.floor(random() * (SESSION_ACTIONS.max - SESSION_ACTIONS.min + 1));
+  return (
+    SESSION_ACTIONS.min + Math.floor(random() * (SESSION_ACTIONS.max - SESSION_ACTIONS.min + 1))
+  );
 }
 
 export function sessionBreakMs(seed: string): number {
   const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
-  return Math.round(SESSION_BREAK_MS.min + random() * (SESSION_BREAK_MS.max - SESSION_BREAK_MS.min));
+  return Math.round(
+    SESSION_BREAK_MS.min + random() * (SESSION_BREAK_MS.max - SESSION_BREAK_MS.min)
+  );
 }
 
 /** Forget every in-flight sitting. Tests only; a worker never wants this. */
@@ -653,14 +689,23 @@ export function resetLinkedInSessionRhythm(): void {
  * stops refusing a manual action typed at 22:00, and then the worker sits on it
  * until the next visit at 08:36 anyway.
  */
-export async function dueManualWork(db: Db, workspaceId: string, seatKey: string, now: Date): Promise<boolean> {
+export async function dueManualWork(
+  db: Db,
+  workspaceId: string,
+  seatKey: string,
+  now: Date
+): Promise<boolean> {
   try {
-    const row = await db.prepare(`
+    const row = await db
+      .prepare(
+        `
       SELECT 1 AS due FROM linkedin_actions
       WHERE workspace_id = ? AND seat_key = ? AND status = 'planned' AND planned_for <= ?
         AND (source = 'manual' OR (kind = 'reply' AND reply_to_inbound = true))
       LIMIT 1
-    `).get<{ due: number }>(workspaceId, seatKey, now.toISOString());
+    `
+      )
+      .get<{ due: number }>(workspaceId, seatKey, now.toISOString());
     return row !== undefined && row !== null;
   } catch {
     // An un-migrated database has no such column. Resting as before is the
@@ -669,7 +714,12 @@ export async function dueManualWork(db: Db, workspaceId: string, seatKey: string
   }
 }
 
-async function visitEndsAt(db: Db, workspaceId: string, seatKey: string, now: Date): Promise<Date | null> {
+async function visitEndsAt(
+  db: Db,
+  workspaceId: string,
+  seatKey: string,
+  now: Date
+): Promise<Date | null> {
   try {
     const seat = await getSeat(db, workspaceId, seatKey);
     if (!seat) return null;
@@ -682,8 +732,9 @@ async function visitEndsAt(db: Db, workspaceId: string, seatKey: string, now: Da
     // reading side sees. The planner's stretched end is not knowable here
     // without recomputing the day's ceiling, and erring short only means the
     // next sitting starts at the next visit rather than later in this one.
-    const visit = visitsForDay(`${workspaceId}:${seatKey}`, local, shape)
-      .find((candidate) => minuteOfDay >= candidate.startMinute && minuteOfDay < candidate.endMinute);
+    const visit = visitsForDay(`${workspaceId}:${seatKey}`, local, shape).find(
+      (candidate) => minuteOfDay >= candidate.startMinute && minuteOfDay < candidate.endMinute
+    );
     if (!visit) return null;
     return zonedToUtc(local, visit.endMinute * 60, seat.timezone);
   } catch {
@@ -798,7 +849,11 @@ async function arriveFromSource(
   }
 }
 
-async function execute(deps: LocalBatchDeps, action: DueLinkedInAction, seed: string): Promise<LinkedInDriverResult> {
+async function execute(
+  deps: LocalBatchDeps,
+  action: DueLinkedInAction,
+  seed: string
+): Promise<LinkedInDriverResult> {
   switch (action.kind) {
     case 'invite':
       return deps.driver.sendInvite(deps.page, action.targetRef, action.body ?? undefined);
@@ -845,7 +900,10 @@ async function execute(deps: LocalBatchDeps, action: DueLinkedInAction, seed: st
  * things to a real account, and the caller needs the count more than it needs
  * a stack trace.
  */
-export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: LocalBatchDeps): Promise<LocalBatchResult> {
+export async function runLinkedInLocalBatch(
+  store: LocalWorkerStore,
+  deps: LocalBatchDeps
+): Promise<LocalBatchResult> {
   const now = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? defaultSleep;
   const log = deps.log ?? ((message: string) => console.log(message));
@@ -999,7 +1057,9 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
       // planned, and the next pass asks again against a ledger that has moved.
       deferred.push(action.id);
       result.blocked += 1;
-      log(`LinkedIn local worker skipped action ${action.id}: ${verdict.reason ?? 'the safety gate refused it'}`);
+      log(
+        `LinkedIn local worker skipped action ${action.id}: ${verdict.reason ?? 'the safety gate refused it'}`
+      );
       continue;
     }
 
@@ -1033,14 +1093,21 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
       // without a separate manual sync -- a failure here changes nothing
       // about what was sent, so it is swallowed rather than turned into a
       // batch failure over a message that already went out.
-      if (action.kind === 'reply' && action.threadUrn && deps.driver.readThread && store.recordReplyMessages) {
+      if (
+        action.kind === 'reply' &&
+        action.threadUrn &&
+        deps.driver.readThread &&
+        store.recordReplyMessages
+      ) {
         try {
           const transcript = await deps.driver.readThread(deps.page, action.threadUrn, { now });
           if (isThreadTranscript(transcript)) {
             await store.recordReplyMessages(action.threadUrn, transcript.messages, at);
           }
         } catch (cause) {
-          log(`LinkedIn local worker sent action ${action.id} but could not re-sync its conversation: ${cause instanceof Error ? cause.message : String(cause)}. "Sync this thread" in the inbox still catches it up.`);
+          log(
+            `LinkedIn local worker sent action ${action.id} but could not re-sync its conversation: ${cause instanceof Error ? cause.message : String(cause)}. "Sync this thread" in the inbox still catches it up.`
+          );
         }
       }
       // A FIRST MESSAGE HAS NO THREAD ID TO HAND `readThread` -- that is the
@@ -1056,11 +1123,11 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
       // operator is exactly as covered as before this existed: the task
       // composer's "Sync the inbox" / "mark as sent" fallback still applies.
       if (
-        action.kind === 'dm'
-        && deps.driver.listConversations
-        && deps.driver.readThread
-        && store.recordNewThread
-        && store.recordReplyMessages
+        action.kind === 'dm' &&
+        deps.driver.listConversations &&
+        deps.driver.readThread &&
+        store.recordNewThread &&
+        store.recordReplyMessages
       ) {
         try {
           const listing = await deps.driver.listConversations(deps.page, {
@@ -1069,17 +1136,23 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
             now
           });
           if (isThreadListing(listing)) {
-            const summary = listing.threads.find((thread) => thread.profileUrl === action.targetRef);
+            const summary = listing.threads.find(
+              (thread) => thread.profileUrl === action.targetRef
+            );
             if (summary) {
               await store.recordNewThread(summary, at);
-              const transcript = await deps.driver.readThread(deps.page, summary.threadUrn, { now });
+              const transcript = await deps.driver.readThread(deps.page, summary.threadUrn, {
+                now
+              });
               if (isThreadTranscript(transcript)) {
                 await store.recordReplyMessages(summary.threadUrn, transcript.messages, at);
               }
             }
           }
         } catch (cause) {
-          log(`LinkedIn local worker sent action ${action.id} but could not find its new conversation: ${cause instanceof Error ? cause.message : String(cause)}. "Sync the inbox" still catches it up.`);
+          log(
+            `LinkedIn local worker sent action ${action.id} but could not find its new conversation: ${cause instanceof Error ? cause.message : String(cause)}. "Sync the inbox" still catches it up.`
+          );
         }
       }
       result.executed += 1;
@@ -1125,11 +1198,11 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
      * on an answer that has not arrived.
      */
     if (
-      failureKind === 'selector_drift'
-      && action.kind === 'dm'
-      && typeof outcome.detail === 'string'
-      && outcome.detail.startsWith(`${SELECTORS.messageButton} did not match`)
-      && (await store.hasUnacceptedInvite(action))
+      failureKind === 'selector_drift' &&
+      action.kind === 'dm' &&
+      typeof outcome.detail === 'string' &&
+      outcome.detail.startsWith(`${SELECTORS.messageButton} did not match`) &&
+      (await store.hasUnacceptedInvite(action))
     ) {
       await store.releaseClaim(action.id, null);
       deferred.push(action.id);
@@ -1184,7 +1257,11 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
 
   await store.closeBatch(
     batchId,
-    { status: result.halted ? 'halted' : 'completed', haltReason: result.haltReason, executed: result.executed },
+    {
+      status: result.halted ? 'halted' : 'completed',
+      haltReason: result.haltReason,
+      executed: result.executed
+    },
     now()
   );
   return result;
@@ -1192,7 +1269,8 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
 
 /** Why this seat may not be worked, or null when it may. */
 function postureRefusal(posture: SeatPosture | null): string | null {
-  if (posture === null) return 'No LinkedIn seat is configured for this workspace, so there is nothing to pace against.';
+  if (posture === null)
+    return 'No LinkedIn seat is configured for this workspace, so there is nothing to pace against.';
   // Every refusal below is about ONE seat. `runDueLinkedInActions` logs it and
   // moves to the next seat rather than ending the tick, so a paused or cooling
   // account never stops the workspace's other accounts.
@@ -1275,7 +1353,13 @@ function branchableSteps(sequence: unknown): BranchableStep[] {
 
   for (const entry of steps) {
     if (typeof entry !== 'object' || entry === null) continue;
-    const step = entry as { id?: unknown; day?: unknown; kind?: unknown; action?: unknown; condition?: unknown };
+    const step = entry as {
+      id?: unknown;
+      day?: unknown;
+      kind?: unknown;
+      action?: unknown;
+      condition?: unknown;
+    };
     if (typeof step.id !== 'string') continue;
 
     // TWO SEQUENCE DIALECTS, ONE PARSER, AND `action` IS THE CANONICAL ONE.
@@ -1287,20 +1371,22 @@ function branchableSteps(sequence: unknown): BranchableStep[] {
     // manager campaign parsed to zero steps, `hasBranching` answered false, and
     // the whole branch evaluation was skipped for exactly the campaigns this
     // deployment runs itself.
-    const kind = typeof step.kind === 'string'
-      ? (step.kind as LinkedInActionKind)
-      : typeof step.action === 'string'
-        ? WORKFLOW_ACTION_KINDS[step.action] ?? null
-        : null;
+    const kind =
+      typeof step.kind === 'string'
+        ? (step.kind as LinkedInActionKind)
+        : typeof step.action === 'string'
+          ? (WORKFLOW_ACTION_KINDS[step.action] ?? null)
+          : null;
     // `manual_message` and `withdraw_pending` write no outbound ledger row at
     // all (`runner.ts` `kindForStep` returns null for both), so there is no
     // action for a branch to be about and nothing here can reference them.
     if (kind === null) continue;
 
     const declared =
-      typeof step.condition === 'object' && step.condition !== null
-        && typeof (step.condition as StepCondition).on === 'string'
-        && typeof (step.condition as StepCondition).ofStepId === 'string'
+      typeof step.condition === 'object' &&
+      step.condition !== null &&
+      typeof (step.condition as StepCondition).on === 'string' &&
+      typeof (step.condition as StepCondition).ofStepId === 'string'
         ? (step.condition as StepCondition)
         : null;
 
@@ -1331,9 +1417,11 @@ function branchableSteps(sequence: unknown): BranchableStep[] {
      * A condition the operator DID declare always wins: this fills a gap, it
      * does not overrule an author.
      */
-    const condition = declared ?? (kind === 'dm' && lastInviteStepId !== null
-      ? { on: 'accepted' as const, ofStepId: lastInviteStepId }
-      : null);
+    const condition =
+      declared ??
+      (kind === 'dm' && lastInviteStepId !== null
+        ? { on: 'accepted' as const, ofStepId: lastInviteStepId }
+        : null);
 
     parsed.push({
       id: step.id,
@@ -1408,19 +1496,34 @@ export function postgresLocalWorkerStore(
 
     async openBatch(now) {
       const batchId = id('lbatch');
-      await db.prepare(`
+      await db
+        .prepare(
+          `
         INSERT INTO linkedin_batches (id, workspace_id, seat_key, status, started_at)
         VALUES (?,?,?,'running',?)
-      `).run(batchId, workspaceId, seatKey, now.toISOString());
+      `
+        )
+        .run(batchId, workspaceId, seatKey, now.toISOString());
       return batchId;
     },
 
     async closeBatch(batchId, outcome, now) {
-      await db.prepare(`
+      await db
+        .prepare(
+          `
         UPDATE linkedin_batches
         SET status=?, halt_reason=?, executed_count=?, finished_at=?
         WHERE id=? AND workspace_id=?
-      `).run(outcome.status, outcome.haltReason, outcome.executed, now.toISOString(), batchId, workspaceId);
+      `
+        )
+        .run(
+          outcome.status,
+          outcome.haltReason,
+          outcome.executed,
+          now.toISOString(),
+          batchId,
+          workspaceId
+        );
     },
 
     async stopRequested(batchId) {
@@ -1428,10 +1531,14 @@ export function postgresLocalWorkerStore(
       // is no longer running, or whose row is gone, is not a batch to keep
       // acting for. A database error still throws -- "I could not find out" is
       // not "carry on".
-      const row = await db.prepare(`
+      const row = await db
+        .prepare(
+          `
         SELECT 1 AS live FROM linkedin_batches
         WHERE id=? AND workspace_id=? AND status='running' AND stop_requested_at IS NULL
-      `).get<{ live: number }>(batchId, workspaceId);
+      `
+        )
+        .get<{ live: number }>(batchId, workspaceId);
       return row === undefined;
     },
 
@@ -1450,7 +1557,9 @@ export function postgresLocalWorkerStore(
       // action, and `reapExpiredActionLeases` releases what a dead worker left
       // behind. Nothing about the deliberate hold changes: it is marked with
       // `settlement_hold_at` and no reaper can see it.
-      const row = await db.prepare(`
+      const row = await db
+        .prepare(
+          `
         UPDATE linkedin_actions SET claimed_at=?, batch_id=?, claimed_by=?, lease_expires_at=?
         WHERE id = (
           SELECT id FROM linkedin_actions
@@ -1491,16 +1600,18 @@ export function postgresLocalWorkerStore(
                   TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS planned_for,
                   body, thread_urn, campaign_id, replay_scope, override_warmup_ceiling,
                   reply_to_inbound, source
-      `).get<DueActionRow>(
-        now.toISOString(),
-        batchId,
-        workerId,
-        new Date(now.getTime() + leaseMs).toISOString(),
-        workspaceId,
-        seatKey,
-        now.toISOString(),
-        [...exclude]
-      );
+      `
+        )
+        .get<DueActionRow>(
+          now.toISOString(),
+          batchId,
+          workerId,
+          new Date(now.getTime() + leaseMs).toISOString(),
+          workspaceId,
+          seatKey,
+          now.toISOString(),
+          [...exclude]
+        );
       if (!row) return null;
       return {
         id: row.id,
@@ -1524,7 +1635,9 @@ export function postgresLocalWorkerStore(
       // subsystem folds them (idx_linkedin_actions_target_ci, migration 031):
       // the invite and the message may have been written from different
       // renderings of the same profile URL.
-      const row = await db.prepare(`
+      const row = await db
+        .prepare(
+          `
         SELECT 1 AS unaccepted FROM linkedin_actions
         WHERE workspace_id=? AND seat_key=? AND kind='invite'
           AND target_ref IS NOT NULL AND LOWER(target_ref)=LOWER(?)
@@ -1535,18 +1648,24 @@ export function postgresLocalWorkerStore(
           -- can never resolve.
           AND status NOT IN ('accepted', 'replied', 'declined', 'withdrawn', 'skipped')
         LIMIT 1
-      `).get<{ unaccepted: number }>(workspaceId, action.seatKey, action.targetRef);
+      `
+        )
+        .get<{ unaccepted: number }>(workspaceId, action.seatKey, action.targetRef);
       return row !== undefined;
     },
 
     async branchDecision(action, now) {
-      const campaign = await db.prepare(`
+      const campaign = await db
+        .prepare(
+          `
         SELECT c.sequence_json AS sequence_json,
                TO_CHAR(c.created_at AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS created_at
         FROM linkedin_actions a
         JOIN linkedin_campaigns c ON c.id = a.campaign_id AND c.workspace_id = a.workspace_id
         WHERE a.id=? AND a.workspace_id=?
-      `).get<{ sequence_json: unknown; created_at: string }>(action.id, workspaceId);
+      `
+        )
+        .get<{ sequence_json: unknown; created_at: string }>(action.id, workspaceId);
       // No campaign, or a campaign with no conditions: nothing to decide, and
       // the action runs exactly as it did before branching existed.
       if (!campaign) return null;
@@ -1570,12 +1689,20 @@ export function postgresLocalWorkerStore(
       const index = steps.findIndex((step) => step.kind === action.kind);
       if (index === -1) return null;
 
-      const rows = await db.prepare(`
+      const rows = await db
+        .prepare(
+          `
         SELECT kind, status,
                TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS planned_for
         FROM linkedin_actions
         WHERE workspace_id=? AND seat_key=? AND target_ref=?
-      `).all<{ kind: string; status: string; planned_for: string | null }>(workspaceId, action.seatKey, action.targetRef);
+      `
+        )
+        .all<{ kind: string; status: string; planned_for: string | null }>(
+          workspaceId,
+          action.seatKey,
+          action.targetRef
+        );
 
       const actions: BranchActionRow[] = rows.map((row) => ({
         kind: row.kind as LinkedInActionKind,
@@ -1595,11 +1722,15 @@ export function postgresLocalWorkerStore(
     },
 
     async releaseClaim(actionId, failureKind) {
-      await db.prepare(`
+      await db
+        .prepare(
+          `
         UPDATE linkedin_actions
         SET claimed_at=NULL, claimed_by=NULL, lease_expires_at=NULL, batch_id=NULL, failure_kind=?
         WHERE id=? AND workspace_id=?
-      `).run(failureKind, actionId, workspaceId);
+      `
+        )
+        .run(failureKind, actionId, workspaceId);
     },
 
     /**
@@ -1633,16 +1764,24 @@ export function postgresLocalWorkerStore(
       // The lease is dropped with it. A settled row is not in flight, and a
       // deadline left behind on one would have a reaper reasoning about work
       // that is finished.
-      await db.prepare(`
+      await db
+        .prepare(
+          `
         UPDATE linkedin_actions
         SET status='sent', recorded_at=?, external_ref=?, failure_kind=NULL,
             claimed_by=NULL, lease_expires_at=NULL
         WHERE id=? AND workspace_id=?
-      `).run(now.toISOString(), externalRef, actionId, workspaceId);
+      `
+        )
+        .run(now.toISOString(), externalRef, actionId, workspaceId);
     },
 
     async recordReplyMessages(threadUrn, messages, now) {
-      await syncThreadMessages(db, { workspaceId, seatKey, threadUrn, messages: [...messages] }, now);
+      await syncThreadMessages(
+        db,
+        { workspaceId, seatKey, threadUrn, messages: [...messages] },
+        now
+      );
     },
 
     async recordNewThread(summary, now) {
@@ -1650,12 +1789,16 @@ export function postgresLocalWorkerStore(
     },
 
     async settleSkipped(actionId, failureKind) {
-      await db.prepare(`
+      await db
+        .prepare(
+          `
         UPDATE linkedin_actions
         SET status='skipped', recorded_at=NULL, claimed_at=NULL, claimed_by=NULL,
             lease_expires_at=NULL, failure_kind=?
         WHERE id=? AND workspace_id=?
-      `).run(failureKind, actionId, workspaceId);
+      `
+        )
+        .run(failureKind, actionId, workspaceId);
     },
 
     // `_reason` is the evaluator's sentence and is deliberately not stored:
@@ -1664,12 +1807,16 @@ export function postgresLocalWorkerStore(
     // failure there would have the ledger report a driver problem that never
     // happened. It reaches the operator through the batch log instead.
     async settleBranchSkipped(actionId, _reason) {
-      await db.prepare(`
+      await db
+        .prepare(
+          `
         UPDATE linkedin_actions
         SET status='skipped', recorded_at=NULL, claimed_at=NULL, claimed_by=NULL,
             lease_expires_at=NULL, failure_kind=NULL
         WHERE id=? AND workspace_id=?
-      `).run(actionId, workspaceId);
+      `
+        )
+        .run(actionId, workspaceId);
     },
 
     async holdClaim(actionId, failureKind) {
@@ -1690,12 +1837,16 @@ export function postgresLocalWorkerStore(
       // The lease is CLEARED rather than extended: a hold is not work in
       // flight, and leaving a deadline on it would say a worker is still
       // coming back for it.
-      await db.prepare(`
+      await db
+        .prepare(
+          `
         UPDATE linkedin_actions
         SET failure_kind=?, claimed_by=?, lease_expires_at=NULL,
             settlement_hold_at=COALESCE(settlement_hold_at, CURRENT_TIMESTAMP)
         WHERE id=? AND workspace_id=?
-      `).run(failureKind, workerId, actionId, workspaceId);
+      `
+        )
+        .run(failureKind, workerId, actionId, workspaceId);
     },
 
     async heartbeat(batchId, actionId, now) {
@@ -1712,10 +1863,20 @@ export function postgresLocalWorkerStore(
       // `claimed_by` and `batch_id` are in the predicate: a worker whose claim
       // was already reaped and re-granted must not be able to extend a lease it
       // no longer holds.
-      await db.prepare(`
+      await db
+        .prepare(
+          `
         UPDATE linkedin_actions SET lease_expires_at=?
         WHERE id=? AND workspace_id=? AND batch_id=? AND claimed_by=?
-      `).run(new Date(now.getTime() + leaseMs).toISOString(), actionId, workspaceId, batchId, workerId);
+      `
+        )
+        .run(
+          new Date(now.getTime() + leaseMs).toISOString(),
+          actionId,
+          workspaceId,
+          batchId,
+          workerId
+        );
     },
 
     async enterCooldown(now) {
@@ -1736,14 +1897,22 @@ export function postgresLocalWorkerStore(
  * status. Asking twice keeps the original timestamp, so "when did somebody ask
  * for this to stop" survives an impatient second click.
  */
-export async function stopLinkedInBatches(db: Db, workspaceId: string, seatKey?: string): Promise<number> {
+export async function stopLinkedInBatches(
+  db: Db,
+  workspaceId: string,
+  seatKey?: string
+): Promise<number> {
   // No seat named means EVERY seat in the workspace, which is what the API's
   // kill switch means when an operator presses Stop on the workspace. Naming
   // one stops one account and leaves the others running.
-  const result = await db.prepare(`
+  const result = await db
+    .prepare(
+      `
     UPDATE linkedin_batches SET stop_requested_at=CURRENT_TIMESTAMP
     WHERE workspace_id=? AND (?::text IS NULL OR seat_key=?) AND status='running' AND stop_requested_at IS NULL
-  `).run(workspaceId, seatKey ?? null, seatKey ?? null);
+  `
+    )
+    .run(workspaceId, seatKey ?? null, seatKey ?? null);
   return result.changes;
 }
 
@@ -1836,10 +2005,15 @@ export async function dueSeatsForWorker(
 ): Promise<DueSeatForWorker[]> {
   const shard = options.shard ?? SINGLE_WORKER_SHARD;
   const maxSeats = Math.max(1, Math.trunc(options.maxSeats ?? DEFAULT_MAX_DUE_SEATS));
-  const perWorkspace = Math.max(1, Math.trunc(options.maxSeatsPerWorkspace ?? DEFAULT_MAX_SEATS_PER_WORKSPACE));
+  const perWorkspace = Math.max(
+    1,
+    Math.trunc(options.maxSeatsPerWorkspace ?? DEFAULT_MAX_SEATS_PER_WORKSPACE)
+  );
   const seatKey = options.seatKey ?? null;
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT ranked.workspace_id, ranked.seat_key, ranked.timezone, ranked.posture, ranked.oldest_due
     FROM (
       SELECT s.workspace_id, s.seat_key, s.timezone, s.posture,
@@ -1863,14 +2037,15 @@ export async function dueSeatsForWorker(
     WHERE ranked.seat_rank <= ?::int
     ORDER BY ranked.oldest_due ASC, ranked.workspace_id ASC, ranked.seat_key ASC
     LIMIT ?::int
-  `).all<{ workspace_id: string; seat_key: string; timezone: string | null; posture: string | null; oldest_due: string }>(
-    now.toISOString(),
-    seatKey,
-    seatKey,
-    ...shardParams(shard),
-    perWorkspace,
-    maxSeats
-  );
+  `
+    )
+    .all<{
+      workspace_id: string;
+      seat_key: string;
+      timezone: string | null;
+      posture: string | null;
+      oldest_due: string;
+    }>(now.toISOString(), seatKey, seatKey, ...shardParams(shard), perWorkspace, maxSeats);
 
   const seats: DueSeatForWorker[] = rows.map((row) => ({
     workspaceId: row.workspace_id,
@@ -1893,7 +2068,9 @@ export async function dueSeatsForWorker(
   // backlog. An orphan newer than that many due rows is found on a later pass,
   // once the rows in front of it have drained.
   if (seats.length < maxSeats) {
-    const orphans = await db.prepare(`
+    const orphans = await db
+      .prepare(
+        `
       WITH candidate AS (
         SELECT a.workspace_id, a.seat_key, a.planned_for
         FROM linkedin_actions a
@@ -1915,13 +2092,15 @@ export async function dueSeatsForWorker(
       GROUP BY c.workspace_id, c.seat_key
       ORDER BY MIN(c.planned_for) ASC
       LIMIT ?::int
-    `).all<{ workspace_id: string; seat_key: string; oldest_due: string }>(
-      now.toISOString(),
-      seatKey,
-      seatKey,
-      ...shardParams(shard),
-      maxSeats - seats.length
-    );
+    `
+      )
+      .all<{ workspace_id: string; seat_key: string; oldest_due: string }>(
+        now.toISOString(),
+        seatKey,
+        seatKey,
+        ...shardParams(shard),
+        maxSeats - seats.length
+      );
     for (const row of orphans) {
       seats.push({
         workspaceId: row.workspace_id,
@@ -1953,10 +2132,21 @@ export async function dueSeatsForWorker(
  * deployment rather than about one worker's slice of it.
  */
 export async function seatsWithDueActions(db: Db, now: Date): Promise<DueSeat[]> {
-  const seats = await dueSeatsForWorker(db, now, { maxSeats: 10_000, maxSeatsPerWorkspace: 10_000 });
+  const seats = await dueSeatsForWorker(db, now, {
+    maxSeats: 10_000,
+    maxSeatsPerWorkspace: 10_000
+  });
   return seats
-    .map((seat) => ({ workspaceId: seat.workspaceId, seatKey: seat.seatKey, timezone: seat.timezone }))
-    .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId) || left.seatKey.localeCompare(right.seatKey));
+    .map((seat) => ({
+      workspaceId: seat.workspaceId,
+      seatKey: seat.seatKey,
+      timezone: seat.timezone
+    }))
+    .sort(
+      (left, right) =>
+        left.workspaceId.localeCompare(right.workspaceId) ||
+        left.seatKey.localeCompare(right.seatKey)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1998,8 +2188,12 @@ export async function reapExpiredActionLeases(
 ): Promise<number> {
   const now = options.now ?? new Date();
   const limit = Math.max(1, Math.trunc(options.limit ?? 500));
-  const legacyBefore = new Date(now.getTime() - Math.max(60_000, options.legacyGraceMs ?? LEGACY_CLAIM_GRACE_MS));
-  const result = await db.prepare(`
+  const legacyBefore = new Date(
+    now.getTime() - Math.max(60_000, options.legacyGraceMs ?? LEGACY_CLAIM_GRACE_MS)
+  );
+  const result = await db
+    .prepare(
+      `
     UPDATE linkedin_actions
     SET claimed_at=NULL, claimed_by=NULL, lease_expires_at=NULL, batch_id=NULL
     WHERE id IN (
@@ -2015,7 +2209,9 @@ export async function reapExpiredActionLeases(
       FOR UPDATE SKIP LOCKED
       LIMIT ${limit}
     )
-  `).run(now.toISOString(), legacyBefore.toISOString());
+  `
+    )
+    .run(now.toISOString(), legacyBefore.toISOString());
   return result.changes;
 }
 
@@ -2042,7 +2238,9 @@ export async function reapStaleLinkedInBatches(
   const now = options.now ?? new Date();
   const limit = Math.max(1, Math.trunc(options.limit ?? 200));
   const before = new Date(now.getTime() - Math.max(60_000, options.olderThanMs ?? STALE_BATCH_MS));
-  const result = await db.prepare(`
+  const result = await db
+    .prepare(
+      `
     UPDATE linkedin_batches
     SET status='halted', halt_reason=?, finished_at=?
     WHERE id IN (
@@ -2052,7 +2250,9 @@ export async function reapStaleLinkedInBatches(
       FOR UPDATE SKIP LOCKED
       LIMIT ${limit}
     )
-  `).run(STALE_BATCH_REASON, now.toISOString(), before.toISOString());
+  `
+    )
+    .run(STALE_BATCH_REASON, now.toISOString(), before.toISOString());
   return result.changes;
 }
 
@@ -2106,17 +2306,28 @@ interface SeatLeaseRow {
  */
 export async function claimSeatLease(
   db: Db,
-  options: { workspaceId: string; seatKey: string; workerId: string; host: string; profileDir: string; leaseMs?: number },
+  options: {
+    workspaceId: string;
+    seatKey: string;
+    workerId: string;
+    host: string;
+    profileDir: string;
+    leaseMs?: number;
+  },
   now: Date = new Date()
 ): Promise<SeatLeaseOutcome> {
   const leaseMs = Math.max(60_000, Math.trunc(options.leaseMs ?? SEAT_LEASE_MS));
   const expiresAt = new Date(now.getTime() + leaseMs).toISOString();
 
-  const current = await db.prepare(`
+  const current = await db
+    .prepare(
+      `
     SELECT worker_id, host, profile_dir,
            TO_CHAR(lease_expires_at AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS lease_expires_at
     FROM linkedin_seat_leases WHERE workspace_id=? AND seat_key=?
-  `).get<SeatLeaseRow>(options.workspaceId, options.seatKey);
+  `
+    )
+    .get<SeatLeaseRow>(options.workspaceId, options.seatKey);
 
   // WHOSE SESSION IS IT, AND CAN IT TRAVEL? The host pin below exists for one
   // reason: the Chrome profile IS the session and it sits on ONE host's local
@@ -2138,9 +2349,16 @@ export async function claimSeatLease(
   // still a new-device sign-in -- the session is in the database and that
   // worker is not going to read it into a persistent Chrome profile. Only
   // remote-to-remote genuinely carries the session with it.
-  const portable = current ? isRemoteSessionHome(current.profile_dir) && isRemoteSessionHome(options.profileDir) : false;
+  const portable = current
+    ? isRemoteSessionHome(current.profile_dir) && isRemoteSessionHome(options.profileDir)
+    : false;
 
-  if (current && !portable && current.host !== options.host && !seatProfilePresent(options.profileDir)) {
+  if (
+    current &&
+    !portable &&
+    current.host !== options.host &&
+    !seatProfilePresent(options.profileDir)
+  ) {
     return {
       ok: false,
       reason: isRemoteSessionHome(options.profileDir)
@@ -2153,7 +2371,9 @@ export async function claimSeatLease(
   // only when it is ours already or its term has run out; otherwise the
   // statement writes nothing and returns nothing, which is a refusal with no
   // race window between the read above and this write.
-  const taken = await db.prepare(`
+  const taken = await db
+    .prepare(
+      `
     INSERT INTO linkedin_seat_leases (workspace_id, seat_key, worker_id, host, profile_dir, leased_at, lease_expires_at, released_at)
     VALUES (?,?,?,?,?,?,?,NULL)
     ON CONFLICT (workspace_id, seat_key) DO UPDATE
@@ -2163,15 +2383,17 @@ export async function claimSeatLease(
        OR linkedin_seat_leases.released_at IS NOT NULL
        OR linkedin_seat_leases.lease_expires_at <= EXCLUDED.leased_at
     RETURNING TO_CHAR(lease_expires_at AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS lease_expires_at
-  `).get<{ lease_expires_at: string }>(
-    options.workspaceId,
-    options.seatKey,
-    options.workerId,
-    options.host,
-    options.profileDir,
-    now.toISOString(),
-    expiresAt
-  );
+  `
+    )
+    .get<{ lease_expires_at: string }>(
+      options.workspaceId,
+      options.seatKey,
+      options.workerId,
+      options.host,
+      options.profileDir,
+      now.toISOString(),
+      expiresAt
+    );
 
   if (!taken) {
     return {
@@ -2194,10 +2416,19 @@ export async function heartbeatSeatLease(
   now: Date = new Date()
 ): Promise<boolean> {
   const leaseMs = Math.max(60_000, Math.trunc(options.leaseMs ?? SEAT_LEASE_MS));
-  const result = await db.prepare(`
+  const result = await db
+    .prepare(
+      `
     UPDATE linkedin_seat_leases SET lease_expires_at=?
     WHERE workspace_id=? AND seat_key=? AND worker_id=? AND released_at IS NULL
-  `).run(new Date(now.getTime() + leaseMs).toISOString(), options.workspaceId, options.seatKey, options.workerId);
+  `
+    )
+    .run(
+      new Date(now.getTime() + leaseMs).toISOString(),
+      options.workspaceId,
+      options.seatKey,
+      options.workerId
+    );
   return result.changes > 0;
 }
 
@@ -2215,10 +2446,20 @@ export async function releaseSeatLease(
   options: { workspaceId: string; seatKey: string; workerId: string },
   now: Date = new Date()
 ): Promise<void> {
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE linkedin_seat_leases SET released_at=?, lease_expires_at=?
     WHERE workspace_id=? AND seat_key=? AND worker_id=?
-  `).run(now.toISOString(), now.toISOString(), options.workspaceId, options.seatKey, options.workerId);
+  `
+    )
+    .run(
+      now.toISOString(),
+      now.toISOString(),
+      options.workspaceId,
+      options.seatKey,
+      options.workerId
+    );
 }
 
 /**
@@ -2261,7 +2502,7 @@ export function seatSessionHome(
   env: NodeJS.ProcessEnv = process.env
 ): string {
   const provider = config.companionBrowser
-    ? companionBrowserSettings(env) ?? browserProviderSettings(env)
+    ? (companionBrowserSettings(env) ?? browserProviderSettings(env))
     : browserProviderSettings(env);
   return provider.kind === 'remote'
     ? remoteSessionHome(provider.remote?.label ?? null)
@@ -2295,23 +2536,31 @@ export function seatProfilePresent(profileDir: string): boolean {
  */
 export async function seatRefsForShard(
   db: Db,
-  options: { shard?: WorkerShard; limit?: number; after?: { workspaceId: string; seatKey: string } | null } = {}
+  options: {
+    shard?: WorkerShard;
+    limit?: number;
+    after?: { workspaceId: string; seatKey: string } | null;
+  } = {}
 ): Promise<Array<{ workspaceId: string; seatKey: string }>> {
   const shard = options.shard ?? SINGLE_WORKER_SHARD;
   const limit = Math.max(1, Math.trunc(options.limit ?? 200));
   const after = options.after ?? null;
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT workspace_id, seat_key FROM linkedin_seats
     WHERE (?::text IS NULL OR (workspace_id, seat_key) > (?::text, ?::text))
       AND ${shardPredicate("workspace_id || '/' || seat_key")}
     ORDER BY workspace_id ASC, seat_key ASC
     LIMIT ${limit}
-  `).all<{ workspace_id: string; seat_key: string }>(
-    after?.workspaceId ?? null,
-    after?.workspaceId ?? null,
-    after?.seatKey ?? null,
-    ...shardParams(shard)
-  );
+  `
+    )
+    .all<{ workspace_id: string; seat_key: string }>(
+      after?.workspaceId ?? null,
+      after?.workspaceId ?? null,
+      after?.seatKey ?? null,
+      ...shardParams(shard)
+    );
   return rows.map((row) => ({ workspaceId: row.workspace_id, seatKey: row.seat_key }));
 }
 
@@ -2330,13 +2579,17 @@ export async function linkedinWorkspaceIdsForShard(
   const shard = options.shard ?? SINGLE_WORKER_SHARD;
   const limit = Math.max(1, Math.trunc(options.limit ?? 200));
   const after = options.after ?? null;
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT DISTINCT workspace_id FROM linkedin_seats
     WHERE (?::text IS NULL OR workspace_id > ?::text)
       AND ${shardPredicate('workspace_id')}
     ORDER BY workspace_id ASC
     LIMIT ${limit}
-  `).all<{ workspace_id: string }>(after, after, ...shardParams(shard));
+  `
+    )
+    .all<{ workspace_id: string }>(after, after, ...shardParams(shard));
   return rows.map((row) => row.workspace_id);
 }
 
@@ -2588,7 +2841,8 @@ export function playwrightBrowsersPath(
     }
   }
   if (configured) return configured;
-  if (platform === 'win32') return join(env.LOCALAPPDATA?.trim() || join(homedir(), 'AppData', 'Local'), 'ms-playwright');
+  if (platform === 'win32')
+    return join(env.LOCALAPPDATA?.trim() || join(homedir(), 'AppData', 'Local'), 'ms-playwright');
   if (platform === 'darwin') return join(homedir(), 'Library', 'Caches', 'ms-playwright');
   return join(env.XDG_CACHE_HOME?.trim() || join(homedir(), '.cache'), 'ms-playwright');
 }
@@ -2634,7 +2888,9 @@ export function linkedInBrowserReadiness(
   if (config.companionBrowser) {
     return {
       canLaunchHeaded: false,
-      reasons: ['This hosted process drives the visible Chrome window on the paired member computer, not a window on the server.']
+      reasons: [
+        'This hosted process drives the visible Chrome window on the paired member computer, not a window on the server.'
+      ]
     };
   }
 
@@ -2648,7 +2904,9 @@ export function linkedInBrowserReadiness(
   if (remote.kind === 'remote') {
     return {
       canLaunchHeaded: false,
-      reasons: [`This deployment drives a remote browser at ${remote.remote?.label ?? 'the configured provider'}, so there is no window on this machine for anyone to watch.`]
+      reasons: [
+        `This deployment drives a remote browser at ${remote.remote?.label ?? 'the configured provider'}, so there is no window on this machine for anyone to watch.`
+      ]
     };
   }
 
@@ -2661,7 +2919,9 @@ export function linkedInBrowserReadiness(
     const wayland = env.WAYLAND_DISPLAY?.trim();
     const display = env.DISPLAY?.trim();
     if (!wayland && !display) {
-      blockers.push('No display is attached to this process, so a browser window cannot open here.');
+      blockers.push(
+        'No display is attached to this process, so a browser window cannot open here.'
+      );
     } else if (!wayland && display) {
       // SET IS NOT SERVED. `DISPLAY=:99` is an address, not a promise that
       // anything is listening at it, and the two came apart in this project's
@@ -2680,7 +2940,9 @@ export function linkedInBrowserReadiness(
       // may not be allowed to stat, and a false blocker is worse than none.
       const local = /^(?:unix)?:(\d+)(?:\.\d+)?$/.exec(display);
       if (local && !existsSync(join(options.xSocketDir ?? X11_SOCKET_DIR, `X${local[1]}`))) {
-        blockers.push(`DISPLAY is ${display} but no X server is serving it, so a browser window cannot open here.`);
+        blockers.push(
+          `DISPLAY is ${display} but no X server is serving it, so a browser window cannot open here.`
+        );
       }
     }
   }
@@ -2689,7 +2951,10 @@ export function linkedInBrowserReadiness(
   return {
     canLaunchHeaded: false,
     reasons: inContainer()
-      ? ['This process runs in a container, which has no display and no browser of its own.', ...blockers]
+      ? [
+          'This process runs in a container, which has no display and no browser of its own.',
+          ...blockers
+        ]
       : blockers
   };
 }
@@ -2703,7 +2968,9 @@ function browserBlockers(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): str
     localWorkerRequire.resolve('playwright');
     playwrightResolvable = true;
   } catch {
-    blockers.push('Playwright is not installed here; run `npm i playwright && npx playwright install chromium`.');
+    blockers.push(
+      'Playwright is not installed here; run `npm i playwright && npx playwright install chromium`.'
+    );
   }
 
   // Only worth asking once playwright itself resolves: "install the browsers"
@@ -2755,7 +3022,9 @@ export function linkedInHeadlessReadiness(
       ? { canLaunchHeadless: true, reasons: [] }
       : {
           canLaunchHeadless: false,
-          reasons: ['No browser driver is installed on this hosted worker, so it cannot attach to the paired computer.']
+          reasons: [
+            'No browser driver is installed on this hosted worker, so it cannot attach to the paired computer.'
+          ]
         };
   }
 
@@ -2772,13 +3041,17 @@ export function linkedInHeadlessReadiness(
       ? { canLaunchHeadless: true, reasons: [] }
       : {
           canLaunchHeadless: false,
-          reasons: ['No browser driver is installed here, so this process cannot attach to a remote browser; run `npm i patchright` (or playwright) in the image that runs the worker.']
+          reasons: [
+            'No browser driver is installed here, so this process cannot attach to a remote browser; run `npm i patchright` (or playwright) in the image that runs the worker.'
+          ]
         };
   }
   if (remote.problem) return { canLaunchHeadless: false, reasons: [remote.problem] };
 
   const blockers = browserBlockers(env, options.platform ?? process.platform);
-  return blockers.length === 0 ? { canLaunchHeadless: true, reasons: [] } : { canLaunchHeadless: false, reasons: blockers };
+  return blockers.length === 0
+    ? { canLaunchHeadless: true, reasons: [] }
+    : { canLaunchHeadless: false, reasons: blockers };
 }
 
 /** Is the driver LIBRARY here? The only local requirement a remote browser has. */
@@ -2836,13 +3109,22 @@ export interface LinkedInBrowserContext {
  */
 export interface PlaywrightLike {
   chromium: {
-    launchPersistentContext(userDataDir: string, options?: Record<string, unknown>): Promise<LinkedInBrowserContext>;
-    connectOverCDP?(endpointURL: string, options?: Record<string, unknown>): Promise<{
+    launchPersistentContext(
+      userDataDir: string,
+      options?: Record<string, unknown>
+    ): Promise<LinkedInBrowserContext>;
+    connectOverCDP?(
+      endpointURL: string,
+      options?: Record<string, unknown>
+    ): Promise<{
       newContext(options?: Record<string, unknown>): Promise<LinkedInBrowserContext>;
       contexts?(): LinkedInBrowserContext[];
       close(): Promise<void>;
     }>;
-    connect?(wsEndpoint: string, options?: Record<string, unknown>): Promise<{
+    connect?(
+      wsEndpoint: string,
+      options?: Record<string, unknown>
+    ): Promise<{
       newContext(options?: Record<string, unknown>): Promise<LinkedInBrowserContext>;
       contexts?(): LinkedInBrowserContext[];
       close(): Promise<void>;
@@ -2982,12 +3264,18 @@ const LOG_SUPPRESSION_MS = 60 * 60_000;
 const MAX_LOG_KEYS = 2_000;
 const loggedRecently = new Map<string, number>();
 
-export function shouldLogOnce(key: string, now: Date, windowMs: number = LOG_SUPPRESSION_MS): boolean {
+export function shouldLogOnce(
+  key: string,
+  now: Date,
+  windowMs: number = LOG_SUPPRESSION_MS
+): boolean {
   const at = now.getTime();
   const last = loggedRecently.get(key);
   if (last !== undefined && at - last < windowMs) return false;
   if (loggedRecently.size >= MAX_LOG_KEYS) {
-    for (const oldest of [...loggedRecently.entries()].sort((left, right) => left[1] - right[1]).slice(0, MAX_LOG_KEYS / 4)) {
+    for (const oldest of [...loggedRecently.entries()]
+      .sort((left, right) => left[1] - right[1])
+      .slice(0, MAX_LOG_KEYS / 4)) {
       loggedRecently.delete(oldest[0]);
     }
   }
@@ -3003,7 +3291,11 @@ export function shouldLogOnce(key: string, now: Date, windowMs: number = LOG_SUP
  * there is one account on one laptop and an unanswerable one across thousands
  * of workspaces, which is what every line in this pass used to be.
  */
-function seatLogger(log: (message: string) => void, workspaceId: string, seatKey: string): (message: string) => void {
+function seatLogger(
+  log: (message: string) => void,
+  workspaceId: string,
+  seatKey: string
+): (message: string) => void {
   return (message: string) => log(`LinkedIn seat ${workspaceId}/${seatKey}: ${message}`);
 }
 
@@ -3137,9 +3429,15 @@ export function seatContextFingerprint(
   const userAgent = linuxChromeUserAgent(chromeMajor);
   const viewport = SEAT_VIEWPORTS[seededIndex(seed, 16, SEAT_VIEWPORTS.length)];
   const seatTimezone = timezone?.trim();
-  if (!seatTimezone) return { userAgent, locale: derived.locale, timezoneId: derived.timezoneId, viewport };
+  if (!seatTimezone)
+    return { userAgent, locale: derived.locale, timezoneId: derived.timezoneId, viewport };
   const paired = SEAT_BROWSER_PROFILES.find((profile) => profile.timezoneId === seatTimezone);
-  return { userAgent, locale: paired?.locale ?? derived.locale, timezoneId: seatTimezone, viewport };
+  return {
+    userAgent,
+    locale: paired?.locale ?? derived.locale,
+    timezoneId: seatTimezone,
+    viewport
+  };
 }
 
 /**
@@ -3250,7 +3548,10 @@ const PROXY_MAP_ENV = 'TREVRA_LINKEDIN_PROXIES';
 
 /** Whatever an id or a seat key is, this is what it may contribute to an env var name. */
 function envSafe(value: string): string {
-  return value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '_');
 }
 
 /**
@@ -3390,17 +3691,23 @@ function proxyFromMap(
     parsed = JSON.parse(raw);
   } catch {
     // The VALUE is never quoted back: this object is full of passwords.
-    throw new Error(`${PROXY_MAP_ENV} is not valid JSON. It is an object keyed by "<workspace>/<seat>", with "*" allowed on either side.`);
+    throw new Error(
+      `${PROXY_MAP_ENV} is not valid JSON. It is an object keyed by "<workspace>/<seat>", with "*" allowed on either side.`
+    );
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`${PROXY_MAP_ENV} must be a JSON object keyed by "<workspace>/<seat>", with "*" allowed on either side.`);
+    throw new Error(
+      `${PROXY_MAP_ENV} must be a JSON object keyed by "<workspace>/<seat>", with "*" allowed on either side.`
+    );
   }
   const table = parsed as Record<string, unknown>;
   for (const key of [`${workspaceId}/${seatKey}`, `*/${seatKey}`, `${workspaceId}/*`, '*']) {
     const value = table[key];
     if (value === undefined) continue;
     if (typeof value !== 'string' || !value.trim()) {
-      throw new Error(`${PROXY_MAP_ENV} entry "${key}" is not a proxy URL. Use http://user:pass@host:port, https://... or socks5://host:port.`);
+      throw new Error(
+        `${PROXY_MAP_ENV} entry "${key}" is not a proxy URL. Use http://user:pass@host:port, https://... or socks5://host:port.`
+      );
     }
     return { source: `${PROXY_MAP_ENV} entry "${key}"`, raw: value.trim() };
   }
@@ -3414,11 +3721,15 @@ function parseProxyUrl(source: string, raw: string): SeatProxy {
     url = new URL(raw);
   } catch {
     // The VALUE is never quoted back: a proxy URL routinely carries a password.
-    throw new Error(`${source} is not a URL. Use http://user:pass@host:port, https://... or socks5://host:port.`);
+    throw new Error(
+      `${source} is not a URL. Use http://user:pass@host:port, https://... or socks5://host:port.`
+    );
   }
   const scheme = url.protocol.replace(':', '');
   if (!['http', 'https', 'socks5'].includes(scheme)) {
-    throw new Error(`${source} uses an unsupported proxy scheme '${scheme}'. Chromium accepts http, https and socks5.`);
+    throw new Error(
+      `${source} uses an unsupported proxy scheme '${scheme}'. Chromium accepts http, https and socks5.`
+    );
   }
   if (!url.hostname) throw new Error(`${source} names no proxy host.`);
   const username = decodeURIComponent(url.username);
@@ -3427,7 +3738,9 @@ function parseProxyUrl(source: string, raw: string): SeatProxy {
     // Chromium cannot authenticate a SOCKS proxy. Accepting it would mean
     // launching with credentials that are silently dropped, which is a direct
     // connection wearing a proxy's clothes.
-    throw new Error(`${source} is a SOCKS proxy with credentials, which Chromium cannot authenticate. Use an http proxy, or a SOCKS proxy that authorises this machine by IP.`);
+    throw new Error(
+      `${source} is a SOCKS proxy with credentials, which Chromium cannot authenticate. Use an http proxy, or a SOCKS proxy that authorises this machine by IP.`
+    );
   }
   return {
     server: `${scheme}://${url.host}`,
@@ -3449,7 +3762,11 @@ function parseProxyUrl(source: string, raw: string): SeatProxy {
  * the operator has no way to tell whose run failed. Keyed and time-boxed
  * instead: see {@link shouldLogOnce}.
  */
-function reportMissingPlaywright(log: (message: string) => void, cause: unknown, scope = 'process'): void {
+function reportMissingPlaywright(
+  log: (message: string) => void,
+  cause: unknown,
+  scope = 'process'
+): void {
   if (!shouldLogOnce(`playwright-missing:${scope}`, new Date())) return;
   log(
     `LinkedIn local worker is enabled but stays off: no browser driver installed; run npm i patchright && npx patchright install chromium (${cause instanceof Error ? cause.message : String(cause)})`
@@ -3462,7 +3779,11 @@ function reportMissingPlaywright(log: (message: string) => void, cause: unknown,
  * used to have the same defect: a single module-level string, so one scope's
  * message silenced every other scope's identical one forever.
  */
-function reportUnready(log: (message: string) => void, readiness: LinkedInBrowserReadiness, scope = 'process'): void {
+function reportUnready(
+  log: (message: string) => void,
+  readiness: LinkedInBrowserReadiness,
+  scope = 'process'
+): void {
   const summary = readiness.reasons.join(' ');
   if (!shouldLogOnce(`unready:${scope}:${summary}`, new Date())) return;
   log(`LinkedIn local worker stays off here: ${summary}`);
@@ -3619,7 +3940,9 @@ export function seatLaunchArgs(inside: boolean): string[] {
     '--disable-blink-features=AutomationControlled',
     // See the ANGLE note on the launch options: without these, WebGL in this
     // container returns null, which is rarer than a software renderer.
-    ...(inside ? ['--use-gl=angle', '--use-angle=gl-egl', '--no-sandbox', '--disable-dev-shm-usage'] : [])
+    ...(inside
+      ? ['--use-gl=angle', '--use-angle=gl-egl', '--no-sandbox', '--disable-dev-shm-usage']
+      : [])
   ];
 }
 
@@ -3639,7 +3962,10 @@ async function launchSeatBrowser(
   for (let index = 0; index < BROWSER_CHANNELS.length; index += 1) {
     const channel = BROWSER_CHANNELS[index] as string;
     try {
-      const context = await playwright.chromium.launchPersistentContext(profileDir, optionsFor(channel));
+      const context = await playwright.chromium.launchPersistentContext(
+        profileDir,
+        optionsFor(channel)
+      );
       if (!launchChannelLogged) {
         launchChannelLogged = true;
         log(
@@ -3684,9 +4010,16 @@ const NOISE_URLS: readonly string[] = [
  * that times out: all of them land here and are dropped. The caller's own
  * first `goto` is the one that matters and it happens either way.
  */
-export async function warmUpSession(page: unknown, seed: string, log: (message: string) => void): Promise<void> {
+export async function warmUpSession(
+  page: unknown,
+  seed: string,
+  log: (message: string) => void
+): Promise<void> {
   const target = page as {
-    goto?: (url: string, options?: { waitUntil?: 'domcontentloaded'; timeout?: number }) => Promise<unknown>;
+    goto?: (
+      url: string,
+      options?: { waitUntil?: 'domcontentloaded'; timeout?: number }
+    ) => Promise<unknown>;
     waitForTimeout?: (ms: number) => Promise<void>;
   };
   if (typeof target.goto !== 'function' || typeof target.waitForTimeout !== 'function') return;
@@ -3758,7 +4091,9 @@ async function openRemoteSeatHandle(input: {
   // or write a second copy of its cookies in Trevra merely because the worker
   // reaches that browser over CDP.
   if (input.settings.remote?.sessionPersistence !== 'browser' && input.db) {
-    const stored = await readSeatStorageState(input.db, input.workspaceId, input.seatKey, { env: input.env });
+    const stored = await readSeatStorageState(input.db, input.workspaceId, input.seatKey, {
+      env: input.env
+    });
     if (stored.status === 'ok') storageState = stored.state;
     else if (stored.status === 'needs_login') {
       logOncePerSeat(
@@ -3795,7 +4130,14 @@ async function openRemoteSeatHandle(input: {
   if ('refused' in opened) {
     // ONCE PER SEAT PER WINDOW. On a hosted fleet "this seat has no proxy" is a
     // steady state somebody has to fix, not a per-minute incident.
-    logOncePerSeat(input.log, `remote:${opened.refused}`, input.workspaceId, input.seatKey, opened.refused, new Date());
+    logOncePerSeat(
+      input.log,
+      `remote:${opened.refused}`,
+      input.workspaceId,
+      input.seatKey,
+      opened.refused,
+      new Date()
+    );
     return null;
   }
 
@@ -3922,7 +4264,8 @@ export async function openBrowser(
   if (!playwright) return null;
   const profileDir = resolveProfileDir(config.profileDir, options.workspaceId, seatKey);
   const providerSettings = config.companionBrowser
-    ? companionBrowserSettings(options.env ?? process.env) ?? browserProviderSettings(options.env ?? process.env)
+    ? (companionBrowserSettings(options.env ?? process.env) ??
+      browserProviderSettings(options.env ?? process.env))
     : browserProviderSettings(options.env ?? process.env);
   const companion = providerSettings.remote?.sessionPersistence === 'browser';
 
@@ -3932,7 +4275,9 @@ export async function openBrowser(
   let proxy: SeatProxy | null = null;
   if (!companion) {
     try {
-      const stored = options.db ? await seatProxyUrl(options.db, options.workspaceId, seatKey) : null;
+      const stored = options.db
+        ? await seatProxyUrl(options.db, options.workspaceId, seatKey)
+        : null;
       proxy = resolveSeatProxy(options.env ?? process.env, options.workspaceId, seatKey, stored);
     } catch (cause) {
       log(
@@ -3942,7 +4287,11 @@ export async function openBrowser(
     }
   }
 
-  const fingerprint = seatContextFingerprint(options.workspaceId, seatKey, options.timezone ?? null);
+  const fingerprint = seatContextFingerprint(
+    options.workspaceId,
+    seatKey,
+    options.timezone ?? null
+  );
 
   // WHERE THE BROWSER IS, DECIDED HERE AND NOWHERE ELSE.
   if (providerSettings.kind === 'remote' || providerSettings.problem) {
@@ -4130,14 +4479,20 @@ export async function openBrowser(
  * a captcha in it. Headless is what is left when there is no display -- the
  * container -- and it is usable only by a seat that can sign itself in.
  */
-function seatBrowserMode(config: LinkedInLocalWorkerConfig): { headless: boolean; blocked: string | null } {
+function seatBrowserMode(config: LinkedInLocalWorkerConfig): {
+  headless: boolean;
+  blocked: string | null;
+} {
   const headed = linkedInBrowserReadiness(config);
   if (headed.canLaunchHeaded) return { headless: false, blocked: null };
   const headless = linkedInHeadlessReadiness(config);
   if (headless.canLaunchHeadless) return { headless: true, blocked: null };
   // Neither. The headed reasons are the fuller set and already carry the
   // container line that explains the rest.
-  return { headless: false, blocked: headed.reasons[headed.reasons.length - 1] ?? linkedInOffReason(config) };
+  return {
+    headless: false,
+    blocked: headed.reasons[headed.reasons.length - 1] ?? linkedInOffReason(config)
+  };
 }
 
 /** The four answers `POST /api/linkedin/seat/login` may give. */
@@ -4225,7 +4580,8 @@ const TYPING_GAP_MS = { min: 45, max: 165 } as const;
  */
 export function humanCadencePage(page: LinkedInPage, seed: string): LinkedInPage {
   const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
-  const gap = (): number => Math.round(TYPING_GAP_MS.min + random() * (TYPING_GAP_MS.max - TYPING_GAP_MS.min));
+  const gap = (): number =>
+    Math.round(TYPING_GAP_MS.min + random() * (TYPING_GAP_MS.max - TYPING_GAP_MS.min));
 
   const wrapLocator = (locator: LinkedInLocator): LinkedInLocator => {
     const wrapped: LinkedInLocator = {
@@ -4250,7 +4606,8 @@ export function humanCadencePage(page: LinkedInPage, seed: string): LinkedInPage
     // Preserved exactly as found: `driver.ts` reads `typeof field.press` to
     // decide whether the form can be submitted with Enter, and inventing the
     // method here would have it press Enter on a page that cannot.
-    if (typeof locator.press === 'function') wrapped.press = (key, options) => locator.press!(key, options);
+    if (typeof locator.press === 'function')
+      wrapped.press = (key, options) => locator.press!(key, options);
     return wrapped;
   };
 
@@ -4343,7 +4700,8 @@ export async function loginLinkedInSeat(
       headless: mode.headless,
       timezone: options.timezone ?? null
     });
-    if (!handle) return { status: 'failed', message: browserOpenFailedMessage(options.workspaceId, seatKey) };
+    if (!handle)
+      return { status: 'failed', message: browserOpenFailedMessage(options.workspaceId, seatKey) };
     page = handle.page;
   }
 
@@ -4374,36 +4732,54 @@ export async function loginLinkedInSeat(
     // towards a stored state older than the live one and eventually restore a
     // session LinkedIn has already retired. A no-op for a local handle.
     await persistSeatSession(db, options.workspaceId, seatKey, log);
-    return { status: 'ok', message: 'That LinkedIn session is still live, so nothing had to be signed in.' };
+    return {
+      status: 'ok',
+      message: 'That LinkedIn session is still live, so nothing had to be signed in.'
+    };
   }
 
-  // Hosted companion sessions deliberately keep LinkedIn credentials out of
-  // Trevra. If that persistent local profile is no longer authenticated, the
-  // correct fallback is therefore a HUMAN recovery in the same profile, not a
-  // request to save a password on the server. Record one durable attention
-  // event; a later `session_reused`/`login` event is the proof that clears it.
-  if (config.companionBrowser) {
-    const recovery = await driver.sessionRecoveryReason?.(page) ?? 'signed_out';
-    const command = seatKey === OWNER_SEAT_KEY
-      ? 'trevra linkedin reconnect'
-      : `trevra linkedin reconnect --seat ${seatKey}`;
-    const message = recovery === 'challenge'
-      ? `LinkedIn needs a human check on the paired computer. Run \`${command}\` to open the dedicated profile visibly, finish the CAPTCHA, verification or sign-in, then close that Chrome window. Background mode resumes automatically.`
-      : `The LinkedIn session on the paired computer needs to be reconnected. Run \`${command}\` to open the dedicated profile visibly, sign in if asked, then close that Chrome window. Background mode resumes automatically.`;
-    challengedSeats.set(seatHandleKey(options.workspaceId, seatKey), { until: now.getTime() + CHALLENGE_RETRY_COOLDOWN_MS, message });
+  // A companion seat signs in automatically when this workspace already has a
+  // stored LinkedIn credential -- the same one the headless path below uses --
+  // over the existing relay, exactly like `loginWithCredentials` further down.
+  // Only when there is NO stored credential, or the attempt itself needs
+  // something only a person can supply (an OTP, a checkpoint, a CAPTCHA), does
+  // this fall back to a HUMAN recovery in the same profile. Record one durable
+  // attention event in that case; a later `session_reused`/`login` event is
+  // the proof that clears it.
+  const companionHumanRecovery = async (
+    forcedRecovery?: 'challenge' | 'signed_out'
+  ): Promise<LinkedInLoginOutcome> => {
+    const recovery =
+      forcedRecovery ?? (await driver.sessionRecoveryReason?.(page!)) ?? 'signed_out';
+    const command =
+      seatKey === OWNER_SEAT_KEY
+        ? 'trevra linkedin reconnect'
+        : `trevra linkedin reconnect --seat ${seatKey}`;
+    const message =
+      recovery === 'challenge'
+        ? `LinkedIn needs a human check on the paired computer. Run \`${command}\` to open the dedicated profile visibly, finish the CAPTCHA, verification or sign-in, then close that Chrome window. Background mode resumes automatically.`
+        : `The LinkedIn session on the paired computer needs to be reconnected. Run \`${command}\` to open the dedicated profile visibly, sign in if asked, then close that Chrome window. Background mode resumes automatically.`;
+    challengedSeats.set(seatHandleKey(options.workspaceId, seatKey), {
+      until: now.getTime() + CHALLENGE_RETRY_COOLDOWN_MS,
+      message
+    });
     await recordSeatEvent(
       db,
       {
         workspaceId: options.workspaceId,
         seatKey,
         kind: recovery === 'challenge' ? 'challenge' : 'reconnect_required',
-        url: typeof page.url === 'function' ? page.url() : null,
+        url: typeof page!.url === 'function' ? page!.url() : null,
         detail: message
       },
       now
     );
     return { status: 'challenge', message };
-  }
+  };
+
+  const credentials = await readLinkedInCredentials(db, options.workspaceId, process.env, seatKey);
+
+  if (config.companionBrowser && !credentials) return companionHumanRecovery();
 
   // A challenge from an earlier tick is still open in this same page. Say so
   // again, verbatim, rather than re-navigating to LOGIN_URL underneath the
@@ -4413,16 +4789,18 @@ export async function loginLinkedInSeat(
     return { status: 'challenge', message: challenged.message };
   }
 
-  const credentials = await readLinkedInCredentials(db, options.workspaceId, process.env, seatKey);
   if (!credentials) {
-    // Covers hosted, nothing stored, and half stored. One sentence -- naming
-    // the seat only when there is more than one it could be, because "seat
-    // 'owner'" means nothing to somebody running a single account.
+    // Only reachable for a non-companion seat now -- a companion seat with no
+    // stored credential already returned above. Covers hosted, nothing
+    // stored, and half stored. One sentence -- naming the seat only when
+    // there is more than one it could be, because "seat 'owner'" means
+    // nothing to somebody running a single account.
     return {
       status: 'failed',
-      message: seatKey === OWNER_SEAT_KEY
-        ? 'Save your LinkedIn email and password here to sign in.'
-        : `Save the LinkedIn email and password for seat '${seatKey}' to sign it in.`
+      message:
+        seatKey === OWNER_SEAT_KEY
+          ? 'Save your LinkedIn email and password here to sign in.'
+          : `Save the LinkedIn email and password for seat '${seatKey}' to sign it in.`
     };
   }
 
@@ -4441,7 +4819,14 @@ export async function loginLinkedInSeat(
   );
 
   if ('needsOtp' in result) {
-    return { status: 'otp_required', message: 'LinkedIn wants a verification code; enter the one it just sent and sign in again.' };
+    // No interactive OTP channel exists on this call path for a companion
+    // seat -- finishing a code is exactly the kind of step that needs a
+    // person at the paired computer's own window.
+    if (config.companionBrowser) return companionHumanRecovery('challenge');
+    return {
+      status: 'otp_required',
+      message: 'LinkedIn wants a verification code; enter the one it just sent and sign in again.'
+    };
   }
   if (result.ok) {
     challengedSeats.delete(seatHandleKey(options.workspaceId, seatKey));
@@ -4456,7 +4841,7 @@ export async function loginLinkedInSeat(
         seatKey,
         kind: 'login',
         url: typeof page.url === 'function' ? page.url() : null,
-        detail: 'Signed in with stored credentials because the session had expired.'
+        detail: 'Signed in with stored credentials because the session was not active.'
       },
       now
     );
@@ -4474,19 +4859,35 @@ export async function loginLinkedInSeat(
     };
   }
   if (result.failureKind === 'challenge') {
-    const message = 'LinkedIn wants a device check that only a person at a browser window can finish; run `npm run linkedin:worker` on a machine with a display, then complete it in that window.';
-    challengedSeats.set(seatHandleKey(options.workspaceId, seatKey), { until: now.getTime() + CHALLENGE_RETRY_COOLDOWN_MS, message });
+    // A companion profile keeps no Trevra-stored `storageState` to clear (see
+    // docs/linkedin-companion.md) -- its session lives entirely in the local
+    // Chrome profile, so the human-recovery fallback is the whole fix.
+    if (config.companionBrowser) return companionHumanRecovery('challenge');
+    const message =
+      'LinkedIn wants a device check that only a person at a browser window can finish; run `npm run linkedin:worker` on a machine with a display, then complete it in that window.';
+    challengedSeats.set(seatHandleKey(options.workspaceId, seatKey), {
+      until: now.getTime() + CHALLENGE_RETRY_COOLDOWN_MS,
+      message
+    });
     // A CHALLENGED SESSION IS NOT A SESSION. Restoring the state that was in
     // the browser when LinkedIn stopped it would replay the challenge on every
     // run; the seat starts clean next time and signs in again.
     await clearSeatStorageState(db, options.workspaceId, seatKey);
     await recordSeatEvent(
       db,
-      { workspaceId: options.workspaceId, seatKey, kind: 'challenge', url: typeof page.url === 'function' ? page.url() : null, detail: message },
+      {
+        workspaceId: options.workspaceId,
+        seatKey,
+        kind: 'challenge',
+        url: typeof page.url === 'function' ? page.url() : null,
+        detail: message
+      },
       now
     );
     return { status: 'challenge', message };
   }
+
+  if (config.companionBrowser) return companionHumanRecovery('signed_out');
 
   // `detail` is written by driver.ts from constants and the page's own URL, so
   // it can be handed to an operator verbatim.
@@ -4510,8 +4911,7 @@ export async function loginLinkedInSeat(
  * neither may 500 on "LinkedIn wants a captcha".
  */
 export type LinkedInSessionResult =
-  | { ok: true; page: LinkedInPage; driver: LinkedInDriver }
-  | { ok: false; blocked: string };
+  { ok: true; page: LinkedInPage; driver: LinkedInDriver } | { ok: false; blocked: string };
 
 export async function openLinkedInSession(
   db: Db,
@@ -4549,7 +4949,8 @@ export async function openLinkedInSession(
     headless: mode.headless,
     timezone: options.timezone ?? null
   });
-  if (!handle) return { ok: false, blocked: browserOpenFailedMessage(options.workspaceId, seatKey) };
+  if (!handle)
+    return { ok: false, blocked: browserOpenFailedMessage(options.workspaceId, seatKey) };
 
   // Every seat signs itself in: the session is reused when it still works, and
   // signed in with the stored email and password when it does not.
@@ -4624,7 +5025,10 @@ export async function closeLinkedInBrowser(workspaceId?: string, seatKey?: strin
  * evicts the least recently used context when the cap is reached, so memory is
  * bounded even when every seat is busy and nothing is idle.
  */
-export async function closeIdleBrowsers(now: Date = new Date(), idleMs: number = browserIdleMs()): Promise<number> {
+export async function closeIdleBrowsers(
+  now: Date = new Date(),
+  idleMs: number = browserIdleMs()
+): Promise<number> {
   const deadline = now.getTime() - Math.max(60_000, idleMs);
   const stale = [...browsers.entries()].filter(([, handle]) => handle.lastUsedAt <= deadline);
   for (const [key] of stale) browsers.delete(key);
@@ -4776,7 +5180,10 @@ export async function runDueLinkedInActions(
   const host = options.host ?? workerHost();
   const seatLeaseMs = Math.max(60_000, Math.trunc(options.seatLeaseMs ?? SEAT_LEASE_MS));
   const actionLeaseMs = Math.max(60_000, Math.trunc(options.actionLeaseMs ?? ACTION_LEASE_MS));
-  const concurrency = Math.max(1, Math.trunc(options.concurrency ?? defaultSeatConcurrency(headlessOnly)));
+  const concurrency = Math.max(
+    1,
+    Math.trunc(options.concurrency ?? defaultSeatConcurrency(headlessOnly))
+  );
   const closeAfterBatch = options.closeAfterBatch ?? headlessOnly;
 
   // BEFORE DISCOVERY, ALWAYS. A row still claimed by a worker that no longer
@@ -4787,15 +5194,25 @@ export async function runDueLinkedInActions(
   if (options.reap !== false) {
     try {
       const released = await reapExpiredActionLeases(db, { now });
-      if (released > 0) log(`LinkedIn local worker released ${released} action${released === 1 ? '' : 's'} whose worker stopped mid-claim; they are due again.`);
+      if (released > 0)
+        log(
+          `LinkedIn local worker released ${released} action${released === 1 ? '' : 's'} whose worker stopped mid-claim; they are due again.`
+        );
     } catch (cause) {
-      log(`LinkedIn local worker could not release expired claims: ${cause instanceof Error ? cause.message : String(cause)}`);
+      log(
+        `LinkedIn local worker could not release expired claims: ${cause instanceof Error ? cause.message : String(cause)}`
+      );
     }
     try {
       const halted = await reapStaleLinkedInBatches(db, { now });
-      if (halted > 0) log(`LinkedIn local worker closed ${halted} batch${halted === 1 ? '' : 'es'} left running by a worker that is gone.`);
+      if (halted > 0)
+        log(
+          `LinkedIn local worker closed ${halted} batch${halted === 1 ? '' : 'es'} left running by a worker that is gone.`
+        );
     } catch (cause) {
-      log(`LinkedIn local worker could not close abandoned batches: ${cause instanceof Error ? cause.message : String(cause)}`);
+      log(
+        `LinkedIn local worker could not close abandoned batches: ${cause instanceof Error ? cause.message : String(cause)}`
+      );
     }
   }
 
@@ -4812,7 +5229,9 @@ export async function runDueLinkedInActions(
       shard,
       ...(options.seatKey ? { seatKey: options.seatKey } : {}),
       ...(options.maxSeats === undefined ? {} : { maxSeats: options.maxSeats }),
-      ...(options.maxSeatsPerWorkspace === undefined ? {} : { maxSeatsPerWorkspace: options.maxSeatsPerWorkspace })
+      ...(options.maxSeatsPerWorkspace === undefined
+        ? {}
+        : { maxSeatsPerWorkspace: options.maxSeatsPerWorkspace })
     });
     recordDiscoveryOutcome(null, now);
   } catch (cause) {
@@ -4896,7 +5315,8 @@ export async function runDueLinkedInActions(
     //
     // Asked ONLY of a resting seat and answered by one indexed count, so the
     // ordinary tick pays nothing for it.
-    const answerWaiting = restingUntil > now.getTime() && (await dueManualWork(db, workspaceId, seatKey, now));
+    const answerWaiting =
+      restingUntil > now.getTime() && (await dueManualWork(db, workspaceId, seatKey, now));
     if (restingUntil > now.getTime() && !answerWaiting) {
       const reason = `is between sittings until ${new Date(restingUntil).toISOString()}`;
       logOncePerSeat(say, 'session-break', workspaceId, seatKey, reason, now);
@@ -4927,9 +5347,15 @@ export async function runDueLinkedInActions(
     const profileDir = seatSessionHome(config, workspaceId, seatKey);
     let lease: SeatLeaseOutcome;
     try {
-      lease = await claimSeatLease(db, { workspaceId, seatKey, workerId, host, profileDir, leaseMs: seatLeaseMs }, now);
+      lease = await claimSeatLease(
+        db,
+        { workspaceId, seatKey, workerId, host, profileDir, leaseMs: seatLeaseMs },
+        now
+      );
     } catch (cause) {
-      say(`could not be leased, so nothing was attempted for it: ${cause instanceof Error ? cause.message : String(cause)}`);
+      say(
+        `could not be leased, so nothing was attempted for it: ${cause instanceof Error ? cause.message : String(cause)}`
+      );
       return;
     }
     if (!lease.ok) {
@@ -4944,12 +5370,19 @@ export async function runDueLinkedInActions(
     // expired underneath a live worker would let a second worker open a second
     // Chrome on the same profile directory. Unref'd: a heartbeat must never be
     // the reason a process will not exit.
-    const heartbeat = setInterval(() => {
-      void heartbeatSeatLease(db, { workspaceId, seatKey, workerId, leaseMs: seatLeaseMs }, new Date()).catch(() => {
-        // A missed heartbeat is not fatal on its own: the lease still has
-        // whatever is left of its term, and the next one may well land.
-      });
-    }, Math.max(15_000, Math.floor(seatLeaseMs / 3)));
+    const heartbeat = setInterval(
+      () => {
+        void heartbeatSeatLease(
+          db,
+          { workspaceId, seatKey, workerId, leaseMs: seatLeaseMs },
+          new Date()
+        ).catch(() => {
+          // A missed heartbeat is not fatal on its own: the lease still has
+          // whatever is left of its term, and the next one may well land.
+        });
+      },
+      Math.max(15_000, Math.floor(seatLeaseMs / 3))
+    );
     heartbeat.unref?.();
 
     try {
@@ -4972,7 +5405,15 @@ export async function runDueLinkedInActions(
 
       // Every seat signs itself in: the session is made usable before the batch
       // opens, reused when it still works and signed in when it does not.
-      const outcome = await loginLinkedInSeat(db, config, { workspaceId, seatKey, timezone, now, driver, page: handle.page, log: say });
+      const outcome = await loginLinkedInSeat(db, config, {
+        workspaceId,
+        seatKey,
+        timezone,
+        now,
+        driver,
+        page: handle.page,
+        log: say
+      });
       if (outcome.status !== 'ok') {
         say(`cannot be used: ${outcome.message}`);
         return;
@@ -4980,10 +5421,19 @@ export async function runDueLinkedInActions(
 
       await recordSeatEvent(
         db,
-        { workspaceId, seatKey, kind: 'sitting_start', url: FEED_URL, detail: `Sitting ${sessionIndex} opened a browser and landed on the feed.` },
+        {
+          workspaceId,
+          seatKey,
+          kind: 'sitting_start',
+          url: FEED_URL,
+          detail: `Sitting ${sessionIndex} opened a browser and landed on the feed.`
+        },
         new Date()
       );
-      const store = postgresLocalWorkerStore(db, workspaceId, seatKey, { workerId, leaseMs: actionLeaseMs });
+      const store = postgresLocalWorkerStore(db, workspaceId, seatKey, {
+        workerId,
+        leaseMs: actionLeaseMs
+      });
       const result = await runLinkedInLocalBatch(store, {
         driver,
         page: handle.page,
@@ -5085,8 +5535,9 @@ export async function runDueLinkedInActions(
         // or a window too short to hold a visit. It is also what this did
         // before, so the degraded path is the old behaviour rather than a new
         // one.
-        const until = (await visitEndsAt(db, workspaceId, seatKey, new Date()))?.getTime()
-          ?? Date.now() + sessionBreakMs(sessionSeed);
+        const until =
+          (await visitEndsAt(db, workspaceId, seatKey, new Date()))?.getTime() ??
+          Date.now() + sessionBreakMs(sessionSeed);
         seatBreaks.set(handleKey, until);
         await setSeatRestingUntil(db, workspaceId, seatKey, new Date(until));
         await recordSeatEvent(
@@ -5145,7 +5596,11 @@ export async function runDueLinkedInActions(
  * whole of the middle ground, and the cursor is safe without a mutex because
  * `cursor++` cannot be interleaved: JavaScript only switches lanes at an await.
  */
-export async function runBounded<T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
+export async function runBounded<T>(
+  items: readonly T[],
+  limit: number,
+  work: (item: T) => Promise<void>
+): Promise<void> {
   if (limit <= 1) {
     for (const item of items) await work(item);
     return;
@@ -5241,7 +5696,10 @@ export async function detectLinkedInSeat(
   const log = options.log ?? ((message: string) => console.log(message));
   const now = options.now ?? new Date();
   const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
-  const refuse = (message: string, failureKind: LinkedInFailureKind | null = null): DetectSeatResult => ({
+  const refuse = (
+    message: string,
+    failureKind: LinkedInFailureKind | null = null
+  ): DetectSeatResult => ({
     detected: null,
     seat: null,
     degraded: [],
@@ -5282,7 +5740,8 @@ export async function detectLinkedInSeat(
     page,
     log
   });
-  if (outcome.status !== 'ok') return refuse(outcome.message, outcome.status === 'challenge' ? 'challenge' : null);
+  if (outcome.status !== 'ok')
+    return refuse(outcome.message, outcome.status === 'challenge' ? 'challenge' : null);
 
   // ONE PAGE, NOT TWO, WHEN THE SECOND ONE HAS NOTHING NEW TO SAY. `readSeat`
   // loads the connections list purely for the exact count -- a surface
@@ -5351,9 +5810,9 @@ export async function detectLinkedInSeat(
     // seat B automates must not restart seat A's warm-up ramp.
     await deleteSeat(db, options.workspaceId, seatKey);
     accountChangeNote =
-      `This browser signed in as ${read.profileUrl}, not ${previousProfileUrl} as this workspace last confirmed. `
-      + `${clearedThreads} stored conversation${clearedThreads === 1 ? '' : 's'} from the previous account `
-      + `${clearedThreads === 1 ? 'was' : 'were'} cleared and the warm-up ramp restarted for the new account.`;
+      `This browser signed in as ${read.profileUrl}, not ${previousProfileUrl} as this workspace last confirmed. ` +
+      `${clearedThreads} stored conversation${clearedThreads === 1 ? '' : 's'} from the previous account ` +
+      `${clearedThreads === 1 ? 'was' : 'were'} cleared and the warm-up ramp restarted for the new account.`;
     log(accountChangeNote);
   }
 
@@ -5384,7 +5843,11 @@ export async function detectLinkedInSeat(
   );
 
   return {
-    detected: { profileUrl: read.profileUrl, name: read.name, connectionsCount: read.connectionsCount },
+    detected: {
+      profileUrl: read.profileUrl,
+      name: read.name,
+      connectionsCount: read.connectionsCount
+    },
     seat,
     degraded: accountChangeNote ? [accountChangeNote, ...read.degraded] : read.degraded,
     blocked: null,
@@ -5475,16 +5938,24 @@ export async function requestSeatDetect(
 ): Promise<SeatDetectRequest> {
   assertTimezone(options.timezone);
   const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO linkedin_seat_detect_requests (id, workspace_id, seat_key, timezone, status, requested_at)
     VALUES (?,?,?,?,'pending',?)
     ON CONFLICT (workspace_id, seat_key) WHERE status = 'pending' DO NOTHING
-  `).run(id('lsdr'), options.workspaceId, seatKey, options.timezone, now.toISOString());
+  `
+    )
+    .run(id('lsdr'), options.workspaceId, seatKey, options.timezone, now.toISOString());
 
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT ${SEAT_DETECT_COLUMNS} FROM linkedin_seat_detect_requests
     WHERE workspace_id=? AND seat_key=? AND status='pending'
-  `).get<SeatDetectRow>(options.workspaceId, seatKey);
+  `
+    )
+    .get<SeatDetectRow>(options.workspaceId, seatKey);
   // The insert either wrote a pending row or lost to one that was already
   // there. Both leave exactly one, so an absence here is a schema problem
   // rather than a race, and saying so beats returning a fabricated request.
@@ -5498,12 +5969,16 @@ export async function latestSeatDetectRequest(
   workspaceId: string,
   seatKey: string = OWNER_SEAT_KEY
 ): Promise<SeatDetectRequest | null> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT ${SEAT_DETECT_COLUMNS} FROM linkedin_seat_detect_requests
     WHERE workspace_id=? AND seat_key=?
     ORDER BY requested_at DESC
     LIMIT 1
-  `).get<SeatDetectRow>(workspaceId, seatKey);
+  `
+    )
+    .get<SeatDetectRow>(workspaceId, seatKey);
   return row ? toSeatDetectRequest(row) : null;
 }
 
@@ -5535,7 +6010,9 @@ async function claimSeatDetectRequest(
   shard: WorkerShard = SINGLE_WORKER_SHARD
 ): Promise<SeatDetectRequest | null> {
   const staleBefore = new Date(now.getTime() - staleClaimMs).toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     UPDATE linkedin_seat_detect_requests SET claimed_at=?
     WHERE id = (
       SELECT id FROM linkedin_seat_detect_requests
@@ -5547,7 +6024,14 @@ async function claimSeatDetectRequest(
       LIMIT 1
     )
     RETURNING ${SEAT_DETECT_COLUMNS}
-  `).get<SeatDetectRow>(now.toISOString(), staleBefore, [...excludeWorkspaces], ...shardParams(shard));
+  `
+    )
+    .get<SeatDetectRow>(
+      now.toISOString(),
+      staleBefore,
+      [...excludeWorkspaces],
+      ...shardParams(shard)
+    );
   return row ? toSeatDetectRequest(row) : null;
 }
 
@@ -5557,11 +6041,15 @@ async function settleSeatDetectRequest(
   outcome: { status: Exclude<SeatDetectStatus, 'pending'>; failureReason: string | null },
   now: Date
 ): Promise<void> {
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE linkedin_seat_detect_requests
     SET status=?, failure_reason=?, finished_at=?
     WHERE id=?
-  `).run(outcome.status, outcome.failureReason, now.toISOString(), requestId);
+  `
+    )
+    .run(outcome.status, outcome.failureReason, now.toISOString(), requestId);
 }
 
 /**
@@ -5640,7 +6128,9 @@ export async function runPendingSeatDetectRequests(
     try {
       request = await claimSeatDetectRequest(db, now, staleClaimMs, servedWorkspaces, shard);
     } catch (cause) {
-      log(`LinkedIn detect queue could not be read: ${cause instanceof Error ? cause.message : String(cause)}`);
+      log(
+        `LinkedIn detect queue could not be read: ${cause instanceof Error ? cause.message : String(cause)}`
+      );
       return settled;
     }
     if (!request) break;
@@ -5649,8 +6139,15 @@ export async function runPendingSeatDetectRequests(
     // A paired computer is deliberately ephemeral. Do not turn "laptop is
     // asleep" or "Trevra tab is closed" into a failed Connect request: put the
     // pure-read claim back and let the next real presence window pick it up.
-    if (options.allowSeat && !(await options.allowSeat({ workspaceId: request.workspaceId, seatKey: request.seatKey }))) {
-      await db.prepare(`UPDATE linkedin_seat_detect_requests SET claimed_at=NULL WHERE id=? AND status='pending'`).run(request.id);
+    if (
+      options.allowSeat &&
+      !(await options.allowSeat({ workspaceId: request.workspaceId, seatKey: request.seatKey }))
+    ) {
+      await db
+        .prepare(
+          `UPDATE linkedin_seat_detect_requests SET claimed_at=NULL WHERE id=? AND status='pending'`
+        )
+        .run(request.id);
       continue;
     }
 
@@ -5679,7 +6176,10 @@ export async function runPendingSeatDetectRequests(
     const status = failureReason ? 'failed' : 'completed';
     await settleSeatDetectRequest(db, request.id, { status, failureReason }, now);
     settled.push({ ...request, status, failureReason, finishedAt: now.toISOString() });
-    if (failureReason) log(`LinkedIn seat detection failed for ${request.workspaceId}/${request.seatKey}: ${failureReason}`);
+    if (failureReason)
+      log(
+        `LinkedIn seat detection failed for ${request.workspaceId}/${request.seatKey}: ${failureReason}`
+      );
   }
 
   return settled;

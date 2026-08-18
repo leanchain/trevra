@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode
+} from 'react';
 import {
   Check,
   CircleAlert,
@@ -196,8 +203,11 @@ function subscribeToActiveAccount(notify: () => void): () => void {
  * event's own handler sees a key it already holds and stops.
  */
 export function setActiveSeatKey(next: string): void {
-  try { window.localStorage.setItem(ACTIVE_ACCOUNT_STORAGE_KEY, next); }
-  catch { /* Not remembered across reloads. The choice still holds for every screen in this tab, which is what the line below guarantees. */ }
+  try {
+    window.localStorage.setItem(ACTIVE_ACCOUNT_STORAGE_KEY, next);
+  } catch {
+    /* Not remembered across reloads. The choice still holds for every screen in this tab, which is what the line below guarantees. */
+  }
   adoptActiveAccountKey(next);
   window.dispatchEvent(new CustomEvent<string>(ACTIVE_ACCOUNT_EVENT, { detail: next }));
 }
@@ -217,7 +227,11 @@ export function setActiveSeatKey(next: string): void {
  * exactly where a screen re-reading its own data on a switch will put it.
  */
 export function useActiveSeatKey(): [string, (key: string) => void] {
-  const key = useSyncExternalStore(subscribeToActiveAccount, activeAccountSnapshot, activeAccountSnapshot);
+  const key = useSyncExternalStore(
+    subscribeToActiveAccount,
+    activeAccountSnapshot,
+    activeAccountSnapshot
+  );
   return [key, setActiveSeatKey];
 }
 
@@ -251,11 +265,16 @@ export function ActiveAccountBar({ scope }: { scope: ReactNode }) {
     // Deliberately silent on failure. This is a control ABOVE the screen's own
     // read, which has its own error banner; a second banner for the picker
     // would report the same outage twice and push the actual work down.
-    try { setAccounts(await getLinkedInManagerSeats()); }
-    catch { setAccounts([]); }
+    try {
+      setAccounts(await getLinkedInManagerSeats());
+    } catch {
+      setAccounts([]);
+    }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
   useOutreachRefresh(load);
 
   // Same correction the Accounts screen makes: a remembered key can name an
@@ -269,21 +288,30 @@ export function ActiveAccountBar({ scope }: { scope: ReactNode }) {
 
   if (!accounts || accounts.length === 0) return null;
 
-  return <section className="page-panel">
-    <div className="li-filter-row">
-      <label>Working in
-        <select
-          value={active?.seatKey ?? ''}
-          aria-label="LinkedIn account this screen is showing"
-          onChange={(event) => setSeatKey(event.target.value)}
-        >
-          {accounts.map((account) => <option key={account.seatKey} value={account.seatKey}>{account.label}</option>)}
-        </select>
-      </label>
-      <a className="li-link" href="/outreach">Accounts</a>
-    </div>
-    <p className="panel-note">{scope}</p>
-  </section>;
+  return (
+    <section className="page-panel">
+      <div className="li-filter-row">
+        <label>
+          Working in
+          <select
+            value={active?.seatKey ?? ''}
+            aria-label="LinkedIn account this screen is showing"
+            onChange={(event) => setSeatKey(event.target.value)}
+          >
+            {accounts.map((account) => (
+              <option key={account.seatKey} value={account.seatKey}>
+                {account.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <a className="li-link" href="/outreach">
+          Accounts
+        </a>
+      </div>
+      <p className="panel-note">{scope}</p>
+    </section>
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -293,7 +321,8 @@ export function ActiveAccountBar({ scope }: { scope: ReactNode }) {
 /** JS weekday numbers, Sunday = 0, which is what the server stores. */
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
-type LimitField = 'dailyInviteLimit' | 'dailyMessageLimit' | 'dailyProfileViewLimit' | 'dailyFollowLimit';
+type LimitField =
+  'dailyInviteLimit' | 'dailyMessageLimit' | 'dailyProfileViewLimit' | 'dailyFollowLimit';
 
 /**
  * What an operator may set each of the four ceilings to, and what a seat starts
@@ -327,7 +356,14 @@ const LIMIT_FIELDS: ReadonlyArray<{
   /** The operator's own words for a pooled ceiling. Absent when the label already names the only kind. */
   pooledKindsLabel?: string;
 }> = [
-  { field: 'dailyInviteLimit', kind: 'invite', kinds: ['invite'], range: 'invite', label: 'Connection invites', column: 'Invites' },
+  {
+    field: 'dailyInviteLimit',
+    kind: 'invite',
+    kinds: ['invite'],
+    range: 'invite',
+    label: 'Connection invites',
+    column: 'Invites'
+  },
   {
     field: 'dailyMessageLimit',
     kind: 'dm',
@@ -337,8 +373,22 @@ const LIMIT_FIELDS: ReadonlyArray<{
     column: 'Messages',
     pooledKindsLabel: 'new messages, replies and InMail'
   },
-  { field: 'dailyProfileViewLimit', kind: 'profile_view', kinds: ['profile_view'], range: 'profileView', label: 'Profile views', column: 'Profile views' },
-  { field: 'dailyFollowLimit', kind: 'follow', kinds: ['follow'], range: 'follow', label: 'Follows', column: 'Follows' }
+  {
+    field: 'dailyProfileViewLimit',
+    kind: 'profile_view',
+    kinds: ['profile_view'],
+    range: 'profileView',
+    label: 'Profile views',
+    column: 'Profile views'
+  },
+  {
+    field: 'dailyFollowLimit',
+    kind: 'follow',
+    kinds: ['follow'],
+    range: 'follow',
+    label: 'Follows',
+    column: 'Follows'
+  }
 ];
 
 type LimitSpec = (typeof LIMIT_FIELDS)[number];
@@ -379,7 +429,8 @@ function describeDays(days: readonly number[]): string {
 }
 
 /** `in/priya-sharma`, not the whole URL. The link still goes to the whole URL. */
-const profileLabel = (url: string) => url.replace(/^https?:\/\/([a-z]{2,3}\.)?linkedin\.com\//i, '').replace(/\/+$/, '') || url;
+const profileLabel = (url: string) =>
+  url.replace(/^https?:\/\/([a-z]{2,3}\.)?linkedin\.com\//i, '').replace(/\/+$/, '') || url;
 
 /* -------------------------------------------------------------------------
  * Timezones, offered rather than guessed.
@@ -413,28 +464,40 @@ const TIMEZONE_OPTIONS: readonly string[] = (() => {
 
 /** Rendered ONCE for the screen: two forms sharing an id is one id too many. */
 function TimezoneOptions() {
-  return <datalist id={TIMEZONE_LIST_ID}>
-    {TIMEZONE_OPTIONS.map((zone) => <option key={zone} value={zone} />)}
-  </datalist>;
+  return (
+    <datalist id={TIMEZONE_LIST_ID}>
+      {TIMEZONE_OPTIONS.map((zone) => (
+        <option key={zone} value={zone} />
+      ))}
+    </datalist>
+  );
 }
 
-function TimezoneField({ value, onChange, className, hint }: {
+function TimezoneField({
+  value,
+  onChange,
+  className,
+  hint
+}: {
   value: string;
   onChange: (value: string) => void;
   className?: string;
   hint?: string;
 }) {
-  return <label className={className}>Timezone
-    <input
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      placeholder="Europe/Zurich"
-      list={TIMEZONE_LIST_ID}
-      spellCheck={false}
-      autoComplete="off"
-    />
-    {hint && <small className="li-acct-range">{hint}</small>}
-  </label>;
+  return (
+    <label className={className}>
+      Timezone
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Europe/Zurich"
+        list={TIMEZONE_LIST_ID}
+        spellCheck={false}
+        autoComplete="off"
+      />
+      {hint && <small className="li-acct-range">{hint}</small>}
+    </label>
+  );
 }
 
 /**
@@ -445,7 +508,8 @@ function TimezoneField({ value, onChange, className, hint }: {
  * sign-in questions -- an account that is paused does not become useful by
  * signing in again.
  */
-type AccountState = 'connected' | 'easing-in' | 'needs-signin' | 'not-connected' | 'paused' | 'cooling-down';
+type AccountState =
+  'connected' | 'easing-in' | 'needs-signin' | 'not-connected' | 'paused' | 'cooling-down';
 
 const STATE_LABELS: Record<AccountState, string> = {
   connected: 'Connected',
@@ -481,7 +545,11 @@ function accountState(account: LinkedInSeat, detail: LinkedInSeatResponse | null
 }
 
 /** One sentence under the badge: what that state means for this account today. */
-function stateSentence(state: AccountState, account: LinkedInSeat, detail: LinkedInSeatResponse | null): string {
+function stateSentence(
+  state: AccountState,
+  account: LinkedInSeat,
+  detail: LinkedInSeatResponse | null
+): string {
   switch (state) {
     case 'paused':
       return account.pausedReason
@@ -509,12 +577,24 @@ function stateSentence(state: AccountState, account: LinkedInSeat, detail: Linke
  */
 const isWall = (error: unknown) => error instanceof ApiError && error.status === 409;
 
-function Wall({ title, message, children }: { title: string; message?: string; children?: React.ReactNode }) {
-  return <div className="li-connect-blocked">
-    <strong><CircleAlert size={14} /> {title}</strong>
-    {message && <p className="li-blocked-message">{message}</p>}
-    {children}
-  </div>;
+function Wall({
+  title,
+  message,
+  children
+}: {
+  title: string;
+  message?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="li-connect-blocked">
+      <strong>
+        <CircleAlert size={14} /> {title}
+      </strong>
+      {message && <p className="li-blocked-message">{message}</p>}
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -528,9 +608,14 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
 
   const load = useCallback(async () => {
     try {
-      const [next, worker] = await Promise.all([getLinkedInCompanionStatus(), getLinkedInWorkerStatus()]);
+      const [next, worker] = await Promise.all([
+        getLinkedInCompanionStatus(),
+        getLinkedInWorkerStatus()
+      ]);
       setStatus(worker.companionBrowser ? next : null);
-    } catch { setStatus(null); }
+    } catch {
+      setStatus(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -540,7 +625,9 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
   }, [load]);
   useOutreachRefresh(load);
 
-  const noDeviceOnline = Boolean(status) && (status!.devices.length === 0 || !status!.devices.some((device) => device.online));
+  const noDeviceOnline =
+    Boolean(status) &&
+    (status!.devices.length === 0 || !status!.devices.some((device) => device.online));
   if (!status?.attention.length && !noDeviceOnline) return null;
 
   const copy = async (command: string) => {
@@ -552,66 +639,116 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
     }
   };
 
-  const offlineDevice = status && status.devices.length > 0 ? status.devices.find((device) => !device.online) ?? null : null;
+  const offlineDevice =
+    status && status.devices.length > 0
+      ? (status.devices.find((device) => !device.online) ?? null)
+      : null;
 
-  return <>
-    {/* Nothing at all can run LinkedIn work right now -- a different, more
+  return (
+    <>
+      {/* Nothing at all can run LinkedIn work right now -- a different, more
         fundamental problem than a single account needing a human (below).
         Kept visually heavier (danger vs. warning) so the two are never
         confused at a glance. */}
-    {noDeviceOnline && <section className="page-panel li-companion-attention li-companion-offline" role="alert" aria-live="polite">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}><Laptop size={17} /> No computer connected for LinkedIn</h3>
-          {status!.devices.length === 0
-            ? <p>Background LinkedIn work is paused. Connect a computer from the Accounts panel below to start it.</p>
-            : <p>Background LinkedIn work is paused because the paired computer is offline.</p>}
-        </div>
-      </div>
-      <div className="li-companion-attention-list">
-        <div className="li-companion-attention-row">
-          <div>
-            {status!.devices.length === 0
-              ? <>
-                <strong>No computer has ever been paired</strong>
-                <p>Connect a computer from the Accounts panel below to run LinkedIn work in the background.</p>
-              </>
-              : <>
-                <strong>{offlineDevice?.label ?? 'Paired computer'} is offline</strong>
-                <p>{offlineDevice?.lastSeenAt ? <>Not seen since {relativeTime(offlineDevice.lastSeenAt)}.</> : 'Never connected.'} LinkedIn work is paused until it is back online.</p>
-              </>}
-          </div>
-        </div>
-      </div>
-    </section>}
-
-    {status?.attention.length ? <section className="page-panel li-companion-attention" role="alert" aria-live="polite">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}><CircleAlert size={17} /> LinkedIn needs your attention</h3>
-          <p>Background work is held for the affected account until its local LinkedIn session is healthy again.</p>
-        </div>
-      </div>
-      <div className="li-companion-attention-list">
-        {status.attention.map((item) => {
-          const command = item.seatKey === OWNER_ACCOUNT_KEY
-            ? 'trevra linkedin reconnect'
-            : `trevra linkedin reconnect --seat ${item.seatKey}`;
-          return <div className="li-companion-attention-row" key={item.seatKey}>
+      {noDeviceOnline && (
+        <section
+          className="page-panel li-companion-attention li-companion-offline"
+          role="alert"
+          aria-live="polite"
+        >
+          <div className="section-heading">
             <div>
-              <strong>{item.label}</strong>
-              <p>{item.message}</p>
-              <small>Raised {relativeTime(item.since)}. Complete the LinkedIn check in the visible Trevra Chrome window, then close that window; the background service resumes automatically.</small>
+              <h3 aria-level={2}>
+                <Laptop size={17} /> No computer connected for LinkedIn
+              </h3>
+              {status!.devices.length === 0 ? (
+                <p>
+                  Background LinkedIn work is paused. Connect a computer from the Accounts panel
+                  below to start it.
+                </p>
+              ) : (
+                <p>Background LinkedIn work is paused because the paired computer is offline.</p>
+              )}
             </div>
-            <div className="li-companion-reconnect-command">
-              <code>{command}</code>
-              <button className="secondary-button" type="button" onClick={() => void copy(command)}><Copy size={14} /> Copy</button>
+          </div>
+          <div className="li-companion-attention-list">
+            <div className="li-companion-attention-row">
+              <div>
+                {status!.devices.length === 0 ? (
+                  <>
+                    <strong>No computer has ever been paired</strong>
+                    <p>
+                      Connect a computer from the Accounts panel below to run LinkedIn work in the
+                      background.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <strong>{offlineDevice?.label ?? 'Paired computer'} is offline</strong>
+                    <p>
+                      {offlineDevice?.lastSeenAt ? (
+                        <>Not seen since {relativeTime(offlineDevice.lastSeenAt)}.</>
+                      ) : (
+                        'Never connected.'
+                      )}{' '}
+                      LinkedIn work is paused until it is back online.
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
-          </div>;
-        })}
-      </div>
-    </section> : null}
-  </>;
+          </div>
+        </section>
+      )}
+
+      {status?.attention.length ? (
+        <section className="page-panel li-companion-attention" role="alert" aria-live="polite">
+          <div className="section-heading">
+            <div>
+              <h3 aria-level={2}>
+                <CircleAlert size={17} /> LinkedIn needs your attention
+              </h3>
+              <p>
+                Background work is held for the affected account until its local LinkedIn session is
+                healthy again.
+              </p>
+            </div>
+          </div>
+          <div className="li-companion-attention-list">
+            {status.attention.map((item) => {
+              const command =
+                item.seatKey === OWNER_ACCOUNT_KEY
+                  ? 'trevra linkedin reconnect'
+                  : `trevra linkedin reconnect --seat ${item.seatKey}`;
+              return (
+                <div className="li-companion-attention-row" key={item.seatKey}>
+                  <div>
+                    <strong>{item.label}</strong>
+                    <p>{item.message}</p>
+                    <small>
+                      Raised {relativeTime(item.since)}. Complete the LinkedIn check in the visible
+                      Trevra Chrome window, then close that window; the background service resumes
+                      automatically.
+                    </small>
+                  </div>
+                  <div className="li-companion-reconnect-command">
+                    <code>{command}</code>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => void copy(command)}
+                    >
+                      <Copy size={14} /> Copy
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -620,7 +757,11 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
 
 function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
   const [status, setStatus] = useState<LinkedInCompanionStatus | null>(null);
-  const [pairing, setPairing] = useState<{ code: string; expiresAt: string; command: string } | null>(null);
+  const [pairing, setPairing] = useState<{
+    code: string;
+    expiresAt: string;
+    command: string;
+  } | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const hadDevice = useRef(false);
@@ -657,7 +798,9 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
       setPairing(created);
     } catch (cause) {
       setError(errorMessage(cause, 'Unable to create a pairing code.'));
-    } finally { setBusy(''); }
+    } finally {
+      setBusy('');
+    }
   };
 
   const copy = async () => {
@@ -680,69 +823,128 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
       await load();
     } catch (cause) {
       setError(errorMessage(cause, 'Unable to disconnect that computer.'));
-    } finally { setBusy(''); }
+    } finally {
+      setBusy('');
+    }
   };
 
   const online = status?.devices.find((device) => device.online) ?? null;
-  return <section className="page-panel li-companion-panel">
-    <div className="section-heading">
-      <div>
-        <h3 aria-level={2}>Run LinkedIn from your computer
-          <Hint label="Why run LinkedIn from your computer">
-            Recommended for hosted Trevra. LinkedIn opens in Chrome on your computer, on your own IP — Trevra keeps
-            the queue and safety rules; your browser profile stays local.
-          </Hint>
-        </h3>
+  return (
+    <section className="page-panel li-companion-panel">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}>
+            Run LinkedIn from your computer
+            <Hint label="Why run LinkedIn from your computer">
+              Recommended for hosted Trevra. LinkedIn opens in Chrome on your computer, on your own
+              IP — Trevra keeps the queue and safety rules; your browser profile stays local.
+            </Hint>
+          </h3>
+        </div>
+        <Laptop size={20} className="li-heading-icon" />
       </div>
-      <Laptop size={20} className="li-heading-icon" />
-    </div>
 
-    {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner">{error}</div>}
 
-    <div className="li-companion-status">
-      <span className={`li-acct-state ${online ? 'li-acct-state-ok' : 'li-acct-state-off'}`}>
-        <i className={`li-acct-dot ${online ? 'li-acct-dot-ok' : 'li-acct-dot-off'}`} aria-hidden="true" />
-        {online ? `${online.label} online` : 'No paired computer online'}
-      </span>
-    </div>
+      <div className="li-companion-status">
+        <span className={`li-acct-state ${online ? 'li-acct-state-ok' : 'li-acct-state-off'}`}>
+          <i
+            className={`li-acct-dot ${online ? 'li-acct-dot-ok' : 'li-acct-dot-off'}`}
+            aria-hidden="true"
+          />
+          {online ? `${online.label} online` : 'No paired computer online'}
+        </span>
+      </div>
 
-    {status && status.devices.length > 0
-      ? <div className="li-companion-devices">
-        {status.devices.map((device) => <div className="li-companion-device" key={device.id}>
+      {status && status.devices.length > 0 ? (
+        <div className="li-companion-devices">
+          {status.devices.map((device) => (
+            <div className="li-companion-device" key={device.id}>
+              <div>
+                <strong>{device.label}</strong>
+                <small>
+                  {device.online
+                    ? 'Online now'
+                    : device.lastSeenAt
+                      ? `Last seen ${relativeTime(device.lastSeenAt)}`
+                      : 'Never connected'}
+                </small>
+              </div>
+              {status.canDisconnect && (
+                <button
+                  className="ghost-button danger"
+                  type="button"
+                  disabled={busy === device.id}
+                  onClick={() => void revoke(device.id, device.label)}
+                >
+                  {busy === device.id ? (
+                    <LoaderCircle className="spin" size={13} />
+                  ) : (
+                    <Unplug size={13} />
+                  )}{' '}
+                  Disconnect
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="empty-copy">
+          Pair the computer whose browser and network you normally use for LinkedIn.
+        </p>
+      )}
+
+      {!status?.canManage && (
+        <p className="panel-note">
+          Only the workspace owner can pair or replace a computer. Workspace members can keep the
+          paired computer active and disconnect it.
+        </p>
+      )}
+
+      {status?.canManage && pairing ? (
+        <div className="li-companion-command">
           <div>
-            <strong>{device.label}</strong>
-            <small>{device.online ? 'Online now' : device.lastSeenAt ? `Last seen ${relativeTime(device.lastSeenAt)}` : 'Never connected'}</small>
+            <strong>Install once on this computer</strong>
+            <p>
+              Expires {relativeTime(pairing.expiresAt)}. Installs a background companion that starts
+              at login and survives crashes; the device token is created only once this code is
+              used, and is never shown in Trevra.
+            </p>
           </div>
-          {status.canDisconnect && <button className="ghost-button danger" type="button" disabled={busy === device.id} onClick={() => void revoke(device.id, device.label)}>
-            {busy === device.id ? <LoaderCircle className="spin" size={13} /> : <Unplug size={13} />} Disconnect
-          </button>}
-        </div>)}
-      </div>
-      : <p className="empty-copy">Pair the computer whose browser and network you normally use for LinkedIn.</p>}
+          <code>{pairing.command}</code>
+          <button className="secondary-button" type="button" onClick={() => void copy()}>
+            <Copy size={14} /> Copy command
+          </button>
+          {status.devices.length > 0 && (
+            <p className="panel-note">
+              Finishing this pairing replaces the currently paired computer. Trevra allows only one
+              active LinkedIn companion per workspace.
+            </p>
+          )}
+        </div>
+      ) : status?.canManage ? (
+        <button
+          className="primary-button"
+          type="button"
+          disabled={busy === 'pair'}
+          onClick={() => void pair()}
+        >
+          {busy === 'pair' ? <LoaderCircle className="spin" size={14} /> : <Laptop size={14} />}{' '}
+          {status.devices.length > 0 ? 'Replace computer' : 'Connect this computer'}
+        </button>
+      ) : null}
 
-    {!status?.canManage && <p className="panel-note">Only the workspace owner can pair or replace a computer. Workspace members can keep the paired computer active and disconnect it.</p>}
-
-    {status?.canManage && pairing ? <div className="li-companion-command">
-      <div>
-        <strong>Install once on this computer</strong>
-        <p>Expires {relativeTime(pairing.expiresAt)}. Installs a background companion that starts at login and survives crashes; the device token is created only once this code is used, and is never shown in Trevra.</p>
-      </div>
-      <code>{pairing.command}</code>
-      <button className="secondary-button" type="button" onClick={() => void copy()}><Copy size={14} /> Copy command</button>
-      {status.devices.length > 0 && <p className="panel-note">Finishing this pairing replaces the currently paired computer. Trevra allows only one active LinkedIn companion per workspace.</p>}
-    </div> : status?.canManage ? <button className="primary-button" type="button" disabled={busy === 'pair'} onClick={() => void pair()}>
-      {busy === 'pair' ? <LoaderCircle className="spin" size={14} /> : <Laptop size={14} />} {status.devices.length > 0 ? 'Replace computer' : 'Connect this computer'}
-    </button> : null}
-
-    <p className="panel-note">
-      <Hint label="How background mode works" trigger={<>How background mode works</>}>
-        Starts at login and survives crashes — no terminal to keep open. Runs in background Chrome — no Trevra tab
-        needs to stay open. A sign-in prompt, CAPTCHA, 2FA or device check pauses
-        work and shows a reconnect alert — its command opens the profile visibly for that one step, then background
-        mode resumes. Coming back online runs one bounded state catch-up, then returns to the normal schedule — missed ticks are never replayed.
-      </Hint>
-    </p>
-  </section>;
+      <p className="panel-note">
+        <Hint label="How background mode works" trigger={<>How background mode works</>}>
+          Starts at login and survives crashes — no terminal to keep open. Runs in background Chrome
+          — no Trevra tab needs to stay open. A sign-in prompt, CAPTCHA, 2FA or device check pauses
+          work and shows a reconnect alert — its command opens the profile visibly for that one
+          step, then background mode resumes. Coming back online runs one bounded state catch-up,
+          then returns to the normal schedule — missed ticks are never replayed.
+        </Hint>
+      </p>
+    </section>
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -786,37 +988,63 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
       // of accounts a person manages, wrong at fifty; upgrade path is a manager
       // route returning sign-in state and today's counts for every account at
       // once.
-      const reads = await Promise.all(list.map(async (account) => {
-        try { return [account.seatKey, await getLinkedInSeat(account.seatKey)] as const; }
-        catch { return [account.seatKey, null] as const; }
-      }));
-      setDetails(Object.fromEntries(
-        reads.filter((entry): entry is readonly [string, LinkedInSeatResponse] => entry[1] !== null)
-      ));
+      const reads = await Promise.all(
+        list.map(async (account) => {
+          try {
+            return [account.seatKey, await getLinkedInSeat(account.seatKey)] as const;
+          } catch {
+            return [account.seatKey, null] as const;
+          }
+        })
+      );
+      setDetails(
+        Object.fromEntries(
+          reads.filter(
+            (entry): entry is readonly [string, LinkedInSeatResponse] => entry[1] !== null
+          )
+        )
+      );
       // Per account, and a failed one simply leaves that row saying it does not
       // know rather than falling back to the number the form holds.
-      const ceilings = await Promise.all(list.map(async (account) => {
-        try { return [account.seatKey, await getLinkedInLimits(account.seatKey)] as const; }
-        catch { return [account.seatKey, null] as const; }
-      }));
-      setReports(Object.fromEntries(
-        ceilings.filter((entry): entry is readonly [string, LinkedInLimitsReport] => entry[1] !== null)
-      ));
+      const ceilings = await Promise.all(
+        list.map(async (account) => {
+          try {
+            return [account.seatKey, await getLinkedInLimits(account.seatKey)] as const;
+          } catch {
+            return [account.seatKey, null] as const;
+          }
+        })
+      );
+      setReports(
+        Object.fromEntries(
+          ceilings.filter(
+            (entry): entry is readonly [string, LinkedInLimitsReport] => entry[1] !== null
+          )
+        )
+      );
       setFailure('');
     } catch (error) {
-      setFailure(errorMessage(error, 'Unable to read your LinkedIn accounts. Nothing was changed — try again.'));
+      setFailure(
+        errorMessage(
+          error,
+          'Unable to read your LinkedIn accounts. Nothing was changed — try again.'
+        )
+      );
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
   useOutreachRefresh(load);
 
   // A remembered key can name an account that has since been removed, and the
   // first account a workspace adds may not be `owner`. What is on screen is
   // what is stored, so the memory is corrected rather than quietly ignored.
-  const active = accounts?.find((account) => account.seatKey === activeKey) ?? accounts?.[0] ?? null;
+  const active =
+    accounts?.find((account) => account.seatKey === activeKey) ?? accounts?.[0] ?? null;
   useEffect(() => {
     if (active && active.seatKey !== activeKey) setActiveKey(active.seatKey);
   }, [active, activeKey, setActiveKey]);
@@ -836,35 +1064,55 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
   useEffect(() => {
     let cancelled = false;
     void getLinkedInLimits(activeSeatKey).then(
-      (report) => { if (!cancelled) setSafety(report); },
-      () => { if (!cancelled) setSafety(null); }
+      (report) => {
+        if (!cancelled) setSafety(report);
+      },
+      () => {
+        if (!cancelled) setSafety(null);
+      }
     );
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [activeSeatKey]);
 
   const empty = accounts !== null && accounts.length === 0;
 
-  return <div className="page-stack">
-    <TimezoneOptions />
+  return (
+    <div className="page-stack">
+      <TimezoneOptions />
 
-    {failure && <div className="error-banner">
-      <strong>{failure}</strong>{' '}
-      <button className="secondary-button" type="button" disabled={loading} onClick={() => void load()}>
-        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Try again
-      </button>
-    </div>}
+      {failure && (
+        <div className="error-banner">
+          <strong>{failure}</strong>{' '}
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={loading}
+            onClick={() => void load()}
+          >
+            {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Try
+            again
+          </button>
+        </div>
+      )}
 
-    <WorkerNotice worker={worker} />
-    {worker?.companionBrowser && <CompanionPanel setToast={setToast} />}
+      <WorkerNotice worker={worker} />
+      {worker?.companionBrowser && <CompanionPanel setToast={setToast} />}
 
-    {accounts === null
-      ? <section className="page-panel"><p className="empty-copy">{loading ? 'Reading your LinkedIn accounts…' : 'No data.'}</p></section>
-      : empty
-        ? <section className="page-panel">
+      {accounts === null ? (
+        <section className="page-panel">
+          <p className="empty-copy">{loading ? 'Reading your LinkedIn accounts…' : 'No data.'}</p>
+        </section>
+      ) : empty ? (
+        <section className="page-panel">
           <div className="section-heading">
             <div>
               <h3 aria-level={2}>No LinkedIn account connected yet</h3>
-              <p>Trevra paces, queues and reads replies per account. Add the first one and everything else on Outreach has something to run against.</p>
+              <p>
+                Trevra paces, queues and reads replies per account. Add the first one and everything
+                else on Outreach has something to run against.
+              </p>
             </div>
             <Users size={20} className="li-heading-icon" />
           </div>
@@ -885,15 +1133,17 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
             }}
           />
         </section>
-        : <>
+      ) : (
+        <>
           <section className="page-panel">
             <div className="section-heading">
               <div>
-                <h3 aria-level={2}>Your LinkedIn accounts
+                <h3 aria-level={2}>
+                  Your LinkedIn accounts
                   <Hint label="What switching an account changes">
-                    Pick the account to work in — it follows you to the Inbox, Approve &amp; export, the send queue,
-                    the plan preview, and this screen. Lead sources, your Never contact list and workspace settings
-                    are shared across accounts, not per-account.
+                    Pick the account to work in — it follows you to the Inbox, Approve &amp; export,
+                    the send queue, the plan preview, and this screen. Lead sources, your Never
+                    contact list and workspace settings are shared across accounts, not per-account.
                   </Hint>
                 </h3>
                 {/* WHAT THE SWITCH ACTUALLY REACHES, and no more than that.
@@ -912,7 +1162,11 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
                   screens carries the same switch above its rows -- so the four
                   names below are four routes that answer for one account. */}
               </div>
-              <button className="secondary-button li-acct-nowrap" type="button" onClick={() => setAdding((open) => !open)}>
+              <button
+                className="secondary-button li-acct-nowrap"
+                type="button"
+                onClick={() => setAdding((open) => !open)}
+              >
                 <Plus size={14} /> {adding ? 'Cancel' : 'Add account'}
               </button>
             </div>
@@ -922,57 +1176,80 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
                 const detail = details[account.seatKey] ?? null;
                 const state = accountState(account, detail);
                 const isActive = active?.seatKey === account.seatKey;
-                return <button
-                  key={account.seatKey}
-                  type="button"
-                  className={`li-acct-tab${isActive ? ' is-active' : ''}`}
-                  aria-current={isActive ? 'true' : undefined}
-                  onClick={() => setActiveKey(account.seatKey)}
-                >
-                  <span className="li-acct-tab-head">
-                    <i className={`li-acct-dot li-acct-dot-${STATE_TONES[state]}`} aria-hidden="true" />
-                    <strong>{account.label}</strong>
-                  </span>
-                  <small>{detail?.auth.maskedEmail ?? (detail?.auth.sessionValidAt ? 'Local browser session' : 'No confirmed session')}</small>
-                  <small className="li-acct-tab-state">{isActive ? 'Working in this account' : STATE_LABELS[state]}</small>
-                </button>;
+                return (
+                  <button
+                    key={account.seatKey}
+                    type="button"
+                    className={`li-acct-tab${isActive ? ' is-active' : ''}`}
+                    aria-current={isActive ? 'true' : undefined}
+                    onClick={() => setActiveKey(account.seatKey)}
+                  >
+                    <span className="li-acct-tab-head">
+                      <i
+                        className={`li-acct-dot li-acct-dot-${STATE_TONES[state]}`}
+                        aria-hidden="true"
+                      />
+                      <strong>{account.label}</strong>
+                    </span>
+                    <small>
+                      {detail?.auth.maskedEmail ??
+                        (detail?.auth.sessionValidAt
+                          ? 'Local browser session'
+                          : 'No confirmed session')}
+                    </small>
+                    <small className="li-acct-tab-state">
+                      {isActive ? 'Working in this account' : STATE_LABELS[state]}
+                    </small>
+                  </button>
+                );
               })}
             </div>
 
-            {adding && <AddAccountForm
-              existingKeys={accounts.map((account) => account.seatKey)}
-              safety={safety}
-              onCancel={() => setAdding(false)}
-              onCreated={(created) => {
-                setAdding(false);
-                setToast(`${created.label} added. Connect it below to start sending from it.`);
-                // Same ordering as the first-account form above, and for the same
-                // reason: switch only once `accounts` actually contains this key.
-                void load().then(() => setActiveKey(created.seatKey));
-              }}
-            />}
+            {adding && (
+              <AddAccountForm
+                existingKeys={accounts.map((account) => account.seatKey)}
+                safety={safety}
+                onCancel={() => setAdding(false)}
+                onCreated={(created) => {
+                  setAdding(false);
+                  setToast(`${created.label} added. Connect it below to start sending from it.`);
+                  // Same ordering as the first-account form above, and for the same
+                  // reason: switch only once `accounts` actually contains this key.
+                  void load().then(() => setActiveKey(created.seatKey));
+                }}
+              />
+            )}
           </section>
 
-          {active && <AccountPanel
-            key={active.seatKey}
-            account={active}
-            detail={details[active.seatKey] ?? null}
-            safety={safety}
-            companion={Boolean(worker?.companionBrowser)}
-            setToast={setToast}
-            onChanged={load}
-            onRemoved={() => { setActiveKey(OWNER_ACCOUNT_KEY); void load(); }}
-          />}
+          {active && (
+            <AccountPanel
+              key={active.seatKey}
+              account={active}
+              detail={details[active.seatKey] ?? null}
+              safety={safety}
+              companion={Boolean(worker?.companionBrowser)}
+              setToast={setToast}
+              onChanged={load}
+              onRemoved={() => {
+                setActiveKey(OWNER_ACCOUNT_KEY);
+                void load();
+              }}
+            />
+          )}
 
-          {accounts.length > 1 && <AccountsTable
-            accounts={accounts}
-            details={details}
-            reports={reports}
-            activeKey={active?.seatKey ?? ''}
-            onSelect={setActiveKey}
-          />}
-        </>}
-  </div>;
+          {accounts.length > 1 && (
+            <AccountsTable
+              accounts={accounts}
+              details={details}
+              reports={reports}
+              activeKey={active?.seatKey ?? ''}
+              onSelect={setActiveKey}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -1011,26 +1288,52 @@ function WorkerNotice({ worker }: { worker: LinkedInWorkerStatus | null }) {
   const off = !worker.enabled;
   const needsPlaywright = worker.enabled && !worker.playwrightInstalled;
 
-  return <Wall title={off
-    ? 'LinkedIn automation is off on this server.'
-    : needsPlaywright
-      ? 'Nothing on this machine can open LinkedIn yet.'
-      : 'This machine has Playwright but cannot open a browser.'}>
-    <p>{off
-      ? 'You can still add accounts here and set their hours and daily limits. Connecting one, and sending from it, happens on a Trevra with LinkedIn automation on — the reason it is off here is below, in the server’s own words.'
-      : needsPlaywright
-        ? 'Add accounts and set their limits now. Connecting one needs a browser this server can open, which is two commands and a switch.'
-        : 'Add accounts and set their limits now. Connecting one needs a browser this server can open, and what is stopping it from opening one is below.'}</p>
-    {needsPlaywright && <p className="li-blocked-message"><code>npm i playwright &amp;&amp; npx playwright install chromium</code></p>}
-    {blockers.length > 0 && <ul className="li-blockers">{blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>}
-  </Wall>;
+  return (
+    <Wall
+      title={
+        off
+          ? 'LinkedIn automation is off on this server.'
+          : needsPlaywright
+            ? 'Nothing on this machine can open LinkedIn yet.'
+            : 'This machine has Playwright but cannot open a browser.'
+      }
+    >
+      <p>
+        {off
+          ? 'You can still add accounts here and set their hours and daily limits. Connecting one, and sending from it, happens on a Trevra with LinkedIn automation on — the reason it is off here is below, in the server’s own words.'
+          : needsPlaywright
+            ? 'Add accounts and set their limits now. Connecting one needs a browser this server can open, which is two commands and a switch.'
+            : 'Add accounts and set their limits now. Connecting one needs a browser this server can open, and what is stopping it from opening one is below.'}
+      </p>
+      {needsPlaywright && (
+        <p className="li-blocked-message">
+          <code>npm i playwright &amp;&amp; npx playwright install chromium</code>
+        </p>
+      )}
+      {blockers.length > 0 && (
+        <ul className="li-blockers">
+          {blockers.map((blocker) => (
+            <li key={blocker}>{blocker}</li>
+          ))}
+        </ul>
+      )}
+    </Wall>
+  );
 }
 
 /* -------------------------------------------------------------------------
  * The active account: connect it, read it, change it, stop it, remove it.
  * ---------------------------------------------------------------------- */
 
-function AccountPanel({ account, detail, safety, companion, setToast, onChanged, onRemoved }: {
+function AccountPanel({
+  account,
+  detail,
+  safety,
+  companion,
+  setToast,
+  onChanged,
+  onRemoved
+}: {
   account: LinkedInSeat;
   detail: LinkedInSeatResponse | null;
   /** Ranges, bands and the campaign ramp. Null while loading, or if that read failed. */
@@ -1072,6 +1375,8 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
    */
   const [lastRead, setLastRead] = useState<LinkedInDetectedProfile | null>(null);
 
+  /** Companion mode's manual sign-in is the default; this opts into the stored-password form instead. */
+  const [wantsCredentialsForm, setWantsCredentialsForm] = useState(false);
   const [pausing, setPausing] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [confirmPause, setConfirmPause] = useState(false);
@@ -1099,7 +1404,10 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
     let ticks = 0;
     const timer = window.setInterval(() => {
       ticks += 1;
-      if (ticks > 20) { window.clearInterval(timer); return; }
+      if (ticks > 20) {
+        window.clearInterval(timer);
+        return;
+      }
       void onChanged();
     }, 6000);
     return () => window.clearInterval(timer);
@@ -1116,7 +1424,10 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
     setBlocked('');
     setActionError('');
     try {
-      const result = await detectLinkedInSeat(account.timezone || BROWSER_TIMEZONE, account.seatKey);
+      const result = await detectLinkedInSeat(
+        account.timezone || BROWSER_TIMEZONE,
+        account.seatKey
+      );
       if (result.status === 'pending') {
         // 202. Not an error, and not this machine's job: the server's sentence
         // names what has to run and where.
@@ -1126,9 +1437,11 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
       }
       setDegraded(result.degraded);
       setLastRead(result.detected);
-      setToast(result.detected
-        ? `Read ${result.detected.name ?? 'the profile'} from ${account.label}’s LinkedIn session.`
-        : 'Reached LinkedIn but read nothing usable. Set what is missing by hand below.');
+      setToast(
+        result.detected
+          ? `Read ${result.detected.name ?? 'the profile'} from ${account.label}’s LinkedIn session.`
+          : 'Reached LinkedIn but read nothing usable. Set what is missing by hand below.'
+      );
       await onChanged();
     } catch (error) {
       const message = errorMessage(error, 'Unable to read this account’s profile from LinkedIn');
@@ -1162,32 +1475,43 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
       await check();
       return;
     }
-    setNote({ tone: result.status === 'challenge' ? 'instruction' : 'error', message: result.message });
+    setNote({
+      tone: result.status === 'challenge' ? 'instruction' : 'error',
+      message: result.message
+    });
   };
 
   const attempt = async (run: () => Promise<void>) => {
     setSigningIn(true);
-    try { await run(); }
-    catch (error) { setNote({ tone: 'error', message: errorMessage(error, 'Unable to sign in to LinkedIn') }); }
-    finally { setSigningIn(false); }
+    try {
+      await run();
+    } catch (error) {
+      setNote({ tone: 'error', message: errorMessage(error, 'Unable to sign in to LinkedIn') });
+    } finally {
+      setSigningIn(false);
+    }
   };
 
-  const signIn = () => void attempt(async () => {
-    const address = email.trim();
-    if (!address || !password) {
-      setNote({ tone: 'error', message: 'Both the email and the password are needed to sign in.' });
-      return;
-    }
-    setNote(null);
-    try {
-      await saveLinkedInCredentials({ email: address, password, seatKey: account.seatKey });
-    } finally {
-      // Out of component state the moment it is on the wire, whatever became of it.
-      setPassword('');
-    }
-    await runLogin();
-    await onChanged();
-  });
+  const signIn = () =>
+    void attempt(async () => {
+      const address = email.trim();
+      if (!address || !password) {
+        setNote({
+          tone: 'error',
+          message: 'Both the email and the password are needed to sign in.'
+        });
+        return;
+      }
+      setNote(null);
+      try {
+        await saveLinkedInCredentials({ email: address, password, seatKey: account.seatKey });
+      } finally {
+        // Out of component state the moment it is on the wire, whatever became of it.
+        setPassword('');
+      }
+      await runLogin();
+      await onChanged();
+    });
 
   const forgetSignIn = async () => {
     setForgetting(true);
@@ -1197,10 +1521,15 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
       setStage('credentials');
       setEmail('');
       setOtp('');
-      setToast(`Sign-in forgotten. Nothing can open LinkedIn as ${account.label} until you add it again.`);
+      setToast(
+        `Sign-in forgotten. Nothing can open LinkedIn as ${account.label} until you add it again.`
+      );
       await onChanged();
     } catch (error) {
-      setNote({ tone: 'error', message: errorMessage(error, 'Unable to remove the stored sign-in') });
+      setNote({
+        tone: 'error',
+        message: errorMessage(error, 'Unable to remove the stored sign-in')
+      });
     } finally {
       setForgetting(false);
     }
@@ -1215,7 +1544,9 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
       setToast(`${account.label} paused. Nothing is scheduled or sent from it until you resume.`);
       await onChanged();
     } catch (error) {
-      setActionError(errorMessage(error, 'Unable to pause this account. It is still running — try again.'));
+      setActionError(
+        errorMessage(error, 'Unable to pause this account. It is still running — try again.')
+      );
     } finally {
       setPausing(false);
     }
@@ -1229,7 +1560,12 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
       setToast(`${account.label} resumed. It eases back in rather than restarting from zero.`);
       await onChanged();
     } catch (error) {
-      setActionError(errorMessage(error, 'Unable to resume this account. It is still paused, which is the safe end of that failure.'));
+      setActionError(
+        errorMessage(
+          error,
+          'Unable to resume this account. It is still paused, which is the safe end of that failure.'
+        )
+      );
     } finally {
       setResuming(false);
     }
@@ -1250,69 +1586,114 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
     }
   };
 
-  return <>
-    <section className="page-panel li-acct-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>{account.label}</h3>
-          <p>{stateSentence(state, account, detail)}</p>
+  return (
+    <>
+      <section className="page-panel li-acct-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>{account.label}</h3>
+            <p>{stateSentence(state, account, detail)}</p>
+          </div>
+          <span className={`li-acct-state li-acct-state-${STATE_TONES[state]}`}>
+            <i className={`li-acct-dot li-acct-dot-${STATE_TONES[state]}`} aria-hidden="true" />
+            {STATE_LABELS[state]}
+          </span>
         </div>
-        <span className={`li-acct-state li-acct-state-${STATE_TONES[state]}`}>
-          <i className={`li-acct-dot li-acct-dot-${STATE_TONES[state]}`} aria-hidden="true" />{STATE_LABELS[state]}
-        </span>
-      </div>
 
-      {actionError && <div className="error-banner">{actionError}</div>}
+        {actionError && <div className="error-banner">{actionError}</div>}
 
-      {blocked && <Wall title="One thing has to happen on your own machine first." message={blocked} />}
+        {blocked && (
+          <Wall title="One thing has to happen on your own machine first." message={blocked} />
+        )}
 
-      {queued && <Wall title={queueWaitCopy(request?.waitingFor) ?? (companion ? 'Waiting for your connected computer.' : 'Waiting on your own worker.')}>
-        <p>
-          {request?.nextAttemptAt
-            ? `Expected by ${new Date(request.nextAttemptAt).toLocaleString()}. `
-            : request?.waitingFor
-              ? 'There is no honest clock time until that prerequisite is back. '
-              : ''}
-          Queued {request?.requestedAt ? relativeTime(request.requestedAt) : 'now'}. Missed worker checks are not replayed; once the prerequisite is ready, the next normal worker cycle picks it up.
-        </p>
-      </Wall>}
+        {queued && (
+          <Wall
+            title={
+              queueWaitCopy(request?.waitingFor) ??
+              (companion ? 'Waiting for your connected computer.' : 'Waiting on your own worker.')
+            }
+          >
+            <p>
+              {request?.nextAttemptAt
+                ? `Expected by ${new Date(request.nextAttemptAt).toLocaleString()}. `
+                : request?.waitingFor
+                  ? 'There is no honest clock time until that prerequisite is back. '
+                  : ''}
+              Queued {request?.requestedAt ? relativeTime(request.requestedAt) : 'now'}. Missed
+              worker checks are not replayed; once the prerequisite is ready, the next normal worker
+              cycle picks it up.
+            </p>
+          </Wall>
+        )}
 
-      {request?.status === 'failed' && request.failureReason && <Wall
-        title="The last read of this account did not finish."
-        message={request.failureReason}
-      />}
+        {request?.status === 'failed' && request.failureReason && (
+          <Wall
+            title="The last read of this account did not finish."
+            message={request.failureReason}
+          />
+        )}
 
-      {detail?.backgroundRun && <div className="li-next-background-run">
-        <Clock3 size={17} aria-hidden="true" />
-        <div>
-          <span>Next LinkedIn background run</span>
-          <strong>{queueWaitCopy(detail.backgroundRun.waitingFor) ?? formatVisitWindow(detail.backgroundRun.startAt, detail.backgroundRun.endAt, detail.backgroundRun.timezone) ?? 'No scheduled window'}</strong>
-          {detail.backgroundRun.waitingFor && <small>Scheduled window: {formatVisitWindow(detail.backgroundRun.startAt, detail.backgroundRun.endAt, detail.backgroundRun.timezone)}</small>}
-        </div>
-      </div>}
+        {detail?.backgroundRun && (
+          <div className="li-next-background-run">
+            <Clock3 size={17} aria-hidden="true" />
+            <div>
+              <span>Next LinkedIn background run</span>
+              <strong>
+                {queueWaitCopy(detail.backgroundRun.waitingFor) ??
+                  formatVisitWindow(
+                    detail.backgroundRun.startAt,
+                    detail.backgroundRun.endAt,
+                    detail.backgroundRun.timezone
+                  ) ??
+                  'No scheduled window'}
+              </strong>
+              {detail.backgroundRun.waitingFor && (
+                <small>
+                  Scheduled window:{' '}
+                  {formatVisitWindow(
+                    detail.backgroundRun.startAt,
+                    detail.backgroundRun.endAt,
+                    detail.backgroundRun.timezone
+                  )}
+                </small>
+              )}
+            </div>
+          </div>
+        )}
 
-      {detail?.maintenance && detail.maintenance.length > 0 && <details className="li-maintenance-schedule">
-        <summary>Next LinkedIn background activity</summary>
-        <div className="li-maintenance-list">
-          {detail.maintenance.map((timing) => {
-            const visit = formatVisitWindow(timing.nextRunAt, timing.nextRunWindowEndAt, timing.timezone);
-            const wait = queueWaitCopy(timing.waitingFor);
-            return <div className="li-maintenance-row" key={timing.task}>
-              <span>{MAINTENANCE_TASK_LABELS[timing.task]}</span>
-              <strong>{wait ?? visit ?? 'No eligible visit in the next two weeks'}</strong>
-              {wait && visit && <small>Next normal visit {visit}</small>}
-            </div>;
-          })}
-        </div>
-        <p className="li-hint">If this computer sleeps through a visit, Trevra skips that window and shows the next normal one. Missed visits are never replayed as a catch-up burst.</p>
-      </details>}
+        {detail?.maintenance && detail.maintenance.length > 0 && (
+          <details className="li-maintenance-schedule">
+            <summary>Next LinkedIn background activity</summary>
+            <div className="li-maintenance-list">
+              {detail.maintenance.map((timing) => {
+                const visit = formatVisitWindow(
+                  timing.nextRunAt,
+                  timing.nextRunWindowEndAt,
+                  timing.timezone
+                );
+                const wait = queueWaitCopy(timing.waitingFor);
+                return (
+                  <div className="li-maintenance-row" key={timing.task}>
+                    <span>{MAINTENANCE_TASK_LABELS[timing.task]}</span>
+                    <strong>{wait ?? visit ?? 'No eligible visit in the next two weeks'}</strong>
+                    {wait && visit && <small>Next normal visit {visit}</small>}
+                  </div>
+                );
+              })}
+            </div>
+            <p className="li-hint">
+              If this computer sleeps through a visit, Trevra skips that window and shows the next
+              normal one. Missed visits are never replayed as a catch-up burst.
+            </p>
+          </details>
+        )}
 
-      <div className="li-seat-card">
-        <div className="li-seat-head">
-          <strong>{account.label}</strong>
-          <span className="li-acct-key">{account.seatKey}</span>
-        </div>
-        {/* WHAT A READ LEAVES BEHIND.
+        <div className="li-seat-card">
+          <div className="li-seat-head">
+            <strong>{account.label}</strong>
+            <span className="li-acct-key">{account.seatKey}</span>
+          </div>
+          {/* WHAT A READ LEAVES BEHIND.
 
             "Check this account on LinkedIn" writes four things onto the seat --
             which profile the session is signed in as, how many connections it
@@ -1321,122 +1702,206 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
             then as nothing, so the only way to find out what it had said was to
             run it again. These are the seat's own columns, not this component's
             memory of a response: they are still here after a reload. */}
-        <dl className="li-seat-facts">
-          <div>
-            <dt>Signs in as</dt>
-            <dd>{auth?.maskedEmail ?? (auth?.sessionValidAt ? 'Local browser session' : <span className="li-unknown">Not connected</span>)}</dd>
-          </div>
-          <div>
-            <dt>LinkedIn profile</dt>
-            <dd>{account.profileUrl
-              ? <a href={account.profileUrl} target="_blank" rel="noreferrer noopener">
-                {lastRead?.name ?? profileLabel(account.profileUrl)}
-              </a>
-              : <span className="li-unknown">Not read yet</span>}</dd>
-          </div>
-          <div>
-            <dt>Timezone</dt>
-            <dd>{account.timezone}</dd>
-          </div>
-          <div>
-            <dt>Works</dt>
-            <dd>{describeDays(account.workingDays)}, {minutesToClock(account.workStartMinute)}–{minutesToClock(account.workEndMinute)}</dd>
-          </div>
-          <div>
-            <dt>Session confirmed</dt>
-            <dd>{auth?.sessionValidAt
-              ? relativeTime(auth.sessionValidAt)
-              : <span className="li-unknown">Not yet</span>}</dd>
-          </div>
-          <div>
-            <dt>Connections</dt>
-            {/* Unknown, never zero: an unreadable count is reported in `degraded` and left as it was. */}
-            <dd>{account.connectionsCount === null
-              ? <span className="li-unknown">Unknown</span>
-              : account.connectionsCount.toLocaleString()}</dd>
-          </div>
-          <div>
-            <dt>Profile last read</dt>
-            <dd>{account.detectedAt
-              ? relativeTime(account.detectedAt)
-              : <span className="li-unknown">Never</span>}</dd>
-          </div>
-          <div>
-            <dt>Account opened</dt>
-            {/* Informational, and nothing paces off it -- the ramp clock is
+          <dl className="li-seat-facts">
+            <div>
+              <dt>Signs in as</dt>
+              <dd>
+                {auth?.maskedEmail ??
+                  (auth?.sessionValidAt ? (
+                    'Local browser session'
+                  ) : (
+                    <span className="li-unknown">Not connected</span>
+                  ))}
+              </dd>
+            </div>
+            <div>
+              <dt>LinkedIn profile</dt>
+              <dd>
+                {account.profileUrl ? (
+                  <a href={account.profileUrl} target="_blank" rel="noreferrer noopener">
+                    {lastRead?.name ?? profileLabel(account.profileUrl)}
+                  </a>
+                ) : (
+                  <span className="li-unknown">Not read yet</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Timezone</dt>
+              <dd>{account.timezone}</dd>
+            </div>
+            <div>
+              <dt>Works</dt>
+              <dd>
+                {describeDays(account.workingDays)}, {minutesToClock(account.workStartMinute)}–
+                {minutesToClock(account.workEndMinute)}
+              </dd>
+            </div>
+            <div>
+              <dt>Session confirmed</dt>
+              <dd>
+                {auth?.sessionValidAt ? (
+                  relativeTime(auth.sessionValidAt)
+                ) : (
+                  <span className="li-unknown">Not yet</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Connections</dt>
+              {/* Unknown, never zero: an unreadable count is reported in `degraded` and left as it was. */}
+              <dd>
+                {account.connectionsCount === null ? (
+                  <span className="li-unknown">Unknown</span>
+                ) : (
+                  account.connectionsCount.toLocaleString()
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Profile last read</dt>
+              <dd>
+                {account.detectedAt ? (
+                  relativeTime(account.detectedAt)
+                ) : (
+                  <span className="li-unknown">Never</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Account opened</dt>
+              {/* Informational, and nothing paces off it -- the ramp clock is
                 `activatedAt`, which is when THIS seat started sending through
                 Trevra. LinkedIn does not publish the opening date, so this is
                 filled only when somebody says so. */}
-            <dd>{account.accountOpenedOn ?? <span className="li-unknown">Not recorded</span>}</dd>
-          </div>
-        </dl>
-      </div>
-
-      {degraded.length > 0 && <div className="li-degraded">
-        <strong>Read, but not all of it came back:</strong>
-        <ul>{degraded.map((entry) => <li key={entry}>{entry}</li>)}</ul>
-        <p>Anything missing is held as unknown, never as zero.</p>
-      </div>}
-
-      {connected
-        ? <div className="li-signin-row">
-          <span className="li-signin-id"><Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}</span>
-          <span>{auth?.sessionValidAt
-            ? `${companion ? 'Browser session' : 'Session'} confirmed ${relativeTime(auth.sessionValidAt)}`
-            : 'No session yet — the sign-in has not completed.'}</span>
-          <div className="li-signin-actions">
-            {auth?.hasCredentials && <button className="ghost-button danger" type="button" disabled={forgetting} onClick={() => void forgetSignIn()}>
-              {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />} Forget stored password
-            </button>}
-          </div>
-        </div>
-        : companion ? <div className="li-dryrun li-acct-promise">
-          <Laptop size={20} />
-          <div>
-            <strong>No LinkedIn password is needed in Trevra.</strong>
-            <p>
-              Keep <code>npx trevra linkedin</code> running, sign into LinkedIn in the Chrome window it opens, then use{' '}
-              <b>Check this account on LinkedIn</b> below. The profile, cookies and IP stay on that computer.
-            </p>
-            {auth?.hasCredentials && <button className="ghost-button danger" type="button" disabled={forgetting} onClick={() => void forgetSignIn()}>
-              {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />} Remove the old stored password
-            </button>}
-          </div>
-        </div>
-        : storedSignIn ? <div className="li-signin-row">
-          <span className="li-signin-id"><Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}</span>
-          <span>The password is stored, but no live session has been confirmed yet.</span>
-          <div className="li-signin-actions">
-            <button className="secondary-button" type="button" disabled={signingIn} onClick={() => void attempt(() => runLogin())}>
-              {signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />} Sign in
-            </button>
-            <button className="ghost-button danger" type="button" disabled={forgetting} onClick={() => void forgetSignIn()}>
-              {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />} Forget this sign-in
-            </button>
-          </div>
-        </div>
-        : <>
-          {/* The reassurance comes BEFORE the field, not under it: a promise
-              made after the password is typed is a receipt, not a promise. */}
-          {stage === 'credentials' && <div className="li-dryrun li-acct-promise">
-            <ShieldCheck size={20} />
-            <div>
-              <strong>Before you type it — what happens to this password.</strong>
-              <p>
-                Encrypted at rest, sent nowhere but LinkedIn, used only to open this account’s browser session. Remove
-                it any time — no screen ever shows it back; the masked address is the most Trevra will say.
-              </p>
+              <dd>{account.accountOpenedOn ?? <span className="li-unknown">Not recorded</span>}</dd>
             </div>
-          </div>}
+          </dl>
+        </div>
 
-          <div className="li-signin">
-            <strong>Connect {account.label}</strong>
-            {stage === 'otp'
-              ? <form
-                className="li-signin-fields li-signin-otp"
-                onSubmit={(event) => { event.preventDefault(); void attempt(() => runLogin(otp.trim())); }}
+        {degraded.length > 0 && (
+          <div className="li-degraded">
+            <strong>Read, but not all of it came back:</strong>
+            <ul>
+              {degraded.map((entry) => (
+                <li key={entry}>{entry}</li>
+              ))}
+            </ul>
+            <p>Anything missing is held as unknown, never as zero.</p>
+          </div>
+        )}
+
+        {connected ? (
+          <div className="li-signin-row">
+            <span className="li-signin-id">
+              <Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}
+            </span>
+            <span>
+              {auth?.sessionValidAt
+                ? `${companion ? 'Browser session' : 'Session'} confirmed ${relativeTime(auth.sessionValidAt)}`
+                : 'No session yet — the sign-in has not completed.'}
+            </span>
+            <div className="li-signin-actions">
+              {auth?.hasCredentials && (
+                <button
+                  className="ghost-button danger"
+                  type="button"
+                  disabled={forgetting}
+                  onClick={() => void forgetSignIn()}
+                >
+                  {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />}{' '}
+                  Forget stored password
+                </button>
+              )}
+            </div>
+          </div>
+        ) : companion && !auth?.hasCredentials && !wantsCredentialsForm ? (
+          <div className="li-dryrun li-acct-promise">
+            <Laptop size={20} />
+            <div>
+              <strong>No LinkedIn password is needed in Trevra.</strong>
+              <p>
+                Keep <code>npx trevra linkedin</code> running, sign into LinkedIn in the Chrome
+                window it opens, then use <b>Check this account on LinkedIn</b> below. The profile,
+                cookies and IP stay on that computer.
+              </p>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => setWantsCredentialsForm(true)}
               >
-                {/* NO LENGTH RULE, IN EITHER DIRECTION. LinkedIn's own
+                Or save a password here to sign in automatically
+              </button>
+            </div>
+          </div>
+        ) : storedSignIn ? (
+          <div className="li-signin-row">
+            <span className="li-signin-id">
+              <Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}
+            </span>
+            <span>The password is stored, but no live session has been confirmed yet.</span>
+            <div className="li-signin-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={signingIn}
+                onClick={() => void attempt(() => runLogin())}
+              >
+                {signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />} Sign
+                in
+              </button>
+              <button
+                className="ghost-button danger"
+                type="button"
+                disabled={forgetting}
+                onClick={() => void forgetSignIn()}
+              >
+                {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />}{' '}
+                Forget this sign-in
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* The reassurance comes BEFORE the field, not under it: a promise
+              made after the password is typed is a receipt, not a promise. */}
+            {stage === 'credentials' && (
+              <div className="li-dryrun li-acct-promise">
+                <ShieldCheck size={20} />
+                <div>
+                  <strong>Before you type it — what happens to this password.</strong>
+                  <p>
+                    Encrypted at rest, sent nowhere but LinkedIn, used only to open this account’s
+                    browser session. Remove it any time — no screen ever shows it back; the masked
+                    address is the most Trevra will say.
+                    {companion &&
+                      ' On a paired computer, it is also used to sign that computer’s browser in automatically whenever its session needs to be renewed, instead of asking you to do it by hand there.'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {companion && !auth?.hasCredentials && stage === 'credentials' && (
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => setWantsCredentialsForm(false)}
+              >
+                ← Back to signing in manually on the paired computer
+              </button>
+            )}
+
+            <div className="li-signin">
+              <strong>Connect {account.label}</strong>
+              {stage === 'otp' ? (
+                <form
+                  className="li-signin-fields li-signin-otp"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void attempt(() => runLogin(otp.trim()));
+                  }}
+                >
+                  {/* NO LENGTH RULE, IN EITHER DIRECTION. LinkedIn's own
                     verification codes are six digits today, but the same field
                     takes whatever a challenge asks for -- and `maxLength={6}`
                     with a `< 6` guard on the button meant a code of any other
@@ -1444,140 +1909,236 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
                     is a dead end with no way out of it. Whether a code is right
                     is LinkedIn's answer to give; this refuses only an empty
                     one, because an empty one is not an attempt. */}
-                <label>Verification code<input
-                  value={otp}
-                  onChange={(event) => setOtp(event.target.value)}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  placeholder="123456"
-                  aria-label="Verification code"
-                /></label>
-                <button className="primary-button" type="submit" disabled={signingIn || otp.trim().length === 0}>
-                  {signingIn ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Verify
-                </button>
-              </form>
-              : <form className="li-signin-fields" onSubmit={(event) => { event.preventDefault(); signIn(); }}>
-                <label>LinkedIn email<input
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  autoComplete="username"
-                  placeholder="you@example.com"
-                /></label>
-                <label>LinkedIn password<input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
-                /></label>
-                <button className="primary-button" type="submit" disabled={signingIn}>
-                  {signingIn ? <LoaderCircle className="spin" size={15} /> : <LogIn size={15} />} Sign in to LinkedIn
-                </button>
-              </form>}
-            {stage === 'otp' && <p className="li-hint">LinkedIn sent a code to this account’s email or phone. Enter it to finish signing in.</p>}
-            {note && <>
-              <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>{note.message}</p>
-              {note.tone === 'instruction' && <p className="li-hint">
-                LinkedIn wants a person, not a script. Finish that step in a browser signed in as this account, then
-                sign in here again.
-              </p>}
-            </>}
-          </div>
-        </>}
+                  <label>
+                    Verification code
+                    <input
+                      value={otp}
+                      onChange={(event) => setOtp(event.target.value)}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      placeholder="123456"
+                      aria-label="Verification code"
+                    />
+                  </label>
+                  <button
+                    className="primary-button"
+                    type="submit"
+                    disabled={signingIn || otp.trim().length === 0}
+                  >
+                    {signingIn ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}{' '}
+                    Verify
+                  </button>
+                </form>
+              ) : (
+                <form
+                  className="li-signin-fields"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    signIn();
+                  }}
+                >
+                  <label>
+                    LinkedIn email
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                      autoComplete="username"
+                      placeholder="you@example.com"
+                    />
+                  </label>
+                  <label>
+                    LinkedIn password
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      autoComplete="current-password"
+                    />
+                  </label>
+                  <button className="primary-button" type="submit" disabled={signingIn}>
+                    {signingIn ? <LoaderCircle className="spin" size={15} /> : <LogIn size={15} />}{' '}
+                    Sign in to LinkedIn
+                  </button>
+                </form>
+              )}
+              {stage === 'otp' && (
+                <p className="li-hint">
+                  LinkedIn sent a code to this account’s email or phone. Enter it to finish signing
+                  in.
+                </p>
+              )}
+              {note && (
+                <>
+                  <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>
+                    {note.message}
+                  </p>
+                  {note.tone === 'instruction' && (
+                    <p className="li-hint">
+                      LinkedIn wants a person, not a script. Finish that step in a browser signed in
+                      as this account, then sign in here again.
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          </>
+        )}
 
-      {connected && note && <p className="li-signin-error">{note.message}</p>}
+        {connected && note && <p className="li-signin-error">{note.message}</p>}
 
-      <div className="li-seat-actions">
-        <button className="secondary-button" type="button" disabled={checking} onClick={() => void check()}>
-          {checking ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
-          {' '}Check this account on LinkedIn
-        </button>
-        {state === 'paused'
-          ? <button className="primary-button" type="button" disabled={resuming} onClick={() => void resume()}>
-            {resuming ? <LoaderCircle className="spin" size={14} /> : <Play size={14} />} Resume this account
+        <div className="li-seat-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={checking}
+            onClick={() => void check()}
+          >
+            {checking ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Check
+            this account on LinkedIn
           </button>
-          : <button className="ghost-button danger" type="button" onClick={() => setConfirmPause(true)}>
-            <CircleStop size={14} /> Pause this account
-          </button>}
-        <button className="ghost-button danger li-acct-remove" type="button" onClick={() => setConfirmRemove(true)}>
-          <Trash2 size={13} /> Remove account
-        </button>
-      </div>
-    </section>
-
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>Today on {account.label}</h3>
-          <p>The last 24 hours against the limits you set — a rolling window, not since midnight.</p>
+          {state === 'paused' ? (
+            <button
+              className="primary-button"
+              type="button"
+              disabled={resuming}
+              onClick={() => void resume()}
+            >
+              {resuming ? <LoaderCircle className="spin" size={14} /> : <Play size={14} />} Resume
+              this account
+            </button>
+          ) : (
+            <button
+              className="ghost-button danger"
+              type="button"
+              onClick={() => setConfirmPause(true)}
+            >
+              <CircleStop size={14} /> Pause this account
+            </button>
+          )}
+          <button
+            className="ghost-button danger li-acct-remove"
+            type="button"
+            onClick={() => setConfirmRemove(true)}
+          >
+            <Trash2 size={13} /> Remove account
+          </button>
         </div>
-        <KeyRound size={20} className="li-heading-icon" />
-      </div>
-      <div className="li-stat-row">
-        {LIMIT_FIELDS.map((limit) => {
-          const ceiling = account[limit.field];
-          const used = usedToday(limit, detail);
-          return <LiStat
-            key={limit.field}
-            label={limit.label}
-            value={used === undefined ? '—' : String(used)}
-            tone={ceiling === 0 ? 'mute' : used !== undefined && used >= ceiling ? 'warn' : 'ok'}
-            detail={ceiling === 0
-              ? 'turned off for this account'
-              : <>of {ceiling} a day{limit.pooledKindsLabel ? ` · ${limit.pooledKindsLabel} together` : ''}</>}
-          />;
-        })}
-      </div>
+      </section>
 
-      <EditAccountForm account={account} safety={safety} setToast={setToast} onSaved={onChanged} />
-    </section>
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Today on {account.label}</h3>
+            <p>
+              The last 24 hours against the limits you set — a rolling window, not since midnight.
+            </p>
+          </div>
+          <KeyRound size={20} className="li-heading-icon" />
+        </div>
+        <div className="li-stat-row">
+          {LIMIT_FIELDS.map((limit) => {
+            const ceiling = account[limit.field];
+            const used = usedToday(limit, detail);
+            return (
+              <LiStat
+                key={limit.field}
+                label={limit.label}
+                value={used === undefined ? '—' : String(used)}
+                tone={
+                  ceiling === 0 ? 'mute' : used !== undefined && used >= ceiling ? 'warn' : 'ok'
+                }
+                detail={
+                  ceiling === 0 ? (
+                    'turned off for this account'
+                  ) : (
+                    <>
+                      of {ceiling} a day
+                      {limit.pooledKindsLabel ? ` · ${limit.pooledKindsLabel} together` : ''}
+                    </>
+                  )
+                }
+              />
+            );
+          })}
+        </div>
 
-    {confirmPause && <ConfirmDrawer
-      title={`Pause ${account.label}?`}
-      tone="caution"
-      busy={pausing}
-      requireReason
-      reasonLabel="Why are you pausing it?"
-      body={<>
-        <p>
-          Nothing is scheduled or sent from this account until you resume it. Your other accounts keep running —
-          pausing one stops one.
-        </p>
-        <p>Say why. This is the note you will read three weeks from now, when you are deciding whether to turn it back on.</p>
-      </>}
-      confirmLabel="Pause this account"
-      onConfirm={(reason) => void pause(reason)}
-      onCancel={() => setConfirmPause(false)}
-    />}
+        <EditAccountForm
+          account={account}
+          safety={safety}
+          setToast={setToast}
+          onSaved={onChanged}
+        />
+      </section>
 
-    {confirmRemove && <ConfirmDrawer
-      title={`Remove ${account.label}?`}
-      tone="danger"
-      busy={removing}
-      error={removeError}
-      body={<>
-        <p>
-          This forgets the account itself: its name, its timezone, its working hours, its daily limits, and the copy of
-          its LinkedIn inbox that Trevra keeps. <b>The inbox copy cannot be recovered</b> — Trevra reads it back from
-          LinkedIn only for accounts it still has.
-        </p>
-        <p>
-          What this account already sent stays in your send history, untouched. So does its stored sign-in — to remove
-          that too, use <b>Forget this sign-in</b> first.
-        </p>
-      </>}
-      confirmLabel="Remove this account"
-      onConfirm={() => void remove()}
-      onCancel={() => { setConfirmRemove(false); setRemoveError(null); }}
-    />}
-  </>;
+      {confirmPause && (
+        <ConfirmDrawer
+          title={`Pause ${account.label}?`}
+          tone="caution"
+          busy={pausing}
+          requireReason
+          reasonLabel="Why are you pausing it?"
+          body={
+            <>
+              <p>
+                Nothing is scheduled or sent from this account until you resume it. Your other
+                accounts keep running — pausing one stops one.
+              </p>
+              <p>
+                Say why. This is the note you will read three weeks from now, when you are deciding
+                whether to turn it back on.
+              </p>
+            </>
+          }
+          confirmLabel="Pause this account"
+          onConfirm={(reason) => void pause(reason)}
+          onCancel={() => setConfirmPause(false)}
+        />
+      )}
+
+      {confirmRemove && (
+        <ConfirmDrawer
+          title={`Remove ${account.label}?`}
+          tone="danger"
+          busy={removing}
+          error={removeError}
+          body={
+            <>
+              <p>
+                This forgets the account itself: its name, its timezone, its working hours, its
+                daily limits, and the copy of its LinkedIn inbox that Trevra keeps.{' '}
+                <b>The inbox copy cannot be recovered</b> — Trevra reads it back from LinkedIn only
+                for accounts it still has.
+              </p>
+              <p>
+                What this account already sent stays in your send history, untouched. So does its
+                stored sign-in — to remove that too, use <b>Forget this sign-in</b> first.
+              </p>
+            </>
+          }
+          confirmLabel="Remove this account"
+          onConfirm={() => void remove()}
+          onCancel={() => {
+            setConfirmRemove(false);
+            setRemoveError(null);
+          }}
+        />
+      )}
+    </>
+  );
 }
 
 /* -------------------------------------------------------------------------
  * Every account at once, for the comparison the panel above cannot make.
  * ---------------------------------------------------------------------- */
 
-function AccountsTable({ accounts, details, reports, activeKey, onSelect }: {
+function AccountsTable({
+  accounts,
+  details,
+  reports,
+  activeKey,
+  onSelect
+}: {
   accounts: LinkedInSeat[];
   details: Record<string, LinkedInSeatResponse>;
   /** GET /api/linkedin/limits per account: the ceilings that are actually enforced. */
@@ -1585,93 +2146,142 @@ function AccountsTable({ accounts, details, reports, activeKey, onSelect }: {
   activeKey: string;
   onSelect: (key: string) => void;
 }) {
-  return <section className="page-panel">
-    <div className="section-heading">
-      <div>
-        <h3 aria-level={2}>All accounts</h3>
-        <p>What each one actually sends in 24 hours, and what it has sent. Select a name to work in that account.</p>
+  return (
+    <section className="page-panel">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}>All accounts</h3>
+          <p>
+            What each one actually sends in 24 hours, and what it has sent. Select a name to work in
+            that account.
+          </p>
+        </div>
+        <Users size={20} className="li-heading-icon" />
       </div>
-      <Users size={20} className="li-heading-icon" />
-    </div>
-    <div className="li-table-scroll li-acct-scroll">
-      <table className="li-table">
-        <thead>
-          <tr>
-            <th>Account</th>
-            <th>Status</th>
-            <th>Timezone</th>
-            <th>Works</th>
-            {LIMIT_FIELDS.map((limit) => <th key={limit.field} className="li-num">{limit.column}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {accounts.map((account) => {
-            const detail = details[account.seatKey] ?? null;
-            const state = accountState(account, detail);
-            const isActive = account.seatKey === activeKey;
-            return <tr key={account.seatKey} className={isActive ? 'li-acct-row-active' : undefined}>
-              <td>
-                <button className="li-acct-pick" type="button" onClick={() => onSelect(account.seatKey)}>
-                  {account.label}
-                </button>
-                <small className="li-acct-row-mail">{detail?.auth.maskedEmail ?? (detail?.auth.sessionValidAt ? 'Local browser session' : 'No confirmed session')}</small>
-              </td>
-              <td>
-                <span className={`li-acct-state li-acct-state-${STATE_TONES[state]}`}>
-                  <i className={`li-acct-dot li-acct-dot-${STATE_TONES[state]}`} aria-hidden="true" />{STATE_LABELS[state]}
-                </span>
-              </td>
-              <td>{account.timezone}</td>
-              <td>{describeDays(account.workingDays)}<br />
-                <small className="li-acct-row-mail">{minutesToClock(account.workStartMinute)}–{minutesToClock(account.workEndMinute)}</small>
-              </td>
-              {LIMIT_FIELDS.map((limit) => {
-                const yours = account[limit.field];
-                /* THE NUMBER THE CHECK WILL USE, from the route that runs the
+      <div className="li-table-scroll li-acct-scroll">
+        <table className="li-table">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Status</th>
+              <th>Timezone</th>
+              <th>Works</th>
+              {LIMIT_FIELDS.map((limit) => (
+                <th key={limit.field} className="li-num">
+                  {limit.column}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map((account) => {
+              const detail = details[account.seatKey] ?? null;
+              const state = accountState(account, detail);
+              const isActive = account.seatKey === activeKey;
+              return (
+                <tr key={account.seatKey} className={isActive ? 'li-acct-row-active' : undefined}>
+                  <td>
+                    <button
+                      className="li-acct-pick"
+                      type="button"
+                      onClick={() => onSelect(account.seatKey)}
+                    >
+                      {account.label}
+                    </button>
+                    <small className="li-acct-row-mail">
+                      {detail?.auth.maskedEmail ??
+                        (detail?.auth.sessionValidAt
+                          ? 'Local browser session'
+                          : 'No confirmed session')}
+                    </small>
+                  </td>
+                  <td>
+                    <span className={`li-acct-state li-acct-state-${STATE_TONES[state]}`}>
+                      <i
+                        className={`li-acct-dot li-acct-dot-${STATE_TONES[state]}`}
+                        aria-hidden="true"
+                      />
+                      {STATE_LABELS[state]}
+                    </span>
+                  </td>
+                  <td>{account.timezone}</td>
+                  <td>
+                    {describeDays(account.workingDays)}
+                    <br />
+                    <small className="li-acct-row-mail">
+                      {minutesToClock(account.workStartMinute)}–
+                      {minutesToClock(account.workEndMinute)}
+                    </small>
+                  </td>
+                  {LIMIT_FIELDS.map((limit) => {
+                    const yours = account[limit.field];
+                    /* THE NUMBER THE CHECK WILL USE, from the route that runs the
                    check. Never `min(...)` of the two here: which one binds is
                    the server's verdict (`ceilingSource`) and it depends on the
                    account's posture, its warm-up week and its band override --
                    none of which this row could see. */
-                const row = reports[account.seatKey]?.limits
-                  .find((entry) => entry.kind === limit.kind && entry.window === 'day') ?? null;
-                const ceiling = row?.ceiling ?? null;
-                const used = usedToday(limit, detail);
-                const share = ceiling !== null && ceiling > 0 && used !== undefined ? Math.min(1, used / ceiling) : 0;
-                // BOTH NUMBERS AT THE POINT OF DECISION, and only when they
-                // differ -- "30 · 30" would be noise on the accounts that agree.
-                const overruled = row !== null && ceiling !== null && ceiling !== yours;
-                return <td key={limit.field} className="li-num">
-                  {yours === 0
-                    ? <span className="li-unknown">off</span>
-                    : <>
-                      {used === undefined ? '—' : used} / {ceiling ?? yours}
-                      <span className="li-acct-usage" aria-hidden="true">
-                        <span
-                          className={`li-acct-usage-fill${share >= 1 ? ' is-full' : ''}`}
-                          style={{ width: `${Math.round(share * 100)}%` }}
-                        />
-                      </span>
-                      {overruled && <small className="li-acct-row-mail">you set {yours}</small>}
-                      {row === null && <small className="li-acct-row-mail">you set {yours}, enforced number unread</small>}
-                    </>}
-                </td>;
-              })}
-            </tr>;
-          })}
-        </tbody>
-      </table>
-    </div>
-    <p className="panel-note">
-      <Hint label="What the big number means" trigger={<>What the big number means</>}>
-        It is <b>what will actually go out</b> — Trevra’s ceiling for that account today, after warm-up and anything
-        else holding it back. Where your own setting differs it is named underneath: you set 30, 18 goes out.
-        Trevra’s band wins whenever it is the lower of the two, unless you have said otherwise on that account.
-        {LIMIT_FIELDS.filter((limit) => limit.pooledKindsLabel).map((limit) => <span key={limit.field}>
-          {' '}{limit.column} is one ceiling shared by {limit.pooledKindsLabel}: a reply spends room a new message would.
-        </span>)}
-      </Hint>
-    </p>
-  </section>;
+                    const row =
+                      reports[account.seatKey]?.limits.find(
+                        (entry) => entry.kind === limit.kind && entry.window === 'day'
+                      ) ?? null;
+                    const ceiling = row?.ceiling ?? null;
+                    const used = usedToday(limit, detail);
+                    const share =
+                      ceiling !== null && ceiling > 0 && used !== undefined
+                        ? Math.min(1, used / ceiling)
+                        : 0;
+                    // BOTH NUMBERS AT THE POINT OF DECISION, and only when they
+                    // differ -- "30 · 30" would be noise on the accounts that agree.
+                    const overruled = row !== null && ceiling !== null && ceiling !== yours;
+                    return (
+                      <td key={limit.field} className="li-num">
+                        {yours === 0 ? (
+                          <span className="li-unknown">off</span>
+                        ) : (
+                          <>
+                            {used === undefined ? '—' : used} / {ceiling ?? yours}
+                            <span className="li-acct-usage" aria-hidden="true">
+                              <span
+                                className={`li-acct-usage-fill${share >= 1 ? ' is-full' : ''}`}
+                                style={{ width: `${Math.round(share * 100)}%` }}
+                              />
+                            </span>
+                            {overruled && (
+                              <small className="li-acct-row-mail">you set {yours}</small>
+                            )}
+                            {row === null && (
+                              <small className="li-acct-row-mail">
+                                you set {yours}, enforced number unread
+                              </small>
+                            )}
+                          </>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="panel-note">
+        <Hint label="What the big number means" trigger={<>What the big number means</>}>
+          It is <b>what will actually go out</b> — Trevra’s ceiling for that account today, after
+          warm-up and anything else holding it back. Where your own setting differs it is named
+          underneath: you set 30, 18 goes out. Trevra’s band wins whenever it is the lower of the
+          two, unless you have said otherwise on that account.
+          {LIMIT_FIELDS.filter((limit) => limit.pooledKindsLabel).map((limit) => (
+            <span key={limit.field}>
+              {' '}
+              {limit.column} is one ceiling shared by {limit.pooledKindsLabel}: a reply spends room
+              a new message would.
+            </span>
+          ))}
+        </Hint>
+      </p>
+    </section>
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -1750,14 +2360,24 @@ const draftOf = (account: LinkedInSeat): AccountDraft => ({
 /** Refuses in the operator's words before the server refuses in its own. */
 function draftToPatch(draft: AccountDraft, ranges: OperatorRanges | null) {
   const label = draft.label.trim();
-  if (!label) throw new Error('Give this account a name you will recognise in a list — “Priya (sales)” beats “account 2”.');
+  if (!label)
+    throw new Error(
+      'Give this account a name you will recognise in a list — “Priya (sales)” beats “account 2”.'
+    );
 
   const timezone = draft.timezone.trim();
-  if (!timezone) throw new Error('A timezone decides which 09:00 this account works to. Leave it as this browser’s if you are not sure.');
+  if (!timezone)
+    throw new Error(
+      'A timezone decides which 09:00 this account works to. Leave it as this browser’s if you are not sure.'
+    );
 
   const workStartMinute = clockToMinutes(draft.workStart);
   const workEndMinute = clockToMinutes(draft.workEnd);
-  if (!Number.isFinite(workStartMinute) || !Number.isFinite(workEndMinute) || workEndMinute <= workStartMinute) {
+  if (
+    !Number.isFinite(workStartMinute) ||
+    !Number.isFinite(workEndMinute) ||
+    workEndMinute <= workStartMinute
+  ) {
     throw new Error('Working hours need a start and a later end on the same day.');
   }
 
@@ -1770,9 +2390,11 @@ function draftToPatch(draft: AccountDraft, ranges: OperatorRanges | null) {
     // saving an untouched blank as an off switch is the one wrong answer here.
     const outOfRange = range ? value < range.min || value > range.max : value < 0;
     if (raw === '' || !Number.isInteger(value) || outOfRange) {
-      throw new Error(range
-        ? `${limit.label} has to be a whole number between ${range.min} and ${range.max}.`
-        : `${limit.label} has to be a whole number of actions a day.`);
+      throw new Error(
+        range
+          ? `${limit.label} has to be a whole number between ${range.min} and ${range.max}.`
+          : `${limit.label} has to be a whole number of actions a day.`
+      );
     }
     limits[limit.field] = value;
   }
@@ -1819,55 +2441,86 @@ function draftToPatch(draft: AccountDraft, ranges: OperatorRanges | null) {
  * whole reason to set one is that this account must not be seen coming from
  * this machine.
  * ---------------------------------------------------------------------- */
-function ProxyField({ draft, onChange, idPrefix, proxy }: {
+function ProxyField({
+  draft,
+  onChange,
+  idPrefix,
+  proxy
+}: {
   draft: AccountDraft;
   onChange: (patch: Partial<AccountDraft>) => void;
   idPrefix: string;
   /** What is stored now, redacted by the server. Null for a new account or one with none. */
   proxy: LinkedInSeat['proxy'] | null;
 }) {
-  return <>
-    <h4 className="li-subhead" aria-level={3}>Outbound connection</h4>
-    <p className="li-hint">
-      {proxy
-        ? <>This account goes out through <b>{proxy.server}</b>{proxy.username ? <> as <b>{proxy.username}</b></> : null}
-          {proxy.hasPassword ? ' with a stored password' : ''}. Leave the box empty to keep it.</>
-        : <>This account goes out from this machine’s own connection, which is usually what you want. Set a proxy only
-          if this account should not be seen coming from here.</>}
-    </p>
-    <label htmlFor={`${idPrefix}-proxy`}>
-      {proxy ? 'Replace the proxy' : 'Proxy'}
-      <input
-        id={`${idPrefix}-proxy`}
-        type="text"
-        autoComplete="off"
-        spellCheck={false}
-        placeholder="http://user:password@host:3128"
-        value={draft.proxyUrl}
-        disabled={draft.proxyRemove}
-        onChange={(event) => onChange({ proxyUrl: event.target.value })}
-      />
-      <small className="li-acct-range">
-        http, https or socks5. A socks5 proxy may not carry a password — Chromium cannot answer its challenge.
-        The password is stored and never shown again.
-      </small>
-    </label>
-    {proxy && <label className="li-inline-check">
-      <input
-        type="checkbox"
-        checked={draft.proxyRemove}
-        onChange={(event) => onChange({ proxyRemove: event.target.checked, proxyUrl: '' })}
-      />
-      <span>Remove it and go out from this machine’s own connection</span>
-    </label>}
-    <p className="li-hint">
-      If Trevra cannot use the proxy you set, <b>this account stops</b> — its work stays queued and nothing goes out.
-      It is never sent directly instead, because that is the one outcome you set a proxy to prevent.
-    </p>
-  </>;
+  return (
+    <>
+      <h4 className="li-subhead" aria-level={3}>
+        Outbound connection
+      </h4>
+      <p className="li-hint">
+        {proxy ? (
+          <>
+            This account goes out through <b>{proxy.server}</b>
+            {proxy.username ? (
+              <>
+                {' '}
+                as <b>{proxy.username}</b>
+              </>
+            ) : null}
+            {proxy.hasPassword ? ' with a stored password' : ''}. Leave the box empty to keep it.
+          </>
+        ) : (
+          <>
+            This account goes out from this machine’s own connection, which is usually what you
+            want. Set a proxy only if this account should not be seen coming from here.
+          </>
+        )}
+      </p>
+      <label htmlFor={`${idPrefix}-proxy`}>
+        {proxy ? 'Replace the proxy' : 'Proxy'}
+        <input
+          id={`${idPrefix}-proxy`}
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="http://user:password@host:3128"
+          value={draft.proxyUrl}
+          disabled={draft.proxyRemove}
+          onChange={(event) => onChange({ proxyUrl: event.target.value })}
+        />
+        <small className="li-acct-range">
+          http, https or socks5. A socks5 proxy may not carry a password — Chromium cannot answer
+          its challenge. The password is stored and never shown again.
+        </small>
+      </label>
+      {proxy && (
+        <label className="li-inline-check">
+          <input
+            type="checkbox"
+            checked={draft.proxyRemove}
+            onChange={(event) => onChange({ proxyRemove: event.target.checked, proxyUrl: '' })}
+          />
+          <span>Remove it and go out from this machine’s own connection</span>
+        </label>
+      )}
+      <p className="li-hint">
+        If Trevra cannot use the proxy you set, <b>this account stops</b> — its work stays queued
+        and nothing goes out. It is never sent directly instead, because that is the one outcome you
+        set a proxy to prevent.
+      </p>
+    </>
+  );
 }
 
-function ScheduleFields({ draft, onChange, idPrefix, safety, bandOverride = false, proxy = null }: {
+function ScheduleFields({
+  draft,
+  onChange,
+  idPrefix,
+  safety,
+  bandOverride = false,
+  proxy = null
+}: {
   draft: AccountDraft;
   onChange: (patch: Partial<AccountDraft>) => void;
   idPrefix: string;
@@ -1880,72 +2533,115 @@ function ScheduleFields({ draft, onChange, idPrefix, safety, bandOverride = fals
 }) {
   const ranges = safety?.operatorRanges ?? null;
 
-  return <>
-    <h4 className="li-subhead" aria-level={3}>When this account may act</h4>
-    <p className="li-hint">
-      Outside these days and hours Trevra refuses every automated action on this account, whatever is queued.
-    </p>
-    <div className="li-filter-row">
-      {DAY_NAMES.map((name, day) => <label className="li-inline-check" key={`${idPrefix}-${name}`}>
-        <input
-          type="checkbox"
-          checked={draft.workingDays.includes(day)}
-          onChange={() => onChange({
-            workingDays: draft.workingDays.includes(day)
-              ? draft.workingDays.filter((value) => value !== day)
-              : [...draft.workingDays, day]
-          })}
-        />
-        <span>{name}</span>
-      </label>)}
-    </div>
-    <div className="li-form-grid">
-      <label>Starts at<input type="time" value={draft.workStart} onChange={(event) => onChange({ workStart: event.target.value })} /></label>
-      <label>Stops at<input type="time" value={draft.workEnd} onChange={(event) => onChange({ workEnd: event.target.value })} /></label>
-    </div>
+  return (
+    <>
+      <h4 className="li-subhead" aria-level={3}>
+        When this account may act
+      </h4>
+      <p className="li-hint">
+        Outside these days and hours Trevra refuses every automated action on this account, whatever
+        is queued.
+      </p>
+      <div className="li-filter-row">
+        {DAY_NAMES.map((name, day) => (
+          <label className="li-inline-check" key={`${idPrefix}-${name}`}>
+            <input
+              type="checkbox"
+              checked={draft.workingDays.includes(day)}
+              onChange={() =>
+                onChange({
+                  workingDays: draft.workingDays.includes(day)
+                    ? draft.workingDays.filter((value) => value !== day)
+                    : [...draft.workingDays, day]
+                })
+              }
+            />
+            <span>{name}</span>
+          </label>
+        ))}
+      </div>
+      <div className="li-form-grid">
+        <label>
+          Starts at
+          <input
+            type="time"
+            value={draft.workStart}
+            onChange={(event) => onChange({ workStart: event.target.value })}
+          />
+        </label>
+        <label>
+          Stops at
+          <input
+            type="time"
+            value={draft.workEnd}
+            onChange={(event) => onChange({ workEnd: event.target.value })}
+          />
+        </label>
+      </div>
 
-    <h4 className="li-subhead" aria-level={3}>Most this account may do in 24 hours</h4>
-    <div className="li-form-grid">
-      {LIMIT_FIELDS.map((limit) => {
-        const range = ranges?.[limit.range] ?? null;
-        /* BOTH NUMBERS BESIDE THE FIELD THAT SETS ONE OF THEM.
+      <h4 className="li-subhead" aria-level={3}>
+        Most this account may do in 24 hours
+      </h4>
+      <div className="li-form-grid">
+        {LIMIT_FIELDS.map((limit) => {
+          const range = ranges?.[limit.range] ?? null;
+          /* BOTH NUMBERS BESIDE THE FIELD THAT SETS ONE OF THEM.
            The form accepts 30 invites a day; the check applies
            `min(band, operator)` and lets 18 out. Saying only "0–75" here is how
            an operator came to believe the number they typed was the number
            being used. The band is the server's own, read from the report -- no
            literal, and nothing derived from it. */
-        const band: number | undefined = safety?.bands[limit.kind]?.perDay;
-        const mine = Number(draft[limit.field].trim());
-        const overruled = band !== undefined && Number.isFinite(mine) && mine > band && !draft.safetyBandOverride;
-        return <label key={limit.field}>
-          {limit.label}
-          <input
-            type="number"
-            step={1}
-            min={range?.min}
-            max={range?.max}
-            value={draft[limit.field]}
-            onChange={(event) => onChange({ [limit.field]: event.target.value } as Partial<AccountDraft>)}
-          />
-          <small className="li-acct-range">
-            {range
-              ? <>{range.min}–{range.max}{range.min === 0 ? ' · 0 turns it off' : ''}</>
-              : <>Trevra could not read the allowed range just now. The server still refuses anything outside it.</>}
-            {band !== undefined && <> · Trevra’s researched ceiling {band}</>}
-            {limit.pooledKindsLabel && <> · spent by {limit.pooledKindsLabel} together</>}
-          </small>
-          {overruled && <small className="li-acct-range">
-            <b>You set {mine} · {band} will go out</b> — Trevra’s researched ceiling is the lower of the two and it is
-            what binds{bandOverride ? '' : ', on this account and on every new one'}.
-          </small>}
-        </label>;
-      })}
-    </div>
+          const band: number | undefined = safety?.bands[limit.kind]?.perDay;
+          const mine = Number(draft[limit.field].trim());
+          const overruled =
+            band !== undefined && Number.isFinite(mine) && mine > band && !draft.safetyBandOverride;
+          return (
+            <label key={limit.field}>
+              {limit.label}
+              <input
+                type="number"
+                step={1}
+                min={range?.min}
+                max={range?.max}
+                value={draft[limit.field]}
+                onChange={(event) =>
+                  onChange({ [limit.field]: event.target.value } as Partial<AccountDraft>)
+                }
+              />
+              <small className="li-acct-range">
+                {range ? (
+                  <>
+                    {range.min}–{range.max}
+                    {range.min === 0 ? ' · 0 turns it off' : ''}
+                  </>
+                ) : (
+                  <>
+                    Trevra could not read the allowed range just now. The server still refuses
+                    anything outside it.
+                  </>
+                )}
+                {band !== undefined && <> · Trevra’s researched ceiling {band}</>}
+                {limit.pooledKindsLabel && <> · spent by {limit.pooledKindsLabel} together</>}
+              </small>
+              {overruled && (
+                <small className="li-acct-range">
+                  <b>
+                    You set {mine} · {band} will go out
+                  </b>{' '}
+                  — Trevra’s researched ceiling is the lower of the two and it is what binds
+                  {bandOverride ? '' : ', on this account and on every new one'}.
+                </small>
+              )}
+            </label>
+          );
+        })}
+      </div>
 
-    {bandOverride && <BandOverrideField draft={draft} onChange={onChange} safety={safety} />}
+      {bandOverride && <BandOverrideField draft={draft} onChange={onChange} safety={safety} />}
 
-    <ProxyField draft={draft} onChange={onChange} idPrefix={idPrefix} proxy={proxy} />
-  </>;
+      <ProxyField draft={draft} onChange={onChange} idPrefix={idPrefix} proxy={proxy} />
+    </>
+  );
 }
 
 /**
@@ -1968,7 +2664,11 @@ function ScheduleFields({ draft, onChange, idPrefix, safety, bandOverride = fals
  * ramp both still multiply whatever ceiling ends up binding, and both numbers
  * quoted below come from the server that applies them.
  */
-function BandOverrideField({ draft, onChange, safety }: {
+function BandOverrideField({
+  draft,
+  onChange,
+  safety
+}: {
   draft: AccountDraft;
   onChange: (patch: Partial<AccountDraft>) => void;
   safety: LinkedInLimitsReport | null;
@@ -1977,63 +2677,81 @@ function BandOverrideField({ draft, onChange, safety }: {
   const bands = safety?.bands ?? null;
   const ramp = safety?.campaignWarmupFractions ?? null;
 
-  return <>
-    <h4 className="li-subhead" aria-level={3}>Whose daily ceiling binds</h4>
-    <p className="li-hint">
-      Trevra researched its own safety bands, and they are lower than what this form lets you type. Until you say
-      otherwise the lower of the two applies — which is the band, not your number.
-    </p>
-    <label className="li-inline-check">
-      <input
-        type="checkbox"
-        checked={on}
-        onChange={(event) => onChange({ safetyBandOverride: event.target.checked })}
-      />
-      <span>Use the numbers I set above, including where they are higher than Trevra’s band</span>
-    </label>
+  return (
+    <>
+      <h4 className="li-subhead" aria-level={3}>
+        Whose daily ceiling binds
+      </h4>
+      <p className="li-hint">
+        Trevra researched its own safety bands, and they are lower than what this form lets you
+        type. Until you say otherwise the lower of the two applies — which is the band, not your
+        number.
+      </p>
+      <label className="li-inline-check">
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(event) => onChange({ safetyBandOverride: event.target.checked })}
+        />
+        <span>Use the numbers I set above, including where they are higher than Trevra’s band</span>
+      </label>
 
-    {bands
-      ? <ul className="li-blockers">
-        {LIMIT_FIELDS.map((limit) => {
-          const band: number | undefined = bands[limit.kind]?.perDay;
-          const mine = Number(draft[limit.field].trim() || Number.NaN);
-          if (band === undefined || !Number.isFinite(mine)) return null;
-          return <li key={limit.field}>
-            <b>{limit.label}:</b>{' '}
-            {mine <= band
-              ? `your ${mine} a day, under Trevra’s ${band} — yours applies either way.`
-              : on
-                ? `${mine} a day, yours, instead of Trevra’s researched ${band}.`
-                : `you set ${mine} a day, Trevra’s band is ${band}, and ${band} is what applies.`}
-          </li>;
-        })}
-      </ul>
-      : <p className="li-hint">Trevra could not read its own bands just now, so this cannot say which of the two numbers is binding.</p>}
+      {bands ? (
+        <ul className="li-blockers">
+          {LIMIT_FIELDS.map((limit) => {
+            const band: number | undefined = bands[limit.kind]?.perDay;
+            const mine = Number(draft[limit.field].trim() || Number.NaN);
+            if (band === undefined || !Number.isFinite(mine)) return null;
+            return (
+              <li key={limit.field}>
+                <b>{limit.label}:</b>{' '}
+                {mine <= band
+                  ? `your ${mine} a day, under Trevra’s ${band} — yours applies either way.`
+                  : on
+                    ? `${mine} a day, yours, instead of Trevra’s researched ${band}.`
+                    : `you set ${mine} a day, Trevra’s band is ${band}, and ${band} is what applies.`}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="li-hint">
+          Trevra could not read its own bands just now, so this cannot say which of the two numbers
+          is binding.
+        </p>
+      )}
 
-    <p className="li-hint">
-      Both ramps apply either way, and this lifts neither.{' '}
-      {/* `warmupWeek` counts on past the ramp -- it is weeks since this account
+      <p className="li-hint">
+        Both ramps apply either way, and this lifts neither.{' '}
+        {/* `warmupWeek` counts on past the ramp -- it is weeks since this account
           started sending through Trevra, not a position in a list -- so week 12
           of a 4-week ramp is a real answer and "12 of 4" is not a sentence. */}
-      {safety
-        ? safety.seat.warmupWeek > safety.seat.warmupWeeks
-          ? `This account has finished its ${safety.seat.warmupWeeks}-week warm-up.`
-          : `This account is on week ${safety.seat.warmupWeek} of its ${safety.seat.warmupWeeks}-week warm-up, and takes only part of its ceiling until that finishes.`
-        : 'The per-account warm-up still applies.'}{' '}
-      Every campaign then starts at{' '}
-      {ramp && ramp.length > 0
-        ? ramp.map((fraction) => `${Math.round(fraction * 100)}%`).join(', then ')
-        : 'a fraction'}{' '}
-      of whichever ceiling is binding. A different ceiling, never no ceiling.
-    </p>
-  </>;
+        {safety
+          ? safety.seat.warmupWeek > safety.seat.warmupWeeks
+            ? `This account has finished its ${safety.seat.warmupWeeks}-week warm-up.`
+            : `This account is on week ${safety.seat.warmupWeek} of its ${safety.seat.warmupWeeks}-week warm-up, and takes only part of its ceiling until that finishes.`
+          : 'The per-account warm-up still applies.'}{' '}
+        Every campaign then starts at{' '}
+        {ramp && ramp.length > 0
+          ? ramp.map((fraction) => `${Math.round(fraction * 100)}%`).join(', then ')
+          : 'a fraction'}{' '}
+        of whichever ceiling is binding. A different ceiling, never no ceiling.
+      </p>
+    </>
+  );
 }
 
 /* -------------------------------------------------------------------------
  * Adding one.
  * ---------------------------------------------------------------------- */
 
-function AddAccountForm({ existingKeys, safety, onCreated, onCancel, firstOne = false }: {
+function AddAccountForm({
+  existingKeys,
+  safety,
+  onCreated,
+  onCancel,
+  firstOne = false
+}: {
   existingKeys: string[];
   safety: LinkedInLimitsReport | null;
   onCreated: (account: LinkedInSeat) => void;
@@ -2062,7 +2780,8 @@ function AddAccountForm({ existingKeys, safety, onCreated, onCancel, firstOne = 
     }));
   }, [ranges]);
 
-  const change = (patch: Partial<AccountDraft>) => setDraft((current) => ({ ...current, ...patch }));
+  const change = (patch: Partial<AccountDraft>) =>
+    setDraft((current) => ({ ...current, ...patch }));
 
   const submit = async () => {
     setBusy(true);
@@ -2071,10 +2790,14 @@ function AddAccountForm({ existingKeys, safety, onCreated, onCancel, firstOne = 
     try {
       const trimmedKey = key.trim();
       if (!ACCOUNT_KEY_PATTERN.test(trimmedKey)) {
-        throw new Error('A short key is letters, numbers, dashes and underscores, starting with a letter or a number — no spaces, up to 64 characters.');
+        throw new Error(
+          'A short key is letters, numbers, dashes and underscores, starting with a letter or a number — no spaces, up to 64 characters.'
+        );
       }
       if (existingKeys.includes(trimmedKey)) {
-        throw new Error('You already have an account with that key. Pick another — the key is how every queue, inbox and export tells them apart.');
+        throw new Error(
+          'You already have an account with that key. Pick another — the key is how every queue, inbox and export tells them apart.'
+        );
       }
       const patch = draftToPatch(draft, ranges);
       onCreated(await createLinkedInManagerSeat({ seatKey: trimmedKey, ...patch }));
@@ -2099,68 +2822,93 @@ function AddAccountForm({ existingKeys, safety, onCreated, onCancel, firstOne = 
    * after the start time", and a sentence beats a bubble for the rules it does
    * have. Enter now submits, which is what a form of eight fields should do.
    */
-  return <form
-    className={`li-acct-add${firstOne ? ' is-first' : ''}`}
-    onSubmit={(event) => { event.preventDefault(); void submit(); }}
-  >
-    {!firstOne && <h4 className="li-subhead" aria-level={3}>Add a LinkedIn account</h4>}
-    <p className="li-hint">
-      Each account keeps its own sign-in, its own browser profile, its own hours and its own daily limits. Nothing is
-      shared between them, so a wall on one never stops another.
-    </p>
+  return (
+    <form
+      className={`li-acct-add${firstOne ? ' is-first' : ''}`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      {!firstOne && (
+        <h4 className="li-subhead" aria-level={3}>
+          Add a LinkedIn account
+        </h4>
+      )}
+      <p className="li-hint">
+        Each account keeps its own sign-in, its own browser profile, its own hours and its own daily
+        limits. Nothing is shared between them, so a wall on one never stops another.
+      </p>
 
-    {failure && <div className="error-banner li-acct-error">{failure}</div>}
-    {wall && <Wall title="That account could not be added." message={wall} />}
+      {failure && <div className="error-banner li-acct-error">{failure}</div>}
+      {wall && <Wall title="That account could not be added." message={wall} />}
 
-    <div className="li-form-grid">
-      <label>Name
-        <input
-          value={draft.label}
-          onChange={(event) => change({ label: event.target.value })}
-          placeholder="Priya (sales)"
-          autoComplete="off"
+      <div className="li-form-grid">
+        <label>
+          Name
+          <input
+            value={draft.label}
+            onChange={(event) => change({ label: event.target.value })}
+            placeholder="Priya (sales)"
+            autoComplete="off"
+          />
+          <small className="li-acct-range">
+            What you will see in the switcher and on every queue.
+          </small>
+        </label>
+        <label>
+          Short key
+          <input
+            value={key}
+            onChange={(event) => setKey(event.target.value)}
+            placeholder="priya"
+            autoComplete="off"
+            spellCheck={false}
+            pattern={ACCOUNT_KEY_PATTERN.source}
+            title="Letters, numbers, dashes and underscores, starting with a letter or a number. No spaces, up to 64 characters."
+          />
+          <small className="li-acct-range">
+            Letters, numbers, dashes, underscores. Permanent — it is how exports and queues name
+            this account.
+          </small>
+        </label>
+        <TimezoneField
+          className="li-span-2"
+          value={draft.timezone}
+          onChange={(timezone) => change({ timezone })}
+          hint="Taken from this browser. Change it if this account is worked from somewhere else."
         />
-        <small className="li-acct-range">What you will see in the switcher and on every queue.</small>
-      </label>
-      <label>Short key
-        <input
-          value={key}
-          onChange={(event) => setKey(event.target.value)}
-          placeholder="priya"
-          autoComplete="off"
-          spellCheck={false}
-          pattern={ACCOUNT_KEY_PATTERN.source}
-          title="Letters, numbers, dashes and underscores, starting with a letter or a number. No spaces, up to 64 characters."
-        />
-        <small className="li-acct-range">Letters, numbers, dashes, underscores. Permanent — it is how exports and queues name this account.</small>
-      </label>
-      <TimezoneField
-        className="li-span-2"
-        value={draft.timezone}
-        onChange={(timezone) => change({ timezone })}
-        hint="Taken from this browser. Change it if this account is worked from somewhere else."
-      />
-    </div>
-
-    <ScheduleFields draft={draft} onChange={change} idPrefix="add" safety={safety} />
-
-    <div className="panel-footer">
-      <span>Adding an account stores nothing on LinkedIn. You connect it in the next step.</span>
-      <div className="li-acct-form-actions">
-        {onCancel && <button className="secondary-button" type="button" disabled={busy} onClick={onCancel}>Cancel</button>}
-        <button className="primary-button" type="submit" disabled={busy}>
-          {busy ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} Add account
-        </button>
       </div>
-    </div>
-  </form>;
+
+      <ScheduleFields draft={draft} onChange={change} idPrefix="add" safety={safety} />
+
+      <div className="panel-footer">
+        <span>Adding an account stores nothing on LinkedIn. You connect it in the next step.</span>
+        <div className="li-acct-form-actions">
+          {onCancel && (
+            <button className="secondary-button" type="button" disabled={busy} onClick={onCancel}>
+              Cancel
+            </button>
+          )}
+          <button className="primary-button" type="submit" disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} Add account
+          </button>
+        </div>
+      </div>
+    </form>
+  );
 }
 
 /* -------------------------------------------------------------------------
  * Changing one.
  * ---------------------------------------------------------------------- */
 
-function EditAccountForm({ account, safety, setToast, onSaved }: {
+function EditAccountForm({
+  account,
+  safety,
+  setToast,
+  onSaved
+}: {
   account: LinkedInSeat;
   safety: LinkedInLimitsReport | null;
   setToast: (message: string) => void;
@@ -2174,9 +2922,12 @@ function EditAccountForm({ account, safety, setToast, onSaved }: {
 
   // The server is the record. A save elsewhere, or a read from the live
   // session, must not lose to a form somebody opened and left.
-  useEffect(() => { setDraft(draftOf(account)); }, [account]);
+  useEffect(() => {
+    setDraft(draftOf(account));
+  }, [account]);
 
-  const change = (patch: Partial<AccountDraft>) => setDraft((current) => ({ ...current, ...patch }));
+  const change = (patch: Partial<AccountDraft>) =>
+    setDraft((current) => ({ ...current, ...patch }));
 
   const save = async () => {
     setBusy(true);
@@ -2184,7 +2935,9 @@ function EditAccountForm({ account, safety, setToast, onSaved }: {
     setWall('');
     try {
       await updateLinkedInManagerSeat(account.seatKey, draftToPatch(draft, ranges));
-      setToast(`${draft.label.trim() || account.label} saved. New limits apply to what is scheduled from now on.`);
+      setToast(
+        `${draft.label.trim() || account.label} saved. New limits apply to what is scheduled from now on.`
+      );
       await onSaved();
     } catch (error) {
       const message = errorMessage(error, 'Unable to save this account');
@@ -2195,35 +2948,53 @@ function EditAccountForm({ account, safety, setToast, onSaved }: {
     }
   };
 
-  return <details className="li-manual-fields li-acct-manage">
-    <summary><Settings2 size={13} /> Change name, hours and limits</summary>
+  return (
+    <details className="li-manual-fields li-acct-manage">
+      <summary>
+        <Settings2 size={13} /> Change name, hours and limits
+      </summary>
 
-    {/* A form, for the same reason the add form is one: `min` and `max` on the
+      {/* A form, for the same reason the add form is one: `min` and `max` on the
         four number fields are enforced by the browser on submit or not at all. */}
-    <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
-      {failure && <div className="error-banner li-acct-error">{failure}</div>}
-      {wall && <Wall title="That change was refused." message={wall} />}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        {failure && <div className="error-banner li-acct-error">{failure}</div>}
+        {wall && <Wall title="That change was refused." message={wall} />}
 
-      <div className="li-form-grid">
-        <label>Name<input value={draft.label} onChange={(event) => change({ label: event.target.value })} /></label>
-        <TimezoneField value={draft.timezone} onChange={(timezone) => change({ timezone })} />
-      </div>
+        <div className="li-form-grid">
+          <label>
+            Name
+            <input
+              value={draft.label}
+              onChange={(event) => change({ label: event.target.value })}
+            />
+          </label>
+          <TimezoneField value={draft.timezone} onChange={(timezone) => change({ timezone })} />
+        </div>
 
-      <ScheduleFields
-        draft={draft}
-        onChange={change}
-        idPrefix={`edit-${account.seatKey}`}
-        safety={safety}
-        bandOverride
-        proxy={account.proxy}
-      />
+        <ScheduleFields
+          draft={draft}
+          onChange={change}
+          idPrefix={`edit-${account.seatKey}`}
+          safety={safety}
+          bandOverride
+          proxy={account.proxy}
+        />
 
-      <div className="panel-footer">
-        <span>The short key <code>{account.seatKey}</code> cannot change — queues, exports and inboxes are filed under it.</span>
-        <button className="primary-button" type="submit" disabled={busy}>
-          {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save changes
-        </button>
-      </div>
-    </form>
-  </details>;
+        <div className="panel-footer">
+          <span>
+            The short key <code>{account.seatKey}</code> cannot change — queues, exports and inboxes
+            are filed under it.
+          </span>
+          <button className="primary-button" type="submit" disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save changes
+          </button>
+        </div>
+      </form>
+    </details>
+  );
 }

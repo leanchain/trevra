@@ -37,7 +37,7 @@ trevra linkedin uninstall
 
 `trevra linkedin reconnect` is the human-recovery path. When a headless session is signed out or hits a LinkedIn checkpoint, the worker records a reconnect-required seat event and stops work for that account. Outreach shows the alert until a later successful session check proves the seat healthy. The reconnect command restarts the service into a one-time visible Chrome window using the same local profile; closing that window restarts the service in headless mode. CAPTCHA/2FA answers stay entirely inside LinkedIn's page. `npx trevra linkedin` remains a foreground/debug mode. `uninstall` removes the OS service and its private npm tree but deliberately preserves the pairing config and dedicated LinkedIn browser profile.
 
-No LinkedIn password has to be stored in hosted Trevra for this path. The persistent Chrome profile and its cookies stay under `~/.trevra/linkedin-companion/` on the member computer.
+A LinkedIn password never has to be stored in hosted Trevra for this path -- sign into the visible Chrome window by hand instead, and the persistent profile and its cookies stay under `~/.trevra/linkedin-companion/` on the member computer with nothing sent to Trevra. Saving a LinkedIn email and password in Trevra (Outreach -> LinkedIn accounts) is optional; if present, it is also used to sign the paired computer's browser in automatically whenever its session needs renewing, the same server-driven sign-in the headless/no-companion path already uses, instead of prompting a human to do it by hand in that window.
 
 ## Presence and backlog semantics
 

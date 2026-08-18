@@ -35,12 +35,18 @@ interface RelaySession {
 const MAX_PENDING_BYTES = 2 * 1024 * 1024;
 
 function bearer(request: IncomingMessage): string {
-  return String(request.headers.authorization ?? '').match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? '';
+  return (
+    String(request.headers.authorization ?? '')
+      .match(/^Bearer\s+(.+)$/i)?.[1]
+      ?.trim() ?? ''
+  );
 }
 
 function reject(socket: Duplex, status: number, message: string): void {
   if (socket.destroyed) return;
-  socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(message)}\r\n\r\n${message}`);
+  socket.write(
+    `HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(message)}\r\n\r\n${message}`
+  );
   socket.destroy();
 }
 
@@ -65,7 +71,10 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
   const forgetSession = (session: RelaySession, notifyControl = true): void => {
     if (!sessions.delete(session.id)) return;
     if (notifyControl) sendJson(session.control.ws, { type: 'close', relayId: session.id });
-    if (session.browser.readyState === WebSocket.OPEN || session.browser.readyState === WebSocket.CONNECTING) {
+    if (
+      session.browser.readyState === WebSocket.OPEN ||
+      session.browser.readyState === WebSocket.CONNECTING
+    ) {
       session.browser.close(1000, 'Companion relay closed');
     }
   };
@@ -103,8 +112,18 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
     });
 
     ws.on('message', (raw: RawData) => {
-      let message: { type?: string; relayId?: string; data?: string; binary?: boolean; message?: string };
-      try { message = JSON.parse(text(raw)) as typeof message; } catch { return; }
+      let message: {
+        type?: string;
+        relayId?: string;
+        data?: string;
+        binary?: boolean;
+        message?: string;
+      };
+      try {
+        message = JSON.parse(text(raw)) as typeof message;
+      } catch {
+        return;
+      }
 
       const now = Date.now();
       if (now - connection.lastDbTouch > 30_000) {
@@ -121,7 +140,8 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
 
       if (message.type === 'ready') {
         session.ready = true;
-        for (const item of session.pending) sendJson(ws, { type: 'cdp', relayId: session.id, data: item.data, binary: item.binary });
+        for (const item of session.pending)
+          sendJson(ws, { type: 'cdp', relayId: session.id, data: item.data, binary: item.binary });
         session.pending = [];
         session.pendingBytes = 0;
         return;
@@ -133,13 +153,18 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
         return;
       }
       if (message.type === 'error') {
-        if (session.browser.readyState === WebSocket.OPEN) session.browser.close(1011, (message.message ?? 'Companion browser failed').slice(0, 120));
+        if (session.browser.readyState === WebSocket.OPEN)
+          session.browser.close(
+            1011,
+            (message.message ?? 'Companion browser failed').slice(0, 120)
+          );
         forgetSession(session, false);
       }
     });
 
     ws.on('close', () => {
-      if (controls.get(connection.workspaceId) === connection) controls.delete(connection.workspaceId);
+      if (controls.get(connection.workspaceId) === connection)
+        controls.delete(connection.workspaceId);
       for (const session of [...sessions.values()]) {
         if (session.control === connection) forgetSession(session, false);
       }
@@ -161,7 +186,12 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
       pendingBytes: 0
     };
     sessions.set(session.id, session);
-    sendJson(meta.control.ws, { type: 'open', relayId: session.id, workspaceId: meta.workspaceId, seatKey: meta.seatKey });
+    sendJson(meta.control.ws, {
+      type: 'open',
+      relayId: session.id,
+      workspaceId: meta.workspaceId,
+      seatKey: meta.seatKey
+    });
 
     browser.on('message', (raw: RawData, binary: boolean) => {
       const payload = binary ? Buffer.from(raw as Buffer).toString('base64') : text(raw);
@@ -184,14 +214,25 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     void (async () => {
       let url: URL;
-      try { url = new URL(request.url ?? '/', 'http://localhost'); }
-      catch { return reject(socket, 400, 'Bad Request'); }
+      try {
+        url = new URL(request.url ?? '/', 'http://localhost');
+      } catch {
+        return reject(socket, 400, 'Bad Request');
+      }
 
       if (url.pathname === '/api/linkedin/companion/socket') {
+        // The one call site. `authenticateCompanionToken` marks an
+        // availability-return catch-up on every successful call, unconditionally
+        // -- correct exactly because this handler is the only place it is ever
+        // called from: once per fresh control connection, never on a routine
+        // keepalive (those touch `last_seen_at` directly below, in `setupControl`'s
+        // message handler).
         const token = bearer(request);
         const identity = token ? await authenticateCompanionToken(db, token) : null;
         if (!identity) return reject(socket, 401, 'Unauthorized');
-        controlServer.handleUpgrade(request, socket, head, (ws: WebSocket) => setupControl(ws, identity));
+        controlServer.handleUpgrade(request, socket, head, (ws: WebSocket) =>
+          setupControl(ws, identity)
+        );
         return;
       }
 
@@ -200,14 +241,21 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
       const workspaceId = decodeURIComponent(match[1]);
       const seatKey = decodeURIComponent(match[2]);
       if (!companionRelaySecretMatches(bearer(request))) return reject(socket, 401, 'Unauthorized');
-      if (!(await companionWorkspaceReady(db, workspaceId))) return reject(socket, 503, 'Companion unavailable');
+      if (!(await companionWorkspaceReady(db, workspaceId)))
+        return reject(socket, 503, 'Companion unavailable');
 
       const candidate = controls.get(workspaceId);
-      if (!candidate || candidate.ws.readyState !== WebSocket.OPEN || !(await companionDeviceIsActive(db, candidate.deviceId))) {
+      if (
+        !candidate ||
+        candidate.ws.readyState !== WebSocket.OPEN ||
+        !(await companionDeviceIsActive(db, candidate.deviceId))
+      ) {
         return reject(socket, 503, 'Companion unavailable');
       }
 
-      browserServer.handleUpgrade(request, socket, head, (ws: WebSocket) => setupBrowser(ws, { workspaceId, seatKey, control: candidate }));
+      browserServer.handleUpgrade(request, socket, head, (ws: WebSocket) =>
+        setupBrowser(ws, { workspaceId, seatKey, control: candidate })
+      );
     })().catch(() => reject(socket, 500, 'Relay error'));
   });
 }

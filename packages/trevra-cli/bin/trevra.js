@@ -1,7 +1,19 @@
 #!/usr/bin/env node
 
 import { spawn, execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, closeSync, chmodSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  closeSync,
+  chmodSync
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, hostname, platform } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -34,7 +46,9 @@ const LINKEDIN_FEED = 'https://www.linkedin.com/feed/';
 
 function usage(exitCode = 0) {
   const out = exitCode === 0 ? process.stdout : process.stderr;
-  out.write(`Trevra ${VERSION}\n\nUsage:\n  <install command copied from Trevra>\n  trevra linkedin status\n  trevra linkedin logs [--follow] [--lines 200]\n  trevra linkedin reconnect [--seat owner]\n  trevra linkedin start\n  trevra linkedin stop\n  trevra linkedin restart\n  trevra linkedin uninstall\n  trevra linkedin                     # foreground/debug mode\n\nLinkedIn companion commands:\n  install        Pair if needed, install a per-user background service, and start it\n  status         Show whether this computer is paired, installed, and running\n  logs           Show local companion activity; --follow streams new entries\n  reconnect      Temporarily open the same LinkedIn profile visibly for login/CAPTCHA/2FA recovery\n  start          Start the installed background companion\n  stop           Stop it without removing pairing or the LinkedIn browser profile\n  restart        Restart the installed background companion\n  uninstall      Remove the background service; keep pairing and browser profile\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --seat KEY     LinkedIn account profile to recover (default: owner)\n  --lines N      Number of recent log lines to show (default: 200)\n  --follow, -f   Continue streaming new log entries\n  --help         Show this help\n  --version      Show the version\n`);
+  out.write(
+    `Trevra ${VERSION}\n\nUsage:\n  <install command copied from Trevra>\n  trevra linkedin status\n  trevra linkedin logs [--follow] [--lines 200]\n  trevra linkedin reconnect [--seat owner]\n  trevra linkedin start\n  trevra linkedin stop\n  trevra linkedin restart\n  trevra linkedin uninstall\n  trevra linkedin                     # foreground/debug mode\n\nLinkedIn companion commands:\n  install        Pair if needed, install a per-user background service, and start it\n  status         Show whether this computer is paired, installed, and running\n  logs           Show local companion activity; --follow streams new entries\n  reconnect      Temporarily open the same LinkedIn profile visibly for login/CAPTCHA/2FA recovery\n  start          Start the installed background companion\n  stop           Stop it without removing pairing or the LinkedIn browser profile\n  restart        Restart the installed background companion\n  uninstall      Remove the background service; keep pairing and browser profile\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --seat KEY     LinkedIn account profile to recover (default: owner)\n  --lines N      Number of recent log lines to show (default: 200)\n  --follow, -f   Continue streaming new log entries\n  --help         Show this help\n  --version      Show the version\n`
+  );
   process.exit(exitCode);
 }
 
@@ -53,7 +67,11 @@ function argNumber(args, name, fallback) {
 
 function ensurePrivateDir(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
-  try { chmodSync(path, 0o700); } catch { /* Windows ACLs do not use POSIX modes. */ }
+  try {
+    chmodSync(path, 0o700);
+  } catch {
+    /* Windows ACLs do not use POSIX modes. */
+  }
 }
 
 function safeLogText(value) {
@@ -70,18 +88,34 @@ function activity(event, detail = '') {
     if (existsSync(ACTIVITY_LOG) && statSync(ACTIVITY_LOG).size >= MAX_ACTIVITY_LOG_BYTES) {
       rmSync(ACTIVITY_LOG_OLD, { force: true });
       renameSync(ACTIVITY_LOG, ACTIVITY_LOG_OLD);
-      try { chmodSync(ACTIVITY_LOG_OLD, 0o600); } catch { /* Windows */ }
+      try {
+        chmodSync(ACTIVITY_LOG_OLD, 0o600);
+      } catch {
+        /* Windows */
+      }
     }
     const suffix = detail ? ` ${safeLogText(detail)}` : '';
-    appendFileSync(ACTIVITY_LOG, `${new Date().toISOString()} ${event}${suffix}\n`, { mode: 0o600 });
-    try { chmodSync(ACTIVITY_LOG, 0o600); } catch { /* Windows */ }
-  } catch { /* Logging must never stop the companion. */ }
+    appendFileSync(ACTIVITY_LOG, `${new Date().toISOString()} ${event}${suffix}\n`, {
+      mode: 0o600
+    });
+    try {
+      chmodSync(ACTIVITY_LOG, 0o600);
+    } catch {
+      /* Windows */
+    }
+  } catch {
+    /* Logging must never stop the companion. */
+  }
 }
 
 function recentLogText(lines) {
   const chunks = [];
   for (const path of [ACTIVITY_LOG_OLD, ACTIVITY_LOG]) {
-    try { chunks.push(readFileSync(path, 'utf8')); } catch { /* no log yet */ }
+    try {
+      chunks.push(readFileSync(path, 'utf8'));
+    } catch {
+      /* no log yet */
+    }
   }
   return chunks.join('').split(/\r?\n/).filter(Boolean).slice(-lines).join('\n');
 }
@@ -93,12 +127,20 @@ async function showActivityLogs({ lines = 200, follow = false } = {}) {
   if (!follow) return;
 
   let seen = '';
-  try { seen = readFileSync(ACTIVITY_LOG, 'utf8'); } catch { /* created later */ }
+  try {
+    seen = readFileSync(ACTIVITY_LOG, 'utf8');
+  } catch {
+    /* created later */
+  }
   process.stdout.write('--- following Trevra LinkedIn companion logs (Ctrl+C to stop) ---\n');
   while (true) {
     await sleep(500);
     let current = '';
-    try { current = readFileSync(ACTIVITY_LOG, 'utf8'); } catch { continue; }
+    try {
+      current = readFileSync(ACTIVITY_LOG, 'utf8');
+    } catch {
+      continue;
+    }
     if (current.startsWith(seen)) {
       const next = current.slice(seen.length);
       if (next) process.stdout.write(next);
@@ -113,14 +155,22 @@ function saveConfig(config) {
   ensurePrivateDir(HOME);
   const temp = `${CONFIG}.${process.pid}.tmp`;
   writeFileSync(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  try { chmodSync(temp, 0o600); } catch { /* Windows */ }
+  try {
+    chmodSync(temp, 0o600);
+  } catch {
+    /* Windows */
+  }
   rmSync(CONFIG, { force: true });
   // renameSync is deliberately avoided on Windows when antivirus has the old
   // file open; writing the final file from the already-private bytes is safer
   // than leaving a temp path as the source of truth.
   const bytes = readFileSync(temp);
   writeFileSync(CONFIG, bytes, { mode: 0o600 });
-  try { chmodSync(CONFIG, 0o600); } catch { /* Windows */ }
+  try {
+    chmodSync(CONFIG, 0o600);
+  } catch {
+    /* Windows */
+  }
   rmSync(temp, { force: true });
 }
 
@@ -129,12 +179,18 @@ function readConfig() {
     const value = JSON.parse(readFileSync(CONFIG, 'utf8'));
     if (!value || typeof value.url !== 'string' || typeof value.token !== 'string') return null;
     return value;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 function secureBaseUrl(raw) {
   let url;
-  try { url = new URL(raw); } catch { throw new Error(`Not a Trevra URL: ${raw}`); }
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`Not a Trevra URL: ${raw}`);
+  }
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
     throw new Error('The Trevra URL must use https (http is allowed only on localhost).');
@@ -172,14 +228,27 @@ async function pair(base, code, label) {
 }
 
 function safeSegment(value) {
-  return String(value).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96) || 'owner';
+  return (
+    String(value)
+      .replace(/[^A-Za-z0-9_-]/g, '_')
+      .slice(0, 96) || 'owner'
+  );
 }
 
 function which(name) {
   try {
-    return execFileSync(platform() === 'win32' ? 'where' : 'which', [name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-      .split(/\r?\n/).map((item) => item.trim()).find(Boolean) ?? null;
-  } catch { return null; }
+    return (
+      execFileSync(platform() === 'win32' ? 'where' : 'which', [name], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      })
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .find(Boolean) ?? null
+    );
+  } catch {
+    return null;
+  }
 }
 
 function systemChrome() {
@@ -191,7 +260,11 @@ function systemChrome() {
       '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
     );
   } else if (platform() === 'win32') {
-    for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA].filter(Boolean)) {
+    for (const base of [
+      process.env.PROGRAMFILES,
+      process.env['PROGRAMFILES(X86)'],
+      process.env.LOCALAPPDATA
+    ].filter(Boolean)) {
       candidates.push(
         join(base, 'Google', 'Chrome', 'Application', 'chrome.exe'),
         join(base, 'Microsoft', 'Edge', 'Application', 'msedge.exe')
@@ -199,7 +272,14 @@ function systemChrome() {
     }
   }
   for (const candidate of candidates) if (existsSync(candidate)) return candidate;
-  for (const name of ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser', 'microsoft-edge-stable', 'msedge']) {
+  for (const name of [
+    'google-chrome-stable',
+    'google-chrome',
+    'chromium',
+    'chromium-browser',
+    'microsoft-edge-stable',
+    'msedge'
+  ]) {
     const found = which(name);
     if (found) return found;
   }
@@ -217,30 +297,49 @@ async function playwrightChromium() {
   await new Promise((resolveInstall, rejectInstall) => {
     const child = spawn(process.execPath, [cli, 'install', 'chromium'], { stdio: 'inherit' });
     child.once('error', rejectInstall);
-    child.once('exit', (code) => code === 0 ? resolveInstall() : rejectInstall(new Error(`Chromium install exited ${code}`)));
+    child.once('exit', (code) =>
+      code === 0 ? resolveInstall() : rejectInstall(new Error(`Chromium install exited ${code}`))
+    );
   });
   executable = chromium.executablePath();
-  if (!existsSync(executable)) throw new Error('Chromium finished installing but its executable could not be found.');
+  if (!existsSync(executable))
+    throw new Error('Chromium finished installing but its executable could not be found.');
   return executable;
 }
 
-function sleep(ms) { return new Promise((resolveSleep) => setTimeout(resolveSleep, ms)); }
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
 
 function readDevToolsEndpoint(profileDir) {
   try {
-    const [port, path] = readFileSync(join(profileDir, 'DevToolsActivePort'), 'utf8').trim().split(/\r?\n/);
+    const [port, path] = readFileSync(join(profileDir, 'DevToolsActivePort'), 'utf8')
+      .trim()
+      .split(/\r?\n/);
     if (!port || !path) return null;
     return `ws://127.0.0.1:${Number(port)}${path}`;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 async function endpointResponds(endpoint) {
   if (!endpoint) return false;
   return new Promise((resolveCheck) => {
     const ws = new WebSocket(endpoint);
-    const timer = setTimeout(() => { ws.terminate(); resolveCheck(false); }, 1500);
-    ws.once('open', () => { clearTimeout(timer); ws.close(); resolveCheck(true); });
-    ws.once('error', () => { clearTimeout(timer); resolveCheck(false); });
+    const timer = setTimeout(() => {
+      ws.terminate();
+      resolveCheck(false);
+    }, 1500);
+    ws.once('open', () => {
+      clearTimeout(timer);
+      ws.close();
+      resolveCheck(true);
+    });
+    ws.once('error', () => {
+      clearTimeout(timer);
+      resolveCheck(false);
+    });
   });
 }
 
@@ -250,7 +349,7 @@ let browserExecutable = null;
 async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
   const key = `${workspaceId}/${seatKey}`;
   const old = browsers.get(key);
-  if (old?.endpoint && await endpointResponds(old.endpoint)) {
+  if (old?.endpoint && (await endpointResponds(old.endpoint))) {
     activity('browser_reused', `seat=${seatKey}`);
     return old;
   }
@@ -258,23 +357,29 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
   const profileDir = join(PROFILES, safeSegment(workspaceId), safeSegment(seatKey));
   ensurePrivateDir(profileDir);
   const onDisk = readDevToolsEndpoint(profileDir);
-  if (onDisk && await endpointResponds(onDisk)) {
+  if (onDisk && (await endpointResponds(onDisk))) {
     const handle = { endpoint: onDisk, child: null, profileDir };
     browsers.set(key, handle);
     activity('browser_reused', `seat=${seatKey}`);
     return handle;
   }
 
-  browserExecutable ??= systemChrome() ?? await playwrightChromium();
+  browserExecutable ??= systemChrome() ?? (await playwrightChromium());
   const browserMode = headless ? 'background' : 'visible';
   activity('browser_opening', `seat=${seatKey} mode=${browserMode}`);
   if (!headless) {
-    process.stdout.write(`Opening LinkedIn in Chrome for ${seatKey === 'owner' ? 'your account' : `account ${seatKey}`}…\n`);
+    process.stdout.write(
+      `Opening LinkedIn in Chrome for ${seatKey === 'owner' ? 'your account' : `account ${seatKey}`}…\n`
+    );
   }
-  const child = spawn(browserExecutable, chromeLaunchArgs({ profileDir, headless, startUrl: LINKEDIN_FEED }), {
-    stdio: 'ignore',
-    windowsHide: headless
-  });
+  const child = spawn(
+    browserExecutable,
+    chromeLaunchArgs({ profileDir, headless, startUrl: LINKEDIN_FEED }),
+    {
+      stdio: 'ignore',
+      windowsHide: headless
+    }
+  );
 
   const handle = { endpoint: null, child, profileDir };
   browsers.set(key, handle);
@@ -290,7 +395,7 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
 
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const endpoint = readDevToolsEndpoint(profileDir);
-    if (endpoint && await endpointResponds(endpoint)) {
+    if (endpoint && (await endpointResponds(endpoint))) {
       handle.endpoint = endpoint;
       activity('browser_ready', `seat=${seatKey}`);
       return handle;
@@ -299,26 +404,50 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
     await sleep(100);
   }
   activity('browser_error', `seat=${seatKey} devtools endpoint unavailable`);
-  throw new Error(`Chrome opened no DevTools endpoint for ${seatKey}. Close the Trevra Chrome window and run the command again.`);
+  throw new Error(
+    `Chrome opened no DevTools endpoint for ${seatKey}. Close the Trevra Chrome window and run the command again.`
+  );
 }
 
 function lockPid() {
-  try { return Number(readFileSync(LOCK, 'utf8').trim()) || 0; }
-  catch { return 0; }
+  try {
+    return Number(readFileSync(LOCK, 'utf8').trim()) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 function processLooksLikeCompanion(pid) {
   if (pid <= 0) return false;
-  try { process.kill(pid, 0); } catch { return false; }
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
   try {
     if (platform() === 'win32') {
-      const ps = process.env.SystemRoot ? join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell.exe';
-      const command = execFileSync(ps, ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], {
-        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
-      });
+      const ps = process.env.SystemRoot
+        ? join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        : 'powershell.exe';
+      const command = execFileSync(
+        ps,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`
+        ],
+        {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore']
+        }
+      );
       return /trevra[^\r\n]*linkedin/i.test(command);
     }
-    const command = execFileSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const command = execFileSync('ps', ['-p', String(pid), '-o', 'args='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
     return /trevra[^\r\n]*linkedin/i.test(command);
   } catch {
     // If process inspection is unavailable, fail closed: do not decide that an
@@ -329,19 +458,33 @@ function processLooksLikeCompanion(pid) {
 
 async function stopExistingCompanion() {
   const pid = lockPid();
-  if (!pid) { rmSync(LOCK, { force: true }); return; }
+  if (!pid) {
+    rmSync(LOCK, { force: true });
+    return;
+  }
   if (!processLooksLikeCompanion(pid)) {
     rmSync(LOCK, { force: true });
     return;
   }
   process.stdout.write(`Stopping the existing foreground companion (process ${pid})…\n`);
-  try { process.kill(pid, 'SIGTERM'); } catch { rmSync(LOCK, { force: true }); return; }
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    rmSync(LOCK, { force: true });
+    return;
+  }
   for (let attempt = 0; attempt < 50; attempt += 1) {
     await sleep(100);
-    try { process.kill(pid, 0); }
-    catch { rmSync(LOCK, { force: true }); return; }
+    try {
+      process.kill(pid, 0);
+    } catch {
+      rmSync(LOCK, { force: true });
+      return;
+    }
   }
-  throw new Error(`The existing Trevra LinkedIn process ${pid} did not stop. Close it, then run install again.`);
+  throw new Error(
+    `The existing Trevra LinkedIn process ${pid} did not stop. Close it, then run install again.`
+  );
 }
 
 function acquireLock() {
@@ -378,37 +521,48 @@ async function runVisibleRecovery(config, seatKey = 'owner') {
   };
   process.once('SIGINT', () => {
     stopping = true;
-    try { handle?.child?.kill(); } catch { /* already gone */ }
+    try {
+      handle?.child?.kill();
+    } catch {
+      /* already gone */
+    }
     releaseLock();
     process.exit(0);
   });
   process.once('SIGTERM', () => {
     stopping = true;
-    try { handle?.child?.kill(); } catch { /* already gone */ }
+    try {
+      handle?.child?.kill();
+    } catch {
+      /* already gone */
+    }
     releaseLock();
     process.exit(0);
   });
   process.once('exit', releaseLock);
 
   activity('recovery_browser_opening', `seat=${seatKey}`);
-  process.stdout.write('Opening the dedicated LinkedIn profile visibly. Complete LinkedIn sign-in, CAPTCHA, 2FA or device verification, then close this Chrome window. Background mode will resume automatically.\n');
+  process.stdout.write(
+    'Opening the dedicated LinkedIn profile visibly. Complete LinkedIn sign-in, CAPTCHA, 2FA or device verification, then close this Chrome window. Background mode will resume automatically.\n'
+  );
   handle = await ensureBrowser(config.workspaceId, seatKey, { headless: false });
   activity('recovery_browser_ready', `seat=${seatKey}`);
 
   if (handle.child) {
     if (handle.child.exitCode !== null) finish(75);
-    else handle.child.once('exit', () => {
-      if (stopping) return;
-      activity('recovery_browser_closed', `seat=${seatKey}`);
-      finish(75);
-    });
+    else
+      handle.child.once('exit', () => {
+        if (stopping) return;
+        activity('recovery_browser_closed', `seat=${seatKey}`);
+        finish(75);
+      });
     await new Promise(() => {});
   }
 
   // If Chrome was already open for this dedicated profile, there is no child
   // handle to watch. Poll only the loopback DevTools endpoint; once the member
   // closes that window the service exits with the normal restart code.
-  while (!stopping && await endpointResponds(handle.endpoint)) await sleep(750);
+  while (!stopping && (await endpointResponds(handle.endpoint))) await sleep(750);
   if (!stopping) {
     activity('recovery_browser_closed', `seat=${seatKey}`);
     finish(75);
@@ -427,7 +581,11 @@ async function runCompanion(config, options = {}) {
   const closeRelays = () => {
     for (const relay of relays.values()) {
       relay.expectClose = true;
-      try { relay.ws.close(); } catch { /* already closed */ }
+      try {
+        relay.ws.close();
+      } catch {
+        /* already closed */
+      }
     }
     relays.clear();
   };
@@ -437,16 +595,30 @@ async function runCompanion(config, options = {}) {
     stopping = true;
     if (ping) clearInterval(ping);
     closeRelays();
-    try { control?.close(); } catch { /* already closed */ }
+    try {
+      control?.close();
+    } catch {
+      /* already closed */
+    }
     for (const handle of browsers.values()) {
-      try { handle.child?.kill(); } catch { /* already gone */ }
+      try {
+        handle.child?.kill();
+      } catch {
+        /* already gone */
+      }
     }
     releaseLock();
     activity('companion_stopped');
     process.stdout.write('\nTrevra LinkedIn companion stopped.\n');
   };
-  process.once('SIGINT', () => { shutdown(); process.exit(0); });
-  process.once('SIGTERM', () => { shutdown(); process.exit(0); });
+  process.once('SIGINT', () => {
+    shutdown();
+    process.exit(0);
+  });
+  process.once('SIGTERM', () => {
+    shutdown();
+    process.exit(0);
+  });
   process.once('exit', releaseLock);
 
   // Foreground mode opens Chrome immediately because it is also the manual
@@ -455,7 +627,9 @@ async function runCompanion(config, options = {}) {
   if (options.openBrowserAtStart !== false) {
     try {
       await ensureBrowser(config.workspaceId, 'owner', { headless: false });
-      process.stdout.write('Use this dedicated Chrome window only for LinkedIn; Trevra can control it while the companion is connected. Sign in if needed, then keep this command open.\n');
+      process.stdout.write(
+        'Use this dedicated Chrome window only for LinkedIn; Trevra can control it while the companion is connected. Sign in if needed, then keep this command open.\n'
+      );
     } catch (error) {
       process.stderr.write(`${error.message}\n`);
     }
@@ -465,7 +639,9 @@ async function runCompanion(config, options = {}) {
   while (!stopping) {
     try {
       await new Promise((resolveConnection, rejectConnection) => {
-        const socket = new WebSocket(wsUrl(config.url), { headers: { authorization: `Bearer ${config.token}` } });
+        const socket = new WebSocket(wsUrl(config.url), {
+          headers: { authorization: `Bearer ${config.token}` }
+        });
         control = socket;
         let opened = false;
 
@@ -473,7 +649,9 @@ async function runCompanion(config, options = {}) {
           opened = true;
           backoff = 1000;
           activity('server_connected', new URL(config.url).host);
-          process.stdout.write(`Connected to ${config.url}. LinkedIn cycles will use this computer only while a Trevra tab is also open.\n`);
+          process.stdout.write(
+            `Connected to ${config.url}. LinkedIn cycles will use this computer whenever it is paired and online.\n`
+          );
           ping = setInterval(() => {
             if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ping' }));
           }, 20_000);
@@ -481,8 +659,16 @@ async function runCompanion(config, options = {}) {
 
         socket.on('message', async (raw) => {
           let message;
-          try { message = JSON.parse(raw.toString()); } catch { return; }
-          if (message.type === 'hello' && serviceInvocation && typeof message.companionVersion === 'string') {
+          try {
+            message = JSON.parse(raw.toString());
+          } catch {
+            return;
+          }
+          if (
+            message.type === 'hello' &&
+            serviceInvocation &&
+            typeof message.companionVersion === 'string'
+          ) {
             const targetVersion = message.companionVersion.trim();
             if (isNewerVersion(VERSION, targetVersion)) {
               activity('update_available', `from=${VERSION} to=${targetVersion}`);
@@ -494,11 +680,14 @@ async function runCompanion(config, options = {}) {
                   // Test/development hook only. Production services do not set
                   // this, so remote updates always come from the official,
                   // version-derived Trevra GitHub release URL.
-                  installSpec: process.env.TREVRA_COMPANION_UPDATE_SPEC?.trim()
-                    || officialCompanionPackage(targetVersion)
+                  installSpec:
+                    process.env.TREVRA_COMPANION_UPDATE_SPEC?.trim() ||
+                    officialCompanionPackage(targetVersion)
                 });
                 activity('update_installed', `version=${targetVersion}`);
-                process.stderr.write(`Trevra companion updated to ${targetVersion}; restarting background service…\n`);
+                process.stderr.write(
+                  `Trevra companion updated to ${targetVersion}; restarting background service…\n`
+                );
                 // All supported service managers restart non-zero exits. The
                 // executable path is stable, so the next process is the newly
                 // installed version without touching pairing or browser state.
@@ -506,7 +695,9 @@ async function runCompanion(config, options = {}) {
               } catch (error) {
                 const detail = error instanceof Error ? error.message : String(error);
                 activity('update_failed', `target=${targetVersion} ${detail}`);
-                process.stderr.write(`Trevra companion update to ${targetVersion} failed; continuing on ${VERSION}.\n`);
+                process.stderr.write(
+                  `Trevra companion update to ${targetVersion} failed; continuing on ${VERSION}.\n`
+                );
               }
             }
             return;
@@ -515,7 +706,9 @@ async function runCompanion(config, options = {}) {
             const relayShort = String(message.relayId).slice(0, 8);
             activity('relay_requested', `relay=${relayShort} seat=${message.seatKey}`);
             try {
-              const handle = await ensureBrowser(config.workspaceId, message.seatKey, { headless: options.headlessBrowser === true });
+              const handle = await ensureBrowser(config.workspaceId, message.seatKey, {
+                headless: options.headlessBrowser === true
+              });
               const local = new WebSocket(handle.endpoint);
               const relay = { ws: local, expectClose: false };
               relays.set(message.relayId, relay);
@@ -525,27 +718,54 @@ async function runCompanion(config, options = {}) {
               });
               local.on('message', (data, binary) => {
                 if (socket.readyState !== WebSocket.OPEN) return;
-                socket.send(JSON.stringify({
-                  type: 'cdp', relayId: message.relayId,
-                  data: binary ? Buffer.from(data).toString('base64') : data.toString(),
-                  binary
-                }));
+                socket.send(
+                  JSON.stringify({
+                    type: 'cdp',
+                    relayId: message.relayId,
+                    data: binary ? Buffer.from(data).toString('base64') : data.toString(),
+                    binary
+                  })
+                );
               });
               local.once('error', (error) => {
                 activity('relay_error', `relay=${relayShort} ${error.message}`);
-                if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', relayId: message.relayId, message: error.message }));
+                if (socket.readyState === WebSocket.OPEN)
+                  socket.send(
+                    JSON.stringify({
+                      type: 'error',
+                      relayId: message.relayId,
+                      message: error.message
+                    })
+                  );
               });
               local.once('close', () => {
                 const current = relays.get(message.relayId);
                 relays.delete(message.relayId);
-                activity('relay_closed', `relay=${relayShort} expected=${Boolean(current?.expectClose)}`);
+                activity(
+                  'relay_closed',
+                  `relay=${relayShort} expected=${Boolean(current?.expectClose)}`
+                );
                 if (!current?.expectClose && socket.readyState === WebSocket.OPEN) {
-                  socket.send(JSON.stringify({ type: 'error', relayId: message.relayId, message: 'The local Chrome connection closed before the Trevra browser session finished.' }));
+                  socket.send(
+                    JSON.stringify({
+                      type: 'error',
+                      relayId: message.relayId,
+                      message:
+                        'The local Chrome connection closed before the Trevra browser session finished.'
+                    })
+                  );
                 }
               });
             } catch (error) {
               activity('relay_error', `relay=${relayShort} ${error.message}`);
-              if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', relayId: message.relayId, message: error.message }));
+              if (socket.readyState === WebSocket.OPEN)
+                socket.send(
+                  JSON.stringify({
+                    type: 'error',
+                    relayId: message.relayId,
+                    message: error.message
+                  })
+                );
             }
             return;
           }
@@ -556,14 +776,19 @@ async function runCompanion(config, options = {}) {
               try {
                 const command = JSON.parse(message.data);
                 if (command?.method === 'Browser.close') relay.expectClose = true;
-              } catch { /* CDP is JSON, but forwarding it never depends on parsing it. */ }
+              } catch {
+                /* CDP is JSON, but forwarding it never depends on parsing it. */
+              }
             }
             relay.ws.send(message.binary ? Buffer.from(message.data, 'base64') : message.data);
             return;
           }
           if (message.type === 'close' && message.relayId) {
             const relay = relays.get(message.relayId);
-            if (relay) { relay.expectClose = true; relay.ws.close(); }
+            if (relay) {
+              relay.expectClose = true;
+              relay.ws.close();
+            }
             relays.delete(message.relayId);
           }
         });
@@ -574,8 +799,18 @@ async function runCompanion(config, options = {}) {
           closeRelays();
           activity('server_disconnected', `code=${code} reason=${reason?.toString() || 'none'}`);
           if (stopping) resolveConnection();
-          else if (code === 1008 || code === 4401) rejectConnection(new Error('This companion is no longer authorised. Pair this computer again in Trevra.'));
-          else if (code === 4001) rejectConnection(new Error('Another companion connected for this workspace. This computer is no longer the active companion.'));
+          else if (code === 1008 || code === 4401)
+            rejectConnection(
+              new Error(
+                'This companion is no longer authorised. Pair this computer again in Trevra.'
+              )
+            );
+          else if (code === 4001)
+            rejectConnection(
+              new Error(
+                'Another companion connected for this workspace. This computer is no longer the active companion.'
+              )
+            );
           else resolveConnection();
         });
         socket.once('error', (error) => {
@@ -583,7 +818,11 @@ async function runCompanion(config, options = {}) {
         });
       });
     } catch (error) {
-      if (/no longer authorised|another companion connected|401|Unexpected server response: 401/i.test(error.message)) {
+      if (
+        /no longer authorised|another companion connected|401|Unexpected server response: 401/i.test(
+          error.message
+        )
+      ) {
         activity('companion_authorisation_stopped', error.message);
         shutdown();
         throw error;
@@ -599,12 +838,24 @@ async function runCompanion(config, options = {}) {
   }
 }
 
-const SERVICE_ACTIONS = new Set(['install', 'status', 'logs', 'reconnect', 'start', 'stop', 'restart', 'uninstall', 'run']);
+const SERVICE_ACTIONS = new Set([
+  'install',
+  'status',
+  'logs',
+  'reconnect',
+  'start',
+  'stop',
+  'restart',
+  'uninstall',
+  'run'
+]);
 let serviceInvocation = false;
 
 function requirePairing(config) {
   if (!config) {
-    throw new Error('This computer is not paired yet. In Trevra open Outreach → LinkedIn accounts → Connect this computer, then run the install command it shows.');
+    throw new Error(
+      'This computer is not paired yet. In Trevra open Outreach → LinkedIn accounts → Connect this computer, then run the install command it shows.'
+    );
   }
   return config;
 }
@@ -612,7 +863,9 @@ function requirePairing(config) {
 function printServiceStatus(config) {
   const status = installedServiceStatus();
   process.stdout.write(`Trevra LinkedIn companion\n`);
-  process.stdout.write(`  paired:    ${config ? `yes (${config.label || 'this computer'})` : 'no'}\n`);
+  process.stdout.write(
+    `  paired:    ${config ? `yes (${config.label || 'this computer'})` : 'no'}\n`
+  );
   process.stdout.write(`  installed: ${status.installed ? `yes (${status.manager})` : 'no'}\n`);
   process.stdout.write(`  running:   ${status.running ? 'yes' : 'no'}\n`);
   if (status.detail) process.stdout.write(`  service:   ${status.detail}\n`);
@@ -622,7 +875,10 @@ function printServiceStatus(config) {
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) usage(0);
-  if (args.includes('--version') || args.includes('-v')) { process.stdout.write(`${VERSION}\n`); return; }
+  if (args.includes('--version') || args.includes('-v')) {
+    process.stdout.write(`${VERSION}\n`);
+    return;
+  }
   const command = args[0];
   if (command !== 'linkedin') usage(command ? 1 : 0);
 
@@ -670,22 +926,30 @@ async function main() {
   if (action === 'reconnect') {
     const config = requirePairing(saved);
     const status = installedServiceStatus();
-    if (!status.installed) throw new Error('The Trevra background service is not installed. Run the install command from Trevra first.');
+    if (!status.installed)
+      throw new Error(
+        'The Trevra background service is not installed. Run the install command from Trevra first.'
+      );
     const seatKey = argValue(args, '--seat') || 'owner';
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(seatKey)) throw new Error('That LinkedIn account key is not valid.');
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(seatKey))
+      throw new Error('That LinkedIn account key is not valid.');
     const next = { ...config, recoveryOnNextStart: { seatKey } };
     delete next.openOnNextStart;
     saveConfig(next);
     activity('recovery_requested', `seat=${seatKey}`);
     restartBackgroundService();
-    process.stdout.write('Opening LinkedIn visibly on the paired computer. Complete the human check, then close that Trevra Chrome window; background mode resumes automatically.\n');
+    process.stdout.write(
+      'Opening LinkedIn visibly on the paired computer. Complete the human check, then close that Trevra Chrome window; background mode resumes automatically.\n'
+    );
     return;
   }
   if (action === 'uninstall') {
     activity('service_uninstall_requested');
     uninstallBackgroundService();
     activity('service_uninstalled');
-    process.stdout.write('Trevra LinkedIn background service removed. Pairing and the dedicated LinkedIn browser profile were kept.\n');
+    process.stdout.write(
+      'Trevra LinkedIn background service removed. Pairing and the dedicated LinkedIn browser profile were kept.\n'
+    );
     printServiceStatus(readConfig());
     return;
   }
@@ -715,15 +979,17 @@ async function main() {
     activity('service_install_started', `version=${VERSION}`);
     process.stdout.write(`Installing Trevra ${VERSION} as a per-user background service…\n`);
     const installedRoot = join(HOME, 'service');
-    const runningFromInstalledService = PACKAGE_ROOT === join(installedRoot, 'node_modules', 'trevra');
+    const runningFromInstalledService =
+      PACKAGE_ROOT === join(installedRoot, 'node_modules', 'trevra');
     installStablePackage({
       version: VERSION,
       // First install may be running from npm's npx cache or a release tarball.
       // Install directly from that exact package directory so background setup
       // does not depend on the registry's current `latest` tag. An installed
       // service update still resolves the exact version from npm.
-      installSpec: process.env.TREVRA_COMPANION_INSTALL_SPEC?.trim()
-        || (runningFromInstalledService ? undefined : PACKAGE_ROOT)
+      installSpec:
+        process.env.TREVRA_COMPANION_INSTALL_SPEC?.trim() ||
+        (runningFromInstalledService ? undefined : PACKAGE_ROOT)
     });
     registerBackgroundService();
 
@@ -735,7 +1001,9 @@ async function main() {
     saveConfig({ ...config, openOnNextStart: true });
     startBackgroundService();
     activity('service_installed', `version=${VERSION}`);
-    process.stdout.write('Installed. The background service is opening Trevra’s dedicated LinkedIn Chrome profile for first sign-in. It starts when you sign into this computer and restarts automatically after crashes. No terminal needs to stay open.\n');
+    process.stdout.write(
+      'Installed. The background service is opening Trevra’s dedicated LinkedIn Chrome profile for first sign-in. It starts when you sign into this computer and restarts automatically after crashes. No terminal needs to stay open.\n'
+    );
     printServiceStatus(readConfig());
     return;
   }
@@ -748,9 +1016,10 @@ async function main() {
 
   if (action === 'run') {
     serviceInvocation = true;
-    const requestedRecoverySeat = typeof config.recoveryOnNextStart?.seatKey === 'string'
-      ? config.recoveryOnNextStart.seatKey
-      : null;
+    const requestedRecoverySeat =
+      typeof config.recoveryOnNextStart?.seatKey === 'string'
+        ? config.recoveryOnNextStart.seatKey
+        : null;
     const firstSignIn = config.openOnNextStart === true;
     const visibleSeatKey = requestedRecoverySeat ?? (firstSignIn ? 'owner' : null);
     if (visibleSeatKey) {
@@ -777,5 +1046,9 @@ main().catch((error) => {
   // A revoked device is not a crash. Background managers restart failures, so
   // exit cleanly here to avoid an infinite restart loop until the user pairs
   // the computer again. Foreground invocations still report failure normally.
-  process.exitCode = serviceInvocation && /no longer authorised|pair this computer again|another companion connected/i.test(message) ? 0 : 1;
+  process.exitCode =
+    serviceInvocation &&
+    /no longer authorised|pair this computer again|another companion connected/i.test(message)
+      ? 0
+      : 1;
 });
