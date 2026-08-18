@@ -27,9 +27,27 @@ runcmd:
   - sysctl -w vm.swappiness=10
   - echo 'vm.swappiness=10' > /etc/sysctl.d/99-trevra.conf
 
+  # The friendly /dev/oracleoci/oraclevdb alias is a udev rule owned by the
+  # oracle-cloud-agent service, not the kernel -- it can lose the race against
+  # this very runcmd block on first boot (agent not up yet, or the volume
+  # attachment landed after the instance's own launch in Terraform's apply
+  # order). The raw device it points at (/dev/sdb: the only disk here besides
+  # the boot volume) is live the moment the kernel sees the attachment, so
+  # wait on whichever path shows up first rather than hard-failing on the
+  # alias. Getting this wrong doesn't error loudly -- `mkdir -p /mnt/data`
+  # further down succeeds either way, so Postgres ends up quietly living on
+  # the 45 GB boot disk instead of the 60 GB volume Terraform attached for it,
+  # and the README's "destroying the instance preserves data, it's on the
+  # block volume" claim becomes false for anyone who hits this.
+  - >
+    for i in $(seq 1 30); do
+    [ -b /dev/oracleoci/oraclevdb ] && { ln -sf /dev/oracleoci/oraclevdb /dev/trevra-data-disk; break; };
+    [ -b /dev/sdb ] && { ln -sf /dev/sdb /dev/trevra-data-disk; break; };
+    sleep 2;
+    done
+  - test -b /dev/trevra-data-disk
   # Format only when there is no filesystem, so re-running never wipes data.
-  - test -b /dev/oracleoci/oraclevdb
-  - blkid /dev/oracleoci/oraclevdb || mkfs.ext4 -L trevra-data /dev/oracleoci/oraclevdb
+  - blkid /dev/trevra-data-disk || mkfs.ext4 -L trevra-data /dev/trevra-data-disk
   - mkdir -p /mnt/data
   - grep -q '/mnt/data' /etc/fstab || echo 'LABEL=trevra-data /mnt/data ext4 defaults,_netdev,nofail 0 2' >> /etc/fstab
   - mount -a
