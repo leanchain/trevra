@@ -1,0 +1,4 @@
+#!/bin/sh
+# Full PostgreSQL suite (spins up a real postgres:17-alpine testcontainer) --
+# gates pushes since CI's container-image workflow no longer runs it.
+npm test

@@ -3,7 +3,7 @@ name: Container image
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ['v*']
   workflow_dispatch:
 
 # Multi-arch on purpose: amd64 for the Always Free E2.1.Micro shapes, arm64 for
@@ -34,8 +34,6 @@ jobs:
       - run: npm ci
       - name: Dependency audit
         run: npm audit
-      - name: Full PostgreSQL suite
-        run: npm test
       - name: Production build
         run: npm run build
 

@@ -1,0 +1,89 @@
+#!/bin/sh
+# Pre-commit hook -- format staged files, typecheck, block large files.
+# Modeled on the leanchain/lemoncrow-dev pre-commit hook.
+
+set -e
+
+echo "Running pre-commit checks..."
+
+get_file_size() {
+    if [ "$(uname)" = "Darwin" ]; then
+        stat -f%z "$1" 2>/dev/null
+    else
+        stat -c%s "$1" 2>/dev/null
+    fi
+}
+
+if [ "$#" -gt 0 ]; then
+    FILES_TO_CHECK="$@"
+else
+    FILES_TO_CHECK=$(git diff --cached --name-only --diff-filter=ACM)
+fi
+
+if [ -z "$FILES_TO_CHECK" ]; then
+    echo "No staged files to check."
+    exit 0
+fi
+
+# Files Prettier formats.
+FORMAT_FILES=$(printf '%s\n' $FILES_TO_CHECK | grep -E '\.(ts|tsx|js|jsx|json|css|scss|html|md|yml|yaml)$' || true)
+
+# 1. Formatting -- format staged files and re-stage, or abort if that would
+#    clobber other unstaged edits to the same working tree.
+if [ -n "$FORMAT_FILES" ]; then
+    echo "Running Prettier on staged files..."
+
+    set +e
+    git diff --quiet
+    HAD_UNSTAGED=$?
+    set -e
+
+    npx prettier --write $FORMAT_FILES
+
+    FORMATTED_FILES=$(git diff --name-only -- $FORMAT_FILES)
+    if [ -n "$FORMATTED_FILES" ]; then
+        if [ "$HAD_UNSTAGED" -eq 0 ]; then
+            echo "Auto-staging formatting changes..."
+            git add $FORMATTED_FILES
+        else
+            echo ""
+            echo "FORMATTING APPLIED -- COMMIT ABORTED"
+            echo "The following files were auto-formatted. Review, stage, and commit again:"
+            for f in $FORMATTED_FILES; do echo "  - $f"; done
+            echo "(git commit --no-verify to bypass)"
+            exit 1
+        fi
+    fi
+fi
+
+# 2. Type checking -- run the full project typecheck if any TS file is staged
+#    (tsc needs full project context; per-file checking isn't meaningful).
+TS_FILES=$(printf '%s\n' $FILES_TO_CHECK | grep -E '\.tsx?$' || true)
+if [ -n "$TS_FILES" ]; then
+    echo "Running typecheck..."
+    if ! npm run -s typecheck; then
+        echo "Typecheck failed. Fix the issues above or use 'git commit --no-verify' to bypass."
+        exit 1
+    fi
+fi
+
+# 3. Large file guard.
+MAX_SIZE=$((10 * 1024 * 1024))
+LARGE_FILES=""
+for f in $FILES_TO_CHECK; do
+    if [ -f "$f" ]; then
+        size=$(get_file_size "$f")
+        if [ -n "$size" ] && [ "$size" -gt "$MAX_SIZE" ]; then
+            LARGE_FILES="$LARGE_FILES $f"
+        fi
+    fi
+done
+if [ -n "$LARGE_FILES" ]; then
+    echo "Large files detected (>10MB):"
+    for f in $LARGE_FILES; do echo "  - $f"; done
+    echo "Use 'git commit --no-verify' to bypass."
+    exit 1
+fi
+
+echo "All pre-commit checks passed."
+exit 0
