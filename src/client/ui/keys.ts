@@ -27,7 +27,9 @@ import { useEffect, useRef, type RefObject } from 'react';
 function ownsTheKey(root: HTMLElement): boolean {
   const peers = Array.from(document.querySelectorAll<HTMLElement>('[data-list-keys="on"]'));
   if (peers.length <= 1) return true;
-  const owner = peers.find((peer) => document.activeElement instanceof Node && peer.contains(document.activeElement));
+  const owner = peers.find(
+    (peer) => document.activeElement instanceof Node && peer.contains(document.activeElement)
+  );
   return owner ? owner === root : peers[0] === root;
 }
 
@@ -82,10 +84,8 @@ export function useShortcuts({ onJump, onSheet, suspended }: ShortcutHandlers): 
  * so the caret a screen reader follows and the caret the eye follows are the
  * same one, and Tab carries on from wherever j left off.
  *
- * ONE LIST ACTS PER KEYPRESS. Money renders three of these side by side, and
- * three listeners each moving focus in their own container would make `j` throw
- * the caret across the screen. So: whichever list already holds the caret owns
- * the key; if none does, the first one in the document does.
+ * ONE LIST ACTS PER KEYPRESS. If several lists are mounted, whichever already
+ * holds the caret owns the key; if none does, the first one in the document does.
  */
 export function useListKeys(
   container: RefObject<HTMLElement | null>,
@@ -110,11 +110,16 @@ export function useListKeys(
       const inside = active instanceof Node && root.contains(active);
       if (!inside && !ownsTheKey(root)) return;
       event.preventDefault();
-      const current = rows.findIndex((row) => row === active || (active instanceof Node && row.contains(active)));
+      const current = rows.findIndex(
+        (row) => row === active || (active instanceof Node && row.contains(active))
+      );
       const step = event.key === 'j' ? 1 : -1;
-      const next = current === -1
-        ? (step === 1 ? 0 : rows.length - 1)
-        : Math.min(rows.length - 1, Math.max(0, current + step));
+      const next =
+        current === -1
+          ? step === 1
+            ? 0
+            : rows.length - 1
+          : Math.min(rows.length - 1, Math.max(0, current + step));
       const row = rows[next];
       if (!row.hasAttribute('tabindex')) row.setAttribute('tabindex', '-1');
       row.focus({ preventScroll: false });

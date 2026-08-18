@@ -126,11 +126,15 @@ export function leadSourcingConfig(env: NodeJS.ProcessEnv = process.env): LeadSo
  * member's local Chrome/network. Trevra-operated cloud browsers do not source
  * leads. Local/self-hosted remains opt-out.
  */
-export function leadSourcingEnabled(config: Pick<LeadSourcingConfig, 'optIn' | 'hosted' | 'companionBrowser'>): boolean {
+export function leadSourcingEnabled(
+  config: Pick<LeadSourcingConfig, 'optIn' | 'hosted' | 'companionBrowser'>
+): boolean {
   return config.optIn && (!config.hosted || config.companionBrowser);
 }
 
-export function leadSourcingOffReason(config: Pick<LeadSourcingConfig, 'optIn' | 'hosted' | 'companionBrowser' | 'remoteBrowser'>): string {
+export function leadSourcingOffReason(
+  config: Pick<LeadSourcingConfig, 'optIn' | 'hosted' | 'companionBrowser' | 'remoteBrowser'>
+): string {
   if (!config.optIn) {
     return 'LinkedIn lead sourcing is switched off for this deployment by TREVRA_LINKEDIN_LEAD_SOURCING=false.';
   }
@@ -174,6 +178,7 @@ export type LinkedInQueueWaitReason = 'computer' | 'account_paused' | 'account_c
 export interface LinkedInLeadSource {
   id: string;
   workspaceId: string;
+  seatKey: string;
   kind: LeadSourceKind;
   url: string;
   status: LeadSourceStatus;
@@ -211,6 +216,7 @@ export interface LinkedInLeadSource {
 export interface LinkedInLead {
   id: string;
   workspaceId: string;
+  seatKey: string;
   sourceId: string;
   profileUrl: string;
   /** The scrubbed display name -- `firstName` and `lastName` joined. */
@@ -229,6 +235,7 @@ export interface LinkedInLead {
 interface LeadSourceRow {
   id: string;
   workspace_id: string;
+  seat_key: string;
   kind: string;
   url: string;
   status: string;
@@ -244,6 +251,7 @@ interface LeadSourceRow {
 interface LeadRow {
   id: string;
   workspace_id: string;
+  seat_key: string;
   source_id: string;
   profile_url: string;
   name: string | null;
@@ -257,12 +265,12 @@ interface LeadRow {
 }
 
 const SOURCE_COLUMNS = `
-  id, workspace_id, kind, url, status, requested_at, finished_at,
+  id, workspace_id, seat_key, kind, url, status, requested_at, finished_at,
   result_count, pages_done, failure_reason, created_at, updated_at
 `;
 
 const LEAD_COLUMNS = `
-  id, workspace_id, source_id, profile_url, name, first_name, last_name,
+  id, workspace_id, seat_key, source_id, profile_url, name, first_name, last_name,
   headline, company, post_url, interaction_kind, created_at
 `;
 
@@ -277,6 +285,7 @@ function toSource(row: LeadSourceRow): LinkedInLeadSource {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
+    seatKey: row.seat_key,
     kind: row.kind as LeadSourceKind,
     url: row.url,
     status: row.status as LeadSourceStatus,
@@ -294,6 +303,7 @@ function toLead(row: LeadRow): LinkedInLead {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
+    seatKey: row.seat_key,
     sourceId: row.source_id,
     profileUrl: row.profile_url,
     name: row.name,
@@ -313,6 +323,7 @@ function toLead(row: LeadRow): LinkedInLead {
 
 export interface LeadSourceInsert {
   workspaceId: string;
+  seatKey?: string;
   kind: LeadSourceKind;
   /** As the operator supplied it. Validated here, never rewritten. */
   url: string;
@@ -344,8 +355,10 @@ export function leadSourceUrlFor(kind: LeadSourceKind, url: string): string | nu
 const LEAD_SOURCE_SHAPES: Record<LeadSourceKind, string> = {
   search: 'a LinkedIn people-search URL (https://www.linkedin.com/search/results/people/...)',
   post: 'a LinkedIn post URL (https://www.linkedin.com/feed/update/urn:li:activity:... or /posts/...)',
-  sales_navigator: 'a LinkedIn Sales Navigator people-search URL (https://www.linkedin.com/sales/search/people?...)',
-  content: 'a LinkedIn content-search URL (https://www.linkedin.com/search/results/content/?keywords=...)'
+  sales_navigator:
+    'a LinkedIn Sales Navigator people-search URL (https://www.linkedin.com/sales/search/people?...)',
+  content:
+    'a LinkedIn content-search URL (https://www.linkedin.com/search/results/content/?keywords=...)'
 };
 
 /**
@@ -363,43 +376,73 @@ export async function createLeadSource(
 ): Promise<{ source: LinkedInLeadSource; duplicate: boolean }> {
   const url = leadSourceUrlFor(input.kind, input.url);
   if (!url) {
-    throw new Error(`'${input.url}' is not ${LEAD_SOURCE_SHAPES[input.kind] ?? 'a supported LinkedIn lead source URL'}.`);
+    throw new Error(
+      `'${input.url}' is not ${LEAD_SOURCE_SHAPES[input.kind] ?? 'a supported LinkedIn lead source URL'}.`
+    );
   }
 
   const sourceId = id('llsrc');
   const iso = now.toISOString();
-  const inserted = await db.prepare(`
+  const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
+  const inserted = await db
+    .prepare(
+      `
     INSERT INTO linkedin_lead_sources
-      (id, workspace_id, kind, url, status, requested_at, created_at, updated_at)
-    VALUES (?,?,?,?,'pending',?,?,?)
+      (id, workspace_id, seat_key, kind, url, status, requested_at, created_at, updated_at)
+    VALUES (?,?,?,?,?,'pending',?,?,?)
     ON CONFLICT DO NOTHING
     RETURNING ${SOURCE_COLUMNS}
-  `).get<LeadSourceRow>(sourceId, input.workspaceId, input.kind, url, iso, iso, iso);
+  `
+    )
+    .get<LeadSourceRow>(sourceId, input.workspaceId, seatKey, input.kind, url, iso, iso, iso);
   if (inserted) return { source: toSource(inserted), duplicate: false };
 
   // The guard fired. The live row is the answer -- and there is exactly one,
   // because that is what the index enforces.
-  const existing = await db.prepare(`
+  const existing = await db
+    .prepare(
+      `
     SELECT ${SOURCE_COLUMNS} FROM linkedin_lead_sources
-    WHERE workspace_id=? AND kind=? AND LOWER(url)=LOWER(?) AND status IN ('pending','running')
+    WHERE workspace_id=? AND seat_key=? AND kind=? AND LOWER(url)=LOWER(?) AND status IN ('pending','running')
     ORDER BY requested_at ASC LIMIT 1
-  `).get<LeadSourceRow>(input.workspaceId, input.kind, url);
-  if (!existing) throw new Error('The lead source could not be created and no live source claims its URL.');
+  `
+    )
+    .get<LeadSourceRow>(input.workspaceId, seatKey, input.kind, url);
+  if (!existing)
+    throw new Error('The lead source could not be created and no live source claims its URL.');
   return { source: toSource(existing), duplicate: true };
 }
 
-export async function listLeadSources(db: Db, workspaceId: string, limit = 50): Promise<LinkedInLeadSource[]> {
-  const rows = await db.prepare(`
+export async function listLeadSources(
+  db: Db,
+  workspaceId: string,
+  limit = 50,
+  seatKey = OWNER_SEAT_KEY
+): Promise<LinkedInLeadSource[]> {
+  const rows = await db
+    .prepare(
+      `
     SELECT ${SOURCE_COLUMNS} FROM linkedin_lead_sources
-    WHERE workspace_id=? ORDER BY created_at DESC LIMIT ?
-  `).all<LeadSourceRow>(workspaceId, Math.max(1, Math.min(200, Math.trunc(limit))));
+    WHERE workspace_id=? AND seat_key=? ORDER BY created_at DESC LIMIT ?
+  `
+    )
+    .all<LeadSourceRow>(workspaceId, seatKey, Math.max(1, Math.min(200, Math.trunc(limit))));
   return rows.map(toSource);
 }
 
-export async function getLeadSource(db: Db, workspaceId: string, sourceId: string): Promise<LinkedInLeadSource | undefined> {
-  const row = await db.prepare(`
-    SELECT ${SOURCE_COLUMNS} FROM linkedin_lead_sources WHERE workspace_id=? AND id=?
-  `).get<LeadSourceRow>(workspaceId, sourceId);
+export async function getLeadSource(
+  db: Db,
+  workspaceId: string,
+  sourceId: string,
+  seatKey = OWNER_SEAT_KEY
+): Promise<LinkedInLeadSource | undefined> {
+  const row = await db
+    .prepare(
+      `
+    SELECT ${SOURCE_COLUMNS} FROM linkedin_lead_sources WHERE workspace_id=? AND seat_key=? AND id=?
+  `
+    )
+    .get<LeadSourceRow>(workspaceId, seatKey, sourceId);
   return row ? toSource(row) : undefined;
 }
 
@@ -413,18 +456,27 @@ export async function getLeadSource(db: Db, workspaceId: string, sourceId: strin
  * idempotency scheme that disagrees with the one next door is how the same
  * search gets walked twice.
  */
-export async function claimLeadSource(db: Db, workspaceId: string, now: Date): Promise<LinkedInLeadSource | null> {
-  const row = await db.prepare(`
+export async function claimLeadSource(
+  db: Db,
+  workspaceId: string,
+  now: Date,
+  seatKey = OWNER_SEAT_KEY
+): Promise<LinkedInLeadSource | null> {
+  const row = await db
+    .prepare(
+      `
     UPDATE linkedin_lead_sources SET status='running', updated_at=?
     WHERE id = (
       SELECT id FROM linkedin_lead_sources
-      WHERE workspace_id=? AND status='pending'
+      WHERE workspace_id=? AND seat_key=? AND status='pending'
       ORDER BY requested_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
     )
     RETURNING ${SOURCE_COLUMNS}
-  `).get<LeadSourceRow>(now.toISOString(), workspaceId);
+  `
+    )
+    .get<LeadSourceRow>(now.toISOString(), workspaceId, seatKey);
   return row ? toSource(row) : null;
 }
 
@@ -447,11 +499,26 @@ export async function claimLeadSource(db: Db, workspaceId: string, now: Date): P
 export const LEAD_READ_LIMIT = 2_000;
 
 /** The people one source found, newest first. */
-export async function listLeads(db: Db, workspaceId: string, sourceId: string, limit = LEAD_READ_LIMIT): Promise<LinkedInLead[]> {
-  const rows = await db.prepare(`
+export async function listLeads(
+  db: Db,
+  workspaceId: string,
+  sourceId: string,
+  limit = LEAD_READ_LIMIT,
+  seatKey = OWNER_SEAT_KEY
+): Promise<LinkedInLead[]> {
+  const rows = await db
+    .prepare(
+      `
     SELECT ${LEAD_COLUMNS} FROM linkedin_leads
-    WHERE workspace_id=? AND source_id=? ORDER BY created_at DESC, id DESC LIMIT ?
-  `).all<LeadRow>(workspaceId, sourceId, Math.max(1, Math.min(LEAD_READ_LIMIT, Math.trunc(limit))));
+    WHERE workspace_id=? AND seat_key=? AND source_id=? ORDER BY created_at DESC, id DESC LIMIT ?
+  `
+    )
+    .all<LeadRow>(
+      workspaceId,
+      seatKey,
+      sourceId,
+      Math.max(1, Math.min(LEAD_READ_LIMIT, Math.trunc(limit)))
+    );
   return rows.map(toLead);
 }
 
@@ -477,11 +544,17 @@ export function leadPagesThisVisit(seed: string): number {
   t = Math.imul(t ^ (t >>> 15), t | 1);
   t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
   const random = ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  return LEAD_PAGES_PER_VISIT.min + Math.floor(random * (LEAD_PAGES_PER_VISIT.max - LEAD_PAGES_PER_VISIT.min + 1));
+  return (
+    LEAD_PAGES_PER_VISIT.min +
+    Math.floor(random * (LEAD_PAGES_PER_VISIT.max - LEAD_PAGES_PER_VISIT.min + 1))
+  );
 }
 
 /** Hosted companion sourcing advances exactly one result page per normal visit. */
-export function leadPagesForConfig(config: Pick<LeadSourcingConfig, 'companionBrowser'>, seed: string): number {
+export function leadPagesForConfig(
+  config: Pick<LeadSourcingConfig, 'companionBrowser'>,
+  seed: string
+): number {
   return config.companionBrowser ? 1 : leadPagesThisVisit(seed);
 }
 
@@ -500,11 +573,15 @@ async function parkLeadSource(
   progress: { pagesDone: number; resultCount: number },
   now: Date
 ): Promise<void> {
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE linkedin_lead_sources
     SET status='pending', result_count=?, pages_done=?, updated_at=?
     WHERE workspace_id=? AND id=?
-  `).run(progress.resultCount, progress.pagesDone, now.toISOString(), workspaceId, sourceId);
+  `
+    )
+    .run(progress.resultCount, progress.pagesDone, now.toISOString(), workspaceId, sourceId);
 }
 
 /** Close a source out. The only writer of a terminal status. */
@@ -512,15 +589,31 @@ async function finishLeadSource(
   db: Db,
   workspaceId: string,
   sourceId: string,
-  outcome: { status: Extract<LeadSourceStatus, 'completed' | 'failed'>; resultCount: number; failureReason: string | null },
+  outcome: {
+    status: Extract<LeadSourceStatus, 'completed' | 'failed'>;
+    resultCount: number;
+    failureReason: string | null;
+  },
   now: Date
 ): Promise<void> {
   const iso = now.toISOString();
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE linkedin_lead_sources
     SET status=?, result_count=?, failure_reason=?, finished_at=?, updated_at=?
     WHERE workspace_id=? AND id=?
-  `).run(outcome.status, outcome.resultCount, outcome.failureReason, iso, iso, workspaceId, sourceId);
+  `
+    )
+    .run(
+      outcome.status,
+      outcome.resultCount,
+      outcome.failureReason,
+      iso,
+      iso,
+      workspaceId,
+      sourceId
+    );
 }
 
 /* ---------------------------------------------------------------------------
@@ -571,9 +664,16 @@ export const DAILY_LEAD_WINDOW_MS = 24 * 60 * 60 * 1000;
  * answerable, and a default that lives in one constant cannot drift from a
  * default that was copied into ten thousand rows.
  */
-export async function getDailyLeadCap(db: Db, workspaceId: string): Promise<number> {
-  const row = await db.prepare('SELECT daily_lead_cap FROM linkedin_lead_settings WHERE workspace_id=?')
-    .get<{ daily_lead_cap: number }>(workspaceId);
+export async function getDailyLeadCap(
+  db: Db,
+  workspaceId: string,
+  seatKey = OWNER_SEAT_KEY
+): Promise<number> {
+  const row = await db
+    .prepare(
+      'SELECT daily_lead_cap FROM linkedin_lead_settings WHERE workspace_id=? AND seat_key=?'
+    )
+    .get<{ daily_lead_cap: number }>(workspaceId, seatKey);
   return row ? Number(row.daily_lead_cap) : DEFAULT_DAILY_LEAD_CAP;
 }
 
@@ -582,24 +682,44 @@ export async function getDailyLeadCap(db: Db, workspaceId: string): Promise<numb
  * operator has at hand when they want to pause without touching an environment
  * variable they may not own.
  */
-export async function setDailyLeadCap(db: Db, workspaceId: string, cap: number, now: Date = new Date()): Promise<number> {
+export async function setDailyLeadCap(
+  db: Db,
+  workspaceId: string,
+  cap: number,
+  now: Date = new Date(),
+  seatKey = OWNER_SEAT_KEY
+): Promise<number> {
   const value = Math.trunc(Number(cap));
   if (!Number.isFinite(value) || value < 0 || value > MAX_DAILY_LEAD_CAP) {
-    throw new Error(`The daily lead cap must be a whole number between 0 and ${MAX_DAILY_LEAD_CAP}.`);
+    throw new Error(
+      `The daily lead cap must be a whole number between 0 and ${MAX_DAILY_LEAD_CAP}.`
+    );
   }
   const iso = now.toISOString();
-  await db.prepare(`
-    INSERT INTO linkedin_lead_settings (workspace_id, daily_lead_cap, created_at, updated_at)
-    VALUES (?,?,?,?)
-    ON CONFLICT (workspace_id) DO UPDATE SET daily_lead_cap=EXCLUDED.daily_lead_cap, updated_at=EXCLUDED.updated_at
-  `).run(workspaceId, value, iso, iso);
+  await db
+    .prepare(
+      `
+    INSERT INTO linkedin_lead_settings (workspace_id, seat_key, daily_lead_cap, created_at, updated_at)
+    VALUES (?,?,?,?,?)
+    ON CONFLICT (workspace_id, seat_key) DO UPDATE SET daily_lead_cap=EXCLUDED.daily_lead_cap, updated_at=EXCLUDED.updated_at
+  `
+    )
+    .run(workspaceId, seatKey, value, iso, iso);
   return value;
 }
 
 /** Leads STORED by this workspace since `since`. */
-export async function leadsStoredSince(db: Db, workspaceId: string, since: Date): Promise<number> {
-  const row = await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_leads WHERE workspace_id=? AND created_at >= ?')
-    .get<{ total: number }>(workspaceId, since.toISOString());
+export async function leadsStoredSince(
+  db: Db,
+  workspaceId: string,
+  since: Date,
+  seatKey = OWNER_SEAT_KEY
+): Promise<number> {
+  const row = await db
+    .prepare(
+      'SELECT COUNT(*)::int AS total FROM linkedin_leads WHERE workspace_id=? AND seat_key=? AND created_at >= ?'
+    )
+    .get<{ total: number }>(workspaceId, seatKey, since.toISOString());
   return Number(row?.total ?? 0);
 }
 
@@ -640,9 +760,19 @@ const LEAD_CAP_LOCK_CLASS = 0x4c454144;
  * again inside `storeLeads` under a lock. Nothing between this call and that
  * one stops another pass spending the same day.
  */
-export async function dailyLeadAllowance(db: Db, workspaceId: string, now: Date): Promise<DailyLeadAllowance> {
-  const limit = await getDailyLeadCap(db, workspaceId);
-  const used = await leadsStoredSince(db, workspaceId, new Date(now.getTime() - DAILY_LEAD_WINDOW_MS));
+export async function dailyLeadAllowance(
+  db: Db,
+  workspaceId: string,
+  now: Date,
+  seatKey = OWNER_SEAT_KEY
+): Promise<DailyLeadAllowance> {
+  const limit = await getDailyLeadCap(db, workspaceId, seatKey);
+  const used = await leadsStoredSince(
+    db,
+    workspaceId,
+    new Date(now.getTime() - DAILY_LEAD_WINDOW_MS),
+    seatKey
+  );
   return { limit, used, remaining: Math.max(0, limit - used) };
 }
 
@@ -720,14 +850,20 @@ async function suppressionSets(
   }
 
   const [exclusionRows, actionRows] = await Promise.all([
-    db.prepare('SELECT target_ref FROM linkedin_exclusions WHERE workspace_id=?').all<{ target_ref: string }>(workspaceId),
+    db
+      .prepare('SELECT target_ref FROM linkedin_exclusions WHERE workspace_id=?')
+      .all<{ target_ref: string }>(workspaceId),
     candidates.size === 0
       ? Promise.resolve([])
-      : db.prepare(`
+      : db
+          .prepare(
+            `
           SELECT DISTINCT target_ref FROM linkedin_actions
           WHERE workspace_id=? AND target_ref IS NOT NULL AND status <> 'skipped'
             AND LOWER(SPLIT_PART(SPLIT_PART(target_ref, chr(63), 1), '#', 1)) = ANY(?::text[])
-        `).all<{ target_ref: string }>(workspaceId, [...candidates])
+        `
+          )
+          .all<{ target_ref: string }>(workspaceId, [...candidates])
   ]);
   return { excluded: refSet(exclusionRows), contacted: refSet(actionRows) };
 }
@@ -866,7 +1002,13 @@ export async function runLeadSource(
 
   if (!leadSourcingEnabled(deps.config)) {
     const reason = leadSourcingOffReason(deps.config);
-    await finishLeadSource(db, source.workspaceId, source.id, { status: 'failed', resultCount: 0, failureReason: reason }, now());
+    await finishLeadSource(
+      db,
+      source.workspaceId,
+      source.id,
+      { status: 'failed', resultCount: 0, failureReason: reason },
+      now()
+    );
     return { ...empty, failureReason: reason };
   }
 
@@ -885,10 +1027,16 @@ export async function runLeadSource(
   // browser is actually signed into is carried down from the job that opened
   // it; absent, it is still the owner seat, which is what a single-seat
   // workspace has always meant.
-  const posture = await getSeatPosture(db, source.workspaceId, now(), deps.seatKey ?? OWNER_SEAT_KEY);
+  const posture = await getSeatPosture(db, source.workspaceId, now(), source.seatKey);
   const refusal = postureRefusal(posture);
   if (refusal) {
-    await finishLeadSource(db, source.workspaceId, source.id, { status: 'failed', resultCount: 0, failureReason: refusal }, now());
+    await finishLeadSource(
+      db,
+      source.workspaceId,
+      source.id,
+      { status: 'failed', resultCount: 0, failureReason: refusal },
+      now()
+    );
     return { ...empty, failureReason: refusal };
   }
 
@@ -896,12 +1044,19 @@ export async function runLeadSource(
   // 100 people it is not allowed to keep has already spent the account's
   // standing on all of them; the only cap worth having is one that stops the
   // pages from being loaded at all.
-  const allowance = await dailyLeadAllowance(db, source.workspaceId, now());
+  const allowance = await dailyLeadAllowance(db, source.workspaceId, now(), source.seatKey);
   if (allowance.remaining <= 0) {
-    const reason = allowance.limit === 0
-      ? 'The daily lead cap for this workspace is 0, so no leads may be stored and nothing was fetched. Raise the cap to start sourcing again.'
-      : `The daily lead cap of ${allowance.limit} is already spent (${allowance.used} lead${allowance.used === 1 ? '' : 's'} stored in the last 24 hours), so nothing was fetched. The window rolls; this source can be re-queued once it does.`;
-    await finishLeadSource(db, source.workspaceId, source.id, { status: 'failed', resultCount: 0, failureReason: reason }, now());
+    const reason =
+      allowance.limit === 0
+        ? 'The daily lead cap for this workspace is 0, so no leads may be stored and nothing was fetched. Raise the cap to start sourcing again.'
+        : `The daily lead cap of ${allowance.limit} is already spent (${allowance.used} lead${allowance.used === 1 ? '' : 's'} stored in the last 24 hours), so nothing was fetched. The window rolls; this source can be re-queued once it does.`;
+    await finishLeadSource(
+      db,
+      source.workspaceId,
+      source.id,
+      { status: 'failed', resultCount: 0, failureReason: reason },
+      now()
+    );
     return { ...empty, dailyCap: allowance, dailyCapReached: true, failureReason: reason };
   }
 
@@ -914,7 +1069,13 @@ export async function runLeadSource(
   // back to back is the one remaining burst, on the exact surface the account
   // was restricted for.
   const startPage = source.pagesDone + 1;
-  const budget = Math.max(0, Math.min(leadPagesForConfig(deps.config, `${source.id}:${startPage}`), deps.config.maxPages - source.pagesDone));
+  const budget = Math.max(
+    0,
+    Math.min(
+      leadPagesForConfig(deps.config, `${source.id}:${startPage}`),
+      deps.config.maxPages - source.pagesDone
+    )
+  );
   const options = {
     // The walk itself is told to stop at whatever is left of the day, so the
     // cap costs fetches rather than merely discarding their results.
@@ -925,11 +1086,21 @@ export async function runLeadSource(
     sleep: deps.sleep,
     log: deps.log
   };
-  const outcome = budget > 0
-    ? await walkFor(scraper, deps.page, source, options)
-    // The source has already read every page it is allowed to. Nothing is
-    // fetched; it is closed out below on the same path a finished walk takes.
-    : { ok: true as const, failureKind: null, externalRef: source.url, leads: [], degraded: [], pagesWalked: 0, dropped: 0, exhausted: true };
+  const outcome =
+    budget > 0
+      ? await walkFor(scraper, deps.page, source, options)
+      : // The source has already read every page it is allowed to. Nothing is
+        // fetched; it is closed out below on the same path a finished walk takes.
+        {
+          ok: true as const,
+          failureKind: null,
+          externalRef: source.url,
+          leads: [],
+          degraded: [],
+          pagesWalked: 0,
+          dropped: 0,
+          exhausted: true
+        };
 
   // THE ALLOWANCE READ ABOVE BOUNDED THE FETCH; THE ONE THAT COMES BACK HERE
   // IS THE ONE THAT COUNTS. `storeLeads` re-reads the window under a lock and
@@ -966,12 +1137,13 @@ export async function runLeadSource(
   }
 
   const dailyCap = stored.allowance;
-  const degraded = stored.capped > 0
-    ? [
-        ...outcome.degraded,
-        `${stored.capped} harvested ${stored.capped === 1 ? 'person was' : 'people were'} not stored: this workspace's daily cap of ${dailyCap.limit} leads was reached. The window is a rolling 24 hours.`
-      ]
-    : outcome.degraded;
+  const degraded =
+    stored.capped > 0
+      ? [
+          ...outcome.degraded,
+          `${stored.capped} harvested ${stored.capped === 1 ? 'person was' : 'people were'} not stored: this workspace's daily cap of ${dailyCap.limit} leads was reached. The window is a rolling 24 hours.`
+        ]
+      : outcome.degraded;
 
   return {
     sourceId: source.id,
@@ -1015,12 +1187,18 @@ export async function runPendingLeadSources(
   // budget would mean nothing. One pass touches each source at most once.
   const seen = new Set<string>();
   for (let index = 0; index < maxSources; index += 1) {
-    const source = await claimLeadSource(db, workspaceId, now());
+    const source = await claimLeadSource(db, workspaceId, now(), deps.seatKey ?? OWNER_SEAT_KEY);
     if (!source) break;
     if (seen.has(source.id)) {
       // Put it back untouched: it is parked, not failed, and the next visit is
       // where it continues.
-      await parkLeadSource(db, source.workspaceId, source.id, { pagesDone: source.pagesDone, resultCount: source.resultCount }, now());
+      await parkLeadSource(
+        db,
+        source.workspaceId,
+        source.id,
+        { pagesDone: source.pagesDone, resultCount: source.resultCount },
+        now()
+      );
       break;
     }
     seen.add(source.id);
@@ -1039,7 +1217,8 @@ export async function runPendingLeadSources(
 
 /** Why this seat may not be harvested for, or null when it may. */
 function postureRefusal(posture: SeatPosture | null): string | null {
-  if (posture === null) return 'No LinkedIn seat is configured for this workspace, so there is no account to source leads through.';
+  if (posture === null)
+    return 'No LinkedIn seat is configured for this workspace, so there is no account to source leads through.';
   if (posture === 'paused') return 'The seat is paused, so nothing may be fetched through it.';
   if (posture === 'cooldown') {
     return 'The seat is in cooldown after a limit wall or challenge; resume it by hand once you know why. Page fetches are actions too.';
@@ -1081,10 +1260,19 @@ async function storeLeads(
   source: LinkedInLeadSource,
   leads: readonly ScrapedLead[],
   now: Date
-): Promise<{ stored: number; filtered: LeadSourceRunResult['filtered']; capped: number; allowance: DailyLeadAllowance }> {
+): Promise<{
+  stored: number;
+  filtered: LeadSourceRunResult['filtered'];
+  capped: number;
+  allowance: DailyLeadAllowance;
+}> {
   const filtered = { duplicate: 0, excluded: 0, contacted: 0 };
 
-  const { excluded, contacted } = await suppressionSets(db, source.workspaceId, leads.map((lead) => lead.profileUrl));
+  const { excluded, contacted } = await suppressionSets(
+    db,
+    source.workspaceId,
+    leads.map((lead) => lead.profileUrl)
+  );
   const keep: ScrapedLead[] = [];
   for (const lead of leads) {
     const key = lead.profileUrl.toLowerCase();
@@ -1112,10 +1300,12 @@ async function storeLeads(
     // 32-bit ones -- see {@link LEAD_CAP_LOCK_CLASS} for why that difference
     // is the difference between one lock per workspace and one lock per
     // roughly every hundredth pair of workspaces.
-    await tx.prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, ?::bigint))').get(source.workspaceId, LEAD_CAP_LOCK_CLASS);
+    await tx
+      .prepare('SELECT pg_advisory_xact_lock(hashtextextended(?, ?::bigint))')
+      .get(`${source.workspaceId}:${source.seatKey}`, LEAD_CAP_LOCK_CLASS);
 
-    const limit = await getDailyLeadCap(tx, source.workspaceId);
-    const used = await leadsStoredSince(tx, source.workspaceId, since);
+    const limit = await getDailyLeadCap(tx, source.workspaceId, source.seatKey);
+    const used = await leadsStoredSince(tx, source.workspaceId, since, source.seatKey);
     const remaining = Math.max(0, limit - used);
 
     // THE CAP IS APPLIED AFTER THE SUPPRESSION FILTER, so a day's allowance is
@@ -1123,7 +1313,8 @@ async function storeLeads(
     // already-excluded rows that were about to be dropped anyway.
     const allowed = keep.slice(0, remaining);
     const capped = keep.length - allowed.length;
-    if (allowed.length === 0) return { stored: 0, filtered, capped, allowance: { limit, used, remaining } };
+    if (allowed.length === 0)
+      return { stored: 0, filtered, capped, allowance: { limit, used, remaining } };
 
     // THE SCRUB RUNS HERE, ON EVERY PATH INTO THE TABLE -- AND IT NOW ACTUALLY
     // DOES. The sentence above this line was true of a name the driver handed
@@ -1136,37 +1327,46 @@ async function storeLeads(
     // which applies the same table and, unlike the joined splitter, may never
     // empty a name it was handed.
     const named = allowed.map((lead) => {
-      const split = lead.firstName || lead.lastName
-        ? { firstName: scrubNameField(lead.firstName ?? ''), lastName: scrubNameField(lead.lastName ?? '') }
-        : splitAndScrubName(lead.name ?? '');
+      const split =
+        lead.firstName || lead.lastName
+          ? {
+              firstName: scrubNameField(lead.firstName ?? ''),
+              lastName: scrubNameField(lead.lastName ?? '')
+            }
+          : splitAndScrubName(lead.name ?? '');
       const full = [split.firstName, split.lastName].filter(Boolean).join(' ');
       return { ...lead, ...split, fullName: full || null };
     });
 
-    const result = await tx.prepare(`
+    const result = await tx
+      .prepare(
+        `
       INSERT INTO linkedin_leads (
-        id, workspace_id, source_id, profile_url, name, first_name, last_name,
+        id, workspace_id, seat_key, source_id, profile_url, name, first_name, last_name,
         headline, company, post_url, interaction_kind, created_at
       )
       SELECT * FROM unnest(
         ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[],
-        ?::text[], ?::text[], ?::text[], ?::text[], ?::timestamptz[]
+        ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::timestamptz[]
       )
-      ON CONFLICT (workspace_id, LOWER(profile_url)) DO NOTHING
-    `).run(
-      named.map(() => id('llead')),
-      named.map(() => source.workspaceId),
-      named.map(() => source.id),
-      named.map((lead) => lead.profileUrl),
-      named.map((lead) => lead.fullName),
-      named.map((lead) => lead.firstName || null),
-      named.map((lead) => lead.lastName || null),
-      named.map((lead) => lead.headline),
-      named.map((lead) => lead.company),
-      named.map((lead) => lead.postUrl),
-      named.map((lead) => interactionKindOf(lead.interactionKind)),
-      named.map(() => iso)
-    );
+      ON CONFLICT (workspace_id, seat_key, LOWER(profile_url)) DO NOTHING
+    `
+      )
+      .run(
+        named.map(() => id('llead')),
+        named.map(() => source.workspaceId),
+        named.map(() => source.seatKey),
+        named.map(() => source.id),
+        named.map((lead) => lead.profileUrl),
+        named.map((lead) => lead.fullName),
+        named.map((lead) => lead.firstName || null),
+        named.map((lead) => lead.lastName || null),
+        named.map((lead) => lead.headline),
+        named.map((lead) => lead.company),
+        named.map((lead) => lead.postUrl),
+        named.map((lead) => interactionKindOf(lead.interactionKind)),
+        named.map(() => iso)
+      );
 
     // Everything the index swallowed was somebody this workspace already has.
     filtered.duplicate = allowed.length - result.changes;

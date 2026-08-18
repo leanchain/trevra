@@ -19,16 +19,12 @@ import {
 } from 'lucide-react';
 import {
   ApiError,
-  LINKEDIN_ACTION_KINDS,
-  LINKEDIN_ACTION_STATUSES,
   PACED_KINDS,
   addLinkedInExclusions,
   deleteLinkedInCredentials,
   deleteLinkedInSeat,
   detectLinkedInSeat,
-  getLinkedInActions,
   getLinkedInAnalytics,
-  getLinkedInCampaigns,
   getLinkedInExclusions,
   getLinkedInSeat,
   getLinkedInWithdrawalCandidates,
@@ -36,16 +32,10 @@ import {
   getLinkedInWorkerStatus,
   loginLinkedInSeat,
   queueLinkedInWithdrawals,
-  recordLinkedInOutcome,
   saveLinkedInCredentials,
   saveLinkedInSeat,
-  skipLinkedInAction,
   syncLinkedInPendingInvites,
-  type LinkedInActionKind,
-  type LinkedInActionStatus,
-  type LinkedInActionView,
   type LinkedInAnalytics,
-  type LinkedInCampaign,
   type LinkedInExclusion,
   type LinkedInLimitConfidence,
   type LinkedInLimitsReport,
@@ -56,11 +46,7 @@ import {
   type WithdrawalStatus
 } from './api';
 import {
-  ACTION_KIND_LABELS,
-  ACTION_KIND_LABELS_ONE,
-  ACTION_STATUS_LABELS,
   KIND_LABELS,
-  actionStatusLabel,
   LinkedInSafetyScreen,
   PostureBadge,
   errorMessage,
@@ -68,13 +54,9 @@ import {
   useOutreachRefresh,
   useSeatLimits
 } from './LinkedInSafety';
-// WHICH ACCOUNT THIS SCREEN IS LOOKING AT. The account switcher owns it for the
-// whole tab; every read and every write below names it rather than defaulting
-// to the workspace's first account, which is what they all silently did.
-import { ActiveAccountBar, useActiveSeatKey } from './LinkedInAccounts';
-import { useWorkspaceMembers } from './TeamScreen';
+import { useActiveSeatKey } from './LinkedInAccounts';
 import { ConfidenceTag, LiStat } from './LinkedInViz';
-import { formatPlannedTime, formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
+import { formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
 import { ConfirmDrawer } from './ui/dialog';
 
 /**
@@ -112,7 +94,12 @@ export const relativeTime = (iso: string) => {
   if (!Number.isFinite(seconds)) return iso;
   const format = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
   const steps: Array<[Intl.RelativeTimeFormatUnit, number]> = [
-    ['second', 60], ['minute', 60], ['hour', 24], ['day', 7], ['week', 4.35], ['month', 12]
+    ['second', 60],
+    ['minute', 60],
+    ['hour', 24],
+    ['day', 7],
+    ['week', 4.35],
+    ['month', 12]
   ];
   let value = seconds;
   for (const [unit, size] of steps) {
@@ -127,7 +114,9 @@ const vanityOf = (profileUrl: string) => {
   try {
     const path = new URL(profileUrl).pathname.replace(/\/+$/, '');
     return path.replace(/^\//, '') || profileUrl;
-  } catch { return profileUrl; }
+  } catch {
+    return profileUrl;
+  }
 };
 
 /**
@@ -140,9 +129,10 @@ const vanityOf = (profileUrl: string) => {
  * that changes the decision, so that is the part that is rendered, and the
  * paths stay out of the interface entirely.
  */
-export const sourceNote = (confidence: LinkedInLimitConfidence) => confidence === 'HARD FACT'
-  ? 'Published by LinkedIn, or a term of its own contract.'
-  : 'Measured by people running LinkedIn outreach, not published by LinkedIn. Directionally right, never a guarantee.';
+export const sourceNote = (confidence: LinkedInLimitConfidence) =>
+  confidence === 'HARD FACT'
+    ? 'Published by LinkedIn, or a term of its own contract.'
+    : 'Measured by people running LinkedIn outreach, not published by LinkedIn. Directionally right, never a guarantee.';
 
 /**
  * Why today's number is the number it is.
@@ -158,13 +148,15 @@ const LIMIT_REASON: Record<string, string> = {
   'monthly-quota': 'LinkedIn’s own monthly quota',
   'seat-unconfigured': 'no LinkedIn account is connected, so nothing may go out',
   'seat-paused': 'this account is paused',
-  'acceptance-rate': 'too few invites are being accepted, so the daily number is halved until that recovers',
+  'acceptance-rate':
+    'too few invites are being accepted, so the daily number is halved until that recovers',
   'warmup-multiplier': 'this account is still ramping up, so it sends less than its full allowance',
   'cooldown-band': 'this account is in cooldown, so the careful starter limits apply'
 };
 
 /** The server's rule name in the operator's words, or the rule name made readable. */
-export const limitReason = (boundBy: string) => LIMIT_REASON[boundBy] ?? boundBy.replaceAll('-', ' ');
+export const limitReason = (boundBy: string) =>
+  LIMIT_REASON[boundBy] ?? boundBy.replaceAll('-', ' ');
 
 /** Where a queued action came from. The stored values are `campaign`, `export` and `manual`. */
 const ACTION_SOURCE_LABELS: Record<string, string> = {
@@ -207,11 +199,16 @@ export function OutreachSeat(_props: { setToast: (message: string) => void }) {
     try {
       const response = await getLinkedInAnalytics(days, seatKey);
       if (seriesToken.current === token) setAnalytics(response);
-    } catch { /* the window selector is not worth an error banner over the ceilings */ }
-    finally { if (seriesToken.current === token) setSeriesLoading(false); }
+    } catch {
+      /* the window selector is not worth an error banner over the ceilings */
+    } finally {
+      if (seriesToken.current === token) setSeriesLoading(false);
+    }
   }, [days, seatKey]);
 
-  useEffect(() => { void loadSeries(); }, [loadSeries]);
+  useEffect(() => {
+    void loadSeries();
+  }, [loadSeries]);
   useOutreachRefresh(loadSeries);
 
   // Account creation already has one canonical empty state immediately above
@@ -219,30 +216,44 @@ export function OutreachSeat(_props: { setToast: (message: string) => void }) {
   // panel underneath it gave a first-time user two doors for one prerequisite.
   if (limits && !limits.seat.configured) return null;
 
-  return <div className="page-stack">
-    {error && <div className="error-banner">
-      <strong>{error}</strong> Nothing was changed. What is below is the last good reading.{' '}
-      <button className="secondary-button" type="button" disabled={loading} onClick={() => void reload()}>
-        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Check the limits again
-      </button>
-    </div>}
+  return (
+    <div className="page-stack">
+      {error && (
+        <div className="error-banner">
+          <strong>{error}</strong> Nothing was changed. What is below is the last good reading.{' '}
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={loading}
+            onClick={() => void reload()}
+          >
+            {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Check
+            the limits again
+          </button>
+        </div>
+      )}
 
-    {limits
-      ? <LinkedInSafetyScreen
-        limits={limits}
-        analytics={analytics}
-        days={days}
-        onDaysChange={setDays}
-        seriesLoading={seriesLoading}
-      />
-      : !error && <LoadingPanel loading={loading} />}
-  </div>;
+      {limits ? (
+        <LinkedInSafetyScreen
+          limits={limits}
+          analytics={analytics}
+          days={days}
+          onDaysChange={setDays}
+          seriesLoading={seriesLoading}
+        />
+      ) : (
+        !error && <LoadingPanel loading={loading} />
+      )}
+    </div>
+  );
 }
 
 function LoadingPanel({ loading }: { loading: boolean }) {
-  return <section className="page-panel">
-    <p className="empty-copy">{loading ? 'Reading this account…' : 'No data.'}</p>
-  </section>;
+  return (
+    <section className="page-panel">
+      <p className="empty-copy">{loading ? 'Reading this account…' : 'No data.'}</p>
+    </section>
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -273,42 +284,70 @@ export function LinkedInSeatSetup({ setToast }: { setToast: (message: string) =>
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [seatResponse, workerResponse] = await Promise.all([getLinkedInSeat(seatKey), getLinkedInWorkerStatus()]);
+      const [seatResponse, workerResponse] = await Promise.all([
+        getLinkedInSeat(seatKey),
+        getLinkedInWorkerStatus()
+      ]);
       setSeat(seatResponse);
       setWorker(workerResponse);
       setError('');
     } catch (err) {
-      setError(errorMessage(err, 'Unable to read this LinkedIn account. Nothing was changed — try again.'));
-    } finally { setLoading(false); }
+      setError(
+        errorMessage(err, 'Unable to read this LinkedIn account. Nothing was changed — try again.')
+      );
+    } finally {
+      setLoading(false);
+    }
   }, [seatKey]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
   useOutreachRefresh(load);
 
-  return <div className="page-stack">
-    {error && <div className="error-banner">
-      <strong>{error}</strong> What is below is the last good reading, and nothing on this screen was saved.{' '}
-      <button className="secondary-button" type="button" disabled={loading} onClick={() => void load()}>
-        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Try again
-      </button>
-    </div>}
+  return (
+    <div className="page-stack">
+      {error && (
+        <div className="error-banner">
+          <strong>{error}</strong> What is below is the last good reading, and nothing on this
+          screen was saved.{' '}
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={loading}
+            onClick={() => void load()}
+          >
+            {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Try
+            again
+          </button>
+        </div>
+      )}
 
-    {/* A save here changes what every other outreach screen is pricing against,
+      {/* A save here changes what every other outreach screen is pricing against,
         so the broadcast is the whole point: the ceilings on Seat and the
         binding rule under a campaign's horizon are stale the moment this
         succeeds. */}
-    {/* KEYED ON THE ACCOUNT, so switching accounts REMOUNTS the form. Every
+      {/* KEYED ON THE ACCOUNT, so switching accounts REMOUNTS the form. Every
         field below is local state hydrated once from the seat it was mounted
         for; without the key, switching account would leave the previous
         account's label, hours and ceilings in the form and save them onto the
         new one. */}
-    <SetupTab key={seatKey} seatKey={seatKey} seat={seat} worker={worker} limits={limits} setToast={setToast} onSaved={() => void reloadOutreach()} />
+      <SetupTab
+        key={seatKey}
+        seatKey={seatKey}
+        seat={seat}
+        worker={worker}
+        limits={limits}
+        setToast={setToast}
+        onSaved={() => void reloadOutreach()}
+      />
 
-    {/* The backlog, and the two-step way out of it. It sits here rather than on
+      {/* The backlog, and the two-step way out of it. It sits here rather than on
         Safety because Safety reads and writes nothing, and both controls below
         write -- one of them drives a browser. */}
-    <PendingInviteWithdrawals setToast={setToast} />
-  </div>;
+      <PendingInviteWithdrawals setToast={setToast} />
+    </div>
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -378,16 +417,27 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
       setQueue(withdrawals);
       setError('');
     } catch (err) {
-      setError(errorMessage(err, 'Unable to read your unanswered invites. Nothing was changed — try again.'));
-    } finally { setLoading(false); }
+      setError(
+        errorMessage(
+          err,
+          'Unable to read your unanswered invites. Nothing was changed — try again.'
+        )
+      );
+    } finally {
+      setLoading(false);
+    }
   }, [olderThanDays]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
   useOutreachRefresh(load);
   const hasQueuedWithdrawals = queue.some((record) => record.status === 'queued');
   useEffect(() => {
     if (!hasQueuedWithdrawals) return;
-    const timer = window.setInterval(() => { void load(); }, 30_000);
+    const timer = window.setInterval(() => {
+      void load();
+    }, 30_000);
     return () => window.clearInterval(timer);
   }, [hasQueuedWithdrawals, load]);
 
@@ -400,18 +450,24 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
       // A PARTIAL READ IS NOT A CLEAN ONE. `degraded` names what that page did
       // not give up, and dropping it reported a half-read invitation list as a
       // complete one -- which then makes every count below look authoritative.
-      setToast(`${result.listed} invitation(s) still showing on LinkedIn · ${result.matched} that Trevra sent, `
-        + `${result.unmatched} you sent yourself, ${result.disappeared} no longer shown.`
-        + `${result.truncated ? ' The list was longer than one pass reads.' : ''}`
-        + `${result.degraded.length > 0
-          ? ` Partial reading — ${result.degraded.length} thing(s) could not be read: ${result.degraded.join(', ')}.`
-          : ''}`);
+      setToast(
+        `${result.listed} invitation(s) still showing on LinkedIn · ${result.matched} that Trevra sent, ` +
+          `${result.unmatched} you sent yourself, ${result.disappeared} no longer shown.` +
+          `${result.truncated ? ' The list was longer than one pass reads.' : ''}` +
+          `${
+            result.degraded.length > 0
+              ? ` Partial reading — ${result.degraded.length} thing(s) could not be read: ${result.degraded.join(', ')}.`
+              : ''
+          }`
+      );
       await load();
     } catch (err) {
       const message = errorMessage(err, 'Unable to re-read the sent-invitations list');
       if (err instanceof ApiError && err.status === 409) setBlocked(message);
       else setError(message);
-    } finally { setBusy(null); }
+    } finally {
+      setBusy(null);
+    }
   };
 
   const enqueue = async () => {
@@ -420,14 +476,18 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
     try {
       const result = await queueLinkedInWithdrawals(days === null ? {} : { olderThanDays: days });
       setConfirming(false);
-      setToast(`${result.queued} withdrawal(s) queued${result.duplicates > 0 ? `, ${result.duplicates} already queued` : ''}. `
-        + `${result.withdrawn} have actually been withdrawn, and queueing never withdraws anything by itself. `
-        + 'They go one at a time, spaced out, inside your working hours.');
+      setToast(
+        `${result.queued} withdrawal(s) queued${result.duplicates > 0 ? `, ${result.duplicates} already queued` : ''}. ` +
+          `${result.withdrawn} have actually been withdrawn, and queueing never withdraws anything by itself. ` +
+          'They go one at a time, spaced out, inside your working hours.'
+      );
       await reloadOutreach();
     } catch (err) {
       setError(errorMessage(err, 'Unable to queue those withdrawals'));
       setConfirming(false);
-    } finally { setBusy(null); }
+    } finally {
+      setBusy(null);
+    }
   };
 
   const pending = backlog?.pendingInvites ?? 0;
@@ -436,179 +496,280 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
   const over = ceiling > 0 && pending >= ceiling;
   const share = ceiling > 0 ? Math.min(1, pending / ceiling) : 0;
 
-  return <section className="page-panel">
-    <div className="section-heading">
-      <div>
-        <h3 aria-level={2}>Invites nobody has answered</h3>
-        <p>
-          These do not expire out of the count. An invite that is neither accepted nor withdrawn keeps using up your
-          weekly invite capacity on LinkedIn’s side, and sending more does not give any of it back.
+  return (
+    <section className="page-panel">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}>Invites nobody has answered</h3>
+          <p>
+            These do not expire out of the count. An invite that is neither accepted nor withdrawn
+            keeps using up your weekly invite capacity on LinkedIn’s side, and sending more does not
+            give any of it back.
+          </p>
+        </div>
+        <ConfidenceTag confidence="REPORTED" source={sourceNote('REPORTED')} compact />
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      {blocked && (
+        <div className="li-connect-blocked">
+          <strong>
+            <CircleAlert size={14} /> One thing has to happen on your machine first.
+          </strong>
+          <p className="li-blocked-message">{blocked}</p>
+          <p>Nothing was read and nothing was queued.</p>
+        </div>
+      )}
+
+      <div className="li-backlog">
+        <div className="li-backlog-head">
+          <strong className={over ? 'li-backlog-over' : ''}>{pending}</strong>
+          <span>
+            of {ceiling || '—'} unanswered invites{over ? ' — at or past the limit' : ''}
+          </span>
+        </div>
+        <div
+          className="li-backlog-meter"
+          role="img"
+          aria-label={
+            ceiling > 0
+              ? `${pending} unanswered invites against a reported limit of ${ceiling}.`
+              : `${pending} unanswered invites. No limit was reported for this account.`
+          }
+        >
+          <i
+            className={over ? 'li-backlog-fill li-backlog-fill-over' : 'li-backlog-fill'}
+            style={{ width: `${share * 100}%` }}
+          />
+        </div>
+        <p className="li-hint">
+          {over
+            ? 'Trevra will not send another invite past this line, and it is right not to — LinkedIn counts the unanswered ' +
+              'ones too. Withdrawing the oldest ones is the only thing that gives the capacity back.'
+            : 'Trevra stops sending invites once this reaches the limit. The limit itself is a practitioner estimate rather ' +
+              'than a published number — it comes from the same reporting that puts acceptance at 25–30% above 100 invites a week.'}
         </p>
       </div>
-      <ConfidenceTag confidence="REPORTED" source={sourceNote('REPORTED')} compact />
-    </div>
 
-    {error && <div className="error-banner">{error}</div>}
-
-    {blocked && <div className="li-connect-blocked">
-      <strong><CircleAlert size={14} /> One thing has to happen on your machine first.</strong>
-      <p className="li-blocked-message">{blocked}</p>
-      <p>Nothing was read and nothing was queued.</p>
-    </div>}
-
-    <div className="li-backlog">
-      <div className="li-backlog-head">
-        <strong className={over ? 'li-backlog-over' : ''}>{pending}</strong>
-        <span>of {ceiling || '—'} unanswered invites{over ? ' — at or past the limit' : ''}</span>
+      <div className="li-filter-row">
+        <label>
+          Pending longer than
+          <input
+            type="number"
+            min={0}
+            max={365}
+            value={days ?? ''}
+            onChange={(event) =>
+              setOlderThanDays(Math.max(0, Math.trunc(Number(event.target.value) || 0)))
+            }
+          />
+        </label>
+        <span className="li-filter-label">days</span>
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={busy !== null}
+          onClick={() => void sync()}
+        >
+          {busy === 'sync' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}{' '}
+          Sync from LinkedIn
+        </button>
+        {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the backlog" />}
       </div>
-      <div
-        className="li-backlog-meter"
-        role="img"
-        aria-label={ceiling > 0
-          ? `${pending} unanswered invites against a reported limit of ${ceiling}.`
-          : `${pending} unanswered invites. No limit was reported for this account.`}
-      >
-        <i className={over ? 'li-backlog-fill li-backlog-fill-over' : 'li-backlog-fill'} style={{ width: `${share * 100}%` }} />
-      </div>
-      <p className="li-hint">
-        {over
-          ? 'Trevra will not send another invite past this line, and it is right not to — LinkedIn counts the unanswered '
-            + 'ones too. Withdrawing the oldest ones is the only thing that gives the capacity back.'
-          : 'Trevra stops sending invites once this reaches the limit. The limit itself is a practitioner estimate rather '
-            + 'than a published number — it comes from the same reporting that puts acceptance at 25–30% above 100 invites a week.'}
+      <p className="panel-note">
+        Syncing opens LinkedIn’s own Sent invitations list in a browser on this machine and records
+        only what that page shows. Accepted, declined, expired and withdrawn all look identical
+        there, so an invite that has vanished from the list is recorded as vanished — Trevra will
+        not guess which of the four it was.
       </p>
-    </div>
 
-    <div className="li-filter-row">
-      <label>Pending longer than
-        <input
-          type="number"
-          min={0}
-          max={365}
-          value={days ?? ''}
-          onChange={(event) => setOlderThanDays(Math.max(0, Math.trunc(Number(event.target.value) || 0)))}
+      <h4 className="li-subhead" aria-level={3}>
+        Old enough to withdraw ({candidates.length})
+      </h4>
+      {candidates.length === 0 ? (
+        <p className="empty-copy">
+          Nothing has been waiting longer than {days ?? '—'} day(s). This is a shortlist, not a
+          decision — it shows what
+          <em> would</em> be queued, before anything is.
+        </p>
+      ) : (
+        <div className="li-table-scroll">
+          <table className="li-table">
+            <thead>
+              <tr>
+                <th>Person</th>
+                <th>Waiting</th>
+                <th>Campaign</th>
+              </tr>
+            </thead>
+            <tbody>
+              {candidates.map((candidate) => (
+                <tr key={candidate.actionId}>
+                  <td className="li-target">{candidate.targetRef}</td>
+                  <td className="li-num">
+                    {candidate.pendingDays} day{candidate.pendingDays === 1 ? '' : 's'}
+                  </td>
+                  <td>{candidate.campaignId ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="li-two-step">
+        <Undo2 size={20} />
+        <div>
+          <strong>Queueing is not withdrawing. Pressing the button withdraws nothing.</strong>
+          <p>
+            It puts one reversible line in the queue per invite. The worker on your machine then
+            takes them one at a time, re-runs every safety check against each, and clicks Withdraw
+            at random 30–120 second gaps inside your working hours — because clearing a backlog in
+            one burst looks exactly like a sending spree. The queue below is where you see what
+            actually happened.
+          </p>
+        </div>
+      </div>
+
+      <div className="panel-footer">
+        <span>
+          Withdrawing does not un-send an invite. Trevra goes on counting the original against every
+          rolling limit, so withdrawing and re-sending cannot buy you extra volume.
+        </span>
+        <button
+          className="primary-button"
+          type="button"
+          disabled={busy !== null || candidates.length === 0}
+          onClick={() => setConfirming(true)}
+        >
+          {busy === 'queue' ? <LoaderCircle className="spin" size={15} /> : <Undo2 size={15} />}{' '}
+          Queue {candidates.length} withdrawal(s)
+        </button>
+      </div>
+
+      {queue.length > 0 && (
+        <>
+          <h4 className="li-subhead" aria-level={3}>
+            The withdrawal queue
+          </h4>
+          <div className="li-table-scroll">
+            <table className="li-table">
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Status</th>
+                  <th>Waited</th>
+                  <th>Timing</th>
+                  <th>Finished</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue.map((record) => {
+                  const visit = formatVisitWindow(
+                    record.nextRunAt,
+                    record.nextRunWindowEndAt,
+                    record.nextRunTimezone
+                  );
+                  const wait = queueWaitCopy(record.waitingFor);
+                  return (
+                    <tr key={record.id}>
+                      <td className="li-target">{record.targetRef}</td>
+                      <td>
+                        <span className={`li-chip li-wd-${record.status}`}>
+                          {WITHDRAWAL_STATUS_LABELS[record.status] ?? record.status}
+                        </span>
+                        {record.detail && <small className="li-failure">{record.detail}</small>}
+                      </td>
+                      <td className="li-num">
+                        {record.pendingDays === null ? '—' : `${record.pendingDays}d`}
+                      </td>
+                      <td className="li-queue-timing">
+                        {record.status === 'queued' && record.claimedAt ? (
+                          <>
+                            <strong>Running now</strong>
+                            <small>Picked up {relativeTime(record.claimedAt)}</small>
+                          </>
+                        ) : record.status === 'queued' ? (
+                          <>
+                            <strong>
+                              {wait ??
+                                (visit
+                                  ? 'Expected in LinkedIn visit'
+                                  : 'Waiting for next eligible visit')}
+                            </strong>
+                            {visit && <small>{visit}</small>}
+                          </>
+                        ) : (
+                          <>
+                            <strong>Queued {relativeTime(record.queuedAt)}</strong>
+                          </>
+                        )}
+                      </td>
+                      <td>
+                        {record.finishedAt ? new Date(record.finishedAt).toLocaleString() : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {confirming && (
+        <ConfirmDrawer
+          title={`Queue ${candidates.length} withdrawal(s)?`}
+          busy={busy === 'queue'}
+          body={
+            <>
+              <p>
+                <b>This queues them. It withdraws nothing.</b> Trevra will report none withdrawn,
+                and that is correct — the work is filed for the browser on your machine to carry
+                out.
+              </p>
+              <p>
+                It takes one at a time, re-runs every safety check against it, and clicks Withdraw
+                at random 30–120 second gaps inside your working hours. Nothing happens at all while
+                this account is paused.
+              </p>
+              <p>
+                Each withdrawal is real on LinkedIn and cannot be taken back — you can invite the
+                person again, but this invite is gone. Trevra still counts the original invite
+                against every rolling limit.
+              </p>
+            </>
+          }
+          confirmLabel={`Queue ${candidates.length} withdrawal(s)`}
+          onConfirm={() => void enqueue()}
+          onCancel={() => setConfirming(false)}
         />
-      </label>
-      <span className="li-filter-label">days</span>
-      <button className="secondary-button" type="button" disabled={busy !== null} onClick={() => void sync()}>
-        {busy === 'sync' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Sync from LinkedIn
-      </button>
-      {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the backlog" />}
-    </div>
-    <p className="panel-note">
-      Syncing opens LinkedIn’s own Sent invitations list in a browser on this machine and records only what that page
-      shows. Accepted, declined, expired and withdrawn all look identical there, so an invite that has vanished from the
-      list is recorded as vanished — Trevra will not guess which of the four it was.
-    </p>
-
-    <h4 className="li-subhead" aria-level={3}>Old enough to withdraw ({candidates.length})</h4>
-    {candidates.length === 0
-      ? <p className="empty-copy">
-        Nothing has been waiting longer than {days ?? '—'} day(s). This is a shortlist, not a decision — it shows what
-        <em> would</em> be queued, before anything is.
-      </p>
-      : <div className="li-table-scroll">
-        <table className="li-table">
-          <thead><tr><th>Person</th><th>Waiting</th><th>Campaign</th></tr></thead>
-          <tbody>{candidates.map((candidate) => <tr key={candidate.actionId}>
-            <td className="li-target">{candidate.targetRef}</td>
-            <td className="li-num">{candidate.pendingDays} day{candidate.pendingDays === 1 ? '' : 's'}</td>
-            <td>{candidate.campaignId ?? '—'}</td>
-          </tr>)}</tbody>
-        </table>
-      </div>}
-
-    <div className="li-two-step">
-      <Undo2 size={20} />
-      <div>
-        <strong>Queueing is not withdrawing. Pressing the button withdraws nothing.</strong>
-        <p>
-          It puts one reversible line in the queue per invite. The worker on your machine then takes them one at a time,
-          re-runs every safety check against each, and clicks Withdraw at random 30–120 second gaps inside your working
-          hours — because clearing a backlog in one burst looks exactly like a sending spree. The queue below is where
-          you see what actually happened.
-        </p>
-      </div>
-    </div>
-
-    <div className="panel-footer">
-      <span>
-        Withdrawing does not un-send an invite. Trevra goes on counting the original against every rolling limit, so
-        withdrawing and re-sending cannot buy you extra volume.
-      </span>
-      <button
-        className="primary-button"
-        type="button"
-        disabled={busy !== null || candidates.length === 0}
-        onClick={() => setConfirming(true)}
-      >
-        {busy === 'queue' ? <LoaderCircle className="spin" size={15} /> : <Undo2 size={15} />} Queue {candidates.length} withdrawal(s)
-      </button>
-    </div>
-
-    {queue.length > 0 && <>
-      <h4 className="li-subhead" aria-level={3}>The withdrawal queue</h4>
-      <div className="li-table-scroll">
-        <table className="li-table">
-          <thead><tr><th>Person</th><th>Status</th><th>Waited</th><th>Timing</th><th>Finished</th></tr></thead>
-          <tbody>{queue.map((record) => {
-            const visit = formatVisitWindow(record.nextRunAt, record.nextRunWindowEndAt, record.nextRunTimezone);
-            const wait = queueWaitCopy(record.waitingFor);
-            return <tr key={record.id}>
-              <td className="li-target">{record.targetRef}</td>
-              <td>
-                <span className={`li-chip li-wd-${record.status}`}>{WITHDRAWAL_STATUS_LABELS[record.status] ?? record.status}</span>
-                {record.detail && <small className="li-failure">{record.detail}</small>}
-              </td>
-              <td className="li-num">{record.pendingDays === null ? '—' : `${record.pendingDays}d`}</td>
-              <td className="li-queue-timing">
-                {record.status === 'queued' && record.claimedAt
-                  ? <><strong>Running now</strong><small>Picked up {relativeTime(record.claimedAt)}</small></>
-                  : record.status === 'queued'
-                    ? <><strong>{wait ?? (visit ? 'Expected in LinkedIn visit' : 'Waiting for next eligible visit')}</strong>{visit && <small>{visit}</small>}</>
-                    : <><strong>Queued {relativeTime(record.queuedAt)}</strong></>}
-              </td>
-              <td>{record.finishedAt ? new Date(record.finishedAt).toLocaleString() : '—'}</td>
-            </tr>;
-          })}</tbody>
-        </table>
-      </div>
-    </>}
-
-    {confirming && <ConfirmDrawer
-      title={`Queue ${candidates.length} withdrawal(s)?`}
-      busy={busy === 'queue'}
-      body={<>
-        <p>
-          <b>This queues them. It withdraws nothing.</b> Trevra will report none withdrawn, and that is correct — the
-          work is filed for the browser on your machine to carry out.
-        </p>
-        <p>
-          It takes one at a time, re-runs every safety check against it, and clicks Withdraw at random 30–120 second
-          gaps inside your working hours. Nothing happens at all while this account is paused.
-        </p>
-        <p>
-          Each withdrawal is real on LinkedIn and cannot be taken back — you can invite the person again, but this
-          invite is gone. Trevra still counts the original invite against every rolling limit.
-        </p>
-      </>}
-      confirmLabel={`Queue ${candidates.length} withdrawal(s)`}
-      onConfirm={() => void enqueue()}
-      onCancel={() => setConfirming(false)}
-    />}
-  </section>;
+      )}
+    </section>
+  );
 }
 
-const minutesToClock = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+const minutesToClock = (minutes: number) =>
+  `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 const clockToMinutes = (clock: string): number => {
   const match = /^(\d{1,2}):(\d{2})$/.exec(clock.trim());
   if (!match) return Number.NaN;
   const hour = Number(match[1]);
   const minute = Number(match[2]);
-  return hour >= 0 && hour <= 24 && minute >= 0 && minute <= 59 && !(hour === 24 && minute !== 0) ? hour * 60 + minute : Number.NaN;
+  return hour >= 0 && hour <= 24 && minute >= 0 && minute <= 59 && !(hour === 24 && minute !== 0)
+    ? hour * 60 + minute
+    : Number.NaN;
 };
 
-function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
+function SetupTab({
+  seatKey,
+  seat,
+  worker,
+  limits,
+  setToast,
+  onSaved
+}: {
   /** The account every write on this form targets. See `useActiveSeatKey`. */
   seatKey: string;
   seat: LinkedInSeatResponse | null;
@@ -722,9 +883,11 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
         return;
       }
       setDegraded(result.degraded);
-      setToast(result.detected
-        ? `Read ${result.detected.name ?? 'the profile'} from your logged-in session.`
-        : 'Reached LinkedIn but read nothing usable. Set what is missing by hand.');
+      setToast(
+        result.detected
+          ? `Read ${result.detected.name ?? 'the profile'} from your logged-in session.`
+          : 'Reached LinkedIn but read nothing usable. Set what is missing by hand.'
+      );
       setHydrated(false);
       onSaved();
     } catch (err) {
@@ -733,7 +896,9 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
       // the one thing to do; rewriting it would drop the path forward.
       if (err instanceof ApiError && err.status === 409) setBlocked(message);
       else setFailure(message);
-    } finally { setDetecting(false); }
+    } finally {
+      setDetecting(false);
+    }
   };
 
   /**
@@ -759,31 +924,42 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
       await detect();
       return;
     }
-    setNote({ tone: result.status === 'challenge' ? 'instruction' : 'error', message: result.message });
+    setNote({
+      tone: result.status === 'challenge' ? 'instruction' : 'error',
+      message: result.message
+    });
   };
 
   const attempt = async (run: () => Promise<void>) => {
     setSigningIn(true);
-    try { await run(); }
-    catch (err) { setNote({ tone: 'error', message: errorMessage(err, 'Unable to sign in to LinkedIn') }); }
-    finally { setSigningIn(false); }
+    try {
+      await run();
+    } catch (err) {
+      setNote({ tone: 'error', message: errorMessage(err, 'Unable to sign in to LinkedIn') });
+    } finally {
+      setSigningIn(false);
+    }
   };
 
-  const signIn = () => void attempt(async () => {
-    const address = email.trim();
-    if (!address || !password) {
-      setNote({ tone: 'error', message: 'Both the email and the password are needed to sign in.' });
-      return;
-    }
-    setNote(null);
-    try {
-      await saveLinkedInCredentials({ email: address, password, seatKey });
-    } finally {
-      // Out of component state the moment it is on the wire, whatever became of it.
-      setPassword('');
-    }
-    await runLogin();
-  });
+  const signIn = () =>
+    void attempt(async () => {
+      const address = email.trim();
+      if (!address || !password) {
+        setNote({
+          tone: 'error',
+          message: 'Both the email and the password are needed to sign in.'
+        });
+        return;
+      }
+      setNote(null);
+      try {
+        await saveLinkedInCredentials({ email: address, password, seatKey });
+      } finally {
+        // Out of component state the moment it is on the wire, whatever became of it.
+        setPassword('');
+      }
+      await runLogin();
+    });
 
   const disconnect = async () => {
     setDisconnecting(true);
@@ -793,11 +969,18 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
       setStage('credentials');
       setEmail('');
       setOtp('');
-      setToast('Credentials removed. Nothing on this machine can sign in until you add them again.');
+      setToast(
+        'Credentials removed. Nothing on this machine can sign in until you add them again.'
+      );
       onSaved();
     } catch (err) {
-      setNote({ tone: 'error', message: errorMessage(err, 'Unable to remove the stored credentials') });
-    } finally { setDisconnecting(false); }
+      setNote({
+        tone: 'error',
+        message: errorMessage(err, 'Unable to remove the stored credentials')
+      });
+    } finally {
+      setDisconnecting(false);
+    }
   };
 
   const removeSeat = async () => {
@@ -811,7 +994,9 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
       onSaved();
     } catch (err) {
       setDeleteError(errorMessage(err, 'Unable to remove this LinkedIn account'));
-    } finally { setDeletingSeat(false); }
+    } finally {
+      setDeletingSeat(false);
+    }
   };
 
   const save = async () => {
@@ -821,8 +1006,10 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
     // Caught here, named, and the disclosure holding it is opened and focused.
     if (!label.trim()) {
       setManualOpen(true);
-      setFailure('This account needs a name before its hours and limits can be saved. The field is under “Details '
-        + 'Trevra could not read from LinkedIn”, which is now open below — nothing else was changed.');
+      setFailure(
+        'This account needs a name before its hours and limits can be saved. The field is under “Details ' +
+          'Trevra could not read from LinkedIn”, which is now open below — nothing else was changed.'
+      );
       requestAnimationFrame(() => labelField.current?.focus());
       return;
     }
@@ -831,27 +1018,36 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
     try {
       const workStartMinute = clockToMinutes(workStart);
       const workEndMinute = clockToMinutes(workEnd);
-      if (!Number.isFinite(workStartMinute) || !Number.isFinite(workEndMinute) || workEndMinute <= workStartMinute) {
+      if (
+        !Number.isFinite(workStartMinute) ||
+        !Number.isFinite(workEndMinute) ||
+        workEndMinute <= workStartMinute
+      ) {
         throw new Error('Working hours need a valid start and a later end in the same day.');
       }
-      await saveLinkedInSeat({
-        label: label.trim(),
-        timezone: timezone.trim(),
-        profileUrl: profileUrl.trim() || null,
-        connectionsCount: connections.trim() === '' ? null : Number(connections),
-        workingDays,
-        workStartMinute,
-        workEndMinute,
-        dailyInviteLimit: Number(inviteLimit),
-        dailyMessageLimit: Number(messageLimit),
-        dailyProfileViewLimit: Number(profileViewLimit),
-        dailyFollowLimit: Number(followLimit)
-      }, seatKey);
+      await saveLinkedInSeat(
+        {
+          label: label.trim(),
+          timezone: timezone.trim(),
+          profileUrl: profileUrl.trim() || null,
+          connectionsCount: connections.trim() === '' ? null : Number(connections),
+          workingDays,
+          workStartMinute,
+          workEndMinute,
+          dailyInviteLimit: Number(inviteLimit),
+          dailyMessageLimit: Number(messageLimit),
+          dailyProfileViewLimit: Number(profileViewLimit),
+          dailyFollowLimit: Number(followLimit)
+        },
+        seatKey
+      );
       setToast('Saved. These values stand until the next read from LinkedIn replaces them.');
       onSaved();
     } catch (err) {
       setFailure(errorMessage(err, 'Unable to save these settings'));
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   };
 
   // One sentence each, deduplicated, and NEVER from the other auth mode. The
@@ -860,713 +1056,638 @@ function SetupTab({ seatKey, seat, worker, limits, setToast, onSaved }: {
   // problem on a credentials seat that runs headless.
   const problems = worker ? Array.from(new Set(worker.blockers)) : [];
 
-  return <>
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>Your LinkedIn account</h3>
-          <p>The account Trevra acts on. Every limit on this screen is measured against this one account.</p>
+  return (
+    <>
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Your LinkedIn account</h3>
+            <p>
+              The account Trevra acts on. Every limit on this screen is measured against this one
+              account.
+            </p>
+          </div>
+          <PostureBadge posture={seat?.posture ?? null} reason={seat?.seat?.pausedReason ?? null} />
         </div>
-        <PostureBadge posture={seat?.posture ?? null} reason={seat?.seat?.pausedReason ?? null} />
-      </div>
 
-      {failure && <div className="error-banner">{failure}</div>}
+        {failure && <div className="error-banner">{failure}</div>}
 
-      {blocked
-        ? <div className="li-connect-blocked">
-          <strong><CircleAlert size={14} /> One thing has to happen on your machine first.</strong>
-          <p className="li-blocked-message">{blocked}</p>
-        </div>
-        /* The same fact, but from the SERVER rather than from this click, so it
+        {blocked ? (
+          <div className="li-connect-blocked">
+            <strong>
+              <CircleAlert size={14} /> One thing has to happen on your machine first.
+            </strong>
+            <p className="li-blocked-message">{blocked}</p>
+          </div>
+        ) : /* The same fact, but from the SERVER rather than from this click, so it
            survives the refresh that used to erase it. */
-        : detectRequest?.status === 'pending'
-          ? <div className="li-connect-blocked">
-            <strong><CircleAlert size={14} /> A profile read is already waiting on your machine.</strong>
+        detectRequest?.status === 'pending' ? (
+          <div className="li-connect-blocked">
+            <strong>
+              <CircleAlert size={14} /> A profile read is already waiting on your machine.
+            </strong>
             <p className="li-blocked-message">
               {queueWaitCopy(detectRequest.waitingFor)
                 ? `${queueWaitCopy(detectRequest.waitingFor)}. `
                 : detectRequest.nextAttemptAt
                   ? `Expected by ${new Date(detectRequest.nextAttemptAt).toLocaleString()}. `
                   : ''}
-              Queued {relativeTime(detectRequest.requestedAt)}. Nothing has been read yet, and pressing the button again queues nothing new.
+              Queued {relativeTime(detectRequest.requestedAt)}. Nothing has been read yet, and
+              pressing the button again queues nothing new.
             </p>
           </div>
-          : detectRequest?.status === 'failed' && detectRequest.failureReason
-            ? <div className="li-connect-blocked">
-              <strong><CircleAlert size={14} /> The last profile read did not finish.</strong>
-              <p className="li-blocked-message">{detectRequest.failureReason}</p>
-              <p>Nothing on the account was changed by it.</p>
-            </div>
-            : null}
-
-      {current && <>
-        <div className="li-seat-card">
-          <div className="li-seat-head">
-            <strong>{current.label.trim() || <span className="li-unknown">Name unknown</span>}</strong>
-            {current.profileUrl
-              ? <a className="li-seat-vanity" href={current.profileUrl} target="_blank" rel="noreferrer">
-                {vanityOf(current.profileUrl)}<ExternalLink size={11} />
-              </a>
-              : <span className="li-unknown">Profile URL unknown</span>}
+        ) : detectRequest?.status === 'failed' && detectRequest.failureReason ? (
+          <div className="li-connect-blocked">
+            <strong>
+              <CircleAlert size={14} /> The last profile read did not finish.
+            </strong>
+            <p className="li-blocked-message">{detectRequest.failureReason}</p>
+            <p>Nothing on the account was changed by it.</p>
           </div>
-          <dl className="li-seat-facts">
-            <div>
-              <dt>Connections</dt>
-              <dd>{current.connectionsCount === null
-                ? <span className="li-unknown">Unknown</span>
-                : current.connectionsCount.toLocaleString()}</dd>
-            </div>
-            <div>
-              <dt>Timezone</dt>
-              <dd>{current.timezone}</dd>
-            </div>
-            <div>
-              <dt>Last read from LinkedIn</dt>
-              <dd>{current.detectedAt
-                ? new Date(current.detectedAt).toLocaleString()
-                : <span className="li-unknown">Never — set by hand</span>}</dd>
-            </div>
-            <div>
-              <dt>Sending through Trevra since</dt>
-              <dd>{current.activatedAt
-                ? new Date(current.activatedAt).toLocaleDateString()
-                : <span className="li-unknown">Not started</span>}</dd>
-            </div>
-          </dl>
-          <div className="li-seat-footer">
-            <button className="ghost-button danger" onClick={() => setConfirmingDelete(true)}>
-              <Trash2 size={13} /> Remove this account
-            </button>
-          </div>
-        </div>
+        ) : null}
 
-        {degraded.length > 0 && <div className="li-degraded">
-          <strong>Read, but some of it did not come back:</strong>
-          <ul>{degraded.map((entry) => <li key={entry}>{entry}</li>)}</ul>
-          <p>Anything missing is left blank rather than filled in with a zero or a guess.</p>
-        </div>}
-      </>}
+        {current && (
+          <>
+            <div className="li-seat-card">
+              <div className="li-seat-head">
+                <strong>
+                  {current.label.trim() || <span className="li-unknown">Name unknown</span>}
+                </strong>
+                {current.profileUrl ? (
+                  <a
+                    className="li-seat-vanity"
+                    href={current.profileUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {vanityOf(current.profileUrl)}
+                    <ExternalLink size={11} />
+                  </a>
+                ) : (
+                  <span className="li-unknown">Profile URL unknown</span>
+                )}
+              </div>
+              <dl className="li-seat-facts">
+                <div>
+                  <dt>Connections</dt>
+                  <dd>
+                    {current.connectionsCount === null ? (
+                      <span className="li-unknown">Unknown</span>
+                    ) : (
+                      current.connectionsCount.toLocaleString()
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Timezone</dt>
+                  <dd>{current.timezone}</dd>
+                </div>
+                <div>
+                  <dt>Last read from LinkedIn</dt>
+                  <dd>
+                    {current.detectedAt ? (
+                      new Date(current.detectedAt).toLocaleString()
+                    ) : (
+                      <span className="li-unknown">Never — set by hand</span>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Sending through Trevra since</dt>
+                  <dd>
+                    {current.activatedAt ? (
+                      new Date(current.activatedAt).toLocaleDateString()
+                    ) : (
+                      <span className="li-unknown">Not started</span>
+                    )}
+                  </dd>
+                </div>
+              </dl>
+              <div className="li-seat-footer">
+                <button className="ghost-button danger" onClick={() => setConfirmingDelete(true)}>
+                  <Trash2 size={13} /> Remove this account
+                </button>
+              </div>
+            </div>
 
-      {connected
-        ? <div className="li-signin-row">
-          <span className="li-signin-id"><Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}</span>
-          <span>{auth?.sessionValidAt
-            ? `Signed in — last confirmed ${relativeTime(auth.sessionValidAt)}`
-            : 'Not signed in yet — the sign-in did not finish.'}</span>
-          <div className="li-signin-actions">
-            {!auth?.sessionValidAt && <button
-              className="secondary-button"
-              disabled={signingIn}
-              onClick={() => void attempt(() => runLogin())}
-            >{signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />} Sign in</button>}
-            <button className="ghost-button danger" disabled={disconnecting} onClick={() => void disconnect()}>
-              {disconnecting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />} Disconnect
-            </button>
+            {degraded.length > 0 && (
+              <div className="li-degraded">
+                <strong>Read, but some of it did not come back:</strong>
+                <ul>
+                  {degraded.map((entry) => (
+                    <li key={entry}>{entry}</li>
+                  ))}
+                </ul>
+                <p>Anything missing is left blank rather than filled in with a zero or a guess.</p>
+              </div>
+            )}
+          </>
+        )}
+
+        {connected ? (
+          <div className="li-signin-row">
+            <span className="li-signin-id">
+              <Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}
+            </span>
+            <span>
+              {auth?.sessionValidAt
+                ? `Signed in — last confirmed ${relativeTime(auth.sessionValidAt)}`
+                : 'Not signed in yet — the sign-in did not finish.'}
+            </span>
+            <div className="li-signin-actions">
+              {!auth?.sessionValidAt && (
+                <button
+                  className="secondary-button"
+                  disabled={signingIn}
+                  onClick={() => void attempt(() => runLogin())}
+                >
+                  {signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />}{' '}
+                  Sign in
+                </button>
+              )}
+              <button
+                className="ghost-button danger"
+                disabled={disconnecting}
+                onClick={() => void disconnect()}
+              >
+                {disconnecting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />}{' '}
+                Disconnect
+              </button>
+            </div>
           </div>
-        </div>
-        : <>
-          {/* THE REASSURANCE COMES FIRST. It used to sit under the fields at
+        ) : (
+          <>
+            {/* THE REASSURANCE COMES FIRST. It used to sit under the fields at
               11px, which is after the moment it was for: by then the password
               of the exact account the Safety screen spends 240 lines
               protecting is already typed. A promise made after the ask is not
               a promise, it is a receipt. */}
-          {stage === 'credentials' && <div className="li-dryrun" style={{ marginTop: 14 }}>
-            <ShieldCheck size={20} />
-            <div>
-              <strong>Before you type it — what happens to this password.</strong>
-              <p>
-                It is encrypted at rest. It is sent nowhere but LinkedIn. It is used for exactly one thing: opening a
-                browser session on this machine. You can remove it at any time, and nothing here can sign in again once
-                you have. No screen ever renders it back — the masked address is the most Trevra will say.
-              </p>
+            {stage === 'credentials' && (
+              <div className="li-dryrun" style={{ marginTop: 14 }}>
+                <ShieldCheck size={20} />
+                <div>
+                  <strong>Before you type it — what happens to this password.</strong>
+                  <p>
+                    It is encrypted at rest. It is sent nowhere but LinkedIn. It is used for exactly
+                    one thing: opening a browser session on this machine. You can remove it at any
+                    time, and nothing here can sign in again once you have. No screen ever renders
+                    it back — the masked address is the most Trevra will say.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="li-signin">
+              <strong>Connect LinkedIn</strong>
+              {stage === 'otp' ? (
+                <form
+                  className="li-signin-fields li-signin-otp"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void attempt(() => runLogin(otp.trim()));
+                  }}
+                >
+                  <label>
+                    Verification code
+                    <input
+                      value={otp}
+                      onChange={(event) => setOtp(event.target.value)}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      placeholder="123456"
+                      aria-label="Verification code"
+                    />
+                  </label>
+                  <button
+                    className="primary-button"
+                    type="submit"
+                    disabled={signingIn || otp.trim().length < 6}
+                  >
+                    {signingIn ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}{' '}
+                    Verify
+                  </button>
+                </form>
+              ) : (
+                <form
+                  className="li-signin-fields"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    signIn();
+                  }}
+                >
+                  <label>
+                    LinkedIn email
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                      autoComplete="username"
+                      placeholder="you@example.com"
+                    />
+                  </label>
+                  <label>
+                    LinkedIn password
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      autoComplete="current-password"
+                    />
+                  </label>
+                  <button className="primary-button" type="submit" disabled={signingIn}>
+                    {signingIn ? <LoaderCircle className="spin" size={15} /> : <LogIn size={15} />}{' '}
+                    Sign in to LinkedIn
+                  </button>
+                </form>
+              )}
+              {stage === 'otp' && (
+                <p className="li-hint">
+                  LinkedIn sent a code to your email or phone. Enter it to finish signing in.
+                </p>
+              )}
+              {note && (
+                <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>
+                  {note.message}
+                </p>
+              )}
             </div>
-          </div>}
+          </>
+        )}
 
-          <div className="li-signin">
-            <strong>Connect LinkedIn</strong>
-            {stage === 'otp'
-              ? <form className="li-signin-fields li-signin-otp" onSubmit={(event) => { event.preventDefault(); void attempt(() => runLogin(otp.trim())); }}>
-                <label>Verification code<input
-                  value={otp}
-                  onChange={(event) => setOtp(event.target.value)}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  placeholder="123456"
-                  aria-label="Verification code"
-                /></label>
-                <button className="primary-button" type="submit" disabled={signingIn || otp.trim().length < 6}>
-                  {signingIn ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Verify
-                </button>
-              </form>
-              : <form className="li-signin-fields" onSubmit={(event) => { event.preventDefault(); signIn(); }}>
-                <label>LinkedIn email<input
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  autoComplete="username"
-                  placeholder="you@example.com"
-                /></label>
-                <label>LinkedIn password<input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
-                /></label>
-                <button className="primary-button" type="submit" disabled={signingIn}>
-                  {signingIn ? <LoaderCircle className="spin" size={15} /> : <LogIn size={15} />} Sign in to LinkedIn
-                </button>
-              </form>}
-            {stage === 'otp' && <p className="li-hint">LinkedIn sent a code to your email or phone. Enter it to finish signing in.</p>}
-            {note && <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>{note.message}</p>}
-          </div>
-        </>}
-
-      {/* A challenge is an INSTRUCTION, not a fault. Styled as an error, the
+        {/* A challenge is an INSTRUCTION, not a fault. Styled as an error, the
           server's “go and finish this in a browser” read as “this broke”. */}
-      {connected && note && <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>{note.message}</p>}
+        {connected && note && (
+          <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>
+            {note.message}
+          </p>
+        )}
 
-      <div className="li-seat-actions">
-        <button className="secondary-button" disabled={detecting} onClick={() => void detect()}>
-          {detecting ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
-          {current ? ' Re-read this profile from LinkedIn' : ' Read my profile from LinkedIn'}
-        </button>
-      </div>
-    </section>
+        <div className="li-seat-actions">
+          <button className="secondary-button" disabled={detecting} onClick={() => void detect()}>
+            {detecting ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
+            {current ? ' Re-read this profile from LinkedIn' : ' Read my profile from LinkedIn'}
+          </button>
+        </div>
+      </section>
 
-    {confirmingDelete && <ConfirmDrawer
-      title="Remove this LinkedIn account?"
-      tone="danger"
-      busy={deletingSeat}
-      error={deleteError}
-      body={<>
-        <p>
-          This removes the name, connection count, timezone and sending status shown above — and the ramp-up clock with
-          them. <b>The clock cannot be recovered.</b> Whatever account you connect next starts back at week 1, sending
-          the smallest daily numbers again.
-        </p>
-        <p>
-          What has already been sent, and any stored LinkedIn password, are untouched — this removes the account record
-          only. To remove a stored password, use Disconnect above instead.
-        </p>
-      </>}
-      confirmLabel="Remove this account"
-      onConfirm={() => void removeSeat()}
-      onCancel={() => { setConfirmingDelete(false); setDeleteError(null); }}
-    />}
+      {confirmingDelete && (
+        <ConfirmDrawer
+          title="Remove this LinkedIn account?"
+          tone="danger"
+          busy={deletingSeat}
+          error={deleteError}
+          body={
+            <>
+              <p>
+                This removes the name, connection count, timezone and sending status shown above —
+                and the ramp-up clock with them. <b>The clock cannot be recovered.</b> Whatever
+                account you connect next starts back at week 1, sending the smallest daily numbers
+                again.
+              </p>
+              <p>
+                What has already been sent, and any stored LinkedIn password, are untouched — this
+                removes the account record only. To remove a stored password, use Disconnect above
+                instead.
+              </p>
+            </>
+          }
+          confirmLabel="Remove this account"
+          onConfirm={() => void removeSeat()}
+          onCancel={() => {
+            setConfirmingDelete(false);
+            setDeleteError(null);
+          }}
+        />
+      )}
 
-    {/* SECOND, BECAUSE IT IS THE SECOND QUESTION. Connected, then healthy,
+      {/* SECOND, BECAUSE IT IS THE SECOND QUESTION. Connected, then healthy,
         then allowed — and nothing goes out at all until this machine can open
         a browser, however well configured the limits below are. It is a setup
         step with a next action, not a fault: a first-run operator has not done
         anything wrong by not having run the command yet. */}
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>Automation on your machine</h3>
-          <p>Trevra acts on LinkedIn by driving a real browser on your own computer. Nothing goes out while that cannot run.</p>
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Automation on your machine</h3>
+            <p>
+              Trevra acts on LinkedIn by driving a real browser on your own computer. Nothing goes
+              out while that cannot run.
+            </p>
+          </div>
+          <Terminal size={20} className="li-heading-icon" />
         </div>
-        <Terminal size={20} className="li-heading-icon" />
-      </div>
 
-      {!worker
-        ? <p className="empty-copy">Could not check this machine. Nothing was changed — try again.</p>
-        : worker.ready
+        {!worker ? (
+          <p className="empty-copy">
+            Could not check this machine. Nothing was changed — try again.
+          </p>
+        ) : worker.ready ? (
           // A working thing states that it works, in one line. The checklist and
           // the installed paths are evidence for a claim nobody is disputing,
           // and a panel that shouts on a healthy tab is a panel operators learn
           // to read past on the day it matters.
-          ? <p className="li-worker-ready">
-            <Check size={14} /> Ready · {worker.browser.canLaunchHeaded
+          <p className="li-worker-ready">
+            <Check size={14} /> Ready ·{' '}
+            {worker.browser.canLaunchHeaded
               ? 'it can open a Chrome window you can watch'
               : 'it runs a browser in the background, with no window'}
           </p>
-          : <>
-            <p className="li-hint">Two or three one-time steps, and then this account can send on its own.</p>
+        ) : (
+          <>
+            <p className="li-hint">
+              Two or three one-time steps, and then this account can send on its own.
+            </p>
 
             <div className="li-checklist">
-              <WorkerCheck ok={worker.enabled} label="Turned on for this install"
-                detail={worker.enabled
-                  ? 'On. This copy of Trevra is allowed to drive a browser.'
-                  : 'Off. On hosted Trevra, connect your computer with the LinkedIn companion so browser work runs locally.'} />
-              <WorkerCheck ok={worker.playwrightInstalled} label="Browser automation installed"
-                detail={worker.playwrightInstalled
-                  ? 'Found on this machine.'
-                  : 'Run `npm i playwright && npx playwright install chromium` on this machine.'} />
-              <WorkerCheck ok={worker.browser.canLaunchHeadless} label="A browser this machine can open"
-                detail={worker.browser.headlessReasons[0] ?? 'A browser can open here, with or without a display.'} />
-              <WorkerCheck ok={worker.loggedIn} label="Signed into LinkedIn"
-                detail={worker.loggedIn
-                  ? 'Trevra has a live session for this account.'
-                  : 'Not signed in yet. Sign in above.'} />
+              <WorkerCheck
+                ok={worker.enabled}
+                label="Turned on for this install"
+                detail={
+                  worker.enabled
+                    ? 'On. This copy of Trevra is allowed to drive a browser.'
+                    : 'Off. On hosted Trevra, connect your computer with the LinkedIn companion so browser work runs locally.'
+                }
+              />
+              <WorkerCheck
+                ok={worker.playwrightInstalled}
+                label="Browser automation installed"
+                detail={
+                  worker.playwrightInstalled
+                    ? 'Found on this machine.'
+                    : 'Run `npm i playwright && npx playwright install chromium` on this machine.'
+                }
+              />
+              <WorkerCheck
+                ok={worker.browser.canLaunchHeadless}
+                label="A browser this machine can open"
+                detail={
+                  worker.browser.headlessReasons[0] ??
+                  'A browser can open here, with or without a display.'
+                }
+              />
+              <WorkerCheck
+                ok={worker.loggedIn}
+                label="Signed into LinkedIn"
+                detail={
+                  worker.loggedIn
+                    ? 'Trevra has a live session for this account.'
+                    : 'Not signed in yet. Sign in above.'
+                }
+              />
             </div>
 
             {/* The server's own sentences. Each one names the single next thing
                 to do, so they are shown verbatim rather than summarised. */}
-            {problems.length > 0 && <ul className="li-blockers">
-              {problems.map((problem) => <li key={problem}>{problem}</li>)}
-            </ul>}
-          </>}
+            {problems.length > 0 && (
+              <ul className="li-blockers">
+                {problems.map((problem) => (
+                  <li key={problem}>{problem}</li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
 
-      <p className="panel-note">
-        Self-hosted only: a hosted Trevra cannot open a browser for you. To run the sending loop on the machine that has
-        a screen — a Chrome window you can watch, instead of an invisible one — run <code>npm run linkedin:worker</code>{' '}
-        there and leave it running.
-      </p>
-    </section>
+        <p className="panel-note">
+          Self-hosted only: a hosted Trevra cannot open a browser for you. To run the sending loop
+          on the machine that has a screen — a Chrome window you can watch, instead of an invisible
+          one — run <code>npm run linkedin:worker</code> there and leave it running.
+        </p>
+      </section>
 
-    {/* THIRD: what this account may do today, and the two settings that decide
+      {/* THIRD: what this account may do today, and the two settings that decide
         it. The working hours and the daily caps used to sit inside a disclosure
         labelled "set these by hand", which is where an operator looks last for
         the two numbers they were told to set first. */}
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>What this account may do today</h3>
-          <p>Done in the last 24 hours — a rolling window, not since midnight — against the most this account may do.</p>
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>What this account may do today</h3>
+            <p>
+              Done in the last 24 hours — a rolling window, not since midnight — against the most
+              this account may do.
+            </p>
+          </div>
         </div>
-      </div>
 
-      {seat
-        ? <div className="li-stat-row">
-          {PACED_KINDS.map((kind) => {
-            const ceiling = limits?.limits.find((limit) => limit.kind === kind && limit.window === 'day');
-            return <LiStat
-              key={kind}
-              label={KIND_LABELS[kind]}
-              value={String(seat.today[kind] ?? 0)}
-              detail={ceiling
-                ? <>of {ceiling.ceiling} today — {limitReason(ceiling.boundBy)}{' '}
-                  <ConfidenceTag confidence={ceiling.confidence} source={sourceNote(ceiling.confidence)} compact /></>
-                : undefined}
-            />;
-          })}
-        </div>
-        : <p className="empty-copy">Connect a LinkedIn account above and today’s numbers appear here.</p>}
+        {seat ? (
+          <div className="li-stat-row">
+            {PACED_KINDS.map((kind) => {
+              const ceiling = limits?.limits.find(
+                (limit) => limit.kind === kind && limit.window === 'day'
+              );
+              return (
+                <LiStat
+                  key={kind}
+                  label={KIND_LABELS[kind]}
+                  value={String(seat.today[kind] ?? 0)}
+                  detail={
+                    ceiling ? (
+                      <>
+                        of {ceiling.ceiling} today — {limitReason(ceiling.boundBy)}{' '}
+                        <ConfidenceTag
+                          confidence={ceiling.confidence}
+                          source={sourceNote(ceiling.confidence)}
+                          compact
+                        />
+                      </>
+                    ) : undefined
+                  }
+                />
+              );
+            })}
+          </div>
+        ) : (
+          <p className="empty-copy">
+            Connect a LinkedIn account above and today’s numbers appear here.
+          </p>
+        )}
 
-      <h4 className="li-subhead" aria-level={3}>Working hours</h4>
-      <p className="li-hint">
-        Outside these days and times, nothing goes out: every automated action is refused at the moment it would have
-        run. These are your own extra limits. Where Trevra’s researched limits are lower, the lower number wins.
-      </p>
-      <div className="li-filter-row">
-        {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((name, day) => <label className="li-inline-check" key={name}>
-          <input type="checkbox" checked={workingDays.includes(day)} onChange={() => setWorkingDays((current) => current.includes(day) ? current.filter((value) => value !== day) : [...current, day].sort())} />
-          <span>{name}</span>
-        </label>)}
-      </div>
-      <div className="li-form-grid">
-        <label>Start<input type="time" value={workStart} onChange={(event) => setWorkStart(event.target.value)} /></label>
-        <label>End<input type="time" value={workEnd} onChange={(event) => setWorkEnd(event.target.value)} /></label>
-      </div>
-
-      <h4 className="li-subhead" aria-level={3}>Your daily limits</h4>
-      <p className="li-hint">
-        The most this account may do in any 24 hours. Set one to 0 to switch that action off completely. Trevra’s own
-        limits still apply on top: a new account ramping up sends less than whatever you type here.
-      </p>
-      <div className="li-form-grid">
-        <label>Connection invites / 24h<input type="number" min={0} max={75} value={inviteLimit} onChange={(event) => setInviteLimit(event.target.value)} /></label>
-        <label>Messages / 24h<input type="number" min={0} max={75} value={messageLimit} onChange={(event) => setMessageLimit(event.target.value)} /></label>
-        <label>Profile views / 24h<input type="number" min={0} max={100} value={profileViewLimit} onChange={(event) => setProfileViewLimit(event.target.value)} /></label>
-        <label>Follows / 24h<input type="number" min={0} max={50} value={followLimit} onChange={(event) => setFollowLimit(event.target.value)} /></label>
-      </div>
-
-      {/* Not the default path, and it must never look like one. Closed on first
-          render, and it stays closed until somebody decides they need it. */}
-      <details className="li-manual-fields" open={manualOpen} onToggle={(event) => setManualOpen(event.currentTarget.open)}>
-        <summary><Settings2 size={13} /> Details Trevra could not read from LinkedIn</summary>
+        <h4 className="li-subhead" aria-level={3}>
+          Working hours
+        </h4>
         <p className="li-hint">
-          For what reading the profile cannot cover: a profile the browser cannot reach, an account you run in a
-          timezone other than this browser’s, or a connection count LinkedIn only ever shows as “500+”. What you set
-          here stands until the next read from LinkedIn replaces it. Leave a field empty to keep it unknown — nothing
-          here is filled in with a guess.
+          Outside these days and times, nothing goes out: every automated action is refused at the
+          moment it would have run. These are your own extra limits. Where Trevra’s researched
+          limits are lower, the lower number wins.
+        </p>
+        <div className="li-filter-row">
+          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((name, day) => (
+            <label className="li-inline-check" key={name}>
+              <input
+                type="checkbox"
+                checked={workingDays.includes(day)}
+                onChange={() =>
+                  setWorkingDays((current) =>
+                    current.includes(day)
+                      ? current.filter((value) => value !== day)
+                      : [...current, day].sort()
+                  )
+                }
+              />
+              <span>{name}</span>
+            </label>
+          ))}
+        </div>
+        <div className="li-form-grid">
+          <label>
+            Start
+            <input
+              type="time"
+              value={workStart}
+              onChange={(event) => setWorkStart(event.target.value)}
+            />
+          </label>
+          <label>
+            End
+            <input
+              type="time"
+              value={workEnd}
+              onChange={(event) => setWorkEnd(event.target.value)}
+            />
+          </label>
+        </div>
+
+        <h4 className="li-subhead" aria-level={3}>
+          Your daily limits
+        </h4>
+        <p className="li-hint">
+          The most this account may do in any 24 hours. Set one to 0 to switch that action off
+          completely. Trevra’s own limits still apply on top: a new account ramping up sends less
+          than whatever you type here.
         </p>
         <div className="li-form-grid">
-          <label>Name<input ref={labelField} value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Pankaj (founder)" /></label>
-          <label>Timezone
-            <input value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="Europe/Zurich" list="li-timezones" />
-            <datalist id="li-timezones"><option value={browserZone} /></datalist>
+          <label>
+            Connection invites / 24h
+            <input
+              type="number"
+              min={0}
+              max={75}
+              value={inviteLimit}
+              onChange={(event) => setInviteLimit(event.target.value)}
+            />
           </label>
-          <label>Connections<input type="number" min={0} value={connections} onChange={(event) => setConnections(event.target.value)} placeholder="e.g. 640" /></label>
-          <label>Profile URL<input value={profileUrl} onChange={(event) => setProfileUrl(event.target.value)} placeholder="https://www.linkedin.com/in/…" /></label>
+          <label>
+            Messages / 24h
+            <input
+              type="number"
+              min={0}
+              max={75}
+              value={messageLimit}
+              onChange={(event) => setMessageLimit(event.target.value)}
+            />
+          </label>
+          <label>
+            Profile views / 24h
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={profileViewLimit}
+              onChange={(event) => setProfileViewLimit(event.target.value)}
+            />
+          </label>
+          <label>
+            Follows / 24h
+            <input
+              type="number"
+              min={0}
+              max={50}
+              value={followLimit}
+              onChange={(event) => setFollowLimit(event.target.value)}
+            />
+          </label>
         </div>
-      </details>
 
-      <div className="panel-footer">
-        <span>
-          Times are read in this browser’s timezone — <code>{browserZone}</code> — which is what decides whose 08:00–18:00
-          the day is spread across. A newly connected account starts slow on purpose: the ramp-up is counted from the day
-          it started sending through Trevra, not from how old the LinkedIn account is.
-        </span>
-        <button className="primary-button" disabled={busy} onClick={() => void save()}>
-          {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save hours and limits
-        </button>
-      </div>
-    </section>
-  </>;
+        {/* Not the default path, and it must never look like one. Closed on first
+          render, and it stays closed until somebody decides they need it. */}
+        <details
+          className="li-manual-fields"
+          open={manualOpen}
+          onToggle={(event) => setManualOpen(event.currentTarget.open)}
+        >
+          <summary>
+            <Settings2 size={13} /> Details Trevra could not read from LinkedIn
+          </summary>
+          <p className="li-hint">
+            For what reading the profile cannot cover: a profile the browser cannot reach, an
+            account you run in a timezone other than this browser’s, or a connection count LinkedIn
+            only ever shows as “500+”. What you set here stands until the next read from LinkedIn
+            replaces it. Leave a field empty to keep it unknown — nothing here is filled in with a
+            guess.
+          </p>
+          <div className="li-form-grid">
+            <label>
+              Name
+              <input
+                ref={labelField}
+                value={label}
+                onChange={(event) => setLabel(event.target.value)}
+                placeholder="Pankaj (founder)"
+              />
+            </label>
+            <label>
+              Timezone
+              <input
+                value={timezone}
+                onChange={(event) => setTimezone(event.target.value)}
+                placeholder="Europe/Zurich"
+                list="li-timezones"
+              />
+              <datalist id="li-timezones">
+                <option value={browserZone} />
+              </datalist>
+            </label>
+            <label>
+              Connections
+              <input
+                type="number"
+                min={0}
+                value={connections}
+                onChange={(event) => setConnections(event.target.value)}
+                placeholder="e.g. 640"
+              />
+            </label>
+            <label>
+              Profile URL
+              <input
+                value={profileUrl}
+                onChange={(event) => setProfileUrl(event.target.value)}
+                placeholder="https://www.linkedin.com/in/…"
+              />
+            </label>
+          </div>
+        </details>
+
+        <div className="panel-footer">
+          <span>
+            Times are read in this browser’s timezone — <code>{browserZone}</code> — which is what
+            decides whose 08:00–18:00 the day is spread across. A newly connected account starts
+            slow on purpose: the ramp-up is counted from the day it started sending through Trevra,
+            not from how old the LinkedIn account is.
+          </span>
+          <button className="primary-button" disabled={busy} onClick={() => void save()}>
+            {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save hours
+            and limits
+          </button>
+        </div>
+      </section>
+    </>
+  );
 }
 
 function WorkerCheck({ ok, label, detail }: { ok: boolean | null; label: string; detail: string }) {
   const state = ok === null ? 'unknown' : ok ? 'ok' : 'no';
-  return <div className={`li-check li-check-${state}`}>
-    <span>{ok === null ? '?' : ok ? <Check size={13} /> : <CircleAlert size={13} />}</span>
-    <div><strong>{label}</strong><small>{detail}</small></div>
-  </div>;
-}
-
-/* -------------------------------------------------------------------------
- * `/outreach/queue` -- everything scheduled, and what became of it.
- * ---------------------------------------------------------------------- */
-
-const OUTCOMES = ['sent', 'accepted', 'replied', 'declined'] as const;
-
-const OUTCOME_LABELS: Record<typeof OUTCOMES[number], string> = {
-  sent: 'Sent',
-  accepted: 'Accepted',
-  replied: 'Replied',
-  declined: 'Declined'
-};
-
-/** The two statuses an action can still be pulled out of. Everything else has happened. */
-const isSkippable = (action: LinkedInActionView) => action.status === 'planned' || action.status === 'exported';
-
-function actionTiming(action: LinkedInActionView, execution: LinkedInSeatResponse['execution'] | null): { primary: string; secondary: string | null } {
-  if (action.claimedAt) return { primary: 'Running now', secondary: `Picked up ${relativeTime(action.claimedAt)}` };
-  const planned = formatPlannedTime(action.plannedFor);
-  if (action.status === 'held') return { primary: 'Waiting for campaign resume', secondary: planned ? `Original slot ${planned}` : null };
-  if (!action.plannedFor) return { primary: 'No run time', secondary: null };
-  const due = Date.parse(action.plannedFor);
-  if (Number.isFinite(due) && due > Date.now()) return { primary: `Planned for ${planned}`, secondary: null };
-  const wait = queueWaitCopy(execution?.waitingFor);
-  return wait
-    ? { primary: wait, secondary: planned ? `Planned for ${planned}` : null }
-    : { primary: 'Due now', secondary: planned ? `Planned for ${planned}` : null };
-}
-
-/**
- * The `linkedin_actions` ledger, filterable, with per-row skip and manual
- * outcome marking.
- *
- * Marking an outcome is a REPORT, not an instruction: the operator is telling
- * Trevra what already happened in their own tool, so the acceptance-rate
- * throttle and the day-over-day arithmetic have a real denominator. The date
- * field matters for the same reason -- an outcome reported on Friday for a send
- * that happened on Tuesday has to charge Tuesday's budget.
- */
-export function OutreachQueue({ setToast }: { setToast: (message: string) => void }) {
-  // Who queued each row -- team-workspace-access design goal 5, "Founder can
-  // see which of the two of them queued a given LinkedIn action". The same
-  // member list the workspace switcher and Team settings read, not a second
-  // fetch of who is in this workspace.
-  const { nameFor } = useWorkspaceMembers();
-  /**
-   * WHOSE QUEUE THIS IS.
-   *
-   * `GET /api/linkedin/actions` has taken a `seatKey` filter since the ledger
-   * grew a seat column, and this screen sent none -- so a workspace with two
-   * LinkedIn accounts saw both accounts' scheduled sends in one undifferentiated
-   * list, with Skip and Mark-as-sent beside every row, whichever account the
-   * operator had switched to. The switch above the filters is the same one the
-   * Accounts screen renders; the rows below it are now that account's.
-   */
-  const [seatKey] = useActiveSeatKey();
-  const [actions, setActions] = useState<LinkedInActionView[]>([]);
-  const [seatDetail, setSeatDetail] = useState<LinkedInSeatResponse | null>(null);
-  /** For the campaign picker. A filter you have to TYPE an id into is a filter nobody uses twice. */
-  const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
-  const [status, setStatus] = useState<LinkedInActionStatus | ''>('');
-  const [kind, setKind] = useState<LinkedInActionKind | ''>('');
-  const [campaignId, setCampaignId] = useState('');
-  const [occurredAt, setOccurredAt] = useState('');
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
-  const [confirmingBulk, setConfirmingBulk] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [bulkBusy, setBulkBusy] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [nextActions, nextSeat] = await Promise.all([
-        getLinkedInActions({
-          ...(status ? { status } : {}),
-          ...(kind ? { kind } : {}),
-          ...(campaignId ? { campaignId } : {}),
-          ...(seatKey ? { seatKey } : {}),
-          limit: 200
-        }),
-        getLinkedInSeat(seatKey || undefined)
-      ]);
-      setActions(nextActions);
-      setSeatDetail(nextSeat);
-      setSelected(new Set());
-      setError('');
-    } catch (err) {
-      setError(errorMessage(err, 'Unable to load what is scheduled. Nothing was changed — try again.'));
-    } finally { setLoading(false); }
-  };
-
-  useEffect(() => { void load(); }, [status, kind, campaignId, seatKey]);
-  useOutreachRefresh(load);
-  const hasLiveActions = actions.some((action) => action.status === 'planned' || action.status === 'exported' || action.status === 'held' || Boolean(action.claimedAt));
-  useEffect(() => {
-    if (!hasLiveActions) return;
-    const timer = window.setInterval(() => { void load(); }, 30_000);
-    return () => window.clearInterval(timer);
-  }, [hasLiveActions, status, kind, campaignId, seatKey]);
-
-  useEffect(() => {
-    // A picker that cannot be populated simply is not offered; it never blocks
-    // the queue, which is the thing this screen is actually for.
-    //
-    // Narrowed to the same account as the rows: a campaign filter offering
-    // campaigns that belong to another account can only ever select an empty
-    // queue, which reads as "this campaign did nothing".
-    void (async () => {
-      try { setCampaigns(await getLinkedInCampaigns(seatKey || undefined)); }
-      catch { /* the campaign filter is not worth an error banner over the queue */ }
-    })();
-  }, [seatKey]);
-
-  const filtered = Boolean(status || kind || campaignId);
-  const skippable = actions.filter(isSkippable);
-  const selectedIds = skippable.filter((action) => selected.has(action.id)).map((action) => action.id);
-  const allSelected = skippable.length > 0 && selectedIds.length === skippable.length;
-
-  const toggle = (id: string) => setSelected((current) => {
-    const next = new Set(current);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
-
-  const skip = async (id: string) => {
-    setBusy(id);
-    try {
-      await skipLinkedInAction(id);
-      setToast('Skipped. It is off the schedule and will not go out.');
-      // The queue, and the seat's spent-today figures wherever else they are
-      // on screen. This used to be `onChanged()` reaching up through the tab
-      // shell; there is no shell now, so it is a broadcast instead.
-      await reloadOutreach();
-    } catch (err) {
-      setError(errorMessage(err, 'Unable to skip that action. It is still scheduled — try it again.'));
-    } finally { setBusy(null); }
-  };
-
-  /**
-   * Skip everything that is ticked.
-   *
-   * A 200-action queue was 200 clicks, which is not a queue, it is a punishment
-   * for having used the product. A partial failure names how many survived and
-   * what to do, because "some of them worked" is the one outcome an operator
-   * cannot act on.
-   */
-  const skipSelected = async () => {
-    setBulkBusy(true);
-    setError('');
-    let done = 0;
-    // lc-debt: one POST per action -- there is no batch skip route today; add
-    // POST /api/linkedin/actions/skip taking ids[] before a queue routinely
-    // runs to thousands.
-    for (const id of selectedIds) {
-      try { await skipLinkedInAction(id); done += 1; }
-      catch { /* counted below; the loop finishes what it can */ }
-    }
-    const failed = selectedIds.length - done;
-    if (failed === 0) {
-      setConfirmingBulk(false);
-      setToast(`${done} action(s) skipped. None of them will go out.`);
-    } else {
-      setError(`${done} of ${selectedIds.length} were skipped. The other ${failed} are still scheduled — they are `
-        + 'reloaded below, so tick those and try again.');
-      setConfirmingBulk(false);
-    }
-    setBulkBusy(false);
-    await reloadOutreach();
-  };
-
-  const mark = async (action: LinkedInActionView, outcome: typeof OUTCOMES[number]) => {
-    setBusy(action.id);
-    try {
-      await recordLinkedInOutcome({
-        actionId: action.id,
-        outcome,
-        ...(occurredAt ? { occurredAt: new Date(occurredAt).toISOString() } : {})
-      });
-      setToast(`Recorded as ${outcome}${occurredAt ? ` on ${occurredAt}` : ''}.`);
-      await reloadOutreach();
-    } catch (err) {
-      setError(errorMessage(err, 'Unable to record what happened. Nothing was saved — try that button again.'));
-    } finally { setBusy(null); }
-  };
-
-  return <div className="page-stack">
-    <ActiveAccountBar scope={<>
-      Everything below is scheduled to go out from this account, and every campaign in the filter belongs to it.
-      Skipping a row or marking one sent changes that account's ledger only.
-    </>} />
-    <section className="page-panel">
-      {/* Status and campaign are what an operator actually scopes by. Kind was
-          a sixth dropdown open on arrival next to a field asking them to TYPE
-          an id they had copied off another tab. */}
-      <div className="li-filter-row">
-        <label>Status
-          <select value={status} onChange={(event) => setStatus(event.target.value as LinkedInActionStatus | '')}>
-            <option value="">Any status</option>
-            {LINKEDIN_ACTION_STATUSES.map((option) => <option key={option} value={option}>{ACTION_STATUS_LABELS[option]}</option>)}
-          </select>
-        </label>
-        <label>Campaign
-          <select value={campaignId} onChange={(event) => setCampaignId(event.target.value)}>
-            <option value="">Any campaign</option>
-            {campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
-          </select>
-        </label>
-        {/* NO APPLY BUTTON. Every filter on this screen already reloads the
-            queue when it changes (the effect above), so a control labelled
-            Apply asked the operator to press it for something that had already
-            happened -- and pressing it fired the identical request a second
-            time. The spinner is the part of it that was saying anything. */}
-        {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the queue" />}
+  return (
+    <div className={`li-check li-check-${state}`}>
+      <span>{ok === null ? '?' : ok ? <Check size={13} /> : <CircleAlert size={13} />}</span>
+      <div>
+        <strong>{label}</strong>
+        <small>{detail}</small>
       </div>
-
-      <details className="li-manual-fields">
-        <summary><SlidersHorizontal size={13} /> Narrow it further</summary>
-        <div className="li-form-grid">
-          <label>Action
-            <select value={kind} onChange={(event) => setKind(event.target.value as LinkedInActionKind | '')}>
-              <option value="">Any action</option>
-              {/* NOT `comment`. It is in the ledger's taxonomy, but nothing in
-                  this product schedules one -- no sequence step, no route, no
-                  import -- so offering it is offering a filter that can only
-                  ever come back empty. The other eight all have a writer:
-                  sequence steps, the engagement route, and inbox replies. */}
-              {LINKEDIN_ACTION_KINDS.filter((option) => option !== 'comment')
-                .map((option) => <option key={option} value={option}>{ACTION_KIND_LABELS[option]}</option>)}
-            </select>
-          </label>
-        </div>
-      </details>
-    </section>
-
-    {error && <div className="error-banner">
-      <strong>{error}</strong>{' '}
-      <button className="secondary-button" type="button" disabled={loading} onClick={() => void load()}>
-        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Try again
-      </button>
-    </div>}
-
-    <section className="page-panel">
-      {/* The date belongs to MARKING, not to filtering. It sat in the filter row
-          looking like a fifth way to narrow the list, which it never was. */}
-      <div className="li-filter-row">
-        <label>These happened on
-          <input type="date" value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} />
-        </label>
-        <span className="li-hint">
-          Leave it empty for “now”. Marking one of these tells Trevra what already happened on LinkedIn; it sends
-          nothing. Every rolling limit counts from this date, so something you sent on Tuesday and record on Friday has
-          to count against Tuesday.
-        </span>
-      </div>
-
-      {selectedIds.length > 0 && <div className="li-filter-row">
-        <span className="li-filter-label">{selectedIds.length} selected</span>
-        <button className="li-danger-button" type="button" disabled={bulkBusy} onClick={() => setConfirmingBulk(true)}>
-          {bulkBusy ? <LoaderCircle className="spin" size={14} /> : <Ban size={14} />} Skip {selectedIds.length} action(s)
-        </button>
-        <button className="ghost-button" type="button" disabled={bulkBusy} onClick={() => setSelected(new Set())}>Clear selection</button>
-      </div>}
-
-      {actions.length === 0
-        ? <div className="empty-state">
-          <ListTree size={26} />
-          <h4 aria-level={2}>{filtered ? 'Nothing scheduled matches this filter' : 'Nothing is scheduled yet'}</h4>
-          <p>
-            Actions land here when you start a campaign on Campaigns, or when an approved plan is exported from
-            Approve &amp; export.
-          </p>
-          {filtered && <button className="secondary-button" type="button" onClick={() => { setStatus(''); setKind(''); setCampaignId(''); }}>
-            Clear the filters
-          </button>}
-        </div>
-        : <div className="li-table-scroll">
-          <table className="li-table">
-            <thead><tr>
-              <th>
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  disabled={skippable.length === 0}
-                  aria-label={allSelected ? 'Clear the selection' : `Select all ${skippable.length} action(s) that can still be skipped`}
-                  onChange={() => setSelected(allSelected ? new Set() : new Set(skippable.map((action) => action.id)))}
-                />
-              </th>
-              <th>Person</th><th>Action</th><th>Status</th><th>Timing</th><th>Recorded</th><th>Came from</th><th>Queued by</th><th>Mark as</th>
-            </tr></thead>
-            <tbody>{actions.map((action) => <tr key={action.id}>
-              <td>
-                {/* Only what a skip could still act on. A tick beside a sent
-                    invite would be a promise the ledger cannot keep. */}
-                {isSkippable(action) && <input
-                  type="checkbox"
-                  checked={selected.has(action.id)}
-                  disabled={bulkBusy}
-                  aria-label={`Select the ${ACTION_KIND_LABELS_ONE[action.kind].toLowerCase()} to ${action.targetRef ?? 'an unnamed target'}`}
-                  onChange={() => toggle(action.id)}
-                />}
-              </td>
-              <td className="li-target">{action.targetRef ?? '—'}</td>
-              <td>{ACTION_KIND_LABELS_ONE[action.kind]}</td>
-              <td>
-                <span className={`li-chip li-status-${action.status}`}>{actionStatusLabel(action.status)}</span>
-                {action.failureKind && <small className="li-failure">{action.failureKind}</small>}
-              </td>
-              <td className="li-queue-timing">{(() => {
-                const timing = actionTiming(action, seatDetail?.execution ?? null);
-                return <><strong>{timing.primary}</strong>{timing.secondary && <small>{timing.secondary}</small>}</>;
-              })()}</td>
-              <td>{action.recordedAt ? new Date(action.recordedAt).toLocaleString() : '—'}</td>
-              <td>{ACTION_SOURCE_LABELS[action.source] ?? action.source}</td>
-              <td>{nameFor(action.queuedByUserId) ?? '—'}</td>
-              <td className="li-row-actions">
-                {OUTCOMES.map((outcome) => <button
-                  key={outcome}
-                  className="li-mini-button"
-                  type="button"
-                  disabled={busy === action.id || bulkBusy}
-                  onClick={() => void mark(action, outcome)}
-                >{OUTCOME_LABELS[outcome]}</button>)}
-                {isSkippable(action) && <button
-                  className="li-mini-button li-mini-danger"
-                  type="button"
-                  disabled={busy === action.id || bulkBusy}
-                  onClick={() => void skip(action.id)}
-                >Skip</button>}
-              </td>
-            </tr>)}</tbody>
-          </table>
-        </div>}
-    </section>
-
-    {confirmingBulk && <ConfirmDrawer
-      title={`Skip ${selectedIds.length} scheduled action(s)?`}
-      tone="danger"
-      busy={bulkBusy}
-      body={<>
-        <p>Each one comes off the schedule and will not go out.</p>
-        <p>
-          A skip is permanent and there is no undo — to bring one back, plan it again from the campaign it belongs to.
-        </p>
-        <p>Nobody is contacted either way. This changes what Trevra was going to do, not what LinkedIn has already seen.</p>
-      </>}
-      confirmLabel={`Skip ${selectedIds.length} action(s)`}
-      onConfirm={() => void skipSelected()}
-      onCancel={() => setConfirmingBulk(false)}
-    />}
-  </div>;
+    </div>
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -1587,68 +1708,115 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
   const [error, setError] = useState('');
 
   const load = async () => {
-    try { setExclusions(await getLinkedInExclusions()); setError(''); }
-    catch (err) { setError(errorMessage(err, 'Unable to load the exclusion list')); }
+    try {
+      setExclusions(await getLinkedInExclusions());
+      setError('');
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to load the exclusion list'));
+    }
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+  }, []);
   useOutreachRefresh(load);
 
   const add = async () => {
-    const list = targets.split(/[\n,]/).map((line) => line.trim()).filter(Boolean);
-    if (list.length === 0) { setError('Add at least one handle or profile URL.'); return; }
+    const list = targets
+      .split(/[\n,]/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (list.length === 0) {
+      setError('Add at least one handle or profile URL.');
+      return;
+    }
     setBusy(true);
     try {
-      const result = await addLinkedInExclusions(list.map((targetRef) => ({ targetRef, reason: reason.trim() })));
+      const result = await addLinkedInExclusions(
+        list.map((targetRef) => ({ targetRef, reason: reason.trim() }))
+      );
       setToast(`${result.added} added, ${result.updated} already on the list and updated.`);
       setTargets('');
       setReason('');
       await load();
     } catch (err) {
       setError(errorMessage(err, 'Unable to add those exclusions'));
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   };
 
-  return <div className="page-stack">
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>Never contact</h3>
-          <p>Checked before a campaign starts and before any plan is built, so nobody on this list ever reaches a queue.</p>
+  return (
+    <div className="page-stack">
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Never contact</h3>
+            <p>
+              Checked before a campaign starts and before any plan is built, so nobody on this list
+              ever reaches a queue.
+            </p>
+          </div>
         </div>
-      </div>
-      {error && <div className="error-banner">{error}</div>}
-      <div className="li-form-grid">
-        <label className="li-span-2">Handles or profile URLs, one per line
-          <textarea rows={4} value={targets} onChange={(event) => setTargets(event.target.value)} />
-        </label>
-        <label className="li-span-2">Reason<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Asked to be left alone" /></label>
-      </div>
-      <div className="panel-footer">
-        <span>
-          Matching is on the text, ignoring case; Trevra never looks a handle up on LinkedIn to check it. There is no
-          Remove button here — taking somebody off this list is a database change, on purpose.
-        </span>
-        <button className="primary-button" disabled={busy} onClick={() => void add()}>
-          {busy ? <LoaderCircle className="spin" size={15} /> : <Ban size={15} />} Add to the list
-        </button>
-      </div>
-    </section>
+        {error && <div className="error-banner">{error}</div>}
+        <div className="li-form-grid">
+          <label className="li-span-2">
+            Handles or profile URLs, one per line
+            <textarea
+              rows={4}
+              value={targets}
+              onChange={(event) => setTargets(event.target.value)}
+            />
+          </label>
+          <label className="li-span-2">
+            Reason
+            <input
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="Asked to be left alone"
+            />
+          </label>
+        </div>
+        <div className="panel-footer">
+          <span>
+            Matching is on the text, ignoring case; Trevra never looks a handle up on LinkedIn to
+            check it. There is no Remove button here — taking somebody off this list is a database
+            change, on purpose.
+          </span>
+          <button className="primary-button" disabled={busy} onClick={() => void add()}>
+            {busy ? <LoaderCircle className="spin" size={15} /> : <Ban size={15} />} Add to the list
+          </button>
+        </div>
+      </section>
 
-    <section className="page-panel">
-      {exclusions.length === 0
-        ? <p className="empty-copy">Nobody is excluded yet.</p>
-        : <div className="li-table-scroll">
-          <table className="li-table">
-            <thead><tr><th>Person</th><th>Reason</th><th>Added from</th><th>Added</th></tr></thead>
-            <tbody>{exclusions.map((entry) => <tr key={entry.id}>
-              <td className="li-target">{entry.targetRef}</td>
-              <td>{entry.reason || '—'}</td>
-              <td>{entry.source}</td>
-              <td>{new Date(entry.createdAt).toLocaleDateString()}</td>
-            </tr>)}</tbody>
-          </table>
-        </div>}
-    </section>
-  </div>;
+      <section className="page-panel">
+        {exclusions.length === 0 ? (
+          <p className="empty-copy">Nobody is excluded yet.</p>
+        ) : (
+          <div className="li-table-scroll">
+            <table className="li-table">
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Reason</th>
+                  <th>Added from</th>
+                  <th>Added</th>
+                </tr>
+              </thead>
+              <tbody>
+                {exclusions.map((entry) => (
+                  <tr key={entry.id}>
+                    <td className="li-target">{entry.targetRef}</td>
+                    <td>{entry.reason || '—'}</td>
+                    <td>{entry.source}</td>
+                    <td>{new Date(entry.createdAt).toLocaleDateString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
 }

@@ -26,12 +26,14 @@ const RAMP_START = '2026-01-01T00:00:00.000Z';
  * assertions are about which of the band and the operator's number bound --
  * not about a ramp that would flatten both to zero on a fresh seat.
  */
-function dayCeiling(body: { limits: Array<Record<string, unknown>> }, kind = 'profile_view'): Record<string, unknown> {
+function dayCeiling(
+  body: { limits: Array<Record<string, unknown>> },
+  kind = 'profile_view'
+): Record<string, unknown> {
   const row = body.limits.find((limit) => limit.kind === kind && limit.window === 'day');
   if (!row) throw new Error(`no day ceiling reported for ${kind}`);
   return row;
 }
-
 
 registerPlaybook({
   id: 'test.api-score-approval',
@@ -40,10 +42,24 @@ registerPlaybook({
   description: 'Exercise durable workflow routes.',
   inputSchema: z.object({ lead: z.record(z.unknown()) }),
   steps: [
-    { id: 'score', type: 'skill', skillId: 'gtm.score-lead', input: { lead: { $ref: '$.input.lead' } } },
-    { id: 'approve', type: 'approval', title: 'Approve score', needs: ['score'], payload: { score: { $ref: '$.steps.score.output.overall' } } }
+    {
+      id: 'score',
+      type: 'skill',
+      skillId: 'gtm.score-lead',
+      input: { lead: { $ref: '$.input.lead' } }
+    },
+    {
+      id: 'approve',
+      type: 'approval',
+      title: 'Approve score',
+      needs: ['score'],
+      payload: { score: { $ref: '$.steps.score.output.overall' } }
+    }
   ],
-  output: { approved: { $ref: '$.steps.approve.output.approved' }, score: { $ref: '$.steps.score.output' } },
+  output: {
+    approved: { $ref: '$.steps.approve.output.approved' },
+    score: { $ref: '$.steps.score.output' }
+  },
   source: { type: 'builtin' }
 });
 
@@ -62,7 +78,11 @@ vi.mock('./agent/provider.js', async (importOriginal) => {
     ...actual,
     resolveWorkspaceModel: async (db: never, workspaceId: string) => {
       if (!hostedModel.model) return actual.resolveWorkspaceModel(db, workspaceId);
-      return { model: hostedModel.model, modelId: 'gpt-4o-mini', baseUrl: 'https://model.invalid/v1' };
+      return {
+        model: hostedModel.model,
+        modelId: 'gpt-4o-mini',
+        baseUrl: 'https://model.invalid/v1'
+      };
     }
   };
 });
@@ -82,7 +102,9 @@ function modelAnswer(text: string): LanguageModelV4GenerateResult {
 /** A promise the test releases by hand, so a run can be held mid-flight. */
 function gate(): { held: Promise<void>; release: () => void } {
   let release: () => void = () => {};
-  const held = new Promise<void>((resolve) => { release = resolve; });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   return { held, release: () => release() };
 }
 
@@ -97,7 +119,9 @@ async function waitForAgentRun(
     };
     if (run.status !== 'running') return run;
     if (Date.now() >= deadline) throw new Error(`Agent run ${runId} never finished`);
-    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 20);
+    });
   }
 }
 
@@ -145,7 +169,8 @@ async function signUpAgent(app: ReturnType<typeof createApp>, label: string) {
   signUpSeq += 1;
   const email = `${label}-${Date.now()}-${signUpSeq}@example.test`;
   const agent = request.agent(app);
-  const res = await agent.post('/api/auth/sign-up/email')
+  const res = await agent
+    .post('/api/auth/sign-up/email')
     .send({ email, password: 'correct-horse-battery-staple', name: label })
     .expect(200);
   return { agent, email, userId: (res.body as { user: { id: string } }).user.id };
@@ -153,7 +178,8 @@ async function signUpAgent(app: ReturnType<typeof createApp>, label: string) {
 
 async function sessionAuth(agent: ReturnType<typeof request.agent>) {
   const res = await agent.get('/api/auth/session').expect(200);
-  return (res.body as { auth: { userId: string; workspaceId: string; role: 'owner' | 'member' } }).auth;
+  return (res.body as { auth: { userId: string; workspaceId: string; role: 'owner' | 'member' } })
+    .auth;
 }
 
 /** An owner and a teammate who has accepted into the owner's workspace. */
@@ -161,8 +187,13 @@ async function ownerAndMember(app: ReturnType<typeof createApp>) {
   const owner = await signUpAgent(app, 'owner');
   const ownerAuth = await sessionAuth(owner.agent);
   const member = await signUpAgent(app, 'mate');
-  await betterAuth.api.addMember({ body: { userId: member.userId, organizationId: ownerAuth.workspaceId, role: 'member' } });
-  await member.agent.post('/api/auth/organization/set-active').send({ organizationId: ownerAuth.workspaceId }).expect(200);
+  await betterAuth.api.addMember({
+    body: { userId: member.userId, organizationId: ownerAuth.workspaceId, role: 'member' }
+  });
+  await member.agent
+    .post('/api/auth/organization/set-active')
+    .send({ organizationId: ownerAuth.workspaceId })
+    .expect(200);
   const memberAuth = await sessionAuth(member.agent);
   expect(memberAuth.workspaceId).toBe(ownerAuth.workspaceId);
   expect(memberAuth.role).toBe('member');
@@ -175,12 +206,20 @@ describe('Trevra API on PostgreSQL', () => {
     process.env.INDEXNOW_KEY = 'trevra-indexnow-key-12345678';
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const app = createApp(db);
-    expect((await request(app).get('/robots.txt').expect(200)).text).toContain('Sitemap: https://trevra.example/sitemap.xml');
-    expect((await request(app).get('/sitemap.xml').expect(200)).text).toContain('<loc>https://trevra.example/how-it-works</loc>');
+    expect((await request(app).get('/robots.txt').expect(200)).text).toContain(
+      'Sitemap: https://trevra.example/sitemap.xml'
+    );
+    expect((await request(app).get('/sitemap.xml').expect(200)).text).toContain(
+      '<loc>https://trevra.example/how-it-works</loc>'
+    );
     expect((await request(app).get('/llms.txt').expect(200)).text).toContain('# Trevra');
     expect((await request(app).get('/agents.md').expect(200)).text).toContain('Restricted areas');
-    expect((await request(app).get('/.well-known/security.txt').expect(200)).text).toContain('Canonical: https://trevra.example/.well-known/security.txt');
-    expect((await request(app).get('/trevra-indexnow-key-12345678.txt').expect(200)).text).toBe('trevra-indexnow-key-12345678');
+    expect((await request(app).get('/.well-known/security.txt').expect(200)).text).toContain(
+      'Canonical: https://trevra.example/.well-known/security.txt'
+    );
+    expect((await request(app).get('/trevra-indexnow-key-12345678.txt').expect(200)).text).toBe(
+      'trevra-indexnow-key-12345678'
+    );
   });
 
   it('records privacy-preserving attribution and protects aggregate traction', async () => {
@@ -189,24 +228,44 @@ describe('Trevra API on PostgreSQL', () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const app = createApp(db);
     const visitorId = 'visitor-12345678';
-    await request(app).post('/api/marketing/events').send({ eventName: 'page_view', visitorId, source: 'search', campaign: 'launch' }).expect(202);
-    const stored = await db.prepare("SELECT visitor_hash,source,campaign FROM marketing_events WHERE event_name='page_view' ORDER BY created_at DESC LIMIT 1").get<{ visitor_hash: string; source: string; campaign: string }>();
+    await request(app)
+      .post('/api/marketing/events')
+      .send({ eventName: 'page_view', visitorId, source: 'search', campaign: 'launch' })
+      .expect(202);
+    const stored = await db
+      .prepare(
+        "SELECT visitor_hash,source,campaign FROM marketing_events WHERE event_name='page_view' ORDER BY created_at DESC LIMIT 1"
+      )
+      .get<{ visitor_hash: string; source: string; campaign: string }>();
     expect(stored?.visitor_hash).not.toBe(visitorId);
     expect(stored?.visitor_hash).toHaveLength(64);
     await request(app).get('/api/internal/traction').expect(401);
-    const report = await request(app).get('/api/internal/traction?days=30').set('Authorization', `Bearer ${process.env.TRACTION_ADMIN_TOKEN}`).expect(200);
+    const report = await request(app)
+      .get('/api/internal/traction?days=30')
+      .set('Authorization', `Bearer ${process.env.TRACTION_ADMIN_TOKEN}`)
+      .expect(200);
     expect(report.body.funnel.pageViews).toBeGreaterThanOrEqual(1);
     expect(report.body.funnel.uniqueVisitors).toBeGreaterThanOrEqual(1);
-    expect(report.body.sources.some((item: { source: string }) => item.source === 'search')).toBe(true);
+    expect(report.body.sources.some((item: { source: string }) => item.source === 'search')).toBe(
+      true
+    );
   });
 
   it('publishes aggregate module popularity without leaking workspace data', async () => {
     process.env.PUBLIC_REGISTRY_CORS_ORIGIN = 'https://www.trevra.example';
     const agent = await agentWithSession();
-    await agent.post('/api/skills/gtm.score-lead/run').send({ lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } }).expect(201);
-    const response = await agent.get('/api/public/modules').set('Origin', 'https://www.trevra.example').expect(200);
+    await agent
+      .post('/api/skills/gtm.score-lead/run')
+      .send({ lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } })
+      .expect(201);
+    const response = await agent
+      .get('/api/public/modules')
+      .set('Origin', 'https://www.trevra.example')
+      .expect(200);
     expect(response.headers['access-control-allow-origin']).toBe('https://www.trevra.example');
-    const module = response.body.modules.find((item: { id: string }) => item.id === 'gtm.score-lead');
+    const module = response.body.modules.find(
+      (item: { id: string }) => item.id === 'gtm.score-lead'
+    );
     expect(module.popularity.totalRuns).toBeGreaterThan(0);
     expect(module.popularity.successRate).toBeGreaterThan(0);
     expect(JSON.stringify(response.body)).not.toContain(DEMO_WORKSPACE_ID);
@@ -216,138 +275,61 @@ describe('Trevra API on PostgreSQL', () => {
   it('exposes Google OAuth only when both credentials are configured', async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const app = createApp(db);
-    expect((await request(app).get('/api/public-config').expect(200)).body.googleAuthEnabled).toBe(false);
+    expect((await request(app).get('/api/public-config').expect(200)).body.googleAuthEnabled).toBe(
+      false
+    );
     process.env.GOOGLE_CLIENT_ID = 'google-client-id.apps.googleusercontent.com';
     process.env.GOOGLE_CLIENT_SECRET = 'google-client-secret';
-    expect((await request(app).get('/api/public-config').expect(200)).body.googleAuthEnabled).toBe(true);
+    expect((await request(app).get('/api/public-config').expect(200)).body.googleAuthEnabled).toBe(
+      true
+    );
   });
 
   it('rejects state-changing requests from untrusted browser origins', async () => {
     const agent = await agentWithSession();
-    await agent.post('/api/automation/run').set('Origin', 'https://malicious.example').expect(403);
+    await agent
+      .post('/api/agent-runs')
+      .set('Origin', 'https://malicious.example')
+      .send({ goal: 'test' })
+      .expect(403);
   });
 
-  it('returns a revenue dashboard with proof packs and prepared work', async () => {
+  it('returns the four-section shell dashboard without Money data', async () => {
     const agent = await agentWithSession();
     const response = await agent.get('/api/dashboard').expect(200);
-    expect(response.body.metrics.openRecommendations).toBe(4);
-    expect(response.body.metrics.revenueAtRisk).toBe(13750);
-    expect(response.body.recommendations.every((item: { proofPack?: { items: unknown[] } }) => item.proofPack && item.proofPack.items.length > 0)).toBe(true);
-    expect(response.body.recommendations.filter((item: { preparedAction?: unknown }) => item.preparedAction).length).toBe(3);
+    expect(response.body.workspace).toBeTruthy();
+    expect(response.body.metrics).toEqual(
+      expect.objectContaining({ connectedSources: expect.any(Number) })
+    );
+    expect(Object.keys(response.body.metrics)).toEqual(['connectedSources']);
+    expect(response.body).not.toHaveProperty('recommendations');
+    expect(response.body).not.toHaveProperty('clients');
+    expect(response.body).not.toHaveProperty('automationRules');
   });
 
-  it('requires approval before action execution', async () => {
+  it('does not expose the removed Money HTTP surface', async () => {
     const agent = await agentWithSession();
-    const dashboard = await agent.get('/api/dashboard');
-    const recId = dashboard.body.recommendations[0].id;
-    const prepared = await agent.post(`/api/recommendations/${recId}/prepare`).expect(201);
-    await agent.post(`/api/actions/${prepared.body.action.id}/execute`).expect(400);
-    const action = prepared.body.action;
-    await agent.post(`/api/actions/${action.id}/approve`).send({ recipient: action.recipient, subject: action.subject, body: action.body }).expect(200);
-    const executed = await agent.post(`/api/actions/${action.id}/execute`).expect(200);
-    expect(executed.body.action.status).toBe('executed');
-    expect(executed.body.action.executionProvider).toBe('simulation');
-  });
-
-  it('imports marketplace exports into the commercial graph', async () => {
-    const agent = await agentWithSession();
-    const csv = [
-      'Client,Project,Amount,Status,Date,Currency',
-      'Pine Labs,Product audit,4500,Proposal sent,2026-07-01,EUR',
-      'Oak Studio,Brand sprint,2200,Paid,2026-07-10,EUR'
-    ].join('\n');
-    const imported = await agent.post('/api/imports/marketplace').send({ provider: 'upwork', csv }).expect(201);
-    expect(imported.body).toEqual({ imported: 2, skipped: 0 });
-    const clients = await db!.prepare("SELECT COUNT(*) AS count FROM clients WHERE name IN ('Pine Labs','Oak Studio')").get<{ count: number }>();
-    const sourceRecords = await db!.prepare("SELECT COUNT(*) AS count FROM source_records WHERE provider='upwork'").get<{ count: number }>();
-    expect(clients?.count).toBe(1);
-    expect(sourceRecords?.count).toBe(2);
-  });
-
-  it('runs delegated low-risk automation end to end', async () => {
-    const agent = await agentWithSession();
-    await agent.get('/api/dashboard').expect(200);
-    await agent.put('/api/automation/rules/stale_proposal').send({
-      mode: 'execute', minConfidence: 0.85, maxAmount: 10000, delayMinutes: 0, enabled: true
-    }).expect(200);
-    const result = await agent.post('/api/automation/run').expect(200);
-    expect(result.body.executed).toBe(1);
-    const completed = await db!.prepare("SELECT COUNT(*) AS count FROM recommendations WHERE type='stale_proposal' AND status='completed'").get<{ count: number }>();
-    expect(completed?.count).toBe(1);
+    await agent.get('/api/recommendations').expect(404);
+    await agent.post('/api/automation/run').expect(404);
+    await agent.post('/api/imports/marketplace').send({ provider: 'upwork', csv: 'x' }).expect(404);
+    await agent.get('/api/clients/client_x').expect(404);
   });
 
   it('creates a real account and maps it to an isolated Trevra workspace', async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const agent = request.agent(createApp(db));
     const email = `founder-${Date.now()}@example.com`;
-    await agent.post('/api/auth/sign-up/email').send({ name: 'Independent Alex', email, password: 'correct-horse-battery-staple' }).expect(200);
+    await agent
+      .post('/api/auth/sign-up/email')
+      .send({ name: 'Independent Alex', email, password: 'correct-horse-battery-staple' })
+      .expect(200);
     const dashboard = await agent.get('/api/dashboard').expect(200);
     expect(dashboard.body.workspace.name).toBe("Independent Alex's Studio");
-    expect(dashboard.body.metrics.openRecommendations).toBe(0);
-    const mapped = await db.prepare('SELECT workspace_id FROM users WHERE email=?').get<{ workspace_id: string }>(email);
+    expect(dashboard.body.metrics).toEqual(expect.objectContaining({ connectedSources: 0 }));
+    const mapped = await db
+      .prepare('SELECT workspace_id FROM users WHERE email=?')
+      .get<{ workspace_id: string }>(email);
     expect(mapped?.workspace_id).toBe(dashboard.body.workspace.id);
-  });
-
-  it('executes scheduled approved work when it becomes due', async () => {
-    const agent = await agentWithSession();
-    const dashboard = await agent.get('/api/dashboard').expect(200);
-    const recommendation = dashboard.body.recommendations.find((item: { type: string }) => item.type === 'stale_proposal');
-    const action = recommendation.preparedAction;
-    const future = new Date(Date.now() + 3_600_000).toISOString();
-    await agent.post(`/api/actions/${action.id}/approve`).send({ recipient: action.recipient, subject: action.subject, body: action.body, scheduledFor: future }).expect(200);
-    await db!.prepare('UPDATE actions SET scheduled_for=? WHERE id=?').run(new Date(Date.now() - 1000).toISOString(), action.id);
-    const cycle = await agent.post('/api/automation/run').expect(200);
-    expect(cycle.body.executed).toBeGreaterThanOrEqual(1);
-    const executed = await db!.prepare('SELECT status FROM actions WHERE id=?').get<{ status: string }>(action.id);
-    expect(executed?.status).toBe('executed');
-  });
-
-  it('creates a ledger invoice after executing ready-to-invoice work', async () => {
-    const agent = await agentWithSession();
-    const dashboard = await agent.get('/api/dashboard').expect(200);
-    const recommendation = dashboard.body.recommendations.find((item: { type: string }) => item.type === 'unbilled_milestone');
-    const action = recommendation.preparedAction;
-    await agent.post(`/api/actions/${action.id}/approve`).send({ recipient: action.recipient, subject: action.subject, body: action.body }).expect(200);
-    await agent.post(`/api/actions/${action.id}/execute`).expect(200);
-    const milestone = await db!.prepare("SELECT status,invoiced_at FROM milestones WHERE id='mil_luma_final'").get<{ status: string; invoiced_at: string | null }>();
-    const invoice = await db!.prepare("SELECT external_ref,amount,status FROM invoices WHERE project_id='prj_luma' ORDER BY created_at DESC LIMIT 1")
-      .get<{ external_ref: string; amount: number; status: string }>();
-    expect(milestone?.status).toBe('invoiced');
-    expect(milestone?.invoiced_at).not.toBeNull();
-    expect(invoice?.amount).toBe(2400);
-    expect(invoice?.status).toBe('sent');
-  });
-
-  it('builds a Scope Ledger from an uploaded agreement', async () => {
-    const agent = await agentWithSession();
-    const agreement = [
-      'STATEMENT OF WORK',
-      'Client: Cedar Labs',
-      'Project: Product launch',
-      '',
-      'Deliverables:',
-      '- Brand strategy workshop',
-      '- One product landing page',
-      '- Additional landing pages are separately priced at EUR 750 per landing page.',
-      '',
-      'Change orders: Additional work outside the scope requires written approval and is priced separately.',
-      'Payment schedule: Deposit EUR 2000 upon signature and final payment EUR 3000 upon delivery.'
-    ].join('\n');
-    const response = await agent.post('/api/imports/document')
-      .field('clientName', 'Cedar Labs')
-      .field('clientEmail', 'client@cedar.example')
-      .field('projectName', 'Product launch')
-      .field('currency', 'EUR')
-      .attach('file', Buffer.from(agreement), { filename: 'cedar-sow.txt', contentType: 'text/plain' })
-      .expect(201);
-    expect(response.body.extractionMethod).toBe('deterministic');
-    expect(response.body.scopeItems).toBeGreaterThanOrEqual(2);
-    expect(response.body.clauses).toBeGreaterThanOrEqual(1);
-    expect(response.body.milestones).toBeGreaterThanOrEqual(1);
-    const contract = await db!.prepare("SELECT COUNT(*) AS count FROM contracts ct JOIN clients c ON c.id=ct.client_id WHERE c.name='Cedar Labs'").get<{ count: number }>();
-    const scope = await db!.prepare("SELECT COUNT(*) AS count FROM scope_items s JOIN projects p ON p.id=s.project_id JOIN clients c ON c.id=p.client_id WHERE c.name='Cedar Labs'").get<{ count: number }>();
-    expect(contract?.count).toBe(1);
-    expect(scope?.count).toBeGreaterThanOrEqual(2);
   });
 
   it('creates scoped agent tokens and runs skills through the agent API', async () => {
@@ -357,11 +339,20 @@ describe('Trevra API on PostgreSQL', () => {
     const browser = request.agent(app);
     await browser.post('/api/auth/demo').expect(200);
 
-    const created = await browser.post('/api/agent-tokens').send({ name: 'Claude Code test' }).expect(201);
+    const created = await browser
+      .post('/api/agent-tokens')
+      .send({ name: 'Claude Code test' })
+      .expect(201);
     expect(created.body.token).toMatch(/^trv_live_/);
     expect(created.body.record.scopes).toEqual([
-      'skills:read', 'skills:run', 'runs:read', 'workspace:read', 'actions:prepare',
-      'playbooks:read', 'playbooks:run', 'workflows:read'
+      'skills:read',
+      'skills:run',
+      'runs:read',
+      'workspace:read',
+      'actions:prepare',
+      'playbooks:read',
+      'playbooks:run',
+      'workflows:read'
     ]);
 
     const listedTokens = await browser.get('/api/agent-tokens').expect(200);
@@ -369,8 +360,13 @@ describe('Trevra API on PostgreSQL', () => {
     expect(JSON.stringify(listedTokens.body)).not.toContain(created.body.token);
 
     const authorization = `Bearer ${created.body.token}`;
-    const skills = await request(app).get('/api/agent/skills').set('Authorization', authorization).expect(200);
-    const scoreManifest = skills.body.skills.find((skill: { id: string }) => skill.id === 'gtm.score-lead');
+    const skills = await request(app)
+      .get('/api/agent/skills')
+      .set('Authorization', authorization)
+      .expect(200);
+    const scoreManifest = skills.body.skills.find(
+      (skill: { id: string }) => skill.id === 'gtm.score-lead'
+    );
     expect(scoreManifest.enabled).toBe(true);
     expect(scoreManifest.inputSchema.type).toBe('object');
 
@@ -383,27 +379,24 @@ describe('Trevra API on PostgreSQL', () => {
     expect(executed.body.run.output.wedge).toBe('sizing');
     expect(executed.body.approvalRequired).toBe(false);
 
-    const runs = await request(app).get('/api/agent/runs?skillId=gtm.score-lead').set('Authorization', authorization).expect(200);
-    expect(runs.body.runs.some((run: { id: string }) => run.id === executed.body.run.id)).toBe(true);
-    await request(app).get(`/api/agent/runs/${executed.body.run.id}`).set('Authorization', authorization).expect(200);
-
-    const brief = await request(app).get('/api/agent/revenue-brief').set('Authorization', authorization).expect(200);
-    expect(brief.body.recommendations.length).toBe(4);
-    const recommendationId = brief.body.recommendations[0].id;
-    const prepared = await request(app)
-      .post(`/api/agent/recommendations/${recommendationId}/prepare`)
+    const runs = await request(app)
+      .get('/api/agent/runs?skillId=gtm.score-lead')
       .set('Authorization', authorization)
-      .send({})
-      .expect(201);
-    expect(prepared.body.action.status).toBe('draft');
-    expect(prepared.body.instruction).toContain('founder');
-    const pending = await request(app).get('/api/agent/actions').set('Authorization', authorization).expect(200);
-    expect(pending.body.actions.some((action: { id: string }) => action.id === prepared.body.action.id)).toBe(true);
+      .expect(200);
+    expect(runs.body.runs.some((run: { id: string }) => run.id === executed.body.run.id)).toBe(
+      true
+    );
     await request(app)
-      .post(`/api/actions/${prepared.body.action.id}/approve`)
+      .get(`/api/agent/runs/${executed.body.run.id}`)
       .set('Authorization', authorization)
-      .send({ recipient: prepared.body.action.recipient, subject: prepared.body.action.subject, body: prepared.body.action.body })
+      .expect(200);
+
+    // Removed agent-Money endpoints are no longer agent-token routes; the normal session boundary rejects the token.
+    await request(app)
+      .get('/api/agent/revenue-brief')
+      .set('Authorization', authorization)
       .expect(401);
+    await request(app).get('/api/agent/actions').set('Authorization', authorization).expect(401);
 
     // An agent token is not a browser session and cannot reach the rest of the product API.
     await request(app).get('/api/dashboard').set('Authorization', authorization).expect(401);
@@ -418,7 +411,10 @@ describe('Trevra API on PostgreSQL', () => {
     const app = createApp(db);
     const browser = request.agent(app);
     await browser.post('/api/auth/demo').expect(200);
-    const created = await browser.post('/api/agent-tokens').send({ name: 'Remote MCP test' }).expect(201);
+    const created = await browser
+      .post('/api/agent-tokens')
+      .send({ name: 'Remote MCP test' })
+      .expect(201);
 
     const httpServer = app.listen(0, '127.0.0.1');
     await new Promise<void>((resolve) => httpServer.once('listening', resolve));
@@ -426,28 +422,19 @@ describe('Trevra API on PostgreSQL', () => {
     if (!address || typeof address === 'string') throw new Error('MCP test server did not bind');
     const mcp = new Client({ name: 'remote-trevra-test', version: '1.0.0' });
     try {
-      await mcp.connect(new StreamableHTTPClientTransport(
-        new URL(`http://127.0.0.1:${address.port}/api/agent/mcp`),
-        { requestInit: { headers: { Authorization: `Bearer ${created.body.token}` } } }
-      ));
+      await mcp.connect(
+        new StreamableHTTPClientTransport(
+          new URL(`http://127.0.0.1:${address.port}/api/agent/mcp`),
+          { requestInit: { headers: { Authorization: `Bearer ${created.body.token}` } } }
+        )
+      );
       const tools = await mcp.listTools();
       expect(tools.tools.some((tool) => tool.name === 'trevra_gtm_score-lead')).toBe(true);
-      expect(tools.tools.some((tool) => tool.name === 'trevra_revenue_brief')).toBe(true);
-      expect(tools.tools.some((tool) => tool.name === 'trevra_prepare_recommendation')).toBe(true);
+      expect(tools.tools.some((tool) => tool.name === 'trevra_revenue_brief')).toBe(false);
+      expect(tools.tools.some((tool) => tool.name === 'trevra_prepare_recommendation')).toBe(false);
+      expect(tools.tools.some((tool) => tool.name === 'trevra_list_pending_actions')).toBe(false);
       expect(tools.tools.some((tool) => tool.name === 'trevra_list_playbooks')).toBe(true);
       expect(tools.tools.some((tool) => tool.name === 'trevra_start_playbook')).toBe(true);
-      const briefResult = await mcp.callTool({ name: 'trevra_revenue_brief', arguments: {} });
-      const briefContent = briefResult.content as Array<{ type: string; text?: string }>;
-      const briefText = briefContent.find((item) => item.type === 'text')?.text;
-      const recommendationId = briefText ? JSON.parse(briefText).recommendations[0].id : null;
-      expect(recommendationId).toBeTruthy();
-      const preparedResult = await mcp.callTool({
-        name: 'trevra_prepare_recommendation',
-        arguments: { recommendationId }
-      });
-      const preparedContent = preparedResult.content as Array<{ type: string; text?: string }>;
-      const preparedText = preparedContent.find((item) => item.type === 'text')?.text;
-      expect(preparedText ? JSON.parse(preparedText).action.status : null).toBe('draft');
       const result = await mcp.callTool({
         name: 'trevra_gtm_score-lead',
         arguments: { lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } }
@@ -467,9 +454,13 @@ describe('Trevra API on PostgreSQL', () => {
     const app = createApp(db);
     const browser = request.agent(app);
     await browser.post('/api/auth/demo').expect(200);
-    const created = await browser.post('/api/agent-tokens').send({
-      name: 'Read-only agent', scopes: ['skills:read']
-    }).expect(201);
+    const created = await browser
+      .post('/api/agent-tokens')
+      .send({
+        name: 'Read-only agent',
+        scopes: ['skills:read']
+      })
+      .expect(201);
     const authorization = `Bearer ${created.body.token}`;
     await request(app).get('/api/agent/skills').set('Authorization', authorization).expect(200);
     await request(app)
@@ -488,33 +479,55 @@ describe('Trevra API on PostgreSQL', () => {
     await browser.post('/api/auth/demo').expect(200);
 
     const catalog = await browser.get('/api/playbooks').expect(200);
-    expect(catalog.body.playbooks.some((playbook: { id: string }) => playbook.id === 'test.api-score-approval')).toBe(true);
+    expect(
+      catalog.body.playbooks.some(
+        (playbook: { id: string }) => playbook.id === 'test.api-score-approval'
+      )
+    ).toBe(true);
 
-    const started = await browser.post('/api/playbooks/test.api-score-approval/runs').send({
-      input: { lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } }
-    }).expect(201);
+    const started = await browser
+      .post('/api/playbooks/test.api-score-approval/runs')
+      .send({
+        input: { lead: { platform: 'shopify', vertical: 'footwear', catalogSize: 100 } }
+      })
+      .expect(201);
     expect(started.body.run.status).toBe('waiting_approval');
     const runId = started.body.run.id as string;
-    const approval = started.body.run.steps.find((step: { status: string }) => step.status === 'waiting_approval');
+    const approval = started.body.run.steps.find(
+      (step: { status: string }) => step.status === 'waiting_approval'
+    );
     expect(approval.approvalPayloadHash).toHaveLength(64);
 
     const inspected = await browser.get(`/api/playbook-runs/${runId}`).expect(200);
     expect(inspected.body.run.currentStepId).toBe('approve');
 
-    const decided = await browser.post(`/api/playbook-runs/${runId}/steps/approve/decision`).send({ decision: 'approve' }).expect(200);
+    const decided = await browser
+      .post(`/api/playbook-runs/${runId}/steps/approve/decision`)
+      .send({ decision: 'approve' })
+      .expect(200);
     expect(decided.body.run.status).toBe('completed');
     expect(decided.body.run.output).toMatchObject({ approved: true, score: { wedge: 'sizing' } });
 
-    const events = await browser.get(`/api/control-plane/events?streamType=playbook_run&streamId=${runId}`).expect(200);
-    expect(events.body.events.map((event: { eventType: string }) => event.eventType)).toContain('playbook.run.completed');
-    expect(events.body.events.map((event: { streamVersion: number }) => event.streamVersion)).toEqual(
-      events.body.events.map((_: unknown, index: number) => index + 1)
+    const events = await browser
+      .get(`/api/control-plane/events?streamType=playbook_run&streamId=${runId}`)
+      .expect(200);
+    expect(events.body.events.map((event: { eventType: string }) => event.eventType)).toContain(
+      'playbook.run.completed'
     );
+    expect(
+      events.body.events.map((event: { streamVersion: number }) => event.streamVersion)
+    ).toEqual(events.body.events.map((_: unknown, index: number) => index + 1));
 
-    const created = await browser.post('/api/agent-tokens').send({ name: 'Workflow agent' }).expect(201);
+    const created = await browser
+      .post('/api/agent-tokens')
+      .send({ name: 'Workflow agent' })
+      .expect(201);
     const authorization = `Bearer ${created.body.token}`;
     await request(app).get('/api/agent/playbooks').set('Authorization', authorization).expect(200);
-    await request(app).get(`/api/agent/playbook-runs/${runId}`).set('Authorization', authorization).expect(200);
+    await request(app)
+      .get(`/api/agent/playbook-runs/${runId}`)
+      .set('Authorization', authorization)
+      .expect(200);
     await request(app)
       .post(`/api/playbook-runs/${runId}/steps/approve/decision`)
       .set('Authorization', authorization)
@@ -527,17 +540,42 @@ describe('Trevra API on PostgreSQL', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_placeholder';
     const agent = await agentWithSession();
     const payload = JSON.stringify({
-      id: 'evt_trevra_paid', object: 'event', api_version: '2025-06-30.basil', created: Math.floor(Date.now() / 1000), type: 'invoice.paid',
-      data: { object: {
-        id: 'in_test', object: 'invoice', number: 'INV-104', amount_paid: 185000, currency: 'eur',
-        metadata: { trevra_workspace_id: 'ws_demo', trevra_invoice_id: 'inv_acme_104' },
-        status_transitions: { paid_at: Math.floor(Date.now() / 1000) }
-      } }
+      id: 'evt_trevra_paid',
+      object: 'event',
+      api_version: '2025-06-30.basil',
+      created: Math.floor(Date.now() / 1000),
+      type: 'invoice.paid',
+      data: {
+        object: {
+          id: 'in_test',
+          object: 'invoice',
+          number: 'INV-104',
+          amount_paid: 185000,
+          currency: 'eur',
+          metadata: { trevra_workspace_id: 'ws_demo', trevra_invoice_id: 'inv_acme_104' },
+          status_transitions: { paid_at: Math.floor(Date.now() / 1000) }
+        }
+      }
     });
-    const signature = Stripe.webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET });
-    await agent.post('/api/webhooks/stripe').set('stripe-signature', signature).set('content-type', 'application/json').send(payload).expect(202);
-    await agent.post('/api/webhooks/stripe').set('stripe-signature', signature).set('content-type', 'application/json').send(payload).expect(200);
-    const invoice = await db!.prepare("SELECT status,paid_at FROM invoices WHERE id='inv_acme_104'").get<{ status: string; paid_at: string | null }>();
+    const signature = Stripe.webhooks.generateTestHeaderString({
+      payload,
+      secret: process.env.STRIPE_WEBHOOK_SECRET
+    });
+    await agent
+      .post('/api/webhooks/stripe')
+      .set('stripe-signature', signature)
+      .set('content-type', 'application/json')
+      .send(payload)
+      .expect(202);
+    await agent
+      .post('/api/webhooks/stripe')
+      .set('stripe-signature', signature)
+      .set('content-type', 'application/json')
+      .send(payload)
+      .expect(200);
+    const invoice = await db!
+      .prepare("SELECT status,paid_at FROM invoices WHERE id='inv_acme_104'")
+      .get<{ status: string; paid_at: string | null }>();
     expect(invoice?.status).toBe('paid');
     expect(invoice?.paid_at).not.toBeNull();
   });
@@ -560,18 +598,28 @@ describe('Trevra API on PostgreSQL', () => {
     const agent = await agentWithSession();
     const apiKey = 'trv-model-key-for-tests-3f9d2b7c4a81';
 
-    const stored = await agent.put('/api/agent-setup/key').send({ apiKey, label: 'Anthropic' }).expect(200);
-    expect(stored.body.secret).toMatchObject({ kind: 'model_api_key', last4: '4a81', label: 'Anthropic', keyVersion: 2 });
+    const stored = await agent
+      .put('/api/agent-setup/key')
+      .send({ apiKey, label: 'Anthropic' })
+      .expect(200);
+    expect(stored.body.secret).toMatchObject({
+      kind: 'model_api_key',
+      last4: '4a81',
+      label: 'Anthropic',
+      keyVersion: 2
+    });
     expect(JSON.stringify(stored.body)).not.toContain(apiKey);
 
     const setup = await agent.get('/api/agent-setup').expect(200);
     expect(setup.body.secret).toMatchObject({ last4: '4a81', label: 'Anthropic' });
     expect(JSON.stringify(setup.body)).not.toContain(apiKey);
 
-    const row = await db!.prepare('SELECT ciphertext FROM workspace_secrets WHERE workspace_id=?')
+    const row = await db!
+      .prepare('SELECT ciphertext FROM workspace_secrets WHERE workspace_id=?')
       .get<{ ciphertext: Buffer }>(DEMO_WORKSPACE_ID);
     expect(row?.ciphertext.toString('utf8')).not.toContain(apiKey);
-    const audit = await db!.prepare("SELECT metadata_json FROM audit_events WHERE event_type='workspace_secret.updated'")
+    const audit = await db!
+      .prepare("SELECT metadata_json FROM audit_events WHERE event_type='workspace_secret.updated'")
       .get<{ metadata_json: string }>();
     expect(audit?.metadata_json).not.toContain(apiKey);
   });
@@ -582,11 +630,17 @@ describe('Trevra API on PostgreSQL', () => {
     // A delta, not an absolute count: every test file in the run shares one
     // database and several of them legitimately store secrets, so `= 0` was an
     // assertion about file order rather than about this request.
-    const countSecrets = async () => (await db!
-      .prepare('SELECT COUNT(*)::int AS count FROM workspace_secrets')
-      .get<{ count: number }>())?.count ?? 0;
+    const countSecrets = async () =>
+      (
+        await db!
+          .prepare('SELECT COUNT(*)::int AS count FROM workspace_secrets')
+          .get<{ count: number }>()
+      )?.count ?? 0;
     const before = await countSecrets();
-    const response = await agent.put('/api/agent-setup/key').send({ apiKey: 'trv-model-key-never-stored' }).expect(400);
+    const response = await agent
+      .put('/api/agent-setup/key')
+      .send({ apiKey: 'trv-model-key-never-stored' })
+      .expect(400);
     expect(response.body.error).toContain('TREVRA_SECRETS_KEY');
     expect(await countSecrets()).toBe(before);
   });
@@ -594,7 +648,10 @@ describe('Trevra API on PostgreSQL', () => {
   it('deletes a stored model key', async () => {
     process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
     const agent = await agentWithSession();
-    await agent.put('/api/agent-setup/key').send({ apiKey: 'trv-model-key-to-delete-8821' }).expect(200);
+    await agent
+      .put('/api/agent-setup/key')
+      .send({ apiKey: 'trv-model-key-to-delete-8821' })
+      .expect(200);
     expect((await agent.delete('/api/agent-setup/key').expect(200)).body.deleted).toBe(true);
     expect((await agent.get('/api/agent-setup').expect(200)).body.secret).toBeNull();
     expect((await agent.delete('/api/agent-setup/key').expect(200)).body.deleted).toBe(false);
@@ -602,27 +659,48 @@ describe('Trevra API on PostgreSQL', () => {
 
   it('refuses a model endpoint that is not HTTPS', async () => {
     const agent = await agentWithSession();
-    const rejected = await agent.put('/api/agent-setup/config')
+    const rejected = await agent
+      .put('/api/agent-setup/config')
       .send({ baseUrl: 'http://api.example.com/v1', model: 'gpt-4o-mini' })
       .expect(400);
     expect(rejected.body.error).toContain('HTTPS');
 
-    const saved = await agent.put('/api/agent-setup/config')
+    const saved = await agent
+      .put('/api/agent-setup/config')
       .send({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', label: 'OpenAI' })
       .expect(200);
-    expect(saved.body.config).toMatchObject({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', label: 'OpenAI' });
+    expect(saved.body.config).toMatchObject({
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      label: 'OpenAI'
+    });
     expect((await agent.get('/api/agent-setup').expect(200)).body.config.model).toBe('gpt-4o-mini');
   });
 
   it('sets the spend cap and the kill switch, and refuses a cap above the ceiling', async () => {
     const agent = await agentWithSession();
-    const updated = await agent.put('/api/agent-setup/budget').send({ monthlyCapCents: 5000, enabled: true }).expect(200);
-    expect(updated.body.budget).toMatchObject({ monthlyCapCents: 5000, spentCents: 0, enabled: true });
-    expect((await agent.get('/api/agent-setup').expect(200)).body.budget).toMatchObject({ monthlyCapCents: 5000, enabled: true });
+    const updated = await agent
+      .put('/api/agent-setup/budget')
+      .send({ monthlyCapCents: 5000, enabled: true })
+      .expect(200);
+    expect(updated.body.budget).toMatchObject({
+      monthlyCapCents: 5000,
+      spentCents: 0,
+      enabled: true
+    });
+    expect((await agent.get('/api/agent-setup').expect(200)).body.budget).toMatchObject({
+      monthlyCapCents: 5000,
+      enabled: true
+    });
 
-    const rejected = await agent.put('/api/agent-setup/budget').send({ monthlyCapCents: 1_000_001 }).expect(400);
+    const rejected = await agent
+      .put('/api/agent-setup/budget')
+      .send({ monthlyCapCents: 1_000_001 })
+      .expect(400);
     expect(JSON.stringify(rejected.body)).toContain('$10,000');
-    expect((await agent.get('/api/agent-setup').expect(200)).body.budget.monthlyCapCents).toBe(5000);
+    expect((await agent.get('/api/agent-setup').expect(200)).body.budget.monthlyCapCents).toBe(
+      5000
+    );
   });
 
   it('keeps one workspace out of another workspace BYOK setup', async () => {
@@ -634,11 +712,19 @@ describe('Trevra API on PostgreSQL', () => {
     await owner.post('/api/auth/demo').expect(200);
     const apiKey = 'trv-model-key-owned-by-demo-9c2f';
     await owner.put('/api/agent-setup/key').send({ apiKey, label: 'Owner' }).expect(200);
-    await owner.put('/api/agent-setup/config').send({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }).expect(200);
+    await owner
+      .put('/api/agent-setup/config')
+      .send({ baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' })
+      .expect(200);
 
     const intruder = request.agent(app);
-    await intruder.post('/api/auth/sign-up/email')
-      .send({ name: 'Other Founder', email: `other-${Date.now()}@example.com`, password: 'correct-horse-battery-staple' })
+    await intruder
+      .post('/api/auth/sign-up/email')
+      .send({
+        name: 'Other Founder',
+        email: `other-${Date.now()}@example.com`,
+        password: 'correct-horse-battery-staple'
+      })
       .expect(200);
     const theirs = await intruder.get('/api/agent-setup').expect(200);
     expect(theirs.body.secret).toBeNull();
@@ -654,12 +740,21 @@ describe('Trevra API on PostgreSQL', () => {
   it('reports the CLI subscription setup as unset by default', async () => {
     const agent = await agentWithSession();
     const setup = await agent.get('/api/agent-setup').expect(200);
-    expect(setup.body.cli).toEqual({ config: null, tokenStored: false, tokenCustody: null, tokenKeyId: null, riskAccepted: false });
+    expect(setup.body.cli).toEqual({
+      config: null,
+      tokenStored: false,
+      tokenCustody: null,
+      tokenKeyId: null,
+      riskAccepted: false
+    });
   });
 
   it('saves the subscription CLI and model, visible before any risk is accepted', async () => {
     const agent = await agentWithSession();
-    const saved = await agent.put('/api/agent-setup/cli-config').send({ cli: 'codex', model: 'gpt-5-codex' }).expect(200);
+    const saved = await agent
+      .put('/api/agent-setup/cli-config')
+      .send({ cli: 'codex', model: 'gpt-5-codex' })
+      .expect(200);
     expect(saved.body.config).toEqual({ cli: 'codex', model: 'gpt-5-codex' });
 
     const setup = await agent.get('/api/agent-setup').expect(200);
@@ -678,18 +773,30 @@ describe('Trevra API on PostgreSQL', () => {
   it('refuses to accept the CLI risk before a CLI and model are saved, then accepts and revokes in one click', async () => {
     const agent = await agentWithSession();
 
-    const early = await agent.put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(400);
+    const early = await agent
+      .put('/api/agent-setup/cli-risk-accept')
+      .send({ accepted: true })
+      .expect(400);
     expect(early.body.error).toMatch(/CLI and model/i);
 
-    await agent.put('/api/agent-setup/cli-config').send({ cli: 'claude', model: 'sonnet' }).expect(200);
+    await agent
+      .put('/api/agent-setup/cli-config')
+      .send({ cli: 'claude', model: 'sonnet' })
+      .expect(200);
 
-    const accepted = await agent.put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(200);
+    const accepted = await agent
+      .put('/api/agent-setup/cli-risk-accept')
+      .send({ accepted: true })
+      .expect(200);
     expect(accepted.body.riskAccepted).toBe(true);
     expect((await agent.get('/api/agent-setup').expect(200)).body.cli.riskAccepted).toBe(true);
 
     // Revocable in one click: `false` clears it back to unaccepted immediately,
     // not on the next save of something else.
-    const revoked = await agent.put('/api/agent-setup/cli-risk-accept').send({ accepted: false }).expect(200);
+    const revoked = await agent
+      .put('/api/agent-setup/cli-risk-accept')
+      .send({ accepted: false })
+      .expect(200);
     expect(revoked.body.riskAccepted).toBe(false);
     expect((await agent.get('/api/agent-setup').expect(200)).body.cli.riskAccepted).toBe(false);
 
@@ -700,7 +807,10 @@ describe('Trevra API on PostgreSQL', () => {
   it('stores the subscription token write-only behind the secrets-key gate, and never returns it anywhere', async () => {
     delete process.env.TREVRA_SECRETS_KEY;
     const agent = await agentWithSession();
-    const refused = await agent.put('/api/agent-setup/cli-token').send({ token: 'sk-ant-oat01-should-not-store' }).expect(400);
+    const refused = await agent
+      .put('/api/agent-setup/cli-token')
+      .send({ token: 'sk-ant-oat01-should-not-store' })
+      .expect(400);
     expect(refused.body.error).toContain('TREVRA_SECRETS_KEY');
 
     process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
@@ -712,7 +822,10 @@ describe('Trevra API on PostgreSQL', () => {
     expect(setup.body.cli.tokenStored).toBe(true);
     expect(JSON.stringify(setup.body)).not.toContain(token);
 
-    const row = await db!.prepare("SELECT ciphertext FROM workspace_secrets WHERE workspace_id=? AND kind='cli_oauth_token'")
+    const row = await db!
+      .prepare(
+        "SELECT ciphertext FROM workspace_secrets WHERE workspace_id=? AND kind='cli_oauth_token'"
+      )
       .get<{ ciphertext: Buffer }>(DEMO_WORKSPACE_ID);
     expect(row?.ciphertext.toString('utf8')).not.toContain(token);
 
@@ -726,7 +839,10 @@ describe('Trevra API on PostgreSQL', () => {
     await resetDemoData(db);
     const app = createApp(db);
     await request(app).get('/api/agent-setup').expect(401);
-    await request(app).put('/api/agent-setup/cli-config').send({ cli: 'claude', model: 'sonnet' }).expect(401);
+    await request(app)
+      .put('/api/agent-setup/cli-config')
+      .send({ cli: 'claude', model: 'sonnet' })
+      .expect(401);
     await request(app).put('/api/agent-setup/cli-token').send({ token: 'x' }).expect(401);
     await request(app).delete('/api/agent-setup/cli-token').expect(401);
     await request(app).put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(401);
@@ -741,7 +857,9 @@ describe('Trevra API on PostgreSQL', () => {
     const agent = await agentWithSession();
     let last: { status: number } | undefined;
     for (let i = 0; i < 30; i += 1) {
-      last = await agent.put('/api/agent-setup/cli-token').send({ token: `trv-cli-token-rate-${i}` });
+      last = await agent
+        .put('/api/agent-setup/cli-token')
+        .send({ token: `trv-cli-token-rate-${i}` });
     }
     expect(last?.status).toBe(429);
   });
@@ -753,22 +871,42 @@ describe('Trevra API on PostgreSQL', () => {
     const app = createApp(db);
     const owner = request.agent(app);
     await owner.post('/api/auth/demo').expect(200);
-    await owner.put('/api/agent-setup/cli-config').send({ cli: 'claude', model: 'sonnet' }).expect(200);
+    await owner
+      .put('/api/agent-setup/cli-config')
+      .send({ cli: 'claude', model: 'sonnet' })
+      .expect(200);
     await owner.put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(200);
     const token = 'sk-ant-oat01-owned-by-demo-workspace';
     await owner.put('/api/agent-setup/cli-token').send({ token }).expect(200);
 
     const intruder = request.agent(app);
-    await intruder.post('/api/auth/sign-up/email')
-      .send({ name: 'Other Founder', email: `other-cli-${Date.now()}@example.com`, password: 'correct-horse-battery-staple' })
+    await intruder
+      .post('/api/auth/sign-up/email')
+      .send({
+        name: 'Other Founder',
+        email: `other-cli-${Date.now()}@example.com`,
+        password: 'correct-horse-battery-staple'
+      })
       .expect(200);
     const theirs = await intruder.get('/api/agent-setup').expect(200);
-    expect(theirs.body.cli).toEqual({ config: null, tokenStored: false, tokenCustody: null, tokenKeyId: null, riskAccepted: false });
+    expect(theirs.body.cli).toEqual({
+      config: null,
+      tokenStored: false,
+      tokenCustody: null,
+      tokenKeyId: null,
+      riskAccepted: false
+    });
     expect(JSON.stringify(theirs.body)).not.toContain(token);
-    expect((await intruder.delete('/api/agent-setup/cli-token').expect(200)).body.deleted).toBe(false);
+    expect((await intruder.delete('/api/agent-setup/cli-token').expect(200)).body.deleted).toBe(
+      false
+    );
 
     const still = await owner.get('/api/agent-setup').expect(200);
-    expect(still.body.cli).toMatchObject({ config: { cli: 'claude', model: 'sonnet' }, tokenStored: true, riskAccepted: true });
+    expect(still.body.cli).toMatchObject({
+      config: { cli: 'claude', model: 'sonnet' },
+      tokenStored: true,
+      riskAccepted: true
+    });
     // Custody, not merely presence: a deployment holding the wrong server key
     // reports the token as stored and then 500s at use time, and this field is
     // the difference between a green setup screen and an honest one.
@@ -790,7 +928,10 @@ describe('Trevra API on PostgreSQL', () => {
     const model = gate();
     hostedModel.model = new MockLanguageModelV4({
       modelId: 'gpt-4o-mini',
-      doGenerate: async () => { await model.held; return modelAnswer('Nothing needs a human right now.'); }
+      doGenerate: async () => {
+        await model.held;
+        return modelAnswer('Nothing needs a human right now.');
+      }
     });
 
     const agent = await agentWithSession();
@@ -801,10 +942,17 @@ describe('Trevra API on PostgreSQL', () => {
     const created = await agent.post('/api/agent-runs').send({ goal }).expect(201);
     const elapsedMs = Date.now() - startedAt;
 
-    expect(created.body.run).toMatchObject({ status: 'running', trigger: 'manual', goal, stepCount: 0 });
+    expect(created.body.run).toMatchObject({
+      status: 'running',
+      trigger: 'manual',
+      goal,
+      stepCount: 0
+    });
     expect(elapsedMs).toBeLessThan(2_000);
     // Still going, with the model still blocked: the run really is detached.
-    expect((await agent.get(`/api/agent-runs/${created.body.run.id}`).expect(200)).body.run.status).toBe('running');
+    expect(
+      (await agent.get(`/api/agent-runs/${created.body.run.id}`).expect(200)).body.run.status
+    ).toBe('running');
 
     model.release();
     const finished = await waitForAgentRun(agent, created.body.run.id);
@@ -817,7 +965,10 @@ describe('Trevra API on PostgreSQL', () => {
   it('refuses to start a run while agent spending is off, and records nothing', async () => {
     hostedModel.model = null;
     const agent = await agentWithSession();
-    const refused = await agent.post('/api/agent-runs').send({ goal: 'Spend money nobody agreed to' }).expect(409);
+    const refused = await agent
+      .post('/api/agent-runs')
+      .send({ goal: 'Spend money nobody agreed to' })
+      .expect(409);
     expect(refused.body.error).toBe('Agent spending is off. Turn it on in Setup.');
     expect((await agent.get('/api/agent-runs').expect(200)).body.runs).toEqual([]);
   });
@@ -829,7 +980,10 @@ describe('Trevra API on PostgreSQL', () => {
 
     await agent.post('/api/agent-runs').send({}).expect(400);
     await agent.post('/api/agent-runs').send({ goal: '   ' }).expect(400);
-    await agent.post('/api/agent-runs').send({ goal: 'x'.repeat(2001) }).expect(400);
+    await agent
+      .post('/api/agent-runs')
+      .send({ goal: 'x'.repeat(2001) })
+      .expect(400);
     await agent.post('/api/agent-runs').send({ goal: 'fine', maxSteps: 0 }).expect(400);
 
     expect((await agent.get('/api/agent-runs').expect(200)).body.runs).toEqual([]);
@@ -839,17 +993,27 @@ describe('Trevra API on PostgreSQL', () => {
     const agent = await agentWithSession();
     expect((await agent.get('/api/agent-setup').expect(200)).body.schedule).toBeNull();
 
-    const saved = await agent.put('/api/agent-setup/schedule')
+    const saved = await agent
+      .put('/api/agent-setup/schedule')
       .send({ enabled: true, goal: 'Review the week', intervalMinutes: 60 })
       .expect(200);
-    expect(saved.body.schedule).toMatchObject({ enabled: true, goal: 'Review the week', intervalMinutes: 60 });
-    expect((await agent.get('/api/agent-setup').expect(200)).body.schedule)
-      .toMatchObject({ enabled: true, intervalMinutes: 60, lastRunAt: null });
+    expect(saved.body.schedule).toMatchObject({
+      enabled: true,
+      goal: 'Review the week',
+      intervalMinutes: 60
+    });
+    expect((await agent.get('/api/agent-setup').expect(200)).body.schedule).toMatchObject({
+      enabled: true,
+      intervalMinutes: 60,
+      lastRunAt: null
+    });
 
     await agent.put('/api/agent-setup/schedule').send({ intervalMinutes: 14 }).expect(400);
     await agent.put('/api/agent-setup/schedule').send({ intervalMinutes: 10_081 }).expect(400);
     await agent.put('/api/agent-setup/schedule').send({}).expect(400);
-    expect((await agent.get('/api/agent-setup').expect(200)).body.schedule.intervalMinutes).toBe(60);
+    expect((await agent.get('/api/agent-setup').expect(200)).body.schedule.intervalMinutes).toBe(
+      60
+    );
 
     // Left off, so this file cannot hand a live schedule to another one.
     await agent.put('/api/agent-setup/schedule').send({ enabled: false }).expect(200);
@@ -864,12 +1028,18 @@ describe('Trevra API on PostgreSQL', () => {
    */
   it('refuses an inverted LinkedIn working window with a 400 and the rule it broke', async () => {
     const agent = await agentWithSession();
-    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+    await agent
+      .put('/api/linkedin/seat')
+      .send({ label: 'Founder', timezone: 'Europe/Zurich' })
+      .expect(200);
 
-    const refused = await agent.put('/api/linkedin/seat')
+    const refused = await agent
+      .put('/api/linkedin/seat')
       .send({ workStartMinute: 1080, workEndMinute: 480 })
       .expect(400);
-    expect(refused.body.error).toBe('Working hours must be whole minutes in one local day, with the end after the start.');
+    expect(refused.body.error).toBe(
+      'Working hours must be whole minutes in one local day, with the end after the start.'
+    );
 
     // The seat is untouched: a refused patch writes nothing.
     const seat = await agent.get('/api/linkedin/seat').expect(200);
@@ -884,7 +1054,10 @@ describe('Trevra API on PostgreSQL', () => {
    */
   it('reports the operator ranges, the seat bands and the campaign ramp with the limits', async () => {
     const agent = await agentWithSession();
-    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+    await agent
+      .put('/api/linkedin/seat')
+      .send({ label: 'Founder', timezone: 'Europe/Zurich' })
+      .expect(200);
 
     const before = await agent.get('/api/linkedin/limits').expect(200);
     expect(before.body.seat.safetyBandOverride).toBe(false);
@@ -897,8 +1070,14 @@ describe('Trevra API on PostgreSQL', () => {
       profileView: { min: 0, max: 100, default: 25 },
       follow: { min: 0, max: 50, default: 20 }
     });
-    await agent.put('/api/linkedin/seat').send({ dailyInviteLimit: before.body.operatorRanges.invite.max }).expect(200);
-    await agent.put('/api/linkedin/seat').send({ dailyInviteLimit: before.body.operatorRanges.invite.max + 1 }).expect(400);
+    await agent
+      .put('/api/linkedin/seat')
+      .send({ dailyInviteLimit: before.body.operatorRanges.invite.max })
+      .expect(200);
+    await agent
+      .put('/api/linkedin/seat')
+      .send({ dailyInviteLimit: before.body.operatorRanges.invite.max + 1 })
+      .expect(400);
 
     // Read off LINKEDIN_LIMITS for the band this seat is actually in.
     const band = before.body.seat.band as 'warmup' | 'steady';
@@ -911,13 +1090,26 @@ describe('Trevra API on PostgreSQL', () => {
     expect(ramp).toHaveLength(5);
     expect(ramp[0]).toBeCloseTo(0.2, 10);
     expect(ramp.at(-1)).toBe(1);
-    ramp.forEach((fraction, index) => expect(fraction).toBeCloseTo(campaignWarmupFraction(RAMP_START, new Date(Date.parse(RAMP_START) + index * 86_400_000)), 10));
+    ramp.forEach((fraction, index) =>
+      expect(fraction).toBeCloseTo(
+        campaignWarmupFraction(RAMP_START, new Date(Date.parse(RAMP_START) + index * 86_400_000)),
+        10
+      )
+    );
 
     // The opt-in is a seat field, saved and read back like every other one.
-    const saved = await agent.put('/api/linkedin/seat').send({ safetyBandOverride: true }).expect(200);
+    const saved = await agent
+      .put('/api/linkedin/seat')
+      .send({ safetyBandOverride: true })
+      .expect(200);
     expect(saved.body.seat.safetyBandOverride).toBe(true);
-    expect((await agent.get('/api/linkedin/limits').expect(200)).body.seat.safetyBandOverride).toBe(true);
-    expect((await agent.put('/api/linkedin/seat').send({ safetyBandOverride: false }).expect(200)).body.seat.safetyBandOverride).toBe(false);
+    expect((await agent.get('/api/linkedin/limits').expect(200)).body.seat.safetyBandOverride).toBe(
+      true
+    );
+    expect(
+      (await agent.put('/api/linkedin/seat').send({ safetyBandOverride: false }).expect(200)).body
+        .seat.safetyBandOverride
+    ).toBe(false);
   });
 
   /**
@@ -931,7 +1123,10 @@ describe('Trevra API on PostgreSQL', () => {
    */
   it('reports the operator ceiling, not the band, when the account sets a stricter one', async () => {
     const agent = await agentWithSession();
-    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+    await agent
+      .put('/api/linkedin/seat')
+      .send({ label: 'Founder', timezone: 'Europe/Zurich' })
+      .expect(200);
 
     const band = LINKEDIN_LIMITS.profile_view.warmup.perDay;
     const mine = 5;
@@ -957,7 +1152,10 @@ describe('Trevra API on PostgreSQL', () => {
    */
   it('reports the operator ceiling above the band once the account is opted out of the safety bands', async () => {
     const agent = await agentWithSession();
-    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+    await agent
+      .put('/api/linkedin/seat')
+      .send({ label: 'Founder', timezone: 'Europe/Zurich' })
+      .expect(200);
 
     const band = LINKEDIN_LIMITS.profile_view.warmup.perDay;
     const mine = band + 25;
@@ -1028,25 +1226,43 @@ describe('Trevra API on PostgreSQL', () => {
    */
   it('refuses to export or queue a campaign whose approval has not been granted', async () => {
     const agent = await agentWithSession();
-    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+    await agent
+      .put('/api/linkedin/seat')
+      .send({ label: 'Founder', timezone: 'Europe/Zurich' })
+      .expect(200);
     // Past the warm-up ramp, so the plan has slots and the run reaches its
     // approval step rather than failing the guard first. `activated_at` is
     // write-once through the API by design, which is why this is set in SQL.
-    await db!.prepare("UPDATE linkedin_seats SET activated_at=? WHERE workspace_id=? AND seat_key='owner'")
+    await db!
+      .prepare("UPDATE linkedin_seats SET activated_at=? WHERE workspace_id=? AND seat_key='owner'")
       .run(new Date(Date.now() - 90 * 86_400_000).toISOString(), DEMO_WORKSPACE_ID);
 
-    const created = await agent.post('/api/linkedin/campaigns').send({
-      name: 'Q3 founders',
-      input: {
-        targets: ['https://www.linkedin.com/in/ada-lovelace/'],
-        sequenceSteps: [{ id: 'open', day: 0, kind: 'invite', intent: 'Open the conversation', template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.' }]
-      }
-    }).expect(201);
+    const created = await agent
+      .post('/api/linkedin/campaigns')
+      .send({
+        name: 'Q3 founders',
+        input: {
+          targets: ['https://www.linkedin.com/in/ada-lovelace/'],
+          sequenceSteps: [
+            {
+              id: 'open',
+              day: 0,
+              kind: 'invite',
+              intent: 'Open the conversation',
+              template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.'
+            }
+          ]
+        }
+      })
+      .expect(201);
     const campaignId = created.body.campaign.id;
     const run = created.body.run;
     expect(run.status).toBe('waiting_approval');
 
-    for (const path of [`/api/linkedin/campaigns/${campaignId}/export`, `/api/linkedin/campaigns/${campaignId}/queue`]) {
+    for (const path of [
+      `/api/linkedin/campaigns/${campaignId}/export`,
+      `/api/linkedin/campaigns/${campaignId}/queue`
+    ]) {
       const refused = await agent.post(path).send({}).expect(409);
       expect(refused.body.error).toContain('still waiting for a founder to approve it');
     }
@@ -1054,8 +1270,14 @@ describe('Trevra API on PostgreSQL', () => {
     // And the check does not over-refuse: once the same payload is approved,
     // the export is the approved bytes and goes through.
     const step = run.steps.find((item: { stepType: string }) => item.stepType === 'approval');
-    await agent.post(`/api/playbook-runs/${run.id}/steps/${step.stepId}/decision`).send({ decision: 'approve' }).expect(200);
-    const exported = await agent.post(`/api/linkedin/campaigns/${campaignId}/export`).send({}).expect(201);
+    await agent
+      .post(`/api/playbook-runs/${run.id}/steps/${step.stepId}/decision`)
+      .send({ decision: 'approve' })
+      .expect(200);
+    const exported = await agent
+      .post(`/api/linkedin/campaigns/${campaignId}/export`)
+      .send({})
+      .expect(201);
     expect(exported.body.export).toBeTruthy();
   });
 
@@ -1069,29 +1291,74 @@ describe('Trevra API on PostgreSQL', () => {
    */
   it('lets an edit change what the campaign was created with, and leaves absent fields alone', async () => {
     const agent = await agentWithSession();
-    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
-    await db!.prepare("UPDATE linkedin_seats SET activated_at=? WHERE workspace_id=? AND seat_key='owner'")
+    await agent
+      .put('/api/linkedin/seat')
+      .send({ label: 'Founder', timezone: 'Europe/Zurich' })
+      .expect(200);
+    await db!
+      .prepare("UPDATE linkedin_seats SET activated_at=? WHERE workspace_id=? AND seat_key='owner'")
       .run(new Date(Date.now() - 90 * 86_400_000).toISOString(), DEMO_WORKSPACE_ID);
 
-    const steps = [{ id: 'open', day: 0, kind: 'invite', intent: 'Open the conversation', template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.' }];
-    const created = await agent.post('/api/linkedin/campaigns')
-      .send({ name: 'Q3 founders', input: { targets: ['https://www.linkedin.com/in/ada-lovelace/'], sequenceSteps: steps } })
+    const steps = [
+      {
+        id: 'open',
+        day: 0,
+        kind: 'invite',
+        intent: 'Open the conversation',
+        template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.'
+      }
+    ];
+    const created = await agent
+      .post('/api/linkedin/campaigns')
+      .send({
+        name: 'Q3 founders',
+        input: { targets: ['https://www.linkedin.com/in/ada-lovelace/'], sequenceSteps: steps }
+      })
       .expect(201);
     const campaignId = created.body.campaign.id;
     // The playbook's own defaults, which is what the campaign was created with.
-    expect(created.body.run.input).toMatchObject({ tone: 'consultative', kind: 'invite', horizonDays: 14, format: 'dripify' });
+    expect(created.body.run.input).toMatchObject({
+      tone: 'consultative',
+      kind: 'invite',
+      horizonDays: 14,
+      format: 'dripify'
+    });
 
-    const edited = await agent.patch(`/api/linkedin/campaigns/${campaignId}/sequence`)
-      .send({ steps, tone: 'direct', kind: 'dm', horizonDays: 7, format: 'heyreach', includeInMail: true, inviteNote: 'none' })
+    const edited = await agent
+      .patch(`/api/linkedin/campaigns/${campaignId}/sequence`)
+      .send({
+        steps,
+        tone: 'direct',
+        kind: 'dm',
+        horizonDays: 7,
+        format: 'heyreach',
+        includeInMail: true,
+        inviteNote: 'none'
+      })
       .expect(200);
     expect(edited.body.run.input).toMatchObject({
-      tone: 'direct', kind: 'dm', horizonDays: 7, format: 'heyreach', includeInMail: true, inviteNote: 'none'
+      tone: 'direct',
+      kind: 'dm',
+      horizonDays: 7,
+      format: 'heyreach',
+      includeInMail: true,
+      inviteNote: 'none'
     });
 
     // A second edit that touches only the copy must not revert any of it.
-    const reworded = [{ ...steps[0], template: 'Hi {{firstName}}, noticed {{company}} is scaling RevOps.' }];
-    const again = await agent.patch(`/api/linkedin/campaigns/${campaignId}/sequence`).send({ steps: reworded }).expect(200);
-    expect(again.body.run.input).toMatchObject({ tone: 'direct', kind: 'dm', horizonDays: 7, format: 'heyreach' });
+    const reworded = [
+      { ...steps[0], template: 'Hi {{firstName}}, noticed {{company}} is scaling RevOps.' }
+    ];
+    const again = await agent
+      .patch(`/api/linkedin/campaigns/${campaignId}/sequence`)
+      .send({ steps: reworded })
+      .expect(200);
+    expect(again.body.run.input).toMatchObject({
+      tone: 'direct',
+      kind: 'dm',
+      horizonDays: 7,
+      format: 'heyreach'
+    });
     expect(again.body.approvalInvalidated).toBe(true);
   });
 
@@ -1105,15 +1372,27 @@ describe('Trevra API on PostgreSQL', () => {
    */
   it('records who resumed a LinkedIn account and why, and resumes fine without a reason', async () => {
     const agent = await agentWithSession();
-    await agent.put('/api/linkedin/seat').send({ label: 'Founder', timezone: 'Europe/Zurich' }).expect(200);
+    await agent
+      .put('/api/linkedin/seat')
+      .send({ label: 'Founder', timezone: 'Europe/Zurich' })
+      .expect(200);
 
-    await agent.post('/api/linkedin/seat/pause').send({ reason: 'LinkedIn showed a checkpoint' }).expect(200);
-    const resumed = await agent.post('/api/linkedin/seat/resume').send({ reason: 'Checkpoint cleared, session confirmed live' }).expect(200);
+    await agent
+      .post('/api/linkedin/seat/pause')
+      .send({ reason: 'LinkedIn showed a checkpoint' })
+      .expect(200);
+    const resumed = await agent
+      .post('/api/linkedin/seat/resume')
+      .send({ reason: 'Checkpoint cleared, session confirmed live' })
+      .expect(200);
     expect(resumed.body.resumeReason).toBe('Checkpoint cleared, session confirmed live');
     // The seat carries the state; it does not carry the sentence about starting.
     expect(resumed.body.seat.pausedReason).toBeNull();
 
-    const recorded = await db!.prepare("SELECT actor_type,actor_id,entity_id,metadata_json FROM audit_events WHERE event_type='linkedin.seat_resumed' ORDER BY created_at DESC LIMIT 1")
+    const recorded = await db!
+      .prepare(
+        "SELECT actor_type,actor_id,entity_id,metadata_json FROM audit_events WHERE event_type='linkedin.seat_resumed' ORDER BY created_at DESC LIMIT 1"
+      )
       .get<{ actor_type: string; actor_id: string; entity_id: string; metadata_json: string }>();
     expect(recorded).toMatchObject({ actor_type: 'user', entity_id: 'owner' });
     expect(recorded?.actor_id).toBeTruthy();
@@ -1141,13 +1420,20 @@ describe('Trevra API on PostgreSQL', () => {
     // the schema, and the schema is what this asserts. An unknown field still
     // fails at 400 with an `Invalid request` body, so the two are told apart by
     // the error, not the status.
-    const accepted = await agent.post('/api/linkedin/campaigns/draft')
-      .send({ domain: 'not-a-real-domain.invalid', tone: 'direct', inviteNote: 'none', includeInMail: true })
+    const accepted = await agent
+      .post('/api/linkedin/campaigns/draft')
+      .send({
+        domain: 'not-a-real-domain.invalid',
+        tone: 'direct',
+        inviteNote: 'none',
+        includeInMail: true
+      })
       .expect(400);
     expect(accepted.body.error).not.toBe('Invalid request');
     expect(accepted.body.error).toContain('not-a-real-domain.invalid');
 
-    const refused = await agent.post('/api/linkedin/campaigns/draft')
+    const refused = await agent
+      .post('/api/linkedin/campaigns/draft')
       .send({ domain: 'not-a-real-domain.invalid', tone: 'shouty' })
       .expect(400);
     expect(refused.body.error).toBe('Invalid request');
@@ -1160,14 +1446,24 @@ describe('Trevra API on PostgreSQL', () => {
    */
   it('returns the lead-list total and page bound alongside the page of contacts', async () => {
     const agent = await agentWithSession();
-    const list = await agent.post('/api/linkedin/manager/lead-lists').send({ name: 'Series A CTOs' }).expect(201);
+    const list = await agent
+      .post('/api/linkedin/manager/lead-lists')
+      .send({ name: 'Series A CTOs' })
+      .expect(201);
     const listId = list.body.list.id;
 
-    const empty = await agent.get(`/api/linkedin/manager/lead-lists/${listId}/contacts`).expect(200);
-    expect(empty.body).toMatchObject({ contacts: [], total: 0, pageLimit: LEAD_CONTACT_READ_LIMIT });
+    const empty = await agent
+      .get(`/api/linkedin/manager/lead-lists/${listId}/contacts`)
+      .expect(200);
+    expect(empty.body).toMatchObject({
+      contacts: [],
+      total: 0,
+      pageLimit: LEAD_CONTACT_READ_LIMIT
+    });
 
     const csv = 'first_name,last_name,company\nAda,Lovelace,Analytical\nGrace,Hopper,Navy\n';
-    await agent.post(`/api/linkedin/manager/lead-lists/${listId}/import`)
+    await agent
+      .post(`/api/linkedin/manager/lead-lists/${listId}/import`)
       .attach('file', Buffer.from(csv), 'leads.csv')
       .expect(201);
 
@@ -1203,23 +1499,47 @@ describe('owner-only acts', () => {
 
     // Control-plane and registry: standing permissions, and code published in
     // the workspace's name.
-    await member.agent.post('/api/policies')
-      .send({ name: 'wide open', priority: 1, actionPattern: '*', effect: 'allow', conditions: {}, enabled: true })
+    await member.agent
+      .post('/api/policies')
+      .send({
+        name: 'wide open',
+        priority: 1,
+        actionPattern: '*',
+        effect: 'allow',
+        conditions: {},
+        enabled: true
+      })
       .expect(403);
     await member.agent.delete('/api/policies/pol_whatever').expect(403);
-    await member.agent.post('/api/registry/publishers')
+    await member.agent
+      .post('/api/registry/publishers')
       .send({ slug: 'mine', displayName: 'Mine', publicKeyPem: 'x'.repeat(60) })
       .expect(403);
-    await member.agent.post('/api/registry/modules/gtm.score-lead/install').send({ version: '1.0.0' }).expect(403);
+    await member.agent
+      .post('/api/registry/modules/gtm.score-lead/install')
+      .send({ version: '1.0.0' })
+      .expect(403);
     await member.agent.post('/api/commercial-projections/rebuild').expect(403);
 
     // Credentials, money, and the unattended cadence that spends it.
     await member.agent.delete('/api/agent-tokens/tok_whatever').expect(403);
-    await member.agent.put('/api/agent-setup/key').send({ apiKey: 'sk-nope-1234567890' }).expect(403);
-    await member.agent.put('/api/agent-setup/cli-token').send({ token: 'nope-1234567890' }).expect(403);
+    await member.agent
+      .put('/api/agent-setup/key')
+      .send({ apiKey: 'sk-nope-1234567890' })
+      .expect(403);
+    await member.agent
+      .put('/api/agent-setup/cli-token')
+      .send({ token: 'nope-1234567890' })
+      .expect(403);
     await member.agent.put('/api/agent-setup/cli-risk-accept').send({ accepted: true }).expect(403);
-    await member.agent.put('/api/agent-setup/budget').send({ monthlyCapCents: 100_000, enabled: true }).expect(403);
-    await member.agent.put('/api/agent-setup/schedule').send({ enabled: true, intervalMinutes: 60 }).expect(403);
+    await member.agent
+      .put('/api/agent-setup/budget')
+      .send({ monthlyCapCents: 100_000, enabled: true })
+      .expect(403);
+    await member.agent
+      .put('/api/agent-setup/schedule')
+      .send({ enabled: true, intervalMinutes: 60 })
+      .expect(403);
 
     // The two downloads. Both are files of client names and message bodies that
     // cannot be recalled once they have left.
@@ -1231,7 +1551,10 @@ describe('owner-only acts', () => {
     await member.agent.post('/api/linkedin/seat/resume').send({}).expect(403);
     await member.agent.delete('/api/linkedin/seat').expect(403);
     await member.agent.post('/api/linkedin/seat/login').send({}).expect(403);
-    await member.agent.post('/api/linkedin/seat/detect').send({ timezone: 'Europe/Berlin' }).expect(403);
+    await member.agent
+      .post('/api/linkedin/seat/detect')
+      .send({ timezone: 'Europe/Berlin' })
+      .expect(403);
     await member.agent.put('/api/linkedin/lead-sources/allowance').send({ cap: 200 }).expect(403);
 
     // Queueing is the closest an HTTP caller gets to a send; stopping and
@@ -1252,7 +1575,10 @@ describe('owner-only acts', () => {
     // than a 403 is the proof: the request reached the handler, found no seat
     // and no campaign, and was refused for THAT. A teammate who can see
     // something going wrong can always stop it.
-    await member.agent.post('/api/linkedin/seat/pause').send({ reason: 'this looks wrong' }).expect(404);
+    await member.agent
+      .post('/api/linkedin/seat/pause')
+      .send({ reason: 'this looks wrong' })
+      .expect(404);
     await member.agent.post('/api/linkedin/manager/campaigns/cmp_x/pause').send({}).expect(404);
   });
 });
@@ -1269,31 +1595,55 @@ describe('pause is honoured by the legacy campaign routes', () => {
     const agent = await agentWithSession();
     const campaignId = `cmp_${randomBytes(6).toString('hex')}`;
     const now = new Date().toISOString();
-    await db!.prepare(`
+    await db!
+      .prepare(
+        `
       INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at)
       VALUES (?,?,?,'paused','{}'::jsonb,'owner',?,?)
-    `).run(campaignId, DEMO_WORKSPACE_ID, 'Paused outreach', now, now);
+    `
+      )
+      .run(campaignId, DEMO_WORKSPACE_ID, 'Paused outreach', now, now);
 
-    const queued = await agent.post(`/api/linkedin/campaigns/${campaignId}/queue`).send({}).expect(409);
+    const queued = await agent
+      .post(`/api/linkedin/campaigns/${campaignId}/queue`)
+      .send({})
+      .expect(409);
     expect(queued.body.error).toMatch(/paused/i);
-    const exported = await agent.post(`/api/linkedin/campaigns/${campaignId}/export`).send({}).expect(409);
+    const exported = await agent
+      .post(`/api/linkedin/campaigns/${campaignId}/export`)
+      .send({})
+      .expect(409);
     expect(exported.body.error).toMatch(/paused/i);
 
     // Nothing was written by either refusal -- the whole point of refusing.
-    const actions = await db!.prepare('SELECT COUNT(*) AS count FROM linkedin_actions WHERE campaign_id=?')
+    const actions = await db!
+      .prepare('SELECT COUNT(*) AS count FROM linkedin_actions WHERE campaign_id=?')
       .get<{ count: number }>(campaignId);
     expect(Number(actions?.count ?? 0)).toBe(0);
 
     // A stopped campaign still says 'stopped', not 'paused'.
     await db!.prepare("UPDATE linkedin_campaigns SET status='stopped' WHERE id=?").run(campaignId);
-    const stopped = await agent.post(`/api/linkedin/campaigns/${campaignId}/queue`).send({}).expect(409);
+    const stopped = await agent
+      .post(`/api/linkedin/campaigns/${campaignId}/queue`)
+      .send({})
+      .expect(409);
     expect(stopped.body.error).toMatch(/was stopped/i);
   });
 
   /** The other half of migration 051: 'held' rows must be READABLE. */
   it('accepts every ledger status the database can hold as an actions filter', async () => {
     const agent = await agentWithSession();
-    for (const status of ['planned', 'held', 'exported', 'sent', 'accepted', 'replied', 'declined', 'skipped', 'withdrawn']) {
+    for (const status of [
+      'planned',
+      'held',
+      'exported',
+      'sent',
+      'accepted',
+      'replied',
+      'declined',
+      'skipped',
+      'withdrawn'
+    ]) {
       await agent.get(`/api/linkedin/actions?status=${status}`).expect(200);
     }
     await agent.get('/api/linkedin/actions?status=invented').expect(400);
@@ -1335,12 +1685,18 @@ describe('export and erasure', () => {
     const preview = await agent.get('/api/workspace/erasure').expect(200);
     expect(preview.body.confirmationPhrase).toBe('Northstar Studio');
     expect(preview.body.erasable).toBe(false);
-    expect(preview.body.inventory.some((entry: { table: string }) => entry.table === 'clients')).toBe(true);
+    expect(
+      preview.body.inventory.some((entry: { table: string }) => entry.table === 'clients')
+    ).toBe(true);
     expect(preview.body.totalRows).toBeGreaterThan(0);
 
-    const refused = await agent.delete('/api/workspace').send({ confirm: 'Northstar Studio' }).expect(403);
+    const refused = await agent
+      .delete('/api/workspace')
+      .send({ confirm: 'Northstar Studio' })
+      .expect(403);
     expect(refused.body.error).toMatch(/demo workspace/i);
-    const clients = await db!.prepare('SELECT COUNT(*) AS count FROM clients WHERE workspace_id=?')
+    const clients = await db!
+      .prepare('SELECT COUNT(*) AS count FROM clients WHERE workspace_id=?')
       .get<{ count: number }>(DEMO_WORKSPACE_ID);
     expect(Number(clients?.count ?? 0)).toBeGreaterThan(0);
   });
@@ -1360,38 +1716,53 @@ describe('export and erasure', () => {
     const phrase = preview.body.confirmationPhrase as string;
     expect(preview.body.erasable).toBe(true);
 
-    const wrong = await owner.agent.delete('/api/workspace').send({ confirm: `${phrase} maybe` }).expect(400);
+    const wrong = await owner.agent
+      .delete('/api/workspace')
+      .send({ confirm: `${phrase} maybe` })
+      .expect(400);
     expect(wrong.body.error).toMatch(/Nothing was deleted/i);
 
     const now = new Date().toISOString();
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at)
       VALUES (?,?,?,'running','{}'::jsonb,'owner',?,?)
-    `).run('cmp_inflight', auth.workspaceId, 'Mid-flight', now, now);
+    `
+      )
+      .run('cmp_inflight', auth.workspaceId, 'Mid-flight', now, now);
 
     const busy = await owner.agent.delete('/api/workspace').send({ confirm: phrase }).expect(409);
     expect(busy.body.inFlight.join(' ')).toMatch(/campaign/i);
 
     // Neither refusal deleted anything.
-    const survived = await db.prepare('SELECT COUNT(*) AS count FROM workspaces WHERE id=?')
+    const survived = await db
+      .prepare('SELECT COUNT(*) AS count FROM workspaces WHERE id=?')
       .get<{ count: number }>(auth.workspaceId);
     expect(Number(survived?.count ?? 0)).toBe(1);
 
-    await db.prepare("UPDATE linkedin_campaigns SET status='stopped' WHERE id='cmp_inflight'").run();
+    await db
+      .prepare("UPDATE linkedin_campaigns SET status='stopped' WHERE id='cmp_inflight'")
+      .run();
     const erased = await owner.agent.delete('/api/workspace').send({ confirm: phrase }).expect(200);
     expect(erased.body.erased).toBe(true);
     expect(erased.body.removed.linkedin_campaigns).toBe(1);
 
-    const gone = await db.prepare('SELECT COUNT(*) AS count FROM workspaces WHERE id=?')
+    const gone = await db
+      .prepare('SELECT COUNT(*) AS count FROM workspaces WHERE id=?')
       .get<{ count: number }>(auth.workspaceId);
     expect(Number(gone?.count ?? 0)).toBe(0);
-    const cascaded = await db.prepare('SELECT COUNT(*) AS count FROM linkedin_campaigns WHERE workspace_id=?')
+    const cascaded = await db
+      .prepare('SELECT COUNT(*) AS count FROM linkedin_campaigns WHERE workspace_id=?')
       .get<{ count: number }>(auth.workspaceId);
     expect(Number(cascaded?.count ?? 0)).toBe(0);
 
     // The record outlives the workspace, which is the only reason it has no
     // foreign key to it (migration 057).
-    const log = await db.prepare('SELECT workspace_name, rows_removed_json FROM workspace_erasures WHERE workspace_id=?')
+    const log = await db
+      .prepare(
+        'SELECT workspace_name, rows_removed_json FROM workspace_erasures WHERE workspace_id=?'
+      )
       .get<{ workspace_name: string; rows_removed_json: Record<string, number> }>(auth.workspaceId);
     expect(log?.workspace_name).toBe(phrase);
     expect(log?.rows_removed_json.linkedin_campaigns).toBe(1);

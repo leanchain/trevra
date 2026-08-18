@@ -1,4 +1,9 @@
-import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
+import express, {
+  type NextFunction,
+  type Request,
+  type RequestHandler,
+  type Response
+} from 'express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -11,25 +16,29 @@ import { APIError } from 'better-auth';
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node';
 import type { Db } from './db.js';
 import { DEMO_USER_ID, DEMO_WORKSPACE_ID, id, resetDemoData } from './db.js';
-import { runRecommendationEngine } from './recommendation-engine.js';
-import { listAutomationRules, listConnections, listRecommendations } from './serializers.js';
-import { approveAction, executeAction, prepareAction } from './action-service.js';
-import { runAutomationCycle } from './automation-service.js';
-import { auth as betterAuth, configureAuthProvisioning, resolveBetterAuthIdentity } from './auth-service.js';
-import { importCommercialDocument } from './document-service.js';
+import { listConnections } from './serializers.js';
+import {
+  auth as betterAuth,
+  configureAuthProvisioning,
+  resolveBetterAuthIdentity
+} from './auth-service.js';
 import {
   createNangoConnectSession,
   disconnectIntegration,
   handleNangoWebhook,
-  importMarketplaceCsv,
   ingestCanonicalRecord,
+  isMoneyIntegrationProvider,
   listAvailableIntegrations,
-  processStripeWebhook,
-  recordOutcome,
   triggerConnectionSync
 } from './integration-service.js';
 import { getSiteConfig, recordMarketingEvent, registerPublicSiteRoutes } from './public-site.js';
-import { listResearchRuns, listResearchSources, saveResearchSource, searchResearchCorpus, syncResearchSource } from './research/service.js';
+import {
+  listResearchRuns,
+  listResearchSources,
+  saveResearchSource,
+  searchResearchCorpus,
+  syncResearchSource
+} from './research/service.js';
 import {
   AGENT_SCOPES,
   createAgentToken,
@@ -48,7 +57,6 @@ import {
   SkillApiError
 } from './skill-api.js';
 import { handleMcpHttpRequest, rejectMcpNonPost } from './mcp-http.js';
-import { getAgentRevenueBrief, listAgentPendingActions, prepareRecommendationForAgent } from './agent-operations.js';
 import {
   decidePlaybookApproval,
   getPlaybookRun,
@@ -69,7 +77,10 @@ import {
   uninstallModuleRelease,
   setPublisherVerification
 } from './registry/service.js';
-import { listCommercialProjections, rebuildCommercialProjections } from './projections/commercial.js';
+import {
+  listCommercialProjections,
+  rebuildCommercialProjections
+} from './projections/commercial.js';
 import { AgentBudgetError, getAgentBudget, setAgentBudget } from './agent/budget.js';
 import { getAgentRun, listAgentRuns, type AgentRunRecord } from './agent/runs.js';
 import { AGENT_STOP_REASON_MAX_CHARS, requestAgentRunStop } from './agent/stop-request.js';
@@ -168,7 +179,15 @@ import {
   type LinkedInBand,
   type PacedKind
 } from './linkedin/limits.js';
-import { ACTION_KIND_VALUES, ACTION_STATUS_VALUES, acceptanceRate, countActionsInWindow, hasTarget, ownerSeat, type LinkedInActionStatus } from './linkedin/actions.js';
+import {
+  ACTION_KIND_VALUES,
+  ACTION_STATUS_VALUES,
+  acceptanceRate,
+  countActionsInWindow,
+  hasTarget,
+  ownerSeat,
+  type LinkedInActionStatus
+} from './linkedin/actions.js';
 import {
   OWNER_SEAT_KEY,
   deleteSeat,
@@ -181,7 +200,14 @@ import {
   warmupWeekOf,
   type SeatPatch
 } from './linkedin/seats.js';
-import { SIDE_TASK_NAMES, availabilityCatchUpPending, nextSideTaskOpportunities, nextVisitOpportunities, sideTaskRuns, type SideTaskName } from './linkedin/side-tasks.js';
+import {
+  SIDE_TASK_NAMES,
+  availabilityCatchUpPending,
+  nextSideTaskOpportunities,
+  nextVisitOpportunities,
+  sideTaskRuns,
+  type SideTaskName
+} from './linkedin/side-tasks.js';
 import { listSeatEvents, parseBackgroundRunDetail } from './linkedin/seat-events.js';
 import { MAX_HORIZON_DAYS, planPacing } from './linkedin/pacing.js';
 import {
@@ -290,7 +316,12 @@ import {
   isEngagementKind,
   recordEngagement
 } from './linkedin/engagement.js';
-import { detectLinkedInAcceptances, syncLinkedInInbox, syncLinkedInPendingInvites, syncLinkedInThread } from './linkedin/jobs.js';
+import {
+  detectLinkedInAcceptances,
+  syncLinkedInInbox,
+  syncLinkedInPendingInvites,
+  syncLinkedInThread
+} from './linkedin/jobs.js';
 import {
   DEFAULT_SEQUENCE_TEMPLATE_ID,
   SEQUENCE_TEMPLATES,
@@ -316,7 +347,13 @@ import {
   updateLeadContact,
   type LeadListSourceKind
 } from './linkedin/lead-lists.js';
-import { deleteWorkflow, getWorkflow, listWorkflows, saveWorkflow, workflowStepsSchema } from './linkedin/workflows.js';
+import {
+  deleteWorkflow,
+  getWorkflow,
+  listWorkflows,
+  saveWorkflow,
+  workflowStepsSchema
+} from './linkedin/workflows.js';
 import { runManagedCampaigns } from './linkedin/runner.js';
 import {
   campaignWarmupFraction,
@@ -386,12 +423,15 @@ const linkedinTargetsUpload = multer({
   limits: { fileSize: 2 * 1024 * 1024, files: 1, fields: 10 },
   fileFilter: (_req, file, callback) => {
     const extension = file.originalname.toLowerCase().split('.').pop();
-    if (!new Set(['csv', 'tsv', 'txt']).has(extension ?? '')) return callback(new Error('Upload a .csv file of LinkedIn targets'));
+    if (!new Set(['csv', 'tsv', 'txt']).has(extension ?? ''))
+      return callback(new Error('Upload a .csv file of LinkedIn targets'));
     callback(null, true);
   }
 });
 
-type AuthedRequest = Request & { auth?: { userId: string; workspaceId: string; email: string; role: 'owner' | 'member' } };
+type AuthedRequest = Request & {
+  auth?: { userId: string; workspaceId: string; email: string; role: 'owner' | 'member' };
+};
 type AgentRequest = Request & { agent?: AgentIdentity };
 
 export function createApp(db: Db) {
@@ -409,41 +449,60 @@ export function createApp(db: Db) {
     res.locals.cspNonce = randomBytes(16).toString('base64');
     next();
   });
-  const loopbackHttpProduction = process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE === 'false';
-  app.use(helmet({
-    contentSecurityPolicy: process.env.NODE_ENV === 'production'
-      ? {
-          directives: {
-            scriptSrc: ["'self'", (_req, res) => `'nonce-${String((res as unknown as Response).locals.cspNonce)}'`],
-            // The single-operator production profile is deliberately loopback
-            // HTTP. Upgrading relative assets there would point the browser at
-            // a TLS endpoint that does not exist. Public production keeps the
-            // default Helmet upgrade directive unchanged.
-            ...(loopbackHttpProduction ? { upgradeInsecureRequests: null } : {})
-          }
-        }
-      : false,
-    // HSTS on an HTTP-only localhost origin teaches the browser to stop using
-    // the only endpoint this deployment exposes. It remains enabled everywhere
-    // production uses secure cookies (the public/HTTPS case).
-    strictTransportSecurity: loopbackHttpProduction ? false : undefined
-  }));
-  app.use(pinoHttp({
-    logger: pino({ level: process.env.NODE_ENV === 'test' ? 'silent' : (process.env.LOG_LEVEL ?? 'info') }),
-    genReqId: (req, res) => {
-      const requestId = String(req.headers['x-request-id'] ?? randomUUID());
-      res.setHeader('x-request-id', requestId);
-      return requestId;
-    },
-    redact: {
-      // pino-http's default req serializer never emits a body, so this list is
-      // belt-and-braces -- and `req.body.apiKey` stays on it so that a future
-      // custom serializer cannot quietly start logging a model key.
-      paths: ['req.headers.authorization', 'req.headers.cookie', 'res.headers.set-cookie', 'req.body.password', 'req.body.csv', 'req.body.apiKey'],
-      censor: '[REDACTED]'
-    },
-    customLogLevel: (_req, res, error) => error || res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info'
-  }));
+  const loopbackHttpProduction =
+    process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE === 'false';
+  app.use(
+    helmet({
+      contentSecurityPolicy:
+        process.env.NODE_ENV === 'production'
+          ? {
+              directives: {
+                scriptSrc: [
+                  "'self'",
+                  (_req, res) => `'nonce-${String((res as unknown as Response).locals.cspNonce)}'`
+                ],
+                // The single-operator production profile is deliberately loopback
+                // HTTP. Upgrading relative assets there would point the browser at
+                // a TLS endpoint that does not exist. Public production keeps the
+                // default Helmet upgrade directive unchanged.
+                ...(loopbackHttpProduction ? { upgradeInsecureRequests: null } : {})
+              }
+            }
+          : false,
+      // HSTS on an HTTP-only localhost origin teaches the browser to stop using
+      // the only endpoint this deployment exposes. It remains enabled everywhere
+      // production uses secure cookies (the public/HTTPS case).
+      strictTransportSecurity: loopbackHttpProduction ? false : undefined
+    })
+  );
+  app.use(
+    pinoHttp({
+      logger: pino({
+        level: process.env.NODE_ENV === 'test' ? 'silent' : (process.env.LOG_LEVEL ?? 'info')
+      }),
+      genReqId: (req, res) => {
+        const requestId = String(req.headers['x-request-id'] ?? randomUUID());
+        res.setHeader('x-request-id', requestId);
+        return requestId;
+      },
+      redact: {
+        // pino-http's default req serializer never emits a body, so this list is
+        // belt-and-braces -- and `req.body.apiKey` stays on it so that a future
+        // custom serializer cannot quietly start logging a model key.
+        paths: [
+          'req.headers.authorization',
+          'req.headers.cookie',
+          'res.headers.set-cookie',
+          'req.body.password',
+          'req.body.csv',
+          'req.body.apiKey'
+        ],
+        censor: '[REDACTED]'
+      },
+      customLogLevel: (_req, res, error) =>
+        error || res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info'
+    })
+  );
   app.use(cookieParser());
   app.use('/api', (_req, res, next) => {
     res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
@@ -451,71 +510,83 @@ export function createApp(db: Db) {
   });
   registerPublicSiteRoutes(app, db);
 
-  app.post('/api/webhooks/nango', express.raw({ type: 'application/json', limit: '2mb' }), async (req, res) => {
-    try {
-      const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body ?? '');
-      const result = await handleNangoWebhook(db, raw, req.headers as Record<string, unknown>);
-      res.status(result.duplicate ? 200 : 202).json(result);
-    } catch (error) {
-      res.status(401).json({ error: error instanceof Error ? error.message : 'Invalid Nango webhook' });
+  app.post(
+    '/api/webhooks/nango',
+    express.raw({ type: 'application/json', limit: '2mb' }),
+    async (req, res) => {
+      try {
+        const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body ?? '');
+        const result = await handleNangoWebhook(db, raw, req.headers as Record<string, unknown>);
+        res.status(result.duplicate ? 200 : 202).json(result);
+      } catch (error) {
+        res
+          .status(401)
+          .json({ error: error instanceof Error ? error.message : 'Invalid Nango webhook' });
+      }
     }
-  });
-
-  app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '2mb' }), async (req, res) => {
-    try {
-      const signature = req.header('stripe-signature');
-      if (!signature) return res.status(400).json({ error: 'Missing Stripe signature' });
-      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body ?? ''));
-      const result = await processStripeWebhook(db, body, signature);
-      res.status(result.duplicate ? 200 : 202).json(result);
-    } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid Stripe webhook' });
-    }
-  });
+  );
 
   app.get('/api/health', async (_req, res) => {
     try {
       await db.prepare('SELECT 1 AS ok').get();
-      res.json({ ok: true, service: 'trevra-api', database: 'postgresql', integrations: Boolean(process.env.NANGO_API_KEY), stripeWebhooks: Boolean(process.env.STRIPE_WEBHOOK_SECRET) });
+      res.json({
+        ok: true,
+        service: 'trevra-api',
+        database: 'postgresql',
+        integrations: Boolean(process.env.NANGO_API_KEY)
+      });
     } catch {
       res.status(503).json({ ok: false, service: 'trevra-api', database: 'unavailable' });
     }
   });
 
-  app.get('/api/public-config', (_req, res) => res.json({
-    googleAuthEnabled: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
-    // Password signup is intentionally self-hosted-only for now. Hosted users
-    // prove email ownership through Google OAuth instead of creating an
-    // immediately authenticated, unverified password identity.
-    emailPasswordAuthEnabled: process.env.TREVRA_DEPLOYMENT_MODE !== 'hosted',
-    modelExtractionEnabled: Boolean(process.env.OPENAI_API_KEY),
-    supportEmail: getSiteConfig().supportEmail,
-    catalogApiUrl: process.env.PUBLIC_REGISTRY_API_URL?.trim() || '',
-    // Where an MCP client should point.
-    //
-    // The browser CANNOT infer this. In development the UI is served by Vite on
-    // its own port and proxies /api, so window.location.origin would hand
-    // Claude Code a URL that only resolves while the dev server happens to be
-    // running. APP_ORIGIN is no good either -- it is the BROWSER origin, which
-    // in dev is the Vite port, not the API.
-    //
-    // In production the API and the UI are the same origin, so APP_ORIGIN is
-    // correct there and only there.
-    apiBaseUrl: (
-      process.env.TREVRA_PUBLIC_API_URL?.trim()
-      || (process.env.NODE_ENV === 'production' ? process.env.APP_ORIGIN?.split(',')[0]?.trim() : '')
-      || `http://localhost:${process.env.PORT ?? 43887}`
-    ).replace(/\/$/, '')
-  }));
+  app.get('/api/public-config', (_req, res) =>
+    res.json({
+      googleAuthEnabled: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
+      // Password signup is intentionally self-hosted-only for now. Hosted users
+      // prove email ownership through Google OAuth instead of creating an
+      // immediately authenticated, unverified password identity.
+      emailPasswordAuthEnabled: process.env.TREVRA_DEPLOYMENT_MODE !== 'hosted',
+      modelExtractionEnabled: Boolean(process.env.OPENAI_API_KEY),
+      supportEmail: getSiteConfig().supportEmail,
+      catalogApiUrl: process.env.PUBLIC_REGISTRY_API_URL?.trim() || '',
+      // Where an MCP client should point.
+      //
+      // The browser CANNOT infer this. In development the UI is served by Vite on
+      // its own port and proxies /api, so window.location.origin would hand
+      // Claude Code a URL that only resolves while the dev server happens to be
+      // running. APP_ORIGIN is no good either -- it is the BROWSER origin, which
+      // in dev is the Vite port, not the API.
+      //
+      // In production the API and the UI are the same origin, so APP_ORIGIN is
+      // correct there and only there.
+      apiBaseUrl: (
+        process.env.TREVRA_PUBLIC_API_URL?.trim() ||
+        (process.env.NODE_ENV === 'production'
+          ? process.env.APP_ORIGIN?.split(',')[0]?.trim()
+          : '') ||
+        `http://localhost:${process.env.PORT ?? 43887}`
+      ).replace(/\/$/, '')
+    })
+  );
 
-  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false
+  });
   app.post('/api/auth/demo', authLimiter, async (_req, res) => {
     if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEMO_AUTH !== 'true') {
       return res.status(404).json({ error: 'Demo authentication is disabled' });
     }
     const token = await createSession(db, DEMO_USER_ID);
     setSessionCookie(res, token);
-    await recordMarketingEvent(db, { eventName: 'demo_started', workspaceId: DEMO_WORKSPACE_ID, path: '/' });
+    await recordMarketingEvent(db, {
+      eventName: 'demo_started',
+      workspaceId: DEMO_WORKSPACE_ID,
+      path: '/'
+    });
     res.json({
       user: { id: DEMO_USER_ID, name: 'Alex Morgan', email: 'alex@northstar.studio' },
       workspace: { id: DEMO_WORKSPACE_ID, name: 'Northstar Studio' }
@@ -568,7 +639,12 @@ export function createApp(db: Db) {
    * answering 401. A forged cookie therefore buys no exemption, which is the
    * hole a bare skip would have opened.
    */
-  const unattributedLimiter = rateLimit({ windowMs: 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false });
+  const unattributedLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 300,
+    standardHeaders: true,
+    legacyHeaders: false
+  });
   const workspaceLimiter = rateLimit({
     windowMs: 60 * 1000,
     limit: WORKSPACE_REQUESTS_PER_MINUTE,
@@ -578,24 +654,33 @@ export function createApp(db: Db) {
     // unattributed request cannot reach here -- it is mounted after
     // `requireSession` -- and the fallback is one shared bucket rather than a
     // crash on the day that stops being true.
-    keyGenerator: (request: Request) => (request as AuthedRequest).auth?.workspaceId ?? 'unattributed',
-    message: { error: 'This workspace has made too many requests in the last minute. Try again shortly.' }
+    keyGenerator: (request: Request) =>
+      (request as AuthedRequest).auth?.workspaceId ?? 'unattributed',
+    message: {
+      error: 'This workspace has made too many requests in the last minute. Try again shortly.'
+    }
   });
-  app.use('/api', (req, res, next) => (carriesSessionCredential(req) ? next() : unattributedLimiter(req, res, next)));
+  app.use('/api', (req, res, next) =>
+    carriesSessionCredential(req) ? next() : unattributedLimiter(req, res, next)
+  );
 
   // One-time pairing exchange. The short code is the only credential a user
   // ever pastes into a shell; it expires after ten minutes and is replaced here
   // with a long device token stored only on that computer.
   app.post('/api/linkedin/companion/exchange', async (req, res, next) => {
     try {
-      const input = z.object({
-        code: z.string().trim().min(8).max(32),
-        label: z.string().trim().min(1).max(120)
-      }).strict().parse(req.body ?? {});
+      const input = z
+        .object({
+          code: z.string().trim().min(8).max(32),
+          label: z.string().trim().min(1).max(120)
+        })
+        .strict()
+        .parse(req.body ?? {});
       const paired = await exchangeCompanionPairing(db, input);
       res.status(201).json(paired);
     } catch (error) {
-      if (error instanceof Error && /pairing code/i.test(error.message)) return res.status(400).json({ error: error.message });
+      if (error instanceof Error && /pairing code/i.test(error.message))
+        return res.status(400).json({ error: error.message });
       next(error);
     }
   });
@@ -604,124 +689,169 @@ export function createApp(db: Db) {
     try {
       const expected = process.env.TRACTION_ADMIN_TOKEN?.trim();
       if (!expected) return res.status(404).json({ error: 'Not found' });
-      const supplied = req.header('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? '';
-      if (!secureTokenEqual(supplied,expected)) return res.status(401).json({ error: 'Invalid registry admin token' });
+      const supplied =
+        req
+          .header('authorization')
+          ?.match(/^Bearer\s+(.+)$/i)?.[1]
+          ?.trim() ?? '';
+      if (!secureTokenEqual(supplied, expected))
+        return res.status(401).json({ error: 'Invalid registry admin token' });
       const input = z.object({ verified: z.boolean() }).parse(req.body ?? {});
-      const updated = await setPublisherVerification(db,String(req.params.id),input.verified);
+      const updated = await setPublisherVerification(db, String(req.params.id), input.verified);
       if (!updated) return res.status(404).json({ error: 'Publisher not found' });
       res.json({ ok: true, verified: input.verified });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   // Agent tokens deliberately expose a smaller surface than browser sessions.
   // Claude Code, Codex, and other MCP clients can inspect and run skills, but
   // cannot silently inherit billing, integration, or account-management access.
-  app.post('/api/agent/mcp', requireAgentScope(db, 'skills:read'), async (req: AgentRequest, res, next) => {
-    try { await handleMcpHttpRequest(db, req.agent!, req, res); }
-    catch (error) { next(error); }
-  });
+  app.post(
+    '/api/agent/mcp',
+    requireAgentScope(db, 'skills:read'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        await handleMcpHttpRequest(db, req.agent!, req, res);
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
   app.get('/api/agent/mcp', requireAgentScope(db, 'skills:read'), rejectMcpNonPost);
   app.delete('/api/agent/mcp', requireAgentScope(db, 'skills:read'), rejectMcpNonPost);
 
-  app.get('/api/agent/revenue-brief', requireAgentScope(db, 'workspace:read'), async (req: AgentRequest, res, next) => {
-    try { res.json(await getAgentRevenueBrief(db, req.agent!.workspaceId)); }
-    catch (error) { next(error); }
-  });
-
-  app.get('/api/agent/actions', requireAgentScope(db, 'workspace:read'), async (req: AgentRequest, res, next) => {
-    try { res.json({ actions: await listAgentPendingActions(db, req.agent!.workspaceId) }); }
-    catch (error) { next(error); }
-  });
-
-  app.post('/api/agent/recommendations/:id/prepare', requireAgentScope(db, 'actions:prepare'), async (req: AgentRequest, res, next) => {
-    try {
-      const result = await prepareRecommendationForAgent(
-        db,
-        req.agent!.workspaceId,
-        req.agent!.tokenId,
-        String(req.params.id)
-      );
-      res.status(201).json(result);
-    } catch (error) {
-      if (error instanceof Error && /not found/i.test(error.message)) return res.status(404).json({ error: error.message });
-      next(error);
+  app.get(
+    '/api/agent/skills',
+    requireAgentScope(db, 'skills:read'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        res.json({ skills: await listWorkspaceSkills(db, req.agent!.workspaceId) });
+      } catch (error) {
+        next(error);
+      }
     }
-  });
+  );
 
-  app.get('/api/agent/skills', requireAgentScope(db, 'skills:read'), async (req: AgentRequest, res, next) => {
-    try { res.json({ skills: await listWorkspaceSkills(db, req.agent!.workspaceId) }); }
-    catch (error) { next(error); }
-  });
+  app.post(
+    '/api/agent/skills/:id/run',
+    requireAgentScope(db, 'skills:run'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        const result = await executeWorkspaceSkill(db, {
+          workspaceId: req.agent!.workspaceId,
+          skillId: String(req.params.id),
+          payload: req.body ?? {},
+          actorType: 'agent',
+          actorId: req.agent!.tokenId
+        });
+        res.status(201).json(result);
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
-  app.post('/api/agent/skills/:id/run', requireAgentScope(db, 'skills:run'), async (req: AgentRequest, res, next) => {
-    try {
-      const result = await executeWorkspaceSkill(db, {
-        workspaceId: req.agent!.workspaceId,
-        skillId: String(req.params.id),
-        payload: req.body ?? {},
-        actorType: 'agent',
-        actorId: req.agent!.tokenId
-      });
-      res.status(201).json(result);
-    } catch (error) { next(error); }
-  });
+  app.get(
+    '/api/agent/runs',
+    requireAgentScope(db, 'runs:read'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        const filters = skillRunFiltersSchema.parse(req.query);
+        res.json({ runs: await listWorkspaceSkillRuns(db, req.agent!.workspaceId, filters) });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
-  app.get('/api/agent/runs', requireAgentScope(db, 'runs:read'), async (req: AgentRequest, res, next) => {
-    try {
-      const filters = skillRunFiltersSchema.parse(req.query);
-      res.json({ runs: await listWorkspaceSkillRuns(db, req.agent!.workspaceId, filters) });
-    } catch (error) { next(error); }
-  });
+  app.get(
+    '/api/agent/runs/:id',
+    requireAgentScope(db, 'runs:read'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        const run = await getWorkspaceSkillRun(db, req.agent!.workspaceId, String(req.params.id));
+        if (!run) return res.status(404).json({ error: 'Skill run not found' });
+        res.json({ run });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
-  app.get('/api/agent/runs/:id', requireAgentScope(db, 'runs:read'), async (req: AgentRequest, res, next) => {
-    try {
-      const run = await getWorkspaceSkillRun(db, req.agent!.workspaceId, String(req.params.id));
-      if (!run) return res.status(404).json({ error: 'Skill run not found' });
-      res.json({ run });
-    } catch (error) { next(error); }
-  });
+  app.get(
+    '/api/agent/playbooks',
+    requireAgentScope(db, 'playbooks:read'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        res.json({ playbooks: await listWorkspacePlaybooks(db, req.agent!.workspaceId) });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
-  app.get('/api/agent/playbooks', requireAgentScope(db, 'playbooks:read'), async (req: AgentRequest, res, next) => {
-    try { res.json({ playbooks: await listWorkspacePlaybooks(db, req.agent!.workspaceId) }); }
-    catch (error) { next(error); }
-  });
+  app.post(
+    '/api/agent/playbooks/:id/runs',
+    requireAgentScope(db, 'playbooks:run'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        const input = playbookStartSchema.parse(req.body ?? {});
+        const run = await startPlaybookRun(db, {
+          workspaceId: req.agent!.workspaceId,
+          playbookId: String(req.params.id),
+          version: input.version,
+          payload: input.input,
+          actorType: 'agent',
+          actorId: req.agent!.tokenId
+        });
+        res.status(201).json({ run });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
-  app.post('/api/agent/playbooks/:id/runs', requireAgentScope(db, 'playbooks:run'), async (req: AgentRequest, res, next) => {
-    try {
-      const input = playbookStartSchema.parse(req.body ?? {});
-      const run = await startPlaybookRun(db, {
-        workspaceId: req.agent!.workspaceId,
-        playbookId: String(req.params.id),
-        version: input.version,
-        payload: input.input,
-        actorType: 'agent',
-        actorId: req.agent!.tokenId
-      });
-      res.status(201).json({ run });
-    } catch (error) { next(error); }
-  });
+  app.get(
+    '/api/agent/playbook-runs',
+    requireAgentScope(db, 'workflows:read'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        const filters = playbookRunFiltersSchema.parse(req.query);
+        res.json({ runs: await listPlaybookRuns(db, req.agent!.workspaceId, filters) });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
-  app.get('/api/agent/playbook-runs', requireAgentScope(db, 'workflows:read'), async (req: AgentRequest, res, next) => {
-    try {
-      const filters = playbookRunFiltersSchema.parse(req.query);
-      res.json({ runs: await listPlaybookRuns(db, req.agent!.workspaceId, filters) });
-    } catch (error) { next(error); }
-  });
+  app.get(
+    '/api/agent/playbook-runs/:id',
+    requireAgentScope(db, 'workflows:read'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        const run = await getPlaybookRun(db, req.agent!.workspaceId, String(req.params.id));
+        if (!run) return res.status(404).json({ error: 'Playbook run not found' });
+        res.json({ run });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
-  app.get('/api/agent/playbook-runs/:id', requireAgentScope(db, 'workflows:read'), async (req: AgentRequest, res, next) => {
-    try {
-      const run = await getPlaybookRun(db, req.agent!.workspaceId, String(req.params.id));
-      if (!run) return res.status(404).json({ error: 'Playbook run not found' });
-      res.json({ run });
-    } catch (error) { next(error); }
-  });
-
-  app.get('/api/agent/events', requireAgentScope(db, 'workflows:read'), async (req: AgentRequest, res, next) => {
-    try {
-      const filters = eventFiltersSchema.parse(req.query);
-      res.json({ events: await listDomainEvents(db, req.agent!.workspaceId, filters) });
-    } catch (error) { next(error); }
-  });
+  app.get(
+    '/api/agent/events',
+    requireAgentScope(db, 'workflows:read'),
+    async (req: AgentRequest, res, next) => {
+      try {
+        const filters = eventFiltersSchema.parse(req.query);
+        res.json({ events: await listDomainEvents(db, req.agent!.workspaceId, filters) });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   app.use('/api', requireSession(db, unattributedLimiter));
   // Mounted immediately after the session resolves, which is the first moment
@@ -746,33 +876,43 @@ export function createApp(db: Db) {
         canUse: true,
         canDisconnect: true
       });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
-  app.post('/api/linkedin/companion/pair', ownerOnly('pair a computer for LinkedIn'), async (req: AuthedRequest, res, next) => {
-    try {
-      const pairing = await createCompanionPairing(db, {
-        workspaceId: req.auth!.workspaceId,
-        actorUserId: req.auth!.userId
-      });
-      const base = (
-        process.env.TREVRA_PUBLIC_API_URL?.trim()
-        || process.env.BETTER_AUTH_URL?.trim()
-        || process.env.APP_ORIGIN?.split(',')[0]?.trim()
-        || ''
-      ).replace(/\/$/, '');
-      res.status(201).json({
-        ...pairing,
-        command: `npx --yes --package=${companionReleasePackage()} trevra linkedin install --pair ${pairing.code}${base ? ` --url ${base}` : ''}`
-      });
-    } catch (error) { next(error); }
-  });
+  app.post(
+    '/api/linkedin/companion/pair',
+    ownerOnly('pair a computer for LinkedIn'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const pairing = await createCompanionPairing(db, {
+          workspaceId: req.auth!.workspaceId,
+          actorUserId: req.auth!.userId
+        });
+        const base = (
+          process.env.TREVRA_PUBLIC_API_URL?.trim() ||
+          process.env.BETTER_AUTH_URL?.trim() ||
+          process.env.APP_ORIGIN?.split(',')[0]?.trim() ||
+          ''
+        ).replace(/\/$/, '');
+        res.status(201).json({
+          ...pairing,
+          command: `npx --yes --package=${companionReleasePackage()} trevra linkedin install --pair ${pairing.code}${base ? ` --url ${base}` : ''}`
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   app.delete('/api/linkedin/companion/devices/:id', async (req: AuthedRequest, res, next) => {
     try {
       const revoked = await revokeCompanionDevice(db, req.auth!.workspaceId, String(req.params.id));
       res.status(revoked ? 200 : 404).json({ revoked });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   /**
@@ -804,7 +944,8 @@ export function createApp(db: Db) {
   });
   app.post('/api/team/members', async (req: AuthedRequest, res, next) => {
     try {
-      if (req.auth!.role !== 'owner') return res.status(403).json({ error: 'Only the workspace owner can add teammates' });
+      if (req.auth!.role !== 'owner')
+        return res.status(403).json({ error: 'Only the workspace owner can add teammates' });
       const input = teamAddMemberSchema.parse(req.body ?? {});
       const workspaceId = req.auth!.workspaceId;
       // `createInvitation` requires this request's own session (the inviter),
@@ -817,14 +958,20 @@ export function createApp(db: Db) {
       });
       res.status(201).json({ status: 'invited', invitation });
     } catch (error) {
-      if (error instanceof APIError) return res.status(error.statusCode ?? 400).json({ error: error.body?.message ?? error.message });
+      if (error instanceof APIError)
+        return res
+          .status(error.statusCode ?? 400)
+          .json({ error: error.body?.message ?? error.message });
       next(error);
     }
   });
 
   app.get('/api/skills', async (req: AuthedRequest, res, next) => {
-    try { res.json({ skills: await listWorkspaceSkills(db, req.auth!.workspaceId) }); }
-    catch (error) { next(error); }
+    try {
+      res.json({ skills: await listWorkspaceSkills(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post('/api/skills/:id/run', async (req: AuthedRequest, res, next) => {
@@ -837,14 +984,18 @@ export function createApp(db: Db) {
         actorId: req.auth!.userId
       });
       res.status(201).json(result);
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/skill-runs', async (req: AuthedRequest, res, next) => {
     try {
       const filters = skillRunFiltersSchema.parse(req.query);
       res.json({ runs: await listWorkspaceSkillRuns(db, req.auth!.workspaceId, filters) });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/skill-runs/:id', async (req: AuthedRequest, res, next) => {
@@ -852,12 +1003,17 @@ export function createApp(db: Db) {
       const run = await getWorkspaceSkillRun(db, req.auth!.workspaceId, String(req.params.id));
       if (!run) return res.status(404).json({ error: 'Skill run not found' });
       res.json({ run });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/playbooks', async (req: AuthedRequest, res, next) => {
-    try { res.json({ playbooks: await listWorkspacePlaybooks(db, req.auth!.workspaceId) }); }
-    catch (error) { next(error); }
+    try {
+      res.json({ playbooks: await listWorkspacePlaybooks(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post('/api/playbooks/:id/runs', async (req: AuthedRequest, res, next) => {
@@ -872,14 +1028,18 @@ export function createApp(db: Db) {
         actorId: req.auth!.userId
       });
       res.status(201).json({ run });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/playbook-runs', async (req: AuthedRequest, res, next) => {
     try {
       const filters = playbookRunFiltersSchema.parse(req.query);
       res.json({ runs: await listPlaybookRuns(db, req.auth!.workspaceId, filters) });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/playbook-runs/:id', async (req: AuthedRequest, res, next) => {
@@ -887,34 +1047,46 @@ export function createApp(db: Db) {
       const run = await getPlaybookRun(db, req.auth!.workspaceId, String(req.params.id));
       if (!run) return res.status(404).json({ error: 'Playbook run not found' });
       res.json({ run });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
-  app.post('/api/playbook-runs/:id/steps/:stepId/decision', async (req: AuthedRequest, res, next) => {
-    try {
-      const decision = playbookDecisionSchema.parse(req.body ?? {});
-      const run = await decidePlaybookApproval(db, {
-        workspaceId: req.auth!.workspaceId,
-        runId: String(req.params.id),
-        stepId: String(req.params.stepId),
-        userId: req.auth!.userId,
-        decision: decision.decision,
-        comment: decision.comment
-      });
-      res.json({ run });
-    } catch (error) { next(error); }
-  });
+  app.post(
+    '/api/playbook-runs/:id/steps/:stepId/decision',
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const decision = playbookDecisionSchema.parse(req.body ?? {});
+        const run = await decidePlaybookApproval(db, {
+          workspaceId: req.auth!.workspaceId,
+          runId: String(req.params.id),
+          stepId: String(req.params.stepId),
+          userId: req.auth!.userId,
+          decision: decision.decision,
+          comment: decision.comment
+        });
+        res.json({ run });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   app.get('/api/control-plane/events', async (req: AuthedRequest, res, next) => {
     try {
       const filters = eventFiltersSchema.parse(req.query);
       res.json({ events: await listDomainEvents(db, req.auth!.workspaceId, filters) });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/policies', async (req: AuthedRequest, res, next) => {
-    try { res.json({ policies: await listWorkspacePolicies(db, req.auth!.workspaceId) }); }
-    catch (error) { next(error); }
+    try {
+      res.json({ policies: await listWorkspacePolicies(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
   });
 
   // Owner-only, and the `allow` effect is why. These rows are what the control
@@ -923,119 +1095,184 @@ export function createApp(db: Db) {
   // choose -- which is a privilege escalation wearing the shape of a settings
   // form. READING them stays open to everyone: knowing which rules bind you is
   // not a privilege, and a teammate who cannot see the policy cannot obey it.
-  app.post('/api/policies', ownerOnly("change this workspace's policies"), async (req: AuthedRequest, res, next) => {
-    try {
-      const input = policyWriteSchema.parse(req.body ?? {});
-      const now = new Date().toISOString();
-      const policyId = id('pol');
-      await db.prepare(`
+  app.post(
+    '/api/policies',
+    ownerOnly("change this workspace's policies"),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = policyWriteSchema.parse(req.body ?? {});
+        const now = new Date().toISOString();
+        const policyId = id('pol');
+        await db
+          .prepare(
+            `
         INSERT INTO workspace_policies (
           id,workspace_id,name,version,priority,action_pattern,effect,conditions_json,enabled,created_at,updated_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-      `).run(
-        policyId,req.auth!.workspaceId,input.name,1,input.priority,input.actionPattern,input.effect,
-        JSON.stringify(input.conditions),input.enabled,now,now
-      );
-      res.status(201).json({ policies: await listWorkspacePolicies(db, req.auth!.workspaceId) });
-    } catch (error) { next(error); }
-  });
+      `
+          )
+          .run(
+            policyId,
+            req.auth!.workspaceId,
+            input.name,
+            1,
+            input.priority,
+            input.actionPattern,
+            input.effect,
+            JSON.stringify(input.conditions),
+            input.enabled,
+            now,
+            now
+          );
+        res.status(201).json({ policies: await listWorkspacePolicies(db, req.auth!.workspaceId) });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   // Same carve-out as the create route, and for the mirror-image reason:
   // deleting a `deny` policy is how you turn a refusal off.
-  app.delete('/api/policies/:id', ownerOnly("change this workspace's policies"), async (req: AuthedRequest, res, next) => {
-    try {
-      const result = await db.prepare('DELETE FROM workspace_policies WHERE id=? AND workspace_id=?')
-        .run(String(req.params.id),req.auth!.workspaceId);
-      if (result.changes === 0) return res.status(404).json({ error: 'Policy not found' });
-      res.json({ ok: true });
-    } catch (error) { next(error); }
-  });
-
+  app.delete(
+    '/api/policies/:id',
+    ownerOnly("change this workspace's policies"),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const result = await db
+          .prepare('DELETE FROM workspace_policies WHERE id=? AND workspace_id=?')
+          .run(String(req.params.id), req.auth!.workspaceId);
+        if (result.changes === 0) return res.status(404).json({ error: 'Policy not found' });
+        res.json({ ok: true });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   app.get('/api/registry/publishers', async (req: AuthedRequest, res, next) => {
-    try { res.json({ publishers: await listWorkspacePublishers(db, req.auth!.workspaceId) }); }
-    catch (error) { next(error); }
+    try {
+      res.json({ publishers: await listWorkspacePublishers(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
   });
 
   // Owner-only: a publisher is this workspace's IDENTITY in a registry other
   // deployments install from, and it carries a signing key. Anything published
   // under it is published in the workspace's name, off this deployment, to
   // strangers -- there is no way to un-say that afterwards.
-  app.post('/api/registry/publishers', ownerOnly('create a module publisher for this workspace'), async (req: AuthedRequest, res, next) => {
-    try {
-      const input = publisherCreateSchema.parse(req.body ?? {});
-      const publisher = await createModulePublisher(db, {
-        workspaceId: req.auth!.workspaceId,
-        userId: req.auth!.userId,
-        slug: input.slug,
-        displayName: input.displayName,
-        publicKeyPem: input.publicKeyPem
-      });
-      res.status(201).json({ publisher });
-    } catch (error) { next(error); }
-  });
+  app.post(
+    '/api/registry/publishers',
+    ownerOnly('create a module publisher for this workspace'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = publisherCreateSchema.parse(req.body ?? {});
+        const publisher = await createModulePublisher(db, {
+          workspaceId: req.auth!.workspaceId,
+          userId: req.auth!.userId,
+          slug: input.slug,
+          displayName: input.displayName,
+          publicKeyPem: input.publicKeyPem
+        });
+        res.status(201).json({ publisher });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   // Owner-only for the same reason as the publisher above, one step closer to
   // the consequence: this is the act that puts signed bytes under the
   // workspace's name in front of everybody else's install route.
-  app.post('/api/registry/modules/:id/releases', ownerOnly('publish a module release'), async (req: AuthedRequest, res, next) => {
-    try {
-      const input = moduleReleaseSchema.parse(req.body ?? {});
-      if (typeof input.manifest !== 'object' || input.manifest === null || Array.isArray(input.manifest) ||
-          String((input.manifest as Record<string, unknown>).id ?? '') !== String(req.params.id)) {
-        return res.status(400).json({ error: 'Manifest id must match the module route' });
+  app.post(
+    '/api/registry/modules/:id/releases',
+    ownerOnly('publish a module release'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = moduleReleaseSchema.parse(req.body ?? {});
+        if (
+          typeof input.manifest !== 'object' ||
+          input.manifest === null ||
+          Array.isArray(input.manifest) ||
+          String((input.manifest as Record<string, unknown>).id ?? '') !== String(req.params.id)
+        ) {
+          return res.status(400).json({ error: 'Manifest id must match the module route' });
+        }
+        const release = await publishModuleRelease(db, {
+          workspaceId: req.auth!.workspaceId,
+          userId: req.auth!.userId,
+          publisherId: input.publisherId,
+          manifest: input.manifest,
+          signature: input.signature,
+          sbom: input.sbom
+        });
+        res.status(201).json({ release });
+      } catch (error) {
+        next(error);
       }
-      const release = await publishModuleRelease(db, {
-        workspaceId: req.auth!.workspaceId,
-        userId: req.auth!.userId,
-        publisherId: input.publisherId,
-        manifest: input.manifest,
-        signature: input.signature,
-        sbom: input.sbom
-      });
-      res.status(201).json({ release });
-    } catch (error) { next(error); }
-  });
+    }
+  );
 
   app.get('/api/registry/installations', async (req: AuthedRequest, res, next) => {
-    try { res.json({ modules: await listWorkspaceCommunityModules(db, req.auth!.workspaceId) }); }
-    catch (error) { next(error); }
+    try {
+      res.json({ modules: await listWorkspaceCommunityModules(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
   });
 
   // Owner-only: an installed community module is third-party code this
   // workspace's runs will execute, chosen from a registry this deployment does
   // not control. "Which strangers' code runs against our data" is not a
   // per-teammate decision.
-  app.post('/api/registry/modules/:id/install', ownerOnly('install a community module'), async (req: AuthedRequest, res, next) => {
-    try {
-      const input = moduleInstallSchema.parse(req.body ?? {});
-      const installation = await installModuleRelease(db, {
-        workspaceId: req.auth!.workspaceId,
-        userId: req.auth!.userId,
-        moduleId: String(req.params.id),
-        version: input.version,
-        config: input.config
-      });
-      res.status(201).json({ installation });
-    } catch (error) { next(error); }
-  });
+  app.post(
+    '/api/registry/modules/:id/install',
+    ownerOnly('install a community module'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = moduleInstallSchema.parse(req.body ?? {});
+        const installation = await installModuleRelease(db, {
+          workspaceId: req.auth!.workspaceId,
+          userId: req.auth!.userId,
+          moduleId: String(req.params.id),
+          version: input.version,
+          config: input.config
+        });
+        res.status(201).json({ installation });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   // The other half of the same decision. Uninstalling is not dangerous the way
   // installing is, but it silently breaks every playbook step that names the
   // module, so it belongs with the person who chose it.
-  app.delete('/api/registry/modules/:id/install', ownerOnly('uninstall a community module'), async (req: AuthedRequest, res, next) => {
-    try {
-      const removed = await uninstallModuleRelease(db, req.auth!.workspaceId, String(req.params.id));
-      if (!removed) return res.status(404).json({ error: 'Installed module not found' });
-      res.json({ ok: true });
-    } catch (error) { next(error); }
-  });
+  app.delete(
+    '/api/registry/modules/:id/install',
+    ownerOnly('uninstall a community module'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const removed = await uninstallModuleRelease(
+          db,
+          req.auth!.workspaceId,
+          String(req.params.id)
+        );
+        if (!removed) return res.status(404).json({ error: 'Installed module not found' });
+        res.json({ ok: true });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   app.get('/api/commercial-projections', async (req: AuthedRequest, res, next) => {
     try {
       const input = projectionFiltersSchema.parse(req.query);
       res.json({ projections: await listCommercialProjections(db, req.auth!.workspaceId, input) });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   /**
@@ -1051,25 +1288,38 @@ export function createApp(db: Db) {
    * database load. The workspace argument is what makes the blast radius the
    * caller's own data; owner-only is what keeps it from being pressed casually.
    */
-  app.post('/api/commercial-projections/rebuild', ownerOnly("rebuild this workspace's commercial projections"), async (req: AuthedRequest, res, next) => {
-    try { res.status(202).json({ processed: await rebuildCommercialProjections(db, req.auth!.workspaceId) }); }
-    catch (error) { next(error); }
-  });
+  app.post(
+    '/api/commercial-projections/rebuild',
+    ownerOnly("rebuild this workspace's commercial projections"),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        res
+          .status(202)
+          .json({ processed: await rebuildCommercialProjections(db, req.auth!.workspaceId) });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   app.get('/api/agent-tokens', async (req: AuthedRequest, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
       res.json({ tokens: await listAgentTokens(db, req.auth!.workspaceId) });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post('/api/agent-tokens', async (req: AuthedRequest, res, next) => {
     try {
-      const input = z.object({
-        name: z.string().trim().min(1).max(100),
-        scopes: z.array(z.enum(AGENT_SCOPES)).min(1).max(AGENT_SCOPES.length).optional(),
-        expiresAt: z.string().datetime().nullable().optional()
-      }).parse(req.body ?? {});
+      const input = z
+        .object({
+          name: z.string().trim().min(1).max(100),
+          scopes: z.array(z.enum(AGENT_SCOPES)).min(1).max(AGENT_SCOPES.length).optional(),
+          expiresAt: z.string().datetime().nullable().optional()
+        })
+        .parse(req.body ?? {});
       const created = await createAgentToken(db, {
         workspaceId: req.auth!.workspaceId,
         userId: req.auth!.userId,
@@ -1079,7 +1329,9 @@ export function createApp(db: Db) {
       });
       res.setHeader('Cache-Control', 'no-store');
       res.status(201).json(created);
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   // Owner-only. Revoking is the act that stops somebody's Claude Code or Codex
@@ -1087,13 +1339,24 @@ export function createApp(db: Db) {
   // un-revoked, only replaced by a new one whose secret the old holder does not
   // have. Creating one stays open: a teammate provisioning their own client is
   // ordinary use, and every token it mints is scoped to this workspace anyway.
-  app.delete('/api/agent-tokens/:id', ownerOnly('revoke an agent token'), async (req: AuthedRequest, res, next) => {
-    try {
-      const revoked = await revokeAgentToken(db, req.auth!.workspaceId, req.auth!.userId, String(req.params.id));
-      if (!revoked) return res.status(404).json({ error: 'Active agent token not found' });
-      res.json({ ok: true });
-    } catch (error) { next(error); }
-  });
+  app.delete(
+    '/api/agent-tokens/:id',
+    ownerOnly('revoke an agent token'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const revoked = await revokeAgentToken(
+          db,
+          req.auth!.workspaceId,
+          req.auth!.userId,
+          String(req.params.id)
+        );
+        if (!revoked) return res.status(404).json({ error: 'Active agent token not found' });
+        res.json({ ok: true });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   // BYOK setup (docs/byok-and-hosted-agent.md sections 3 and 5).
   //
@@ -1148,7 +1411,9 @@ export function createApp(db: Db) {
           riskAccepted: cliConfig?.riskAcceptedAt != null
         }
       });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.put('/api/agent-setup/config', async (req: AuthedRequest, res, next) => {
@@ -1179,32 +1444,47 @@ export function createApp(db: Db) {
   // invoiced for every hosted run from that moment on, and the route is
   // write-only, so a member could swap in their own key and nobody could read
   // back what had been there before.
-  app.put('/api/agent-setup/key', authLimiter, ownerOnly("store this workspace's model API key"), async (req: AuthedRequest, res, next) => {
-    try {
-      if (!secretsConfigured()) {
-        return res.status(400).json({
-          error: 'This server has no TREVRA_SECRETS_KEY configured, so it cannot encrypt a model key. '
-            + 'Generate one with `openssl rand -base64 32`, set it in the environment, and restart.'
+  app.put(
+    '/api/agent-setup/key',
+    authLimiter,
+    ownerOnly("store this workspace's model API key"),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        if (!secretsConfigured()) {
+          return res.status(400).json({
+            error:
+              'This server has no TREVRA_SECRETS_KEY configured, so it cannot encrypt a model key. ' +
+              'Generate one with `openssl rand -base64 32`, set it in the environment, and restart.'
+          });
+        }
+        const input = agentKeySchema.parse(req.body ?? {});
+        const secret = await putWorkspaceSecret(db, {
+          workspaceId: req.auth!.workspaceId,
+          kind: 'model_api_key',
+          plaintext: input.apiKey,
+          label: input.label,
+          actorUserId: req.auth!.userId
         });
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({ secret });
+      } catch (error) {
+        next(error);
       }
-      const input = agentKeySchema.parse(req.body ?? {});
-      const secret = await putWorkspaceSecret(db, {
-        workspaceId: req.auth!.workspaceId,
-        kind: 'model_api_key',
-        plaintext: input.apiKey,
-        label: input.label,
-        actorUserId: req.auth!.userId
-      });
-      res.setHeader('Cache-Control', 'no-store');
-      res.json({ secret });
-    } catch (error) { next(error); }
-  });
+    }
+  );
 
   app.delete('/api/agent-setup/key', async (req: AuthedRequest, res, next) => {
     try {
-      const deleted = await deleteWorkspaceSecret(db, req.auth!.workspaceId, 'model_api_key', req.auth!.userId);
+      const deleted = await deleteWorkspaceSecret(
+        db,
+        req.auth!.workspaceId,
+        'model_api_key',
+        req.auth!.userId
+      );
       res.json({ deleted });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   // The third way to run the hosted agent: a workspace's own Claude/Codex
@@ -1214,17 +1494,23 @@ export function createApp(db: Db) {
   // secret-adjacent -- and adds one more: the risk disclaimer gate, which is
   // its own route so it is revocable in one click and never implied by saving
   // config or a token.
-  app.put('/api/agent-setup/cli-config', ownerOnly('choose which CLI agent this workspace runs'), async (req: AuthedRequest, res, next) => {
-    try {
-      const input = agentCliConfigSchema.parse(req.body ?? {});
-      const config = await putWorkspaceCliAgentConfig(db, {
-        workspaceId: req.auth!.workspaceId,
-        cli: input.cli,
-        model: input.model
-      });
-      res.json({ config: { cli: config.cli, model: config.model } });
-    } catch (error) { next(error); }
-  });
+  app.put(
+    '/api/agent-setup/cli-config',
+    ownerOnly('choose which CLI agent this workspace runs'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = agentCliConfigSchema.parse(req.body ?? {});
+        const config = await putWorkspaceCliAgentConfig(db, {
+          workspaceId: req.auth!.workspaceId,
+          cli: input.cli,
+          model: input.model
+        });
+        res.json({ config: { cli: config.cli, model: config.model } });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   // Rate-limited and gated the same as /api/agent-setup/key: a subscription
   // token is a credential endpoint too, whatever the session already proves,
@@ -1236,31 +1522,46 @@ export function createApp(db: Db) {
   // with a real subscription, launched with an environment this workspace
   // chose. Each one is separately harmless and the set is not, so all three are
   // the owner's to throw (see the config and risk routes either side).
-  app.put('/api/agent-setup/cli-token', authLimiter, ownerOnly("store this workspace's CLI subscription token"), async (req: AuthedRequest, res, next) => {
-    try {
-      if (!secretsConfigured()) {
-        return res.status(400).json({
-          error: 'This server has no TREVRA_SECRETS_KEY configured, so it cannot encrypt a CLI subscription token. '
-            + 'Generate one with `openssl rand -base64 32`, set it in the environment, and restart.'
+  app.put(
+    '/api/agent-setup/cli-token',
+    authLimiter,
+    ownerOnly("store this workspace's CLI subscription token"),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        if (!secretsConfigured()) {
+          return res.status(400).json({
+            error:
+              'This server has no TREVRA_SECRETS_KEY configured, so it cannot encrypt a CLI subscription token. ' +
+              'Generate one with `openssl rand -base64 32`, set it in the environment, and restart.'
+          });
+        }
+        const input = agentCliTokenSchema.parse(req.body ?? {});
+        await putWorkspaceSecret(db, {
+          workspaceId: req.auth!.workspaceId,
+          kind: 'cli_oauth_token',
+          plaintext: input.token,
+          actorUserId: req.auth!.userId
         });
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({ tokenStored: true });
+      } catch (error) {
+        next(error);
       }
-      const input = agentCliTokenSchema.parse(req.body ?? {});
-      await putWorkspaceSecret(db, {
-        workspaceId: req.auth!.workspaceId,
-        kind: 'cli_oauth_token',
-        plaintext: input.token,
-        actorUserId: req.auth!.userId
-      });
-      res.setHeader('Cache-Control', 'no-store');
-      res.json({ tokenStored: true });
-    } catch (error) { next(error); }
-  });
+    }
+  );
 
   app.delete('/api/agent-setup/cli-token', async (req: AuthedRequest, res, next) => {
     try {
-      const deleted = await deleteWorkspaceSecret(db, req.auth!.workspaceId, 'cli_oauth_token', req.auth!.userId);
+      const deleted = await deleteWorkspaceSecret(
+        db,
+        req.auth!.workspaceId,
+        'cli_oauth_token',
+        req.auth!.userId
+      );
       res.json({ deleted });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   // Its own isolated write, deliberately -- see the doc comment on
@@ -1272,28 +1573,42 @@ export function createApp(db: Db) {
   // exactly as much as the authority of whoever gave it. Revoking is owner-only
   // too, which costs nothing -- the safety-reducing direction is the one being
   // gated, and a member who wants it off can pause the schedule or the budget.
-  app.put('/api/agent-setup/cli-risk-accept', ownerOnly('accept the CLI agent risk disclaimer'), async (req: AuthedRequest, res, next) => {
-    try {
-      const input = agentCliRiskAcceptSchema.parse(req.body ?? {});
-      const config = await setWorkspaceCliRiskAccepted(db, req.auth!.workspaceId, input.accepted);
-      if (!config && input.accepted) {
-        return res.status(400).json({ error: 'Save your CLI and model first, then accept the risk.' });
+  app.put(
+    '/api/agent-setup/cli-risk-accept',
+    ownerOnly('accept the CLI agent risk disclaimer'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = agentCliRiskAcceptSchema.parse(req.body ?? {});
+        const config = await setWorkspaceCliRiskAccepted(db, req.auth!.workspaceId, input.accepted);
+        if (!config && input.accepted) {
+          return res
+            .status(400)
+            .json({ error: 'Save your CLI and model first, then accept the risk.' });
+        }
+        res.json({ riskAccepted: config?.riskAcceptedAt != null });
+      } catch (error) {
+        next(error);
       }
-      res.json({ riskAccepted: config?.riskAcceptedAt != null });
-    } catch (error) { next(error); }
-  });
+    }
+  );
 
   // Owner-only: the budget is a spending limit on the workspace's own provider
   // key, so raising it spends somebody else's money and lowering it stops work
   // the owner scheduled. Reading it stays open -- a teammate has to be able to
   // see why a run stopped.
-  app.put('/api/agent-setup/budget', ownerOnly('change the agent budget'), async (req: AuthedRequest, res, next) => {
-    try {
-      const input = agentBudgetSchema.parse(req.body ?? {});
-      const budget = await setAgentBudget(db, req.auth!.workspaceId, input, req.auth!.userId);
-      res.json({ budget });
-    } catch (error) { next(error); }
-  });
+  app.put(
+    '/api/agent-setup/budget',
+    ownerOnly('change the agent budget'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = agentBudgetSchema.parse(req.body ?? {});
+        const budget = await setAgentBudget(db, req.auth!.workspaceId, input, req.auth!.userId);
+        res.json({ budget });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   // The unattended cadence -- app-spec.md §2, "works when your laptop is
   // closed". Deliberately a sibling of the budget rather than part of it: this
@@ -1302,19 +1617,27 @@ export function createApp(db: Db) {
   // Owner-only, for the reason the comment above already gives: this is the
   // second of the two switches that together spend the operator's key with
   // nobody in the room, and both of them are the owner's.
-  app.put('/api/agent-setup/schedule', ownerOnly('change the unattended agent schedule'), async (req: AuthedRequest, res, next) => {
-    try {
-      const input = agentScheduleSchema.parse(req.body ?? {});
-      const schedule = await setAgentSchedule(db, req.auth!.workspaceId, input, req.auth!.userId);
-      res.json({ schedule });
-    } catch (error) { next(error); }
-  });
+  app.put(
+    '/api/agent-setup/schedule',
+    ownerOnly('change the unattended agent schedule'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = agentScheduleSchema.parse(req.body ?? {});
+        const schedule = await setAgentSchedule(db, req.auth!.workspaceId, input, req.auth!.userId);
+        res.json({ schedule });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   app.get('/api/agent-runs', async (req: AuthedRequest, res, next) => {
     try {
       const filters = agentRunFiltersSchema.parse(req.query);
       res.json({ runs: await listAgentRuns(db, req.auth!.workspaceId, filters) });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   // Starting a run by hand. The other half of "nothing can start a run" -- the
@@ -1347,11 +1670,14 @@ export function createApp(db: Db) {
       // EXISTS a running row for the workspace) so the row it returns IS the
       // lease and nothing outside it needs to check first.
       const running = await db
-        .prepare("SELECT 1 AS present FROM agent_runs WHERE workspace_id=? AND status='running' LIMIT 1")
+        .prepare(
+          "SELECT 1 AS present FROM agent_runs WHERE workspace_id=? AND status='running' LIMIT 1"
+        )
         .get<{ present: number }>(req.auth!.workspaceId);
       if (running) {
         return res.status(409).json({
-          error: 'An agent run is already in progress for this workspace. Wait for it to finish, or stop it first.'
+          error:
+            'An agent run is already in progress for this workspace. Wait for it to finish, or stop it first.'
         });
       }
 
@@ -1361,7 +1687,9 @@ export function createApp(db: Db) {
         (error) => req.log.error({ err: error }, 'Detached hosted agent run failed')
       );
       res.status(201).json({ run });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/agent-runs/:id', async (req: AuthedRequest, res, next) => {
@@ -1369,7 +1697,9 @@ export function createApp(db: Db) {
       const run = await getAgentRun(db, req.auth!.workspaceId, String(req.params.id));
       if (!run) return res.status(404).json({ error: 'Agent run not found' });
       res.json({ run });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
   // The kill switch from section 5. It deliberately consults nothing -- not the
   // budget, not the config, not whether a key exists -- because the one moment
@@ -1393,7 +1723,9 @@ export function createApp(db: Db) {
       // `stopped` keeps its meaning verbatim: how many runs were ASKED. Nothing
       // here may report them as stopped -- only the loop's own status can.
       res.json({ stopped: requests.length, requests });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   /* =====================================================================
@@ -1425,14 +1757,18 @@ export function createApp(db: Db) {
       // for the same reason the download below is not.
       res.setHeader('Cache-Control', 'no-store');
       res.status(201).json(record);
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/ledger/exports', async (req: AuthedRequest, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
       res.json({ exports: await listLedgerExports(db, req.auth!.workspaceId) });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   /**
@@ -1451,16 +1787,22 @@ export function createApp(db: Db) {
   // -- those are row counts and filenames, and a teammate assembling evidence
   // has to be able to do both -- but the bytes themselves leave the building,
   // and a file that has left cannot be un-downloaded when a membership ends.
-  app.get('/api/ledger/exports/:id', ownerOnly('download a ledger export'), async (req: AuthedRequest, res, next) => {
-    try {
-      const stored = await readLedgerExport(db, req.auth!.workspaceId, String(req.params.id));
-      if (!stored) return res.status(404).json({ error: 'Ledger export not found' });
-      res.setHeader('Content-Type', stored.contentType);
-      res.setHeader('Content-Disposition', `attachment; filename="${stored.filename}"`);
-      res.setHeader('Cache-Control', 'no-store');
-      res.send(stored.bytes);
-    } catch (error) { next(error); }
-  });
+  app.get(
+    '/api/ledger/exports/:id',
+    ownerOnly('download a ledger export'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const stored = await readLedgerExport(db, req.auth!.workspaceId, String(req.params.id));
+        if (!stored) return res.status(404).json({ error: 'Ledger export not found' });
+        res.setHeader('Content-Type', stored.contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${stored.filename}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(stored.bytes);
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   /* =====================================================================
    * EXPORT AND ERASURE (public/privacy/index.html, "Retention and deletion":
@@ -1508,19 +1850,28 @@ export function createApp(db: Db) {
    * is the key to an account. The manifest lists what was withheld, because
    * silence would read as "there was no sign-in stored".
    */
-  app.get('/api/workspace/export', ownerOnly('export this workspace'), async (req: AuthedRequest, res, next) => {
-    try {
-      const workspaceId = req.auth!.workspaceId;
-      const bundle = await exportWorkspaceData(db, workspaceId);
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="trevra-workspace-${workspaceId}.json"`);
-      // Same rule as both downloads above, and the sharpest instance of it: a
-      // cache that outlives an erasure keeps handing back the workspace that
-      // asked to be forgotten.
-      res.setHeader('Cache-Control', 'no-store');
-      res.send(JSON.stringify(bundle, null, 2));
-    } catch (error) { next(error); }
-  });
+  app.get(
+    '/api/workspace/export',
+    ownerOnly('export this workspace'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const workspaceId = req.auth!.workspaceId;
+        const bundle = await exportWorkspaceData(db, workspaceId);
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="trevra-workspace-${workspaceId}.json"`
+        );
+        // Same rule as both downloads above, and the sharpest instance of it: a
+        // cache that outlives an erasure keeps handing back the workspace that
+        // asked to be forgotten.
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(JSON.stringify(bundle, null, 2));
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   /**
    * What erasure would remove, BEFORE anything is removed.
@@ -1531,31 +1882,39 @@ export function createApp(db: Db) {
    * right now. An owner who reads this and then calls DELETE has been told the
    * number of rows in every table it will touch.
    */
-  app.get('/api/workspace/erasure', ownerOnly('erase this workspace'), async (req: AuthedRequest, res, next) => {
-    try {
-      const workspaceId = req.auth!.workspaceId;
-      const workspace = await db.prepare('SELECT id,name FROM workspaces WHERE id=?').get<{ id: string; name: string }>(workspaceId);
-      if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
-      const [inventory, inFlight] = await Promise.all([
-        workspaceInventory(db, workspaceId),
-        workspaceWorkInFlight(db, workspaceId)
-      ]);
-      res.setHeader('Cache-Control', 'no-store');
-      res.json({
-        workspace,
-        /** The DELETE refuses anything else. Published so a client can label its own confirm box. */
-        confirmationPhrase: workspace.name,
-        // Empty tables are omitted from the list and counted in the total, so
-        // the screen reads as a summary of what exists rather than as a census
-        // of the schema.
-        inventory: inventory.filter((entry) => entry.rows > 0),
-        totalRows: inventory.reduce((sum, entry) => sum + entry.rows, 0),
-        inFlight,
-        erasable: inFlight.length === 0 && workspaceId !== DEMO_WORKSPACE_ID,
-        reversible: false
-      });
-    } catch (error) { next(error); }
-  });
+  app.get(
+    '/api/workspace/erasure',
+    ownerOnly('erase this workspace'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const workspaceId = req.auth!.workspaceId;
+        const workspace = await db
+          .prepare('SELECT id,name FROM workspaces WHERE id=?')
+          .get<{ id: string; name: string }>(workspaceId);
+        if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
+        const [inventory, inFlight] = await Promise.all([
+          workspaceInventory(db, workspaceId),
+          workspaceWorkInFlight(db, workspaceId)
+        ]);
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({
+          workspace,
+          /** The DELETE refuses anything else. Published so a client can label its own confirm box. */
+          confirmationPhrase: workspace.name,
+          // Empty tables are omitted from the list and counted in the total, so
+          // the screen reads as a summary of what exists rather than as a census
+          // of the schema.
+          inventory: inventory.filter((entry) => entry.rows > 0),
+          totalRows: inventory.reduce((sum, entry) => sum + entry.rows, 0),
+          inFlight,
+          erasable: inFlight.length === 0 && workspaceId !== DEMO_WORKSPACE_ID,
+          reversible: false
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   /**
    * Erase the workspace. Everything, at once, and never half of it.
@@ -1601,116 +1960,143 @@ export function createApp(db: Db) {
    * deletion actually performed, when, by whom, and how much went -- would have
    * had no answer anywhere. It stores counts and names, never contents.
    */
-  app.delete('/api/workspace', ownerOnly('erase this workspace'), async (req: AuthedRequest, res, next) => {
-    try {
-      const input = workspaceErasureSchema.parse(req.body ?? {});
-      const workspaceId = req.auth!.workspaceId;
+  app.delete(
+    '/api/workspace',
+    ownerOnly('erase this workspace'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = workspaceErasureSchema.parse(req.body ?? {});
+        const workspaceId = req.auth!.workspaceId;
 
-      if (workspaceId === DEMO_WORKSPACE_ID) {
-        return res.status(403).json({
-          error: 'The demo workspace is shared by everyone trying Trevra and cannot be erased. POST /api/demo/reset restores it instead.'
-        });
-      }
+        if (workspaceId === DEMO_WORKSPACE_ID) {
+          return res.status(403).json({
+            error:
+              'The demo workspace is shared by everyone trying Trevra and cannot be erased. POST /api/demo/reset restores it instead.'
+          });
+        }
 
-      const workspace = await db.prepare('SELECT id,name FROM workspaces WHERE id=?').get<{ id: string; name: string }>(workspaceId);
-      if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
+        const workspace = await db
+          .prepare('SELECT id,name FROM workspaces WHERE id=?')
+          .get<{ id: string; name: string }>(workspaceId);
+        if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
 
-      if (input.confirm !== workspace.name) {
-        return res.status(400).json({
-          error: `Type the workspace name exactly -- "${workspace.name}" -- to confirm this erasure. Nothing was deleted.`
-        });
-      }
+        if (input.confirm !== workspace.name) {
+          return res.status(400).json({
+            error: `Type the workspace name exactly -- "${workspace.name}" -- to confirm this erasure. Nothing was deleted.`
+          });
+        }
 
-      const inFlight = await workspaceWorkInFlight(db, workspaceId);
-      if (inFlight.length > 0) {
-        return res.status(409).json({
-          error: 'This workspace still has work in flight, so erasing it now would delete rows a running process is holding. Nothing was deleted.',
-          inFlight
-        });
-      }
+        const inFlight = await workspaceWorkInFlight(db, workspaceId);
+        if (inFlight.length > 0) {
+          return res.status(409).json({
+            error:
+              'This workspace still has work in flight, so erasing it now would delete rows a running process is holding. Nothing was deleted.',
+            inFlight
+          });
+        }
 
-      // Counted BEFORE the delete, because after it there is nothing to count.
-      // This is what the response reports and what the durable record stores.
-      const inventory = await workspaceInventory(db, workspaceId);
-      const removed = Object.fromEntries(inventory.filter((entry) => entry.rows > 0).map((entry) => [entry.table, entry.rows]));
+        // Counted BEFORE the delete, because after it there is nothing to count.
+        // This is what the response reports and what the durable record stores.
+        const inventory = await workspaceInventory(db, workspaceId);
+        const removed = Object.fromEntries(
+          inventory.filter((entry) => entry.rows > 0).map((entry) => [entry.table, entry.rows])
+        );
 
-      /*
-       * TREVRA'S OWN ROWS GO FIRST, AND THE ORDER IS THE WHOLE POINT.
-       *
-       * These two steps are in two different databases and there is no
-       * transaction across them, so one of the two orders has to be chosen for
-       * what its FAILURE leaves behind. Deleting the organization first left
-       * the unrecoverable one: a transient error on the transaction below
-       * 500s with the workspace and all its data still in Postgres, but the
-       * better-auth organization and every member's membership already gone --
-       * and a retry cannot re-run `deleteOrganization` against an organization
-       * that no longer exists, so nothing can finish the erasure.
-       *
-       * This way round, a failing transaction rolls back and deletes NOTHING:
-       * the organization is untouched, the refusal is honest, and the whole
-       * request is retryable. What can still be left over is an organization
-       * whose workspace is gone -- reported as `organizationRemoved:false`
-       * rather than swallowed, holds no tenant data, and is removable on its
-       * own.
-       */
-      await db.transaction(async (tx) => {
-        await tx.prepare(`
+        /*
+         * TREVRA'S OWN ROWS GO FIRST, AND THE ORDER IS THE WHOLE POINT.
+         *
+         * These two steps are in two different databases and there is no
+         * transaction across them, so one of the two orders has to be chosen for
+         * what its FAILURE leaves behind. Deleting the organization first left
+         * the unrecoverable one: a transient error on the transaction below
+         * 500s with the workspace and all its data still in Postgres, but the
+         * better-auth organization and every member's membership already gone --
+         * and a retry cannot re-run `deleteOrganization` against an organization
+         * that no longer exists, so nothing can finish the erasure.
+         *
+         * This way round, a failing transaction rolls back and deletes NOTHING:
+         * the organization is untouched, the refusal is honest, and the whole
+         * request is retryable. What can still be left over is an organization
+         * whose workspace is gone -- reported as `organizationRemoved:false`
+         * rather than swallowed, holds no tenant data, and is removable on its
+         * own.
+         */
+        await db.transaction(async (tx) => {
+          await tx
+            .prepare(
+              `
           INSERT INTO workspace_erasures (
             id,workspace_id,workspace_name,requested_by_user_id,requested_by_email,rows_removed_json,created_at
           ) VALUES (?,?,?,?,?,?::jsonb,?)
-        `).run(
-          id('erasure'),
-          workspaceId,
-          workspace.name,
-          req.auth!.userId,
-          req.auth!.email,
-          JSON.stringify(removed),
-          new Date().toISOString()
-        );
-        await tx.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
-      });
-
-      let organizationRemoved = false;
-      try {
-        await betterAuth.api.deleteOrganization({
-          headers: fromNodeHeaders(req.headers),
-          body: { organizationId: workspaceId }
+        `
+            )
+            .run(
+              id('erasure'),
+              workspaceId,
+              workspace.name,
+              req.auth!.userId,
+              req.auth!.email,
+              JSON.stringify(removed),
+              new Date().toISOString()
+            );
+          await tx.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
         });
-        organizationRemoved = true;
-      } catch (error) {
-        // A demo-style session has no better-auth organization behind it at all,
-        // and a workspace whose organization was already removed answers the
-        // same way. Both are 4xx from better-auth and neither is a reason to
-        // fail the erasure -- the workspace rows are already gone. Anything
-        // that is NOT better-auth saying no is reported the same way rather
-        // than rethrown: throwing here would answer a completed, irreversible
-        // deletion with a 500, which reads as "nothing happened".
-        if (!(error instanceof APIError)) {
-          console.error(`Workspace ${workspaceId} was erased but its better-auth organization was not removed`, error);
-        }
-      }
 
-      /**
-       * AND THE CALLER IS SIGNED OUT EVERYWHERE, which is not cosmetic.
-       *
-       * `resolveBetterAuthIdentity` provisions a home workspace for any valid
-       * better-auth session whose Trevra `users` row is missing -- that is what
-       * makes first sign-in work. The erased owner's `users` row has just been
-       * cascaded away while their better-auth session is still perfectly valid,
-       * so their very next request would have PROVISIONED THEM A NEW WORKSPACE:
-       * an erasure that quietly undoes itself one page load later. Revoking the
-       * sessions is what makes the deletion stick.
-       *
-       * Only this user's own sessions. Other members were removed from the
-       * organization above and fall back to their own home workspaces, which is
-       * correct -- their accounts are not this workspace's to end.
-       */
-      await betterAuth.api.revokeSessions({ headers: fromNodeHeaders(req.headers) }).catch(() => undefined);
-      res.clearCookie(SESSION_COOKIE, { path: '/' });
-      res.setHeader('Cache-Control', 'no-store');
-      res.json({ erased: true, workspaceId, workspaceName: workspace.name, removed, organizationRemoved });
-    } catch (error) { next(error); }
-  });
+        let organizationRemoved = false;
+        try {
+          await betterAuth.api.deleteOrganization({
+            headers: fromNodeHeaders(req.headers),
+            body: { organizationId: workspaceId }
+          });
+          organizationRemoved = true;
+        } catch (error) {
+          // A demo-style session has no better-auth organization behind it at all,
+          // and a workspace whose organization was already removed answers the
+          // same way. Both are 4xx from better-auth and neither is a reason to
+          // fail the erasure -- the workspace rows are already gone. Anything
+          // that is NOT better-auth saying no is reported the same way rather
+          // than rethrown: throwing here would answer a completed, irreversible
+          // deletion with a 500, which reads as "nothing happened".
+          if (!(error instanceof APIError)) {
+            console.error(
+              `Workspace ${workspaceId} was erased but its better-auth organization was not removed`,
+              error
+            );
+          }
+        }
+
+        /**
+         * AND THE CALLER IS SIGNED OUT EVERYWHERE, which is not cosmetic.
+         *
+         * `resolveBetterAuthIdentity` provisions a home workspace for any valid
+         * better-auth session whose Trevra `users` row is missing -- that is what
+         * makes first sign-in work. The erased owner's `users` row has just been
+         * cascaded away while their better-auth session is still perfectly valid,
+         * so their very next request would have PROVISIONED THEM A NEW WORKSPACE:
+         * an erasure that quietly undoes itself one page load later. Revoking the
+         * sessions is what makes the deletion stick.
+         *
+         * Only this user's own sessions. Other members were removed from the
+         * organization above and fall back to their own home workspaces, which is
+         * correct -- their accounts are not this workspace's to end.
+         */
+        await betterAuth.api
+          .revokeSessions({ headers: fromNodeHeaders(req.headers) })
+          .catch(() => undefined);
+        res.clearCookie(SESSION_COOKIE, { path: '/' });
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({
+          erased: true,
+          workspaceId,
+          workspaceName: workspace.name,
+          removed,
+          organizationRemoved
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   /**
    * Spent, sent, produced -- one payload, one period, no attribution.
@@ -1724,145 +2110,64 @@ export function createApp(db: Db) {
       const filters = loopCostFiltersSchema.parse(req.query);
       res.setHeader('Cache-Control', 'no-store');
       res.json(await loopCost(db, req.auth!.workspaceId, filters.window, new Date()));
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
   app.get('/api/dashboard', async (req: AuthedRequest, res, next) => {
     try {
       const workspaceId = req.auth!.workspaceId;
-      await runRecommendationEngine(db, workspaceId);
-      await runAutomationCycle(db, workspaceId);
-      const recommendations = await listRecommendations(db, workspaceId);
-      const clients = await db.prepare(`
-        SELECT c.*,
-          (SELECT recommended_action FROM recommendations r WHERE r.client_id=c.id AND r.status IN ('ready','approved') ORDER BY priority_score DESC LIMIT 1) AS next_action
-        FROM clients c WHERE c.workspace_id=? ORDER BY c.last_interaction_at DESC
-      `).all(workspaceId) as Array<Record<string, unknown>>;
-      const overdue = await db.prepare("SELECT COUNT(*) AS count FROM invoices WHERE workspace_id=? AND paid_at IS NULL AND due_at < datetime('now')").get(workspaceId) as { count: number };
-      const outcomes = await db.prepare(`
-        SELECT ro.outcome_type, COALESCE(SUM(ro.amount),0) AS total
-        FROM recommendation_outcomes ro JOIN recommendations r ON r.id=ro.recommendation_id
-        WHERE r.workspace_id=? GROUP BY ro.outcome_type
-      `).all(workspaceId) as Array<{ outcome_type: string; total: number }>;
-      const outcomeMap = new Map(outcomes.map((item) => [item.outcome_type, Number(item.total)]));
-      const connections = await listConnections(db, workspaceId);
+      const connections = (await listConnections(db, workspaceId)).filter(
+        (connection) => !isMoneyIntegrationProvider(connection.provider)
+      );
       const availableIntegrations = await listAvailableIntegrations(db, workspaceId);
-      const automationRules = await listAutomationRules(db, workspaceId);
-
       res.json({
         workspace: await db.prepare('SELECT id,name FROM workspaces WHERE id=?').get(workspaceId),
         metrics: {
-          revenueAtRisk: recommendations.reduce((sum, item) => sum + item.estimatedAmount, 0),
-          revenueProtected: outcomeMap.get('revenue_protected') ?? 0,
-          revenueCollected: outcomeMap.get('revenue_collected') ?? 0,
-          readyToInvoice: recommendations.filter((item) => item.type === 'unbilled_milestone').reduce((sum, item) => sum + item.estimatedAmount, 0),
-          openRecommendations: recommendations.length,
-          overdueInvoices: overdue.count,
-          activeClients: clients.filter((client) => client.status === 'active').length,
-          connectedSources: connections.filter((connection) => connection.status === 'connected' && !connection.isDemo).length,
-          currency: String((await db.prepare('SELECT currency FROM workspace_settings WHERE workspace_id=?').get(workspaceId) as { currency?: string } | undefined)?.currency ?? 'EUR')
+          connectedSources: connections.filter(
+            (connection) => connection.status === 'connected' && !connection.isDemo
+          ).length
         },
-        recommendations,
         connections,
-        availableIntegrations,
-        automationRules,
-        clients: clients.map((client) => ({
-          id: String(client.id), name: String(client.name), contactName: String(client.contact_name), email: String(client.email),
-          status: String(client.status), activeValue: Number(client.active_value), currency: String(client.currency),
-          lastInteractionAt: String(client.last_interaction_at), nextAction: client.next_action ? String(client.next_action) : null
-        }))
+        availableIntegrations
       });
-    } catch (error) { next(error); }
-  });
-
-  app.get('/api/recommendations', async (req: AuthedRequest, res) => {
-    await runRecommendationEngine(db, req.auth!.workspaceId);
-    res.json({ recommendations: await listRecommendations(db, req.auth!.workspaceId) });
-  });
-
-  app.post('/api/recommendations/:id/snooze', async (req: AuthedRequest, res) => {
-    const recommendationId = String(req.params.id);
-    const body = z.object({ days: z.number().int().min(1).max(30).default(3) }).parse(req.body);
-    const until = new Date(Date.now() + body.days * 86400000).toISOString();
-    const result = await db.prepare("UPDATE recommendations SET status='snoozed',snoozed_until=?,updated_at=? WHERE id=? AND workspace_id=?")
-      .run(until, new Date().toISOString(), recommendationId, req.auth!.workspaceId);
-    if (result.changes === 0) return res.status(404).json({ error: 'Recommendation not found' });
-    res.json({ ok: true, snoozedUntil: until });
-  });
-
-  app.post('/api/recommendations/:id/dismiss', async (req: AuthedRequest, res) => {
-    const recommendationId = String(req.params.id);
-    const input = z.object({ reason: z.string().max(500).optional() }).parse(req.body ?? {});
-    const recommendation = await db.prepare('SELECT * FROM recommendations WHERE id=? AND workspace_id=?').get(recommendationId, req.auth!.workspaceId) as Record<string, unknown> | undefined;
-    if (!recommendation) return res.status(404).json({ error: 'Recommendation not found' });
-    // SCOPED ON THE WRITE, not only on the read above. The SELECT proved this
-    // recommendation belongs to the caller's workspace and the UPDATE then
-    // addressed it by id alone -- correct today because the id came from a
-    // scoped row, and correct only by that accident. Two statements enforcing
-    // one boundary between them is a boundary that breaks the first time
-    // somebody reorders them, and `WHERE id=?` on a global table is the exact
-    // shape of a cross-tenant write. The snooze route two blocks up already
-    // scopes its UPDATE; this one now matches it.
-    const dismissed = await db.prepare("UPDATE recommendations SET status='dismissed',updated_at=? WHERE id=? AND workspace_id=?")
-      .run(new Date().toISOString(), recommendationId, req.auth!.workspaceId);
-    if (dismissed.changes === 0) return res.status(404).json({ error: 'Recommendation not found' });
-    // `recordOutcome` now takes the workspace explicitly and refuses a
-    // recommendation that does not belong to it -- the id was already proved
-    // to be this workspace's twice over here, but the function no longer
-    // depends on every caller having done that.
-    await recordOutcome(db, req.auth!.workspaceId, recommendationId, 'dismissed', 0, String(recommendation.currency), { reason: input.reason ?? null });
-    res.json({ ok: true });
-  });
-
-  app.post('/api/recommendations/:id/prepare', async (req: AuthedRequest, res) => {
-    try {
-      const action = await prepareAction(db, req.auth!.workspaceId, String(req.params.id));
-      await recordMarketingEvent(db, { eventName: 'action_prepared', workspaceId: req.auth!.workspaceId, metadata: { actionType: action.type } });
-      res.status(201).json({ action });
+    } catch (error) {
+      next(error);
     }
-    catch (error) { res.status(404).json({ error: error instanceof Error ? error.message : 'Unable to prepare action' }); }
-  });
-
-  app.post('/api/actions/:id/approve', async (req: AuthedRequest, res) => {
-    const input = z.object({
-      recipient: z.string().email(), subject: z.string().min(1).max(200), body: z.string().min(1).max(20000),
-      scheduledFor: z.string().datetime().nullable().optional()
-    }).parse(req.body);
-    try {
-      const action = await approveAction(db, req.auth!.workspaceId, req.auth!.userId, String(req.params.id), input);
-      await recordMarketingEvent(db, { eventName: 'action_approved', workspaceId: req.auth!.workspaceId, metadata: { actionType: action.type, scheduled: Boolean(action.scheduledFor) } });
-      res.json({ action });
-    }
-    catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to approve action' }); }
-  });
-
-  app.post('/api/actions/:id/execute', async (req: AuthedRequest, res) => {
-    try {
-      const action = await executeAction(db, req.auth!.workspaceId, String(req.params.id));
-      await recordMarketingEvent(db, { eventName: 'action_executed', workspaceId: req.auth!.workspaceId, metadata: { actionType: action.type, provider: action.executionProvider } });
-      res.json({ action });
-    }
-    catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to execute action' }); }
   });
 
   app.get('/api/integrations', async (req: AuthedRequest, res) => {
+    const connections = (await listConnections(db, req.auth!.workspaceId)).filter(
+      (connection) => !isMoneyIntegrationProvider(connection.provider)
+    );
     res.json({
-      connections: await listConnections(db, req.auth!.workspaceId),
+      connections,
       available: await listAvailableIntegrations(db, req.auth!.workspaceId),
       configured: Boolean(process.env.NANGO_API_KEY)
     });
   });
 
   app.post('/api/integrations/connect-session', async (req: AuthedRequest, res) => {
-    const input = z.object({ allowedIntegrations: z.array(z.string()).max(12).default([]) }).parse(req.body ?? {});
+    const input = z
+      .object({ allowedIntegrations: z.array(z.string()).max(12).default([]) })
+      .parse(req.body ?? {});
     try {
       const session = await createNangoConnectSession({
-        workspaceId: req.auth!.workspaceId, userId: req.auth!.userId, userEmail: req.auth!.email,
+        workspaceId: req.auth!.workspaceId,
+        userId: req.auth!.userId,
+        userEmail: req.auth!.email,
         allowedIntegrations: input.allowedIntegrations
       });
-      await recordMarketingEvent(db, { eventName: 'integration_connect_started', workspaceId: req.auth!.workspaceId, metadata: { integrations: input.allowedIntegrations.join(',') } });
+      await recordMarketingEvent(db, {
+        eventName: 'integration_connect_started',
+        workspaceId: req.auth!.workspaceId,
+        metadata: { integrations: input.allowedIntegrations.join(',') }
+      });
       res.status(201).json({ session });
     } catch (error) {
-      res.status(503).json({ error: error instanceof Error ? error.message : 'Unable to start connection' });
+      res
+        .status(503)
+        .json({ error: error instanceof Error ? error.message : 'Unable to start connection' });
     }
   });
 
@@ -1870,120 +2175,69 @@ export function createApp(db: Db) {
     try {
       await triggerConnectionSync(db, req.auth!.workspaceId, String(req.params.id));
       res.status(202).json({ accepted: true });
-    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to sync connection' }); }
+    } catch (error) {
+      res
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : 'Unable to sync connection' });
+    }
   });
 
   app.delete('/api/integrations/:id', async (req: AuthedRequest, res) => {
     try {
       await disconnectIntegration(db, req.auth!.workspaceId, String(req.params.id));
       res.json({ ok: true });
-    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to disconnect' }); }
-  });
-
-  app.get('/api/research', async (req: AuthedRequest, res) => {
-    res.json({ sources: await listResearchSources(db, req.auth!.workspaceId), runs: await listResearchRuns(db, req.auth!.workspaceId) });
-  });
-
-  app.post('/api/research/sources', async (req: AuthedRequest, res) => {
-    try { res.status(201).json({ source: await saveResearchSource(db, req.auth!.workspaceId, req.body) }); }
-    catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Could not save research source' }); }
-  });
-
-  app.post('/api/research/sources/:id/run', async (req: AuthedRequest, res) => {
-    const input = z.object({ mode: z.enum(['incremental','backfill']).default('incremental') }).parse(req.body ?? {});
-    try { res.json(await syncResearchSource(db, req.auth!.workspaceId, String(req.params.id), input.mode)); }
-    catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Research sync failed' }); }
-  });
-
-  app.post('/api/research/search', async (req: AuthedRequest, res) => {
-    const input = z.object({ text: z.string().max(1000).optional(), sourceId: z.string().optional(), community: z.string().max(100).optional(), includeComments: z.boolean().optional(), limit: z.number().int().min(1).max(200).optional() }).parse(req.body ?? {});
-    res.json({ results: await searchResearchCorpus(db, req.auth!.workspaceId, input) });
-  });
-
-  app.post('/api/imports/marketplace', async (req: AuthedRequest, res) => {
-    const input = z.object({ provider: z.enum(['upwork', 'fiverr', 'contra', 'generic']), csv: z.string().min(1).max(5_000_000) }).parse(req.body);
-    const result = await importMarketplaceCsv(db, req.auth!.workspaceId, input.provider, input.csv);
-    await runRecommendationEngine(db, req.auth!.workspaceId);
-    await recordMarketingEvent(db, { eventName: 'marketplace_imported', workspaceId: req.auth!.workspaceId, metadata: { provider: input.provider, imported: result.imported } });
-    res.status(201).json(result);
-  });
-
-  app.post('/api/imports/document', documentUpload.single('file'), async (req: AuthedRequest, res) => {
-    if (!req.file) return res.status(400).json({ error: 'A PDF, DOCX, or text document is required' });
-    const hints = z.object({
-      clientName: z.string().max(200).optional(),
-      contactName: z.string().max(200).optional(),
-      clientEmail: z.string().email().optional().or(z.literal('')),
-      projectName: z.string().max(300).optional(),
-      currency: z.string().length(3).optional()
-    }).parse(req.body);
-    try {
-      const result = await importCommercialDocument(db, req.auth!.workspaceId, req.file, {
-        ...hints,
-        clientEmail: hints.clientEmail || undefined
-      });
-      await runRecommendationEngine(db, req.auth!.workspaceId);
-      await recordMarketingEvent(db, { eventName: 'document_imported', workspaceId: req.auth!.workspaceId, metadata: { extractionMethod: result.extractionMethod, scopeItems: result.scopeItems } });
-      res.status(201).json(result);
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to import document' });
+      res
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : 'Unable to disconnect' });
     }
   });
 
-  app.get('/api/automation/rules', async (req: AuthedRequest, res) => res.json({ rules: await listAutomationRules(db, req.auth!.workspaceId) }));
-
-  app.put('/api/automation/rules/:type', async (req: AuthedRequest, res) => {
-    const recommendationType = z.enum(['stale_proposal', 'scope_creep', 'unbilled_milestone', 'overdue_invoice']).parse(String(req.params.type));
-    const input = z.object({
-      mode: z.enum(['suggest', 'prepare', 'execute']), minConfidence: z.number().min(0.5).max(1),
-      maxAmount: z.number().nonnegative().max(10_000_000), delayMinutes: z.number().int().min(0).max(43_200), enabled: z.boolean()
-    }).parse(req.body);
-    if (recommendationType === 'scope_creep' && input.mode === 'execute') return res.status(400).json({ error: 'Scope changes always require manual approval' });
-    const now = new Date().toISOString();
-    const existing = await db.prepare('SELECT id FROM automation_rules WHERE workspace_id=? AND recommendation_type=?').get(req.auth!.workspaceId, recommendationType) as { id: string } | undefined;
-    await db.prepare(`
-      INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,max_amount,delay_minutes,enabled,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(workspace_id,recommendation_type) DO UPDATE SET
-        mode=excluded.mode,min_confidence=excluded.min_confidence,max_amount=excluded.max_amount,
-        delay_minutes=excluded.delay_minutes,enabled=excluded.enabled,updated_at=excluded.updated_at
-    `).run(existing?.id ?? id('rule'), req.auth!.workspaceId, recommendationType, input.mode, input.minConfidence, input.maxAmount, input.delayMinutes, input.enabled ? 1 : 0, now, now);
-    res.json({ rules: await listAutomationRules(db, req.auth!.workspaceId) });
+  app.get('/api/research', async (req: AuthedRequest, res) => {
+    res.json({
+      sources: await listResearchSources(db, req.auth!.workspaceId),
+      runs: await listResearchRuns(db, req.auth!.workspaceId)
+    });
   });
 
-  app.post('/api/automation/run', async (req: AuthedRequest, res) => {
-    res.json(await runAutomationCycle(db, req.auth!.workspaceId));
+  app.post('/api/research/sources', async (req: AuthedRequest, res) => {
+    try {
+      res
+        .status(201)
+        .json({ source: await saveResearchSource(db, req.auth!.workspaceId, req.body) });
+    } catch (error) {
+      res
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : 'Could not save research source' });
+    }
   });
 
-  app.get('/api/clients/:id', async (req: AuthedRequest, res) => {
-    const clientId = String(req.params.id);
-    const workspaceId = req.auth!.workspaceId;
-    const client = await db.prepare('SELECT * FROM clients WHERE id=? AND workspace_id=?').get(clientId, workspaceId);
-    if (!client) return res.status(404).json({ error: 'Client not found' });
-    // EVERY CHILD READ CARRIES THE WORKSPACE TOO, and not because the parent
-    // read above is insufficient proof of ownership -- it is -- but because
-    // nothing below the application enforces that a child's workspace matches
-    // its parent's. There is not a single composite foreign key in this schema:
-    // `messages.client_id` references `clients(id)` and `messages.workspace_id`
-    // references `workspaces(id)`, and no constraint anywhere says the two must
-    // agree. So a row written with a mismatched pair -- by an importer, a
-    // backfill, a future writer that scopes one and not the other -- is a row
-    // Postgres accepts and this route would have served to the wrong tenant
-    // under a client id it had correctly scoped. `WHERE client_id=?` alone puts
-    // the whole boundary on the caller having got a different query right.
-    //
-    // `recommendation_outcomes` has no `workspace_id` column at all, so it is
-    // scoped through the recommendation it hangs off, which does.
-    const messages = await db.prepare('SELECT id,direction,subject,body,occurred_at,source_record_id FROM messages WHERE client_id=? AND workspace_id=? ORDER BY occurred_at DESC').all(clientId, workspaceId);
-    const invoices = await db.prepare('SELECT id,external_ref,amount,currency,status,issued_at,due_at,paid_at FROM invoices WHERE client_id=? AND workspace_id=? ORDER BY issued_at DESC').all(clientId, workspaceId);
-    const projects = await db.prepare('SELECT id,name,status,total_value,currency FROM projects WHERE client_id=? AND workspace_id=? ORDER BY created_at DESC').all(clientId, workspaceId);
-    const commitments = await db.prepare('SELECT * FROM commitments WHERE client_id=? AND workspace_id=? ORDER BY due_at').all(clientId, workspaceId);
-    const contracts = await db.prepare('SELECT * FROM contracts WHERE client_id=? AND workspace_id=? ORDER BY created_at DESC').all(clientId, workspaceId);
-    const outcomes = await db.prepare(`
-      SELECT ro.* FROM recommendation_outcomes ro JOIN recommendations r ON r.id=ro.recommendation_id
-      WHERE r.client_id=? AND r.workspace_id=? ORDER BY ro.created_at DESC
-    `).all(clientId, workspaceId);
-    res.json({ client, messages, invoices, projects, commitments, contracts, outcomes });
+  app.post('/api/research/sources/:id/run', async (req: AuthedRequest, res) => {
+    const input = z
+      .object({ mode: z.enum(['incremental', 'backfill']).default('incremental') })
+      .parse(req.body ?? {});
+    try {
+      res.json(
+        await syncResearchSource(db, req.auth!.workspaceId, String(req.params.id), input.mode)
+      );
+    } catch (error) {
+      res
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : 'Research sync failed' });
+    }
+  });
+
+  app.post('/api/research/search', async (req: AuthedRequest, res) => {
+    const input = z
+      .object({
+        text: z.string().max(1000).optional(),
+        sourceId: z.string().optional(),
+        community: z.string().max(100).optional(),
+        includeComments: z.boolean().optional(),
+        limit: z.number().int().min(1).max(200).optional()
+      })
+      .parse(req.body ?? {});
+    res.json({ results: await searchResearchCorpus(db, req.auth!.workspaceId, input) });
   });
 
   /**
@@ -2016,14 +2270,22 @@ export function createApp(db: Db) {
     if (!process.env.INGEST_API_KEY || !secureTokenEqual(ingestKey, process.env.INGEST_API_KEY)) {
       return res.status(401).json({ error: 'Invalid ingest key' });
     }
-    const event = z.object({ provider: z.string().default('custom'), record: z.record(z.unknown()) }).parse(req.body);
-    await ingestCanonicalRecord(db, req.auth!.workspaceId, event.provider, null, event.record as never);
-    const count = await runRecommendationEngine(db, req.auth!.workspaceId);
-    res.status(202).json({ accepted: true, recommendationsEvaluated: count });
+    const event = z
+      .object({ provider: z.string().default('custom'), record: z.record(z.unknown()) })
+      .parse(req.body);
+    await ingestCanonicalRecord(
+      db,
+      req.auth!.workspaceId,
+      event.provider,
+      null,
+      event.record as never
+    );
+    res.status(202).json({ accepted: true });
   });
 
   app.post('/api/demo/reset', async (req: AuthedRequest, res) => {
-    if (req.auth!.workspaceId !== DEMO_WORKSPACE_ID) return res.status(403).json({ error: 'Only the demo workspace can be reset' });
+    if (req.auth!.workspaceId !== DEMO_WORKSPACE_ID)
+      return res.status(403).json({ error: 'Only the demo workspace can be reset' });
     await resetDemoData(db);
     res.clearCookie(SESSION_COOKIE);
     res.json({ ok: true });
@@ -2061,138 +2323,176 @@ export function createApp(db: Db) {
    * names for the job.
    * ================================================================== */
 
-  app.get('/api/linkedin/seat', linkedinRoute(async (req, res) => {
-    const workspaceId = req.auth!.workspaceId;
-    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
-    const now = new Date();
-    const seat = await getSeat(db, workspaceId, seatKey);
-    const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : { workspaceId, seatKey };
-    const counts = await Promise.all(PACED_KINDS.map((kind) => countActionsInWindow(db, seatRef, kind, 24, now)));
-    const credentials = await describeLinkedInCredentials(db, workspaceId, seatKey);
-    const waitingFor = await linkedinQueueWaitReason(db, workspaceId, seatKey, now);
-    const detect = await latestSeatDetectRequest(db, workspaceId, seatKey);
-    const workerIntervalMs = (() => {
-      try { return validateEnvironment().automationIntervalMs; }
-      catch { return 300_000; }
-    })();
+  app.get(
+    '/api/linkedin/seat',
+    linkedinRoute(async (req, res) => {
+      const workspaceId = req.auth!.workspaceId;
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      const now = new Date();
+      const seat = await getSeat(db, workspaceId, seatKey);
+      const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : { workspaceId, seatKey };
+      const counts = await Promise.all(
+        PACED_KINDS.map((kind) => countActionsInWindow(db, seatRef, kind, 24, now))
+      );
+      const credentials = await describeLinkedInCredentials(db, workspaceId, seatKey);
+      const waitingFor = await linkedinQueueWaitReason(db, workspaceId, seatKey, now);
+      const detect = await latestSeatDetectRequest(db, workspaceId, seatKey);
+      const workerIntervalMs = (() => {
+        try {
+          return validateEnvironment().automationIntervalMs;
+        } catch {
+          return 300_000;
+        }
+      })();
 
-    const maintenance = seat
-      ? await (async () => {
-        const runs = await sideTaskRuns(db, workspaceId, seat.seatKey);
-        return SIDE_TASK_NAMES.map((task) => {
-          const [next] = nextSideTaskOpportunities(seat, runs, task, now, 1);
-          return {
-            task,
-            nextRunAt: next?.startAt.toISOString() ?? null,
-            nextRunWindowEndAt: next?.endAt.toISOString() ?? null,
-            timezone: seat.timezone,
-            waitingFor
-          };
-        });
-      })()
-      : [];
-    const backgroundRun = seat ? await nextLinkedInBackgroundRun(db, workspaceId, seat.seatKey, now) : null;
+      const maintenance = seat
+        ? await (async () => {
+            const runs = await sideTaskRuns(db, workspaceId, seat.seatKey);
+            return SIDE_TASK_NAMES.map((task) => {
+              const [next] = nextSideTaskOpportunities(seat, runs, task, now, 1);
+              return {
+                task,
+                nextRunAt: next?.startAt.toISOString() ?? null,
+                nextRunWindowEndAt: next?.endAt.toISOString() ?? null,
+                timezone: seat.timezone,
+                waitingFor
+              };
+            });
+          })()
+        : [];
+      const backgroundRun = seat
+        ? await nextLinkedInBackgroundRun(db, workspaceId, seat.seatKey, now)
+        : null;
 
-    res.json({
-      seat: seat ?? null,
-      auth: {
-        hasCredentials: credentials.hasCredentials,
-        maskedEmail: credentials.maskedEmail,
-        sessionValidAt: seat?.sessionValidAt ?? null
-      },
-      detectRequest: detect?.status === 'pending' ? {
-        ...detect,
-        nextAttemptAt: waitingFor === null ? (() => {
-          const requested = Date.parse(detect.requestedAt);
-          if (!Number.isFinite(requested)) return new Date(now.getTime() + workerIntervalMs).toISOString();
-          const elapsed = Math.max(0, now.getTime() - requested);
-          const cycles = Math.floor(elapsed / workerIntervalMs) + 1;
-          return new Date(requested + cycles * workerIntervalMs).toISOString();
-        })() : null,
-        waitingFor
-      } : detect,
-      execution: { ready: waitingFor === null, waitingFor },
-      backgroundRun: backgroundRun ? {
-        startAt: backgroundRun.startAt.toISOString(),
-        endAt: backgroundRun.endAt.toISOString(),
-        timezone: backgroundRun.timezone,
-        source: backgroundRun.source,
-        waitingFor: backgroundRun.waitingFor
-      } : null,
-      maintenance,
-      posture: seat ? effectivePosture(seat, now) : null,
-      warmupWeek: warmupWeekOf(seat?.activatedAt ?? null, now),
-      warmupWeeks: WARMUP_WEEKS,
-      today: Object.fromEntries(PACED_KINDS.map((kind, index) => [kind, counts[index]]))
-    });
-  }));
+      res.json({
+        seat: seat ?? null,
+        auth: {
+          hasCredentials: credentials.hasCredentials,
+          maskedEmail: credentials.maskedEmail,
+          sessionValidAt: seat?.sessionValidAt ?? null
+        },
+        detectRequest:
+          detect?.status === 'pending'
+            ? {
+                ...detect,
+                nextAttemptAt:
+                  waitingFor === null
+                    ? (() => {
+                        const requested = Date.parse(detect.requestedAt);
+                        if (!Number.isFinite(requested))
+                          return new Date(now.getTime() + workerIntervalMs).toISOString();
+                        const elapsed = Math.max(0, now.getTime() - requested);
+                        const cycles = Math.floor(elapsed / workerIntervalMs) + 1;
+                        return new Date(requested + cycles * workerIntervalMs).toISOString();
+                      })()
+                    : null,
+                waitingFor
+              }
+            : detect,
+        execution: { ready: waitingFor === null, waitingFor },
+        backgroundRun: backgroundRun
+          ? {
+              startAt: backgroundRun.startAt.toISOString(),
+              endAt: backgroundRun.endAt.toISOString(),
+              timezone: backgroundRun.timezone,
+              source: backgroundRun.source,
+              waitingFor: backgroundRun.waitingFor
+            }
+          : null,
+        maintenance,
+        posture: seat ? effectivePosture(seat, now) : null,
+        warmupWeek: warmupWeekOf(seat?.activatedAt ?? null, now),
+        warmupWeeks: WARMUP_WEEKS,
+        today: Object.fromEntries(PACED_KINDS.map((kind, index) => [kind, counts[index]]))
+      });
+    })
+  );
 
-  app.get('/api/linkedin/activity', linkedinRoute(async (req, res) => {
-    const workspaceId = req.auth!.workspaceId;
-    const limit = z.coerce.number().int().min(1).max(200).default(50).parse(req.query.limit ?? 50);
-    const now = new Date();
-    const seats = await listSeats(db, workspaceId);
-    const labels = new Map(seats.map((seat) => [seat.seatKey, seat.label] as const));
-    const schedules = (await Promise.all(seats.map((seat) => nextLinkedInBackgroundRun(db, workspaceId, seat.seatKey, now))))
-      .filter((run): run is LinkedInBackgroundScheduleView => run !== null)
-      .sort((left, right) => left.startAt.getTime() - right.startAt.getTime());
-    const nextRun = schedules.find((run) => run.waitingFor === null) ?? schedules[0] ?? null;
+  app.get(
+    '/api/linkedin/activity',
+    linkedinRoute(async (req, res) => {
+      const workspaceId = req.auth!.workspaceId;
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      const limit = z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .default(50)
+        .parse(req.query.limit ?? 50);
+      const now = new Date();
+      const seat = await getSeat(db, workspaceId, seatKey);
+      const labels = new Map(seat ? [[seat.seatKey, seat.label] as const] : []);
+      const nextRun = seat ? await nextLinkedInBackgroundRun(db, workspaceId, seatKey, now) : null;
 
-    const batches = await db.prepare(`
+      const batches = await db
+        .prepare(
+          `
       SELECT id,seat_key,status,executed_count,halt_reason,started_at,finished_at
       FROM linkedin_batches
-      WHERE workspace_id=?
+      WHERE workspace_id=? AND seat_key=?
       ORDER BY started_at DESC
       LIMIT ?
-    `).all<Record<string, unknown>>(workspaceId, limit);
+    `
+        )
+        .all<Record<string, unknown>>(workspaceId, seatKey, limit);
 
-    const events = await listSeatEvents(db, workspaceId, { limit: Math.min(500, limit * 4) });
-    const maintenanceRuns = events.flatMap((event) => {
-      if (event.kind !== 'background_run') return [];
-      const detail = parseBackgroundRunDetail(event.detail);
-      if (!detail) return [];
-      return [{
-        id: event.id,
-        kind: 'maintenance' as const,
-        seatKey: event.seatKey,
-        seatLabel: labels.get(event.seatKey) ?? event.seatKey,
-        startedAt: detail.startedAt,
-        finishedAt: detail.finishedAt,
-        status: detail.status,
-        tasks: detail.tasks,
-        executedCount: 0,
-        reason: detail.reason
-      }];
-    });
-    const actionRuns = batches.map((row) => ({
-      id: String(row.id),
-      kind: 'actions' as const,
-      seatKey: String(row.seat_key),
-      seatLabel: labels.get(String(row.seat_key)) ?? String(row.seat_key),
-      startedAt: new Date(String(row.started_at)).toISOString(),
-      finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : null,
-      status: String(row.status),
-      tasks: [] as string[],
-      executedCount: Number(row.executed_count ?? 0),
-      reason: row.halt_reason === null || row.halt_reason === undefined ? null : String(row.halt_reason)
-    }));
-    const runs = [...maintenanceRuns, ...actionRuns]
-      .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
-      .slice(0, limit);
+      const events = await listSeatEvents(db, workspaceId, {
+        seatKey,
+        limit: Math.min(500, limit * 4)
+      });
+      const maintenanceRuns = events.flatMap((event) => {
+        if (event.kind !== 'background_run') return [];
+        const detail = parseBackgroundRunDetail(event.detail);
+        if (!detail) return [];
+        return [
+          {
+            id: event.id,
+            kind: 'maintenance' as const,
+            seatKey: event.seatKey,
+            seatLabel: labels.get(event.seatKey) ?? event.seatKey,
+            startedAt: detail.startedAt,
+            finishedAt: detail.finishedAt,
+            status: detail.status,
+            tasks: detail.tasks,
+            executedCount: 0,
+            reason: detail.reason
+          }
+        ];
+      });
+      const actionRuns = batches.map((row) => ({
+        id: String(row.id),
+        kind: 'actions' as const,
+        seatKey: String(row.seat_key),
+        seatLabel: labels.get(String(row.seat_key)) ?? String(row.seat_key),
+        startedAt: new Date(String(row.started_at)).toISOString(),
+        finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : null,
+        status: String(row.status),
+        tasks: [] as string[],
+        executedCount: Number(row.executed_count ?? 0),
+        reason:
+          row.halt_reason === null || row.halt_reason === undefined ? null : String(row.halt_reason)
+      }));
+      const runs = [...maintenanceRuns, ...actionRuns]
+        .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
+        .slice(0, limit);
 
-    res.json({
-      nextRun: nextRun ? {
-        startAt: nextRun.startAt.toISOString(),
-        endAt: nextRun.endAt.toISOString(),
-        timezone: nextRun.timezone,
-        seatKey: nextRun.seatKey,
-        seatLabel: nextRun.seatLabel,
-        source: nextRun.source,
-        waitingFor: nextRun.waitingFor
-      } : null,
-      runs
-    });
-  }));
+      res.json({
+        nextRun: nextRun
+          ? {
+              startAt: nextRun.startAt.toISOString(),
+              endAt: nextRun.endAt.toISOString(),
+              timezone: nextRun.timezone,
+              seatKey: nextRun.seatKey,
+              seatLabel: nextRun.seatLabel,
+              source: nextRun.source,
+              waitingFor: nextRun.waitingFor
+            }
+          : null,
+        runs
+      });
+    })
+  );
 
   // Posture is deliberately NOT writable here. warmup-vs-steady is derived from
   // the account's age on every read, and the two postures an operator really
@@ -2206,24 +2506,27 @@ export function createApp(db: Db) {
   // decides whether the researched safety band or the operator's own number
   // binds. That is an account-risk decision, and the account belongs to the
   // owner.
-  app.put('/api/linkedin/seat', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, "change a LinkedIn account's limits");
-    const { seatKey = OWNER_SEAT_KEY, ...input } = linkedinSeatSchema.parse(req.body ?? {});
-    assertSeatProxyUsable(req.auth!.workspaceId, seatKey, input.proxyUrl);
-    const now = new Date();
-    let seat;
-    try {
-      seat = await upsertSeat(db, req.auth!.workspaceId, input as SeatPatch, now, seatKey);
-    } catch (error) {
-      // seats.ts owns the label/timezone/date rules and its refusals are
-      // operator input errors, not faults. Same pattern as the agent config route.
-      if (error instanceof Error && LINKEDIN_SEAT_INPUT_ERROR.test(error.message)) {
-        throw new LinkedInApiError(error.message, 400);
+  app.put(
+    '/api/linkedin/seat',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, "change a LinkedIn account's limits");
+      const { seatKey = OWNER_SEAT_KEY, ...input } = linkedinSeatSchema.parse(req.body ?? {});
+      assertSeatProxyUsable(req.auth!.workspaceId, seatKey, input.proxyUrl);
+      const now = new Date();
+      let seat;
+      try {
+        seat = await upsertSeat(db, req.auth!.workspaceId, input as SeatPatch, now, seatKey);
+      } catch (error) {
+        // seats.ts owns the label/timezone/date rules and its refusals are
+        // operator input errors, not faults. Same pattern as the agent config route.
+        if (error instanceof Error && LINKEDIN_SEAT_INPUT_ERROR.test(error.message)) {
+          throw new LinkedInApiError(error.message, 400);
+        }
+        throw error;
       }
-      throw error;
-    }
-    res.json({ seat, posture: effectivePosture(seat, now) });
-  }));
+      res.json({ seat, posture: effectivePosture(seat, now) });
+    })
+  );
 
   // The kill switch. Consults nothing -- not the plan, not the ledger, not the
   // worker -- for the same reason the agent's stop route does not: the one
@@ -2240,12 +2543,25 @@ export function createApp(db: Db) {
   // it again -- which is a smaller failure than the alternative by a wide
   // margin. Same reasoning, same shape, at
   // `POST /api/linkedin/manager/campaigns/:id/pause`.
-  app.post('/api/linkedin/seat/pause', linkedinRoute(async (req, res) => {
-    const input = linkedinPauseSchema.parse(req.body ?? {});
-    const seat = await pauseSeat(db, req.auth!.workspaceId, input.reason, new Date(), input.seatKey);
-    if (!seat) throw new LinkedInApiError('That LinkedIn account is not configured for this workspace', 404);
-    res.json({ seat, posture: 'paused' });
-  }));
+  app.post(
+    '/api/linkedin/seat/pause',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinPauseSchema.parse(req.body ?? {});
+      const seat = await pauseSeat(
+        db,
+        req.auth!.workspaceId,
+        input.reason,
+        new Date(),
+        input.seatKey
+      );
+      if (!seat)
+        throw new LinkedInApiError(
+          'That LinkedIn account is not configured for this workspace',
+          404
+        );
+      res.json({ seat, posture: 'paused' });
+    })
+  );
 
   /**
    * Resume, and RECORD WHY IT WAS RESUMED AND BY WHOM.
@@ -2264,41 +2580,56 @@ export function createApp(db: Db) {
    * pause it answers, which is the pairing that makes either half readable a
    * month later.
    */
-  app.post('/api/linkedin/seat/resume', linkedinRoute(async (req, res) => {
-    // Owner-only, and this is the asymmetry that makes the open pause route
-    // above safe: stopping is a member's to do, starting again is not. An
-    // account was paused because somebody thought something was wrong, and
-    // deciding it is fine now is the decision the audit row below records
-    // against a name.
-    assertWorkspaceOwner(req, 'resume a paused LinkedIn account');
-    const { seatKey, reason } = linkedinResumeSchema.parse({ ...(req.body ?? {}), ...req.query });
-    const workspaceId = req.auth!.workspaceId;
-    const now = new Date();
-    // Read BEFORE the resume clears it: the pause this resume answers is half
-    // of what makes the record worth keeping.
-    const paused = await getSeat(db, workspaceId, seatKey);
-    const seat = await resumeSeat(db, workspaceId, now, seatKey);
-    if (!seat) throw new LinkedInApiError('That LinkedIn account is not configured for this workspace', 404);
-    const resumeReason = reason ?? null;
-    await db.prepare(`
+  app.post(
+    '/api/linkedin/seat/resume',
+    linkedinRoute(async (req, res) => {
+      // Owner-only, and this is the asymmetry that makes the open pause route
+      // above safe: stopping is a member's to do, starting again is not. An
+      // account was paused because somebody thought something was wrong, and
+      // deciding it is fine now is the decision the audit row below records
+      // against a name.
+      assertWorkspaceOwner(req, 'resume a paused LinkedIn account');
+      const { seatKey, reason } = linkedinResumeSchema.parse({ ...(req.body ?? {}), ...req.query });
+      const workspaceId = req.auth!.workspaceId;
+      const now = new Date();
+      // Read BEFORE the resume clears it: the pause this resume answers is half
+      // of what makes the record worth keeping.
+      const paused = await getSeat(db, workspaceId, seatKey);
+      const seat = await resumeSeat(db, workspaceId, now, seatKey);
+      if (!seat)
+        throw new LinkedInApiError(
+          'That LinkedIn account is not configured for this workspace',
+          404
+        );
+      const resumeReason = reason ?? null;
+      await db
+        .prepare(
+          `
       INSERT INTO audit_events (
         id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at
       ) VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(
-      id('audit'),
-      workspaceId,
-      'user',
-      req.auth!.userId,
-      'linkedin.seat_resumed',
-      'linkedin_seat',
-      seat.seatKey,
-      JSON.stringify({ reason: resumeReason, pausedReason: paused?.pausedReason ?? null, previousPosture: paused?.posture ?? null }),
-      now.toISOString()
-    );
-    // Stored 'warmup', but resuming a two-year-old account does not put it back
-    // through the ramp -- the effective posture is re-derived from its age.
-    res.json({ seat, posture: effectivePosture(seat, now), resumeReason });
-  }));
+    `
+        )
+        .run(
+          id('audit'),
+          workspaceId,
+          'user',
+          req.auth!.userId,
+          'linkedin.seat_resumed',
+          'linkedin_seat',
+          seat.seatKey,
+          JSON.stringify({
+            reason: resumeReason,
+            pausedReason: paused?.pausedReason ?? null,
+            previousPosture: paused?.posture ?? null
+          }),
+          now.toISOString()
+        );
+      // Stored 'warmup', but resuming a two-year-old account does not put it back
+      // through the ramp -- the effective posture is re-derived from its age.
+      res.json({ seat, posture: effectivePosture(seat, now), resumeReason });
+    })
+  );
 
   /**
    * Forget this seat, including its ramp clock -- and the inbox read cache
@@ -2334,45 +2665,48 @@ export function createApp(db: Db) {
    * Owner-only. This is a delete with a blast radius, and the audit that asked
    * for the check was right that it is the sharpest one on this surface.
    */
-  app.delete('/api/linkedin/seat', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, 'disconnect a LinkedIn account');
-    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
-    const workspaceId = req.auth!.workspaceId;
-    // The queue first: planned and held rows to 'skipped', pending manual tasks
-    // to 'cancelled', and a count of anything a worker had already CLAIMED --
-    // which this deliberately leaves alone, because a row a browser is acting
-    // on is not this route's to rewrite. `actionsInFlight` is how the response
-    // says so instead of rounding it to zero.
-    const released = await releaseSeatWork(db, workspaceId, seatKey, new Date());
-    // And the sign-in, which `deleteSeat` never touched: a disconnect that
-    // leaves a sealed password behind is a disconnect that can sign itself back
-    // in the moment somebody re-adds the seat.
-    await deleteLinkedInCredentials(db, workspaceId, req.auth!.userId, seatKey);
-    // Scoped to the account being forgotten. Clearing the whole workspace's
-    // cache would empty a SECOND account's inbox as a side effect of
-    // disconnecting the first, which is the one thing multi-account made
-    // possible to get wrong here.
-    const clearedThreads = await clearInboxForSeat(db, workspaceId, seatKey);
-    const deleted = await deleteSeat(db, workspaceId, seatKey);
-    res.json({
-      deleted,
-      clearedThreads,
-      released,
-      /**
-       * WHETHER THE DISCONNECT ACTUALLY STOPPED EVERYTHING, as a fact rather
-       * than as an inference the client has to draw from a count.
-       *
-       * Rows a worker had already CLAIMED cannot be pulled back -- a browser is
-       * mid-action on them, and rewriting the row would not close the tab. So a
-       * non-zero `released.actionsInFlight` means this seat is disconnected and
-       * still sending, for up to one more batch. A response that reported that
-       * as a clean disconnect would be the same lie the Reddit route used to
-       * tell, and the screen has to be able to say "3 actions were already in
-       * flight and will finish" rather than "done".
-       */
-      fullyStopped: released.actionsInFlight === 0
-    });
-  }));
+  app.delete(
+    '/api/linkedin/seat',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'disconnect a LinkedIn account');
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      const workspaceId = req.auth!.workspaceId;
+      // The queue first: planned and held rows to 'skipped', pending manual tasks
+      // to 'cancelled', and a count of anything a worker had already CLAIMED --
+      // which this deliberately leaves alone, because a row a browser is acting
+      // on is not this route's to rewrite. `actionsInFlight` is how the response
+      // says so instead of rounding it to zero.
+      const released = await releaseSeatWork(db, workspaceId, seatKey, new Date());
+      // And the sign-in, which `deleteSeat` never touched: a disconnect that
+      // leaves a sealed password behind is a disconnect that can sign itself back
+      // in the moment somebody re-adds the seat.
+      await deleteLinkedInCredentials(db, workspaceId, req.auth!.userId, seatKey);
+      // Scoped to the account being forgotten. Clearing the whole workspace's
+      // cache would empty a SECOND account's inbox as a side effect of
+      // disconnecting the first, which is the one thing multi-account made
+      // possible to get wrong here.
+      const clearedThreads = await clearInboxForSeat(db, workspaceId, seatKey);
+      const deleted = await deleteSeat(db, workspaceId, seatKey);
+      res.json({
+        deleted,
+        clearedThreads,
+        released,
+        /**
+         * WHETHER THE DISCONNECT ACTUALLY STOPPED EVERYTHING, as a fact rather
+         * than as an inference the client has to draw from a count.
+         *
+         * Rows a worker had already CLAIMED cannot be pulled back -- a browser is
+         * mid-action on them, and rewriting the row would not close the tab. So a
+         * non-zero `released.actionsInFlight` means this seat is disconnected and
+         * still sending, for up to one more batch. A response that reported that
+         * as a clean disconnect would be the same lie the Reddit route used to
+         * tell, and the screen has to be able to say "3 actions were already in
+         * flight and will finish" rather than "done".
+         */
+        fullyStopped: released.actionsInFlight === 0
+      });
+    })
+  );
 
   /* ---------------------------------------------------------------------
    * The sign-in the operator may hand over, and the one they may not.
@@ -2390,56 +2724,64 @@ export function createApp(db: Db) {
    * multi-tenant service holding many humans' is a different product.
    * ------------------------------------------------------------------ */
 
-  app.post('/api/linkedin/seat/credentials', linkedinRoute(async (req, res) => {
-    const input = linkedinCredentialsSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    const seatKey = input.seatKey;
+  app.post(
+    '/api/linkedin/seat/credentials',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinCredentialsSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const seatKey = input.seatKey;
 
-    // Credential-management carve-out (design doc "Decisions made during
-    // brainstorming" #2): full workspace parity for any member, EXCEPT this.
-    // Only the workspace owner may replace the stored LinkedIn sign-in.
-    if (req.auth!.role !== 'owner') {
-      throw new LinkedInApiError('Only the workspace owner can manage the stored LinkedIn credentials', 403);
-    }
-
-    // THE HOSTED GATE, READ FROM THE ONE DEFINITION OF IT -- and it is no
-    // longer unconditional, which is the whole of what hosted execution
-    // changed here. A hosted deployment refuses exactly as it always did, with
-    // the same sentence, UNLESS it has a remote browser to act with AND this
-    // workspace's owner has recorded an authorisation to act on their behalf.
-    // Both halves are checked inside `putLinkedInCredentials` too, structurally
-    // and unconditionally, so a caller that skipped this still stores nothing;
-    // asking here is what turns the refusal into a 409 with one sentence rather
-    // than a 500.
-    const hostedCustody = await hostedExecutionGate(db, workspaceId);
-    if (!hostedCustody.allowed) throw new LinkedInApiError(hostedCustody.reason, 409);
-    // A deployment with no key would seal nothing, and `sealSecret` would throw
-    // a sentence about environment variables into a 500. Asked first instead.
-    if (!secretsConfigured()) throw new LinkedInApiError(LINKEDIN_CREDENTIALS_UNSEALED_REFUSAL, 409);
-
-    let summary;
-    try {
-      summary = await putLinkedInCredentials(db, {
-        workspaceId,
-        seatKey,
-        email: input.email,
-        password: input.password,
-        actorUserId: req.auth!.userId
-      });
-    } catch (error) {
-      // The store's own refusals are operator-facing facts, not faults. Nothing
-      // it throws contains either value.
-      if (
-        error instanceof Error
-        && (error.message === LINKEDIN_CREDENTIALS_HOSTED_REFUSAL || error.message === HOSTED_EXECUTION_ACK_REQUIRED)
-      ) {
-        throw new LinkedInApiError(error.message, 409);
+      // Credential-management carve-out (design doc "Decisions made during
+      // brainstorming" #2): full workspace parity for any member, EXCEPT this.
+      // Only the workspace owner may replace the stored LinkedIn sign-in.
+      if (req.auth!.role !== 'owner') {
+        throw new LinkedInApiError(
+          'Only the workspace owner can manage the stored LinkedIn credentials',
+          403
+        );
       }
-      throw error;
-    }
 
-    res.json(summary);
-  }));
+      // THE HOSTED GATE, READ FROM THE ONE DEFINITION OF IT -- and it is no
+      // longer unconditional, which is the whole of what hosted execution
+      // changed here. A hosted deployment refuses exactly as it always did, with
+      // the same sentence, UNLESS it has a remote browser to act with AND this
+      // workspace's owner has recorded an authorisation to act on their behalf.
+      // Both halves are checked inside `putLinkedInCredentials` too, structurally
+      // and unconditionally, so a caller that skipped this still stores nothing;
+      // asking here is what turns the refusal into a 409 with one sentence rather
+      // than a 500.
+      const hostedCustody = await hostedExecutionGate(db, workspaceId);
+      if (!hostedCustody.allowed) throw new LinkedInApiError(hostedCustody.reason, 409);
+      // A deployment with no key would seal nothing, and `sealSecret` would throw
+      // a sentence about environment variables into a 500. Asked first instead.
+      if (!secretsConfigured())
+        throw new LinkedInApiError(LINKEDIN_CREDENTIALS_UNSEALED_REFUSAL, 409);
+
+      let summary;
+      try {
+        summary = await putLinkedInCredentials(db, {
+          workspaceId,
+          seatKey,
+          email: input.email,
+          password: input.password,
+          actorUserId: req.auth!.userId
+        });
+      } catch (error) {
+        // The store's own refusals are operator-facing facts, not faults. Nothing
+        // it throws contains either value.
+        if (
+          error instanceof Error &&
+          (error.message === LINKEDIN_CREDENTIALS_HOSTED_REFUSAL ||
+            error.message === HOSTED_EXECUTION_ACK_REQUIRED)
+        ) {
+          throw new LinkedInApiError(error.message, 409);
+        }
+        throw error;
+      }
+
+      res.json(summary);
+    })
+  );
 
   /**
    * Give the password back to nobody.
@@ -2449,16 +2791,22 @@ export function createApp(db: Db) {
    * did would send an operator to re-authenticate something that still works.
    * Nothing can sign this seat back in until a new pair is saved.
    */
-  app.delete('/api/linkedin/seat/credentials', linkedinRoute(async (req, res) => {
-    const workspaceId = req.auth!.workspaceId;
-    // Same owner-only carve-out as the save route above.
-    if (req.auth!.role !== 'owner') {
-      throw new LinkedInApiError('Only the workspace owner can manage the stored LinkedIn credentials', 403);
-    }
-    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
-    await deleteLinkedInCredentials(db, workspaceId, req.auth!.userId, seatKey);
-    res.json({ hasCredentials: false, maskedEmail: null });
-  }));
+  app.delete(
+    '/api/linkedin/seat/credentials',
+    linkedinRoute(async (req, res) => {
+      const workspaceId = req.auth!.workspaceId;
+      // Same owner-only carve-out as the save route above.
+      if (req.auth!.role !== 'owner') {
+        throw new LinkedInApiError(
+          'Only the workspace owner can manage the stored LinkedIn credentials',
+          403
+        );
+      }
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      await deleteLinkedInCredentials(db, workspaceId, req.auth!.userId, seatKey);
+      res.json({ hasCredentials: false, maskedEmail: null });
+    })
+  );
 
   /* ---------------------------------------------------------------------
    * Hosted execution: the authorisation, and only the authorisation.
@@ -2481,63 +2829,90 @@ export function createApp(db: Db) {
    * that can drift from it.
    * ------------------------------------------------------------------ */
 
-  app.get('/api/linkedin/hosted-execution', linkedinRoute(async (req, res) => {
-    const mode = hostedExecutionMode();
-    const ack = await describeHostedExecutionAck(db, req.auth!.workspaceId);
-    const gate = await hostedExecutionGate(db, req.auth!.workspaceId);
-    res.json({
-      // Nothing here is a secret: a provider LABEL (a host name or the
-      // operator's own word for it), never the endpoint, which carries the API
-      // key, and never the key.
-      deployment: { hosted: mode.hosted, remoteBrowser: mode.remoteBrowser, provider: mode.provider, available: mode.available },
-      acknowledgement: ack,
-      statement: HOSTED_EXECUTION_STATEMENT,
-      statementVersion: HOSTED_EXECUTION_STATEMENT_VERSION,
-      // The one fact a screen actually needs: may this workspace's seats be run
-      // here right now, and if not, in one sentence, why not.
-      allowed: gate.allowed,
-      reason: gate.allowed ? null : gate.reason
-    });
-  }));
+  app.get(
+    '/api/linkedin/hosted-execution',
+    linkedinRoute(async (req, res) => {
+      const mode = hostedExecutionMode();
+      const ack = await describeHostedExecutionAck(db, req.auth!.workspaceId);
+      const gate = await hostedExecutionGate(db, req.auth!.workspaceId);
+      res.json({
+        // Nothing here is a secret: a provider LABEL (a host name or the
+        // operator's own word for it), never the endpoint, which carries the API
+        // key, and never the key.
+        deployment: {
+          hosted: mode.hosted,
+          remoteBrowser: mode.remoteBrowser,
+          provider: mode.provider,
+          available: mode.available
+        },
+        acknowledgement: ack,
+        statement: HOSTED_EXECUTION_STATEMENT,
+        statementVersion: HOSTED_EXECUTION_STATEMENT_VERSION,
+        // The one fact a screen actually needs: may this workspace's seats be run
+        // here right now, and if not, in one sentence, why not.
+        allowed: gate.allowed,
+        reason: gate.allowed ? null : gate.reason
+      });
+    })
+  );
 
-  app.post('/api/linkedin/hosted-execution', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, 'authorise Trevra to act on this LinkedIn account');
-    const input = z.object({
-      // EXPLICIT, AND THE VERSION MUST MATCH. A client that agreed to wording
-      // it has not seen has not agreed to anything, so a stale version is a 409
-      // telling it to re-read the statement rather than a silently recorded
-      // consent to terms that changed underneath it.
-      acknowledge: z.literal(true),
-      statementVersion: z.number().int()
-    }).parse(req.body ?? {});
-    if (input.statementVersion !== HOSTED_EXECUTION_STATEMENT_VERSION) {
-      throw new LinkedInApiError(
-        `That authorisation refers to version ${input.statementVersion} of the terms and the current version is ${HOSTED_EXECUTION_STATEMENT_VERSION}. Read the current statement and authorise again.`,
-        409
-      );
-    }
-    const ack = await recordHostedExecutionAck(db, { workspaceId: req.auth!.workspaceId, actorUserId: req.auth!.userId });
-    const gate = await hostedExecutionGate(db, req.auth!.workspaceId);
-    res.json({ acknowledgement: ack, allowed: gate.allowed, reason: gate.allowed ? null : gate.reason });
-  }));
+  app.post(
+    '/api/linkedin/hosted-execution',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'authorise Trevra to act on this LinkedIn account');
+      const input = z
+        .object({
+          // EXPLICIT, AND THE VERSION MUST MATCH. A client that agreed to wording
+          // it has not seen has not agreed to anything, so a stale version is a 409
+          // telling it to re-read the statement rather than a silently recorded
+          // consent to terms that changed underneath it.
+          acknowledge: z.literal(true),
+          statementVersion: z.number().int()
+        })
+        .parse(req.body ?? {});
+      if (input.statementVersion !== HOSTED_EXECUTION_STATEMENT_VERSION) {
+        throw new LinkedInApiError(
+          `That authorisation refers to version ${input.statementVersion} of the terms and the current version is ${HOSTED_EXECUTION_STATEMENT_VERSION}. Read the current statement and authorise again.`,
+          409
+        );
+      }
+      const ack = await recordHostedExecutionAck(db, {
+        workspaceId: req.auth!.workspaceId,
+        actorUserId: req.auth!.userId
+      });
+      const gate = await hostedExecutionGate(db, req.auth!.workspaceId);
+      res.json({
+        acknowledgement: ack,
+        allowed: gate.allowed,
+        reason: gate.allowed ? null : gate.reason
+      });
+    })
+  );
 
-  app.delete('/api/linkedin/hosted-execution', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, 'withdraw the authorisation for hosted LinkedIn execution');
-    const ack = await revokeHostedExecutionAck(db, { workspaceId: req.auth!.workspaceId, actorUserId: req.auth!.userId });
-    /**
-     * WITHDRAWAL IS NOT A KILL SWITCH FOR WORK ALREADY IN FLIGHT, and saying so
-     * is the same honesty the disconnect route already owes: a seat whose batch
-     * is open has a browser mid-action on rows it has already claimed, and
-     * rewriting a row does not close a tab. No NEW seat is served from the next
-     * tick. Pausing the seat is the faster stop, exactly as it always was.
-     */
-    res.json({
-      acknowledgement: ack,
-      allowed: false,
-      stopsNewWorkFrom: 'the next worker tick',
-      message: 'Hosted execution is withdrawn for this workspace. A batch already in flight finishes; no new seat is picked up.'
-    });
-  }));
+  app.delete(
+    '/api/linkedin/hosted-execution',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'withdraw the authorisation for hosted LinkedIn execution');
+      const ack = await revokeHostedExecutionAck(db, {
+        workspaceId: req.auth!.workspaceId,
+        actorUserId: req.auth!.userId
+      });
+      /**
+       * WITHDRAWAL IS NOT A KILL SWITCH FOR WORK ALREADY IN FLIGHT, and saying so
+       * is the same honesty the disconnect route already owes: a seat whose batch
+       * is open has a browser mid-action on rows it has already claimed, and
+       * rewriting a row does not close a tab. No NEW seat is served from the next
+       * tick. Pausing the seat is the faster stop, exactly as it always was.
+       */
+      res.json({
+        acknowledgement: ack,
+        allowed: false,
+        stopsNewWorkFrom: 'the next worker tick',
+        message:
+          'Hosted execution is withdrawn for this workspace. A batch already in flight finishes; no new seat is picked up.'
+      });
+    })
+  );
 
   /**
    * Make this seat's LinkedIn session usable.
@@ -2559,33 +2934,38 @@ export function createApp(db: Db) {
    * has to distinguish "wrong password" from "needs a code" should read a field
    * rather than a status code.
    */
-  app.post('/api/linkedin/seat/login', linkedinRoute(async (req, res) => {
-    // Owner-only, and it belongs with the credential routes above rather than
-    // with the read routes: this is the act that USES the stored sign-in.
-    // Whoever can call it can drive an authentication attempt against the
-    // owner's real LinkedIn account -- and a run of failed ones is exactly the
-    // signal that gets an account challenged or restricted.
-    assertWorkspaceOwner(req, 'sign a LinkedIn account in');
-    const input = linkedinSeatLoginSchema.parse(req.body ?? {});
+  app.post(
+    '/api/linkedin/seat/login',
+    linkedinRoute(async (req, res) => {
+      // Owner-only, and it belongs with the credential routes above rather than
+      // with the read routes: this is the act that USES the stored sign-in.
+      // Whoever can call it can drive an authentication attempt against the
+      // owner's real LinkedIn account -- and a run of failed ones is exactly the
+      // signal that gets an account challenged or restricted.
+      assertWorkspaceOwner(req, 'sign a LinkedIn account in');
+      const input = linkedinSeatLoginSchema.parse(req.body ?? {});
 
-    let config: LinkedInLocalWorkerConfig;
-    try {
-      config = validateEnvironment().linkedinLocalWorker;
-    } catch (error) {
-      throw new LinkedInApiError(
-        `This server could not read its own configuration: ${error instanceof Error ? error.message : 'unknown error'}`,
-        409
+      let config: LinkedInLocalWorkerConfig;
+      try {
+        config = validateEnvironment().linkedinLocalWorker;
+      } catch (error) {
+        throw new LinkedInApiError(
+          `This server could not read its own configuration: ${error instanceof Error ? error.message : 'unknown error'}`,
+          409
+        );
+      }
+      if (!config.enabled) throw new LinkedInApiError(linkedInOffReason(config), 409);
+
+      res.json(
+        await loginLinkedInSeat(db, config, {
+          workspaceId: req.auth!.workspaceId,
+          seatKey: input.seatKey,
+          otp: input.otp,
+          now: new Date()
+        })
       );
-    }
-    if (!config.enabled) throw new LinkedInApiError(linkedInOffReason(config), 409);
-
-    res.json(await loginLinkedInSeat(db, config, {
-      workspaceId: req.auth!.workspaceId,
-      seatKey: input.seatKey,
-      otp: input.otp,
-      now: new Date()
-    }));
-  }));
+    })
+  );
 
   /**
    * Read the seat out of the browser the operator already logged into.
@@ -2613,150 +2993,192 @@ export function createApp(db: Db) {
    * exactly as `linkedin_batches` work is. The client keeps polling
    * GET /api/linkedin/seat, which is what it already does.
    */
-  app.post('/api/linkedin/seat/detect', linkedinRoute(async (req, res) => {
-    // Owner-only for the same reason as the login route above: on the
-    // credentials path this signs in to read the profile, so it is a sign-in
-    // wearing a different name -- and on the manual path it re-points the seat
-    // at whichever account the browser happens to be logged into, which is a
-    // change of account, not a refresh.
-    assertWorkspaceOwner(req, 'detect a LinkedIn account');
-    const input = linkedinSeatDetectSchema.parse(req.body ?? {});
+  app.post(
+    '/api/linkedin/seat/detect',
+    linkedinRoute(async (req, res) => {
+      // Owner-only for the same reason as the login route above: on the
+      // credentials path this signs in to read the profile, so it is a sign-in
+      // wearing a different name -- and on the manual path it re-points the seat
+      // at whichever account the browser happens to be logged into, which is a
+      // change of account, not a refresh.
+      assertWorkspaceOwner(req, 'detect a LinkedIn account');
+      const input = linkedinSeatDetectSchema.parse(req.body ?? {});
 
-    let config: LinkedInLocalWorkerConfig;
-    try {
-      config = validateEnvironment().linkedinLocalWorker;
-    } catch (error) {
-      // Same posture as the worker-status route: the screen that answers "why
-      // is nothing sending" must not be the screen that 500s.
-      throw new LinkedInApiError(
-        `This server could not read its own configuration: ${error instanceof Error ? error.message : 'unknown error'}`,
-        409
-      );
-    }
-
-    if (!config.enabled) throw new LinkedInApiError(linkedInOffReason(config), 409);
-
-    /**
-     * WHICH PROCESS DOES THIS?
-     *
-     * A headed browser is best and is used whenever one can be opened. Failing
-     * that -- the container, always -- a seat that stored its own sign-in can
-     * be served right here by a headless Chromium, because that browser can
-     * type a password even though it cannot show anybody a window. THAT IS THE
-     * WHOLE POINT OF THE CREDENTIALS PATH: no host-side worker, no second
-     * machine, nothing for the operator to run.
-     *
-     */
-    const companionReady = Boolean(config.companionBrowser)
-      && await companionWorkspaceReady(db, req.auth!.workspaceId);
-    const canDetectHere = companionReady
-      || linkedInBrowserReadiness(config).canLaunchHeaded
-      || ((await describeLinkedInCredentials(db, req.auth!.workspaceId, input.seatKey)).hasCredentials
-        && linkedInHeadlessReadiness(config).canLaunchHeadless);
-
-    if (!canDetectHere) {
-      let request: Awaited<ReturnType<typeof requestSeatDetect>>;
+      let config: LinkedInLocalWorkerConfig;
       try {
-        request = await requestSeatDetect(db, { workspaceId: req.auth!.workspaceId, seatKey: input.seatKey, timezone: input.timezone }, new Date());
+        config = validateEnvironment().linkedinLocalWorker;
       } catch (error) {
-        if (error instanceof Error && LINKEDIN_SEAT_INPUT_ERROR.test(error.message)) throw new LinkedInApiError(error.message, 400);
+        // Same posture as the worker-status route: the screen that answers "why
+        // is nothing sending" must not be the screen that 500s.
+        throw new LinkedInApiError(
+          `This server could not read its own configuration: ${error instanceof Error ? error.message : 'unknown error'}`,
+          409
+        );
+      }
+
+      if (!config.enabled) throw new LinkedInApiError(linkedInOffReason(config), 409);
+
+      /**
+       * WHICH PROCESS DOES THIS?
+       *
+       * A headed browser is best and is used whenever one can be opened. Failing
+       * that -- the container, always -- a seat that stored its own sign-in can
+       * be served right here by a headless Chromium, because that browser can
+       * type a password even though it cannot show anybody a window. THAT IS THE
+       * WHOLE POINT OF THE CREDENTIALS PATH: no host-side worker, no second
+       * machine, nothing for the operator to run.
+       *
+       */
+      const companionReady =
+        Boolean(config.companionBrowser) &&
+        (await companionWorkspaceReady(db, req.auth!.workspaceId));
+      const canDetectHere =
+        companionReady ||
+        linkedInBrowserReadiness(config).canLaunchHeaded ||
+        ((await describeLinkedInCredentials(db, req.auth!.workspaceId, input.seatKey))
+          .hasCredentials &&
+          linkedInHeadlessReadiness(config).canLaunchHeadless);
+
+      if (!canDetectHere) {
+        let request: Awaited<ReturnType<typeof requestSeatDetect>>;
+        try {
+          request = await requestSeatDetect(
+            db,
+            {
+              workspaceId: req.auth!.workspaceId,
+              seatKey: input.seatKey,
+              timezone: input.timezone
+            },
+            new Date()
+          );
+        } catch (error) {
+          if (error instanceof Error && LINKEDIN_SEAT_INPUT_ERROR.test(error.message))
+            throw new LinkedInApiError(error.message, 400);
+          throw error;
+        }
+        /**
+         * WHO IS GOING TO PICK THIS UP, said accurately rather than by habit.
+         *
+         * This sentence was always "run the worker on your machine", because
+         * that was the only process that could ever fulfil the request. On a
+         * hosted deployment with a remote browser and this workspace's recorded
+         * authorisation, the hosted runner takes it on its next tick and there
+         * is nothing for the operator to run at all -- telling them otherwise
+         * would send them to install Node and Chromium for a job already in
+         * progress.
+         *
+         * The gate is asked rather than assumed: a hosted deployment whose
+         * workspace has NOT authorised hosted execution still gets the old
+         * instruction, because for them it is still the only thing that works.
+         */
+        const hostedRunner = await hostedExecutionGate(db, req.auth!.workspaceId);
+        return res.status(202).json({
+          status: 'pending',
+          detected: null,
+          seat: null,
+          degraded: [],
+          requestedAt: request.requestedAt,
+          message:
+            hostedRunner.allowed && hostedExecutionMode().available
+              ? 'Queued for the hosted runner; it will finish connecting this seat on its next pass.'
+              : config.companionBrowser
+                ? 'Run `npx trevra linkedin` on your computer and keep this Trevra tab open. The pending connection will be picked up when both are online.'
+                : 'Run `npm run linkedin:worker` on your machine to finish connecting.'
+        });
+      }
+
+      let result: Awaited<ReturnType<typeof detectLinkedInSeat>>;
+      try {
+        result = await detectLinkedInSeat(db, config, {
+          workspaceId: req.auth!.workspaceId,
+          seatKey: input.seatKey,
+          timezone: input.timezone,
+          now: new Date()
+        });
+      } catch (error) {
+        // seats.ts owns the timezone rule and its refusal is caller input, not a
+        // fault. Same mapping as the seat PUT above.
+        if (error instanceof Error && LINKEDIN_SEAT_INPUT_ERROR.test(error.message)) {
+          throw new LinkedInApiError(error.message, 400);
+        }
         throw error;
       }
-      /**
-       * WHO IS GOING TO PICK THIS UP, said accurately rather than by habit.
-       *
-       * This sentence was always "run the worker on your machine", because
-       * that was the only process that could ever fulfil the request. On a
-       * hosted deployment with a remote browser and this workspace's recorded
-       * authorisation, the hosted runner takes it on its next tick and there
-       * is nothing for the operator to run at all -- telling them otherwise
-       * would send them to install Node and Chromium for a job already in
-       * progress.
-       *
-       * The gate is asked rather than assumed: a hosted deployment whose
-       * workspace has NOT authorised hosted execution still gets the old
-       * instruction, because for them it is still the only thing that works.
-       */
-      const hostedRunner = await hostedExecutionGate(db, req.auth!.workspaceId);
-      return res.status(202).json({
-        status: 'pending',
-        detected: null,
-        seat: null,
-        degraded: [],
-        requestedAt: request.requestedAt,
-        message: hostedRunner.allowed && hostedExecutionMode().available
-          ? 'Queued for the hosted runner; it will finish connecting this seat on its next pass.'
-          : config.companionBrowser
-            ? 'Run `npx trevra linkedin` on your computer and keep this Trevra tab open. The pending connection will be picked up when both are online.'
-            : 'Run `npm run linkedin:worker` on your machine to finish connecting.'
-      });
-    }
 
-    let result: Awaited<ReturnType<typeof detectLinkedInSeat>>;
-    try {
-      result = await detectLinkedInSeat(db, config, {
-        workspaceId: req.auth!.workspaceId,
-        seatKey: input.seatKey,
-        timezone: input.timezone,
-        now: new Date()
+      if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
+      res.json({
+        status: 'detected',
+        detected: result.detected,
+        seat: result.seat,
+        degraded: result.degraded
       });
-    } catch (error) {
-      // seats.ts owns the timezone rule and its refusal is caller input, not a
-      // fault. Same mapping as the seat PUT above.
-      if (error instanceof Error && LINKEDIN_SEAT_INPUT_ERROR.test(error.message)) {
-        throw new LinkedInApiError(error.message, 400);
-      }
-      throw error;
-    }
-
-    if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
-    res.json({ status: 'detected', detected: result.detected, seat: result.seat, degraded: result.degraded });
-  }));
+    })
+  );
 
   // Every effective ceiling WITH ITS PROVENANCE: which rule bound it, and
   // whether the number behind it is a HARD FACT or REPORTED practitioner
   // consensus (plan 1.1/1.3/1.4, and the UI honesty rule in plan 6). Never
   // flattened to bare numbers -- the operator is betting their account on
   // these, and they deserve to know which is which.
-  app.get('/api/linkedin/limits', linkedinRoute(async (req, res) => {
-    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
-    res.json(await effectiveLinkedInLimits(db, req.auth!.workspaceId, new Date(), seatKey));
-  }));
+  app.get(
+    '/api/linkedin/limits',
+    linkedinRoute(async (req, res) => {
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      res.json(await effectiveLinkedInLimits(db, req.auth!.workspaceId, new Date(), seatKey));
+    })
+  );
 
   // A DRY RUN. `planPacing` is pure with respect to the ledger -- it reads
   // history and writes nothing -- and this route keeps it that way: no slot
   // becomes a `linkedin_actions` row here. Persisting is the campaign path's
   // job, downstream of a human approving the exact plan they were shown.
-  app.post('/api/linkedin/plan', linkedinRoute(async (req, res) => {
-    const input = linkedinPlanSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    // Exclusions are applied BEFORE planning, never at send time: a person
-    // filtered out later would still have been in the payload a founder read.
-    const { kept, excluded } = await filterExcluded(db, workspaceId, input.targets);
-    if (kept.length === 0) {
-      throw new LinkedInApiError('Every target on this list is on the workspace exclusion list, so there is nothing to plan.', 400);
-    }
-    const plan = await planPacing(
-      db,
-      { workspaceId, kind: input.kind, targets: kept, horizonDays: input.horizonDays, seatKey: input.seatKey ?? OWNER_SEAT_KEY },
-      new Date()
-    );
-    res.json({ plan, excluded, persisted: false });
-  }));
+  app.post(
+    '/api/linkedin/plan',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinPlanSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      // Exclusions are applied BEFORE planning, never at send time: a person
+      // filtered out later would still have been in the payload a founder read.
+      const { kept, excluded } = await filterExcluded(db, workspaceId, input.targets);
+      if (kept.length === 0) {
+        throw new LinkedInApiError(
+          'Every target on this list is on the workspace exclusion list, so there is nothing to plan.',
+          400
+        );
+      }
+      const plan = await planPacing(
+        db,
+        {
+          workspaceId,
+          kind: input.kind,
+          targets: kept,
+          horizonDays: input.horizonDays,
+          seatKey: input.seatKey ?? OWNER_SEAT_KEY
+        },
+        new Date()
+      );
+      res.json({ plan, excluded, persisted: false });
+    })
+  );
 
-  app.get('/api/linkedin/actions', linkedinRoute(async (req, res) => {
-    const filters = linkedinActionFiltersSchema.parse(req.query);
-    res.json({ actions: await listActions(db, req.auth!.workspaceId, filters) });
-  }));
+  app.get(
+    '/api/linkedin/actions',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinActionFiltersSchema.parse(req.query);
+      res.json({ actions: await listActions(db, req.auth!.workspaceId, filters) });
+    })
+  );
 
   // Drop a planned action. The body schema is strict and empty, which is the
   // point: there is no field here a caller could use to name a status, so
   // "skip" cannot be talked into meaning "sent".
-  app.post('/api/linkedin/actions/:id/skip', linkedinRoute(async (req, res) => {
-    linkedinSkipSchema.parse(req.body ?? {});
-    const action = await skipAction(db, req.auth!.workspaceId, String(req.params.id), new Date());
-    res.json({ action });
-  }));
+  app.post(
+    '/api/linkedin/actions/:id/skip',
+    linkedinRoute(async (req, res) => {
+      linkedinSkipSchema.parse(req.body ?? {});
+      const action = await skipAction(db, req.auth!.workspaceId, String(req.params.id), new Date());
+      res.json({ action });
+    })
+  );
 
   /**
    * Change the words of a message that has not been typed yet.
@@ -2768,25 +3190,35 @@ export function createApp(db: Db) {
    * A queue an operator cannot correct is a queue they cancel and retype, which
    * spends a trip through the replay guard to fix a typo.
    */
-  app.post('/api/linkedin/actions/:id/body', linkedinRoute(async (req, res) => {
-    const input = linkedinEditBodySchema.parse(req.body ?? {});
-    const action = await editQueuedMessage(db, {
-      workspaceId: req.auth!.workspaceId,
-      actionId: String(req.params.id),
-      body: input.body
-    });
-    res.json({ action });
-  }));
+  app.post(
+    '/api/linkedin/actions/:id/body',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinEditBodySchema.parse(req.body ?? {});
+      const action = await editQueuedMessage(db, {
+        workspaceId: req.auth!.workspaceId,
+        actionId: String(req.params.id),
+        body: input.body
+      });
+      res.json({ action });
+    })
+  );
 
   // The ONLY route that may move an action to sent/accepted/replied, and it is
   // a REPORT rather than an instruction: the operator is telling Trevra what
   // already happened in their own tool, so the acceptance-rate throttle and the
   // day-over-day arithmetic have a real denominator (plan 7.2).
-  app.post('/api/linkedin/actions/outcome', linkedinRoute(async (req, res) => {
-    const input = linkedinOutcomeSchema.parse(req.body ?? {});
-    const action = await ingestOutcome(db, { workspaceId: req.auth!.workspaceId, ...input }, new Date());
-    res.json({ action });
-  }));
+  app.post(
+    '/api/linkedin/actions/outcome',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinOutcomeSchema.parse(req.body ?? {});
+      const action = await ingestOutcome(
+        db,
+        { workspaceId: req.auth!.workspaceId, ...input },
+        new Date()
+      );
+      res.json({ action });
+    })
+  );
 
   /**
    * The template library, and the vocabulary that goes with it.
@@ -2800,25 +3232,28 @@ export function createApp(db: Db) {
    * failure mode is an editor that lets an operator type copy the API then
    * refuses.
    */
-  app.get('/api/linkedin/sequence-templates', linkedinRoute(async (_req, res) => {
-    res.json({
-      templates: SEQUENCE_TEMPLATES,
-      defaultTemplateId: DEFAULT_SEQUENCE_TEMPLATE_ID,
-      mergeFields: SUPPORTED_MERGE_FIELDS,
-      inviteNoteMaxChars: INVITE_NOTE_MAX_CHARS,
-      maxSteps: MAX_SEQUENCE_STEPS,
-      /**
-       * The branch vocabulary, for the same reason `mergeFields` rides along:
-       * it is a CLOSED list of five, an editor has to render a dropdown of
-       * exactly those, and a client that hardcodes them drifts from the server
-       * that validates them. The failure mode is an editor that lets an
-       * operator pick a branch the API then refuses.
-       */
-      branchOn: BRANCH_ON_VALUES,
-      actionKinds: ACTION_KIND_VALUES,
-      pacedKinds: PACED_KIND_VALUES
-    });
-  }));
+  app.get(
+    '/api/linkedin/sequence-templates',
+    linkedinRoute(async (_req, res) => {
+      res.json({
+        templates: SEQUENCE_TEMPLATES,
+        defaultTemplateId: DEFAULT_SEQUENCE_TEMPLATE_ID,
+        mergeFields: SUPPORTED_MERGE_FIELDS,
+        inviteNoteMaxChars: INVITE_NOTE_MAX_CHARS,
+        maxSteps: MAX_SEQUENCE_STEPS,
+        /**
+         * The branch vocabulary, for the same reason `mergeFields` rides along:
+         * it is a CLOSED list of five, an editor has to render a dropdown of
+         * exactly those, and a client that hardcodes them drifts from the server
+         * that validates them. The failure mode is an editor that lets an
+         * operator pick a branch the API then refuses.
+         */
+        branchOn: BRANCH_ON_VALUES,
+        actionKinds: ACTION_KIND_VALUES,
+        pacedKinds: PACED_KIND_VALUES
+      });
+    })
+  );
 
   /**
    * The sequence-builder campaigns, narrowed to one LinkedIn account when the
@@ -2832,10 +3267,13 @@ export function createApp(db: Db) {
    * in. Absent still means the whole workspace, which is what a caller with no
    * switcher has always meant.
    */
-  app.get('/api/linkedin/campaigns', linkedinRoute(async (req, res) => {
-    const filters = linkedinCampaignListSchema.parse(req.query);
-    res.json({ campaigns: await listCampaigns(db, req.auth!.workspaceId, filters) });
-  }));
+  app.get(
+    '/api/linkedin/campaigns',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinCampaignListSchema.parse(req.query);
+      res.json({ campaigns: await listCampaigns(db, req.auth!.workspaceId, filters) });
+    })
+  );
 
   /**
    * Draft a campaign from a DOMAIN instead of from a nine-field form.
@@ -2852,79 +3290,89 @@ export function createApp(db: Db) {
    * campaign. Enrichment is a network read of a public site; a draft that wrote
    * a row would make "let me see what this domain looks like" a side effect.
    */
-  app.post('/api/linkedin/campaigns/draft', linkedinRoute(async (req, res) => {
-    const input = linkedinDraftSchema.parse(req.body ?? {});
+  app.post(
+    '/api/linkedin/campaigns/draft',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinDraftSchema.parse(req.body ?? {});
 
-    const template = input.templateId ? getSequenceTemplate(input.templateId) : undefined;
-    if (input.templateId && !template) {
-      throw new LinkedInApiError(
-        `No sequence template called '${input.templateId}'. GET /api/linkedin/sequence-templates lists the ones that exist.`,
-        404
-      );
-    }
+      const template = input.templateId ? getSequenceTemplate(input.templateId) : undefined;
+      if (input.templateId && !template) {
+        throw new LinkedInApiError(
+          `No sequence template called '${input.templateId}'. GET /api/linkedin/sequence-templates lists the ones that exist.`,
+          404
+        );
+      }
 
-    let profile: Awaited<ReturnType<typeof enrichCompany>>;
-    try {
-      profile = await enrichCompany(input.domain);
-    } catch (error) {
-      // A domain that will not resolve, or one that resolves somewhere private,
-      // is an operator error and reads as one. It is never a 500.
-      throw new LinkedInApiError(`Could not read ${input.domain}: ${error instanceof Error ? error.message : String(error)}`, 400);
-    }
+      let profile: Awaited<ReturnType<typeof enrichCompany>>;
+      try {
+        profile = await enrichCompany(input.domain);
+      } catch (error) {
+        // A domain that will not resolve, or one that resolves somewhere private,
+        // is an operator error and reads as one. It is never a 500.
+        throw new LinkedInApiError(
+          `Could not read ${input.domain}: ${error instanceof Error ? error.message : String(error)}`,
+          400
+        );
+      }
 
-    const { brief, degraded } = briefFromProfile(profile);
+      const { brief, degraded } = briefFromProfile(profile);
 
-    /*
-     * SUGGESTIONS RIDE ALONGSIDE THE BRIEF, NEVER INSIDE IT.
-     *
-     * `brief` is what the site SAID; `suggested` is what a model THINKS the
-     * four unreadable fields are. Merging them would make the response unable
-     * to answer "was this read or guessed", which is the one question the whole
-     * enrichment path is built to keep answerable. `degraded` still names every
-     * suggested field for the same reason: a guess does not fill a gap.
-     *
-     * Null when no model is configured, and a failure never fails the draft --
-     * the operator gets the same empty fields they got before, plus a sequence.
-     */
-    const suggestion = await suggestBriefFields(db, req.auth!.workspaceId, profile, {
-      log: (message: string) => console.warn(message)
-    });
+      /*
+       * SUGGESTIONS RIDE ALONGSIDE THE BRIEF, NEVER INSIDE IT.
+       *
+       * `brief` is what the site SAID; `suggested` is what a model THINKS the
+       * four unreadable fields are. Merging them would make the response unable
+       * to answer "was this read or guessed", which is the one question the whole
+       * enrichment path is built to keep answerable. `degraded` still names every
+       * suggested field for the same reason: a guess does not fill a gap.
+       *
+       * Null when no model is configured, and a failure never fails the draft --
+       * the operator gets the same empty fields they got before, plus a sequence.
+       */
+      const suggestion = await suggestBriefFields(db, req.auth!.workspaceId, profile, {
+        log: (message: string) => console.warn(message)
+      });
 
-    const complete = briefIsComplete(brief);
+      const complete = briefIsComplete(brief);
 
-    // The AI draft FILLS a shape; it does not dictate one. A template names the
-    // shape explicitly; without one, a complete brief drafts the default
-    // five-touch copy and an incomplete brief falls back to that same shape as
-    // a template, because there is nothing to draft specific copy from yet.
-    const steps = template ? template.steps : complete ? undefined : defaultSequenceTemplate().steps;
-    const templateId = template ? template.id : complete ? null : DEFAULT_SEQUENCE_TEMPLATE_ID;
-    if (!template && !complete) degraded.push('sequence:drafted-from-template');
+      // The AI draft FILLS a shape; it does not dictate one. A template names the
+      // shape explicitly; without one, a complete brief drafts the default
+      // five-touch copy and an incomplete brief falls back to that same shape as
+      // a template, because there is nothing to draft specific copy from yet.
+      const steps = template
+        ? template.steps
+        : complete
+          ? undefined
+          : defaultSequenceTemplate().steps;
+      const templateId = template ? template.id : complete ? null : DEFAULT_SEQUENCE_TEMPLATE_ID;
+      if (!template && !complete) degraded.push('sequence:drafted-from-template');
 
-    // The three copy controls travel with the brief. Absent ones are left off
-    // entirely rather than defaulted here, so the skill's own defaults stay the
-    // single definition of what an unspecified draft sounds like.
-    const skillInput = linkedinSequenceSkill.manifest.inputSchema.parse({
-      ...(steps === undefined ? {} : { steps }),
-      ...(complete ? { icp: brief.icp, offer: brief.offer } : {}),
-      ...(input.tone === undefined ? {} : { tone: input.tone }),
-      ...(input.inviteNote === undefined ? {} : { inviteNote: input.inviteNote }),
-      ...(input.includeInMail === undefined ? {} : { includeInMail: input.includeInMail }),
-      targets: input.targets
-    });
-    const sequence = await linkedinSequenceSkill.run(skillInput, {
-      db,
-      workspaceId: req.auth!.workspaceId,
-      now: () => new Date()
-    });
+      // The three copy controls travel with the brief. Absent ones are left off
+      // entirely rather than defaulted here, so the skill's own defaults stay the
+      // single definition of what an unspecified draft sounds like.
+      const skillInput = linkedinSequenceSkill.manifest.inputSchema.parse({
+        ...(steps === undefined ? {} : { steps }),
+        ...(complete ? { icp: brief.icp, offer: brief.offer } : {}),
+        ...(input.tone === undefined ? {} : { tone: input.tone }),
+        ...(input.inviteNote === undefined ? {} : { inviteNote: input.inviteNote }),
+        ...(input.includeInMail === undefined ? {} : { includeInMail: input.includeInMail }),
+        targets: input.targets
+      });
+      const sequence = await linkedinSequenceSkill.run(skillInput, {
+        db,
+        workspaceId: req.auth!.workspaceId,
+        now: () => new Date()
+      });
 
-    res.json({
-      brief,
-      sequence,
-      degraded,
-      templateId,
-      ...(suggestion ? { suggested: suggestion.fields, suggestedBy: suggestion.source } : {})
-    });
-  }));
+      res.json({
+        brief,
+        sequence,
+        degraded,
+        templateId,
+        ...(suggestion ? { suggested: suggestion.fields, suggestedBy: suggestion.source } : {})
+      });
+    })
+  );
 
   /**
    * Start a campaign: run `gtm.linkedin-outreach`.
@@ -2941,79 +3389,93 @@ export function createApp(db: Db) {
    * template, edit the copy, launch" one call rather than a create followed by
    * an edit that throws away a sequence nobody asked for.
    */
-  app.post('/api/linkedin/campaigns', linkedinRoute(async (req, res) => {
-    const input = linkedinCampaignSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    const now = new Date();
+  app.post(
+    '/api/linkedin/campaigns',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinCampaignSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const now = new Date();
 
-    // EXACTLY ONE SOURCE OF COPY. A brief is what a sequence is drafted from;
-    // steps are a sequence that already exists. With both on the request the
-    // server would be choosing which one the operator meant, and the wrong
-    // choice is a campaign whose words nobody wrote.
-    const sequenceSteps = input.input.sequenceSteps;
-    const supplied = input.input as Record<string, unknown>;
+      // EXACTLY ONE SOURCE OF COPY. A brief is what a sequence is drafted from;
+      // steps are a sequence that already exists. With both on the request the
+      // server would be choosing which one the operator meant, and the wrong
+      // choice is a campaign whose words nobody wrote.
+      const sequenceSteps = input.input.sequenceSteps;
+      const supplied = input.input as Record<string, unknown>;
 
-    // WHOSE ACCOUNT, checked before anything is written. An unknown seat key
-    // would otherwise plan against a seat that does not exist and file the
-    // campaign under it, and the first symptom is a campaign no screen lists.
-    const seatKey = input.input.seatKey ?? OWNER_SEAT_KEY;
-    if (input.input.seatKey && !(await getSeat(db, workspaceId, seatKey))) {
-      throw new LinkedInApiError('That LinkedIn account is not configured for this workspace', 404);
-    }
-    const hasBrief = supplied.icp !== undefined || supplied.offer !== undefined;
-    if (sequenceSteps && hasBrief) {
-      throw new LinkedInApiError(
-        'Send sequenceSteps to use the copy as it is, or an icp and an offer to draft it from, but not both -- only one of them can be this campaign\'s sequence.',
-        400
-      );
-    }
-    if (!sequenceSteps && !hasBrief) {
-      throw new LinkedInApiError(
-        'A campaign needs copy: send sequenceSteps to use as they are, or an icp and an offer for Trevra to draft the sequence from.',
-        400
-      );
-    }
+      // WHOSE ACCOUNT, checked before anything is written. An unknown seat key
+      // would otherwise plan against a seat that does not exist and file the
+      // campaign under it, and the first symptom is a campaign no screen lists.
+      const seatKey = input.input.seatKey ?? OWNER_SEAT_KEY;
+      if (input.input.seatKey && !(await getSeat(db, workspaceId, seatKey))) {
+        throw new LinkedInApiError(
+          'That LinkedIn account is not configured for this workspace',
+          404
+        );
+      }
+      const hasBrief = supplied.icp !== undefined || supplied.offer !== undefined;
+      if (sequenceSteps && hasBrief) {
+        throw new LinkedInApiError(
+          "Send sequenceSteps to use the copy as it is, or an icp and an offer to draft it from, but not both -- only one of them can be this campaign's sequence.",
+          400
+        );
+      }
+      if (!sequenceSteps && !hasBrief) {
+        throw new LinkedInApiError(
+          'A campaign needs copy: send sequenceSteps to use as they are, or an icp and an offer for Trevra to draft the sequence from.',
+          400
+        );
+      }
 
-    // Same validator, same refusals, as the sequence editor -- and run before
-    // the campaign id is minted, so a bad step leaves nothing behind.
-    if (sequenceSteps) validatedSequence(sequenceSteps);
+      // Same validator, same refusals, as the sequence editor -- and run before
+      // the campaign id is minted, so a bad step leaves nothing behind.
+      if (sequenceSteps) validatedSequence(sequenceSteps);
 
-    const { kept, excluded } = await filterExcluded(db, workspaceId, input.input.targets);
-    if (kept.length === 0) {
-      throw new LinkedInApiError('Every target on this list is on the workspace exclusion list, so there is nothing to campaign.', 400);
-    }
+      const { kept, excluded } = await filterExcluded(db, workspaceId, input.input.targets);
+      if (kept.length === 0) {
+        throw new LinkedInApiError(
+          'Every target on this list is on the workspace exclusion list, so there is nothing to campaign.',
+          400
+        );
+      }
 
-    const campaignId = newCampaignId();
-    const run = await startPlaybookRun(db, {
-      workspaceId,
-      playbookId: LINKEDIN_PLAYBOOK_ID,
-      version: input.version,
-      payload: { ...input.input, seatKey, targets: kept, campaignId },
-      actorType: 'user',
-      actorId: req.auth!.userId
-    });
-
-    const campaign = await createCampaign(
-      db,
-      {
-        id: campaignId,
+      const campaignId = newCampaignId();
+      const run = await startPlaybookRun(db, {
         workspaceId,
-        name: input.name,
-        // The same seat the run was planned against. Defaulted in one place
-        // above, not twice with two different defaults.
-        seatKey,
-        status: run.status === 'completed' ? 'completed' : run.status === 'failed' || run.status === 'cancelled' ? 'stopped' : 'running',
-        sequence: run.steps.find((step) => step.stepId === 'sequence')?.output ?? {},
-        // The inputs, kept on the campaign (029) so a later sequence edit can
-        // re-plan through the same pacing and guard even after this run has
-        // been pruned out of history.
-        brief: run.input,
-        playbookRunId: run.id
-      },
-      now
-    );
-    res.status(201).json({ campaign, run, excluded });
-  }));
+        playbookId: LINKEDIN_PLAYBOOK_ID,
+        version: input.version,
+        payload: { ...input.input, seatKey, targets: kept, campaignId },
+        actorType: 'user',
+        actorId: req.auth!.userId
+      });
+
+      const campaign = await createCampaign(
+        db,
+        {
+          id: campaignId,
+          workspaceId,
+          name: input.name,
+          // The same seat the run was planned against. Defaulted in one place
+          // above, not twice with two different defaults.
+          seatKey,
+          status:
+            run.status === 'completed'
+              ? 'completed'
+              : run.status === 'failed' || run.status === 'cancelled'
+                ? 'stopped'
+                : 'running',
+          sequence: run.steps.find((step) => step.stepId === 'sequence')?.output ?? {},
+          // The inputs, kept on the campaign (029) so a later sequence edit can
+          // re-plan through the same pacing and guard even after this run has
+          // been pruned out of history.
+          brief: run.input,
+          playbookRunId: run.id
+        },
+        now
+      );
+      res.status(201).json({ campaign, run, excluded });
+    })
+  );
 
   /**
    * Edit the copy, and re-earn the approval.
@@ -3033,94 +3495,112 @@ export function createApp(db: Db) {
    * it is a lie about what was sent, and the ledger is the one place that
    * question has to stay answerable.
    */
-  app.patch('/api/linkedin/campaigns/:id/sequence', linkedinRoute(async (req, res) => {
-    const input = linkedinSequenceEditSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    const now = new Date();
+  app.patch(
+    '/api/linkedin/campaigns/:id/sequence',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinSequenceEditSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const now = new Date();
 
-    const campaign = await getCampaign(db, workspaceId, String(req.params.id));
-    if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
-    assertCampaignRunnable(campaign, 'edit');
+      const campaign = await getCampaign(db, workspaceId, String(req.params.id));
+      if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
+      assertCampaignRunnable(campaign, 'edit');
 
-    const delivered = await countDeliveredActions(db, workspaceId, campaign.id);
-    if (delivered > 0) {
-      throw new LinkedInApiError(
-        `${delivered} action(s) in this campaign have already been exported or sent, so this copy is the record of what went out and cannot be rewritten. Stop this campaign and start another.`,
-        409
+      const delivered = await countDeliveredActions(db, workspaceId, campaign.id);
+      if (delivered > 0) {
+        throw new LinkedInApiError(
+          `${delivered} action(s) in this campaign have already been exported or sent, so this copy is the record of what went out and cannot be rewritten. Stop this campaign and start another.`,
+          409
+        );
+      }
+
+      // Validated BEFORE anything is written or re-planned: a bad step costs one
+      // 400, not a playbook run and a campaign left pointing at a failure.
+      const validated = validatedSequence(input.steps);
+
+      const brief = await campaignPlaybookInput(db, workspaceId, campaign);
+      if (!brief) {
+        throw new LinkedInApiError(
+          'This campaign has no plan input on file, so its sequence cannot be re-planned or re-approved. Start a new campaign from these steps instead.',
+          409
+        );
+      }
+
+      // ABSENT MEANS UNCHANGED. Only the fields the operator actually sent are
+      // merged over the input this campaign was created with, so an edit to the
+      // copy cannot silently re-default the tone, the kind, the horizon or the
+      // export format to the playbook's values.
+      const { steps, ...overrides } = input;
+      const previousRunId = campaign.playbookRunId;
+      const run = await startPlaybookRun(db, {
+        workspaceId,
+        playbookId: LINKEDIN_PLAYBOOK_ID,
+        payload: { ...brief, ...overrides, campaignId: campaign.id, sequenceSteps: steps },
+        actorType: 'user',
+        actorId: req.auth!.userId
+      });
+
+      // The run's own critique is the one the new approval payload carries, so it
+      // is the one stored. `validated` only stands in when the run never got that
+      // far, and a campaign pointing at a failed run cannot be exported anyway.
+      const sequence =
+        (run.steps.find((step) => step.stepId === 'sequence')?.output as
+          LinkedInSequence | undefined) ?? validated;
+      const updated = await attachCampaignRun(
+        db,
+        workspaceId,
+        campaign.id,
+        {
+          playbookRunId: run.id,
+          sequence,
+          status:
+            run.status === 'completed'
+              ? 'completed'
+              : run.status === 'failed' || run.status === 'cancelled'
+                ? 'stopped'
+                : 'running'
+        },
+        now
       );
-    }
 
-    // Validated BEFORE anything is written or re-planned: a bad step costs one
-    // 400, not a playbook run and a campaign left pointing at a failure.
-    const validated = validatedSequence(input.steps);
-
-    const brief = await campaignPlaybookInput(db, workspaceId, campaign);
-    if (!brief) {
-      throw new LinkedInApiError(
-        'This campaign has no plan input on file, so its sequence cannot be re-planned or re-approved. Start a new campaign from these steps instead.',
-        409
-      );
-    }
-
-    // ABSENT MEANS UNCHANGED. Only the fields the operator actually sent are
-    // merged over the input this campaign was created with, so an edit to the
-    // copy cannot silently re-default the tone, the kind, the horizon or the
-    // export format to the playbook's values.
-    const { steps, ...overrides } = input;
-    const previousRunId = campaign.playbookRunId;
-    const run = await startPlaybookRun(db, {
-      workspaceId,
-      playbookId: LINKEDIN_PLAYBOOK_ID,
-      payload: { ...brief, ...overrides, campaignId: campaign.id, sequenceSteps: steps },
-      actorType: 'user',
-      actorId: req.auth!.userId
-    });
-
-    // The run's own critique is the one the new approval payload carries, so it
-    // is the one stored. `validated` only stands in when the run never got that
-    // far, and a campaign pointing at a failed run cannot be exported anyway.
-    const sequence = (run.steps.find((step) => step.stepId === 'sequence')?.output as LinkedInSequence | undefined) ?? validated;
-    const updated = await attachCampaignRun(
-      db,
-      workspaceId,
-      campaign.id,
-      {
-        playbookRunId: run.id,
+      res.json({
+        campaign: updated ?? campaign,
         sequence,
-        status: run.status === 'completed' ? 'completed' : run.status === 'failed' || run.status === 'cancelled' ? 'stopped' : 'running'
-      },
-      now
-    );
+        run,
+        /** The run whose approval this edit retired. Null when there was nothing to retire. */
+        previousRunId,
+        approvalInvalidated: previousRunId !== null
+      });
+    })
+  );
 
-    res.json({
-      campaign: updated ?? campaign,
-      sequence,
-      run,
-      /** The run whose approval this edit retired. Null when there was nothing to retire. */
-      previousRunId,
-      approvalInvalidated: previousRunId !== null
-    });
-  }));
+  app.get(
+    '/api/linkedin/campaigns/:id',
+    linkedinRoute(async (req, res) => {
+      const workspaceId = req.auth!.workspaceId;
+      const campaign = await getCampaign(db, workspaceId, String(req.params.id));
+      if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
+      const run = campaign.playbookRunId
+        ? await getPlaybookRun(db, workspaceId, campaign.playbookRunId)
+        : null;
+      res.json({
+        campaign,
+        run,
+        actions: await listActions(db, workspaceId, { campaignId: campaign.id, limit: 500 }),
+        exports: await listCampaignExports(db, workspaceId, campaign.id)
+      });
+    })
+  );
 
-  app.get('/api/linkedin/campaigns/:id', linkedinRoute(async (req, res) => {
-    const workspaceId = req.auth!.workspaceId;
-    const campaign = await getCampaign(db, workspaceId, String(req.params.id));
-    if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
-    const run = campaign.playbookRunId ? await getPlaybookRun(db, workspaceId, campaign.playbookRunId) : null;
-    res.json({
-      campaign,
-      run,
-      actions: await listActions(db, workspaceId, { campaignId: campaign.id, limit: 500 }),
-      exports: await listCampaignExports(db, workspaceId, campaign.id)
-    });
-  }));
-
-  app.get('/api/linkedin/campaigns/:id/exports', linkedinRoute(async (req, res) => {
-    const workspaceId = req.auth!.workspaceId;
-    const campaign = await getCampaign(db, workspaceId, String(req.params.id));
-    if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
-    res.json({ exports: await listCampaignExports(db, workspaceId, campaign.id) });
-  }));
+  app.get(
+    '/api/linkedin/campaigns/:id/exports',
+    linkedinRoute(async (req, res) => {
+      const workspaceId = req.auth!.workspaceId;
+      const campaign = await getCampaign(db, workspaceId, String(req.params.id));
+      if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
+      res.json({ exports: await listCampaignExports(db, workspaceId, campaign.id) });
+    })
+  );
 
   /**
    * The download. Reads stored bytes and touches nothing else.
@@ -3131,23 +3611,31 @@ export function createApp(db: Db) {
    * against the one table the entire pacing engine reasons from. Rendered once,
    * served forever. See migrations/025 and linkedin/campaigns.ts.
    */
-  app.get('/api/linkedin/campaigns/:id/export/:exportId', linkedinRoute(async (req, res) => {
-    // Owner-only. This is the one route on the LinkedIn surface that hands over
-    // a FILE of people: every target's name and profile, and the exact message
-    // body queued against each of them. Listing the exports stays open -- that
-    // is metadata, and a teammate has to be able to see that an export exists
-    // -- but the bytes are the workspace's contact list, and a downloaded file
-    // is a copy nothing here can ever recall.
-    assertWorkspaceOwner(req, 'download a campaign export');
-    const stored = await readCampaignExport(db, req.auth!.workspaceId, String(req.params.id), String(req.params.exportId));
-    if (!stored) throw new LinkedInApiError('LinkedIn export not found', 404);
-    res.setHeader('Content-Type', stored.contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${stored.filename}"`);
-    // The file names people, and a cache that outlives an exclusion is a file
-    // that keeps handing out somebody who asked to be left alone.
-    res.setHeader('Cache-Control', 'no-store');
-    res.send(stored.bytes);
-  }));
+  app.get(
+    '/api/linkedin/campaigns/:id/export/:exportId',
+    linkedinRoute(async (req, res) => {
+      // Owner-only. This is the one route on the LinkedIn surface that hands over
+      // a FILE of people: every target's name and profile, and the exact message
+      // body queued against each of them. Listing the exports stays open -- that
+      // is metadata, and a teammate has to be able to see that an export exists
+      // -- but the bytes are the workspace's contact list, and a downloaded file
+      // is a copy nothing here can ever recall.
+      assertWorkspaceOwner(req, 'download a campaign export');
+      const stored = await readCampaignExport(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        String(req.params.exportId)
+      );
+      if (!stored) throw new LinkedInApiError('LinkedIn export not found', 404);
+      res.setHeader('Content-Type', stored.contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${stored.filename}"`);
+      // The file names people, and a cache that outlives an exclusion is a file
+      // that keeps handing out somebody who asked to be left alone.
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(stored.bytes);
+    })
+  );
 
   /**
    * Render the approved campaign for the operator's own tool.
@@ -3159,67 +3647,71 @@ export function createApp(db: Db) {
    * point, because it changes how the same approved plan and copy are
    * rendered, not what they are.
    */
-  app.post('/api/linkedin/campaigns/:id/export', linkedinRoute(async (req, res) => {
-    const input = linkedinExportRequestSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    const now = new Date();
+  app.post(
+    '/api/linkedin/campaigns/:id/export',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinExportRequestSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const now = new Date();
 
-    const campaign = await getCampaign(db, workspaceId, String(req.params.id));
-    if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
-    assertCampaignRunnable(campaign, 'export');
+      const campaign = await getCampaign(db, workspaceId, String(req.params.id));
+      if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
+      assertCampaignRunnable(campaign, 'export');
 
-    const approved = await approvedCampaignPayload(db, workspaceId, campaign, 'export');
+      const approved = await approvedCampaignPayload(db, workspaceId, campaign, 'export');
 
-    const format = input.format ?? approved.format;
-    const payloadHash = canonicalPayloadHash({ ...approved, format });
+      const format = input.format ?? approved.format;
+      const payloadHash = canonicalPayloadHash({ ...approved, format });
 
-    // Already rendered from these exact bytes: hand back the same file. This is
-    // what makes a double-clicked Export produce one ledger write, not two.
-    const existing = await currentCampaignExport(db, workspaceId, campaign.id, format);
-    if (existing) {
-      if (existing.payloadHash === payloadHash) return res.status(200).json({ export: existing, rendered: false });
-      // A re-approval changed the plan. The old file keeps its id and its bytes
-      // -- somebody may already be running it -- but stops being the answer.
-      await supersedeCampaignExport(db, workspaceId, existing.id);
-    }
+      // Already rendered from these exact bytes: hand back the same file. This is
+      // what makes a double-clicked Export produce one ledger write, not two.
+      const existing = await currentCampaignExport(db, workspaceId, campaign.id, format);
+      if (existing) {
+        if (existing.payloadHash === payloadHash)
+          return res.status(200).json({ export: existing, rendered: false });
+        // A re-approval changed the plan. The old file keeps its id and its bytes
+        // -- somebody may already be running it -- but stops being the answer.
+        await supersedeCampaignExport(db, workspaceId, existing.id);
+      }
 
-    const rendered = await exportCampaign(
-      db,
-      {
-        workspaceId,
-        plan: approved.plan,
-        sequence: approved.sequence,
-        format,
-        ...(approved.contacts === undefined ? {} : { contacts: approved.contacts }),
-        campaignId: campaign.id,
-        payloadHash
-      },
-      now
-    );
-    const stored = await storeCampaignExport(
-      db,
-      {
-        workspaceId,
-        campaignId: campaign.id,
-        format,
-        filename: rendered.filename,
-        contentType: rendered.contentType,
-        bytes: rendered.content,
-        payloadHash
-      },
-      now
-    );
-    res.status(201).json({
-      export: stored,
-      rendered: true,
-      schedule: rendered.schedule,
-      ceilingsApplied: rendered.ceilingsApplied,
-      warmupWeek: rendered.warmupWeek,
-      timezone: rendered.timezone,
-      recorded: rendered.recorded,
-      downloadPath: `/api/linkedin/campaigns/${campaign.id}/export/${stored.id}`
-    });
-  }));
+      const rendered = await exportCampaign(
+        db,
+        {
+          workspaceId,
+          plan: approved.plan,
+          sequence: approved.sequence,
+          format,
+          ...(approved.contacts === undefined ? {} : { contacts: approved.contacts }),
+          campaignId: campaign.id,
+          payloadHash
+        },
+        now
+      );
+      const stored = await storeCampaignExport(
+        db,
+        {
+          workspaceId,
+          campaignId: campaign.id,
+          format,
+          filename: rendered.filename,
+          contentType: rendered.contentType,
+          bytes: rendered.content,
+          payloadHash
+        },
+        now
+      );
+      res.status(201).json({
+        export: stored,
+        rendered: true,
+        schedule: rendered.schedule,
+        ceilingsApplied: rendered.ceilingsApplied,
+        warmupWeek: rendered.warmupWeek,
+        timezone: rendered.timezone,
+        recorded: rendered.recorded,
+        downloadPath: `/api/linkedin/campaigns/${campaign.id}/export/${stored.id}`
+      });
+    })
+  );
 
   /**
    * Queue the approved campaign for THIS deployment's local worker.
@@ -3241,39 +3733,42 @@ export function createApp(db: Db) {
    * here -- the gate belongs with the write, so the executor's path cannot
    * bypass it by not being a route.
    */
-  app.post('/api/linkedin/campaigns/:id/queue', linkedinRoute(async (req, res) => {
-    // Owner-only. Nothing in this file sends, but this is the route that puts
-    // rows in front of the thing that does: the worker claims them on its own
-    // tick and drives a real browser on the owner's real account. It is the
-    // closest an HTTP caller gets to a send, and it is where the account risk
-    // is actually incurred.
-    assertWorkspaceOwner(req, 'queue a campaign for the local worker');
-    linkedinQueueRequestSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    const campaign = await getCampaign(db, workspaceId, String(req.params.id));
-    if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
-    assertCampaignRunnable(campaign, 'queue');
+  app.post(
+    '/api/linkedin/campaigns/:id/queue',
+    linkedinRoute(async (req, res) => {
+      // Owner-only. Nothing in this file sends, but this is the route that puts
+      // rows in front of the thing that does: the worker claims them on its own
+      // tick and drives a real browser on the owner's real account. It is the
+      // closest an HTTP caller gets to a send, and it is where the account risk
+      // is actually incurred.
+      assertWorkspaceOwner(req, 'queue a campaign for the local worker');
+      linkedinQueueRequestSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const campaign = await getCampaign(db, workspaceId, String(req.params.id));
+      if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
+      assertCampaignRunnable(campaign, 'queue');
 
-    const approved = await approvedCampaignPayload(db, workspaceId, campaign, 'queue');
-    const queued = await queueCampaign(
-      db,
-      {
-        workspaceId,
-        plan: approved.plan,
-        sequence: approved.sequence,
-        ...(approved.contacts === undefined ? {} : { contacts: approved.contacts }),
-        campaignId: campaign.id,
-        // The hash of the payload as approved. `format` is deliberately not
-        // folded in the way the export route folds it: a queued action has no
-        // format, so including one would put a hash on the row that describes a
-        // choice nobody made about it.
-        payloadHash: canonicalPayloadHash(approved),
-        queuedByUserId: req.auth!.userId
-      },
-      new Date()
-    );
-    res.status(201).json({ campaignId: campaign.id, ...queued });
-  }));
+      const approved = await approvedCampaignPayload(db, workspaceId, campaign, 'queue');
+      const queued = await queueCampaign(
+        db,
+        {
+          workspaceId,
+          plan: approved.plan,
+          sequence: approved.sequence,
+          ...(approved.contacts === undefined ? {} : { contacts: approved.contacts }),
+          campaignId: campaign.id,
+          // The hash of the payload as approved. `format` is deliberately not
+          // folded in the way the export route folds it: a queued action has no
+          // format, so including one would put a hash on the row that describes a
+          // choice nobody made about it.
+          payloadHash: canonicalPayloadHash(approved),
+          queuedByUserId: req.auth!.userId
+        },
+        new Date()
+      );
+      res.status(201).json({ campaignId: campaign.id, ...queued });
+    })
+  );
 
   // Stops the campaign and releases the slots it had queued. It does NOT stop
   // the seat: a batch already in a browser belongs to the worker holding it,
@@ -3304,60 +3799,88 @@ export function createApp(db: Db) {
    * because deleting a row mid-flight leaves the browser acting on behalf of a
    * campaign that no longer exists.
    */
-  app.delete('/api/linkedin/campaigns/:id', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, 'delete a campaign and its outreach records');
-    const workspaceId = req.auth!.workspaceId;
-    const campaignId = String(req.params.id);
-    const campaign = await getCampaign(db, workspaceId, campaignId);
-    if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
+  app.delete(
+    '/api/linkedin/campaigns/:id',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'delete a campaign and its outreach records');
+      const workspaceId = req.auth!.workspaceId;
+      const campaignId = String(req.params.id);
+      const campaign = await getCampaign(db, workspaceId, campaignId);
+      if (!campaign) throw new LinkedInApiError('LinkedIn campaign not found', 404);
 
-    if (campaign.status === 'running' || campaign.status === 'paused') {
-      const status = campaign.status;
-      throw new LinkedInApiError(
-        `This campaign is ${status}. Stop it first -- POST /api/linkedin/campaigns/${campaignId}/stop -- so its queued slots are released rather than deleted out from under a worker.`,
-        409
+      if (campaign.status === 'running' || campaign.status === 'paused') {
+        const status = campaign.status;
+        throw new LinkedInApiError(
+          `This campaign is ${status}. Stop it first -- POST /api/linkedin/campaigns/${campaignId}/stop -- so its queued slots are released rather than deleted out from under a worker.`,
+          409
+        );
+      }
+
+      const claimed = await db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM linkedin_actions WHERE workspace_id=? AND campaign_id=? AND claimed_at IS NOT NULL AND status IN ('planned','held')"
+        )
+        .get<{ count: number }>(workspaceId, campaignId);
+      const claimedCount = Number(claimed?.count ?? 0);
+      if (claimedCount > 0) {
+        throw new LinkedInApiError(
+          `A worker is holding ${claimedCount} of this campaign's actions right now. Let the batch finish, or pause the seat, and try again.`,
+          409
+        );
+      }
+
+      // One transaction: a campaign whose exports were deleted and whose actions
+      // were not is a workspace that can no longer answer either question.
+      const removed = await db.transaction(async (tx) => {
+        const exports = await tx
+          .prepare('DELETE FROM linkedin_exports WHERE workspace_id=? AND campaign_id=?')
+          .run(workspaceId, campaignId);
+        const tasks = await tx
+          .prepare('DELETE FROM linkedin_manual_tasks WHERE workspace_id=? AND campaign_id=?')
+          .run(workspaceId, campaignId);
+        const members = await tx
+          .prepare('DELETE FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=?')
+          .run(workspaceId, campaignId);
+        // No foreign key on `linkedin_actions.campaign_id` (migration 025 says
+        // why: the file an operator downloaded outlives the campaign row), so
+        // nothing cascades here and the delete has to be explicit.
+        const actions = await tx
+          .prepare('DELETE FROM linkedin_actions WHERE workspace_id=? AND campaign_id=?')
+          .run(workspaceId, campaignId);
+        await tx
+          .prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=? AND id=?')
+          .run(workspaceId, campaignId);
+        return {
+          exports: exports.changes,
+          manualTasks: tasks.changes,
+          members: members.changes,
+          actions: actions.changes
+        };
+      });
+
+      res.json({ deleted: true, campaignId, removed, exclusionsKept: true });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/campaigns/:id/stop',
+    linkedinRoute(async (req, res) => {
+      // Owner-only, unlike the seat pause above, and the difference is that this
+      // one does not come back. A stopped campaign cannot be edited, exported or
+      // queued ever again, and the slots it had reserved are released -- so it is
+      // a destructive end, not a pause. The reversible control a member should
+      // reach for is POST /api/linkedin/manager/campaigns/:id/pause.
+      assertWorkspaceOwner(req, 'stop a campaign');
+      const stopped = await stopCampaign(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        new Date()
       );
-    }
-
-    const claimed = await db.prepare(
-      "SELECT COUNT(*) AS count FROM linkedin_actions WHERE workspace_id=? AND campaign_id=? AND claimed_at IS NOT NULL AND status IN ('planned','held')"
-    ).get<{ count: number }>(workspaceId, campaignId);
-    const claimedCount = Number(claimed?.count ?? 0);
-    if (claimedCount > 0) {
-      throw new LinkedInApiError(
-        `A worker is holding ${claimedCount} of this campaign's actions right now. Let the batch finish, or pause the seat, and try again.`,
-        409
-      );
-    }
-
-    // One transaction: a campaign whose exports were deleted and whose actions
-    // were not is a workspace that can no longer answer either question.
-    const removed = await db.transaction(async (tx) => {
-      const exports = await tx.prepare('DELETE FROM linkedin_exports WHERE workspace_id=? AND campaign_id=?').run(workspaceId, campaignId);
-      const tasks = await tx.prepare('DELETE FROM linkedin_manual_tasks WHERE workspace_id=? AND campaign_id=?').run(workspaceId, campaignId);
-      const members = await tx.prepare('DELETE FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=?').run(workspaceId, campaignId);
-      // No foreign key on `linkedin_actions.campaign_id` (migration 025 says
-      // why: the file an operator downloaded outlives the campaign row), so
-      // nothing cascades here and the delete has to be explicit.
-      const actions = await tx.prepare('DELETE FROM linkedin_actions WHERE workspace_id=? AND campaign_id=?').run(workspaceId, campaignId);
-      await tx.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=? AND id=?').run(workspaceId, campaignId);
-      return { exports: exports.changes, manualTasks: tasks.changes, members: members.changes, actions: actions.changes };
-    });
-
-    res.json({ deleted: true, campaignId, removed, exclusionsKept: true });
-  }));
-
-  app.post('/api/linkedin/campaigns/:id/stop', linkedinRoute(async (req, res) => {
-    // Owner-only, unlike the seat pause above, and the difference is that this
-    // one does not come back. A stopped campaign cannot be edited, exported or
-    // queued ever again, and the slots it had reserved are released -- so it is
-    // a destructive end, not a pause. The reversible control a member should
-    // reach for is POST /api/linkedin/manager/campaigns/:id/pause.
-    assertWorkspaceOwner(req, 'stop a campaign');
-    const stopped = await stopCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date());
-    if (!stopped) throw new LinkedInApiError('LinkedIn campaign not found', 404);
-    res.json({ campaign: stopped.campaign, releasedActions: stopped.released });
-  }));
+      if (!stopped) throw new LinkedInApiError('LinkedIn campaign not found', 404);
+      res.json({ campaign: stopped.campaign, releasedActions: stopped.released });
+    })
+  );
 
   /**
    * Read a target CSV.
@@ -3367,47 +3890,63 @@ export function createApp(db: Db) {
    * would actually be approached before any of it becomes a plan. A row only
    * enters `linkedin_actions` downstream of an approval.
    */
-  app.post('/api/linkedin/targets/import', linkedinTargetsUpload.single('file'), linkedinRoute(async (req, res) => {
-    if (!req.file) throw new LinkedInApiError('A CSV file of LinkedIn targets is required', 400);
-    const options = linkedinImportSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
+  app.post(
+    '/api/linkedin/targets/import',
+    linkedinTargetsUpload.single('file'),
+    linkedinRoute(async (req, res) => {
+      if (!req.file) throw new LinkedInApiError('A CSV file of LinkedIn targets is required', 400);
+      const options = linkedinImportSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
 
-    const { contacts, skipped } = parseLinkedInTargetCsv(req.file.buffer);
-    const { kept, excluded } = await filterExcluded(db, workspaceId, contacts.map((contact) => contact.targetRef));
-    const keptSet = new Set(kept);
+      const { contacts, skipped } = parseLinkedInTargetCsv(req.file.buffer);
+      const { kept, excluded } = await filterExcluded(
+        db,
+        workspaceId,
+        contacts.map((contact) => contact.targetRef)
+      );
+      const keptSet = new Set(kept);
 
-    const seat = await getSeat(db, workspaceId);
-    const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : ownerSeat(workspaceId);
-    const alreadyContacted: string[] = [];
-    for (const targetRef of kept) {
-      if (await hasTarget(db, seatRef, options.kind, targetRef)) alreadyContacted.push(targetRef);
-    }
-    const contacted = new Set(alreadyContacted);
+      const seat = await getSeat(db, workspaceId);
+      const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : ownerSeat(workspaceId);
+      const alreadyContacted: string[] = [];
+      for (const targetRef of kept) {
+        if (await hasTarget(db, seatRef, options.kind, targetRef)) alreadyContacted.push(targetRef);
+      }
+      const contacted = new Set(alreadyContacted);
 
-    res.status(200).json({
-      persisted: false,
-      parsed: contacts.length,
-      kind: options.kind,
-      targets: kept.filter((targetRef) => !contacted.has(targetRef)),
-      contacts: contacts.filter((contact) => keptSet.has(contact.targetRef) && !contacted.has(contact.targetRef)),
-      excluded,
-      // The seat has a non-skipped action of this kind against these already.
-      // Planning them again would be refused by the ledger's replay guard, so
-      // they are reported here rather than discovered at export time.
-      alreadyContacted,
-      skippedRows: skipped
-    });
-  }));
+      res.status(200).json({
+        persisted: false,
+        parsed: contacts.length,
+        kind: options.kind,
+        targets: kept.filter((targetRef) => !contacted.has(targetRef)),
+        contacts: contacts.filter(
+          (contact) => keptSet.has(contact.targetRef) && !contacted.has(contact.targetRef)
+        ),
+        excluded,
+        // The seat has a non-skipped action of this kind against these already.
+        // Planning them again would be refused by the ledger's replay guard, so
+        // they are reported here rather than discovered at export time.
+        alreadyContacted,
+        skippedRows: skipped
+      });
+    })
+  );
 
-  app.get('/api/linkedin/exclusions', linkedinRoute(async (req, res) => {
-    res.json({ exclusions: await listExclusions(db, req.auth!.workspaceId) });
-  }));
+  app.get(
+    '/api/linkedin/exclusions',
+    linkedinRoute(async (req, res) => {
+      res.json({ exclusions: await listExclusions(db, req.auth!.workspaceId) });
+    })
+  );
 
-  app.post('/api/linkedin/exclusions', linkedinRoute(async (req, res) => {
-    const input = linkedinExclusionSchema.parse(req.body ?? {});
-    const result = await addExclusions(db, req.auth!.workspaceId, input.targets, new Date());
-    res.status(201).json(result);
-  }));
+  app.post(
+    '/api/linkedin/exclusions',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinExclusionSchema.parse(req.body ?? {});
+      const result = await addExclusions(db, req.auth!.workspaceId, input.targets, new Date());
+      res.status(201).json(result);
+    })
+  );
 
   /**
    * The funnel, for one account or for all of them, cut in the zone the
@@ -3428,54 +3967,82 @@ export function createApp(db: Db) {
    * agree -- the honest answer for an agency running Berlin and Los Angeles
    * from one screen.
    */
-  app.get('/api/linkedin/analytics', linkedinRoute(async (req, res) => {
-    const filters = linkedinAnalyticsSchema.parse(req.query);
-    const workspaceId = req.auth!.workspaceId;
-    // Read from the seat rather than taken from the query: a caller must not be
-    // able to re-cut somebody's ledger on a zone no account of theirs is in.
-    const seat = filters.seatKey ? await getSeat(db, workspaceId, filters.seatKey) : undefined;
-    if (filters.seatKey && !seat) throw new LinkedInApiError('That LinkedIn account is not configured for this workspace', 404);
-    res.json(await linkedinAnalytics(
-      db,
-      workspaceId,
-      filters.days,
-      new Date(),
-      seat ? { timezone: seat.timezone, seatKey: seat.seatKey } : {}
-    ));
-  }));
+  app.get(
+    '/api/linkedin/analytics',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinAnalyticsSchema.parse(req.query);
+      const workspaceId = req.auth!.workspaceId;
+      // Read from the seat rather than taken from the query: a caller must not be
+      // able to re-cut somebody's ledger on a zone no account of theirs is in.
+      const seat = filters.seatKey ? await getSeat(db, workspaceId, filters.seatKey) : undefined;
+      if (filters.seatKey && !seat)
+        throw new LinkedInApiError(
+          'That LinkedIn account is not configured for this workspace',
+          404
+        );
+      res.json(
+        await linkedinAnalytics(
+          db,
+          workspaceId,
+          filters.days,
+          new Date(),
+          seat ? { timezone: seat.timezone, seatKey: seat.seatKey } : {}
+        )
+      );
+    })
+  );
 
   /* Outreach-manager read models. No route in this block queues or sends. */
-  app.get('/api/linkedin/manager/seats', linkedinRoute(async (req, res) => {
-    res.json({ seats: await listSeats(db, req.auth!.workspaceId) });
-  }));
+  app.get(
+    '/api/linkedin/manager/seats',
+    linkedinRoute(async (req, res) => {
+      res.json({ seats: await listSeats(db, req.auth!.workspaceId) });
+    })
+  );
 
   // Owner-only, for the reason PUT /api/linkedin/seat states at length: the
   // fields these two routes write are the seat's daily ceilings, its working
   // hours and the band override -- an account-risk decision, not a preference.
   // They are field-identical to that route and were reachable by any member.
-  app.post('/api/linkedin/manager/seats', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, "change a LinkedIn account's limits");
-    const input = linkedinManagerSeatCreateSchema.parse(req.body ?? {});
-    assertSeatProxyUsable(req.auth!.workspaceId, input.seatKey, input.proxyUrl);
-    try {
-      const seat = await upsertSeat(db, req.auth!.workspaceId, input, new Date(), input.seatKey);
-      res.status(201).json({ seat });
-    } catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/manager/seats',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, "change a LinkedIn account's limits");
+      const input = linkedinManagerSeatCreateSchema.parse(req.body ?? {});
+      assertSeatProxyUsable(req.auth!.workspaceId, input.seatKey, input.proxyUrl);
+      try {
+        const seat = await upsertSeat(db, req.auth!.workspaceId, input, new Date(), input.seatKey);
+        res.status(201).json({ seat });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
-  app.patch('/api/linkedin/manager/seats/:seatKey', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, "change a LinkedIn account's limits");
-    const seatKey = linkedinSeatKeySchema.parse(String(req.params.seatKey));
-    const input = linkedinSeatSchema.parse(req.body ?? {});
-    assertSeatProxyUsable(req.auth!.workspaceId, seatKey, input.proxyUrl);
-    if (!(await getSeat(db, req.auth!.workspaceId, seatKey))) throw new LinkedInApiError('LinkedIn account not found', 404);
-    try { res.json({ seat: await upsertSeat(db, req.auth!.workspaceId, input, new Date(), seatKey) }); }
-    catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.patch(
+    '/api/linkedin/manager/seats/:seatKey',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, "change a LinkedIn account's limits");
+      const seatKey = linkedinSeatKeySchema.parse(String(req.params.seatKey));
+      const input = linkedinSeatSchema.parse(req.body ?? {});
+      assertSeatProxyUsable(req.auth!.workspaceId, seatKey, input.proxyUrl);
+      if (!(await getSeat(db, req.auth!.workspaceId, seatKey)))
+        throw new LinkedInApiError('LinkedIn account not found', 404);
+      try {
+        res.json({ seat: await upsertSeat(db, req.auth!.workspaceId, input, new Date(), seatKey) });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
-  app.get('/api/linkedin/manager/lead-lists', linkedinRoute(async (req, res) => {
-    res.json({ lists: await listLeadLists(db, req.auth!.workspaceId) });
-  }));
+  app.get(
+    '/api/linkedin/manager/lead-lists',
+    linkedinRoute(async (req, res) => {
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      res.json({ lists: await listLeadLists(db, req.auth!.workspaceId, seatKey) });
+    })
+  );
 
   /**
    * One lead list and a page of the people on it.
@@ -3492,51 +4059,91 @@ export function createApp(db: Db) {
    * file's own opinion of which table a list's people are in -- which the
    * membership schema has already changed once.
    */
-  app.get('/api/linkedin/manager/lead-lists/:id/contacts', linkedinRoute(async (req, res) => {
-    const listId = String(req.params.id);
-    const workspaceId = req.auth!.workspaceId;
-    const list = await getLeadList(db, workspaceId, listId);
-    if (!list) throw new LinkedInApiError('Lead list not found', 404);
-    const [contacts, total] = await Promise.all([
-      listLeadContacts(db, workspaceId, listId, LEAD_CONTACT_READ_LIMIT),
-      countLeadContacts(db, workspaceId, listId)
-    ]);
-    // The page bound, so the screen can say "the first N of M" without holding
-    // its own copy of N.
-    res.json({ list, contacts, total, pageLimit: LEAD_CONTACT_READ_LIMIT });
-  }));
+  app.get(
+    '/api/linkedin/manager/lead-lists/:id/contacts',
+    linkedinRoute(async (req, res) => {
+      const listId = String(req.params.id);
+      const workspaceId = req.auth!.workspaceId;
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      const list = await getLeadList(db, workspaceId, listId, seatKey);
+      if (!list) throw new LinkedInApiError('Lead list not found', 404);
+      const [contacts, total] = await Promise.all([
+        listLeadContacts(db, workspaceId, listId, LEAD_CONTACT_READ_LIMIT),
+        countLeadContacts(db, workspaceId, listId)
+      ]);
+      // The page bound, so the screen can say "the first N of M" without holding
+      // its own copy of N.
+      res.json({ list, contacts, total, pageLimit: LEAD_CONTACT_READ_LIMIT });
+    })
+  );
 
-  app.get('/api/linkedin/manager/workflows', linkedinRoute(async (req, res) => {
-    res.json({ workflows: await listWorkflows(db, req.auth!.workspaceId) });
-  }));
+  app.get(
+    '/api/linkedin/manager/workflows',
+    linkedinRoute(async (req, res) => {
+      res.json({ workflows: await listWorkflows(db, req.auth!.workspaceId) });
+    })
+  );
 
-  app.get('/api/linkedin/manager/campaigns', linkedinRoute(async (req, res) => {
-    res.json({ campaigns: await listManagedCampaigns(db, req.auth!.workspaceId) });
-  }));
+  app.get(
+    '/api/linkedin/manager/campaigns',
+    linkedinRoute(async (req, res) => {
+      res.json({ campaigns: await listManagedCampaigns(db, req.auth!.workspaceId) });
+    })
+  );
 
-  app.post('/api/linkedin/manager/campaigns', linkedinRoute(async (req, res) => {
-    const input = linkedinManagedCampaignCreateSchema.parse(req.body ?? {});
-    try {
-      const created = await createManagedCampaign(db, { workspaceId: req.auth!.workspaceId, ...input }, new Date());
-      res.status(201).json(created);
-    } catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/manager/campaigns',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinManagedCampaignCreateSchema.parse(req.body ?? {});
+      try {
+        const created = await createManagedCampaign(
+          db,
+          { workspaceId: req.auth!.workspaceId, ...input },
+          new Date()
+        );
+        res.status(201).json(created);
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
-  app.get('/api/linkedin/manager/campaigns/:id', linkedinRoute(async (req, res) => {
-    const campaignId = String(req.params.id);
-    const campaign = await getManagedCampaign(db, req.auth!.workspaceId, campaignId);
-    if (!campaign) throw new LinkedInApiError('Managed campaign not found', 404);
-    res.json({ campaign, members: await listCampaignMembers(db, req.auth!.workspaceId, campaignId) });
-  }));
+  app.get(
+    '/api/linkedin/manager/campaigns/:id',
+    linkedinRoute(async (req, res) => {
+      const campaignId = String(req.params.id);
+      const campaign = await getManagedCampaign(db, req.auth!.workspaceId, campaignId);
+      if (!campaign) throw new LinkedInApiError('Managed campaign not found', 404);
+      res.json({
+        campaign,
+        members: await listCampaignMembers(db, req.auth!.workspaceId, campaignId)
+      });
+    })
+  );
 
   // Owner-only: starting is the act that begins really approaching strangers on
   // the owner's account, on a cadence nobody has to press a button for again.
-  app.post('/api/linkedin/manager/campaigns/:id/start', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, 'start a managed campaign');
-    z.object({}).strict().parse(req.body ?? {});
-    try { res.json({ campaign: await startManagedCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date()) }); }
-    catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/manager/campaigns/:id/start',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'start a managed campaign');
+      z.object({})
+        .strict()
+        .parse(req.body ?? {});
+      try {
+        res.json({
+          campaign: await startManagedCampaign(
+            db,
+            req.auth!.workspaceId,
+            String(req.params.id),
+            new Date()
+          )
+        });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
   // DELIBERATELY NOT OWNER-ONLY -- the second of the two, and the same argument
   // as POST /api/linkedin/seat/pause. Pausing parks the queue in 'held' and
@@ -3544,30 +4151,53 @@ export function createApp(db: Db) {
   // only the owner can start it again. A teammate who can see a campaign
   // approaching the wrong people has to be able to stop it approaching them
   // while they go and find the owner.
-  app.post('/api/linkedin/manager/campaigns/:id/pause', linkedinRoute(async (req, res) => {
-    z.object({}).strict().parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    const campaignId = String(req.params.id);
-    // Read first, exactly as the workflow PUT above does. `pauseManagedCampaign`
-    // refuses a campaign that is not running with one sentence covering both
-    // "already stopped" and "never existed", and a 409 about state is the wrong
-    // answer to an id that is not this workspace's.
-    if (!(await getManagedCampaign(db, workspaceId, campaignId))) {
-      throw new LinkedInApiError('Managed campaign not found', 404);
-    }
-    try { res.json({ campaign: await pauseManagedCampaign(db, workspaceId, campaignId, new Date()) }); }
-    catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/manager/campaigns/:id/pause',
+    linkedinRoute(async (req, res) => {
+      z.object({})
+        .strict()
+        .parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const campaignId = String(req.params.id);
+      // Read first, exactly as the workflow PUT above does. `pauseManagedCampaign`
+      // refuses a campaign that is not running with one sentence covering both
+      // "already stopped" and "never existed", and a 409 about state is the wrong
+      // answer to an id that is not this workspace's.
+      if (!(await getManagedCampaign(db, workspaceId, campaignId))) {
+        throw new LinkedInApiError('Managed campaign not found', 404);
+      }
+      try {
+        res.json({ campaign: await pauseManagedCampaign(db, workspaceId, campaignId, new Date()) });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
   // Owner-only, for the reason the legacy stop route gives: this one removes
   // every active member, cancels the pending manual tasks and skips the queue.
   // It is the irreversible half of the pair above.
-  app.post('/api/linkedin/manager/campaigns/:id/stop', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, 'stop a managed campaign');
-    z.object({}).strict().parse(req.body ?? {});
-    try { res.json({ campaign: await stopManagedCampaign(db, req.auth!.workspaceId, String(req.params.id), new Date()) }); }
-    catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/manager/campaigns/:id/stop',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'stop a managed campaign');
+      z.object({})
+        .strict()
+        .parse(req.body ?? {});
+      try {
+        res.json({
+          campaign: await stopManagedCampaign(
+            db,
+            req.auth!.workspaceId,
+            String(req.params.id),
+            new Date()
+          )
+        });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
   /**
    * Pause OR continue one lead, which is one route because they are one
@@ -3577,30 +4207,68 @@ export function createApp(db: Db) {
    * can be easily paused or continued" is the requirement, and a pause nobody
    * can undo is a removal wearing a different label.
    */
-  app.post('/api/linkedin/manager/members/:id/pause', linkedinRoute(async (req, res) => {
-    const input = z.object({ paused: z.boolean().default(true) }).strict().parse(req.body ?? {});
-    const changed = await setCampaignMemberPaused(db, req.auth!.workspaceId, String(req.params.id), input.paused, new Date());
-    if (!changed) throw new LinkedInApiError(input.paused ? 'Active campaign member not found' : 'Paused campaign member not found', 404);
-    res.json({ paused: input.paused });
-  }));
+  app.post(
+    '/api/linkedin/manager/members/:id/pause',
+    linkedinRoute(async (req, res) => {
+      const input = z
+        .object({ paused: z.boolean().default(true) })
+        .strict()
+        .parse(req.body ?? {});
+      const changed = await setCampaignMemberPaused(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        input.paused,
+        new Date()
+      );
+      if (!changed)
+        throw new LinkedInApiError(
+          input.paused ? 'Active campaign member not found' : 'Paused campaign member not found',
+          404
+        );
+      res.json({ paused: input.paused });
+    })
+  );
 
-  app.post('/api/linkedin/manager/members/:id/resume', linkedinRoute(async (req, res) => {
-    z.object({}).strict().parse(req.body ?? {});
-    const resumed = await setCampaignMemberPaused(db, req.auth!.workspaceId, String(req.params.id), false, new Date());
-    if (!resumed) throw new LinkedInApiError('Paused campaign member not found', 404);
-    res.json({ paused: false });
-  }));
+  app.post(
+    '/api/linkedin/manager/members/:id/resume',
+    linkedinRoute(async (req, res) => {
+      z.object({})
+        .strict()
+        .parse(req.body ?? {});
+      const resumed = await setCampaignMemberPaused(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        false,
+        new Date()
+      );
+      if (!resumed) throw new LinkedInApiError('Paused campaign member not found', 404);
+      res.json({ paused: false });
+    })
+  );
 
-  app.delete('/api/linkedin/manager/members/:id', linkedinRoute(async (req, res) => {
-    const removed = await removeCampaignMember(db, req.auth!.workspaceId, String(req.params.id), new Date());
-    if (!removed) throw new LinkedInApiError('Active campaign member not found', 404);
-    res.json({ removed: true });
-  }));
+  app.delete(
+    '/api/linkedin/manager/members/:id',
+    linkedinRoute(async (req, res) => {
+      const removed = await removeCampaignMember(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        new Date()
+      );
+      if (!removed) throw new LinkedInApiError('Active campaign member not found', 404);
+      res.json({ removed: true });
+    })
+  );
 
-  app.get('/api/linkedin/manager/tasks', linkedinRoute(async (req, res) => {
-    const filters = linkedinManualTaskFiltersSchema.parse(req.query);
-    res.json({ tasks: await listManualTasks(db, req.auth!.workspaceId, filters) });
-  }));
+  app.get(
+    '/api/linkedin/manager/tasks',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinManualTaskFiltersSchema.parse(req.query);
+      res.json({ tasks: await listManualTasks(db, req.auth!.workspaceId, filters) });
+    })
+  );
 
   /**
    * The human checkpoint, closed.
@@ -3610,12 +4278,22 @@ export function createApp(db: Db) {
    * member to the next workflow step. Keeping the two separate is deliberate --
    * Trevra never claims to have sent bytes it did not send.
    */
-  app.post('/api/linkedin/manager/tasks/:id/complete', linkedinRoute(async (req, res) => {
-    z.object({}).strict().parse(req.body ?? {});
-    const completed = await completeManualTask(db, req.auth!.workspaceId, String(req.params.id), new Date());
-    if (!completed) throw new LinkedInApiError('Pending manual task not found', 404);
-    res.json({ completed: true });
-  }));
+  app.post(
+    '/api/linkedin/manager/tasks/:id/complete',
+    linkedinRoute(async (req, res) => {
+      z.object({})
+        .strict()
+        .parse(req.body ?? {});
+      const completed = await completeManualTask(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        new Date()
+      );
+      if (!completed) throw new LinkedInApiError('Pending manual task not found', 404);
+      res.json({ completed: true });
+    })
+  );
 
   /**
    * Advance every running campaign now instead of waiting for the worker tick.
@@ -3624,39 +4302,59 @@ export function createApp(db: Db) {
    * is a "don't make me wait a minute" button, not a way around the ramp. It
    * plans rows; it never sends.
    */
-  app.post('/api/linkedin/manager/tick', linkedinRoute(async (req, res) => {
-    z.object({}).strict().parse(req.body ?? {});
-    res.json(await runManagedCampaigns(db, req.auth!.workspaceId, new Date()));
-  }));
+  app.post(
+    '/api/linkedin/manager/tick',
+    linkedinRoute(async (req, res) => {
+      z.object({})
+        .strict()
+        .parse(req.body ?? {});
+      res.json(await runManagedCampaigns(db, req.auth!.workspaceId, new Date()));
+    })
+  );
 
-  app.get('/api/linkedin/manager/analytics', linkedinRoute(async (req, res) => {
-    const filters = linkedinManagedAnalyticsSchema.parse(req.query);
-    res.json(await managedAnalytics(db, req.auth!.workspaceId, filters));
-  }));
+  app.get(
+    '/api/linkedin/manager/analytics',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinManagedAnalyticsSchema.parse(req.query);
+      res.json(await managedAnalytics(db, req.auth!.workspaceId, filters));
+    })
+  );
 
   /* Manager configuration CRUD. These writes configure data; they do not create action-ledger rows. */
-  app.post('/api/linkedin/manager/lead-lists/preview', linkedinTargetsUpload.single('file'), linkedinRoute(async (req, res) => {
-    if (!req.file) throw new LinkedInApiError('A CSV file of LinkedIn leads is required', 400);
-    if (!req.file.originalname.toLowerCase().endsWith('.csv')) throw new LinkedInApiError('Upload a .csv file of LinkedIn leads', 400);
-    let mapping: z.infer<typeof linkedinLeadFieldMappingSchema> | undefined;
-    if (typeof req.body?.mapping === 'string' && req.body.mapping.trim()) {
-      let decoded: unknown;
-      try { decoded = JSON.parse(req.body.mapping); }
-      catch { throw new LinkedInApiError('mapping must be valid JSON', 400); }
-      mapping = linkedinLeadFieldMappingSchema.parse(decoded);
-    }
-    try {
-      const preview = parseLeadCsv(req.file.buffer.toString('utf8'), mapping);
-      res.json({
-        headers: preview.headers,
-        mapping: preview.mapping,
-        accepted: preview.accepted.slice(0, 100).map(({ original: _original, dedupeKey: _dedupeKey, ...lead }) => lead),
-        acceptedCount: preview.accepted.length,
-        rejected: preview.rejected.slice(0, 100).map(({ row, reason }) => ({ row, reason })),
-        rejectedCount: preview.rejected.length
-      });
-    } catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/manager/lead-lists/preview',
+    linkedinTargetsUpload.single('file'),
+    linkedinRoute(async (req, res) => {
+      if (!req.file) throw new LinkedInApiError('A CSV file of LinkedIn leads is required', 400);
+      if (!req.file.originalname.toLowerCase().endsWith('.csv'))
+        throw new LinkedInApiError('Upload a .csv file of LinkedIn leads', 400);
+      let mapping: z.infer<typeof linkedinLeadFieldMappingSchema> | undefined;
+      if (typeof req.body?.mapping === 'string' && req.body.mapping.trim()) {
+        let decoded: unknown;
+        try {
+          decoded = JSON.parse(req.body.mapping);
+        } catch {
+          throw new LinkedInApiError('mapping must be valid JSON', 400);
+        }
+        mapping = linkedinLeadFieldMappingSchema.parse(decoded);
+      }
+      try {
+        const preview = parseLeadCsv(req.file.buffer.toString('utf8'), mapping);
+        res.json({
+          headers: preview.headers,
+          mapping: preview.mapping,
+          accepted: preview.accepted
+            .slice(0, 100)
+            .map(({ original: _original, dedupeKey: _dedupeKey, ...lead }) => lead),
+          acceptedCount: preview.accepted.length,
+          rejected: preview.rejected.slice(0, 100).map(({ row, reason }) => ({ row, reason })),
+          rejectedCount: preview.rejected.length
+        });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
   /**
    * The write half of the preview above, and the reason a lead list can hold
@@ -3664,34 +4362,67 @@ export function createApp(db: Db) {
    * same parser, with the same scrub and the same automatch -- so what the
    * operator confirmed on screen is exactly what lands.
    */
-  app.post('/api/linkedin/manager/lead-lists/:id/import', linkedinTargetsUpload.single('file'), linkedinRoute(async (req, res) => {
-    if (!req.file) throw new LinkedInApiError('A CSV file of LinkedIn leads is required', 400);
-    if (!req.file.originalname.toLowerCase().endsWith('.csv')) throw new LinkedInApiError('Upload a .csv file of LinkedIn leads', 400);
-    let mapping: z.infer<typeof linkedinLeadFieldMappingSchema> | undefined;
-    if (typeof req.body?.mapping === 'string' && req.body.mapping.trim()) {
-      let decoded: unknown;
-      try { decoded = JSON.parse(req.body.mapping); }
-      catch { throw new LinkedInApiError('mapping must be valid JSON', 400); }
-      mapping = linkedinLeadFieldMappingSchema.parse(decoded);
-    }
-    try {
-      const result = await importLeadCsv(db, {
-        workspaceId: req.auth!.workspaceId,
-        listId: String(req.params.id),
-        csv: req.file.buffer.toString('utf8'),
-        mapping
-      }, new Date());
-      res.status(201).json(result);
-    } catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/manager/lead-lists/:id/import',
+    linkedinTargetsUpload.single('file'),
+    linkedinRoute(async (req, res) => {
+      if (!req.file) throw new LinkedInApiError('A CSV file of LinkedIn leads is required', 400);
+      if (!req.file.originalname.toLowerCase().endsWith('.csv'))
+        throw new LinkedInApiError('Upload a .csv file of LinkedIn leads', 400);
+      let mapping: z.infer<typeof linkedinLeadFieldMappingSchema> | undefined;
+      if (typeof req.body?.mapping === 'string' && req.body.mapping.trim()) {
+        let decoded: unknown;
+        try {
+          decoded = JSON.parse(req.body.mapping);
+        } catch {
+          throw new LinkedInApiError('mapping must be valid JSON', 400);
+        }
+        mapping = linkedinLeadFieldMappingSchema.parse(decoded);
+      }
+      try {
+        const seatKey = linkedinSeatKeySchema.parse(
+          typeof req.body?.seatKey === 'string' ? req.body.seatKey : OWNER_SEAT_KEY
+        );
+        const result = await importLeadCsv(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            seatKey,
+            listId: String(req.params.id),
+            csv: req.file.buffer.toString('utf8'),
+            mapping
+          },
+          new Date()
+        );
+        res.status(201).json(result);
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
-  app.post('/api/linkedin/manager/lead-lists', linkedinRoute(async (req, res) => {
-    const input = linkedinLeadListCreateSchema.parse(req.body ?? {});
-    try {
-      const list = await createLeadList(db, { workspaceId: req.auth!.workspaceId, name: input.name, sourceKind: input.sourceKind as LeadListSourceKind, sourceRef: input.sourceRef ?? null }, new Date());
-      res.status(201).json({ list });
-    } catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/manager/lead-lists',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinLeadListCreateSchema.parse(req.body ?? {});
+      try {
+        const list = await createLeadList(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            seatKey: input.seatKey,
+            name: input.name,
+            sourceKind: input.sourceKind as LeadListSourceKind,
+            sourceRef: input.sourceRef ?? null
+          },
+          new Date()
+        );
+        res.status(201).json({ list });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
   /**
    * Delete a lead list, and everyone on it.
@@ -3706,57 +4437,113 @@ export function createApp(db: Db) {
    * Owner-only: this is the delete that removes a workspace's contact data
    * rather than a row about it.
    */
-  app.delete('/api/linkedin/manager/lead-lists/:id', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, 'delete a lead list');
-    let deleted;
-    try {
-      // No existence pre-check: `deleteLeadList` takes the row `FOR UPDATE` so
-      // that its refusal and its delete see the same list, and a SELECT out
-      // here would be a third read that a concurrent campaign start could slip
-      // between. `undefined` is its 404.
-      deleted = await deleteLeadList(db, req.auth!.workspaceId, String(req.params.id));
-    } catch (error) { rethrowLinkedInManagerError(error); }
-    if (!deleted) throw new LinkedInApiError('Lead list not found', 404);
-    // The counts are the point. Deleting a list no longer deletes PEOPLE: they
-    // lose this membership and keep every other one (migration 052), so
-    // `membershipsRemoved` and `contactsDetached` are what a confirmation
-    // screen has to be able to show instead of "N leads deleted", which was
-    // both alarming and, since migration 053, untrue.
-    res.json({ deleted });
-  }));
+  app.delete(
+    '/api/linkedin/manager/lead-lists/:id',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'delete a lead list');
+      let deleted;
+      try {
+        // No existence pre-check: `deleteLeadList` takes the row `FOR UPDATE` so
+        // that its refusal and its delete see the same list, and a SELECT out
+        // here would be a third read that a concurrent campaign start could slip
+        // between. `undefined` is its 404.
+        deleted = await deleteLeadList(db, req.auth!.workspaceId, String(req.params.id));
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+      if (!deleted) throw new LinkedInApiError('Lead list not found', 404);
+      // The counts are the point. Deleting a list no longer deletes PEOPLE: they
+      // lose this membership and keep every other one (migration 052), so
+      // `membershipsRemoved` and `contactsDetached` are what a confirmation
+      // screen has to be able to show instead of "N leads deleted", which was
+      // both alarming and, since migration 053, untrue.
+      res.json({ deleted });
+    })
+  );
 
-  app.patch('/api/linkedin/manager/contacts/:id', linkedinRoute(async (req, res) => {
-    const input = linkedinLeadContactUpdateSchema.parse(req.body ?? {});
-    try {
-      res.json({ contact: await updateLeadContact(db, { workspaceId: req.auth!.workspaceId, contactId: String(req.params.id), ...input }, new Date()) });
-    } catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.patch(
+    '/api/linkedin/manager/contacts/:id',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinLeadContactUpdateSchema.parse(req.body ?? {});
+      try {
+        res.json({
+          contact: await updateLeadContact(
+            db,
+            { workspaceId: req.auth!.workspaceId, contactId: String(req.params.id), ...input },
+            new Date()
+          )
+        });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
   // Owner-only, and MORE destructive than the lead-list delete three routes
   // above which already is: deleting a contact cascades it out of every
   // campaign it is enrolled in and cancels the manual tasks written for it,
   // where deleting a list only drops memberships.
-  app.delete('/api/linkedin/manager/contacts/:id', linkedinRoute(async (req, res) => {
-    assertWorkspaceOwner(req, 'delete a lead and its campaign enrolments');
-    res.json({ deleted: await removeLeadContact(db, req.auth!.workspaceId, String(req.params.id)) });
-  }));
+  app.delete(
+    '/api/linkedin/manager/contacts/:id',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'delete a lead and its campaign enrolments');
+      res.json({
+        deleted: await removeLeadContact(db, req.auth!.workspaceId, String(req.params.id))
+      });
+    })
+  );
 
-  app.post('/api/linkedin/manager/workflows', linkedinRoute(async (req, res) => {
-    const input = linkedinWorkflowWriteSchema.parse(req.body ?? {});
-    try { res.status(201).json({ workflow: await saveWorkflow(db, { workspaceId: req.auth!.workspaceId, name: input.name, steps: input.steps }, new Date()) }); }
-    catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/manager/workflows',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinWorkflowWriteSchema.parse(req.body ?? {});
+      try {
+        res
+          .status(201)
+          .json({
+            workflow: await saveWorkflow(
+              db,
+              { workspaceId: req.auth!.workspaceId, name: input.name, steps: input.steps },
+              new Date()
+            )
+          });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
-  app.put('/api/linkedin/manager/workflows/:id', linkedinRoute(async (req, res) => {
-    const input = linkedinWorkflowWriteSchema.parse(req.body ?? {});
-    if (!(await getWorkflow(db, req.auth!.workspaceId, String(req.params.id)))) throw new LinkedInApiError('Workflow not found', 404);
-    try { res.json({ workflow: await saveWorkflow(db, { workspaceId: req.auth!.workspaceId, id: String(req.params.id), name: input.name, steps: input.steps }, new Date()) }); }
-    catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.put(
+    '/api/linkedin/manager/workflows/:id',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinWorkflowWriteSchema.parse(req.body ?? {});
+      if (!(await getWorkflow(db, req.auth!.workspaceId, String(req.params.id))))
+        throw new LinkedInApiError('Workflow not found', 404);
+      try {
+        res.json({
+          workflow: await saveWorkflow(
+            db,
+            {
+              workspaceId: req.auth!.workspaceId,
+              id: String(req.params.id),
+              name: input.name,
+              steps: input.steps
+            },
+            new Date()
+          )
+        });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
-  app.delete('/api/linkedin/manager/workflows/:id', linkedinRoute(async (req, res) => {
-    res.json({ deleted: await deleteWorkflow(db, req.auth!.workspaceId, String(req.params.id)) });
-  }));
+  app.delete(
+    '/api/linkedin/manager/workflows/:id',
+    linkedinRoute(async (req, res) => {
+      res.json({ deleted: await deleteWorkflow(db, req.auth!.workspaceId, String(req.params.id)) });
+    })
+  );
 
   /**
   /**
@@ -3773,10 +4560,13 @@ export function createApp(db: Db) {
    * because the screen that answers "why is nothing sending" must not be the
    * screen that 500s.
    */
-  app.get('/api/linkedin/worker/status', linkedinRoute(async (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    res.json(await linkedinWorkerStatus(db, req.auth!.workspaceId));
-  }));
+  app.get(
+    '/api/linkedin/worker/status',
+    linkedinRoute(async (req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await linkedinWorkerStatus(db, req.auth!.workspaceId));
+    })
+  );
 
   /* ---------------------------------------------------------------------
    * Lead sourcing (030).
@@ -3795,59 +4585,88 @@ export function createApp(db: Db) {
    * is the dead end this distinction removes.
    * ------------------------------------------------------------------ */
 
-  app.post('/api/linkedin/lead-sources', linkedinRoute(async (req, res) => {
-    const input = linkedinLeadSourceSchema.parse(req.body ?? {});
-    assertLeadSourcingOn();
-    let created;
-    try {
-      created = await createLeadSource(db, { workspaceId: req.auth!.workspaceId, kind: input.kind, url: input.url }, new Date());
-    } catch (error) {
-      // leads.ts owns the URL rule and its refusal is caller input, not a fault.
-      throw new LinkedInApiError(error instanceof Error ? error.message : String(error), 400);
-    }
-    // 200 rather than 201 for a duplicate: a double-clicked button did not
-    // create anything, and the live row is the honest answer.
-    res.status(created.duplicate ? 200 : 201).json({ source: created.source, duplicate: created.duplicate });
-  }));
-  app.get('/api/linkedin/lead-sources', linkedinRoute(async (req, res) => {
-    const filters = linkedinLeadListSchema.parse(req.query);
-    const workspaceId = req.auth!.workspaceId;
-    const config = leadSourcingConfig();
-    const sources = await listLeadSources(db, workspaceId, filters.limit);
-    const pending = sources
-      .filter((source) => source.status === 'pending')
-      .sort((left, right) => left.requestedAt.localeCompare(right.requestedAt));
-    const schedule = new Map<string, SideTaskScheduleView>();
-    const now = new Date();
-    const waitingFor = pending.length > 0 ? await linkedinQueueWaitReason(db, workspaceId, null, now) : null;
+  app.post(
+    '/api/linkedin/lead-sources',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinLeadSourceSchema.parse(req.body ?? {});
+      assertLeadSourcingOn();
+      let created;
+      try {
+        created = await createLeadSource(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            seatKey: input.seatKey,
+            kind: input.kind,
+            url: input.url
+          },
+          new Date()
+        );
+      } catch (error) {
+        // leads.ts owns the URL rule and its refusal is caller input, not a fault.
+        throw new LinkedInApiError(error instanceof Error ? error.message : String(error), 400);
+      }
+      // 200 rather than 201 for a duplicate: a double-clicked button did not
+      // create anything, and the live row is the honest answer.
+      res
+        .status(created.duplicate ? 200 : 201)
+        .json({ source: created.source, duplicate: created.duplicate });
+    })
+  );
+  app.get(
+    '/api/linkedin/lead-sources',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinLeadListSchema.parse(req.query);
+      const workspaceId = req.auth!.workspaceId;
+      const config = leadSourcingConfig();
+      const sources = await listLeadSources(db, workspaceId, filters.limit, filters.seatKey);
+      const pending = sources
+        .filter((source) => source.status === 'pending')
+        .sort((left, right) => left.requestedAt.localeCompare(right.requestedAt));
+      const schedule = new Map<string, SideTaskScheduleView>();
+      const now = new Date();
+      const waitingFor =
+        pending.length > 0
+          ? await linkedinQueueWaitReason(db, workspaceId, filters.seatKey, now)
+          : null;
 
-    if (pending.length > 0 && leadSourcingEnabled(config)) {
-      const opportunities = await sideTaskSchedule(db, workspaceId, 'lead_sources', now, pending.length);
-      pending.forEach((source, index) => {
-        const opportunity = opportunities[index];
-        if (opportunity) schedule.set(source.id, opportunity);
+      if (pending.length > 0 && leadSourcingEnabled(config)) {
+        const opportunities = await sideTaskSchedule(
+          db,
+          workspaceId,
+          'lead_sources',
+          now,
+          pending.length,
+          filters.seatKey
+        );
+        pending.forEach((source, index) => {
+          const opportunity = opportunities[index];
+          if (opportunity) schedule.set(source.id, opportunity);
+        });
+      }
+
+      res.json({
+        enabled: leadSourcingEnabled(config),
+        offReason: leadSourcingEnabled(config) ? null : leadSourcingOffReason(config),
+        sources: sources.map((source) => {
+          const next = schedule.get(source.id);
+          if (source.status !== 'pending') return source;
+          return {
+            ...source,
+            ...(next
+              ? {
+                  nextRunAt: next.startAt.toISOString(),
+                  nextRunWindowEndAt: next.endAt.toISOString(),
+                  nextRunTimezone: next.timezone,
+                  nextRunSeatLabel: next.seatLabel
+                }
+              : {}),
+            waitingFor
+          };
+        })
       });
-    }
-
-    res.json({
-      enabled: leadSourcingEnabled(config),
-      offReason: leadSourcingEnabled(config) ? null : leadSourcingOffReason(config),
-      sources: sources.map((source) => {
-        const next = schedule.get(source.id);
-        if (source.status !== 'pending') return source;
-        return {
-          ...source,
-          ...(next ? {
-            nextRunAt: next.startAt.toISOString(),
-            nextRunWindowEndAt: next.endAt.toISOString(),
-            nextRunTimezone: next.timezone,
-            nextRunSeatLabel: next.seatLabel
-          } : {}),
-          waitingFor
-        };
-      })
-    });
-  }));
+    })
+  );
   /**
    * The daily lead ceiling, read and set.
    *
@@ -3856,26 +4675,37 @@ export function createApp(db: Db) {
    * not bounded anything. This is the number the brief asks for -- how many new
    * leads a day this workspace is willing to collect at all.
    */
-  app.get('/api/linkedin/lead-sources/allowance', linkedinRoute(async (req, res) => {
-    res.json(await dailyLeadAllowance(db, req.auth!.workspaceId, new Date()));
-  }));
+  app.get(
+    '/api/linkedin/lead-sources/allowance',
+    linkedinRoute(async (req, res) => {
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      res.json(await dailyLeadAllowance(db, req.auth!.workspaceId, new Date(), seatKey));
+    })
+  );
 
-  app.put('/api/linkedin/lead-sources/allowance', linkedinRoute(async (req, res) => {
-    // Owner-only: this is the number that says how much scraping this workspace
-    // is willing to do at all under LinkedIn's User Agreement 8.2, and raising
-    // it raises the account's exposure. Reading it stays open, because a
-    // teammate whose import stopped has to be able to see why.
-    assertWorkspaceOwner(req, "change this workspace's daily lead ceiling");
-    const input = linkedinDailyLeadCapSchema.parse(req.body ?? {});
-    await setDailyLeadCap(db, req.auth!.workspaceId, input.cap, new Date());
-    res.json(await dailyLeadAllowance(db, req.auth!.workspaceId, new Date()));
-  }));
+  app.put(
+    '/api/linkedin/lead-sources/allowance',
+    linkedinRoute(async (req, res) => {
+      // Owner-only: this is the number that says how much scraping this workspace
+      // is willing to do at all under LinkedIn's User Agreement 8.2, and raising
+      // it raises the account's exposure. Reading it stays open, because a
+      // teammate whose import stopped has to be able to see why.
+      assertWorkspaceOwner(req, "change this workspace's daily lead ceiling");
+      const input = linkedinDailyLeadCapSchema.parse(req.body ?? {});
+      await setDailyLeadCap(db, req.auth!.workspaceId, input.cap, new Date(), input.seatKey);
+      res.json(await dailyLeadAllowance(db, req.auth!.workspaceId, new Date(), input.seatKey));
+    })
+  );
 
-  app.get('/api/linkedin/lead-sources/:id', linkedinRoute(async (req, res) => {
-    const source = await getLeadSource(db, req.auth!.workspaceId, String(req.params.id));
-    if (!source) throw new LinkedInApiError('LinkedIn lead source not found', 404);
-    res.json({ source });
-  }));
+  app.get(
+    '/api/linkedin/lead-sources/:id',
+    linkedinRoute(async (req, res) => {
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      const source = await getLeadSource(db, req.auth!.workspaceId, String(req.params.id), seatKey);
+      if (!source) throw new LinkedInApiError('LinkedIn lead source not found', 404);
+      res.json({ source });
+    })
+  );
 
   /**
    * Turn what a walk found into leads a campaign can actually enrol.
@@ -3885,22 +4715,41 @@ export function createApp(db: Db) {
    * the same scrub and the same first/last split the CSV path uses, into a
    * persistent list.
    */
-  app.post('/api/linkedin/lead-sources/:id/import', linkedinRoute(async (req, res) => {
-    const input = linkedinLeadSourceImportSchema.parse(req.body ?? {});
-    try {
-      res.status(201).json(await importLeadSourceContacts(db, { workspaceId: req.auth!.workspaceId, sourceId: String(req.params.id), ...input }, new Date()));
-    } catch (error) { rethrowLinkedInManagerError(error); }
-  }));
+  app.post(
+    '/api/linkedin/lead-sources/:id/import',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinLeadSourceImportSchema.parse(req.body ?? {});
+      try {
+        res
+          .status(201)
+          .json(
+            await importLeadSourceContacts(
+              db,
+              { workspaceId: req.auth!.workspaceId, sourceId: String(req.params.id), ...input },
+              new Date()
+            )
+          );
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
 
-  app.get('/api/linkedin/lead-sources/:id/leads', linkedinRoute(async (req, res) => {
-    const filters = linkedinLeadListSchema.parse(req.query);
-    const workspaceId = req.auth!.workspaceId;
-    // The source is fetched first so a bad id is a 404 rather than an empty
-    // list, which reads as "this walk found nobody".
-    const source = await getLeadSource(db, workspaceId, String(req.params.id));
-    if (!source) throw new LinkedInApiError('LinkedIn lead source not found', 404);
-    res.json({ source, leads: await listLeads(db, workspaceId, source.id, filters.limit) });
-  }));
+  app.get(
+    '/api/linkedin/lead-sources/:id/leads',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinLeadListSchema.parse(req.query);
+      const workspaceId = req.auth!.workspaceId;
+      // The source is fetched first so a bad id is a 404 rather than an empty
+      // list, which reads as "this walk found nobody".
+      const source = await getLeadSource(db, workspaceId, String(req.params.id), filters.seatKey);
+      if (!source) throw new LinkedInApiError('LinkedIn lead source not found', 404);
+      res.json({
+        source,
+        leads: await listLeads(db, workspaceId, source.id, filters.limit, filters.seatKey)
+      });
+    })
+  );
 
   /* ---------------------------------------------------------------------
    * The unified inbox (031).
@@ -3918,75 +4767,95 @@ export function createApp(db: Db) {
    * gate again, and execute.
    * ------------------------------------------------------------------ */
 
-  app.get('/api/linkedin/inbox/threads', linkedinRoute(async (req, res) => {
-    const filters = linkedinInboxFiltersSchema.parse(req.query);
-    res.json({ threads: await listThreads(db, req.auth!.workspaceId, filters) });
-  }));
+  app.get(
+    '/api/linkedin/inbox/threads',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinInboxFiltersSchema.parse(req.query);
+      res.json({ threads: await listThreads(db, req.auth!.workspaceId, filters) });
+    })
+  );
 
-  app.get('/api/linkedin/inbox/threads/:threadUrn', linkedinRoute(async (req, res) => {
-    const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
-    const conversation = await readStoredThread(db, req.auth!.workspaceId, String(req.params.threadUrn), seatKey);
-    if (!conversation) throw new LinkedInApiError('LinkedIn conversation not found', 404);
-    res.json(conversation);
-  }));
+  app.get(
+    '/api/linkedin/inbox/threads/:threadUrn',
+    linkedinRoute(async (req, res) => {
+      const { seatKey } = linkedinSeatSelectorSchema.parse(req.query);
+      const conversation = await readStoredThread(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.threadUrn),
+        seatKey
+      );
+      if (!conversation) throw new LinkedInApiError('LinkedIn conversation not found', 404);
+      res.json(conversation);
+    })
+  );
 
-  app.post('/api/linkedin/inbox/sync', linkedinRoute(async (req, res) => {
-    const input = linkedinInboxSyncSchema.parse(req.body ?? {});
-    const config = linkedinWorkerConfigOrRefuse();
-    const result = await syncLinkedInInbox(db, config, {
-      workspaceId: req.auth!.workspaceId,
-      seatKey: input.seatKey,
-      now: new Date(),
-      ...(input.maxThreads === undefined ? {} : { maxThreads: input.maxThreads }),
-      ...(input.maxMessages === undefined ? {} : { maxMessages: input.maxMessages }),
-      log: () => {}
-    });
-    // 409, not 500: a process with no display is not a fault, it is something
-    // the operator has to go and do -- and the sentence says what.
-    if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
-    res.json(result);
-  }));
-
-  app.post('/api/linkedin/inbox/threads/:threadUrn/sync', linkedinRoute(async (req, res) => {
-    const input = linkedinInboxSyncSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    const threadUrn = String(req.params.threadUrn);
-    // Refused here rather than in the browser: navigating to a conversation id
-    // somebody typed is not a thing this API does.
-    if (!(await threadByUrn(db, workspaceId, threadUrn, input.seatKey))) {
-      throw new LinkedInApiError('LinkedIn conversation not found', 404);
-    }
-    const config = linkedinWorkerConfigOrRefuse();
-    const result = await syncLinkedInThread(db, config, threadUrn, {
-      workspaceId,
-      seatKey: input.seatKey,
-      now: new Date(),
-      ...(input.maxMessages === undefined ? {} : { maxMessages: input.maxMessages }),
-      log: () => {}
-    });
-    if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
-    res.json(result);
-  }));
-
-  app.post('/api/linkedin/inbox/threads/:threadUrn/reply', linkedinRoute(async (req, res) => {
-    const input = linkedinReplySchema.parse(req.body ?? {});
-    const queued = await enqueueReply(
-      db,
-      {
+  app.post(
+    '/api/linkedin/inbox/sync',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinInboxSyncSchema.parse(req.body ?? {});
+      const config = linkedinWorkerConfigOrRefuse();
+      const result = await syncLinkedInInbox(db, config, {
         workspaceId: req.auth!.workspaceId,
         seatKey: input.seatKey,
-        threadUrn: String(req.params.threadUrn),
-        body: input.body,
-        ...(input.plannedFor === undefined ? {} : { plannedFor: input.plannedFor }),
-        queuedByUserId: req.auth!.userId
-      },
-      new Date()
-    );
-    // 201: a row was created. `verdict` rides along so a screen can show WHAT
-    // was checked rather than only that it passed -- the same honesty rule the
-    // limits route follows.
-    res.status(201).json(queued);
-  }));
+        now: new Date(),
+        ...(input.maxThreads === undefined ? {} : { maxThreads: input.maxThreads }),
+        ...(input.maxMessages === undefined ? {} : { maxMessages: input.maxMessages }),
+        log: () => {}
+      });
+      // 409, not 500: a process with no display is not a fault, it is something
+      // the operator has to go and do -- and the sentence says what.
+      if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
+      res.json(result);
+    })
+  );
+
+  app.post(
+    '/api/linkedin/inbox/threads/:threadUrn/sync',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinInboxSyncSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const threadUrn = String(req.params.threadUrn);
+      // Refused here rather than in the browser: navigating to a conversation id
+      // somebody typed is not a thing this API does.
+      if (!(await threadByUrn(db, workspaceId, threadUrn, input.seatKey))) {
+        throw new LinkedInApiError('LinkedIn conversation not found', 404);
+      }
+      const config = linkedinWorkerConfigOrRefuse();
+      const result = await syncLinkedInThread(db, config, threadUrn, {
+        workspaceId,
+        seatKey: input.seatKey,
+        now: new Date(),
+        ...(input.maxMessages === undefined ? {} : { maxMessages: input.maxMessages }),
+        log: () => {}
+      });
+      if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
+      res.json(result);
+    })
+  );
+
+  app.post(
+    '/api/linkedin/inbox/threads/:threadUrn/reply',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinReplySchema.parse(req.body ?? {});
+      const queued = await enqueueReply(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          seatKey: input.seatKey,
+          threadUrn: String(req.params.threadUrn),
+          body: input.body,
+          ...(input.plannedFor === undefined ? {} : { plannedFor: input.plannedFor }),
+          queuedByUserId: req.auth!.userId
+        },
+        new Date()
+      );
+      // 201: a row was created. `verdict` rides along so a screen can show WHAT
+      // was checked rather than only that it passed -- the same honesty rule the
+      // limits route follows.
+      res.status(201).json(queued);
+    })
+  );
 
   /* ---------------------------------------------------------------------
    * Pending-invite withdrawal (032).
@@ -4001,16 +4870,19 @@ export function createApp(db: Db) {
    * the irreversible step the only one an operator ever sees.
    * ------------------------------------------------------------------ */
 
-  app.post('/api/linkedin/withdrawals/sync', linkedinRoute(async (req, res) => {
-    const config = linkedinWorkerConfigOrRefuse();
-    const result = await syncLinkedInPendingInvites(db, config, {
-      workspaceId: req.auth!.workspaceId,
-      now: new Date(),
-      log: () => {}
-    });
-    if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
-    res.json(result);
-  }));
+  app.post(
+    '/api/linkedin/withdrawals/sync',
+    linkedinRoute(async (req, res) => {
+      const config = linkedinWorkerConfigOrRefuse();
+      const result = await syncLinkedInPendingInvites(db, config, {
+        workspaceId: req.auth!.workspaceId,
+        now: new Date(),
+        log: () => {}
+      });
+      if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
+      res.json(result);
+    })
+  );
 
   /**
    * Find out which vanished invites were accepted.
@@ -4031,87 +4903,107 @@ export function createApp(db: Db) {
    *
    * 409 rather than 500 when no browser can open, exactly as its neighbours do.
    */
-  app.post('/api/linkedin/acceptance/detect', linkedinRoute(async (req, res) => {
-    const input = linkedinAcceptanceDetectSchema.parse(req.body ?? {});
-    const config = linkedinWorkerConfigOrRefuse();
-    const result = await detectLinkedInAcceptances(db, config, {
-      workspaceId: req.auth!.workspaceId,
-      ...(input.seatKey === undefined ? {} : { seatKey: input.seatKey }),
-      ...(input.maxChecks === undefined ? {} : { maxChecks: input.maxChecks }),
-      now: new Date(),
-      log: () => {}
-    });
-    if (result.blockedReason) throw new LinkedInApiError(result.blockedReason, 409);
-    res.json(result);
-  }));
-
-  app.get('/api/linkedin/withdrawals/candidates', linkedinRoute(async (req, res) => {
-    const filters = linkedinWithdrawalCandidateSchema.parse(req.query);
-    const workspaceId = req.auth!.workspaceId;
-    const now = new Date();
-    const seat = await getSeat(db, workspaceId);
-    const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : ownerSeat(workspaceId);
-    res.json({
-      candidates: await selectWithdrawalCandidates(db, seatRef, now, filters),
-      // The backlog and the ceiling it is measured against, so the screen can
-      // say WHY clearing these returns capacity rather than just that it does.
-      pendingInvites: await countPendingInvites(db, seatRef),
-      maxOutstandingInvites: MAX_OUTSTANDING_INVITES,
-      staleAfterDays: filters.olderThanDays,
-      persisted: false
-    });
-  }));
-
-  app.post('/api/linkedin/withdrawals', linkedinRoute(async (req, res) => {
-    const input = linkedinWithdrawalCandidateSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    const now = new Date();
-    const seat = await getSeat(db, workspaceId);
-    if (!seat) throw new LinkedInApiError('No LinkedIn seat is configured for this workspace', 404);
-    const swept = await sweepStaleInvites(db, { workspaceId, seatKey: seat.seatKey }, now, input);
-    // NOTHING WAS WITHDRAWN HERE. The rows are queued; the local worker claims
-    // them, re-runs the whole safety gate against each one, and clicks at
-    // 30-120s gaps. Clearing a backlog in one burst is the same volume spike as
-    // sending one.
-    res.status(201).json({
-      candidates: swept.candidates,
-      queued: swept.queued,
-      duplicates: swept.duplicates,
-      withdrawn: 0
-    });
-  }));
-
-  app.get('/api/linkedin/withdrawals', linkedinRoute(async (req, res) => {
-    const filters = linkedinWithdrawalListSchema.parse(req.query);
-    const workspaceId = req.auth!.workspaceId;
-    const withdrawals = await listWithdrawals(db, workspaceId, filters);
-    const now = new Date();
-    const timingBySeat = new Map<string, { next: SideTaskScheduleView | null; waitingFor: LinkedInQueueWaitReason | null }>();
-
-    for (const seatKey of new Set(withdrawals.filter((row) => row.status === 'queued').map((row) => row.seatKey))) {
-      const [next] = await sideTaskSchedule(db, workspaceId, 'withdrawals', now, 1, seatKey);
-      timingBySeat.set(seatKey, {
-        next: next ?? null,
-        waitingFor: await linkedinQueueWaitReason(db, workspaceId, seatKey, now)
+  app.post(
+    '/api/linkedin/acceptance/detect',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinAcceptanceDetectSchema.parse(req.body ?? {});
+      const config = linkedinWorkerConfigOrRefuse();
+      const result = await detectLinkedInAcceptances(db, config, {
+        workspaceId: req.auth!.workspaceId,
+        ...(input.seatKey === undefined ? {} : { seatKey: input.seatKey }),
+        ...(input.maxChecks === undefined ? {} : { maxChecks: input.maxChecks }),
+        now: new Date(),
+        log: () => {}
       });
-    }
+      if (result.blockedReason) throw new LinkedInApiError(result.blockedReason, 409);
+      res.json(result);
+    })
+  );
 
-    res.json({
-      withdrawals: withdrawals.map((row) => {
-        if (row.status !== 'queued') return row;
-        const timing = timingBySeat.get(row.seatKey);
-        return {
-          ...row,
-          ...(timing?.next ? {
-            nextRunAt: timing.next.startAt.toISOString(),
-            nextRunWindowEndAt: timing.next.endAt.toISOString(),
-            nextRunTimezone: timing.next.timezone
-          } : {}),
-          waitingFor: timing?.waitingFor ?? null
-        };
-      })
-    });
-  }));
+  app.get(
+    '/api/linkedin/withdrawals/candidates',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinWithdrawalCandidateSchema.parse(req.query);
+      const workspaceId = req.auth!.workspaceId;
+      const now = new Date();
+      const seat = await getSeat(db, workspaceId);
+      const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : ownerSeat(workspaceId);
+      res.json({
+        candidates: await selectWithdrawalCandidates(db, seatRef, now, filters),
+        // The backlog and the ceiling it is measured against, so the screen can
+        // say WHY clearing these returns capacity rather than just that it does.
+        pendingInvites: await countPendingInvites(db, seatRef),
+        maxOutstandingInvites: MAX_OUTSTANDING_INVITES,
+        staleAfterDays: filters.olderThanDays,
+        persisted: false
+      });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/withdrawals',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinWithdrawalCandidateSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const now = new Date();
+      const seat = await getSeat(db, workspaceId);
+      if (!seat)
+        throw new LinkedInApiError('No LinkedIn seat is configured for this workspace', 404);
+      const swept = await sweepStaleInvites(db, { workspaceId, seatKey: seat.seatKey }, now, input);
+      // NOTHING WAS WITHDRAWN HERE. The rows are queued; the local worker claims
+      // them, re-runs the whole safety gate against each one, and clicks at
+      // 30-120s gaps. Clearing a backlog in one burst is the same volume spike as
+      // sending one.
+      res.status(201).json({
+        candidates: swept.candidates,
+        queued: swept.queued,
+        duplicates: swept.duplicates,
+        withdrawn: 0
+      });
+    })
+  );
+
+  app.get(
+    '/api/linkedin/withdrawals',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinWithdrawalListSchema.parse(req.query);
+      const workspaceId = req.auth!.workspaceId;
+      const withdrawals = await listWithdrawals(db, workspaceId, filters);
+      const now = new Date();
+      const timingBySeat = new Map<
+        string,
+        { next: SideTaskScheduleView | null; waitingFor: LinkedInQueueWaitReason | null }
+      >();
+
+      for (const seatKey of new Set(
+        withdrawals.filter((row) => row.status === 'queued').map((row) => row.seatKey)
+      )) {
+        const [next] = await sideTaskSchedule(db, workspaceId, 'withdrawals', now, 1, seatKey);
+        timingBySeat.set(seatKey, {
+          next: next ?? null,
+          waitingFor: await linkedinQueueWaitReason(db, workspaceId, seatKey, now)
+        });
+      }
+
+      res.json({
+        withdrawals: withdrawals.map((row) => {
+          if (row.status !== 'queued') return row;
+          const timing = timingBySeat.get(row.seatKey);
+          return {
+            ...row,
+            ...(timing?.next
+              ? {
+                  nextRunAt: timing.next.startAt.toISOString(),
+                  nextRunWindowEndAt: timing.next.endAt.toISOString(),
+                  nextRunTimezone: timing.next.timezone
+                }
+              : {}),
+            waitingFor: timing?.waitingFor ?? null
+          };
+        })
+      });
+    })
+  );
 
   /* ---------------------------------------------------------------------
    * Engagement actions (034): follow, like, endorse.
@@ -4129,62 +5021,82 @@ export function createApp(db: Db) {
    * queue that will never drain with no way to see why.
    * ------------------------------------------------------------------ */
 
-  app.post('/api/linkedin/engagement', linkedinRoute(async (req, res) => {
-    const input = linkedinEngagementSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-    const now = new Date();
+  app.post(
+    '/api/linkedin/engagement',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinEngagementSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const now = new Date();
 
-    // Defensive and cheap: the schema already narrows it, and this is the
-    // predicate `engagement.ts` itself uses, so the two cannot disagree.
-    if (!isEngagementKind(input.kind)) {
-      throw new LinkedInApiError(`'${input.kind}' is not an engagement action. The three are follow, like and endorse.`, 400);
-    }
+      // Defensive and cheap: the schema already narrows it, and this is the
+      // predicate `engagement.ts` itself uses, so the two cannot disagree.
+      if (!isEngagementKind(input.kind)) {
+        throw new LinkedInApiError(
+          `'${input.kind}' is not an engagement action. The three are follow, like and endorse.`,
+          400
+        );
+      }
 
-    // Exclusions are applied BEFORE the gate, never at send time: somebody who
-    // asked to be left alone must not be in a payload a founder reads.
-    const { kept } = await filterExcluded(db, workspaceId, [input.targetRef]);
-    if (kept.length === 0) {
-      throw new LinkedInApiError('That target is on the workspace exclusion list, so nothing will be scheduled against them.', 400);
-    }
+      // Exclusions are applied BEFORE the gate, never at send time: somebody who
+      // asked to be left alone must not be in a payload a founder reads.
+      const { kept } = await filterExcluded(db, workspaceId, [input.targetRef]);
+      if (kept.length === 0) {
+        throw new LinkedInApiError(
+          'That target is on the workspace exclusion list, so nothing will be scheduled against them.',
+          400
+        );
+      }
 
-    const plannedFor = input.plannedFor ?? now.toISOString();
-    const verdict = await evaluateEngagementSafety(
-      db,
-      // `manual`, because this IS the manual surface: a live request from a
-      // signed-in operator, filed below as `source: 'manual'`. It relaxes the
-      // working window and the weekend rule -- a person follows somebody when
-      // they are looking at them -- and nothing else. Every ceiling below still
-      // counts this like any other action.
-      { workspaceId, kind: input.kind, targetRef: input.targetRef, plannedFor, manual: true },
-      now
-    );
-    if (!verdict.allowed) {
-      throw new LinkedInApiError(`This ${input.kind} was refused by the LinkedIn safety gate -- ${verdict.reason}`, 409);
-    }
-
-    const filed = await recordEngagement(
-      db,
-      {
-        workspaceId,
-        kind: input.kind,
-        targetRef: input.targetRef,
-        campaignId: input.campaignId ?? null,
-        status: 'planned',
-        plannedFor,
-        source: 'manual',
-        queuedByUserId: req.auth!.userId
-      },
-      now
-    );
-    if (filed.duplicate) {
-      throw new LinkedInApiError(
-        `This seat already has a ${input.kind} logged against '${input.targetRef}', so a second one was not queued. One target takes one action of one kind per seat.`,
-        409
+      const plannedFor = input.plannedFor ?? now.toISOString();
+      const verdict = await evaluateEngagementSafety(
+        db,
+        // `manual`, because this IS the manual surface: a live request from a
+        // signed-in operator, filed below as `source: 'manual'`. It relaxes the
+        // working window and the weekend rule -- a person follows somebody when
+        // they are looking at them -- and nothing else. Every ceiling below still
+        // counts this like any other action.
+        { workspaceId, kind: input.kind, targetRef: input.targetRef, plannedFor, manual: true },
+        now
       );
-    }
+      if (!verdict.allowed) {
+        throw new LinkedInApiError(
+          `This ${input.kind} was refused by the LinkedIn safety gate -- ${verdict.reason}`,
+          409
+        );
+      }
 
-    res.status(201).json({ actionId: filed.id, kind: input.kind, targetRef: input.targetRef, plannedFor, verdict });
-  }));
+      const filed = await recordEngagement(
+        db,
+        {
+          workspaceId,
+          kind: input.kind,
+          targetRef: input.targetRef,
+          campaignId: input.campaignId ?? null,
+          status: 'planned',
+          plannedFor,
+          source: 'manual',
+          queuedByUserId: req.auth!.userId
+        },
+        now
+      );
+      if (filed.duplicate) {
+        throw new LinkedInApiError(
+          `This seat already has a ${input.kind} logged against '${input.targetRef}', so a second one was not queued. One target takes one action of one kind per seat.`,
+          409
+        );
+      }
+
+      res
+        .status(201)
+        .json({
+          actionId: filed.id,
+          kind: input.kind,
+          targetRef: input.targetRef,
+          plannedFor,
+          verdict
+        });
+    })
+  );
 
   /* =====================================================================
    * REDDIT (041)
@@ -4209,55 +5121,62 @@ export function createApp(db: Db) {
    * yet, so every write is one operator-initiated call.
    * ================================================================== */
 
-  app.get('/api/reddit/account', redditRoute(async (req, res) => {
-    const workspaceId = req.auth!.workspaceId;
-    // A boolean and a public handle. There is no shape of this response that
-    // carries the password, and no privilege level that changes that -- the
-    // store has no function that could produce it here (secrets/reddit.ts).
-    const credentials = await describeRedditCredentials(db, workspaceId);
-    const account = await getRedditAccount(db, workspaceId);
-    res.setHeader('Cache-Control', 'no-store');
-    res.json({
-      account,
-      auth: {
-        hasCredentials: credentials.hasCredentials,
-        username: credentials.username ?? (account?.username ? `u/${account.username}` : null),
-        sessionValidAt: account?.sessionValidAt ?? null
-      },
-      // Answered WITHOUT opening a browser, so this route cannot hang.
-      worker: redditWorkerStatus(redditConfigOrRefuse())
-    });
-  }));
-
-  app.post('/api/reddit/credentials', redditRoute(async (req, res) => {
-    const input = redditCredentialsSchema.parse(req.body ?? {});
-    const workspaceId = req.auth!.workspaceId;
-
-    // The one unconditional gate, read from the one definition of it.
-    if (redditConfigOrRefuse().hosted) throw new RedditApiError(REDDIT_CREDENTIALS_HOSTED_REFUSAL, 409);
-    // A deployment with no key would seal nothing, and `sealSecret` would throw
-    // a sentence about environment variables into a 500. Asked first instead.
-    if (!secretsConfigured()) throw new RedditApiError(REDDIT_CREDENTIALS_UNSEALED_REFUSAL, 409);
-
-    let summary;
-    try {
-      summary = await putRedditCredentials(db, {
-        workspaceId,
-        username: input.username,
-        password: input.password,
-        actorUserId: req.auth!.userId
+  app.get(
+    '/api/reddit/account',
+    redditRoute(async (req, res) => {
+      const workspaceId = req.auth!.workspaceId;
+      // A boolean and a public handle. There is no shape of this response that
+      // carries the password, and no privilege level that changes that -- the
+      // store has no function that could produce it here (secrets/reddit.ts).
+      const credentials = await describeRedditCredentials(db, workspaceId);
+      const account = await getRedditAccount(db, workspaceId);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        account,
+        auth: {
+          hasCredentials: credentials.hasCredentials,
+          username: credentials.username ?? (account?.username ? `u/${account.username}` : null),
+          sessionValidAt: account?.sessionValidAt ?? null
+        },
+        // Answered WITHOUT opening a browser, so this route cannot hang.
+        worker: redditWorkerStatus(redditConfigOrRefuse())
       });
-    } catch (error) {
-      // The store's own refusals are operator-facing facts, not faults. Nothing
-      // it throws contains the password.
-      if (error instanceof Error && error.message === REDDIT_CREDENTIALS_HOSTED_REFUSAL) {
-        throw new RedditApiError(error.message, 409);
-      }
-      throw error;
-    }
+    })
+  );
 
-    res.json(summary);
-  }));
+  app.post(
+    '/api/reddit/credentials',
+    redditRoute(async (req, res) => {
+      const input = redditCredentialsSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+
+      // The one unconditional gate, read from the one definition of it.
+      if (redditConfigOrRefuse().hosted)
+        throw new RedditApiError(REDDIT_CREDENTIALS_HOSTED_REFUSAL, 409);
+      // A deployment with no key would seal nothing, and `sealSecret` would throw
+      // a sentence about environment variables into a 500. Asked first instead.
+      if (!secretsConfigured()) throw new RedditApiError(REDDIT_CREDENTIALS_UNSEALED_REFUSAL, 409);
+
+      let summary;
+      try {
+        summary = await putRedditCredentials(db, {
+          workspaceId,
+          username: input.username,
+          password: input.password,
+          actorUserId: req.auth!.userId
+        });
+      } catch (error) {
+        // The store's own refusals are operator-facing facts, not faults. Nothing
+        // it throws contains the password.
+        if (error instanceof Error && error.message === REDDIT_CREDENTIALS_HOSTED_REFUSAL) {
+          throw new RedditApiError(error.message, 409);
+        }
+        throw error;
+      }
+
+      res.json(summary);
+    })
+  );
 
   /**
    * Give the password back to nobody.
@@ -4301,21 +5220,29 @@ export function createApp(db: Db) {
    *
    * Owner-only, same carve-out as every other credential route in this file.
    */
-  app.delete('/api/reddit/credentials', redditRoute(async (req, res) => {
-    if (req.auth!.role !== 'owner') {
-      throw new RedditApiError('Only the workspace owner can disconnect the stored Reddit account', 403);
-    }
-    const removed = await disconnectRedditWorkspace(db, req.auth!.workspaceId, { actorUserId: req.auth!.userId });
-    res.setHeader('Cache-Control', 'no-store');
-    res.status(removed.problems.length > 0 ? 207 : 200).json({
-      // The credential is gone from the store either way -- `problems` is about
-      // the browser and the disk, never about the sealed pair.
-      hasCredentials: false,
-      username: null,
-      disconnected: removed.problems.length === 0,
-      removed
-    });
-  }));
+  app.delete(
+    '/api/reddit/credentials',
+    redditRoute(async (req, res) => {
+      if (req.auth!.role !== 'owner') {
+        throw new RedditApiError(
+          'Only the workspace owner can disconnect the stored Reddit account',
+          403
+        );
+      }
+      const removed = await disconnectRedditWorkspace(db, req.auth!.workspaceId, {
+        actorUserId: req.auth!.userId
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(removed.problems.length > 0 ? 207 : 200).json({
+        // The credential is gone from the store either way -- `problems` is about
+        // the browser and the disk, never about the sealed pair.
+        hasCredentials: false,
+        username: null,
+        disconnected: removed.problems.length === 0,
+        removed
+      });
+    })
+  );
 
   /**
    * Make this workspace's Reddit session usable.
@@ -4337,15 +5264,20 @@ export function createApp(db: Db) {
    * has to distinguish "wrong password" from "needs a code" should read a field
    * rather than a status code.
    */
-  app.post('/api/reddit/login', redditRoute(async (req, res) => {
-    const input = redditLoginSchema.parse(req.body ?? {});
-    const config = assertRedditWorkerOn();
-    res.json(await loginRedditAccount(db, config, {
-      workspaceId: req.auth!.workspaceId,
-      otp: input.otp,
-      now: new Date()
-    }));
-  }));
+  app.post(
+    '/api/reddit/login',
+    redditRoute(async (req, res) => {
+      const input = redditLoginSchema.parse(req.body ?? {});
+      const config = assertRedditWorkerOn();
+      res.json(
+        await loginRedditAccount(db, config, {
+          workspaceId: req.auth!.workspaceId,
+          otp: input.otp,
+          now: new Date()
+        })
+      );
+    })
+  );
 
   /**
    * Read one subreddit through the signed-in session.
@@ -4354,38 +5286,41 @@ export function createApp(db: Db) {
    * same GET the operator's own scroll makes. A 409 means the session is not
    * usable and the body names the one thing to do about it.
    */
-  app.post('/api/reddit/research', redditRoute(async (req, res) => {
-    const input = redditResearchSchema.parse(req.body ?? {});
-    const config = assertRedditWorkerOn();
-    const now = new Date();
+  app.post(
+    '/api/reddit/research',
+    redditRoute(async (req, res) => {
+      const input = redditResearchSchema.parse(req.body ?? {});
+      const config = assertRedditWorkerOn();
+      const now = new Date();
 
-    // Sequential rather than concurrent, and that is the safety property: one
-    // browser, one page, and a burst of parallel listing reads from one account
-    // is exactly the shape Reddit rate-limits.
-    const reads = [];
-    const refused = [];
-    for (const subreddit of input.subreddits) {
-      const result = await researchSubreddit(db, config, {
-        workspaceId: req.auth!.workspaceId,
-        subreddit,
-        read: { sort: input.sort, limit: input.limit },
-        now
-      });
-      if (result.ok) reads.push(result.read);
-      // Named, never silently dropped: a subreddit that is private or
-      // misspelled has to reach the operator, and an empty list would read as
-      // "nobody is posting there".
-      else refused.push({ subreddit, reason: result.blocked });
-    }
+      // Sequential rather than concurrent, and that is the safety property: one
+      // browser, one page, and a burst of parallel listing reads from one account
+      // is exactly the shape Reddit rate-limits.
+      const reads = [];
+      const refused = [];
+      for (const subreddit of input.subreddits) {
+        const result = await researchSubreddit(db, config, {
+          workspaceId: req.auth!.workspaceId,
+          subreddit,
+          read: { sort: input.sort, limit: input.limit },
+          now
+        });
+        if (result.ok) reads.push(result.read);
+        // Named, never silently dropped: a subreddit that is private or
+        // misspelled has to reach the operator, and an empty list would read as
+        // "nobody is posting there".
+        else refused.push({ subreddit, reason: result.blocked });
+      }
 
-    // Every subreddit refused for the same reason is a session problem, not a
-    // set of community problems, so it answers as one 409 the operator can act
-    // on rather than as a success carrying nothing.
-    if (reads.length === 0) {
-      throw new RedditApiError(refused[0]?.reason ?? 'Could not read anything from Reddit.', 409);
-    }
-    res.json({ reads, refused });
-  }));
+      // Every subreddit refused for the same reason is a session problem, not a
+      // set of community problems, so it answers as one 409 the operator can act
+      // on rather than as a success carrying nothing.
+      if (reads.length === 0) {
+        throw new RedditApiError(refused[0]?.reason ?? 'Could not read anything from Reddit.', 409);
+      }
+      res.json({ reads, refused });
+    })
+  );
 
   /**
    * Post one comment, in one thread, right now.
@@ -4399,28 +5334,35 @@ export function createApp(db: Db) {
    * the comment may exist; a retry posts it twice, and a duplicate comment
    * cannot be un-posted. The operator gets the sentence and checks the thread.
    */
-  app.post('/api/reddit/comment', redditRoute(async (req, res) => {
-    const input = redditCommentSchema.parse(req.body ?? {});
-    const config = assertRedditWorkerOn();
+  app.post(
+    '/api/reddit/comment',
+    redditRoute(async (req, res) => {
+      const input = redditCommentSchema.parse(req.body ?? {});
+      const config = assertRedditWorkerOn();
 
-    const outcome = await commentOnRedditThread(db, config, {
-      workspaceId: req.auth!.workspaceId,
-      threadUrl: input.url,
-      body: input.body,
-      now: new Date()
-    });
-    if (outcome.ok) {
-      res.json({ posted: true, url: outcome.result.externalRef ?? input.url, detail: outcome.result.detail ?? null });
-      return;
-    }
-    // 409 rather than 500 for every one of them: a locked thread, a rate limit
-    // and a dead session are things to go and deal with, not faults.
-    res.status(409).json({
-      posted: false,
-      failureKind: outcome.result?.failureKind ?? null,
-      error: outcome.blocked
-    });
-  }));
+      const outcome = await commentOnRedditThread(db, config, {
+        workspaceId: req.auth!.workspaceId,
+        threadUrl: input.url,
+        body: input.body,
+        now: new Date()
+      });
+      if (outcome.ok) {
+        res.json({
+          posted: true,
+          url: outcome.result.externalRef ?? input.url,
+          detail: outcome.result.detail ?? null
+        });
+        return;
+      }
+      // 409 rather than 500 for every one of them: a locked thread, a rate limit
+      // and a dead session are things to go and deal with, not faults.
+      res.status(409).json({
+        posted: false,
+        failureKind: outcome.result?.failureKind ?? null,
+        error: outcome.blocked
+      });
+    })
+  );
 
   /* ---------------------------------------------------------------------
    * Accounts (039), the noun everything else was missing.
@@ -4442,7 +5384,9 @@ export function createApp(db: Db) {
     try {
       const filters = accountListSchema.parse(req.query);
       res.json({ accounts: await listRankedAccounts(db, req.auth!.workspaceId, filters) });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   /**
@@ -4457,18 +5401,28 @@ export function createApp(db: Db) {
     try {
       const input = accountImportSchema.parse(req.body ?? {});
       const workspaceId = req.auth!.workspaceId;
-      const result = await importAccounts(db, workspaceId, input.text, { source: input.source, tags: input.tags });
+      const result = await importAccounts(db, workspaceId, input.text, {
+        source: input.source,
+        tags: input.tags
+      });
       // ONE BULK RESCORE, not one per row: an import is up to 2,000 accounts,
       // and a round trip each would make the paste the slowest thing in the
       // product. The operator's own rejections go in with it, so a shape they
       // have already thrown out never scores its way onto the first screen
       // they see.
       const rejectedShapes = await rejectedSignalShapes(db, workspaceId);
-      await rescoreAccounts(db, workspaceId, result.accounts.map((account) => account.id), { rejectedShapes });
+      await rescoreAccounts(
+        db,
+        workspaceId,
+        result.accounts.map((account) => account.id),
+        { rejectedShapes }
+      );
       // 200 when a re-paste of the same list wrote nothing: nothing was
       // created, and saying 201 would make a no-op look like work.
       res.status(result.created > 0 ? 201 : 200).json(result);
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post('/api/accounts/rescore', async (req: AuthedRequest, res, next) => {
@@ -4476,7 +5430,9 @@ export function createApp(db: Db) {
       const workspaceId = req.auth!.workspaceId;
       const rejectedShapes = await rejectedSignalShapes(db, workspaceId);
       res.json({ rescored: await rescoreWorkspace(db, workspaceId, { rejectedShapes }) });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/api/accounts/:id', async (req: AuthedRequest, res, next) => {
@@ -4484,7 +5440,9 @@ export function createApp(db: Db) {
       const detail = await accountDetail(db, req.auth!.workspaceId, String(req.params.id));
       if (!detail) return res.status(404).json({ error: 'Account not found' });
       res.json(detail);
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post('/api/accounts/:id/feedback', async (req: AuthedRequest, res, next) => {
@@ -4501,20 +5459,25 @@ export function createApp(db: Db) {
       // Only the rejection changes the status. 'good_fit' is training data
       // about the shape and nothing more -- an account already in the sweep
       // does not need to be put back into it.
-      if (input.verdict === 'not_a_fit') await setAccountStatus(db, workspaceId, accountId, 'not_a_fit');
+      if (input.verdict === 'not_a_fit')
+        await setAccountStatus(db, workspaceId, accountId, 'not_a_fit');
 
       const detail = await accountDetail(db, workspaceId, accountId);
       if (!detail) return res.status(404).json({ error: 'Account not found' });
       res.json(detail);
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.use('/api', (_req, res) => res.status(404).json({ error: 'API route not found' }));
 
   app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof AgentBudgetError) return res.status(409).json({ error: error.message });
-    if (error instanceof SkillApiError || error instanceof PlaybookError) return res.status(error.status).json({ error: error.message });
-    if (error instanceof z.ZodError) return res.status(400).json({ error: 'Invalid request', issues: error.issues });
+    if (error instanceof SkillApiError || error instanceof PlaybookError)
+      return res.status(error.status).json({ error: error.message });
+    if (error instanceof z.ZodError)
+      return res.status(400).json({ error: 'Invalid request', issues: error.issues });
     if (error instanceof multer.MulterError) return res.status(400).json({ error: error.message });
     req.log.error({ err: error }, 'Unhandled request error');
     res.status(500).json({ error: 'Internal server error', requestId: req.id });
@@ -4528,7 +5491,6 @@ const skillRunFiltersSchema = z.object({
   status: z.enum(['ok', 'error']).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50)
 });
-
 
 const publisherCreateSchema = z.object({
   slug: z.string().min(3).max(64),
@@ -4560,12 +5522,14 @@ const playbookStartSchema = z.object({
 });
 
 const playbookRunFiltersSchema = z.object({
-  status: z.enum(['queued','running','waiting_approval','completed','failed','cancelled']).optional(),
+  status: z
+    .enum(['queued', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled'])
+    .optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50)
 });
 
 const playbookDecisionSchema = z.object({
-  decision: z.enum(['approve','reject']),
+  decision: z.enum(['approve', 'reject']),
   comment: z.string().trim().max(1000).optional()
 });
 
@@ -4581,7 +5545,7 @@ const policyWriteSchema = z.object({
   name: z.string().trim().min(1).max(120),
   priority: z.number().int().min(-10000).max(10000).default(0),
   actionPattern: z.string().trim().min(1).max(200),
-  effect: z.enum(['allow','deny','require_approval']),
+  effect: z.enum(['allow', 'deny', 'require_approval']),
   conditions: z.record(z.unknown()).default({}),
   enabled: z.boolean().default(true)
 });
@@ -4638,15 +5602,22 @@ const agentCliRiskAcceptSchema = z.object({
 
 /** Section 5: $10,000/month ceiling, so a typo cannot become a real bill. */
 const AGENT_BUDGET_MAX_CENTS = 1_000_000;
-const AGENT_BUDGET_CAP_MESSAGE = 'monthlyCapCents must be a whole number of cents between $0 and $10,000';
+const AGENT_BUDGET_CAP_MESSAGE =
+  'monthlyCapCents must be a whole number of cents between $0 and $10,000';
 
-const agentBudgetSchema = z.object({
-  monthlyCapCents: z.number().int(AGENT_BUDGET_CAP_MESSAGE).min(0, AGENT_BUDGET_CAP_MESSAGE).max(AGENT_BUDGET_MAX_CENTS, AGENT_BUDGET_CAP_MESSAGE).optional(),
-  enabled: z.boolean().optional()
-}).refine(
-  (patch) => patch.monthlyCapCents !== undefined || patch.enabled !== undefined,
-  { message: 'Provide monthlyCapCents, enabled, or both' }
-);
+const agentBudgetSchema = z
+  .object({
+    monthlyCapCents: z
+      .number()
+      .int(AGENT_BUDGET_CAP_MESSAGE)
+      .min(0, AGENT_BUDGET_CAP_MESSAGE)
+      .max(AGENT_BUDGET_MAX_CENTS, AGENT_BUDGET_CAP_MESSAGE)
+      .optional(),
+    enabled: z.boolean().optional()
+  })
+  .refine((patch) => patch.monthlyCapCents !== undefined || patch.enabled !== undefined, {
+    message: 'Provide monthlyCapCents, enabled, or both'
+  });
 
 const agentRunFiltersSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50)
@@ -4685,12 +5656,25 @@ const agentRunStopSchema = z.object({
  * under-deliver the exact sentence this route exists to earn.
  */
 const ledgerExportSchema = z.object({
-  window: z.coerce.number().int().min(1).max(LEDGER_EXPORT_MAX_WINDOW_DAYS).default(LEDGER_EXPORT_DEFAULT_WINDOW_DAYS),
-  include: z.array(z.enum(LEDGER_EXPORT_SECTIONS)).min(1).default([...LEDGER_EXPORT_SECTIONS])
+  window: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(LEDGER_EXPORT_MAX_WINDOW_DAYS)
+    .default(LEDGER_EXPORT_DEFAULT_WINDOW_DAYS),
+  include: z
+    .array(z.enum(LEDGER_EXPORT_SECTIONS))
+    .min(1)
+    .default([...LEDGER_EXPORT_SECTIONS])
 });
 
 const loopCostFiltersSchema = z.object({
-  window: z.coerce.number().int().min(1).max(LOOP_COST_MAX_WINDOW_DAYS).default(LOOP_COST_DEFAULT_WINDOW_DAYS)
+  window: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(LOOP_COST_MAX_WINDOW_DAYS)
+    .default(LOOP_COST_DEFAULT_WINDOW_DAYS)
 });
 
 /**
@@ -4698,14 +5682,19 @@ const loopCostFiltersSchema = z.object({
  * the same values on its own -- imported rather than restated so the 400 and the
  * module can never disagree about what is allowed.
  */
-const agentScheduleSchema = z.object({
-  enabled: z.boolean().optional(),
-  goal: z.string().trim().min(1).max(AGENT_GOAL_MAX_CHARS).optional(),
-  intervalMinutes: z.number().int().min(MIN_INTERVAL_MINUTES).max(MAX_INTERVAL_MINUTES).optional()
-}).refine(
-  (patch) => patch.enabled !== undefined || patch.goal !== undefined || patch.intervalMinutes !== undefined,
-  { message: 'Provide enabled, goal, intervalMinutes, or any combination' }
-);
+const agentScheduleSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    goal: z.string().trim().min(1).max(AGENT_GOAL_MAX_CHARS).optional(),
+    intervalMinutes: z.number().int().min(MIN_INTERVAL_MINUTES).max(MAX_INTERVAL_MINUTES).optional()
+  })
+  .refine(
+    (patch) =>
+      patch.enabled !== undefined ||
+      patch.goal !== undefined ||
+      patch.intervalMinutes !== undefined,
+    { message: 'Provide enabled, goal, intervalMinutes, or any combination' }
+  );
 
 /** How long the request will wait for the run's ledger row to appear. */
 const AGENT_RUN_ACCEPT_TIMEOUT_MS = 5_000;
@@ -4743,7 +5732,9 @@ async function acceptAgentRun(
   // without reaching into the loop. Two identical goals started at the same
   // instant are indistinguishable here, and that is harmless: both requests get
   // a genuine running record for the goal they asked for.
-  const before = new Set((await listAgentRuns(db, input.workspaceId, { limit: 20 })).map((run) => run.id));
+  const before = new Set(
+    (await listAgentRuns(db, input.workspaceId, { limit: 20 })).map((run) => run.id)
+  );
 
   const settled: Promise<Settled> = runHostedAgent(db, { ...input, trigger: 'manual' }).then(
     (run) => ({ failed: false as const, run }),
@@ -4752,12 +5743,15 @@ async function acceptAgentRun(
 
   const deadline = Date.now() + AGENT_RUN_ACCEPT_TIMEOUT_MS;
   for (;;) {
-    const started = (await listAgentRuns(db, input.workspaceId, { limit: 20 }))
-      .find((run) => !before.has(run.id) && run.goal === input.goal);
+    const started = (await listAgentRuns(db, input.workspaceId, { limit: 20 })).find(
+      (run) => !before.has(run.id) && run.goal === input.goal
+    );
     if (started) {
       // The response is about to go out; from here the log is the only place a
       // later failure can be reported to a human watching the process.
-      void settled.then((outcome) => { if (outcome.failed) log(outcome.error); });
+      void settled.then((outcome) => {
+        if (outcome.failed) log(outcome.error);
+      });
       return started;
     }
 
@@ -4773,7 +5767,9 @@ async function acceptAgentRun(
 }
 
 function wait(ms: number): Promise<null> {
-  return new Promise((resolve) => { setTimeout(() => resolve(null), ms); });
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(null), ms);
+  });
 }
 
 function requireAgentScope(db: Db, scope: AgentScope) {
@@ -4781,7 +5777,8 @@ function requireAgentScope(db: Db, scope: AgentScope) {
     try {
       const identity = await resolveAgentIdentity(db, req.headers);
       if (!identity) return res.status(401).json({ error: 'Valid Trevra agent token required' });
-      if (!hasAgentScope(identity, scope)) return res.status(403).json({ error: `Agent token is missing scope: ${scope}` });
+      if (!hasAgentScope(identity, scope))
+        return res.status(403).json({ error: `Agent token is missing scope: ${scope}` });
       req.agent = identity;
       next();
     } catch (error) {
@@ -4800,7 +5797,9 @@ function requireSession(db: Db, unattributedLimiter: RequestHandler) {
         // capped by an address it shares with a stranger -- and a cookie that
         // does not resolve would otherwise have bought an unmetered 401 simply
         // by presenting one.
-        return unattributedLimiter(req, res, () => { res.status(401).json({ error: 'Session expired' }); });
+        return unattributedLimiter(req, res, () => {
+          res.status(401).json({ error: 'Session expired' });
+        });
       }
       req.auth = identity;
       next();
@@ -4824,7 +5823,9 @@ function requireSession(db: Db, unattributedLimiter: RequestHandler) {
 function carriesSessionCredential(req: Request): boolean {
   const cookies = (req as Request & { cookies?: Record<string, unknown> }).cookies;
   if (!cookies || typeof cookies !== 'object') return false;
-  return Object.keys(cookies).some((name) => name === SESSION_COOKIE || name.includes('better-auth'));
+  return Object.keys(cookies).some(
+    (name) => name === SESSION_COOKIE || name.includes('better-auth')
+  );
 }
 
 /**
@@ -4861,7 +5862,8 @@ function ownerOnly(act: string): RequestHandler {
 }
 
 function assertWorkspaceOwner(req: AuthedRequest, act: string): void {
-  if (req.auth!.role !== 'owner') throw new LinkedInApiError(`Only the workspace owner can ${act}`, 403);
+  if (req.auth!.role !== 'owner')
+    throw new LinkedInApiError(`Only the workspace owner can ${act}`, 403);
 }
 
 /* ===========================================================================
@@ -4897,18 +5899,37 @@ const WORKSPACE_INVENTORY_EXCLUDED: ReadonlySet<string> = new Set(['workspace_er
  */
 const WORKSPACE_CHILD_TABLES: ReadonlyArray<{ table: string; where: string }> = [
   { table: 'approvals', where: 'action_id IN (SELECT id FROM actions WHERE workspace_id=?)' },
-  { table: 'contract_clauses', where: 'contract_id IN (SELECT id FROM contracts WHERE workspace_id=?)' },
+  {
+    table: 'contract_clauses',
+    where: 'contract_id IN (SELECT id FROM contracts WHERE workspace_id=?)'
+  },
   { table: 'milestones', where: 'project_id IN (SELECT id FROM projects WHERE workspace_id=?)' },
   { table: 'scope_items', where: 'project_id IN (SELECT id FROM projects WHERE workspace_id=?)' },
-  { table: 'playbook_step_runs', where: 'playbook_run_id IN (SELECT id FROM playbook_runs WHERE workspace_id=?)' },
-  { table: 'recommendation_evidence', where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)' },
-  { table: 'recommendation_outcomes', where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)' },
-  { table: 'proof_packs', where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)' },
+  {
+    table: 'playbook_step_runs',
+    where: 'playbook_run_id IN (SELECT id FROM playbook_runs WHERE workspace_id=?)'
+  },
+  {
+    table: 'recommendation_evidence',
+    where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)'
+  },
+  {
+    table: 'recommendation_outcomes',
+    where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)'
+  },
+  {
+    table: 'proof_packs',
+    where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)'
+  },
   {
     table: 'proof_pack_items',
-    where: 'proof_pack_id IN (SELECT id FROM proof_packs WHERE recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?))'
+    where:
+      'proof_pack_id IN (SELECT id FROM proof_packs WHERE recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?))'
   },
-  { table: 'research_source_documents', where: 'source_id IN (SELECT id FROM research_sources WHERE workspace_id=?)' }
+  {
+    table: 'research_source_documents',
+    where: 'source_id IN (SELECT id FROM research_sources WHERE workspace_id=?)'
+  }
 ];
 
 /**
@@ -4946,7 +5967,9 @@ const WORKSPACE_EXPORT_ROW_LIMIT = 50_000;
  * a table a future migration adds is covered by both on the day it lands.
  */
 async function workspaceScopedTables(db: Db): Promise<string[]> {
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT c.table_name FROM information_schema.columns c
     JOIN information_schema.tables t
       ON t.table_schema = c.table_schema AND t.table_name = c.table_name
@@ -4954,21 +5977,30 @@ async function workspaceScopedTables(db: Db): Promise<string[]> {
       AND c.column_name = 'workspace_id'
       AND t.table_type = 'BASE TABLE'
     ORDER BY c.table_name
-  `).all<{ table_name: string }>();
+  `
+    )
+    .all<{ table_name: string }>();
   return rows
     .map((row) => String(row.table_name))
     .filter((name) => SAFE_TABLE_NAME.test(name) && !WORKSPACE_INVENTORY_EXCLUDED.has(name));
 }
 
 /** Row counts per table, sealed ones included: the preview must not under-report. */
-async function workspaceInventory(db: Db, workspaceId: string): Promise<Array<{ table: string; rows: number }>> {
+async function workspaceInventory(
+  db: Db,
+  workspaceId: string
+): Promise<Array<{ table: string; rows: number }>> {
   const inventory: Array<{ table: string; rows: number }> = [];
   for (const table of await workspaceScopedTables(db)) {
-    const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE workspace_id=?`).get<{ count: number }>(workspaceId);
+    const row = await db
+      .prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE workspace_id=?`)
+      .get<{ count: number }>(workspaceId);
     inventory.push({ table, rows: Number(row?.count ?? 0) });
   }
   for (const child of WORKSPACE_CHILD_TABLES) {
-    const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${child.table} WHERE ${child.where}`).get<{ count: number }>(workspaceId);
+    const row = await db
+      .prepare(`SELECT COUNT(*) AS count FROM ${child.table} WHERE ${child.where}`)
+      .get<{ count: number }>(workspaceId);
     inventory.push({ table: child.table, rows: Number(row?.count ?? 0) });
   }
   return inventory.sort((left, right) => left.table.localeCompare(right.table));
@@ -4984,7 +6016,9 @@ async function exportWorkspaceData(db: Db, workspaceId: string): Promise<Record<
   const read = async (table: string, where: string): Promise<void> => {
     // One row over the ceiling, so "exactly at the limit" and "more than the
     // limit" are distinguishable rather than both reported as complete.
-    const rows = await db.prepare(`SELECT * FROM ${table} WHERE ${where} LIMIT ${WORKSPACE_EXPORT_ROW_LIMIT + 1}`).all(workspaceId);
+    const rows = await db
+      .prepare(`SELECT * FROM ${table} WHERE ${where} LIMIT ${WORKSPACE_EXPORT_ROW_LIMIT + 1}`)
+      .all(workspaceId);
     if (rows.length > WORKSPACE_EXPORT_ROW_LIMIT) {
       rows.length = WORKSPACE_EXPORT_ROW_LIMIT;
       truncated.push(table);
@@ -4993,7 +6027,10 @@ async function exportWorkspaceData(db: Db, workspaceId: string): Promise<Record<
   };
 
   for (const table of await workspaceScopedTables(db)) {
-    if (WORKSPACE_EXPORT_SEALED_TABLES.has(table)) { withheld.push(table); continue; }
+    if (WORKSPACE_EXPORT_SEALED_TABLES.has(table)) {
+      withheld.push(table);
+      continue;
+    }
     await read(table, 'workspace_id=?');
   }
   for (const child of WORKSPACE_CHILD_TABLES) await read(child.table, child.where);
@@ -5007,8 +6044,8 @@ async function exportWorkspaceData(db: Db, workspaceId: string): Promise<Record<
     truncated,
     withheld,
     withheldReason:
-      'Sealed credentials and token hashes are the key to an account rather than information about it, '
-      + 'and no code path in this server can decrypt them. Row counts for them appear in GET /api/workspace/erasure.',
+      'Sealed credentials and token hashes are the key to an account rather than information about it, ' +
+      'and no code path in this server can decrypt them. Row counts for them appear in GET /api/workspace/erasure.',
     tables
   };
 }
@@ -5026,22 +6063,38 @@ async function workspaceWorkInFlight(db: Db, workspaceId: string): Promise<strin
     Number((await db.prepare(sql).get<{ count: number }>(workspaceId))?.count ?? 0);
   const blockers: string[] = [];
 
-  const runs = await count("SELECT COUNT(*) AS count FROM agent_runs WHERE workspace_id=? AND status='running'");
-  if (runs > 0) blockers.push(`${runs} agent run(s) are still running. Stop them first: POST /api/agent-runs/:id/stop.`);
+  const runs = await count(
+    "SELECT COUNT(*) AS count FROM agent_runs WHERE workspace_id=? AND status='running'"
+  );
+  if (runs > 0)
+    blockers.push(
+      `${runs} agent run(s) are still running. Stop them first: POST /api/agent-runs/:id/stop.`
+    );
 
-  const batches = await count("SELECT COUNT(*) AS count FROM linkedin_batches WHERE workspace_id=? AND status='running'");
+  const batches = await count(
+    "SELECT COUNT(*) AS count FROM linkedin_batches WHERE workspace_id=? AND status='running'"
+  );
   if (batches > 0) {
-    blockers.push(`${batches} LinkedIn batch(es) are open in a worker's browser. Pause the seat and let the batch end: POST /api/linkedin/seat/pause.`);
+    blockers.push(
+      `${batches} LinkedIn batch(es) are open in a worker's browser. Pause the seat and let the batch end: POST /api/linkedin/seat/pause.`
+    );
   }
 
   const claimed = await count(
     "SELECT COUNT(*) AS count FROM linkedin_actions WHERE workspace_id=? AND claimed_at IS NOT NULL AND status IN ('planned','held')"
   );
-  if (claimed > 0) blockers.push(`${claimed} LinkedIn action(s) are claimed by a worker right now. They finish on their own within one tick.`);
+  if (claimed > 0)
+    blockers.push(
+      `${claimed} LinkedIn action(s) are claimed by a worker right now. They finish on their own within one tick.`
+    );
 
-  const campaigns = await count("SELECT COUNT(*) AS count FROM linkedin_campaigns WHERE workspace_id=? AND status='running'");
+  const campaigns = await count(
+    "SELECT COUNT(*) AS count FROM linkedin_campaigns WHERE workspace_id=? AND status='running'"
+  );
   if (campaigns > 0) {
-    blockers.push(`${campaigns} LinkedIn campaign(s) are still running. Stop them first: POST /api/linkedin/manager/campaigns/:id/stop.`);
+    blockers.push(
+      `${campaigns} LinkedIn campaign(s) are still running. Stop them first: POST /api/linkedin/manager/campaigns/:id/stop.`
+    );
   }
 
   return blockers;
@@ -5055,18 +6108,37 @@ async function workspaceWorkInFlight(db: Db, workspaceId: string): Promise<strin
  */
 const workspaceErasureSchema = z.object({ confirm: z.string().trim().min(1).max(200) }).strict();
 
-async function readSession(db: Db, req: Request): Promise<{ userId: string; workspaceId: string; email: string; role: 'owner' | 'member' } | null> {
+async function readSession(
+  db: Db,
+  req: Request
+): Promise<{
+  userId: string;
+  workspaceId: string;
+  email: string;
+  role: 'owner' | 'member';
+} | null> {
   const token = req.cookies?.[SESSION_COOKIE] as string | undefined;
   if (token) {
-    const session = await db.prepare(`
+    const session = (await db
+      .prepare(
+        `
       SELECT s.user_id, u.workspace_id, u.email FROM sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token_hash=? AND s.expires_at > ?
-    `).get(hash(token), new Date().toISOString()) as { user_id: string; workspace_id: string; email: string } | undefined;
+    `
+      )
+      .get(hash(token), new Date().toISOString())) as
+      { user_id: string; workspace_id: string; email: string } | undefined;
     // Trevra's own hand-rolled session (demo mode only -- see /api/auth/demo).
     // It never goes through better-auth's organization plugin, so there is no
     // membership to check: the demo user is unconditionally the owner of the
     // one demo workspace this cookie always points at.
-    if (session) return { userId: session.user_id, workspaceId: session.workspace_id, email: session.email, role: 'owner' };
+    if (session)
+      return {
+        userId: session.user_id,
+        workspaceId: session.workspace_id,
+        email: session.email,
+        role: 'owner'
+      };
   }
   const identity = await resolveBetterAuthIdentity(db, req.headers);
   if (!identity) return null;
@@ -5100,19 +6172,36 @@ async function readSession(db: Db, req: Request): Promise<{ userId: string; work
  */
 async function resolveActiveWorkspace(
   headers: Request['headers'],
-  identity: { userId: string; email: string; homeWorkspaceId: string; activeOrganizationId: string | null }
+  identity: {
+    userId: string;
+    email: string;
+    homeWorkspaceId: string;
+    activeOrganizationId: string | null;
+  }
 ): Promise<{ userId: string; workspaceId: string; email: string; role: 'owner' | 'member' }> {
   const authHeaders = fromNodeHeaders(headers);
 
   if (identity.activeOrganizationId) {
     const member = await betterAuth.api.getActiveMember({ headers: authHeaders }).catch(() => null);
     if (member) {
-      return { userId: identity.userId, workspaceId: identity.activeOrganizationId, email: identity.email, role: member.role === 'owner' ? 'owner' : 'member' };
+      return {
+        userId: identity.userId,
+        workspaceId: identity.activeOrganizationId,
+        email: identity.email,
+        role: member.role === 'owner' ? 'owner' : 'member'
+      };
     }
   }
 
-  await betterAuth.api.setActiveOrganization({ headers: authHeaders, body: { organizationId: identity.homeWorkspaceId } }).catch(() => undefined);
-  const homeMember = await betterAuth.api.getActiveMember({ headers: authHeaders }).catch(() => null);
+  await betterAuth.api
+    .setActiveOrganization({
+      headers: authHeaders,
+      body: { organizationId: identity.homeWorkspaceId }
+    })
+    .catch(() => undefined);
+  const homeMember = await betterAuth.api
+    .getActiveMember({ headers: authHeaders })
+    .catch(() => null);
   return {
     userId: identity.userId,
     workspaceId: identity.homeWorkspaceId,
@@ -5125,14 +6214,24 @@ async function createSession(db: Db, userId: string): Promise<string> {
   const token = randomBytes(32).toString('hex');
   const now = new Date();
   await db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now.toISOString());
-  await db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)')
-    .run(hash(token), userId, new Date(now.getTime() + SESSION_TTL).toISOString(), now.toISOString());
+  await db
+    .prepare('INSERT INTO sessions (token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)')
+    .run(
+      hash(token),
+      userId,
+      new Date(now.getTime() + SESSION_TTL).toISOString(),
+      now.toISOString()
+    );
   return token;
 }
 
 function setSessionCookie(res: Response, token: string): void {
   res.cookie(SESSION_COOKIE, token, {
-    httpOnly: true, sameSite: 'lax', secure: process.env.COOKIE_SECURE === 'true', maxAge: SESSION_TTL, path: '/'
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.COOKIE_SECURE === 'true',
+    maxAge: SESSION_TTL,
+    path: '/'
   });
 }
 
@@ -5149,10 +6248,10 @@ function enforceAllowedOrigin(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-function secureTokenEqual(left:string,right:string):boolean{
-  const leftHash=createHash('sha256').update(left).digest();
-  const rightHash=createHash('sha256').update(right).digest();
-  return timingSafeEqual(leftHash,rightHash);
+function secureTokenEqual(left: string, right: string): boolean {
+  const leftHash = createHash('sha256').update(left).digest();
+  const rightHash = createHash('sha256').update(right).digest();
+  return timingSafeEqual(leftHash, rightHash);
 }
 
 function hash(value: string): string {
@@ -5183,7 +6282,6 @@ const LINKEDIN_APPROVAL_STATE: Partial<Record<PlaybookStepStatus, string>> = {
 
 /** Where every number below comes from. Quoted in each response, per the plan's honesty rule. */
 const LINKEDIN_PLAN_DOC = 'docs/linkedin-outreach-plan.md';
-
 
 /**
  * Wrap a LinkedIn handler.
@@ -5231,7 +6329,10 @@ function linkedinRoute(handler: (req: AuthedRequest, res: Response) => Promise<u
  */
 function assertCampaignRunnable(campaign: { status: CampaignStatus }, act: string): void {
   if (campaign.status === 'stopped') {
-    throw new LinkedInApiError(`This campaign was stopped, so there is nothing left to ${act}.`, 409);
+    throw new LinkedInApiError(
+      `This campaign was stopped, so there is nothing left to ${act}.`,
+      409
+    );
   }
   if (campaign.status === 'paused') {
     throw new LinkedInApiError(
@@ -5244,17 +6345,35 @@ function assertCampaignRunnable(campaign: { status: CampaignStatus }, act: strin
 /** Turn only EXPECTED manager-domain failures into 4xx; database faults still surface as 500. */
 function rethrowLinkedInManagerError(error: unknown): never {
   if (error instanceof LinkedInApiError || error instanceof z.ZodError) throw error;
-  const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
-  if (code === '23505') throw new LinkedInApiError('That LinkedIn manager name or active lead claim already exists.', 409);
-  if (code === '23503') throw new LinkedInApiError('That LinkedIn manager record references an item that no longer exists.', 400);
-  if (error instanceof Error && /not found/i.test(error.message)) throw new LinkedInApiError(error.message, 404);
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+  if (code === '23505')
+    throw new LinkedInApiError(
+      'That LinkedIn manager name or active lead claim already exists.',
+      409
+    );
+  if (code === '23503')
+    throw new LinkedInApiError(
+      'That LinkedIn manager record references an item that no longer exists.',
+      400
+    );
+  if (error instanceof Error && /not found/i.test(error.message))
+    throw new LinkedInApiError(error.message, 404);
   // "Only a running campaign can be paused." and its siblings: the caller asked
   // for a transition this row's CURRENT STATE does not allow. That is a 409,
   // and it used to be a 500 -- the manager module throws these as plain Errors
   // and nothing here recognised the shape, so pausing an already-paused
   // campaign told the operator the server had faulted.
-  if (error instanceof Error && /^Only an? .+ can be /i.test(error.message)) throw new LinkedInApiError(error.message, 409);
-  if (error instanceof Error && /(required|must |needs |could not map|does not exist in this csv|duplicate|unsupported variable|withdraw-pending|source must|working hours|seat_key)/i.test(error.message)) {
+  if (error instanceof Error && /^Only an? .+ can be /i.test(error.message))
+    throw new LinkedInApiError(error.message, 409);
+  if (
+    error instanceof Error &&
+    /(required|must |needs |could not map|does not exist in this csv|duplicate|unsupported variable|withdraw-pending|source must|working hours|seat_key)/i.test(
+      error.message
+    )
+  ) {
     throw new LinkedInApiError(error.message, 400);
   }
   throw error;
@@ -5355,7 +6474,9 @@ async function approvedCampaignPayload(
   campaign: LinkedInCampaign,
   verb: 'export' | 'queue'
 ): Promise<LinkedInExportPayload> {
-  const run = campaign.playbookRunId ? await getPlaybookRun(db, workspaceId, campaign.playbookRunId) : null;
+  const run = campaign.playbookRunId
+    ? await getPlaybookRun(db, workspaceId, campaign.playbookRunId)
+    : null;
   const approval = run?.steps.find((step) => step.stepType === 'approval');
   if (!approval?.input) {
     throw new LinkedInApiError(
@@ -5389,11 +6510,15 @@ async function approvedCampaignPayload(
     );
   }
   const granted = approval.approvalPayloadHash
-    ? await db.prepare(`
+    ? await db
+        .prepare(
+          `
         SELECT id FROM playbook_approvals
         WHERE workspace_id=? AND playbook_run_id=? AND step_run_id=? AND decision='approve' AND payload_hash=?
         ORDER BY created_at DESC LIMIT 1
-      `).get<{ id: string }>(workspaceId, run!.id, approval.id, approval.approvalPayloadHash)
+      `
+        )
+        .get<{ id: string }>(workspaceId, run!.id, approval.id, approval.approvalPayloadHash)
     : undefined;
   if (!granted) {
     throw new LinkedInApiError(
@@ -5407,7 +6532,10 @@ async function approvedCampaignPayload(
   const storedSequence: unknown = campaign.sequence;
   if (isJsonObject(storedSequence) && Array.isArray(storedSequence.steps)) {
     const parsedStored = linkedinSequencePayloadSchema.safeParse(storedSequence);
-    if (!parsedStored.success || canonicalPayloadHash(parsedStored.data) !== canonicalPayloadHash(approved.sequence)) {
+    if (
+      !parsedStored.success ||
+      canonicalPayloadHash(parsedStored.data) !== canonicalPayloadHash(approved.sequence)
+    ) {
       throw new LinkedInApiError(
         `This campaign's sequence was edited after that plan was approved, so the approved bytes no longer describe it. Approve the re-planned campaign before ${verb === 'export' ? 'exporting' : 'queueing'} it.`,
         409
@@ -5489,13 +6617,17 @@ async function linkedinQueueWaitReason(
     if (seats.length > 0) {
       const postures = seats.map((seat) => effectivePosture(seat, now));
       if (postures.every((posture) => posture === 'paused')) return 'account_paused';
-      if (postures.every((posture) => posture === 'paused' || posture === 'cooldown')) return 'account_cooldown';
+      if (postures.every((posture) => posture === 'paused' || posture === 'cooldown'))
+        return 'account_cooldown';
     }
   }
 
   let worker: LinkedInLocalWorkerConfig;
-  try { worker = validateEnvironment().linkedinLocalWorker; }
-  catch { return 'worker'; }
+  try {
+    worker = validateEnvironment().linkedinLocalWorker;
+  } catch {
+    return 'worker';
+  }
   if (!worker.enabled) return 'worker';
 
   if (worker.companionBrowser) {
@@ -5520,7 +6652,11 @@ async function nextLinkedInBackgroundRun(
   if (!seat) return null;
   const waitingFor = await linkedinQueueWaitReason(db, workspaceId, seatKey, now);
   const runs = await sideTaskRuns(db, workspaceId, seatKey);
-  const candidates: Array<{ startAt: Date; endAt: Date; source: 'maintenance' | 'actions' | 'catchup' }> = [];
+  const candidates: Array<{
+    startAt: Date;
+    endAt: Date;
+    source: 'maintenance' | 'actions' | 'catchup';
+  }> = [];
 
   // A companion return is eligible immediately once both presence gates are
   // back. Represent it as NOW rather than pretending the next deterministic
@@ -5540,13 +6676,17 @@ async function nextLinkedInBackgroundRun(
   // Campaign/automated actions can make an earlier sitting than the next
   // maintenance read. Manual work is intentionally excluded: it is the person
   // asking Trevra to act now, not a background run.
-  const planned = await db.prepare(`
+  const planned = await db
+    .prepare(
+      `
     SELECT planned_for
     FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND status='planned' AND source <> 'manual' AND planned_for IS NOT NULL
     ORDER BY planned_for ASC
     LIMIT 1
-  `).get<{ planned_for: string }>(workspaceId, seatKey);
+  `
+    )
+    .get<{ planned_for: string }>(workspaceId, seatKey);
   if (planned?.planned_for) {
     const plannedAt = new Date(planned.planned_for);
     if (!Number.isNaN(plannedAt.getTime())) {
@@ -5557,7 +6697,11 @@ async function nextLinkedInBackgroundRun(
     }
   }
 
-  candidates.sort((left, right) => left.startAt.getTime() - right.startAt.getTime() || left.endAt.getTime() - right.endAt.getTime());
+  candidates.sort(
+    (left, right) =>
+      left.startAt.getTime() - right.startAt.getTime() ||
+      left.endAt.getTime() - right.endAt.getTime()
+  );
   const next = candidates[0];
   if (!next) return null;
   return {
@@ -5592,7 +6736,10 @@ async function sideTaskSchedule(
       });
     }
   }
-  opportunities.sort((left, right) => left.startAt.getTime() - right.startAt.getTime() || left.seatKey.localeCompare(right.seatKey));
+  opportunities.sort(
+    (left, right) =>
+      left.startAt.getTime() - right.startAt.getTime() || left.seatKey.localeCompare(right.seatKey)
+  );
   return opportunities.slice(0, Math.max(1, count));
 }
 
@@ -5664,7 +6811,8 @@ function isPlannableInput(value: unknown): value is Record<string, unknown> {
  * own, and only the PAIR is wrong. An operator who types an 18:00-08:00 window
  * -- the ordinary way to get this wrong -- was told the server had faulted.
  */
-const LINKEDIN_SEAT_INPUT_ERROR = /(needs a label|needs an IANA timezone|is not an IANA timezone|must be a 'YYYY-MM-DD' date|Working hours must be)/;
+const LINKEDIN_SEAT_INPUT_ERROR =
+  /(needs a label|needs an IANA timezone|is not an IANA timezone|must be a 'YYYY-MM-DD' date|Working hours must be)/;
 
 /**
  * The two vocabularies, read from the modules that own them.
@@ -5704,7 +6852,12 @@ const linkedinInviteNoteMode = z.enum(['drafted', 'none']);
  * routes -- a kill switch buried in a settings PUT is a kill switch nobody
  * finds. `strict()` so a UI that thinks it can send one gets told.
  */
-const linkedinSeatKeySchema = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
+const linkedinSeatKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
 
 /**
  * The four ceilings an operator may set for themselves, and the range each may
@@ -5738,41 +6891,43 @@ function operatorLimitField(limit: LinkedInOperatorLimit) {
   return z.number().int().min(range.min).max(range.max).optional();
 }
 
-const linkedinSeatSchema = z.object({
-  seatKey: linkedinSeatKeySchema.optional(),
-  label: z.string().trim().min(1).max(120).optional(),
-  profileUrl: z.string().trim().max(500).nullable().optional(),
-  accountOpenedOn: z.string().trim().max(20).nullable().optional(),
-  connectionsCount: z.number().int().min(0).max(100_000).nullable().optional(),
-  timezone: z.string().trim().min(1).max(100).optional(),
-  workingDays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
-  workStartMinute: z.number().int().min(0).max(1439).optional(),
-  workEndMinute: z.number().int().min(1).max(1440).optional(),
-  dailyInviteLimit: operatorLimitField('invite'),
-  dailyMessageLimit: operatorLimitField('message'),
-  dailyProfileViewLimit: operatorLimitField('profileView'),
-  dailyFollowLimit: operatorLimitField('follow'),
-  /**
-   * The operator's informed opt-in: their own configured ceiling binds instead
-   * of Trevra's stricter researched band.
-   *
-   * IT IS NOT A WAY PAST THE RAMP. Warm-up still multiplies whatever ceiling
-   * ends up applying, so a week-1 seat with this on is still a week-1 seat --
-   * this decides WHICH ceiling is ramped, never whether one is. Seat-scoped
-   * like every other field here, because it is one human's decision about one
-   * LinkedIn account and not a workspace policy.
-   */
-  safetyBandOverride: z.boolean().optional(),
-  /**
-   * This account's own outbound proxy, `scheme://user:pass@host:port`.
-   *
-   * Absent leaves whatever is stored alone; null or '' removes it. It is never
-   * returned: a seat carries the redacted `proxy` view instead, so this field
-   * is write-only from a client's point of view and a password cannot come
-   * back down to a browser that will put it in a screenshot.
-   */
-  proxyUrl: z.string().trim().max(500).nullable().optional()
-}).strict();
+const linkedinSeatSchema = z
+  .object({
+    seatKey: linkedinSeatKeySchema.optional(),
+    label: z.string().trim().min(1).max(120).optional(),
+    profileUrl: z.string().trim().max(500).nullable().optional(),
+    accountOpenedOn: z.string().trim().max(20).nullable().optional(),
+    connectionsCount: z.number().int().min(0).max(100_000).nullable().optional(),
+    timezone: z.string().trim().min(1).max(100).optional(),
+    workingDays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
+    workStartMinute: z.number().int().min(0).max(1439).optional(),
+    workEndMinute: z.number().int().min(1).max(1440).optional(),
+    dailyInviteLimit: operatorLimitField('invite'),
+    dailyMessageLimit: operatorLimitField('message'),
+    dailyProfileViewLimit: operatorLimitField('profileView'),
+    dailyFollowLimit: operatorLimitField('follow'),
+    /**
+     * The operator's informed opt-in: their own configured ceiling binds instead
+     * of Trevra's stricter researched band.
+     *
+     * IT IS NOT A WAY PAST THE RAMP. Warm-up still multiplies whatever ceiling
+     * ends up applying, so a week-1 seat with this on is still a week-1 seat --
+     * this decides WHICH ceiling is ramped, never whether one is. Seat-scoped
+     * like every other field here, because it is one human's decision about one
+     * LinkedIn account and not a workspace policy.
+     */
+    safetyBandOverride: z.boolean().optional(),
+    /**
+     * This account's own outbound proxy, `scheme://user:pass@host:port`.
+     *
+     * Absent leaves whatever is stored alone; null or '' removes it. It is never
+     * returned: a seat carries the redacted `proxy` view instead, so this field
+     * is write-only from a client's point of view and a password cannot come
+     * back down to a browser that will put it in a screenshot.
+     */
+    proxyUrl: z.string().trim().max(500).nullable().optional()
+  })
+  .strict();
 
 /**
  * Refuse a proxy the browser launcher could not use, at the moment it is typed.
@@ -5789,58 +6944,80 @@ const linkedinSeatSchema = z.object({
  * A blank env is passed deliberately: this validates THIS string, not whatever
  * the process happens to have set.
  */
-function assertSeatProxyUsable(workspaceId: string, seatKey: string, proxyUrl: string | null | undefined): void {
+function assertSeatProxyUsable(
+  workspaceId: string,
+  seatKey: string,
+  proxyUrl: string | null | undefined
+): void {
   if (!proxyUrl?.trim()) return;
   try {
     resolveSeatProxy({}, workspaceId, seatKey, proxyUrl);
   } catch (error) {
-    throw new LinkedInApiError(error instanceof Error ? error.message : 'That proxy could not be used.', 400);
+    throw new LinkedInApiError(
+      error instanceof Error ? error.message : 'That proxy could not be used.',
+      400
+    );
   }
 }
 
-const linkedinManagerSeatCreateSchema = linkedinSeatSchema.extend({
-  seatKey: linkedinSeatKeySchema,
-  label: z.string().trim().min(1).max(120),
-  timezone: z.string().trim().min(1).max(100)
-}).strict();
+const linkedinManagerSeatCreateSchema = linkedinSeatSchema
+  .extend({
+    seatKey: linkedinSeatKeySchema,
+    label: z.string().trim().min(1).max(120),
+    timezone: z.string().trim().min(1).max(100)
+  })
+  .strict();
 
-const linkedinLeadListCreateSchema = z.object({
-  name: z.string().trim().min(1).max(200),
-  sourceKind: z.enum(['csv', 'linkedin_search', 'sales_navigator', 'post_keyword']).default('csv'),
-  sourceRef: z.string().trim().max(2000).nullable().optional()
-}).strict();
+const linkedinLeadListCreateSchema = z
+  .object({
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
+    name: z.string().trim().min(1).max(200),
+    sourceKind: z
+      .enum(['csv', 'linkedin_search', 'sales_navigator', 'post_keyword'])
+      .default('csv'),
+    sourceRef: z.string().trim().max(2000).nullable().optional()
+  })
+  .strict();
 
-const linkedinLeadFieldMappingSchema = z.object({
-  firstName: z.string().min(1).optional(),
-  lastName: z.string().min(1).optional(),
-  company: z.string().min(1).optional(),
-  email: z.string().min(1).optional(),
-  phone: z.string().min(1).optional(),
-  country: z.string().min(1).optional(),
-  profileUrl: z.string().min(1).optional()
-}).strict();
+const linkedinLeadFieldMappingSchema = z
+  .object({
+    firstName: z.string().min(1).optional(),
+    lastName: z.string().min(1).optional(),
+    company: z.string().min(1).optional(),
+    email: z.string().min(1).optional(),
+    phone: z.string().min(1).optional(),
+    country: z.string().min(1).optional(),
+    profileUrl: z.string().min(1).optional()
+  })
+  .strict();
 
-const linkedinLeadContactUpdateSchema = z.object({
-  firstName: z.string().trim().min(1).max(200),
-  lastName: z.string().trim().min(1).max(200),
-  company: z.string().trim().min(1).max(300),
-  email: z.string().trim().max(320).nullable().optional(),
-  phone: z.string().trim().max(100).nullable().optional(),
-  country: z.string().trim().max(120).nullable().optional(),
-  profileUrl: z.string().trim().max(1000).nullable().optional()
-}).strict();
+const linkedinLeadContactUpdateSchema = z
+  .object({
+    firstName: z.string().trim().min(1).max(200),
+    lastName: z.string().trim().min(1).max(200),
+    company: z.string().trim().min(1).max(300),
+    email: z.string().trim().max(320).nullable().optional(),
+    phone: z.string().trim().max(100).nullable().optional(),
+    country: z.string().trim().max(120).nullable().optional(),
+    profileUrl: z.string().trim().max(1000).nullable().optional()
+  })
+  .strict();
 
-const linkedinWorkflowWriteSchema = z.object({
-  name: z.string().trim().min(1).max(200),
-  steps: workflowStepsSchema
-}).strict();
+const linkedinWorkflowWriteSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    steps: workflowStepsSchema
+  })
+  .strict();
 
-const linkedinManagedCampaignCreateSchema = z.object({
-  name: z.string().trim().min(1).max(200),
-  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
-  leadListId: z.string().trim().min(1).max(120),
-  workflowId: z.string().trim().min(1).max(120)
-}).strict();
+const linkedinManagedCampaignCreateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
+    leadListId: z.string().trim().min(1).max(120),
+    workflowId: z.string().trim().min(1).max(120)
+  })
+  .strict();
 
 const linkedinManagedAnalyticsSchema = z.object({
   campaignId: z.string().trim().min(1).max(120).optional(),
@@ -5861,10 +7038,12 @@ const linkedinManualTaskFiltersSchema = z.object({
  * count here is told rather than quietly believed. The timezone is the only
  * fact the server cannot derive for itself.
  */
-const linkedinSeatDetectSchema = z.object({
-  timezone: z.string().trim().min(1).max(100),
-  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
-}).strict();
+const linkedinSeatDetectSchema = z
+  .object({
+    timezone: z.string().trim().min(1).max(100),
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
+  })
+  .strict();
 
 /**
  * Which LinkedIn account a seat route is about.
@@ -5886,11 +7065,13 @@ const linkedinSeatSelectorSchema = z.object({
  * even a rejected body cannot echo a password back through the shared error
  * middleware.
  */
-const linkedinCredentialsSchema = z.object({
-  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
-  email: z.string().trim().min(3).max(320).email(),
-  password: z.string().min(1).max(200)
-}).strict();
+const linkedinCredentialsSchema = z
+  .object({
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
+    email: z.string().trim().min(3).max(320).email(),
+    password: z.string().min(1).max(200)
+  })
+  .strict();
 
 /**
  * The verification code, and nothing else.
@@ -5899,10 +7080,12 @@ const linkedinCredentialsSchema = z.object({
  * means "you asked me for this code, here it is" -- the second half of an
  * `otp_required` answer.
  */
-const linkedinSeatLoginSchema = z.object({
-  otp: z.string().trim().min(4).max(12).optional(),
-  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
-}).strict();
+const linkedinSeatLoginSchema = z
+  .object({
+    otp: z.string().trim().min(4).max(12).optional(),
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
+  })
+  .strict();
 
 /**
  * The Reddit sign-in, and it goes ONE WAY.
@@ -5917,10 +7100,20 @@ const linkedinSeatLoginSchema = z.object({
  * the offending value, so even a rejected body cannot echo a password back
  * through the shared error middleware.
  */
-const redditCredentialsSchema = z.object({
-  username: z.string().trim().min(3).max(40).regex(/^\/?(?:u\/|user\/)?[A-Za-z0-9_-]{3,20}$/, 'A Reddit username is 3-20 letters, digits, underscores or hyphens'),
-  password: z.string().min(1).max(200)
-}).strict();
+const redditCredentialsSchema = z
+  .object({
+    username: z
+      .string()
+      .trim()
+      .min(3)
+      .max(40)
+      .regex(
+        /^\/?(?:u\/|user\/)?[A-Za-z0-9_-]{3,20}$/,
+        'A Reddit username is 3-20 letters, digits, underscores or hyphens'
+      ),
+    password: z.string().min(1).max(200)
+  })
+  .strict();
 
 /**
  * The two-factor code, and nothing else.
@@ -5929,9 +7122,11 @@ const redditCredentialsSchema = z.object({
  * means "you asked me for this code, here it is" -- the second half of an
  * `otp_required` answer.
  */
-const redditLoginSchema = z.object({
-  otp: z.string().trim().min(4).max(12).optional()
-}).strict();
+const redditLoginSchema = z
+  .object({
+    otp: z.string().trim().min(4).max(12).optional()
+  })
+  .strict();
 
 /**
  * What to read, and how much of it.
@@ -5942,11 +7137,13 @@ const redditLoginSchema = z.object({
  * rate-limited. `driver.normaliseSubreddit` is the authority on the NAME --
  * this only bounds the shape so an oversized body never reaches a browser.
  */
-const redditResearchSchema = z.object({
-  subreddits: z.array(z.string().trim().min(2).max(64)).min(1).max(5),
-  sort: z.enum(REDDIT_SORTS).optional(),
-  limit: z.coerce.number().int().min(1).max(REDDIT_MAX_READ_LIMIT).optional()
-}).strict();
+const redditResearchSchema = z
+  .object({
+    subreddits: z.array(z.string().trim().min(2).max(64)).min(1).max(5),
+    sort: z.enum(REDDIT_SORTS).optional(),
+    limit: z.coerce.number().int().min(1).max(REDDIT_MAX_READ_LIMIT).optional()
+  })
+  .strict();
 
 /**
  * One comment, in one thread.
@@ -5955,17 +7152,21 @@ const redditResearchSchema = z.object({
  * is the check that matters -- this one only keeps an obviously wrong body from
  * reaching a browser at all. 10,000 characters is Reddit's own comment ceiling.
  */
-const redditCommentSchema = z.object({
-  url: z.string().trim().min(1).max(500),
-  body: z.string().trim().min(1).max(10_000)
-}).strict();
+const redditCommentSchema = z
+  .object({
+    url: z.string().trim().min(1).max(500),
+    body: z.string().trim().min(1).max(10_000)
+  })
+  .strict();
 
-const linkedinPauseSchema = z.object({
-  // Not decoration: "why is this stopped" three weeks later is the question
-  // this column answers, so it is required rather than defaulted to ''.
-  reason: z.string().trim().min(1).max(500),
-  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
-}).strict();
+const linkedinPauseSchema = z
+  .object({
+    // Not decoration: "why is this stopped" three weeks later is the question
+    // this column answers, so it is required rather than defaulted to ''.
+    reason: z.string().trim().min(1).max(500),
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
+  })
+  .strict();
 
 /**
  * Resuming, with an optional note about why.
@@ -5980,12 +7181,14 @@ const linkedinResumeSchema = z.object({
   reason: z.string().trim().min(1).max(500).optional()
 });
 
-const linkedinPlanSchema = z.object({
-  seatKey: z.string().trim().min(1).max(64).optional(),
-  kind: linkedinPacedKind,
-  targets: z.array(z.string().trim().min(1).max(500)).min(1).max(500),
-  horizonDays: z.number().int().min(1).max(MAX_HORIZON_DAYS).default(14)
-}).strict();
+const linkedinPlanSchema = z
+  .object({
+    seatKey: z.string().trim().min(1).max(64).optional(),
+    kind: linkedinPacedKind,
+    targets: z.array(z.string().trim().min(1).max(500)).min(1).max(500),
+    horizonDays: z.number().int().min(1).max(MAX_HORIZON_DAYS).default(14)
+  })
+  .strict();
 
 const linkedinActionFiltersSchema = z.object({
   status: linkedinActionStatus.optional(),
@@ -6017,17 +7220,20 @@ const linkedinEditBodySchema = z.object({ body: z.string().min(1).max(8000) }).s
  * today's count and deflate the day the seat actually acted -- which is the
  * exact arithmetic the day-over-day guard depends on.
  */
-const linkedinOutcomeSchema = z.object({
-  actionId: z.string().trim().min(1).max(120).optional(),
-  kind: linkedinActionKind.optional(),
-  targetRef: z.string().trim().min(1).max(500).optional(),
-  seatKey: z.string().trim().min(1).max(64).optional(),
-  outcome: z.enum(['sent', 'accepted', 'replied', 'declined']),
-  occurredAt: z.string().datetime().optional()
-}).strict().refine(
-  (input) => Boolean(input.actionId) || (Boolean(input.kind) && Boolean(input.targetRef)),
-  { message: 'Provide actionId, or both kind and targetRef, so the outcome has exactly one action to attach to' }
-);
+const linkedinOutcomeSchema = z
+  .object({
+    actionId: z.string().trim().min(1).max(120).optional(),
+    kind: linkedinActionKind.optional(),
+    targetRef: z.string().trim().min(1).max(500).optional(),
+    seatKey: z.string().trim().min(1).max(64).optional(),
+    outcome: z.enum(['sent', 'accepted', 'replied', 'declined']),
+    occurredAt: z.string().datetime().optional()
+  })
+  .strict()
+  .refine((input) => Boolean(input.actionId) || (Boolean(input.kind) && Boolean(input.targetRef)), {
+    message:
+      'Provide actionId, or both kind and targetRef, so the outcome has exactly one action to attach to'
+  });
 
 /**
  * A sequence as a caller supplies it: the whole ordered list, never a patch.
@@ -6058,26 +7264,30 @@ const linkedinSequenceStepsSchema = sequenceStepsSchema;
  * picked, or a sequence they assembled node by node. Exactly one of them per
  * request; the route refuses both and neither, in a sentence.
  */
-const linkedinCampaignSchema = z.object({
-  name: z.string().trim().min(1).max(200),
-  version: z.string().trim().min(1).max(50).optional(),
-  input: z.object({
-    targets: z.array(z.string().trim().min(1).max(500)).min(1).max(500),
-    sequenceSteps: linkedinSequenceStepsSchema.optional(),
-    /**
-     * WHICH ACCOUNT THIS CAMPAIGN SENDS FROM, declared rather than assumed.
-     *
-     * The playbook has always read `input.seatKey` -- it is how pacing and the
-     * safety gate know whose ledger and whose ceilings to plan against -- but
-     * `passthrough()` let it travel untyped, and the route then filed the
-     * campaign row itself with no seat at all, so `createCampaign` fell to
-     * `OWNER_SEAT_KEY`. A campaign planned against the second account was
-     * therefore STORED as the owner's, which is what made the campaign list
-     * unable to honour the account switcher even once it tried to.
-     */
-    seatKey: linkedinSeatKeySchema.optional()
-  }).passthrough()
-}).strict();
+const linkedinCampaignSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    version: z.string().trim().min(1).max(50).optional(),
+    input: z
+      .object({
+        targets: z.array(z.string().trim().min(1).max(500)).min(1).max(500),
+        sequenceSteps: linkedinSequenceStepsSchema.optional(),
+        /**
+         * WHICH ACCOUNT THIS CAMPAIGN SENDS FROM, declared rather than assumed.
+         *
+         * The playbook has always read `input.seatKey` -- it is how pacing and the
+         * safety gate know whose ledger and whose ceilings to plan against -- but
+         * `passthrough()` let it travel untyped, and the route then filed the
+         * campaign row itself with no seat at all, so `createCampaign` fell to
+         * `OWNER_SEAT_KEY`. A campaign planned against the second account was
+         * therefore STORED as the owner's, which is what made the campaign list
+         * unable to honour the account switcher even once it tried to.
+         */
+        seatKey: linkedinSeatKeySchema.optional()
+      })
+      .passthrough()
+  })
+  .strict();
 
 /** Which account's campaigns to list. Absent means every one in the workspace -- see the route. */
 const linkedinCampaignListSchema = z.object({
@@ -6093,25 +7303,27 @@ const linkedinCampaignListSchema = z.object({
  * accepted anyway so the critic sees the same campaign the operator has in
  * mind; nothing per-target ever reaches the copy.
  */
-const linkedinDraftSchema = z.object({
-  domain: z.string().trim().min(1).max(253),
-  targets: z.array(z.string().trim().min(1).max(500)).max(500).default([]),
-  templateId: z.string().trim().min(1).max(64).optional(),
-  /**
-   * THE SAME THREE COPY CONTROLS THE CAMPAIGN PATH HAS, and they were missing
-   * here rather than deliberately withheld: `gtm.linkedin-sequence` has taken
-   * `tone`, `inviteNote` and `includeInMail` since it was written, the create
-   * route passes all three through the playbook, and this `.strict()` schema
-   * refused them outright -- so "draft with AI" was quietly the less capable of
-   * two drafting paths and the controls beside it did nothing.
-   *
-   * Absent means the skill's own default (`consultative`, a drafted invite
-   * note, no InMail), which is what every draft got before this.
-   */
-  tone: linkedinSequenceTone.optional(),
-  inviteNote: linkedinInviteNoteMode.optional(),
-  includeInMail: z.boolean().optional()
-}).strict();
+const linkedinDraftSchema = z
+  .object({
+    domain: z.string().trim().min(1).max(253),
+    targets: z.array(z.string().trim().min(1).max(500)).max(500).default([]),
+    templateId: z.string().trim().min(1).max(64).optional(),
+    /**
+     * THE SAME THREE COPY CONTROLS THE CAMPAIGN PATH HAS, and they were missing
+     * here rather than deliberately withheld: `gtm.linkedin-sequence` has taken
+     * `tone`, `inviteNote` and `includeInMail` since it was written, the create
+     * route passes all three through the playbook, and this `.strict()` schema
+     * refused them outright -- so "draft with AI" was quietly the less capable of
+     * two drafting paths and the controls beside it did nothing.
+     *
+     * Absent means the skill's own default (`consultative`, a drafted invite
+     * note, no InMail), which is what every draft got before this.
+     */
+    tone: linkedinSequenceTone.optional(),
+    inviteNote: linkedinInviteNoteMode.optional(),
+    includeInMail: z.boolean().optional()
+  })
+  .strict();
 
 /**
  * Editing a sequence on a campaign that already exists.
@@ -6128,20 +7340,24 @@ const linkedinDraftSchema = z.object({
  * already carries, so an edit that only touches copy leaves the rest exactly as
  * approved. Every field is the playbook's own, with the playbook's own bounds.
  */
-const linkedinSequenceEditSchema = z.object({
-  steps: linkedinSequenceStepsSchema,
-  tone: linkedinSequenceTone.optional(),
-  inviteNote: linkedinInviteNoteMode.optional(),
-  includeInMail: z.boolean().optional(),
-  kind: linkedinPacedKind.optional(),
-  horizonDays: z.number().int().min(1).max(MAX_HORIZON_DAYS).optional(),
-  format: linkedinExportFormat.optional()
-}).strict();
+const linkedinSequenceEditSchema = z
+  .object({
+    steps: linkedinSequenceStepsSchema,
+    tone: linkedinSequenceTone.optional(),
+    inviteNote: linkedinInviteNoteMode.optional(),
+    includeInMail: z.boolean().optional(),
+    kind: linkedinPacedKind.optional(),
+    horizonDays: z.number().int().min(1).max(MAX_HORIZON_DAYS).optional(),
+    format: linkedinExportFormat.optional()
+  })
+  .strict();
 
-const linkedinExportRequestSchema = z.object({
-  /** Absent means the format the campaign was approved with. */
-  format: linkedinExportFormat.optional()
-}).strict();
+const linkedinExportRequestSchema = z
+  .object({
+    /** Absent means the format the campaign was approved with. */
+    format: linkedinExportFormat.optional()
+  })
+  .strict();
 
 /**
  * Queueing takes no options at all, and `.strict()` is the point of the schema.
@@ -6158,15 +7374,23 @@ const linkedinImportSchema = z.object({
   kind: linkedinActionKind.default('invite')
 });
 
-const linkedinExclusionSchema = z.object({
-  targets: z.array(z.object({
-    targetRef: z.string().trim().min(1).max(500),
-    reason: z.string().trim().max(500).default('')
-  })).min(1).max(1000),
-  source: z.enum(['manual', 'import']).default('manual')
-}).strict().transform((input) => ({
-  targets: input.targets.map((target) => ({ ...target, source: input.source }))
-}));
+const linkedinExclusionSchema = z
+  .object({
+    targets: z
+      .array(
+        z.object({
+          targetRef: z.string().trim().min(1).max(500),
+          reason: z.string().trim().max(500).default('')
+        })
+      )
+      .min(1)
+      .max(1000),
+    source: z.enum(['manual', 'import']).default('manual')
+  })
+  .strict()
+  .transform((input) => ({
+    targets: input.targets.map((target) => ({ ...target, source: input.source }))
+  }));
 
 const linkedinAnalyticsSchema = z.object({
   /**
@@ -6193,33 +7417,43 @@ const linkedinAnalyticsSchema = z.object({
  * stored `https://evil.example/x` is a row some later worker opens in an
  * AUTHENTICATED browser, and the fix for that is to never write it.
  */
-const linkedinLeadSourceSchema = z.object({
-  kind: z.enum([...LEAD_SOURCE_KINDS] as [LeadSourceKind, ...LeadSourceKind[]]),
-  url: z.string().trim().min(1).max(1000)
-}).strict();
+const linkedinLeadSourceSchema = z
+  .object({
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
+    kind: z.enum([...LEAD_SOURCE_KINDS] as [LeadSourceKind, ...LeadSourceKind[]]),
+    url: z.string().trim().min(1).max(1000)
+  })
+  .strict();
 
-const linkedinDailyLeadCapSchema = z.object({
-  cap: z.number().int().min(0).max(MAX_DAILY_LEAD_CAP)
-}).strict();
+const linkedinDailyLeadCapSchema = z
+  .object({
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
+    cap: z.number().int().min(0).max(MAX_DAILY_LEAD_CAP)
+  })
+  .strict();
 
-const linkedinLeadSourceImportSchema = z.object({
-  listId: z.string().trim().min(1).max(120).optional(),
-  listName: z.string().trim().min(1).max(200).optional(),
-  // `listLeads` clamps to LEAD_READ_LIMIT whatever it is asked for, so a larger
-  // number accepted here would be a promise the reader silently breaks.
-  limit: z.number().int().min(1).max(LEAD_READ_LIMIT).optional(),
-  /**
-   * The rows the operator actually ticked.
-   *
-   * Absent means every lead the walk found, up to `limit`, which is what this
-   * route did when there was no selection to respect. A screen that offers
-   * checkboxes and then imports the whole page is worse than one that offers
-   * none, so the selection travels rather than being thrown away at the button.
-   */
-  leadIds: z.array(z.string().trim().min(1).max(120)).min(1).max(LEAD_READ_LIMIT).optional()
-}).strict();
+const linkedinLeadSourceImportSchema = z
+  .object({
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
+    listId: z.string().trim().min(1).max(120).optional(),
+    listName: z.string().trim().min(1).max(200).optional(),
+    // `listLeads` clamps to LEAD_READ_LIMIT whatever it is asked for, so a larger
+    // number accepted here would be a promise the reader silently breaks.
+    limit: z.number().int().min(1).max(LEAD_READ_LIMIT).optional(),
+    /**
+     * The rows the operator actually ticked.
+     *
+     * Absent means every lead the walk found, up to `limit`, which is what this
+     * route did when there was no selection to respect. A screen that offers
+     * checkboxes and then imports the whole page is worse than one that offers
+     * none, so the selection travels rather than being thrown away at the button.
+     */
+    leadIds: z.array(z.string().trim().min(1).max(120)).min(1).max(LEAD_READ_LIMIT).optional()
+  })
+  .strict();
 
 const linkedinLeadListSchema = z.object({
+  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
   limit: z.coerce.number().int().min(1).max(500).default(100)
 });
 
@@ -6249,17 +7483,19 @@ const linkedinInboxFiltersSchema = z.object({
  * request. The defaults are the driver's own (10 conversations, 40 messages),
  * which is a refresh rather than a re-read of the whole inbox.
  */
-const linkedinInboxSyncSchema = z.object({
-  maxThreads: z.number().int().min(1).max(50).optional(),
-  maxMessages: z.number().int().min(1).max(200).optional(),
-  // WHOSE INBOX. Every function behind these routes takes a seat and defaults
-  // it to the owner, so a sync or a refresh requested for a SECONDARY account
-  // walked the owner's conversations instead -- the same silent default
-  // `enqueueReply` and `syncLinkedInThread` each carry a paragraph about. The
-  // list route has taken a `seatKey` filter since it was written; these did not
-  // accept one at all.
-  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
-}).strict();
+const linkedinInboxSyncSchema = z
+  .object({
+    maxThreads: z.number().int().min(1).max(50).optional(),
+    maxMessages: z.number().int().min(1).max(200).optional(),
+    // WHOSE INBOX. Every function behind these routes takes a seat and defaults
+    // it to the owner, so a sync or a refresh requested for a SECONDARY account
+    // walked the owner's conversations instead -- the same silent default
+    // `enqueueReply` and `syncLinkedInThread` each carry a paragraph about. The
+    // list route has taken a `seatKey` filter since it was written; these did not
+    // accept one at all.
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
+  })
+  .strict();
 
 /**
  * One reply, and `plannedFor` is not decoration.
@@ -6269,12 +7505,14 @@ const linkedinInboxSyncSchema = z.object({
  * to send now -- and answering both with "now" would refuse the first for a
  * reason that is not true of it.
  */
-const linkedinReplySchema = z.object({
-  body: z.string().min(1).max(8000),
-  plannedFor: z.string().datetime().optional(),
-  /** Which account is replying. See `linkedinInboxSyncSchema`. */
-  seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
-}).strict();
+const linkedinReplySchema = z
+  .object({
+    body: z.string().min(1).max(8000),
+    plannedFor: z.string().datetime().optional(),
+    /** Which account is replying. See `linkedinInboxSyncSchema`. */
+    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY)
+  })
+  .strict();
 
 /** Both the candidate query and the enqueue body: the same two knobs, the same defaults. */
 const linkedinWithdrawalCandidateSchema = z.object({
@@ -6298,10 +7536,12 @@ const linkedinWithdrawalListSchema = z.object({
  * spends the whole day's budget in one press and then discovers the refusal one
  * navigation at a time.
  */
-const linkedinAcceptanceDetectSchema = z.object({
-  seatKey: z.string().trim().min(1).max(64).optional(),
-  maxChecks: z.coerce.number().int().min(1).max(25).optional()
-}).strict();
+const linkedinAcceptanceDetectSchema = z
+  .object({
+    seatKey: z.string().trim().min(1).max(64).optional(),
+    maxChecks: z.coerce.number().int().min(1).max(25).optional()
+  })
+  .strict();
 
 /**
  * One engagement action.
@@ -6310,12 +7550,14 @@ const linkedinAcceptanceDetectSchema = z.object({
  * there is nothing here a caller could use to claim something was performed.
  * The row is filed 'planned' and only the local worker may move it.
  */
-const linkedinEngagementSchema = z.object({
-  kind: linkedinEngagementKind,
-  targetRef: z.string().trim().min(1).max(500),
-  campaignId: z.string().trim().min(1).max(120).optional(),
-  plannedFor: z.string().datetime().optional()
-}).strict();
+const linkedinEngagementSchema = z
+  .object({
+    kind: linkedinEngagementKind,
+    targetRef: z.string().trim().min(1).max(500),
+    campaignId: z.string().trim().min(1).max(120).optional(),
+    plannedFor: z.string().datetime().optional()
+  })
+  .strict();
 
 /* ---------------------------------------------------------------------------
  * Accounts (039).
@@ -6344,16 +7586,20 @@ const accountListSchema = z.object({
  * is accepted rather than assumed -- but it defaults to 'csv', because a
  * request with a body of pasted text came through door B by definition.
  */
-const accountImportSchema = z.object({
-  text: z.string().min(1).max(5_000_000),
-  source: z.enum(['csv', 'sourced', 'linkedin', 'manual']).default('csv'),
-  tags: z.array(z.string().trim().min(1).max(60)).max(20).default([])
-}).strict();
+const accountImportSchema = z
+  .object({
+    text: z.string().min(1).max(5_000_000),
+    source: z.enum(['csv', 'sourced', 'linkedin', 'manual']).default('csv'),
+    tags: z.array(z.string().trim().min(1).max(60)).max(20).default([])
+  })
+  .strict();
 
-const accountFeedbackSchema = z.object({
-  verdict: z.enum(['not_a_fit', 'good_fit']),
-  reason: z.string().trim().max(500).optional()
-}).strict();
+const accountFeedbackSchema = z
+  .object({
+    verdict: z.enum(['not_a_fit', 'good_fit']),
+    reason: z.string().trim().max(500).optional()
+  })
+  .strict();
 
 /**
  * One account, its signals and its score -- the ranked row for a single id.
@@ -6366,19 +7612,31 @@ const accountFeedbackSchema = z.object({
  * path is a `getRankedAccount(db, workspaceId, id)` in accounts/store.ts, at
  * which point this function and its two queries delete.
  */
-async function accountDetail(db: Db, workspaceId: string, accountId: string): Promise<RankedAccount | null> {
+async function accountDetail(
+  db: Db,
+  workspaceId: string,
+  accountId: string
+): Promise<RankedAccount | null> {
   const account: Account | null = await getAccount(db, workspaceId, accountId);
   if (!account) return null;
 
-  const signalRows = await db.prepare(`
+  const signalRows = (await db
+    .prepare(
+      `
     SELECT id, workspace_id, account_id, kind, detail, previous, current, evidence_url, observed_at, fingerprint, created_at
     FROM account_signals WHERE workspace_id=? AND account_id=? ORDER BY observed_at DESC LIMIT 50
-  `).all(workspaceId, accountId) as Array<Record<string, unknown>>;
+  `
+    )
+    .all(workspaceId, accountId)) as Array<Record<string, unknown>>;
 
-  const scoreRow = await db.prepare(`
+  const scoreRow = (await db
+    .prepare(
+      `
     SELECT score, tier, distinct_kinds, newest_signal_at, rationale_json, computed_at
     FROM account_scores WHERE workspace_id=? AND account_id=?
-  `).get(workspaceId, accountId) as Record<string, unknown> | undefined;
+  `
+    )
+    .get(workspaceId, accountId)) as Record<string, unknown> | undefined;
 
   const signals: AccountSignal[] = signalRows.map((row) => ({
     id: String(row.id),
@@ -6406,13 +7664,16 @@ async function accountDetail(db: Db, workspaceId: string, accountId: string): Pr
         score: Number(scoreRow.score),
         tier: String(scoreRow.tier) as AccountScore['tier'],
         distinctKinds: Number(scoreRow.distinct_kinds),
-        newestSignalAt: scoreRow.newest_signal_at === null || scoreRow.newest_signal_at === undefined
-          ? null
-          : String(scoreRow.newest_signal_at),
+        newestSignalAt:
+          scoreRow.newest_signal_at === null || scoreRow.newest_signal_at === undefined
+            ? null
+            : String(scoreRow.newest_signal_at),
         rationale: JSON.parse(String(scoreRow.rationale_json ?? '{}')) as AccountScore['rationale'],
         computedAt: String(scoreRow.computed_at)
       };
-    } catch { score = null; }
+    } catch {
+      score = null;
+    }
   }
 
   return { account, signals, score };
@@ -6525,7 +7786,12 @@ function campaignWarmupRamp(): number[] {
  * rather than from LinkedIn" are different claims, and only the second one is
  * true.
  */
-async function effectiveLinkedInLimits(db: Db, workspaceId: string, now: Date, seatKey: string = OWNER_SEAT_KEY) {
+async function effectiveLinkedInLimits(
+  db: Db,
+  workspaceId: string,
+  now: Date,
+  seatKey: string = OWNER_SEAT_KEY
+) {
   const seat = await getSeat(db, workspaceId, seatKey);
   const posture = seat ? effectivePosture(seat, now) : null;
   const warmupWeek = warmupWeekOf(seat?.activatedAt ?? null, now);
@@ -6609,7 +7875,8 @@ async function effectiveLinkedInLimits(db: Db, workspaceId: string, now: Date, s
     if (!seat) {
       ceiling = 0;
       boundBy = 'seat-unconfigured';
-      rule = 'No LinkedIn seat is configured for this workspace, so nothing can be paced. An undeclared seat is treated as a week-1 account, never as an established one.';
+      rule =
+        'No LinkedIn seat is configured for this workspace, so nothing can be paced. An undeclared seat is treated as a week-1 account, never as an established one.';
     } else if (posture === 'paused') {
       ceiling = 0;
       boundBy = 'seat-paused';
@@ -6760,15 +8027,33 @@ async function effectiveLinkedInLimits(db: Db, workspaceId: string, now: Date, s
 const LINKEDIN_IMPORT_MAX_ROWS = 500;
 
 function linkedinCsvHeader(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
 }
 
-const LINKEDIN_TARGET_COLUMNS = ['targetref', 'target', 'handle', 'profileurl', 'profile', 'url', 'linkedin', 'linkedinurl'];
+const LINKEDIN_TARGET_COLUMNS = [
+  'targetref',
+  'target',
+  'handle',
+  'profileurl',
+  'profile',
+  'url',
+  'linkedin',
+  'linkedinurl'
+];
 const LINKEDIN_PROFILE_COLUMNS = ['profileurl', 'profile', 'url', 'linkedin', 'linkedinurl'];
 const LINKEDIN_NAME_COLUMNS = ['name', 'fullname', 'displayname', 'contactname'];
 const LINKEDIN_FIRST_COLUMNS = ['firstname', 'first', 'givenname'];
 const LINKEDIN_LAST_COLUMNS = ['lastname', 'last', 'surname', 'familyname'];
-const LINKEDIN_COMPANY_COLUMNS = ['company', 'companyname', 'organisation', 'organization', 'employer'];
+const LINKEDIN_COMPANY_COLUMNS = [
+  'company',
+  'companyname',
+  'organisation',
+  'organization',
+  'employer'
+];
 const LINKEDIN_ROLE_COLUMNS = ['role', 'title', 'jobtitle', 'position'];
 
 function linkedinCsvField(row: Record<string, unknown>, columns: readonly string[]): string {
@@ -6826,22 +8111,33 @@ function parseLinkedInTargetCsv(buffer: Buffer): {
     // +2: one for the header line, one because humans count from 1.
     const line = index + 2;
     if (contacts.length >= LINKEDIN_IMPORT_MAX_ROWS) {
-      skipped.push({ row: line, reason: `Over the ${LINKEDIN_IMPORT_MAX_ROWS}-target limit for one campaign; split the list.` });
+      skipped.push({
+        row: line,
+        reason: `Over the ${LINKEDIN_IMPORT_MAX_ROWS}-target limit for one campaign; split the list.`
+      });
       return;
     }
     const targetRef = linkedinCsvField(row, LINKEDIN_TARGET_COLUMNS);
     if (!targetRef) {
-      skipped.push({ row: line, reason: 'No target column. Name one of: targetRef, handle, profileUrl, url.' });
+      skipped.push({
+        row: line,
+        reason: 'No target column. Name one of: targetRef, handle, profileUrl, url.'
+      });
       return;
     }
     const key = targetRef.toLowerCase();
     if (seen.has(key)) {
-      skipped.push({ row: line, reason: `Repeated target '${targetRef}'; one target gets one slot.` });
+      skipped.push({
+        row: line,
+        reason: `Repeated target '${targetRef}'; one target gets one slot.`
+      });
       return;
     }
     seen.add(key);
 
-    const profileUrl = linkedinCsvField(row, LINKEDIN_PROFILE_COLUMNS) || (/^https?:\/\//i.test(targetRef) ? targetRef : '');
+    const profileUrl =
+      linkedinCsvField(row, LINKEDIN_PROFILE_COLUMNS) ||
+      (/^https?:\/\//i.test(targetRef) ? targetRef : '');
 
     /**
      * THE SAME SCRUB THE MANAGED LEAD PATH USES, and it was missing here.
@@ -6862,8 +8158,10 @@ function parseLinkedInTargetCsv(buffer: Buffer): {
      * is the shape a scrape or a contact export usually has.
      */
     const joined = splitAndScrubName(linkedinCsvField(row, LINKEDIN_NAME_COLUMNS));
-    const firstName = scrubNameField(linkedinCsvField(row, LINKEDIN_FIRST_COLUMNS)) || joined.firstName;
-    const lastName = scrubNameField(linkedinCsvField(row, LINKEDIN_LAST_COLUMNS)) || joined.lastName;
+    const firstName =
+      scrubNameField(linkedinCsvField(row, LINKEDIN_FIRST_COLUMNS)) || joined.firstName;
+    const lastName =
+      scrubNameField(linkedinCsvField(row, LINKEDIN_LAST_COLUMNS)) || joined.lastName;
 
     contacts.push({
       targetRef,
@@ -6946,16 +8244,24 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
   // its way, and the chromium line only once playwright itself is there --
   // "install the browsers" is not the next action for somebody with no
   // playwright.
-  const installPlaywright = 'Run `npm i playwright && npx playwright install chromium` on the machine that runs the worker.';
+  const installPlaywright =
+    'Run `npm i playwright && npx playwright install chromium` on the machine that runs the worker.';
   const blockers: string[] = [];
-  if (configError) blockers.push(`This server could not read its own configuration: ${configError}`);
+  if (configError)
+    blockers.push(`This server could not read its own configuration: ${configError}`);
   if (!enabled) {
     blockers.push(linkedInOffReason(workerConfig));
   } else if (!playwrightInstalled) {
-    blockers.push(workerConfig.companionBrowser
-      ? 'This hosted worker is missing Playwright, which it needs to attach to the paired computer. Redeploy the server image with Playwright installed.'
-      : installPlaywright);
-  } else if (!workerConfig.companionBrowser && !headless.canLaunchHeadless && !headed.canLaunchHeaded) {
+    blockers.push(
+      workerConfig.companionBrowser
+        ? 'This hosted worker is missing Playwright, which it needs to attach to the paired computer. Redeploy the server image with Playwright installed.'
+        : installPlaywright
+    );
+  } else if (
+    !workerConfig.companionBrowser &&
+    !headless.canLaunchHeadless &&
+    !headed.canLaunchHeaded
+  ) {
     // BOTH, NOT JUST HEADLESS. This branch read `!headless.canLaunchHeadless`
     // alone, which was a fair proxy for "can this machine open a browser" only
     // while the two verdicts moved together -- chromium present meant headless
@@ -6972,7 +8278,12 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
   // GPU, and puts "HeadlessChrome" in its own user agent (measured; see
   // `scripts/linkedin-fingerprint-probe.mjs`). Ranking it as "not ready" had
   // the screen recommending the worse path.
-  const ready = enabled && playwrightInstalled && (Boolean(workerConfig.companionBrowser) || browser.canLaunchHeaded || browser.canLaunchHeadless);
+  const ready =
+    enabled &&
+    playwrightInstalled &&
+    (Boolean(workerConfig.companionBrowser) ||
+      browser.canLaunchHeaded ||
+      browser.canLaunchHeadless);
 
   return {
     enabled,

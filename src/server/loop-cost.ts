@@ -29,7 +29,12 @@
 
 import type { Db } from './db.js';
 import { getAgentBudget, type AgentBudgetState } from './agent/budget.js';
-import { ACTION_KIND_VALUES, countActionsInWindow, ownerSeat, type LinkedInActionKind } from './linkedin/actions.js';
+import {
+  ACTION_KIND_VALUES,
+  countActionsInWindow,
+  ownerSeat,
+  type LinkedInActionKind
+} from './linkedin/actions.js';
 import { linkedinAnalytics } from './linkedin/campaigns.js';
 
 /**
@@ -113,18 +118,6 @@ export interface LoopCostProduced {
   /** Invites accepted in the window. A reply implies acceptance, as everywhere else. */
   accepted: number;
   replied: number;
-  /**
-   * A BALANCE, not a flow: what is billable right now, whatever period produced
-   * it. Deliberately not windowed -- an unbilled milestone from two months ago
-   * is still unbilled today, and hiding it behind a 30-day filter would make
-   * the number wrong in the one direction that costs money.
-   */
-  readyToInvoice: number;
-  /** Collected INSIDE the window. A flow, unlike the line above. */
-  revenueCollected: number;
-  currency: string;
-  /** Rendered verbatim. See {@link LOOP_COST_NO_ATTRIBUTION}. */
-  attribution: string;
 }
 
 export interface LoopCost {
@@ -153,7 +146,12 @@ interface ModelCallRow {
  * including the rolling-hours helper. One screen showing two definitions of
  * "30 days" is a screen nobody can reconcile.
  */
-export async function loopCost(db: Db, workspaceId: string, windowDays: number, now: Date): Promise<LoopCost> {
+export async function loopCost(
+  db: Db,
+  workspaceId: string,
+  windowDays: number,
+  now: Date
+): Promise<LoopCost> {
   const days = Math.max(1, Math.min(Math.trunc(windowDays), LOOP_COST_MAX_WINDOW_DAYS));
   const start = new Date(now.getTime() - (days - 1) * 86_400_000);
   const since = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
@@ -162,10 +160,12 @@ export async function loopCost(db: Db, workspaceId: string, windowDays: number, 
 
   const seat = ownerSeat(workspaceId);
 
-  const [budget, modelCalls, agentRuns, analytics, actionCounts, revenue, ready, settings] = await Promise.all([
+  const [budget, modelCalls, agentRuns, analytics, actionCounts] = await Promise.all([
     getAgentBudget(db, workspaceId),
 
-    db.prepare(`
+    db
+      .prepare(
+        `
       SELECT model,
         COALESCE(usage_reported, FALSE) AS usage_reported,
         COUNT(*)::int AS calls,
@@ -176,9 +176,13 @@ export async function loopCost(db: Db, workspaceId: string, windowDays: number, 
       WHERE workspace_id=? AND created_at >= ?
       GROUP BY model, COALESCE(usage_reported, FALSE)
       ORDER BY cost_cents DESC, model ASC
-    `).all<ModelCallRow>(workspaceId, sinceIso),
+    `
+      )
+      .all<ModelCallRow>(workspaceId, sinceIso),
 
-    db.prepare(`
+    db
+      .prepare(
+        `
       SELECT COUNT(*)::int AS total,
         COUNT(*) FILTER (WHERE status='completed')::int AS completed,
         COUNT(*) FILTER (WHERE status='failed')::int AS failed,
@@ -186,7 +190,9 @@ export async function loopCost(db: Db, workspaceId: string, windowDays: number, 
         COUNT(*) FILTER (WHERE status='running')::int AS running
       FROM agent_runs
       WHERE workspace_id=? AND started_at >= ?
-    `).get<LoopCostAgentRuns>(workspaceId, sinceIso),
+    `
+      )
+      .get<LoopCostAgentRuns>(workspaceId, sinceIso),
 
     // The outreach funnel. Its `series` is the windowed half -- `total` is
     // all-time and would quietly widen this payload's period if used here.
@@ -200,27 +206,7 @@ export async function loopCost(db: Db, workspaceId: string, windowDays: number, 
         kind,
         count: await countActionsInWindow(db, seat, kind, sinceHours, now)
       }))
-    ),
-
-    db.prepare(`
-      SELECT COALESCE(SUM(ro.amount), 0) AS total
-      FROM recommendation_outcomes ro
-      JOIN recommendations r ON r.id=ro.recommendation_id
-      WHERE r.workspace_id=? AND ro.outcome_type='revenue_collected' AND ro.created_at >= ?
-    `).get<{ total: number }>(workspaceId, sinceIso),
-
-    // Same filter listRecommendations applies, so this agrees with the number
-    // the dashboard shows rather than counting dismissed and snoozed work.
-    db.prepare(`
-      SELECT COALESCE(SUM(estimated_amount), 0) AS total
-      FROM recommendations
-      WHERE workspace_id=? AND type='unbilled_milestone'
-        AND status NOT IN ('dismissed','completed')
-        AND (snoozed_until IS NULL OR snoozed_until <= CURRENT_TIMESTAMP)
-    `).get<{ total: number }>(workspaceId),
-
-    db.prepare('SELECT currency FROM workspace_settings WHERE workspace_id=?')
-      .get<{ currency: string }>(workspaceId)
+    )
   ]);
 
   const byModel: LoopCostModelLine[] = modelCalls.map((row) => ({
@@ -255,11 +241,7 @@ export async function loopCost(db: Db, workspaceId: string, windowDays: number, 
     },
     produced: {
       accepted: windowed.accepted,
-      replied: windowed.replied,
-      readyToInvoice: Number(ready?.total ?? 0),
-      revenueCollected: Number(revenue?.total ?? 0),
-      currency: settings?.currency ?? 'EUR',
-      attribution: LOOP_COST_NO_ATTRIBUTION
+      replied: windowed.replied
     }
   };
 }

@@ -1,9 +1,7 @@
 import type { Db } from './db.js';
-import { id } from './db.js';
 import { runAccountSweep } from './accounts/sweep.js';
 import { rescoreAccounts } from './accounts/score.js';
 import { rejectedSignalShapes } from './accounts/store.js';
-import { approveActionByRule, executeAction, prepareAction } from './action-service.js';
 
 /**
  * Accounts swept per cycle. Small on purpose: a pass paces itself 20-90s
@@ -33,12 +31,17 @@ export async function runAutomationCycle(db: Db, workspaceId: string): Promise<A
   // itself never throws -- a dead host is a recorded `sweep_error` -- so this
   // catch is only for the case it is wrong about that, and it must not cost the
   // action queue its turn.
-  const sweepable = await db.prepare(
-    "SELECT id FROM accounts WHERE workspace_id=? AND status='active' LIMIT 1"
-  ).get<{ id: string }>(workspaceId);
+  const sweepable = await db
+    .prepare("SELECT id FROM accounts WHERE workspace_id=? AND status='active' LIMIT 1")
+    .get<{ id: string }>(workspaceId);
   if (sweepable) {
     try {
-      const sweep = await runAccountSweep(db, workspaceId, {}, { maxAccounts: SWEEP_ACCOUNTS_PER_CYCLE });
+      const sweep = await runAccountSweep(
+        db,
+        workspaceId,
+        {},
+        { maxAccounts: SWEEP_ACCOUNTS_PER_CYCLE }
+      );
       // SCORING FOLLOWS THE SWEEP IN THE SAME TURN, and only over the accounts
       // that were actually touched. A signal stored but never scored is a row
       // no screen ranks and no operator sees, which is the same as not having
@@ -55,66 +58,6 @@ export async function runAutomationCycle(db: Db, workspaceId: string): Promise<A
       }
     } catch {
       result.failed += 1;
-    }
-  }
-  const scheduled = await db.prepare(`
-    SELECT id FROM actions
-    WHERE workspace_id=? AND status='scheduled' AND scheduled_for IS NOT NULL AND scheduled_for <= ?
-    ORDER BY scheduled_for LIMIT 50
-  `).all<{ id: string }>(workspaceId, new Date().toISOString());
-  for (const action of scheduled) {
-    try {
-      await executeAction(db, workspaceId, action.id);
-      result.executed += 1;
-    } catch {
-      result.failed += 1;
-    }
-  }
-
-  const rules = await db.prepare(`
-    SELECT * FROM automation_rules WHERE workspace_id=? AND enabled=1 AND mode IN ('prepare','execute')
-  `).all<Record<string, unknown>>(workspaceId);
-
-  for (const rule of rules) {
-    const recommendations = await db.prepare(`
-      SELECT * FROM recommendations
-      WHERE workspace_id=? AND type=? AND status IN ('ready','approved')
-        AND confidence >= ? AND estimated_amount <= ?
-        AND created_at + (? * INTERVAL '1 minute') <= CURRENT_TIMESTAMP
-      ORDER BY priority_score DESC
-    `).all<Record<string, unknown>>(
-      workspaceId,
-      String(rule.recommendation_type),
-      Number(rule.min_confidence),
-      Number(rule.max_amount),
-      Number(rule.delay_minutes)
-    );
-
-    for (const recommendation of recommendations) {
-      try {
-        const action = await prepareAction(db, workspaceId, String(recommendation.id));
-        if (action.status === 'draft' || action.status === 'failed') result.prepared += 1;
-        if (rule.mode !== 'execute') continue;
-        if (String(rule.recommendation_type) === 'scope_creep') continue;
-
-        let approved = action;
-        if (action.status === 'draft' || action.status === 'failed') {
-          approved = await approveActionByRule(db, workspaceId, String(rule.id), action.id, {
-            recipient: action.recipient,
-            subject: action.subject,
-            body: action.body
-          });
-        }
-        if (approved.status === 'approved') {
-          await executeAction(db, workspaceId, approved.id);
-          result.executed += 1;
-        }
-      } catch (error) {
-        result.failed += 1;
-        await db.prepare('INSERT INTO audit_events (id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-          .run(id('audit'), workspaceId, 'automation', String(rule.id), 'automation.failed', 'recommendation', String(recommendation.id),
-            JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), new Date().toISOString());
-      }
     }
   }
   return result;
@@ -215,8 +158,14 @@ export function resetAutomationRotation(): void {
  * that share its interval; stopping at the budget and resuming from the cursor
  * next time is what keeps that interval honest.
  */
-export async function runAllAutomationCycles(db: Db, options: AutomationSweepOptions = {}): Promise<AutomationSweepResult> {
-  const concurrency = Math.max(1, options.concurrency ?? envInt('TREVRA_AUTOMATION_CONCURRENCY', 4));
+export async function runAllAutomationCycles(
+  db: Db,
+  options: AutomationSweepOptions = {}
+): Promise<AutomationSweepResult> {
+  const concurrency = Math.max(
+    1,
+    options.concurrency ?? envInt('TREVRA_AUTOMATION_CONCURRENCY', 4)
+  );
   const batchSize = Math.max(1, options.batchSize ?? envInt('TREVRA_AUTOMATION_BATCH', 100));
   const budgetMs = options.budgetMs ?? envInt('TREVRA_AUTOMATION_BUDGET_MS', 45_000);
   const cycle = options.runCycle ?? runAutomationCycle;
@@ -231,43 +180,62 @@ export async function runAllAutomationCycles(db: Db, options: AutomationSweepOpt
   // the tick rather than one per tenant -- which matters against a pool of ten.
   // The watchdog is told the tick's own budget: this checkout is SUPPOSED to be
   // long, and a warning printed every minute is a warning nobody reads.
-  await db.withConnection('automation-lease', async (lease) => {
-    // ONE CONNECTION, SEVERAL WORKERS, SO THE LOCK CALLS QUEUE HERE RATHER THAN
-    // IN THE DRIVER. A pg client executes one query at a time and merely warns
-    // when a second is handed to it mid-flight -- a warning that becomes an
-    // error in pg 9. This chain is the queue, made explicit.
-    let pending: Promise<unknown> = Promise.resolve();
-    const onLease = <T>(work: () => Promise<T>): Promise<T> => {
-      const next = pending.then(work, work);
-      pending = next.catch(() => undefined);
-      return next;
-    };
+  await db.withConnection(
+    'automation-lease',
+    async (lease) => {
+      // ONE CONNECTION, SEVERAL WORKERS, SO THE LOCK CALLS QUEUE HERE RATHER THAN
+      // IN THE DRIVER. A pg client executes one query at a time and merely warns
+      // when a second is handed to it mid-flight -- a warning that becomes an
+      // error in pg 9. This chain is the queue, made explicit.
+      let pending: Promise<unknown> = Promise.resolve();
+      const onLease = <T>(work: () => Promise<T>): Promise<T> => {
+        const next = pending.then(work, work);
+        pending = next.catch(() => undefined);
+        return next;
+      };
 
-    let cursor = 0;
-    const worker = async (): Promise<void> => {
-      for (;;) {
-        const index = cursor++;
-        if (index >= workspaceIds.length) return;
-        const workspaceId = workspaceIds[index];
-        if (Date.now() >= deadline) { result.deferred += 1; continue; }
-        const claimed = await onLease(() => lease.query<{ locked: boolean }>(
-          'SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS locked',
-          [LEASE_NAMESPACE, workspaceId]
-        ));
-        if (!claimed.rows[0]?.locked) { result.skipped += 1; continue; }
-        try {
-          await cycle(db, workspaceId);
-          result.claimed += 1;
-        } catch (error) {
-          result.failed += 1;
-          console.error(`Automation cycle failed for workspace ${workspaceId}`, error);
-        } finally {
-          await onLease(() => lease.query('SELECT pg_advisory_unlock(hashtext($1), hashtext($2))', [LEASE_NAMESPACE, workspaceId]));
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const index = cursor++;
+          if (index >= workspaceIds.length) return;
+          const workspaceId = workspaceIds[index];
+          if (Date.now() >= deadline) {
+            result.deferred += 1;
+            continue;
+          }
+          const claimed = await onLease(() =>
+            lease.query<{ locked: boolean }>(
+              'SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS locked',
+              [LEASE_NAMESPACE, workspaceId]
+            )
+          );
+          if (!claimed.rows[0]?.locked) {
+            result.skipped += 1;
+            continue;
+          }
+          try {
+            await cycle(db, workspaceId);
+            result.claimed += 1;
+          } catch (error) {
+            result.failed += 1;
+            console.error(`Automation cycle failed for workspace ${workspaceId}`, error);
+          } finally {
+            await onLease(() =>
+              lease.query('SELECT pg_advisory_unlock(hashtext($1), hashtext($2))', [
+                LEASE_NAMESPACE,
+                workspaceId
+              ])
+            );
+          }
         }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, workspaceIds.length) }, () => worker()));
-  }, budgetMs + 5_000);
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(concurrency, workspaceIds.length) }, () => worker())
+      );
+    },
+    budgetMs + 5_000
+  );
 
   return result;
 }
@@ -282,11 +250,15 @@ export async function runAllAutomationCycles(db: Db, options: AutomationSweepOpt
  * the following tick continues past it rather than replaying the head.
  */
 async function nextWorkspaceBatch(db: Db, batchSize: number): Promise<string[]> {
-  const rows = await db.prepare('SELECT id FROM workspaces WHERE id > ? ORDER BY id LIMIT ?').all<{ id: string }>(rotationCursor, batchSize);
+  const rows = await db
+    .prepare('SELECT id FROM workspaces WHERE id > ? ORDER BY id LIMIT ?')
+    .all<{ id: string }>(rotationCursor, batchSize);
   const ids = rows.map((row) => row.id);
   if (ids.length < batchSize && rotationCursor !== '') {
     const seen = new Set(ids);
-    const head = await db.prepare('SELECT id FROM workspaces ORDER BY id LIMIT ?').all<{ id: string }>(batchSize - ids.length);
+    const head = await db
+      .prepare('SELECT id FROM workspaces ORDER BY id LIMIT ?')
+      .all<{ id: string }>(batchSize - ids.length);
     for (const row of head) if (!seen.has(row.id)) ids.push(row.id);
   }
   rotationCursor = ids.length > 0 ? ids[ids.length - 1] : '';

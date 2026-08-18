@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CircleAlert, LoaderCircle, Play, Plus, Users, Workflow as WorkflowIcon } from 'lucide-react';
+import {
+  CircleAlert,
+  LoaderCircle,
+  Play,
+  Plus,
+  Users,
+  Workflow as WorkflowIcon
+} from 'lucide-react';
 import {
   createLinkedInManagedCampaign,
   getLinkedInLimits,
@@ -41,9 +48,12 @@ const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   withdraw_pending: 'Withdraw the invite if still pending'
 };
 
-const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
-const clock = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
-const stepHours = (step: WorkflowStep) => step.delayBefore.unit === 'days' ? step.delayBefore.amount * 24 : step.delayBefore.amount;
+const plural = (count: number, one: string, many = `${one}s`) =>
+  `${count} ${count === 1 ? one : many}`;
+const clock = (minute: number) =>
+  `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+const stepHours = (step: WorkflowStep) =>
+  step.delayBefore.unit === 'days' ? step.delayBefore.amount * 24 : step.delayBefore.amount;
 
 /* ---------------------------------------------------------------------------
  * WHAT A CAMPAIGN IS ACTUALLY ALLOWED TO SEND.
@@ -75,7 +85,10 @@ export function rampFractions(report: LinkedInLimitsReport | null): readonly num
 }
 
 /** The fraction for a 1-based campaign day. Days past the ramp sit at its last value. */
-export function rampFractionForDay(report: LinkedInLimitsReport | null, day: number): number | null {
+export function rampFractionForDay(
+  report: LinkedInLimitsReport | null,
+  day: number
+): number | null {
   const fractions = rampFractions(report);
   if (!fractions) return null;
   return fractions[Math.min(Math.max(1, Math.floor(day)), fractions.length) - 1];
@@ -127,15 +140,22 @@ export function enforcedCeilings(
     const row = report.limits.find((limit) => limit.kind === kind && limit.window === 'day');
     if (!row) return null;
     const operator = row.operatorLimit ?? null;
-    const beforeRamps = effectiveDailyCeiling(row.bandCeiling, operator, report.seat.safetyBandOverride);
-    entries.push([kind, {
-      kind,
-      band: report.bands[kind].perDay,
+    const beforeRamps = effectiveDailyCeiling(
+      row.bandCeiling,
       operator,
-      full: row.ceiling,
-      today: Math.min(row.ceiling, Math.floor(beforeRamps * campaignFraction)),
-      source: row.ceilingSource ?? 'band'
-    }]);
+      report.seat.safetyBandOverride
+    );
+    entries.push([
+      kind,
+      {
+        kind,
+        band: report.bands[kind].perDay,
+        operator,
+        full: row.ceiling,
+        today: Math.min(row.ceiling, Math.floor(beforeRamps * campaignFraction)),
+        source: row.ceilingSource ?? 'band'
+      }
+    ]);
   }
   return Object.fromEntries(entries) as Record<ManagedKind, EnforcedCeiling>;
 }
@@ -185,7 +205,14 @@ export function takeStagedCampaignPrefill(): CampaignPrefill | null {
   return staged;
 }
 
-export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads, onNeedWorkflows, onStarted, prefill }: {
+export function LinkedInManagerCampaignConfig({
+  onChanged,
+  setToast,
+  onNeedLeads,
+  onNeedWorkflows,
+  onStarted,
+  prefill
+}: {
   onChanged: () => Promise<void>;
   setToast: (message: string) => void;
   /**
@@ -205,59 +232,57 @@ export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads
   /** Fills the form from a finished campaign, so "run this list again" is one click. */
   prefill?: CampaignPrefill | null;
 }) {
-  /**
-   * The account this screen follows, shared with every other LinkedIn screen.
-   *
-   * "Sends from" both STARTS at the operator's pick and WRITES BACK to it, so
-   * choosing an account to send from is the same act as choosing the account
-   * the inbox and the queue are showing. One question, one answer, everywhere.
-   */
-  const [activeSeatKey, setActiveSeatKey] = useActiveSeatKey();
+  /** The sending account is the universal Outreach selection made in Settings. */
+  const [activeSeatKey] = useActiveSeatKey();
   const [seats, setSeats] = useState<LinkedInSeat[]>([]);
   const [lists, setLists] = useState<LinkedInLeadList[]>([]);
   const [workflows, setWorkflows] = useState<LinkedInWorkflow[]>([]);
   const [name, setName] = useState('');
-  const [seatKey, setSeatKey] = useState(activeSeatKey);
+  const seatKey = activeSeatKey;
   const [listId, setListId] = useState('');
   const [workflowId, setWorkflowId] = useState('');
   const [limits, setLimits] = useState<LinkedInLimitsReport | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const [created, setCreated] = useState<{ campaign: ManagedCampaign; enrolled: number; skippedAlreadyActive: number } | null>(null);
+  const [created, setCreated] = useState<{
+    campaign: ManagedCampaign;
+    enrolled: number;
+    skippedAlreadyActive: number;
+  } | null>(null);
 
   const refreshOptions = async () => {
     const [nextSeats, nextLists, nextWorkflows] = await Promise.all([
-      getLinkedInManagerSeats(), getLinkedInManagerLeadLists(), getLinkedInManagerWorkflows()
+      getLinkedInManagerSeats(),
+      getLinkedInManagerLeadLists(activeSeatKey),
+      getLinkedInManagerWorkflows()
     ]);
     setSeats(nextSeats);
     setLists(nextLists);
     setWorkflows(nextWorkflows);
-    // A remembered account that no longer exists is not a pick, it is a stale
-    // key: fall back to the first real one rather than sending from nothing.
-    setSeatKey((current) => nextSeats.some((candidate) => candidate.seatKey === current) ? current : nextSeats[0]?.seatKey || '');
-    setListId((current) => current || nextLists[0]?.id || '');
+    setListId((current) =>
+      nextLists.some((candidate) => candidate.id === current) ? current : nextLists[0]?.id || ''
+    );
     setWorkflowId((current) => current || nextWorkflows[0]?.id || '');
   };
-  useEffect(() => { void refreshOptions().catch(() => undefined); }, []);
-
-  /** Follow a pick made on another screen, as long as that account exists here. */
   useEffect(() => {
-    if (!seats.some((candidate) => candidate.seatKey === activeSeatKey)) return;
-    setSeatKey(activeSeatKey);
-  }, [activeSeatKey, seats]);
+    void refreshOptions().catch(() => undefined);
+  }, [activeSeatKey]);
 
   useEffect(() => {
     if (!prefill) return;
     setName(prefill.name);
-    // Rebuilding a campaign is a decision to work on ITS account, so the shared
-    // pick moves with it rather than snapping back on the next options refresh.
-    setSeatKey(prefill.seatKey);
-    setActiveSeatKey(prefill.seatKey);
-    setListId(prefill.leadListId);
     setWorkflowId(prefill.workflowId);
     setCreated(null);
-    setError('');
-  }, [prefill]);
+    if (prefill.seatKey === activeSeatKey) {
+      setListId(prefill.leadListId);
+      setError('');
+    } else {
+      setListId('');
+      setError(
+        'That campaign belongs to another LinkedIn account. Switch accounts in Outreach → Settings to reuse its lead list.'
+      );
+    }
+  }, [prefill, activeSeatKey]);
 
   /**
    * The ceilings this account is really under, for the account chosen above.
@@ -266,23 +291,33 @@ export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads
    * posture and its warm-up week, both of which are per-account facts.
    */
   useEffect(() => {
-    if (!seatKey) { setLimits(null); return undefined; }
+    if (!seatKey) {
+      setLimits(null);
+      return undefined;
+    }
     let live = true;
     void getLinkedInLimits(seatKey)
-      .then((report) => { if (live) setLimits(report); })
-      .catch(() => { if (live) setLimits(null); });
-    return () => { live = false; };
+      .then((report) => {
+        if (live) setLimits(report);
+      })
+      .catch(() => {
+        if (live) setLimits(null);
+      });
+    return () => {
+      live = false;
+    };
   }, [seatKey]);
 
-  const seat = seats.find((candidate) => candidate.seatKey === seatKey) ?? null;
+  const seat = seats.find((candidate) => candidate.seatKey === activeSeatKey) ?? null;
   const list = lists.find((candidate) => candidate.id === listId) ?? null;
   const workflow = workflows.find((candidate) => candidate.id === workflowId) ?? null;
 
-  const pickSeat = (key: string) => { setSeatKey(key); setActiveSeatKey(key); };
-
   const fractions = rampFractions(limits);
   const dayOneFraction = fractions?.[0] ?? null;
-  const ceilings = useMemo(() => enforcedCeilings(limits, dayOneFraction ?? 1), [limits, dayOneFraction]);
+  const ceilings = useMemo(
+    () => enforcedCeilings(limits, dayOneFraction ?? 1),
+    [limits, dayOneFraction]
+  );
 
   const schedule = useMemo(() => {
     if (!workflow) return { steps: [] as Array<{ step: WorkflowStep; day: number }>, days: 0 };
@@ -295,13 +330,21 @@ export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads
   }, [workflow]);
 
   const warnings: string[] = [];
-  if (list && list.leadCount === 0) warnings.push(`“${list.name}” has no leads in it yet, so the campaign would start empty. Import leads into it first.`);
-  if (seat && seat.workingDays.length === 0) warnings.push(`“${seat.label}” has no working days set, so nothing will go out until you set them on Setup → LinkedIn account.`);
+  if (list && list.leadCount === 0)
+    warnings.push(
+      `“${list.name}” has no leads in it yet, so the campaign would start empty. Import leads into it first.`
+    );
+  if (seat && seat.workingDays.length === 0)
+    warnings.push(
+      `“${seat.label}” has no working days set, so nothing will go out until you set them on Setup → LinkedIn account.`
+    );
   // Not a guess about the account: the ceiling the server reports for it is
   // zero right now, so a campaign started under it would enrol its leads and
   // then sit still. `rule` is the server's own sentence for why.
   if (seat && ceilings && ceilings.invite.full === 0 && ceilings.dm.full === 0) {
-    warnings.push(`“${seat.label}” is not allowed to send anything at the moment, so the campaign would enrol its leads and then wait. ${limits?.limits.find((limit) => limit.kind === 'invite' && limit.window === 'day')?.rule ?? ''}`.trim());
+    warnings.push(
+      `“${seat.label}” is not allowed to send anything at the moment, so the campaign would enrol its leads and then wait. ${limits?.limits.find((limit) => limit.kind === 'invite' && limit.window === 'day')?.rule ?? ''}`.trim()
+    );
   }
 
   const create = async () => {
@@ -309,12 +352,20 @@ export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads
     setBusy('create');
     setError('');
     try {
-      const result = await createLinkedInManagedCampaign({ name: name.trim(), seatKey: seatKey || undefined, leadListId: listId, workflowId });
+      const result = await createLinkedInManagedCampaign({
+        name: name.trim(),
+        seatKey: activeSeatKey,
+        leadListId: listId,
+        workflowId
+      });
       setCreated(result);
       setName('');
       await Promise.all([refreshOptions(), onChanged()]);
-    } catch (err) { setError(errorMessage(err, 'Unable to create that campaign.')); }
-    finally { setBusy(''); }
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to create that campaign.'));
+    } finally {
+      setBusy('');
+    }
   };
 
   const startNow = async () => {
@@ -323,118 +374,229 @@ export function LinkedInManagerCampaignConfig({ onChanged, setToast, onNeedLeads
     setError('');
     try {
       await startLinkedInManagedCampaign(created.campaign.id);
-      setToast(`“${created.campaign.name}” is running.${dayOneFraction === null ? '' : ` Day one is held to ${Math.round(dayOneFraction * 100)}% of what this account may send.`}`);
+      setToast(
+        `“${created.campaign.name}” is running.${dayOneFraction === null ? '' : ` Day one is held to ${Math.round(dayOneFraction * 100)}% of what this account may send.`}`
+      );
       const started = created.campaign;
       setCreated(null);
       await onChanged();
       onStarted?.(started);
-    } catch (err) { setError(errorMessage(err, 'The campaign was created but could not be started.')); }
-    finally { setBusy(''); }
+    } catch (err) {
+      setError(errorMessage(err, 'The campaign was created but could not be started.'));
+    } finally {
+      setBusy('');
+    }
   };
 
   const missing = seats.length === 0 || lists.length === 0 || workflows.length === 0;
 
-  return <section className="page-panel">
-    <div className="section-heading"><div>
-      <h3 aria-level={2}>Create a campaign</h3>
-      <p>Pick who sends, who they send to and what they send. Nothing goes out until you start it.</p>
-    </div></div>
-
-    {error && <div className="error-banner">{error}</div>}
-
-    {missing
-      ? <div className="mgr-empty">
-        <h4 aria-level={3}>Two things first</h4>
-        <p>A campaign is a lead list plus a workflow, sent from a LinkedIn account. {seats.length === 0 && 'No account is set up. '}{lists.length === 0 && 'No lead list exists yet. '}{workflows.length === 0 && 'No workflow exists yet. '}</p>
-        <div className="mgr-actions">
-          {seats.length === 0 && <a className="primary-button" href="/outreach">Add a LinkedIn account</a>}
-          {lists.length === 0 && <button className="secondary-button" type="button" onClick={onNeedLeads}><Users size={14} /> Import leads</button>}
-          {workflows.length === 0 && <button className="secondary-button" type="button" onClick={onNeedWorkflows}><WorkflowIcon size={14} /> Build a workflow</button>}
+  return (
+    <section className="page-panel">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}>Create a campaign</h3>
+          <p>
+            Choose the lead list and workflow. The selected LinkedIn account in the header is the
+            sender.
+          </p>
         </div>
       </div>
-      : <div className="mgr-split">
-        <div className="li-form-grid mgr-fields">
-          <label>Campaign name
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Q3 founder outreach" />
-          </label>
-          <label>Sends from
-            <select value={seatKey} onChange={(event) => pickSeat(event.target.value)}>
-              {seats.map((candidate) => <option key={candidate.seatKey} value={candidate.seatKey}>{candidate.label}</option>)}
-            </select>
-          </label>
-          <label>Lead list
-            <select value={listId} onChange={(event) => setListId(event.target.value)}>
-              <option value="">Choose a list</option>
-              {lists.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name} — {plural(candidate.leadCount, 'lead')}</option>)}
-            </select>
-          </label>
-          <label>Workflow
-            <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
-              <option value="">Choose a workflow</option>
-              {workflows.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name} — {plural(candidate.steps.length, 'step')}</option>)}
-            </select>
-          </label>
-          <p className="li-hint">A lead can only be in one active campaign at a time. Anyone already in another one is left where they are.</p>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      {missing ? (
+        <div className="mgr-empty">
+          <h4 aria-level={3}>Two things first</h4>
+          <p>
+            A campaign is a lead list plus a workflow, sent from a LinkedIn account.{' '}
+            {seats.length === 0 && 'No account is set up. '}
+            {lists.length === 0 && 'No lead list exists yet. '}
+            {workflows.length === 0 && 'No workflow exists yet. '}
+          </p>
+          <div className="mgr-actions">
+            {seats.length === 0 && (
+              <a className="primary-button" href="/outreach">
+                Add a LinkedIn account
+              </a>
+            )}
+            {lists.length === 0 && (
+              <button className="secondary-button" type="button" onClick={onNeedLeads}>
+                <Users size={14} /> Import leads
+              </button>
+            )}
+            {workflows.length === 0 && (
+              <button className="secondary-button" type="button" onClick={onNeedWorkflows}>
+                <WorkflowIcon size={14} /> Build a workflow
+              </button>
+            )}
+          </div>
         </div>
+      ) : (
+        <div className="mgr-split">
+          <div className="li-form-grid mgr-fields">
+            <label>
+              Campaign name
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Q3 founder outreach"
+              />
+            </label>
+            <label>
+              Lead list
+              <select value={listId} onChange={(event) => setListId(event.target.value)}>
+                <option value="">Choose a list</option>
+                {lists.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.name} — {plural(candidate.leadCount, 'lead')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Workflow
+              <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
+                <option value="">Choose a workflow</option>
+                {workflows.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.name} — {plural(candidate.steps.length, 'step')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="li-hint">
+              A lead can only be in one active campaign at a time. Anyone already in another one is
+              left where they are.
+            </p>
+          </div>
 
-        <aside className="mgr-preview">
-          <h4 aria-level={3}>What will happen</h4>
-          {list && workflow && seat
-            ? <>
-              <p className="mgr-preview-lede">
-                <b>{plural(list.leadCount, 'lead')}</b> from {list.name} will be worked through <b>{workflow.name}</b> by <b>{seat.label}</b>, over about <b>{plural(schedule.days, 'day')}</b> each.
+          <aside className="mgr-preview">
+            <h4 aria-level={3}>What will happen</h4>
+            {list && workflow && seat ? (
+              <>
+                <p className="mgr-preview-lede">
+                  <b>{plural(list.leadCount, 'lead')}</b> from {list.name} will be worked through{' '}
+                  <b>{workflow.name}</b> by <b>{seat.label}</b>, over about{' '}
+                  <b>{plural(schedule.days, 'day')}</b> each.
+                </p>
+                <ol className="mgr-preview-steps">
+                  {schedule.steps.map(({ step, day }) => (
+                    <li key={step.id}>
+                      <span className="mgr-preview-day">Day {day}</span>
+                      {ACTION_LABEL[step.action]}
+                    </li>
+                  ))}
+                </ol>
+                <p className="mgr-preview-note">
+                  {seat.workingDays.length > 0
+                    ? `Only on ${seat.workingDays.map((day) => WEEKDAYS[day]).join(', ')}, ${clock(seat.workStartMinute)}–${clock(seat.workEndMinute)} ${seat.timezone}.`
+                    : 'This account has no working hours set, so nothing can go out yet.'}{' '}
+                  {ceilings && fractions && dayOneFraction !== null ? (
+                    <>
+                      Day 1 is held to {Math.round(dayOneFraction * 100)}% of what this account may
+                      send — {plural(ceilings.invite.today, 'invite')} and{' '}
+                      {plural(ceilings.dm.today, 'message')} across the whole campaign — and reaches
+                      full speed on day {fractions.length}. Full speed is{' '}
+                      {plural(ceilings.invite.full, 'invite')} and{' '}
+                      {plural(ceilings.dm.full, 'message')} a day; the invite ceiling is{' '}
+                      {ceilingSourceNote(ceilings.invite)}.
+                    </>
+                  ) : (
+                    'Day 1 is deliberately slow, and the campaign steps up to full speed over its first few days.'
+                  )}
+                </p>
+              </>
+            ) : (
+              <p className="empty-copy">
+                Choose a lead list and a workflow to see what this campaign will do.
               </p>
-              <ol className="mgr-preview-steps">
-                {schedule.steps.map(({ step, day }) => <li key={step.id}>
-                  <span className="mgr-preview-day">Day {day}</span>
-                  {ACTION_LABEL[step.action]}
-                </li>)}
-              </ol>
-              <p className="mgr-preview-note">
-                {seat.workingDays.length > 0
-                  ? `Only on ${seat.workingDays.map((day) => WEEKDAYS[day]).join(', ')}, ${clock(seat.workStartMinute)}–${clock(seat.workEndMinute)} ${seat.timezone}.`
-                  : 'This account has no working hours set, so nothing can go out yet.'}
-                {' '}
-                {ceilings && fractions && dayOneFraction !== null
-                  ? <>Day 1 is held to {Math.round(dayOneFraction * 100)}% of what this account may send — {plural(ceilings.invite.today, 'invite')} and {plural(ceilings.dm.today, 'message')} across the whole campaign — and reaches full speed on day {fractions.length}. Full speed is {plural(ceilings.invite.full, 'invite')} and {plural(ceilings.dm.full, 'message')} a day; the invite ceiling is {ceilingSourceNote(ceilings.invite)}.</>
-                  : 'Day 1 is deliberately slow, and the campaign steps up to full speed over its first few days.'}
-              </p>
-            </>
-            : <p className="empty-copy">Choose a lead list and a workflow to see what this campaign will do.</p>}
+            )}
 
-          {warnings.length > 0 && <div className="li-warn-block">
-            <CircleAlert size={16} />
-            <div>
-              <strong>Worth fixing first</strong>
-              <ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+            {warnings.length > 0 && (
+              <div className="li-warn-block">
+                <CircleAlert size={16} />
+                <div>
+                  <strong>Worth fixing first</strong>
+                  <ul>
+                    {warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+          </aside>
+        </div>
+      )}
+
+      {created && (
+        <div className="li-dryrun mgr-created">
+          <Play size={18} />
+          <div>
+            <strong>“{created.campaign.name}” is ready</strong>
+            <p className="mgr-launch-summary">
+              <b>{plural(created.enrolled, 'contact')}</b>
+              {seat && (
+                <>
+                  {' '}
+                  · <b>{seat.label}</b>
+                </>
+              )}
+              {workflow && (
+                <>
+                  {' '}
+                  · <b>{workflow.name}</b>
+                </>
+              )}
+            </p>
+            <p>
+              {created.skippedAlreadyActive > 0 &&
+                `${plural(created.skippedAlreadyActive, 'contact')} skipped — already in another active campaign. `}
+              It is not running yet: nothing goes out until you start it.
+            </p>
+            <div className="mgr-actions">
+              <button
+                className="primary-button"
+                type="button"
+                disabled={busy !== ''}
+                onClick={() => void startNow()}
+              >
+                {busy === 'start' ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <Play size={14} />
+                )}{' '}
+                Start it now
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={busy !== ''}
+                onClick={() => setCreated(null)}
+              >
+                Create another campaign
+              </button>
             </div>
-          </div>}
-        </aside>
-      </div>}
-
-    {created && <div className="li-dryrun mgr-created">
-      <Play size={18} />
-      <div>
-        <strong>“{created.campaign.name}” is ready</strong>
-        <p>
-          {plural(created.enrolled, 'lead')} enrolled.
-          {created.skippedAlreadyActive > 0 && ` ${plural(created.skippedAlreadyActive, 'lead')} skipped — already in another active campaign.`}
-          {' '}It is not running yet: nothing goes out until you start it.
-        </p>
-        <div className="mgr-actions">
-          <button className="primary-button" type="button" disabled={busy !== ''} onClick={() => void startNow()}>
-            {busy === 'start' ? <LoaderCircle className="spin" size={14} /> : <Play size={14} />} Start it now
-          </button>
-          <button className="secondary-button" type="button" disabled={busy !== ''} onClick={() => setCreated(null)}>Leave it for later</button>
+          </div>
         </div>
-      </div>
-    </div>}
+      )}
 
-    {!missing && <div className="panel-footer">
-      <span>Creating a campaign queues nothing. Start is the only control that lets work go out.</span>
-      <button className="primary-button" type="button" disabled={busy !== '' || !name.trim() || !listId || !workflowId} onClick={() => void create()}>
-        {busy === 'create' ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />} Create campaign
-      </button>
-    </div>}
-  </section>;
+      {!missing && (
+        <div className="panel-footer">
+          <span>
+            Creating a campaign queues nothing. Start is the only control that lets work go out.
+          </span>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy !== '' || !name.trim() || !listId || !workflowId}
+            onClick={() => void create()}
+          >
+            {busy === 'create' ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}{' '}
+            Create campaign
+          </button>
+        </div>
+      )}
+    </section>
+  );
 }

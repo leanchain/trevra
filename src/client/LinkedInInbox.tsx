@@ -22,7 +22,6 @@ import {
   getLinkedInActions,
   getLinkedInCampaigns,
   getLinkedInManagedCampaigns,
-  getLinkedInManagerSeats,
   getLinkedInManualTasks,
   getLinkedInSeat,
   getLinkedInThread,
@@ -36,7 +35,6 @@ import {
   type LinkedInConversation,
   type LinkedInMessageRecord,
   type LinkedInSafetyVerdict,
-  type LinkedInSeat,
   type LinkedInSeatResponse,
   type LinkedInThreadRecord
 } from './api';
@@ -89,11 +87,9 @@ interface InboxFilters {
   unread: boolean;
   hasReply: boolean;
   campaignId: string;
-  /** Which LinkedIn account. Only offered when this workspace has more than one. */
-  seatKey: string;
 }
 
-const EMPTY_FILTERS: InboxFilters = { unread: false, hasReply: false, campaignId: '', seatKey: '' };
+const EMPTY_FILTERS: InboxFilters = { unread: false, hasReply: false, campaignId: '' };
 
 /**
  * HOW MUCH OF THE INBOX ONE READ ASKS FOR, and how much it can ever get.
@@ -170,7 +166,11 @@ const messageTime = (sentAt: string | null) => {
  * difference between them rather than a different person.
  */
 const profileKey = (url: string | null | undefined) =>
-  (url ?? '').trim().toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '');
+  (url ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[?#].*$/, '')
+    .replace(/\/+$/, '');
 
 /**
  * WHERE A QUEUED MESSAGE ACTUALLY IS, in the operator's words.
@@ -183,7 +183,10 @@ const profileKey = (url: string | null | undefined) =>
  * Held is a pause parking it, and it is the one state where "waiting" would be
  * a lie: see its branch below.
  */
-const replyStage = (action: LinkedInActionView, waitingFor?: LinkedInSeatResponse['execution']['waitingFor']): { label: string; chip: string; detail: string } => {
+const replyStage = (
+  action: LinkedInActionView,
+  waitingFor?: LinkedInSeatResponse['execution']['waitingFor']
+): { label: string; chip: string; detail: string } => {
   if (action.status === 'sent' || action.status === 'accepted' || action.status === 'replied') {
     return {
       label: 'Delivered',
@@ -193,7 +196,11 @@ const replyStage = (action: LinkedInActionView, waitingFor?: LinkedInSeatRespons
         : 'Typed into LinkedIn.'
     };
   }
-  if (action.status === 'skipped' || action.status === 'withdrawn' || action.status === 'declined') {
+  if (
+    action.status === 'skipped' ||
+    action.status === 'withdrawn' ||
+    action.status === 'declined'
+  ) {
     return {
       label: 'Never sent',
       chip: 'li-status-skipped',
@@ -224,8 +231,9 @@ const replyStage = (action: LinkedInActionView, waitingFor?: LinkedInSeatRespons
     return {
       label: 'Paused',
       chip: 'li-status-held',
-      detail: 'Its campaign is paused, so nothing will pick this up — not at its planned time, not later. '
-        + 'Resume the campaign and it goes back in the queue exactly as it is; stop the campaign and it never sends.'
+      detail:
+        'Its campaign is paused, so nothing will pick this up — not at its planned time, not later. ' +
+        'Resume the campaign and it goes back in the queue exactly as it is; stop the campaign and it never sends.'
     };
   }
   if (action.claimedAt) {
@@ -268,16 +276,29 @@ const initials = (name: string | null | undefined) => {
 /** Same person, same tint, for as long as this tab stays open -- a small hash over a fixed tone set, not a new palette and not a stored preference. */
 const avatarTone = (seed: string) => {
   let hash = 0;
-  for (let index = 0; index < seed.length; index += 1) hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  for (let index = 0; index < seed.length; index += 1)
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
   return AVATAR_TONES[hash % AVATAR_TONES.length];
 };
 
 /** The avatar-led row every native message UI draws. `seed` keys the tint to the PERSON (a profile URL, ideally), not the row, so a task and its later conversation read as the same person. */
-function LiAvatar({ name, seed, large }: { name: string | null | undefined; seed: string; large?: boolean }) {
-  return <span
-    className={`li-avatar li-avatar-${avatarTone(seed || name || '?')}${large ? ' li-avatar-lg' : ''}`}
-    aria-hidden="true"
-  >{initials(name)}</span>;
+function LiAvatar({
+  name,
+  seed,
+  large
+}: {
+  name: string | null | undefined;
+  seed: string;
+  large?: boolean;
+}) {
+  return (
+    <span
+      className={`li-avatar li-avatar-${avatarTone(seed || name || '?')}${large ? ' li-avatar-lg' : ''}`}
+      aria-hidden="true"
+    >
+      {initials(name)}
+    </span>
+  );
 }
 
 /** "Today" / "Yesterday" / a date -- read the way a person reads a calendar, never off a raw millisecond subtraction (which a timezone or a DST flip can push across midnight either direction). */
@@ -322,7 +343,12 @@ const groupMessages = (messages: LinkedInMessageRecord[]): ThreadItem[] => {
     }
     if (current && current.direction === message.direction) current.items.push(message);
     else {
-      current = { kind: 'group', key: `group-${message.id}`, direction: message.direction, items: [message] };
+      current = {
+        kind: 'group',
+        key: `group-${message.id}`,
+        direction: message.direction,
+        items: [message]
+      };
       items.push(current);
     }
   }
@@ -351,11 +377,10 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
    * context. Reading it here is what stops the inbox showing one account while
    * the screen the operator just came from showed another.
    */
-  const [activeSeatKey, selectActiveSeat] = useActiveSeatKey();
+  const [activeSeatKey] = useActiveSeatKey();
   const [threads, setThreads] = useState<LinkedInThreadRecord[]>([]);
   const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
-  const [seats, setSeats] = useState<LinkedInSeat[]>([]);
-  const [seatDetails, setSeatDetails] = useState<Record<string, LinkedInSeatResponse>>({});
+  const [seatDetail, setSeatDetail] = useState<LinkedInSeatResponse | null>(null);
   const [managed, setManaged] = useState<ManagedCampaign[]>([]);
   /** Campaign steps waiting on a human. Pending only: a closed task is not a to-do. */
   const [tasks, setTasks] = useState<ManualTaskView[]>([]);
@@ -397,7 +422,10 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
   const [completing, setCompleting] = useState(false);
   /** The safety check's own sentence, verbatim. Not an error: a decision with a reason. */
   const [refusal, setRefusal] = useState('');
-  const [queued, setQueued] = useState<{ plannedFor: string; verdict: LinkedInSafetyVerdict } | null>(null);
+  const [queued, setQueued] = useState<{
+    plannedFor: string;
+    verdict: LinkedInSafetyVerdict;
+  } | null>(null);
   /**
    * The queued message currently open for rewriting, and the draft of it.
    *
@@ -423,7 +451,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
         ...(filters.unread ? { unread: true } : {}),
         ...(filters.hasReply ? { hasReply: true } : {}),
         ...(filters.campaignId ? { campaignId: filters.campaignId } : {}),
-        ...(filters.seatKey ? { seatKey: filters.seatKey } : {}),
+        seatKey: activeSeatKey,
         limit: threadLimit
       });
       if (listToken.current !== token) return;
@@ -431,41 +459,64 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       setError('');
     } catch (err) {
       if (listToken.current === token) {
-        setError(errorMessage(err, 'Unable to read the inbox. Nothing was changed — try the filters again.'));
+        setError(
+          errorMessage(
+            err,
+            'Unable to read the inbox. Nothing was changed — try the filters again.'
+          )
+        );
       }
     } finally {
       if (listToken.current === token) setLoading(false);
     }
-  }, [filters.unread, filters.hasReply, filters.campaignId, filters.seatKey, threadLimit]);
+  }, [filters.unread, filters.hasReply, filters.campaignId, activeSeatKey, threadLimit]);
 
   const loadTasks = useCallback(async () => {
     try {
-      const next = await getLinkedInManualTasks({ status: 'pending' });
+      const next = await getLinkedInManualTasks({ status: 'pending', seatKey: activeSeatKey });
       setTasks(next);
       // Read as deep as the route allows, because this is the read that decides
       // whether Trevra can queue a task's message at all: a conversation past
       // the ceiling is indistinguishable from one that was never synced, and
       // the composer has to be able to tell those two apart.
-      const conversations = next.length === 0 ? [] : await getLinkedInThreads({ limit: THREAD_MAX });
+      const conversations =
+        next.length === 0
+          ? []
+          : await getLinkedInThreads({ seatKey: activeSeatKey, limit: THREAD_MAX });
       setTaskThreads(conversations);
       setTaskThreadsTruncated(conversations.length >= THREAD_MAX);
       setTaskError('');
     } catch (err) {
-      setTaskError(errorMessage(err, 'Unable to read the messages campaigns are waiting on you for. Nothing was changed.'));
+      setTaskError(
+        errorMessage(
+          err,
+          'Unable to read the messages campaigns are waiting on you for. Nothing was changed.'
+        )
+      );
     }
-  }, []);
+  }, [activeSeatKey]);
 
   const loadReplies = useCallback(async () => {
     try {
-      const next = await getLinkedInActions({ kind: 'reply', limit: REPLY_MAX });
+      const next = await getLinkedInActions({
+        kind: 'reply',
+        seatKey: activeSeatKey,
+        limit: REPLY_MAX
+      });
       setReplies(next);
       setRepliesTruncated(next.length >= REPLY_MAX);
+    } catch {
+      /* the send-state strip adds to a conversation; it is never a reason to fail reading one */
     }
-    catch { /* the send-state strip adds to a conversation; it is never a reason to fail reading one */ }
-  }, []);
+  }, [activeSeatKey]);
 
-  useEffect(() => { void loadThreads(); }, [loadThreads]);
-  useEffect(() => { void loadTasks(); void loadReplies(); }, [loadTasks, loadReplies]);
+  useEffect(() => {
+    void loadThreads();
+  }, [loadThreads]);
+  useEffect(() => {
+    void loadTasks();
+    void loadReplies();
+  }, [loadTasks, loadReplies]);
 
   const reloadAll = useCallback(async () => {
     await Promise.allSettled([loadThreads(), loadTasks(), loadReplies()]);
@@ -474,64 +525,42 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
   const hasLiveReplies = replies.some((action) => LIVE_REPLY_STATUSES.has(action.status));
   useEffect(() => {
     if (!hasLiveReplies) return;
-    const timer = window.setInterval(() => { void reloadAll(); }, 30_000);
+    const timer = window.setInterval(() => {
+      void reloadAll();
+    }, 30_000);
     return () => window.clearInterval(timer);
   }, [hasLiveReplies, reloadAll]);
 
   useEffect(() => {
-    // A picker that cannot be populated simply is not offered; none of these
-    // reads ever block the conversations, which is what this screen is for.
     void (async () => {
-      try { setCampaigns(await getLinkedInCampaigns()); } catch { /* no error banner over the inbox for a filter */ }
-      try { setSeats(await getLinkedInManagerSeats()); } catch { /* one account is the honest assumption when we cannot tell */ }
-      try { setManaged(await getLinkedInManagedCampaigns()); } catch { /* a task still names its person without a campaign name */ }
+      try {
+        setCampaigns(await getLinkedInCampaigns(activeSeatKey));
+      } catch {
+        /* no error banner over the inbox for a filter */
+      }
+      try {
+        setManaged(await getLinkedInManagedCampaigns());
+      } catch {
+        /* a task still names its person without a campaign name */
+      }
+      try {
+        setSeatDetail(await getLinkedInSeat(activeSeatKey));
+      } catch {
+        setSeatDetail(null);
+      }
     })();
-  }, []);
-
-  useEffect(() => {
-    if (seats.length === 0) { setSeatDetails({}); return; }
-    let cancelled = false;
-    void Promise.all(seats.map(async (seat) => [seat.seatKey, await getLinkedInSeat(seat.seatKey)] as const))
-      .then((pairs) => { if (!cancelled) setSeatDetails(Object.fromEntries(pairs)); })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [seats]);
-
-  /**
-   * Follow the account the operator picked -- but only once it is a real one.
-   *
-   * The stored key is whatever was last chosen anywhere in outreach, and a
-   * workspace can be reading it before its accounts have loaded, or holding a
-   * key that no longer belongs to a configured account. Filtering by a key the
-   * picker below has no option for would show an empty inbox and no way to see
-   * why, so the filter adopts it only when the seat list confirms it, and only
-   * where there is more than one account for the choice to mean anything.
-   */
-  useEffect(() => {
-    if (seats.length < 2) return;
-    if (!seats.some((seat) => seat.seatKey === activeSeatKey)) return;
-    setFilters((current) => (current.seatKey === activeSeatKey ? current : { ...current, seatKey: activeSeatKey }));
-  }, [seats, activeSeatKey]);
-
-  /** More than one configured account is what earns the extra column of chrome. Never before. */
-  const multiSeat = seats.length > 1;
-  const seatLabel = useCallback(
-    (seatKey: string) => seats.find((seat) => seat.seatKey === seatKey)?.label ?? seatKey,
-    [seats]
-  );
+  }, [activeSeatKey]);
   const campaignName = useCallback(
-    (campaignId: string) => managed.find((campaign) => campaign.id === campaignId)?.name ?? 'A campaign',
+    (campaignId: string) =>
+      managed.find((campaign) => campaign.id === campaignId)?.name ?? 'A campaign',
     [managed]
   );
   const replyStageFor = useCallback(
-    (action: LinkedInActionView) => replyStage(action, seatDetails[action.seatKey]?.execution.waitingFor),
-    [seatDetails]
+    (action: LinkedInActionView) => replyStage(action, seatDetail?.execution.waitingFor),
+    [seatDetail]
   );
 
-  const visibleTasks = useMemo(
-    () => tasks.filter((task) => !filters.seatKey || task.seatKey === filters.seatKey),
-    [tasks, filters.seatKey]
-  );
+  const visibleTasks = tasks;
   const openTask = useMemo(
     () => visibleTasks.find((task) => task.id === openTaskId) ?? null,
     [visibleTasks, openTaskId]
@@ -542,11 +571,14 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     if (!key) return null;
     return taskThreads.find((thread) => profileKey(thread.profileUrl) === key) ?? null;
   }, [openTask, taskThreads]);
-  const repliesFor = useCallback((profileUrl: string | null | undefined) => {
-    const key = profileKey(profileUrl);
-    if (!key) return [];
-    return replies.filter((action) => profileKey(action.targetRef) === key).slice(0, 4);
-  }, [replies]);
+  const repliesFor = useCallback(
+    (profileUrl: string | null | undefined) => {
+      const key = profileKey(profileUrl);
+      if (!key) return [];
+      return replies.filter((action) => profileKey(action.targetRef) === key).slice(0, 4);
+    },
+    [replies]
+  );
 
   /**
    * The message to this person that is still in flight, if there is one.
@@ -557,11 +589,18 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
    * rows the server would refuse against, so the screen and the ledger disagree
    * only for as long as it takes this list to be re-read.
    */
-  const liveReplyTo = useCallback((profileUrl: string | null | undefined) => {
-    const key = profileKey(profileUrl);
-    if (!key) return null;
-    return replies.find((action) => profileKey(action.targetRef) === key && LIVE_REPLY_STATUSES.has(action.status)) ?? null;
-  }, [replies]);
+  const liveReplyTo = useCallback(
+    (profileUrl: string | null | undefined) => {
+      const key = profileKey(profileUrl);
+      if (!key) return null;
+      return (
+        replies.find(
+          (action) => profileKey(action.targetRef) === key && LIVE_REPLY_STATUSES.has(action.status)
+        ) ?? null
+      );
+    },
+    [replies]
+  );
 
   /**
    * WHICH ACCOUNT THIS CONVERSATION IS IN, taken off the row that named it.
@@ -573,12 +612,14 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
    * `seatKey`, so it is read from the row that was clicked rather than inferred
    * from the filter, which may well be "Any account".
    */
-  const seatForThread = useCallback((threadUrn: string): string | undefined =>
-    threads.find((thread) => thread.threadUrn === threadUrn)?.seatKey
-    ?? taskThreads.find((thread) => thread.threadUrn === threadUrn)?.seatKey
-    ?? (conversation?.thread.threadUrn === threadUrn ? conversation.thread.seatKey : undefined)
-    ?? (filters.seatKey || undefined),
-    [threads, taskThreads, conversation, filters.seatKey]);
+  const seatForThread = useCallback(
+    (threadUrn: string): string | undefined =>
+      threads.find((thread) => thread.threadUrn === threadUrn)?.seatKey ??
+      taskThreads.find((thread) => thread.threadUrn === threadUrn)?.seatKey ??
+      (conversation?.thread.threadUrn === threadUrn ? conversation.thread.seatKey : undefined) ??
+      activeSeatKey,
+    [threads, taskThreads, conversation, activeSeatKey]
+  );
 
   const openThread = async (threadUrn: string) => {
     setOpenUrn(threadUrn);
@@ -593,7 +634,9 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     } catch (err) {
       setConversation(null);
       setError(errorMessage(err, 'Unable to read that conversation. Nothing was changed.'));
-    } finally { setReading(false); }
+    } finally {
+      setReading(false);
+    }
   };
 
   /** A task is something to write, not something that arrived. Opening one loads its draft. */
@@ -619,17 +662,21 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     setError('');
     setDegraded([]);
     try {
-      const result = await syncLinkedInInbox(filters.seatKey ? { seatKey: filters.seatKey } : {});
+      const result = await syncLinkedInInbox({ seatKey: activeSeatKey });
       setDegraded(result.degraded);
-      setToast(`${result.threads} conversation(s) walked · ${result.created} new, ${result.updated} updated, `
-        + `${result.inbound} inbound message(s) stored, ${result.linked} matched to a campaign.`);
+      setToast(
+        `${result.threads} conversation(s) walked · ${result.created} new, ${result.updated} updated, ` +
+          `${result.inbound} inbound message(s) stored, ${result.linked} matched to a campaign.`
+      );
       await reloadOutreach();
       if (openUrn) await openThread(openUrn);
     } catch (err) {
       const message = errorMessage(err, 'Unable to walk the inbox');
       if (err instanceof ApiError && err.status === 409) setBlocked(message);
       else setError(message);
-    } finally { setSyncing(null); }
+    } finally {
+      setSyncing(null);
+    }
   };
 
   const syncOne = async (threadUrn: string) => {
@@ -649,7 +696,9 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       const message = errorMessage(err, 'Unable to re-read that conversation');
       if (err instanceof ApiError && err.status === 409) setBlocked(message);
       else setError(message);
-    } finally { setSyncing(null); }
+    } finally {
+      setSyncing(null);
+    }
   };
 
   /**
@@ -667,17 +716,26 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     setError('');
     setQueued(null);
     try {
-      const result = await replyToLinkedInThread(threadUrn, body, undefined, seatForThread(threadUrn));
+      const result = await replyToLinkedInThread(
+        threadUrn,
+        body,
+        undefined,
+        seatForThread(threadUrn)
+      );
       setQueued({ plannedFor: result.plannedFor, verdict: result.verdict });
       setBody('');
-      setToast('Message queued. Nothing has been sent yet — this screen shows when it is typed into LinkedIn.');
+      setToast(
+        'Message queued. Nothing has been sent yet — this screen shows when it is typed into LinkedIn.'
+      );
       await loadReplies();
       await reloadOutreach();
     } catch (err) {
       const message = errorMessage(err, 'Unable to queue that message');
       if (err instanceof ApiError && err.status === 409) setRefusal(message);
       else setError(message);
-    } finally { setQueueing(false); }
+    } finally {
+      setQueueing(false);
+    }
   };
 
   /**
@@ -693,14 +751,18 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     setError('');
     try {
       await completeLinkedInManualTask(task.id);
-      setToast(`${task.firstName} ${task.lastName} marked as messaged. The campaign can move them to its next step.`);
+      setToast(
+        `${task.firstName} ${task.lastName} marked as messaged. The campaign can move them to its next step.`
+      );
       setOpenTaskId(null);
       setBody('');
       await loadTasks();
       await reloadOutreach();
     } catch (err) {
       setError(errorMessage(err, 'Unable to close that one off. Nothing was changed.'));
-    } finally { setCompleting(false); }
+    } finally {
+      setCompleting(false);
+    }
   };
 
   /**
@@ -731,13 +793,17 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     try {
       await editLinkedInActionBody(action.id, editDraft);
       setEditingId(null);
-      setToast('Message updated. Same person, same slot — only the words changed, and nothing has been sent.');
+      setToast(
+        'Message updated. Same person, same slot — only the words changed, and nothing has been sent.'
+      );
       await loadReplies();
     } catch (err) {
       const message = errorMessage(err, 'Unable to change that message');
       if (err instanceof ApiError && err.status === 409) setRefusal(message);
       else setError(message);
-    } finally { setSavingEdit(false); }
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   /** Drop a queued message before it is typed. Nothing reaches them, ever. */
@@ -752,82 +818,112 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       await reloadOutreach();
     } catch (err) {
       setError(errorMessage(err, 'Unable to cancel that message. Nothing was changed.'));
-    } finally { setCancellingId(null); }
+    } finally {
+      setCancellingId(null);
+    }
   };
 
   /** Where each message to this person got to. Read off the queued rows, never guessed. */
   const sendState = (profileUrl: string | null | undefined) => {
     const rows = repliesFor(profileUrl);
     if (rows.length === 0) return null;
-    return <div className="li-queued">
-      <strong><Clock size={14} /> {rows.length === 1 ? 'Your message to them' : `Your last ${rows.length} messages to them`}</strong>
-      {rows.map((action) => {
-        const stage = replyStageFor(action);
-        /**
-         * WHAT A WAITING MESSAGE STILL ALLOWS.
-         *
-         * Until the worker claims a row its words are text in a database the
-         * operator owns, so both controls are honest: rewriting changes what
-         * will be typed and nothing else, and cancelling means nothing is ever
-         * typed. A claimed row offers neither -- the browser may be typing
-         * these very bytes -- and neither does a campaign's own copy.
-         */
-        const editable = action.status === 'planned' && !action.claimedAt && action.source === 'manual';
-        const editing = editingId === action.id;
-        return <div className="li-chip-row" key={action.id}>
-          <span className={`li-chip ${stage.chip}`}>{stage.label}</span>
-          <p>{stage.detail}</p>
-          {action.body && !editing && <blockquote className="li-queued-body">{action.body}</blockquote>}
-          {editable && !editing && <div className="li-queued-controls">
-            <button type="button" className="secondary-button" onClick={() => startEditingQueued(action)}>
-              <Pencil size={14} /> Edit these words
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={cancellingId === action.id}
-              onClick={() => void cancelQueued(action)}
-            >
-              <X size={14} /> {cancellingId === action.id ? 'Cancelling…' : 'Cancel it'}
-            </button>
-          </div>}
-          {editing && <div className="li-queued-edit">
-            <label className="li-block-label">The words that will be typed
-              <textarea
-                rows={4}
-                value={editDraft}
-                onChange={(event) => setEditDraft(event.target.value)}
-                placeholder="Write the message you want to send."
-              />
-            </label>
-            <div className="li-queued-controls">
-              <button
-                type="button"
-                className="primary-button"
-                disabled={savingEdit || !editDraft.trim()}
-                onClick={() => void saveQueuedEdit(action)}
-              >
-                {savingEdit ? 'Saving…' : 'Save these words'}
-              </button>
-              <button type="button" className="secondary-button" disabled={savingEdit} onClick={() => setEditingId(null)}>
-                Leave it as it was
-              </button>
+    return (
+      <div className="li-queued">
+        <strong>
+          <Clock size={14} />{' '}
+          {rows.length === 1 ? 'Your message to them' : `Your last ${rows.length} messages to them`}
+        </strong>
+        {rows.map((action) => {
+          const stage = replyStageFor(action);
+          /**
+           * WHAT A WAITING MESSAGE STILL ALLOWS.
+           *
+           * Until the worker claims a row its words are text in a database the
+           * operator owns, so both controls are honest: rewriting changes what
+           * will be typed and nothing else, and cancelling means nothing is ever
+           * typed. A claimed row offers neither -- the browser may be typing
+           * these very bytes -- and neither does a campaign's own copy.
+           */
+          const editable =
+            action.status === 'planned' && !action.claimedAt && action.source === 'manual';
+          const editing = editingId === action.id;
+          return (
+            <div className="li-chip-row" key={action.id}>
+              <span className={`li-chip ${stage.chip}`}>{stage.label}</span>
+              <p>{stage.detail}</p>
+              {action.body && !editing && (
+                <blockquote className="li-queued-body">{action.body}</blockquote>
+              )}
+              {editable && !editing && (
+                <div className="li-queued-controls">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => startEditingQueued(action)}
+                  >
+                    <Pencil size={14} /> Edit these words
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={cancellingId === action.id}
+                    onClick={() => void cancelQueued(action)}
+                  >
+                    <X size={14} /> {cancellingId === action.id ? 'Cancelling…' : 'Cancel it'}
+                  </button>
+                </div>
+              )}
+              {editing && (
+                <div className="li-queued-edit">
+                  <label className="li-block-label">
+                    The words that will be typed
+                    <textarea
+                      rows={4}
+                      value={editDraft}
+                      onChange={(event) => setEditDraft(event.target.value)}
+                      placeholder="Write the message you want to send."
+                    />
+                  </label>
+                  <div className="li-queued-controls">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={savingEdit || !editDraft.trim()}
+                      onClick={() => void saveQueuedEdit(action)}
+                    >
+                      {savingEdit ? 'Saving…' : 'Save these words'}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={savingEdit}
+                      onClick={() => setEditingId(null)}
+                    >
+                      Leave it as it was
+                    </button>
+                  </div>
+                  <p className="li-hint">
+                    Words only. Same person, same slot, same safety checks — saving sends nothing,
+                    and if Trevra picks the message up while you are typing, your change is refused
+                    rather than half-applied.
+                  </p>
+                </div>
+              )}
             </div>
-            <p className="li-hint">
-              Words only. Same person, same slot, same safety checks — saving sends nothing, and if Trevra picks the
-              message up while you are typing, your change is refused rather than half-applied.
-            </p>
-          </div>}
-        </div>;
-      })}
-      {repliesTruncated && <p className="li-hint">
-        Only the {REPLY_MAX} most recent messages this workspace queued were read, so an older one to them may be
-        missing from this list. Nothing here is guessed at either way.
-      </p>}
-    </div>;
+          );
+        })}
+        {repliesTruncated && (
+          <p className="li-hint">
+            Only the {REPLY_MAX} most recent messages this workspace queued were read, so an older
+            one to them may be missing from this list. Nothing here is guessed at either way.
+          </p>
+        )}
+      </div>
+    );
   };
 
-  const filtered = filters.unread || filters.hasReply || Boolean(filters.campaignId) || Boolean(filters.seatKey) || Boolean(search.trim());
+  const filtered =
+    filters.unread || filters.hasReply || Boolean(filters.campaignId) || Boolean(search.trim());
   const messages = conversation?.messages ?? [];
   /**
    * ONE LIST, NOT TWO. A native inbox is a single rail sorted by recency; a
@@ -845,7 +941,12 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     const rows: InboxRow[] = [];
     for (const task of visibleTasks) {
       if (!matches([task.firstName, task.lastName, task.company, task.suggestedBody])) continue;
-      rows.push({ kind: 'task', key: `task-${task.id}`, ts: Date.parse(task.createdAt) || 0, task });
+      rows.push({
+        kind: 'task',
+        key: `task-${task.id}`,
+        ts: Date.parse(task.createdAt) || 0,
+        task
+      });
     }
     for (const thread of threads) {
       if (!matches([thread.name, thread.snippet])) continue;
@@ -866,285 +967,389 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
   const taskLiveReply = openTask ? liveReplyTo(openTask.profileUrl) : null;
   const threadLiveReply = conversation ? liveReplyTo(conversation.thread.profileUrl) : null;
 
-  return <div className="page-stack">
-    {error && <div className="error-banner">
-      <strong>{error}</strong> Whatever is below is the last good read.{' '}
-      <button className="secondary-button" type="button" disabled={loading} onClick={() => void reloadAll()}>
-        {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Read the inbox again
-      </button>
-    </div>}
-
-    {blocked && <div className="li-connect-blocked">
-      <strong><CircleAlert size={14} /> One thing has to happen on your machine first.</strong>
-      <p className="li-blocked-message">{blocked}</p>
-      <p>Nothing was read and nothing was changed. What is below is still the last sync.</p>
-    </div>}
-
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>Inbox</h3>
-          <p>
-            Everything people have written to you, and every message a campaign is waiting on you to write. Reading
-            here never touches LinkedIn; Sync opens it in a real browser on this machine, at paced gaps, and Trevra
-            does the same walk on its own schedule.
-          </p>
+  return (
+    <div className="page-stack">
+      {error && (
+        <div className="error-banner">
+          <strong>{error}</strong> Whatever is below is the last good read.{' '}
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={loading}
+            onClick={() => void reloadAll()}
+          >
+            {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Read
+            the inbox again
+          </button>
         </div>
-        <button className="secondary-button" type="button" disabled={syncing !== null} onClick={() => void syncRail()}>
-          {syncing === 'rail' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Sync the inbox
-        </button>
-      </div>
+      )}
 
-      <div className="li-filter-row">
-        <button
-          type="button"
-          className={`li-range ${filters.unread ? 'is-active' : ''}`}
-          aria-pressed={filters.unread}
-          onClick={() => setFilters((current) => ({ ...current, unread: !current.unread }))}
-        >Unread</button>
-        <button
-          type="button"
-          className={`li-range ${filters.hasReply ? 'is-active' : ''}`}
-          aria-pressed={filters.hasReply}
-          onClick={() => setFilters((current) => ({ ...current, hasReply: !current.hasReply }))}
-        >Has a reply</button>
-        <label>Campaign
-          <select
-            value={filters.campaignId}
-            onChange={(event) => setFilters((current) => ({ ...current, campaignId: event.target.value }))}
+      {blocked && (
+        <div className="li-connect-blocked">
+          <strong>
+            <CircleAlert size={14} /> One thing has to happen on your machine first.
+          </strong>
+          <p className="li-blocked-message">{blocked}</p>
+          <p>Nothing was read and nothing was changed. What is below is still the last sync.</p>
+        </div>
+      )}
+
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Inbox</h3>
+            <p>
+              Everything people have written to you, and every message a campaign is waiting on you
+              to write. Reading here never touches LinkedIn; Sync opens it in a real browser on this
+              machine, at paced gaps, and Trevra does the same walk on its own schedule.
+            </p>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={syncing !== null}
+            onClick={() => void syncRail()}
           >
-            <option value="">Any campaign</option>
-            {campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
-          </select>
-        </label>
-        {multiSeat && <label>Account
-          <select
-            value={filters.seatKey}
-            onChange={(event) => {
-              const next = event.target.value;
-              setFilters((current) => ({ ...current, seatKey: next }));
-              // Picking an account here is picking it everywhere: the queue and
-              // the campaign screens read the same stored key. "Any account" is
-              // a widening of this list only, so it leaves that choice alone.
-              if (next) selectActiveSeat(next);
-            }}
-          >
-            <option value="">Any account</option>
-            {seats.map((seat) => <option key={seat.seatKey} value={seat.seatKey}>{seat.label}</option>)}
-          </select>
-        </label>}
-        {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the inbox" />}
-      </div>
-
-      {degraded.length > 0 && <div className="li-degraded">
-        <strong>Walked, but not all of it came back:</strong>
-        <ul>{degraded.slice(0, 8).map((entry) => <li key={entry}>{entry}</li>)}</ul>
-        <p>Anything missing is simply not stored. Nothing here is guessed at.</p>
-      </div>}
-    </section>
-
-    <div className="li-inbox">
-      <section className="page-panel li-thread-pane">
-        <div className="li-search-row">
-          <Search className="li-search-icon" size={14} aria-hidden="true" />
-          <input
-            type="search"
-            className="li-search-input"
-            placeholder="Search messages"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            aria-label="Search conversations and messages to write"
-          />
+            {syncing === 'rail' ? (
+              <LoaderCircle className="spin" size={14} />
+            ) : (
+              <RefreshCw size={14} />
+            )}{' '}
+            Sync the inbox
+          </button>
         </div>
 
-        {taskError && <p className="li-hint">{taskError}</p>}
+        <div className="li-filter-row">
+          <button
+            type="button"
+            className={`li-range ${filters.unread ? 'is-active' : ''}`}
+            aria-pressed={filters.unread}
+            onClick={() => setFilters((current) => ({ ...current, unread: !current.unread }))}
+          >
+            Unread
+          </button>
+          <button
+            type="button"
+            className={`li-range ${filters.hasReply ? 'is-active' : ''}`}
+            aria-pressed={filters.hasReply}
+            onClick={() => setFilters((current) => ({ ...current, hasReply: !current.hasReply }))}
+          >
+            Has a reply
+          </button>
+          <label>
+            Campaign
+            <select
+              value={filters.campaignId}
+              onChange={(event) =>
+                setFilters((current) => ({ ...current, campaignId: event.target.value }))
+              }
+            >
+              <option value="">Any campaign</option>
+              {campaigns.map((campaign) => (
+                <option key={campaign.id} value={campaign.id}>
+                  {campaign.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the inbox" />}
+        </div>
 
-        {inboxRows.length === 0
-          ? <div className="empty-state">
-            <Inbox size={26} />
-            <h4 aria-level={3}>{filtered ? 'Nothing matches' : 'Nothing has been synced yet'}</h4>
-            <p>{filtered
-              ? 'The filters and search above narrow what the last sync stored; they never fetch anything new.'
-              : 'Sync the inbox to walk the conversation rail. Trevra stores what LinkedIn rendered — it invents no message and no timestamp.'}</p>
-            {/* Clearing drops the narrowing, not the account: the account is a
+        {degraded.length > 0 && (
+          <div className="li-degraded">
+            <strong>Walked, but not all of it came back:</strong>
+            <ul>
+              {degraded.slice(0, 8).map((entry) => (
+                <li key={entry}>{entry}</li>
+              ))}
+            </ul>
+            <p>Anything missing is simply not stored. Nothing here is guessed at.</p>
+          </div>
+        )}
+      </section>
+
+      <div className="li-inbox">
+        <section className="page-panel li-thread-pane">
+          <div className="li-search-row">
+            <Search className="li-search-icon" size={14} aria-hidden="true" />
+            <input
+              type="search"
+              className="li-search-input"
+              placeholder="Search messages"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              aria-label="Search conversations and messages to write"
+            />
+          </div>
+
+          {taskError && <p className="li-hint">{taskError}</p>}
+
+          {inboxRows.length === 0 ? (
+            <div className="empty-state">
+              <Inbox size={26} />
+              <h4 aria-level={3}>{filtered ? 'Nothing matches' : 'Nothing has been synced yet'}</h4>
+              <p>
+                {filtered
+                  ? 'The filters and search above narrow what the last sync stored; they never fetch anything new.'
+                  : 'Sync the inbox to walk the conversation rail. Trevra stores what LinkedIn rendered — it invents no message and no timestamp.'}
+              </p>
+              {/* Clearing drops the narrowing, not the account: the account is a
                 choice made across outreach, and silently widening the inbox to
                 every seat would be this screen overruling it. */}
-            {filtered && <button
-              className="secondary-button"
-              type="button"
-              onClick={() => {
-                setSearch('');
-                setFilters({
-                  ...EMPTY_FILTERS,
-                  seatKey: seats.length > 1 && seats.some((seat) => seat.seatKey === activeSeatKey) ? activeSeatKey : ''
-                });
-              }}
-            >
-              Clear the filters
-            </button>}
-          </div>
-          : <ul className="li-thread-list">
-            {inboxRows.map((row) => row.kind === 'task'
-              ? <li key={row.key}>
+              {filtered && (
                 <button
+                  className="secondary-button"
                   type="button"
-                  className={`li-thread ${openTaskId === row.task.id ? 'is-open' : ''}`}
-                  onClick={() => selectTask(row.task)}
+                  onClick={() => {
+                    setSearch('');
+                    setFilters(EMPTY_FILTERS);
+                  }}
                 >
-                  <LiAvatar
-                    name={`${row.task.firstName} ${row.task.lastName}`}
-                    seed={profileKey(row.task.profileUrl) || `${row.task.firstName} ${row.task.lastName}`}
-                  />
-                  <span className="li-thread-body">
-                    <span className="li-thread-top">
-                      <strong className="li-thread-name">{row.task.firstName} {row.task.lastName}</strong>
-                      <span className="li-thread-time">{relativeTime(row.task.createdAt)}</span>
-                    </span>
-                    <span className="li-thread-snippet">
-                      {row.task.suggestedBody?.trim() || 'No draft was written for this step — the words are yours.'}
-                    </span>
-                    <span className="li-thread-meta">
-                      <span className="li-chip li-status-planned">To write</span>
-                      {row.task.company && <span>{row.task.company}</span>}
-                      <span>{campaignName(row.task.campaignId)}</span>
-                      {multiSeat && <span className="li-chip">{seatLabel(row.task.seatKey)}</span>}
-                    </span>
-                  </span>
+                  Clear the filters
                 </button>
-              </li>
-              : <li key={row.key}>
-                <button
-                  type="button"
-                  className={`li-thread ${openUrn === row.thread.threadUrn ? 'is-open' : ''}`}
-                  onClick={() => void openThread(row.thread.threadUrn)}
-                >
-                  <LiAvatar
-                    name={row.thread.name}
-                    seed={profileKey(row.thread.profileUrl) || row.thread.name || row.thread.threadUrn}
-                  />
-                  <span className="li-thread-body">
-                    <span className="li-thread-top">
-                      {row.thread.unread && <i className="li-unread-dot" aria-label="Unread at the last sync" />}
-                      <strong className="li-thread-name">{row.thread.name ?? <em className="li-unknown">Name unknown</em>}</strong>
-                      <span className="li-thread-time">
-                        {row.thread.lastMessageAt ? relativeTime(row.thread.lastMessageAt) : '—'}
+              )}
+            </div>
+          ) : (
+            <ul className="li-thread-list">
+              {inboxRows.map((row) =>
+                row.kind === 'task' ? (
+                  <li key={row.key}>
+                    <button
+                      type="button"
+                      className={`li-thread ${openTaskId === row.task.id ? 'is-open' : ''}`}
+                      onClick={() => selectTask(row.task)}
+                    >
+                      <LiAvatar
+                        name={`${row.task.firstName} ${row.task.lastName}`}
+                        seed={
+                          profileKey(row.task.profileUrl) ||
+                          `${row.task.firstName} ${row.task.lastName}`
+                        }
+                      />
+                      <span className="li-thread-body">
+                        <span className="li-thread-top">
+                          <strong className="li-thread-name">
+                            {row.task.firstName} {row.task.lastName}
+                          </strong>
+                          <span className="li-thread-time">{relativeTime(row.task.createdAt)}</span>
+                        </span>
+                        <span className="li-thread-snippet">
+                          {row.task.suggestedBody?.trim() ||
+                            'No draft was written for this step — the words are yours.'}
+                        </span>
+                        <span className="li-thread-meta">
+                          <span className="li-chip li-status-planned">To write</span>
+                          {row.task.company && <span>{row.task.company}</span>}
+                          <span>{campaignName(row.task.campaignId)}</span>
+                        </span>
                       </span>
-                    </span>
-                    <span className="li-thread-snippet">{row.thread.snippet || 'No snippet was rendered for this conversation.'}</span>
-                    <span className="li-thread-meta">
-                      {row.thread.messageCount} message{row.thread.messageCount === 1 ? '' : 's'}
-                      {row.thread.hasReply && <span className="li-chip li-status-replied">replied</span>}
-                      {row.thread.campaignId && <span className="li-chip">campaign</span>}
-                      {multiSeat && <span className="li-chip">{seatLabel(row.thread.seatKey)}</span>}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            )}
-          </ul>}
+                    </button>
+                  </li>
+                ) : (
+                  <li key={row.key}>
+                    <button
+                      type="button"
+                      className={`li-thread ${openUrn === row.thread.threadUrn ? 'is-open' : ''}`}
+                      onClick={() => void openThread(row.thread.threadUrn)}
+                    >
+                      <LiAvatar
+                        name={row.thread.name}
+                        seed={
+                          profileKey(row.thread.profileUrl) ||
+                          row.thread.name ||
+                          row.thread.threadUrn
+                        }
+                      />
+                      <span className="li-thread-body">
+                        <span className="li-thread-top">
+                          {row.thread.unread && (
+                            <i className="li-unread-dot" aria-label="Unread at the last sync" />
+                          )}
+                          <strong className="li-thread-name">
+                            {row.thread.name ?? <em className="li-unknown">Name unknown</em>}
+                          </strong>
+                          <span className="li-thread-time">
+                            {row.thread.lastMessageAt
+                              ? relativeTime(row.thread.lastMessageAt)
+                              : '—'}
+                          </span>
+                        </span>
+                        <span className="li-thread-snippet">
+                          {row.thread.snippet || 'No snippet was rendered for this conversation.'}
+                        </span>
+                        <span className="li-thread-meta">
+                          {row.thread.messageCount} message
+                          {row.thread.messageCount === 1 ? '' : 's'}
+                          {row.thread.hasReply && (
+                            <span className="li-chip li-status-replied">replied</span>
+                          )}
+                          {row.thread.campaignId && <span className="li-chip">campaign</span>}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                )
+              )}
+            </ul>
+          )}
 
-        {/* A full page means there are older conversations this read did not
+          {/* A full page means there are older conversations this read did not
             ask for. It is deliberately not phrased as "N of M": the route
             returns rows and no count, so the total is a number nobody has
             measured and this screen will not print one. Keyed to `threads`,
             not `inboxRows`: this is about the server's own paging, and
             neither search nor folding tasks in changes what was asked for. */}
-        {threads.length >= threadLimit && <div className="panel-footer">
-          <span>{threadLimit < THREAD_MAX
-            ? <>The {threads.length} most recently active conversations are shown. There are older ones — this read
-              simply did not ask for them.</>
-            : <>The {THREAD_MAX} most recently active conversations are shown, which is as far as one read of this
-              list reaches. Narrow it by campaign{multiSeat ? ' or account' : ''} above to bring older ones into
-              range.</>}</span>
-          {threadLimit < THREAD_MAX && <button
-            className="secondary-button"
-            type="button"
-            disabled={loading}
-            onClick={() => setThreadLimit((current) => Math.min(THREAD_MAX, current + THREAD_PAGE))}
-          >
-            {loading ? <LoaderCircle className="spin" size={14} /> : <Inbox size={14} />} Show older conversations
-          </button>}
-        </div>}
-      </section>
-
-      <section className="page-panel li-convo">
-        {openTask
-          ? <>
-            <div className="section-heading li-convo-head">
-              <div className="li-convo-title">
-                <LiAvatar
-                  name={`${openTask.firstName} ${openTask.lastName}`}
-                  seed={profileKey(openTask.profileUrl) || `${openTask.firstName} ${openTask.lastName}`}
-                  large
-                />
-                <div>
-                  <h3 aria-level={2}><ClipboardList size={16} /> Write to {openTask.firstName} {openTask.lastName}</h3>
-                  <p>
-                    {openTask.company || 'Company unknown'} · {campaignName(openTask.campaignId)} reached a step it will
-                    not do on its own, and has been waiting since {new Date(openTask.createdAt).toLocaleString()}.
-                  </p>
-                  <p>
-                    {openTask.profileUrl
-                      ? <a className="li-seat-vanity" href={openTask.profileUrl} target="_blank" rel="noreferrer">
-                        {openTask.profileUrl}<ExternalLink size={11} />
-                      </a>
-                      : <span className="li-unknown">No profile URL is stored for this person.</span>}
-                  </p>
-                  {multiSeat && <p>From {seatLabel(openTask.seatKey)}.</p>}
-                </div>
-              </div>
-              {taskThread && <button
-                className="secondary-button"
-                type="button"
-                onClick={() => void openThread(taskThread.threadUrn)}
-              >
-                <MessageSquare size={14} /> Open the conversation
-              </button>}
+          {threads.length >= threadLimit && (
+            <div className="panel-footer">
+              <span>
+                {threadLimit < THREAD_MAX ? (
+                  <>
+                    The {threads.length} most recently active conversations are shown. There are
+                    older ones — this read simply did not ask for them.
+                  </>
+                ) : (
+                  <>
+                    The {THREAD_MAX} most recently active conversations are shown, which is as far
+                    as one read of this list reaches. Narrow it by campaign above to bring older
+                    ones into range.
+                  </>
+                )}
+              </span>
+              {threadLimit < THREAD_MAX && (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={loading}
+                  onClick={() =>
+                    setThreadLimit((current) => Math.min(THREAD_MAX, current + THREAD_PAGE))
+                  }
+                >
+                  {loading ? <LoaderCircle className="spin" size={14} /> : <Inbox size={14} />} Show
+                  older conversations
+                </button>
+              )}
             </div>
+          )}
+        </section>
 
-            <div className="li-composer">
-              <label className="li-block-label">The message
-                <textarea
-                  rows={5}
-                  value={body}
-                  onChange={(event) => setBody(event.target.value)}
-                  placeholder="Write the message you want to send."
-                />
-              </label>
-              <p className="li-hint">{openTask.suggestedBody?.trim()
-                ? 'This draft came from the campaign step. Change as much of it as you like — nothing goes anywhere until you queue it.'
-                : 'This step carries no draft, so nothing has been written for you.'}</p>
+        <section className="page-panel li-convo">
+          {openTask ? (
+            <>
+              <div className="section-heading li-convo-head">
+                <div className="li-convo-title">
+                  <LiAvatar
+                    name={`${openTask.firstName} ${openTask.lastName}`}
+                    seed={
+                      profileKey(openTask.profileUrl) ||
+                      `${openTask.firstName} ${openTask.lastName}`
+                    }
+                    large
+                  />
+                  <div>
+                    <h3 aria-level={2}>
+                      <ClipboardList size={16} /> Write to {openTask.firstName} {openTask.lastName}
+                    </h3>
+                    <p>
+                      {openTask.company || 'Company unknown'} · {campaignName(openTask.campaignId)}{' '}
+                      reached a step it will not do on its own, and has been waiting since{' '}
+                      {new Date(openTask.createdAt).toLocaleString()}.
+                    </p>
+                    <p>
+                      {openTask.profileUrl ? (
+                        <a
+                          className="li-seat-vanity"
+                          href={openTask.profileUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {openTask.profileUrl}
+                          <ExternalLink size={11} />
+                        </a>
+                      ) : (
+                        <span className="li-unknown">
+                          No profile URL is stored for this person.
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+                {taskThread && (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => void openThread(taskThread.threadUrn)}
+                  >
+                    <MessageSquare size={14} /> Open the conversation
+                  </button>
+                )}
+              </div>
 
-              {/* The server's sentence, verbatim, whichever refusal it is: the
+              <div className="li-composer">
+                <label className="li-block-label">
+                  The message
+                  <textarea
+                    rows={5}
+                    value={body}
+                    onChange={(event) => setBody(event.target.value)}
+                    placeholder="Write the message you want to send."
+                  />
+                </label>
+                <p className="li-hint">
+                  {openTask.suggestedBody?.trim()
+                    ? 'This draft came from the campaign step. Change as much of it as you like — nothing goes anywhere until you queue it.'
+                    : 'This step carries no draft, so nothing has been written for you.'}
+                </p>
+
+                {/* The server's sentence, verbatim, whichever refusal it is: the
                   day's ceiling, working hours, a paused account, or a message
                   to this person that has not been typed yet. Naming it as the
                   safety gate specifically would put the wrong sentence over the
                   last of those, so the heading says only what is certain --
                   nothing was queued, and the reason below is the server's. */}
-              {refusal && <div className="li-gate-refusal">
-                <strong><ShieldCheck size={14} /> Trevra did not queue this message, and said why.</strong>
-                <p className="li-blocked-message">{refusal}</p>
-                <p>Nothing was queued and nobody was contacted. That is a decision with a reason, not a failure.</p>
-              </div>}
+                {refusal && (
+                  <div className="li-gate-refusal">
+                    <strong>
+                      <ShieldCheck size={14} /> Trevra did not queue this message, and said why.
+                    </strong>
+                    <p className="li-blocked-message">{refusal}</p>
+                    <p>
+                      Nothing was queued and nobody was contacted. That is a decision with a reason,
+                      not a failure.
+                    </p>
+                  </div>
+                )}
 
-              {queued && <div className="li-queued">
-                <strong><ShieldCheck size={14} /> Queued — planned for {new Date(queued.plannedFor).toLocaleString()}.</strong>
-                <p>
-                  Nothing has been sent yet. Trevra runs every check below again the moment it is due, then types the
-                  message into LinkedIn in a real browser at a human-looking gap. It reads as Delivered here once it has.
-                </p>
-                <details className="li-gate-checks">
-                  <summary>What Trevra checked before queuing this ({(queued.verdict.checks ?? []).length})</summary>
-                  <ul>{(queued.verdict.checks ?? []).map((check) => <li key={check.check}>
-                    <b>{check.check.replaceAll('-', ' ')}</b> — {check.detail}
-                  </li>)}</ul>
-                  <p>{queued.verdict.automationReason}</p>
-                </details>
-              </div>}
+                {queued && (
+                  <div className="li-queued">
+                    <strong>
+                      <ShieldCheck size={14} /> Queued — planned for{' '}
+                      {new Date(queued.plannedFor).toLocaleString()}.
+                    </strong>
+                    <p>
+                      Nothing has been sent yet. Trevra runs every check below again the moment it
+                      is due, then types the message into LinkedIn in a real browser at a
+                      human-looking gap. It reads as Delivered here once it has.
+                    </p>
+                    <details className="li-gate-checks">
+                      <summary>
+                        What Trevra checked before queuing this (
+                        {(queued.verdict.checks ?? []).length})
+                      </summary>
+                      <ul>
+                        {(queued.verdict.checks ?? []).map((check) => (
+                          <li key={check.check}>
+                            <b>{check.check.replaceAll('-', ' ')}</b> — {check.detail}
+                          </li>
+                        ))}
+                      </ul>
+                      <p>{queued.verdict.automationReason}</p>
+                    </details>
+                  </div>
+                )}
 
-              {sendState(openTask.profileUrl)}
+                {sendState(openTask.profileUrl)}
 
-              {/*
+                {/*
                 WHY THERE ARE TWO DIFFERENT LEFT-HAND BUTTONS HERE.
 
                 that route is addressed by CONVERSATION: it looks the thread up,
@@ -1160,82 +1365,137 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                 cannot help, the copy names the way forward instead: send the
                 first message on their profile, then mark it as sent.
               */}
-              <div className="panel-footer li-composer-foot">
-                <span>
-                  {taskThread
-                    ? <>Trevra can send this one for you: it queues the message on the conversation it already synced
-                      with {openTask.firstName} and types it in later. <b>Marking it as sent is a separate act</b> —
-                      do that once the message has really gone out, however it went out.</>
-                    : <>Trevra types a message into a conversation LinkedIn has already shown it, and it has synced
-                      none with {openTask.firstName}. Nothing here opens a new one, so send this first message from
-                      their profile above and then <b>mark it as sent</b>. If you have already written to them from
-                      this account, <b>Sync the inbox</b> and the conversation appears — after that Trevra can queue
-                      the next one for you.
-                      {taskThreadsTruncated && <> Only the {THREAD_MAX} most recently active conversations were read,
-                        so an older one with them would not have been seen.</>}</>}
-                  {taskThread && taskLiveReply && <> One message to {openTask.firstName} is already queued and has not
-                    been typed yet — it reads as <b>{replyStageFor(taskLiveReply).label}</b> above. Queueing a second
-                    answer to the same message is refused; once that one is typed in, or once they write again, the
-                    next is a different answer and goes through.</>}
-                  {' '}Marking it as sent is what releases {openTask.firstName} to the campaign’s next step; nothing
-                  else does.
-                  {' '}<ConfidenceTag confidence="REPORTED" source="docs/linkedin-outreach-plan.md 1.3" compact />
-                </span>
-                <div className="li-row-actions">
-                  {taskThread
-                    ? <button
-                      className="primary-button"
-                      type="button"
-                      disabled={queueing || !body.trim()}
-                      onClick={() => void queueReply(taskThread.threadUrn)}
-                    >
-                      {queueing ? <LoaderCircle className="spin" size={15} /> : <ListPlus size={15} />} Queue this message
-                    </button>
-                    : <button
+                <div className="panel-footer li-composer-foot">
+                  <span>
+                    {taskThread ? (
+                      <>
+                        Trevra can send this one for you: it queues the message on the conversation
+                        it already synced with {openTask.firstName} and types it in later.{' '}
+                        <b>Marking it as sent is a separate act</b> — do that once the message has
+                        really gone out, however it went out.
+                      </>
+                    ) : (
+                      <>
+                        Trevra types a message into a conversation LinkedIn has already shown it,
+                        and it has synced none with {openTask.firstName}. Nothing here opens a new
+                        one, so send this first message from their profile above and then{' '}
+                        <b>mark it as sent</b>. If you have already written to them from this
+                        account, <b>Sync the inbox</b> and the conversation appears — after that
+                        Trevra can queue the next one for you.
+                        {taskThreadsTruncated && (
+                          <>
+                            {' '}
+                            Only the {THREAD_MAX} most recently active conversations were read, so
+                            an older one with them would not have been seen.
+                          </>
+                        )}
+                      </>
+                    )}
+                    {taskThread && taskLiveReply && (
+                      <>
+                        {' '}
+                        One message to {openTask.firstName} is already queued and has not been typed
+                        yet — it reads as <b>{replyStageFor(taskLiveReply).label}</b> above.
+                        Queueing a second answer to the same message is refused; once that one is
+                        typed in, or once they write again, the next is a different answer and goes
+                        through.
+                      </>
+                    )}{' '}
+                    Marking it as sent is what releases {openTask.firstName} to the campaign’s next
+                    step; nothing else does.{' '}
+                    <ConfidenceTag
+                      confidence="REPORTED"
+                      source="docs/linkedin-outreach-plan.md 1.3"
+                      compact
+                    />
+                  </span>
+                  <div className="li-row-actions">
+                    {taskThread ? (
+                      <button
+                        className="primary-button"
+                        type="button"
+                        disabled={queueing || !body.trim()}
+                        onClick={() => void queueReply(taskThread.threadUrn)}
+                      >
+                        {queueing ? (
+                          <LoaderCircle className="spin" size={15} />
+                        ) : (
+                          <ListPlus size={15} />
+                        )}{' '}
+                        Queue this message
+                      </button>
+                    ) : (
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={syncing !== null}
+                        onClick={() => void syncRail()}
+                      >
+                        {syncing === 'rail' ? (
+                          <LoaderCircle className="spin" size={15} />
+                        ) : (
+                          <RefreshCw size={15} />
+                        )}{' '}
+                        Sync the inbox
+                      </button>
+                    )}
+                    <button
                       className="secondary-button"
                       type="button"
-                      disabled={syncing !== null}
-                      onClick={() => void syncRail()}
+                      disabled={completing}
+                      onClick={() => void completeTask(openTask)}
                     >
-                      {syncing === 'rail' ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} Sync the inbox
-                    </button>}
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={completing}
-                    onClick={() => void completeTask(openTask)}
-                  >
-                    {completing ? <LoaderCircle className="spin" size={15} /> : <CheckCircle2 size={15} />} Mark as sent
-                  </button>
+                      {completing ? (
+                        <LoaderCircle className="spin" size={15} />
+                      ) : (
+                        <CheckCircle2 size={15} />
+                      )}{' '}
+                      Mark as sent
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </>
-          : !conversation
-            ? <p className="empty-copy">{reading
-              ? 'Reading that conversation…'
-              : 'Pick a conversation on the left, or one of the messages a campaign is waiting on you to write. A conversation shows what the last sync stored, oldest first.'}</p>
-            : <>
+            </>
+          ) : !conversation ? (
+            <p className="empty-copy">
+              {reading
+                ? 'Reading that conversation…'
+                : 'Pick a conversation on the left, or one of the messages a campaign is waiting on you to write. A conversation shows what the last sync stored, oldest first.'}
+            </p>
+          ) : (
+            <>
               <div className="section-heading li-convo-head">
                 <div className="li-convo-title">
                   <LiAvatar
                     name={conversation.thread.name}
-                    seed={profileKey(conversation.thread.profileUrl) || conversation.thread.name || conversation.thread.threadUrn}
+                    seed={
+                      profileKey(conversation.thread.profileUrl) ||
+                      conversation.thread.name ||
+                      conversation.thread.threadUrn
+                    }
                     large
                   />
                   <div>
                     <h3 aria-level={2}>{conversation.thread.name ?? 'Conversation'}</h3>
                     <p>
-                      {conversation.thread.profileUrl
-                        ? <a className="li-seat-vanity" href={conversation.thread.profileUrl} target="_blank" rel="noreferrer">
-                          {conversation.thread.profileUrl}<ExternalLink size={11} />
+                      {conversation.thread.profileUrl ? (
+                        <a
+                          className="li-seat-vanity"
+                          href={conversation.thread.profileUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {conversation.thread.profileUrl}
+                          <ExternalLink size={11} />
                         </a>
-                        : <span className="li-unknown">No profile URL was resolved, so this conversation cannot be replied to yet.</span>}
+                      ) : (
+                        <span className="li-unknown">
+                          No profile URL was resolved, so this conversation cannot be replied to
+                          yet.
+                        </span>
+                      )}
                     </p>
-                    <p>
-                      Last synced {relativeTime(conversation.thread.syncedAt)}.
-                      {multiSeat && ` On ${seatLabel(conversation.thread.seatKey)}.`}
-                    </p>
+                    <p>Last synced {relativeTime(conversation.thread.syncedAt)}.</p>
                   </div>
                 </div>
                 <button
@@ -1244,32 +1504,56 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                   disabled={syncing !== null}
                   onClick={() => void syncOne(conversation.thread.threadUrn)}
                 >
-                  {syncing === 'thread' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Sync this thread
+                  {syncing === 'thread' ? (
+                    <LoaderCircle className="spin" size={14} />
+                  ) : (
+                    <RefreshCw size={14} />
+                  )}{' '}
+                  Sync this thread
                 </button>
               </div>
 
-              {messages.length === 0
-                ? <p className="empty-copy">No message has been stored for this conversation. Sync it to read what LinkedIn shows.</p>
-                : <ol className="li-msgs">
+              {messages.length === 0 ? (
+                <p className="empty-copy">
+                  No message has been stored for this conversation. Sync it to read what LinkedIn
+                  shows.
+                </p>
+              ) : (
+                <ol className="li-msgs">
                   {groupMessages(messages).map((item) => {
                     if (item.kind === 'divider') {
-                      return <li key={item.key} className="li-day-divider" role="presentation"><span>{item.label}</span></li>;
+                      return (
+                        <li key={item.key} className="li-day-divider" role="presentation">
+                          <span>{item.label}</span>
+                        </li>
+                      );
                     }
                     const last = item.items[item.items.length - 1];
                     const queuedBy = last.actionId ? nameFor(last.queuedByUserId) : null;
-                    return <li key={item.key} className={`li-msg-group li-msg-group-${item.direction}`}>
-                      <span className="li-msg-who">{item.direction === 'in' ? 'Them' : 'You'}</span>
-                      {item.items.map((message) => <p key={message.id} className="li-msg-bubble">{message.body}</p>)}
-                      <span className="li-msg-time">
-                        {messageTime(last.sentAt) ?? 'No timestamp was rendered'}
-                        {last.actionId && ` · sent through Trevra${queuedBy ? ` by ${queuedBy}` : ''}`}
-                      </span>
-                    </li>;
+                    return (
+                      <li key={item.key} className={`li-msg-group li-msg-group-${item.direction}`}>
+                        <span className="li-msg-who">
+                          {item.direction === 'in' ? 'Them' : 'You'}
+                        </span>
+                        {item.items.map((message) => (
+                          <p key={message.id} className="li-msg-bubble">
+                            {message.body}
+                          </p>
+                        ))}
+                        <span className="li-msg-time">
+                          {messageTime(last.sentAt) ?? 'No timestamp was rendered'}
+                          {last.actionId &&
+                            ` · sent through Trevra${queuedBy ? ` by ${queuedBy}` : ''}`}
+                        </span>
+                      </li>
+                    );
                   })}
-                </ol>}
+                </ol>
+              )}
 
               <div className="li-composer">
-                <label className="li-block-label">Your reply
+                <label className="li-block-label">
+                  Your reply
                   <textarea
                     rows={4}
                     value={body}
@@ -1283,26 +1567,46 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                     task composer: "held back to keep the account safe" is the
                     wrong sentence over a refusal that says a reply to this
                     person is already in flight. */}
-                {refusal && <div className="li-gate-refusal">
-                  <strong><ShieldCheck size={14} /> Trevra did not queue this reply, and said why.</strong>
-                  <p className="li-blocked-message">{refusal}</p>
-                  <p>Nothing was queued and nobody was contacted. That is a decision with a reason, not a failure.</p>
-                </div>}
+                {refusal && (
+                  <div className="li-gate-refusal">
+                    <strong>
+                      <ShieldCheck size={14} /> Trevra did not queue this reply, and said why.
+                    </strong>
+                    <p className="li-blocked-message">{refusal}</p>
+                    <p>
+                      Nothing was queued and nobody was contacted. That is a decision with a reason,
+                      not a failure.
+                    </p>
+                  </div>
+                )}
 
-                {queued && <div className="li-queued">
-                  <strong><ShieldCheck size={14} /> Queued — planned for {new Date(queued.plannedFor).toLocaleString()}.</strong>
-                  <p>
-                    Nothing has been sent yet. Trevra runs every check below again the moment it is due, then types the
-                    reply into LinkedIn in a real browser at a human-looking gap. It reads as Delivered here once it has.
-                  </p>
-                  <details className="li-gate-checks">
-                    <summary>What Trevra checked before queuing this ({(queued.verdict.checks ?? []).length})</summary>
-                    <ul>{(queued.verdict.checks ?? []).map((check) => <li key={check.check}>
-                      <b>{check.check.replaceAll('-', ' ')}</b> — {check.detail}
-                    </li>)}</ul>
-                    <p>{queued.verdict.automationReason}</p>
-                  </details>
-                </div>}
+                {queued && (
+                  <div className="li-queued">
+                    <strong>
+                      <ShieldCheck size={14} /> Queued — planned for{' '}
+                      {new Date(queued.plannedFor).toLocaleString()}.
+                    </strong>
+                    <p>
+                      Nothing has been sent yet. Trevra runs every check below again the moment it
+                      is due, then types the reply into LinkedIn in a real browser at a
+                      human-looking gap. It reads as Delivered here once it has.
+                    </p>
+                    <details className="li-gate-checks">
+                      <summary>
+                        What Trevra checked before queuing this (
+                        {(queued.verdict.checks ?? []).length})
+                      </summary>
+                      <ul>
+                        {(queued.verdict.checks ?? []).map((check) => (
+                          <li key={check.check}>
+                            <b>{check.check.replaceAll('-', ' ')}</b> — {check.detail}
+                          </li>
+                        ))}
+                      </ul>
+                      <p>{queued.verdict.automationReason}</p>
+                    </details>
+                  </div>
+                )}
 
                 {sendState(conversation.thread.profileUrl)}
 
@@ -1317,18 +1621,31 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                 <div className="panel-footer li-composer-foot">
                   <span>
                     <b>Nothing leaves when you press this.</b> Trevra holds the reply against
-                    {multiSeat ? ` ${seatLabel(conversation.thread.seatKey)}` : ' this account'}, checks it again the
-                    moment it is due, then types it into LinkedIn in a real browser inside your working hours. You watch
-                    it move from <b>Waiting to send</b> to <b>Delivered</b> right here — and if it is held back to keep
-                    the account safe, you get the reason in place of silence.
-                    {threadLiveReply
-                      ? <> One answer to them is in flight already — it reads as <b>{replyStageFor(threadLiveReply).label}</b>{' '}
-                        above. <b>A second answer to the same message is refused</b>, in the server’s own words; once
-                        that one is typed in, or once they write again, the next is a different answer and is
-                        queued.</>
-                      : <> One unsent answer per message they send: a duplicate is refused with the reason, and
-                        carrying the conversation on is not.</>}
-                    {' '}<ConfidenceTag confidence="REPORTED" source="docs/linkedin-outreach-plan.md 1.3" compact />
+                    {' this account'}, checks it again the moment it is due, then types it into
+                    LinkedIn in a real browser inside your working hours. You watch it move from{' '}
+                    <b>Waiting to send</b> to <b>Delivered</b> right here — and if it is held back
+                    to keep the account safe, you get the reason in place of silence.
+                    {threadLiveReply ? (
+                      <>
+                        {' '}
+                        One answer to them is in flight already — it reads as{' '}
+                        <b>{replyStageFor(threadLiveReply).label}</b> above.{' '}
+                        <b>A second answer to the same message is refused</b>, in the server’s own
+                        words; once that one is typed in, or once they write again, the next is a
+                        different answer and is queued.
+                      </>
+                    ) : (
+                      <>
+                        {' '}
+                        One unsent answer per message they send: a duplicate is refused with the
+                        reason, and carrying the conversation on is not.
+                      </>
+                    )}{' '}
+                    <ConfidenceTag
+                      confidence="REPORTED"
+                      source="docs/linkedin-outreach-plan.md 1.3"
+                      compact
+                    />
                   </span>
                   <button
                     className="primary-button"
@@ -1336,18 +1653,24 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                     disabled={queueing || !body.trim() || !conversation.thread.profileUrl}
                     onClick={() => void queueReply(conversation.thread.threadUrn)}
                   >
-                    {queueing ? <LoaderCircle className="spin" size={15} /> : <ListPlus size={15} />} Queue this reply
+                    {queueing ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <ListPlus size={15} />
+                    )}{' '}
+                    Queue this reply
                   </button>
                 </div>
               </div>
-            </>}
-      </section>
-    </div>
+            </>
+          )}
+        </section>
+      </div>
 
-    <p className="panel-note">
-      <MessageSquare size={13} /> Everything you queue here also shows on the{' '}
-      <a className="li-link" href="/outreach/queue">queue</a>, and it counts against this account’s daily message
-      limit exactly like anything else Trevra sends.
-    </p>
-  </div>;
+      <p className="panel-note">
+        <MessageSquare size={13} /> Queued replies count against this account’s daily message limit
+        exactly like any other message Trevra sends.
+      </p>
+    </div>
+  );
 }

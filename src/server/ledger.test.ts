@@ -6,7 +6,6 @@ import { inflateRawSync } from 'node:zlib';
 import { openDatabase, type Db } from './db.js';
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
-import { LOOP_COST_NO_ATTRIBUTION } from './loop-cost.js';
 
 /**
  * The ledger export, the combined cost surface, and the agent stop reason
@@ -31,17 +30,25 @@ let sessionB = '';
 async function seedSession(workspaceId: string, label: string): Promise<string> {
   const userId = `usr_${workspaceId}`;
   const now = new Date().toISOString();
-  await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+  await db
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(workspaceId, label, now);
-  await db.prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING')
+  await db
+    .prepare(
+      'INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(userId, workspaceId, `${userId}@trevra.test`, label, now);
   const token = randomBytes(24).toString('hex');
-  await db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)').run(
-    createHash('sha256').update(token).digest('hex'),
-    userId,
-    new Date(Date.now() + 86_400_000).toISOString(),
-    now
-  );
+  await db
+    .prepare('INSERT INTO sessions (token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)')
+    .run(
+      createHash('sha256').update(token).digest('hex'),
+      userId,
+      new Date(Date.now() + 86_400_000).toISOString(),
+      now
+    );
   return token;
 }
 
@@ -63,39 +70,95 @@ async function seedLedger(workspaceId: string, marker: string): Promise<string> 
   const now = new Date().toISOString();
   const runId = `arun_${marker}`;
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO agent_runs (id,workspace_id,trigger,status,goal,step_count,max_steps,started_at)
     VALUES (?,?,?,?,?,?,?,?)
-  `).run(runId, workspaceId, 'manual', 'running', `goal for ${marker}`, 1, 12, now);
+  `
+    )
+    .run(runId, workspaceId, 'manual', 'running', `goal for ${marker}`, 1, 12, now);
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO agent_run_steps (id,run_id,workspace_id,seq,kind,tool_name,input_json,output_json,created_at)
     VALUES (?,?,?,?,?,?,?,?,?)
-  `).run(
-    `astep_${marker}`, runId, workspaceId, 1, 'tool', 'list-clients',
-    JSON.stringify({ marker }), JSON.stringify({ nested: { evidence: marker } }), now
-  );
+  `
+    )
+    .run(
+      `astep_${marker}`,
+      runId,
+      workspaceId,
+      1,
+      'tool',
+      'list-clients',
+      JSON.stringify({ marker }),
+      JSON.stringify({ nested: { evidence: marker } }),
+      now
+    );
 
-  for (const [suffix, reported, cost] of [['hard', true, 42], ['soft', false, 10]] as const) {
-    await db.prepare(`
+  for (const [suffix, reported, cost] of [
+    ['hard', true, 42],
+    ['soft', false, 10]
+  ] as const) {
+    await db
+      .prepare(
+        `
       INSERT INTO agent_model_calls (id,workspace_id,run_id,model,prompt_tokens,completion_tokens,cost_cents,usage_reported,created_at)
       VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(`amc_${marker}_${suffix}`, workspaceId, runId, 'gpt-4o-mini', reported ? 1000 : 0, reported ? 200 : 0, cost, reported, now);
+    `
+      )
+      .run(
+        `amc_${marker}_${suffix}`,
+        workspaceId,
+        runId,
+        'gpt-4o-mini',
+        reported ? 1000 : 0,
+        reported ? 200 : 0,
+        cost,
+        reported,
+        now
+      );
   }
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO skill_runs (id,skill_id,skill_version,workspace_id,status,input_json,output_json,evidence_json,started_at)
     VALUES (?,?,?,?,?,?::jsonb,?::jsonb,?::jsonb,?)
-  `).run(
-    `srun_${marker}`, 'gtm.score-lead', '1.0.0', workspaceId, 'ok',
-    JSON.stringify({ marker }), JSON.stringify({ overall: 80 }),
-    JSON.stringify([{ label: 'Source', excerpt: marker }]), now
-  );
+  `
+    )
+    .run(
+      `srun_${marker}`,
+      'gtm.score-lead',
+      '1.0.0',
+      workspaceId,
+      'ok',
+      JSON.stringify({ marker }),
+      JSON.stringify({ overall: 80 }),
+      JSON.stringify([{ label: 'Source', excerpt: marker }]),
+      now
+    );
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,recorded_at,source,created_at)
     VALUES (?,?,?,?,?,?,?,?,?)
-  `).run(`lact_${marker}`, workspaceId, 'owner', 'invite', `https://linkedin.test/${marker}`, 'accepted', now, 'manual', now);
+  `
+    )
+    .run(
+      `lact_${marker}`,
+      workspaceId,
+      'owner',
+      'invite',
+      `https://linkedin.test/${marker}`,
+      'accepted',
+      now,
+      'manual',
+      now
+    );
 
   return runId;
 }
@@ -129,15 +192,25 @@ function unzip(archive: Buffer): Map<string, Buffer> {
 }
 
 function ndjson(file: Buffer): Array<Record<string, unknown>> {
-  return file.toString('utf8').split('\n').filter((line) => line.length > 0)
+  return file
+    .toString('utf8')
+    .split('\n')
+    .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 /** Supertest hands back a parsed object by default; a zip has to be read as bytes. */
-function binary(res: NodeJS.EventEmitter & { setEncoding: (encoding: string) => void }, callback: (error: Error | null, body: unknown) => void): void {
+function binary(
+  res: NodeJS.EventEmitter & { setEncoding: (encoding: string) => void },
+  callback: (error: Error | null, body: unknown) => void
+): void {
   const chunks: Buffer[] = [];
-  res.on('data', (chunk: Buffer) => { chunks.push(Buffer.from(chunk)); });
-  res.on('end', () => { callback(null, Buffer.concat(chunks)); });
+  res.on('data', (chunk: Buffer) => {
+    chunks.push(Buffer.from(chunk));
+  });
+  res.on('end', () => {
+    callback(null, Buffer.concat(chunks));
+  });
 }
 
 beforeAll(async () => {
@@ -157,10 +230,17 @@ afterAll(async () => {
 
 describe('POST /api/ledger/exports', () => {
   it('renders NDJSON per table plus a manifest whose sha256 pins every file', async () => {
-    const created = (await as(sessionA)
-      .post('/api/ledger/exports')
-      .send({ window: 30, include: ['runs', 'steps', 'evidence', 'approvals', 'actions'] })
-      .expect(201)).body as { id: string; counts: Record<string, number>; sha256: Record<string, string>; filename: string };
+    const created = (
+      await as(sessionA)
+        .post('/api/ledger/exports')
+        .send({ window: 30, include: ['runs', 'steps', 'evidence', 'approvals', 'actions'] })
+        .expect(201)
+    ).body as {
+      id: string;
+      counts: Record<string, number>;
+      sha256: Record<string, string>;
+      filename: string;
+    };
 
     expect(created.counts.agent_runs).toBe(1);
     expect(created.counts.agent_run_steps).toBe(1);
@@ -178,7 +258,9 @@ describe('POST /api/ledger/exports', () => {
       .expect(200);
 
     expect(download.headers['content-type']).toBe('application/zip');
-    expect(download.headers['content-disposition']).toBe(`attachment; filename="${created.filename}"`);
+    expect(download.headers['content-disposition']).toBe(
+      `attachment; filename="${created.filename}"`
+    );
     // The archive names clients, message bodies and outreach targets. A cache
     // that outlives a deletion keeps handing back somebody who asked to go.
     expect(download.headers['cache-control']).toBe('no-store');
@@ -196,7 +278,11 @@ describe('POST /api/ledger/exports', () => {
       const bytes = files.get(entry.name);
       expect(bytes, `${entry.name} is missing from the archive`).toBeDefined();
       // The whole point of publishing a digest: it has to name these bytes.
-      expect(createHash('sha256').update(bytes as Buffer).digest('hex')).toBe(entry.sha256);
+      expect(
+        createHash('sha256')
+          .update(bytes as Buffer)
+          .digest('hex')
+      ).toBe(entry.sha256);
       expect(entry.sha256).toBe(created.sha256[entry.name]);
       expect(entry.truncated).toBe(false);
     }
@@ -209,8 +295,9 @@ describe('POST /api/ledger/exports', () => {
   });
 
   it('never carries another workspace, and never serves another workspace its bytes', async () => {
-    const created = (await as(sessionA).post('/api/ledger/exports').send({ window: 30 }).expect(201))
-      .body as { id: string };
+    const created = (
+      await as(sessionA).post('/api/ledger/exports').send({ window: 30 }).expect(201)
+    ).body as { id: string };
 
     const download = await as(sessionA)
       .get(`/api/ledger/exports/${created.id}`)
@@ -235,28 +322,48 @@ describe('POST /api/ledger/exports', () => {
   });
 
   it('honours the section list', async () => {
-    const created = (await as(sessionA).post('/api/ledger/exports').send({ window: 30, include: ['runs'] }).expect(201))
-      .body as { counts: Record<string, number>; sha256: Record<string, string> };
-    expect(Object.keys(created.sha256).sort()).toEqual(['agent_runs.ndjson', 'playbook_runs.ndjson', 'skill_runs.ndjson']);
+    const created = (
+      await as(sessionA)
+        .post('/api/ledger/exports')
+        .send({ window: 30, include: ['runs'] })
+        .expect(201)
+    ).body as { counts: Record<string, number>; sha256: Record<string, string> };
+    expect(Object.keys(created.sha256).sort()).toEqual([
+      'agent_runs.ndjson',
+      'playbook_runs.ndjson',
+      'skill_runs.ndjson'
+    ]);
     expect(created.counts.linkedin_actions).toBeUndefined();
   });
 
   it('rejects an unknown section rather than silently dropping it', async () => {
-    await as(sessionA).post('/api/ledger/exports').send({ window: 30, include: ['everything'] }).expect(400);
+    await as(sessionA)
+      .post('/api/ledger/exports')
+      .send({ window: 30, include: ['everything'] })
+      .expect(400);
   });
 });
 
 describe('GET /api/loop/cost', () => {
-  it('flags every spend line with who measured it, and refuses to attribute', async () => {
+  it('flags every spend line with who measured it and reports outreach output', async () => {
     const payload = (await as(sessionA).get('/api/loop/cost?window=30').expect(200)).body as {
       windowDays: number;
       spent: {
         costCents: number;
         calls: number;
-        byModel: Array<{ model: string; costCents: number; usageReported: boolean; confidence: string }>;
+        byModel: Array<{
+          model: string;
+          costCents: number;
+          usageReported: boolean;
+          confidence: string;
+        }>;
       };
-      sent: { actions: Array<{ kind: string; count: number }>; actionsTotal: number; agentRuns: { total: number; running: number } };
-      produced: { accepted: number; replied: number; attribution: string };
+      sent: {
+        actions: Array<{ kind: string; count: number }>;
+        actionsTotal: number;
+        agentRuns: { total: number; running: number };
+      };
+      produced: { accepted: number; replied: number };
     };
 
     expect(payload.windowDays).toBe(30);
@@ -277,9 +384,7 @@ describe('GET /api/loop/cost', () => {
     expect(payload.sent.agentRuns.running).toBe(1);
 
     expect(payload.produced.accepted).toBe(1);
-    // Verbatim. The three rows are the same period and not the same causal
-    // chain, and the payload says so rather than leaving the screen to imply it.
-    expect(payload.produced.attribution).toBe(LOOP_COST_NO_ATTRIBUTION);
+    expect(payload.produced.replied).toBeGreaterThanOrEqual(0);
   });
 
   it('scopes spend to the caller', async () => {
@@ -293,45 +398,70 @@ describe('GET /api/loop/cost', () => {
 
 describe('POST /api/agent-runs/stop', () => {
   it('records the reason it was given, once, and never overwrites it', async () => {
-    const asked = (await as(sessionA)
-      .post('/api/agent-runs/stop')
-      .send({ runId: 'arun_alpha', reason: 'It was looping on the same invoice.' })
-      .expect(200)).body as { stopped: number; requests: Array<{ runId: string; stopReason: string | null }> };
+    const asked = (
+      await as(sessionA)
+        .post('/api/agent-runs/stop')
+        .send({ runId: 'arun_alpha', reason: 'It was looping on the same invoice.' })
+        .expect(200)
+    ).body as { stopped: number; requests: Array<{ runId: string; stopReason: string | null }> };
 
     expect(asked.stopped).toBe(1);
     expect(asked.requests[0]?.runId).toBe('arun_alpha');
     expect(asked.requests[0]?.stopReason).toBe('It was looping on the same invoice.');
 
-    const stored = await db.prepare('SELECT stop_reason, stop_requested_at FROM agent_runs WHERE id=?')
+    const stored = await db
+      .prepare('SELECT stop_reason, stop_requested_at FROM agent_runs WHERE id=?')
       .get<{ stop_reason: string | null; stop_requested_at: string | null }>('arun_alpha');
     expect(stored?.stop_reason).toBe('It was looping on the same invoice.');
     expect(stored?.stop_requested_at).not.toBeNull();
 
     // A second click must not destroy the note written while it was happening.
-    const again = (await as(sessionA).post('/api/agent-runs/stop').send({ reason: 'changed my mind' }).expect(200))
-      .body as { stopped: number };
+    const again = (
+      await as(sessionA)
+        .post('/api/agent-runs/stop')
+        .send({ reason: 'changed my mind' })
+        .expect(200)
+    ).body as { stopped: number };
     expect(again.stopped).toBe(0);
-    const unchanged = await db.prepare('SELECT stop_reason FROM agent_runs WHERE id=?')
+    const unchanged = await db
+      .prepare('SELECT stop_reason FROM agent_runs WHERE id=?')
       .get<{ stop_reason: string | null }>('arun_alpha');
     expect(unchanged?.stop_reason).toBe('It was looping on the same invoice.');
 
     // The stop stayed inside the workspace that asked for it.
-    const other = await db.prepare('SELECT stop_reason, stop_requested_at FROM agent_runs WHERE id=?')
+    const other = await db
+      .prepare('SELECT stop_reason, stop_requested_at FROM agent_runs WHERE id=?')
       .get<{ stop_reason: string | null; stop_requested_at: string | null }>('arun_bravo');
     expect(other?.stop_requested_at).toBeNull();
     expect(other?.stop_reason).toBeNull();
   });
 
   it('accepts a stop with no reason at all, and stores no placeholder', async () => {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO agent_runs (id,workspace_id,trigger,status,goal,step_count,max_steps,started_at)
       VALUES (?,?,?,?,?,?,?,?)
-    `).run('arun_silent', WORKSPACE_B, 'manual', 'running', 'no note given', 0, 12, new Date().toISOString());
+    `
+      )
+      .run(
+        'arun_silent',
+        WORKSPACE_B,
+        'manual',
+        'running',
+        'no note given',
+        0,
+        12,
+        new Date().toISOString()
+      );
 
-    const asked = (await as(sessionB).post('/api/agent-runs/stop').send({}).expect(200)).body as { stopped: number };
+    const asked = (await as(sessionB).post('/api/agent-runs/stop').send({}).expect(200)).body as {
+      stopped: number;
+    };
     expect(asked.stopped).toBe(2);
 
-    const stored = await db.prepare('SELECT stop_reason FROM agent_runs WHERE id=?')
+    const stored = await db
+      .prepare('SELECT stop_reason FROM agent_runs WHERE id=?')
       .get<{ stop_reason: string | null }>('arun_silent');
     // NULL means nobody said. A default string would be indistinguishable from
     // a real note three weeks from now, which is the failure the column exists

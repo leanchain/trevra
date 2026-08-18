@@ -6,8 +6,15 @@ import { id, type Db } from '../db.js';
 // campaigns.ts imports db and actions and nothing else, so this direction adds
 // no cycle -- the reverse import, from campaigns.ts to here, would.
 import { LinkedInApiError } from './campaigns.js';
-import { normalizeLeadRow, normalizeScrapedLead, parseLeadCsv, type LeadFieldMapping, type NormalizedLeadInput } from './lead-import.js';
+import {
+  normalizeLeadRow,
+  normalizeScrapedLead,
+  parseLeadCsv,
+  type LeadFieldMapping,
+  type NormalizedLeadInput
+} from './lead-import.js';
 import { LEAD_READ_LIMIT, getLeadSource, listLeads, type LeadSourceKind } from './leads.js';
+import { OWNER_SEAT_KEY } from './seats.js';
 
 /**
  * HOW MANY CONTACTS ARE EVER READ OUT OF ONE LIST AT ONCE. The default and the
@@ -27,6 +34,7 @@ export type LeadListSourceKind = 'csv' | 'linkedin_search' | 'sales_navigator' |
 export interface LinkedInLeadList {
   id: string;
   workspaceId: string;
+  seatKey: string;
   name: string;
   sourceKind: LeadListSourceKind;
   sourceRef: string | null;
@@ -66,53 +74,150 @@ export interface LinkedInLeadContact {
   updatedAt: string;
 }
 
-interface ListRow { id: string; workspace_id: string; name: string; source_kind: string; source_ref: string | null; lead_count: number; created_at: string; updated_at: string }
-interface ContactRow { id: string; workspace_id: string; list_id: string | null; first_name: string; last_name: string; company: string; email: string | null; phone: string | null; country: string | null; profile_url: string | null; created_at: string; updated_at: string }
+interface ListRow {
+  id: string;
+  workspace_id: string;
+  seat_key: string;
+  name: string;
+  source_kind: string;
+  source_ref: string | null;
+  lead_count: number;
+  created_at: string;
+  updated_at: string;
+}
+interface ContactRow {
+  id: string;
+  workspace_id: string;
+  list_id: string | null;
+  first_name: string;
+  last_name: string;
+  company: string;
+  email: string | null;
+  phone: string | null;
+  country: string | null;
+  profile_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 // The count comes off the MEMBERSHIP table, not off `linkedin_lead_contacts.
 // list_id`: since migration 051 a person may sit in several lists while still
 // being one contact row, and the column only records the list they first
 // landed in.
-const LIST_SELECT = `l.id,l.workspace_id,l.name,l.source_kind,l.source_ref,l.created_at,l.updated_at,(SELECT COUNT(*)::int FROM linkedin_lead_list_members m WHERE m.list_id=l.id) AS lead_count`;
+const LIST_SELECT = `l.id,l.workspace_id,l.seat_key,l.name,l.source_kind,l.source_ref,l.created_at,l.updated_at,(SELECT COUNT(*)::int FROM linkedin_lead_list_members m WHERE m.list_id=l.id) AS lead_count`;
 const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,created_at,updated_at`;
 /** The same columns through the membership join, where `list_id` is the list asked for. */
 const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.phone,c.country,c.profile_url,c.created_at,c.updated_at`;
 
 function toList(row: ListRow): LinkedInLeadList {
-  return { id: row.id, workspaceId: row.workspace_id, name: row.name, sourceKind: row.source_kind as LeadListSourceKind, sourceRef: row.source_ref, leadCount: Number(row.lead_count), createdAt: row.created_at, updatedAt: row.updated_at };
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    seatKey: row.seat_key,
+    name: row.name,
+    sourceKind: row.source_kind as LeadListSourceKind,
+    sourceRef: row.source_ref,
+    leadCount: Number(row.lead_count),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 function toContact(row: ContactRow): LinkedInLeadContact {
-  return { id: row.id, workspaceId: row.workspace_id, listId: row.list_id, firstName: row.first_name, lastName: row.last_name, company: row.company, email: row.email, phone: row.phone, country: row.country, profileUrl: row.profile_url, createdAt: row.created_at, updatedAt: row.updated_at };
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    listId: row.list_id,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    company: row.company,
+    email: row.email,
+    phone: row.phone,
+    country: row.country,
+    profileUrl: row.profile_url,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
-export function assertLeadSourceUrl(kind: Extract<LeadListSourceKind, 'linkedin_search' | 'sales_navigator'>, raw: string): string {
+export function assertLeadSourceUrl(
+  kind: Extract<LeadListSourceKind, 'linkedin_search' | 'sales_navigator'>,
+  raw: string
+): string {
   let url: URL;
-  try { url = new URL(raw.trim()); } catch { throw new Error('Lead source must be an absolute LinkedIn URL.'); }
-  if (!['linkedin.com', 'www.linkedin.com'].includes(url.hostname.toLowerCase())) throw new Error('Lead source must be on linkedin.com.');
-  if (kind === 'linkedin_search' && !/^\/search\/results\/people\/?/i.test(url.pathname)) throw new Error('Basic LinkedIn source must be a People search-results URL.');
-  if (kind === 'sales_navigator' && !/^\/sales\/search\/people\/?/i.test(url.pathname)) throw new Error('Sales Navigator source must be a people-search URL.');
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new Error('Lead source must be an absolute LinkedIn URL.');
+  }
+  if (!['linkedin.com', 'www.linkedin.com'].includes(url.hostname.toLowerCase()))
+    throw new Error('Lead source must be on linkedin.com.');
+  if (kind === 'linkedin_search' && !/^\/search\/results\/people\/?/i.test(url.pathname))
+    throw new Error('Basic LinkedIn source must be a People search-results URL.');
+  if (kind === 'sales_navigator' && !/^\/sales\/search\/people\/?/i.test(url.pathname))
+    throw new Error('Sales Navigator source must be a people-search URL.');
   return url.toString();
 }
 
-export async function createLeadList(db: Db, input: { workspaceId: string; name: string; sourceKind?: LeadListSourceKind; sourceRef?: string | null }, now: Date = new Date()): Promise<LinkedInLeadList> {
+export async function createLeadList(
+  db: Db,
+  input: {
+    workspaceId: string;
+    seatKey?: string;
+    name: string;
+    sourceKind?: LeadListSourceKind;
+    sourceRef?: string | null;
+  },
+  now: Date = new Date()
+): Promise<LinkedInLeadList> {
   const name = input.name.trim();
   if (!name) throw new Error('Lead list name is required.');
   const sourceKind = input.sourceKind ?? 'csv';
-  const sourceRef = sourceKind === 'linkedin_search' || sourceKind === 'sales_navigator' ? assertLeadSourceUrl(sourceKind, input.sourceRef ?? '') : input.sourceRef?.trim() || null;
+  const sourceRef =
+    sourceKind === 'linkedin_search' || sourceKind === 'sales_navigator'
+      ? assertLeadSourceUrl(sourceKind, input.sourceRef ?? '')
+      : input.sourceRef?.trim() || null;
   const timestamp = now.toISOString();
   const listId = id('lilst');
-  await db.prepare(`INSERT INTO linkedin_lead_lists (id,workspace_id,name,source_kind,source_ref,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`).run(listId, input.workspaceId, name, sourceKind, sourceRef, timestamp, timestamp);
-  const row = await db.prepare(`SELECT ${LIST_SELECT} FROM linkedin_lead_lists l WHERE l.id=? AND l.workspace_id=?`).get<ListRow>(listId, input.workspaceId);
+  const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
+  await db
+    .prepare(
+      `INSERT INTO linkedin_lead_lists (id,workspace_id,seat_key,name,source_kind,source_ref,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`
+    )
+    .run(listId, input.workspaceId, seatKey, name, sourceKind, sourceRef, timestamp, timestamp);
+  const row = await db
+    .prepare(
+      `SELECT ${LIST_SELECT} FROM linkedin_lead_lists l WHERE l.id=? AND l.workspace_id=? AND l.seat_key=?`
+    )
+    .get<ListRow>(listId, input.workspaceId, seatKey);
   if (!row) throw new Error('Lead list could not be created.');
   return toList(row);
 }
 
-export async function listLeadLists(db: Db, workspaceId: string): Promise<LinkedInLeadList[]> {
-  return (await db.prepare(`SELECT ${LIST_SELECT} FROM linkedin_lead_lists l WHERE l.workspace_id=? ORDER BY l.updated_at DESC`).all<ListRow>(workspaceId)).map(toList);
+export async function listLeadLists(
+  db: Db,
+  workspaceId: string,
+  seatKey = OWNER_SEAT_KEY
+): Promise<LinkedInLeadList[]> {
+  return (
+    await db
+      .prepare(
+        `SELECT ${LIST_SELECT} FROM linkedin_lead_lists l WHERE l.workspace_id=? AND l.seat_key=? ORDER BY l.updated_at DESC`
+      )
+      .all<ListRow>(workspaceId, seatKey)
+  ).map(toList);
 }
 
-export async function getLeadList(db: Db, workspaceId: string, listId: string): Promise<LinkedInLeadList | undefined> {
-  const row = await db.prepare(`SELECT ${LIST_SELECT} FROM linkedin_lead_lists l WHERE l.workspace_id=? AND l.id=?`).get<ListRow>(workspaceId, listId);
+export async function getLeadList(
+  db: Db,
+  workspaceId: string,
+  listId: string,
+  seatKey = OWNER_SEAT_KEY
+): Promise<LinkedInLeadList | undefined> {
+  const row = await db
+    .prepare(
+      `SELECT ${LIST_SELECT} FROM linkedin_lead_lists l WHERE l.workspace_id=? AND l.seat_key=? AND l.id=?`
+    )
+    .get<ListRow>(workspaceId, seatKey, listId);
   return row ? toList(row) : undefined;
 }
 
@@ -129,13 +234,24 @@ export async function getLeadList(db: Db, workspaceId: string, listId: string): 
  * signature returned an array with no total, which is why the screen printed a
  * hardcoded sentence about the first thousand rows.
  */
-export async function listLeadContacts(db: Db, workspaceId: string, listId: string, limit = LEAD_CONTACT_READ_LIMIT): Promise<LinkedInLeadContact[]> {
-  return (await db.prepare(`
+export async function listLeadContacts(
+  db: Db,
+  workspaceId: string,
+  listId: string,
+  limit = LEAD_CONTACT_READ_LIMIT
+): Promise<LinkedInLeadContact[]> {
+  return (
+    await db
+      .prepare(
+        `
     SELECT ${MEMBER_CONTACT_SELECT}
     FROM linkedin_lead_list_members m
     JOIN linkedin_lead_contacts c ON c.id=m.contact_id AND c.workspace_id=m.workspace_id
     WHERE m.workspace_id=? AND m.list_id=? ORDER BY m.created_at,c.id LIMIT ?
-  `).all<ContactRow>(workspaceId, listId, Math.max(1, Math.min(limit, LEAD_CONTACT_READ_LIMIT)))).map(toContact);
+  `
+      )
+      .all<ContactRow>(workspaceId, listId, Math.max(1, Math.min(limit, LEAD_CONTACT_READ_LIMIT)))
+  ).map(toContact);
 }
 
 /**
@@ -145,8 +261,16 @@ export async function listLeadContacts(db: Db, workspaceId: string, listId: stri
  * a caller holding only a list id does not have to re-read the list to say
  * "showing 5,000 of 6,214".
  */
-export async function countLeadContacts(db: Db, workspaceId: string, listId: string): Promise<number> {
-  const row = await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_lead_list_members WHERE workspace_id=? AND list_id=?').get<{ total: number }>(workspaceId, listId);
+export async function countLeadContacts(
+  db: Db,
+  workspaceId: string,
+  listId: string
+): Promise<number> {
+  const row = await db
+    .prepare(
+      'SELECT COUNT(*)::int AS total FROM linkedin_lead_list_members WHERE workspace_id=? AND list_id=?'
+    )
+    .get<{ total: number }>(workspaceId, listId);
   return Number(row?.total ?? 0);
 }
 
@@ -206,23 +330,59 @@ export interface LeadInsertOutcome {
  * now; the one-campaign claim is unaffected, because it is keyed on the
  * contact id and there is still exactly one of those per person.
  */
-async function insertLead(db: Db, workspaceId: string, listId: string, lead: NormalizedLeadInput, now: string): Promise<LeadInsertOutcome> {
-  const row = await db.prepare(`INSERT INTO linkedin_lead_contacts (id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,dedupe_key,original_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?) ON CONFLICT DO NOTHING RETURNING id`)
-    .get<{ id: string }>(id('lilead'), workspaceId, listId, lead.firstName, lead.lastName, lead.company, lead.email, lead.phone, lead.country, lead.profileUrl, lead.dedupeKey, JSON.stringify(lead.original), now, now);
+async function insertLead(
+  db: Db,
+  workspaceId: string,
+  listId: string,
+  lead: NormalizedLeadInput,
+  now: string
+): Promise<LeadInsertOutcome> {
+  const row = await db
+    .prepare(
+      `INSERT INTO linkedin_lead_contacts (id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,dedupe_key,original_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?) ON CONFLICT DO NOTHING RETURNING id`
+    )
+    .get<{ id: string }>(
+      id('lilead'),
+      workspaceId,
+      listId,
+      lead.firstName,
+      lead.lastName,
+      lead.company,
+      lead.email,
+      lead.phone,
+      lead.country,
+      lead.profileUrl,
+      lead.dedupeKey,
+      JSON.stringify(lead.original),
+      now,
+      now
+    );
 
   // ONE LOOKUP FOR BOTH IDENTITIES. The insert can be refused by either
   // workspace-wide index, and which one refused it is not reported, so the
   // search has to cover the same ground they do: the `dedupe_key` a
   // profile-less lead is identified by AND the profile URL, whose two
   // spellings fold to one only under LOWER().
-  const contactId = row?.id ?? (await db.prepare(`
+  const contactId =
+    row?.id ??
+    (
+      await db
+        .prepare(
+          `
     SELECT id FROM linkedin_lead_contacts
     WHERE workspace_id=? AND (dedupe_key=? OR (?::text IS NOT NULL AND LOWER(profile_url)=LOWER(?)))
     LIMIT 1
-  `).get<{ id: string }>(workspaceId, lead.dedupeKey, lead.profileUrl, lead.profileUrl))?.id ?? '';
+  `
+        )
+        .get<{ id: string }>(workspaceId, lead.dedupeKey, lead.profileUrl, lead.profileUrl)
+    )?.id ??
+    '';
   if (!contactId) return { contactId: '', inserted: false, reused: false };
 
-  const link = await db.prepare('INSERT INTO linkedin_lead_list_members (workspace_id,list_id,contact_id,created_at) VALUES (?,?,?,?) ON CONFLICT DO NOTHING')
+  const link = await db
+    .prepare(
+      'INSERT INTO linkedin_lead_list_members (workspace_id,list_id,contact_id,created_at) VALUES (?,?,?,?) ON CONFLICT DO NOTHING'
+    )
     .run(workspaceId, listId, contactId, now);
 
   // `reused` still means what its call sites print: "this person was already
@@ -231,8 +391,26 @@ async function insertLead(db: Db, workspaceId: string, listId: string, lead: Nor
   return { contactId, inserted: Boolean(row), reused: !row && link.changes > 0 };
 }
 
-export async function importLeadCsv(db: Db, input: { workspaceId: string; listId: string; csv: string; mapping?: LeadFieldMapping }, now: Date = new Date()): Promise<{ inserted: number; duplicates: number; reused: number; rejected: Array<{ row: number; reason: string }>; mapping: LeadFieldMapping; headers: string[] }> {
-  if (!(await getLeadList(db, input.workspaceId, input.listId))) throw new Error('Lead list not found.');
+export async function importLeadCsv(
+  db: Db,
+  input: {
+    workspaceId: string;
+    seatKey?: string;
+    listId: string;
+    csv: string;
+    mapping?: LeadFieldMapping;
+  },
+  now: Date = new Date()
+): Promise<{
+  inserted: number;
+  duplicates: number;
+  reused: number;
+  rejected: Array<{ row: number; reason: string }>;
+  mapping: LeadFieldMapping;
+  headers: string[];
+}> {
+  if (!(await getLeadList(db, input.workspaceId, input.listId)))
+    throw new Error('Lead list not found.');
   const parsed = parseLeadCsv(input.csv, input.mapping);
   const timestamp = now.toISOString();
   let inserted = 0;
@@ -252,9 +430,18 @@ export async function importLeadCsv(db: Db, input: { workspaceId: string; listId
         if (outcome.reused) reused += 1;
       }
     }
-    await tx.prepare('UPDATE linkedin_lead_lists SET updated_at=? WHERE id=? AND workspace_id=?').run(timestamp, input.listId, input.workspaceId);
+    await tx
+      .prepare('UPDATE linkedin_lead_lists SET updated_at=? WHERE id=? AND workspace_id=?')
+      .run(timestamp, input.listId, input.workspaceId);
   });
-  return { inserted, duplicates, reused, rejected: parsed.rejected.map(({ row, reason }) => ({ row, reason })), mapping: parsed.mapping, headers: parsed.headers };
+  return {
+    inserted,
+    duplicates,
+    reused,
+    rejected: parsed.rejected.map(({ row, reason }) => ({ row, reason })),
+    mapping: parsed.mapping,
+    headers: parsed.headers
+  };
 }
 
 /** Which kind of list a harvested source materialises into. */
@@ -293,18 +480,34 @@ const SOURCE_LIST_KIND: Record<LeadSourceKind, LeadListSourceKind> = {
  */
 export async function importLeadSourceContacts(
   db: Db,
-  input: { workspaceId: string; sourceId: string; listId?: string; listName?: string; limit?: number; leadIds?: readonly string[] },
+  input: {
+    workspaceId: string;
+    seatKey?: string;
+    sourceId: string;
+    listId?: string;
+    listName?: string;
+    limit?: number;
+    leadIds?: readonly string[];
+  },
   now: Date = new Date()
-): Promise<{ list: LinkedInLeadList; inserted: number; duplicates: number; reused: number; skipped: number }> {
-  const source = await getLeadSource(db, input.workspaceId, input.sourceId);
+): Promise<{
+  list: LinkedInLeadList;
+  inserted: number;
+  duplicates: number;
+  reused: number;
+  skipped: number;
+}> {
+  const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
+  const source = await getLeadSource(db, input.workspaceId, input.sourceId, seatKey);
   if (!source) throw new Error('Lead source not found.');
 
   const list = input.listId
-    ? await getLeadList(db, input.workspaceId, input.listId)
+    ? await getLeadList(db, input.workspaceId, input.listId, seatKey)
     : await createLeadList(
         db,
         {
           workspaceId: input.workspaceId,
+          seatKey,
           name: input.listName?.trim() || `Lead source ${source.id}`,
           sourceKind: SOURCE_LIST_KIND[source.kind] ?? 'csv',
           sourceRef: source.url
@@ -315,7 +518,13 @@ export async function importLeadSourceContacts(
 
   // The same ceiling the leads screen reads with, so what an operator reviewed
   // is what Save writes -- see LEAD_READ_LIMIT.
-  const all = await listLeads(db, input.workspaceId, source.id, input.limit ?? LEAD_READ_LIMIT);
+  const all = await listLeads(
+    db,
+    input.workspaceId,
+    source.id,
+    input.limit ?? LEAD_READ_LIMIT,
+    seatKey
+  );
   const selection = new Set(input.leadIds ?? []);
   const harvested = selection.size > 0 ? all.filter((lead) => selection.has(lead.id)) : all;
   const timestamp = now.toISOString();
@@ -341,7 +550,9 @@ export async function importLeadSourceContacts(
         if (outcome.reused) reused += 1;
       }
     }
-    await tx.prepare('UPDATE linkedin_lead_lists SET updated_at=? WHERE id=? AND workspace_id=?').run(timestamp, list.id, input.workspaceId);
+    await tx
+      .prepare('UPDATE linkedin_lead_lists SET updated_at=? WHERE id=? AND workspace_id=?')
+      .run(timestamp, list.id, input.workspaceId);
   });
 
   const refreshed = await getLeadList(db, input.workspaceId, list.id);
@@ -350,12 +561,38 @@ export async function importLeadSourceContacts(
 
 export async function updateLeadContact(
   db: Db,
-  input: { workspaceId: string; contactId: string; firstName: string; lastName: string; company: string; email?: string | null; phone?: string | null; country?: string | null; profileUrl?: string | null },
+  input: {
+    workspaceId: string;
+    contactId: string;
+    firstName: string;
+    lastName: string;
+    company: string;
+    email?: string | null;
+    phone?: string | null;
+    country?: string | null;
+    profileUrl?: string | null;
+  },
   now: Date = new Date()
 ): Promise<LinkedInLeadContact> {
   const normalized = normalizeLeadRow(
-    { firstName: input.firstName, lastName: input.lastName, company: input.company, email: input.email ?? '', phone: input.phone ?? '', country: input.country ?? '', profileUrl: input.profileUrl ?? '' },
-    { firstName: 'firstName', lastName: 'lastName', company: 'company', email: 'email', phone: 'phone', country: 'country', profileUrl: 'profileUrl' }
+    {
+      firstName: input.firstName,
+      lastName: input.lastName,
+      company: input.company,
+      email: input.email ?? '',
+      phone: input.phone ?? '',
+      country: input.country ?? '',
+      profileUrl: input.profileUrl ?? ''
+    },
+    {
+      firstName: 'firstName',
+      lastName: 'lastName',
+      company: 'company',
+      email: 'email',
+      phone: 'phone',
+      country: 'country',
+      profileUrl: 'profileUrl'
+    }
   );
   // A WORKSPACE-WIDE INDEX WOULD RAISE A BARE 23505 HERE, which the API layer
   // cannot tell apart from any other unique violation and reports as the
@@ -369,14 +606,40 @@ export async function updateLeadContact(
   // a typo in a duplicate they just spotted -- skipped it entirely and fell
   // through to the raw constraint. One lookup covers the same ground both
   // indexes do, and the refusal names what actually clashed.
-  const clash = await db.prepare(`
+  const clash = await db
+    .prepare(
+      `
     SELECT id,first_name,last_name FROM linkedin_lead_contacts
     WHERE workspace_id=? AND id<>? AND (dedupe_key=? OR (?::text IS NOT NULL AND LOWER(profile_url)=LOWER(?)))
     LIMIT 1
-  `).get<{ id: string; first_name: string; last_name: string }>(input.workspaceId, input.contactId, normalized.dedupeKey, normalized.profileUrl, normalized.profileUrl);
-  if (clash) throw new Error(leadClashMessage(normalized, `${clash.first_name} ${clash.last_name}`.trim()));
-  const row = await db.prepare(`UPDATE linkedin_lead_contacts SET first_name=?,last_name=?,company=?,email=?,phone=?,country=?,profile_url=?,dedupe_key=?,updated_at=? WHERE workspace_id=? AND id=? RETURNING ${CONTACT_SELECT}`)
-    .get<ContactRow>(normalized.firstName, normalized.lastName, normalized.company, normalized.email, normalized.phone, normalized.country, normalized.profileUrl, normalized.dedupeKey, now.toISOString(), input.workspaceId, input.contactId);
+  `
+    )
+    .get<{ id: string; first_name: string; last_name: string }>(
+      input.workspaceId,
+      input.contactId,
+      normalized.dedupeKey,
+      normalized.profileUrl,
+      normalized.profileUrl
+    );
+  if (clash)
+    throw new Error(leadClashMessage(normalized, `${clash.first_name} ${clash.last_name}`.trim()));
+  const row = await db
+    .prepare(
+      `UPDATE linkedin_lead_contacts SET first_name=?,last_name=?,company=?,email=?,phone=?,country=?,profile_url=?,dedupe_key=?,updated_at=? WHERE workspace_id=? AND id=? RETURNING ${CONTACT_SELECT}`
+    )
+    .get<ContactRow>(
+      normalized.firstName,
+      normalized.lastName,
+      normalized.company,
+      normalized.email,
+      normalized.phone,
+      normalized.country,
+      normalized.profileUrl,
+      normalized.dedupeKey,
+      now.toISOString(),
+      input.workspaceId,
+      input.contactId
+    );
   if (!row) throw new Error('Lead not found.');
   return toContact(row);
 }
@@ -393,8 +656,10 @@ export async function updateLeadContact(
 function leadClashMessage(edited: NormalizedLeadInput, who: string): string {
   const other = who || 'another lead';
   const rule = 'One person is one lead row, so that campaign claim cannot be split in two.';
-  if (edited.profileUrl) return `The LinkedIn profile ${edited.profileUrl} already belongs to ${other} in this workspace. ${rule}`;
-  if (edited.email) return `The email address ${edited.email} already belongs to ${other} in this workspace. ${rule}`;
+  if (edited.profileUrl)
+    return `The LinkedIn profile ${edited.profileUrl} already belongs to ${other} in this workspace. ${rule}`;
+  if (edited.email)
+    return `The email address ${edited.email} already belongs to ${other} in this workspace. ${rule}`;
   return `${edited.firstName} ${edited.lastName} at ${edited.company} is already a lead in this workspace (${other}). ${rule} Give this row a LinkedIn profile or an email address if they are a different person of the same name.`;
 }
 
@@ -441,15 +706,25 @@ function leadClashMessage(edited: NormalizedLeadInput, who: string): string {
  * THE SKIP RUNS FIRST. After the DELETE the cascade has taken the member rows
  * with it and there is nothing left to find the actions by.
  */
-export async function removeLeadContact(db: Db, workspaceId: string, contactId: string): Promise<boolean> {
+export async function removeLeadContact(
+  db: Db,
+  workspaceId: string,
+  contactId: string
+): Promise<boolean> {
   return db.transaction(async (tx) => {
-    await tx.prepare(`
+    await tx
+      .prepare(
+        `
       UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL
       WHERE workspace_id=? AND status IN ('planned','held') AND claimed_at IS NULL AND campaign_member_id IN (
         SELECT id FROM linkedin_campaign_members WHERE workspace_id=? AND contact_id=?
       )
-    `).run(workspaceId, workspaceId, contactId);
-    const result = await tx.prepare('DELETE FROM linkedin_lead_contacts WHERE workspace_id=? AND id=?').run(workspaceId, contactId);
+    `
+      )
+      .run(workspaceId, workspaceId, contactId);
+    const result = await tx
+      .prepare('DELETE FROM linkedin_lead_contacts WHERE workspace_id=? AND id=?')
+      .run(workspaceId, contactId);
     return result.changes > 0;
   });
 }
@@ -553,55 +828,90 @@ export interface LeadListDeletion {
  * Returns undefined when there is no such list in this workspace, so a route
  * can answer 404 without a second read.
  */
-export async function deleteLeadList(db: Db, workspaceId: string, listId: string): Promise<LeadListDeletion | undefined> {
+export async function deleteLeadList(
+  db: Db,
+  workspaceId: string,
+  listId: string
+): Promise<LeadListDeletion | undefined> {
   return db.transaction(async (tx) => {
     // FOR UPDATE: the refusal below and the delete at the bottom must see the
     // same list, and a concurrent campaign start must not slip between them.
-    const list = await tx.prepare('SELECT id,name FROM linkedin_lead_lists WHERE workspace_id=? AND id=? FOR UPDATE')
+    const list = await tx
+      .prepare('SELECT id,name FROM linkedin_lead_lists WHERE workspace_id=? AND id=? FOR UPDATE')
       .get<{ id: string; name: string }>(workspaceId, listId);
     if (!list) return undefined;
 
-    const blocking = await tx.prepare(`
+    const blocking = await tx
+      .prepare(
+        `
       SELECT name,status FROM linkedin_campaigns
       WHERE workspace_id=? AND lead_list_id=? AND status = ANY(?::text[])
       ORDER BY created_at LIMIT 3
-    `).all<{ name: string; status: string }>(workspaceId, listId, [...LIST_LOCKING_CAMPAIGN_STATUSES]);
+    `
+      )
+      .all<{ name: string; status: string }>(workspaceId, listId, [
+        ...LIST_LOCKING_CAMPAIGN_STATUSES
+      ]);
     if (blocking.length > 0) {
       const named = blocking.map((c) => `'${c.name}' (${c.status})`).join(', ');
       throw new LinkedInApiError(
-        `This lead list is still driving ${named}. Stop ${blocking.length === 1 ? 'that campaign' : 'those campaigns'} first -- `
-          + 'a paused campaign is one somebody intends to resume, and resuming it into a deleted list would leave it running for nobody.',
+        `This lead list is still driving ${named}. Stop ${blocking.length === 1 ? 'that campaign' : 'those campaigns'} first -- ` +
+          'a paused campaign is one somebody intends to resume, and resuming it into a deleted list would leave it running for nobody.',
         409
       );
     }
 
-    const scope = 'campaign_id IN (SELECT id FROM linkedin_campaigns WHERE workspace_id=? AND lead_list_id=?)';
+    const scope =
+      'campaign_id IN (SELECT id FROM linkedin_campaigns WHERE workspace_id=? AND lead_list_id=?)';
 
-    const members = await tx.prepare(`
+    const members = await tx
+      .prepare(
+        `
       UPDATE linkedin_campaign_members SET status='removed',next_eligible_at=NULL,updated_at=CURRENT_TIMESTAMP
       WHERE workspace_id=? AND status = ANY(?::text[]) AND ${scope}
-    `).run(workspaceId, [...CLAIMING_MEMBER_STATUSES], workspaceId, listId);
+    `
+      )
+      .run(workspaceId, [...CLAIMING_MEMBER_STATUSES], workspaceId, listId);
 
-    const tasks = await tx.prepare(`
+    const tasks = await tx
+      .prepare(
+        `
       UPDATE linkedin_manual_tasks SET status='cancelled'
       WHERE workspace_id=? AND status='pending' AND ${scope}
-    `).run(workspaceId, workspaceId, listId);
+    `
+      )
+      .run(workspaceId, workspaceId, listId);
 
-    const actions = await tx.prepare(`
+    const actions = await tx
+      .prepare(
+        `
       UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL
       WHERE workspace_id=? AND status IN ('planned','held') AND claimed_at IS NULL AND ${scope}
-    `).run(workspaceId, workspaceId, listId);
+    `
+      )
+      .run(workspaceId, workspaceId, listId);
 
     // Counted BEFORE the delete, because after it the FKs have already moved
     // every one of these rows out of reach of the question.
-    const memberships = await tx.prepare('SELECT COUNT(*)::int AS total FROM linkedin_lead_list_members WHERE workspace_id=? AND list_id=?')
+    const memberships = await tx
+      .prepare(
+        'SELECT COUNT(*)::int AS total FROM linkedin_lead_list_members WHERE workspace_id=? AND list_id=?'
+      )
       .get<{ total: number }>(workspaceId, listId);
-    const contacts = await tx.prepare('SELECT COUNT(*)::int AS total FROM linkedin_lead_contacts WHERE workspace_id=? AND list_id=?')
+    const contacts = await tx
+      .prepare(
+        'SELECT COUNT(*)::int AS total FROM linkedin_lead_contacts WHERE workspace_id=? AND list_id=?'
+      )
       .get<{ total: number }>(workspaceId, listId);
-    const campaigns = await tx.prepare('SELECT COUNT(*)::int AS total FROM linkedin_campaigns WHERE workspace_id=? AND lead_list_id=?')
+    const campaigns = await tx
+      .prepare(
+        'SELECT COUNT(*)::int AS total FROM linkedin_campaigns WHERE workspace_id=? AND lead_list_id=?'
+      )
       .get<{ total: number }>(workspaceId, listId);
 
-    await tx.prepare('DELETE FROM linkedin_lead_lists WHERE workspace_id=? AND id=?').run(workspaceId, listId);
+    await tx
+      .prepare('DELETE FROM linkedin_lead_lists WHERE workspace_id=? AND id=?')
+      .run(workspaceId, listId);
 
     return {
       listId: list.id,

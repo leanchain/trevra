@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode
-} from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Check,
   CircleAlert,
@@ -92,21 +85,7 @@ const OWNER_ACCOUNT_KEY = 'owner';
 
 const ACTIVE_ACCOUNT_STORAGE_KEY = 'trevra.linkedin.active-account';
 
-/**
- * Fired on `window` whenever the active account changes.
- *
- * `storage` only fires in OTHER tabs, so it cannot keep two components in THIS
- * one agreed -- which is the case that matters: the switcher on this screen
- * and whatever else adopts `useActiveSeatKey` are usually mounted together.
- * Both events are listened for, so a second tab follows along too.
- *
- * IT CARRIES THE KEY IT IS ANNOUNCING (`CustomEvent<string>`) rather than
- * telling every listener to go and re-read storage. That is not a convenience.
- * When the storage write FAILS -- private mode, blocked cookies -- a re-read
- * returns the PREVIOUS key, so a payload-free event would hand every other
- * subscriber the old value and quietly undo the switch for everybody except
- * the component that made it.
- */
+/** Fired inside this browser tab whenever the user changes the active account. */
 const ACTIVE_ACCOUNT_EVENT = 'trevra:linkedin-active-account';
 
 /**
@@ -156,11 +135,10 @@ function activeAccountSnapshot(): string {
   return activeAccountKey;
 }
 
-/** Take a key decided somewhere else: another component, or another tab. */
+/** Update the one active account value shared by every Outreach screen in this tab. */
 function adoptActiveAccountKey(next: string): void {
   if (!next || activeAccountKey === next) return;
   activeAccountKey = next;
-  // A copy, because a subscriber is free to unsubscribe while being notified.
   for (const notify of [...activeAccountSubscribers]) notify();
 }
 
@@ -170,38 +148,24 @@ const followActiveAccountEvent = (event: Event) => {
 };
 
 /**
- * Another tab switched account. A `null` event key is a whole-storage clear,
- * which is a reset to the default account rather than a switch to nothing.
+ * Components in this tab subscribe to one in-memory value. We intentionally do
+ * not listen to the browser `storage` event: another open tab must not be able
+ * to change the account underneath the tab the user is actively working in.
  */
-const followActiveAccountStorage = (event: StorageEvent) => {
-  if (event.key !== null && event.key !== ACTIVE_ACCOUNT_STORAGE_KEY) return;
-  adoptActiveAccountKey(event.newValue || readActiveAccountKey());
-};
-
-/** One pair of window listeners for the whole tab, however many screens read the hook. */
 function subscribeToActiveAccount(notify: () => void): () => void {
   if (activeAccountSubscribers.size === 0) {
     window.addEventListener(ACTIVE_ACCOUNT_EVENT, followActiveAccountEvent);
-    window.addEventListener('storage', followActiveAccountStorage);
   }
   activeAccountSubscribers.add(notify);
   return () => {
     activeAccountSubscribers.delete(notify);
     if (activeAccountSubscribers.size === 0) {
       window.removeEventListener(ACTIVE_ACCOUNT_EVENT, followActiveAccountEvent);
-      window.removeEventListener('storage', followActiveAccountStorage);
     }
   };
 }
 
-/**
- * Switch every screen in this tab -- and every other tab -- to one account.
- *
- * Order matters: remember it, then move the value every subscriber reads, then
- * announce it. The announcement is last because it is for listeners that are
- * NOT using the hook; the subscribers above have already been told, and the
- * event's own handler sees a key it already holds and stops.
- */
+/** Switch every Outreach screen in this tab to the account the user chose. */
 export function setActiveSeatKey(next: string): void {
   try {
     window.localStorage.setItem(ACTIVE_ACCOUNT_STORAGE_KEY, next);
@@ -213,18 +177,9 @@ export function setActiveSeatKey(next: string): void {
 }
 
 /**
- * The account every other screen should be reading, remembered across reloads.
- *
- * Exported as a pair rather than a context because the screens that adopt it --
- * inbox, queue, campaigns, the manager -- are separate hash routes with no
- * common parent to hold a provider. The store above is that parent;
- * `localStorage` is only how it survives a reload, and the event is only how a
- * second tab hears about it.
- *
- * THE PAIR IS THIS FILE'S STABLE CONTRACT: `const [seatKey, setSeatKey] =
- * useActiveSeatKey()`. The setter is a module function, so its identity never
- * changes between renders and it is safe in a dependency array -- which is
- * exactly where a screen re-reading its own data on a switch will put it.
+ * The account every Outreach screen in this browser tab should read.
+ * `localStorage` remembers it across reloads; the in-memory store keeps mounted
+ * components in this tab in sync. Other browser tabs deliberately do not drive it.
  */
 export function useActiveSeatKey(): [string, (key: string) => void] {
   const key = useSyncExternalStore(
@@ -235,36 +190,12 @@ export function useActiveSeatKey(): [string, (key: string) => void] {
   return [key, setActiveSeatKey];
 }
 
-/**
- * The switch itself, on every screen that obeys it -- and the sentence saying
- * what obeying it means HERE.
- *
- * ONE COMPONENT, NOT A COPY PER SCREEN. The switch used to be rendered only on
- * `/outreach`, while the queue, the campaign list and the funnel each read
- * their own data with no seat at all: the choice was two clicks away from
- * every screen it governed, and on those screens nothing said which account
- * the rows belonged to -- so a workspace with two accounts read the first
- * one's queue under the second one's name. A screen that shows per-account
- * rows renders this above them; the account it names and the rows below it are
- * then the same account, on screen, in one glance.
- *
- * `scope` IS REQUIRED AND IT IS THE POINT. Every screen says in its own words
- * what this choice reaches on it -- and a screen whose data is NOT per-account
- * says that instead, in the same place, rather than letting a switcher over
- * workspace-wide rows imply a filter that is not there.
- *
- * Renders nothing at all when the workspace has no LinkedIn account yet, or
- * when the account list cannot be read: an empty picker is not a control, and
- * every screen that uses this has its own empty state saying to connect one.
- */
-export function ActiveAccountBar({ scope }: { scope: ReactNode }) {
-  const [seatKey, setSeatKey] = useActiveSeatKey();
+/** Compact read-only account context for the app header. Selection still lives in Outreach → Settings. */
+export function ActiveLinkedInAccountName() {
+  const [seatKey] = useActiveSeatKey();
   const [accounts, setAccounts] = useState<LinkedInSeat[] | null>(null);
 
   const load = useCallback(async () => {
-    // Deliberately silent on failure. This is a control ABOVE the screen's own
-    // read, which has its own error banner; a second banner for the picker
-    // would report the same outage twice and push the actual work down.
     try {
       setAccounts(await getLinkedInManagerSeats());
     } catch {
@@ -277,41 +208,11 @@ export function ActiveAccountBar({ scope }: { scope: ReactNode }) {
   }, [load]);
   useOutreachRefresh(load);
 
-  // Same correction the Accounts screen makes: a remembered key can name an
-  // account that has since been deleted, and the first account a workspace adds
-  // is not necessarily `owner`. What the screen below reads must be what this
-  // control shows, so the memory is fixed rather than quietly ignored.
-  const active = accounts?.find((account) => account.seatKey === seatKey) ?? accounts?.[0] ?? null;
-  useEffect(() => {
-    if (active && active.seatKey !== seatKey) setSeatKey(active.seatKey);
-  }, [active, seatKey, setSeatKey]);
-
-  if (!accounts || accounts.length === 0) return null;
-
-  return (
-    <section className="page-panel">
-      <div className="li-filter-row">
-        <label>
-          Working in
-          <select
-            value={active?.seatKey ?? ''}
-            aria-label="LinkedIn account this screen is showing"
-            onChange={(event) => setSeatKey(event.target.value)}
-          >
-            {accounts.map((account) => (
-              <option key={account.seatKey} value={account.seatKey}>
-                {account.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <a className="li-link" href="/outreach">
-          Accounts
-        </a>
-      </div>
-      <p className="panel-note">{scope}</p>
-    </section>
-  );
+  const active = accounts?.find((account) => account.seatKey === seatKey) ?? null;
+  const label =
+    active?.label ??
+    (accounts === null ? 'Loading…' : accounts.length === 0 ? 'No LinkedIn account' : seatKey);
+  return <span>{label}</span>;
 }
 
 /* -------------------------------------------------------------------------
@@ -955,25 +856,19 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
   const [activeKey, setActiveKey] = useActiveSeatKey();
   const [accounts, setAccounts] = useState<LinkedInSeat[] | null>(null);
   const [details, setDetails] = useState<Record<string, LinkedInSeatResponse>>({});
-  /**
-   * The ENFORCED ceilings, per account, straight from the route that enforces
-   * them.
-   *
-   * The table below used to print the account's own configured number as the
-   * ceiling -- "4 / 30" -- while the check immediately before every action was
-   * applying `min(band, operator)` and letting 18 out. That is the silent
-   * trade-off this screen exists to stop being silent about, and the only
-   * honest fix is to print the number the server says will actually go out,
-   * next to the one the operator set. Nothing here is computed from the two.
-   */
   const [reports, setReports] = useState<Record<string, LinkedInLimitsReport>>({});
   const [worker, setWorker] = useState<LinkedInWorkerStatus | null>(null);
   const [safety, setSafety] = useState<LinkedInLimitsReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState('');
   const [adding, setAdding] = useState(false);
+  /** Only the newest refresh may replace the account list. An older request can
+   * have started before a just-added account existed and must never "repair"
+   * the active selection back to account #1 when it arrives late. */
+  const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     setLoading(true);
     try {
       const [list, workerStatus] = await Promise.all([
@@ -982,6 +877,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
         // take the account list down with it.
         getLinkedInWorkerStatus().catch(() => null)
       ]);
+      if (sequence !== loadSequence.current) return;
       setAccounts(list);
       setWorker(workerStatus);
       // lc-debt: one GET /api/linkedin/seat per account -- fine at the handful
@@ -997,6 +893,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
           }
         })
       );
+      if (sequence !== loadSequence.current) return;
       setDetails(
         Object.fromEntries(
           reads.filter(
@@ -1015,6 +912,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
           }
         })
       );
+      if (sequence !== loadSequence.current) return;
       setReports(
         Object.fromEntries(
           ceilings.filter(
@@ -1024,6 +922,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
       );
       setFailure('');
     } catch (error) {
+      if (sequence !== loadSequence.current) return;
       setFailure(
         errorMessage(
           error,
@@ -1031,7 +930,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
         )
       );
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
   }, []);
 
@@ -1039,16 +938,10 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
     void load();
   }, [load]);
   useOutreachRefresh(load);
-
-  // A remembered key can name an account that has since been removed, and the
-  // first account a workspace adds may not be `owner`. What is on screen is
-  // what is stored, so the memory is corrected rather than quietly ignored.
-  const active =
-    accounts?.find((account) => account.seatKey === activeKey) ?? accounts?.[0] ?? null;
-  useEffect(() => {
-    if (active && active.seatKey !== activeKey) setActiveKey(active.seatKey);
-  }, [active, activeKey, setActiveKey]);
-
+  // The Settings tabs are the source of truth for selection. A refresh may
+  // temporarily return a partial/stale account list, but it must never turn
+  // that into a write that overrides the account the user clicked.
+  const active = accounts?.find((account) => account.seatKey === activeKey) ?? null;
   /**
    * The ranges every limit control is built from, the bands those limits are
    * measured against, and the campaign ramp -- one read, and the only copy of
@@ -1198,7 +1091,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
                           : 'No confirmed session')}
                     </small>
                     <small className="li-acct-tab-state">
-                      {isActive ? 'Working in this account' : STATE_LABELS[state]}
+                      {isActive ? 'Active account' : STATE_LABELS[state]}
                     </small>
                   </button>
                 );

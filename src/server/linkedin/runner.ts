@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
 import { recordAction } from './actions.js';
 import { ACTION_GAP_SECONDS, bandFor, effectiveDailyCeiling, seatOperatorLimit } from './limits.js';
-import { campaignActionLimit, campaignSnapshotSteps, enrolNewContacts } from './managed-campaigns.js';
+import {
+  campaignActionLimit,
+  campaignSnapshotSteps,
+  enrolNewContacts
+} from './managed-campaigns.js';
 import { addLocalDays, localDateOf, weekdayOf, zonedToUtc } from './pacing.js';
 import { effectivePosture, getSeat, type LinkedInSeat } from './seats.js';
 import { enqueueWithdrawals, selectWithdrawalCandidates } from './withdraw.js';
@@ -161,9 +165,16 @@ function kindForStep(step: WorkflowStep): BudgetedKind | null {
 }
 
 function parseVariants(value: unknown): Record<string, string> {
-  const raw = typeof value === 'string'
-    ? (() => { try { return JSON.parse(value) as unknown; } catch { return {}; } })()
-    : value;
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return {};
+          }
+        })()
+      : value;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   return Object.fromEntries(
     Object.entries(raw as Record<string, unknown>)
@@ -224,11 +235,19 @@ function nextOpenInstant(seat: LinkedInSeat, from: Date): Date | null {
  * and the jitter on top of it is the seeded draw -- which is what keeps a
  * sequence of actions from arriving on a grid a rate-limiter could key on.
  */
-function scheduleSlot(seat: LinkedInSeat, earliest: Date, floor: Date | null, seed: string): Date | null {
-  const jitterMs = Math.round(seededUnit(seed) * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min) * 1000);
+function scheduleSlot(
+  seat: LinkedInSeat,
+  earliest: Date,
+  floor: Date | null,
+  seed: string
+): Date | null {
+  const jitterMs = Math.round(
+    seededUnit(seed) * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min) * 1000
+  );
   const gapMs = ACTION_GAP_SECONDS.min * 1000 + jitterMs;
   let candidate = new Date(earliest.getTime() + jitterMs);
-  if (floor && floor.getTime() + gapMs > candidate.getTime()) candidate = new Date(floor.getTime() + gapMs);
+  if (floor && floor.getTime() + gapMs > candidate.getTime())
+    candidate = new Date(floor.getTime() + gapMs);
   return nextOpenInstant(seat, candidate);
 }
 
@@ -240,11 +259,15 @@ function parseInstant(value: string | null): Date | null {
 
 /** The latest slot this seat already holds, so a new run never lands on top of one. */
 async function ledgerFloorFor(db: Db, workspaceId: string, seatKey: string): Promise<Date | null> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT TO_CHAR(MAX(planned_for) AT TIME ZONE 'UTC', ${UTC_ISO}) AS latest
     FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND status <> 'skipped' AND planned_for IS NOT NULL
-  `).get<{ latest: string | null }>(workspaceId, seatKey);
+  `
+    )
+    .get<{ latest: string | null }>(workspaceId, seatKey);
   return parseInstant(row?.latest ?? null);
 }
 
@@ -299,10 +322,16 @@ function targetKey(profileUrl: string): string {
  * by construction -- `syncThreads` stores `profileUrlFor(...)` output, which
  * carries no query -- and the key side is already normalised, so the two meet.
  */
-async function repliedProfiles(db: Db, workspaceId: string, profileUrls: readonly string[]): Promise<Set<string>> {
+async function repliedProfiles(
+  db: Db,
+  workspaceId: string,
+  profileUrls: readonly string[]
+): Promise<Set<string>> {
   if (profileUrls.length === 0) return new Set();
   const keys = profileUrls.map(targetKey);
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT LOWER(SPLIT_PART(SPLIT_PART(a.target_ref, chr(63), 1), '#', 1)) AS profile FROM linkedin_actions a
       WHERE a.workspace_id=? AND a.status='replied' AND a.target_ref IS NOT NULL
         AND LOWER(SPLIT_PART(SPLIT_PART(a.target_ref, chr(63), 1), '#', 1)) = ANY(?::text[])
@@ -310,7 +339,9 @@ async function repliedProfiles(db: Db, workspaceId: string, profileUrls: readonl
     SELECT LOWER(t.profile_url) AS profile FROM linkedin_threads t
       JOIN linkedin_messages m ON m.thread_id=t.id AND m.workspace_id=t.workspace_id
       WHERE t.workspace_id=? AND t.profile_url IS NOT NULL AND LOWER(t.profile_url) = ANY(?::text[]) AND m.direction='in'
-  `).all<{ profile: string }>(workspaceId, keys, workspaceId, keys);
+  `
+    )
+    .all<{ profile: string }>(workspaceId, keys, workspaceId, keys);
   return new Set(rows.map((row) => row.profile));
 }
 
@@ -341,19 +372,33 @@ const RUNNER_LEASE_NAMESPACE = 'trevra-linkedin-runner';
  * The lease is namespaced and taken on a connection of its own, the same shape
  * `automation-service.ts` uses for the same reason.
  */
-export async function runManagedCampaigns(db: Db, workspaceId: string, now: Date = new Date()): Promise<RunnerResult> {
+export async function runManagedCampaigns(
+  db: Db,
+  workspaceId: string,
+  now: Date = new Date()
+): Promise<RunnerResult> {
   return db.withConnection('linkedin-runner-lease', async (lease) => {
     const claimed = await lease.query<{ locked: boolean }>(
       'SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS locked',
       [RUNNER_LEASE_NAMESPACE, workspaceId]
     );
     if (!claimed.rows[0]?.locked) {
-      return { campaignsTicked: 0, actionsPlanned: 0, manualTasksCreated: 0, membersCompleted: 0, membersBlocked: 0 };
+      return {
+        campaignsTicked: 0,
+        actionsPlanned: 0,
+        manualTasksCreated: 0,
+        membersCompleted: 0,
+        membersBlocked: 0
+      };
     }
     try {
       return await planManagedCampaigns(db, workspaceId, now);
     } finally {
-      await lease.query('SELECT pg_advisory_unlock(hashtext($1), hashtext($2))', [RUNNER_LEASE_NAMESPACE, workspaceId])
+      await lease
+        .query('SELECT pg_advisory_unlock(hashtext($1), hashtext($2))', [
+          RUNNER_LEASE_NAMESPACE,
+          workspaceId
+        ])
         .catch(() => undefined);
     }
   });
@@ -368,13 +413,17 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
     membersBlocked: 0
   };
 
-  const campaigns = await db.prepare(`
+  const campaigns = await db
+    .prepare(
+      `
     SELECT id, seat_key, workflow_id, lead_list_id, sequence_json,
            TO_CHAR(started_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS started_at
     FROM linkedin_campaigns
     WHERE workspace_id=? AND status='running' AND lead_list_id IS NOT NULL AND workflow_id IS NOT NULL
     ORDER BY created_at ASC, id ASC
-  `).all<CampaignRow>(workspaceId);
+  `
+    )
+    .all<CampaignRow>(workspaceId);
   if (campaigns.length === 0) return result;
 
   // One seat may carry several campaigns. Both caches are per tick: the seat
@@ -404,9 +453,10 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
      * every other one.
      */
     const snapshot = campaignSnapshotSteps(campaign.sequence_json);
-    const steps = snapshot.length > 0
-      ? snapshot
-      : (await getWorkflow(db, workspaceId, campaign.workflow_id))?.steps ?? [];
+    const steps =
+      snapshot.length > 0
+        ? snapshot
+        : ((await getWorkflow(db, workspaceId, campaign.workflow_id))?.steps ?? []);
     if (steps.length === 0) continue;
 
     if (!seats.has(campaign.seat_key)) {
@@ -414,10 +464,14 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
     }
     const seat = seats.get(campaign.seat_key) ?? null;
     if (!seat) {
-      const blocked = await db.prepare(`
+      const blocked = await db
+        .prepare(
+          `
         SELECT COUNT(*)::int AS total FROM linkedin_campaign_members
         WHERE workspace_id=? AND campaign_id=? AND status IN ('active','waiting')
-      `).get<{ total: number }>(workspaceId, campaign.id);
+      `
+        )
+        .get<{ total: number }>(workspaceId, campaign.id);
       result.membersBlocked += blocked?.total ?? 0;
       continue;
     }
@@ -434,7 +488,12 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
      * the list afterwards was invisible to it forever. Done per tick, and only
      * for a RUNNING campaign, which is what this loop already selects for.
      */
-    await enrolNewContacts(db, workspaceId, { id: campaign.id, leadListId: campaign.lead_list_id, steps }, now);
+    await enrolNewContacts(
+      db,
+      workspaceId,
+      { id: campaign.id, leadListId: campaign.lead_list_id, steps },
+      now
+    );
 
     /* --- The campaign warm-up budget. ---
      *
@@ -456,23 +515,35 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
      */
     const windowStart = new Date(now.getTime() - 86_400_000).toISOString();
     const windowEnd = new Date(now.getTime() + 86_400_000).toISOString();
-    const used = await db.prepare(`
+    const used = await db
+      .prepare(
+        `
       SELECT kind, COUNT(*)::int AS total FROM linkedin_actions
       WHERE workspace_id=? AND campaign_id=? AND status <> 'skipped'
         AND planned_for IS NOT NULL AND planned_for >= ?::timestamptz AND planned_for <= ?::timestamptz
         AND kind = ANY(?::text[])
       GROUP BY kind
-    `).all<{ kind: string; total: number }>(workspaceId, campaign.id, windowStart, windowEnd, [...BUDGETED_KINDS]);
+    `
+      )
+      .all<{ kind: string; total: number }>(workspaceId, campaign.id, windowStart, windowEnd, [
+        ...BUDGETED_KINDS
+      ]);
     const usedByKind = new Map(used.map((row) => [row.kind, Number(row.total)]));
     const budget = new Map<BudgetedKind, number>();
     for (const kind of BUDGETED_KINDS) {
       // The ramp is a percentage of THE CEILING THE GATE WILL ENFORCE, not of
       // the raw operator setting -- see `seatDailyCeilingFor`.
-      const limit = campaignActionLimit(seatDailyCeilingFor(seat, kind, now), campaign.started_at, now);
+      const limit = campaignActionLimit(
+        seatDailyCeilingFor(seat, kind, now),
+        campaign.started_at,
+        now
+      );
       budget.set(kind, Math.max(0, limit - (usedByKind.get(kind) ?? 0)));
     }
 
-    const members = await db.prepare(`
+    const members = await db
+      .prepare(
+        `
       SELECT m.id, m.contact_id, m.step_index, m.assigned_variants,
              l.first_name, l.last_name, l.company, l.email, l.phone, l.country, l.profile_url
       FROM linkedin_campaign_members m
@@ -481,7 +552,9 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         AND (m.next_eligible_at IS NULL OR m.next_eligible_at <= ?::timestamptz)
       ORDER BY m.next_eligible_at ASC NULLS FIRST, m.id ASC
       LIMIT ${MEMBER_BATCH}
-    `).all<DueMemberRow>(workspaceId, campaign.id, now.toISOString());
+    `
+      )
+      .all<DueMemberRow>(workspaceId, campaign.id, now.toISOString());
 
     const replied = await repliedProfiles(
       db,
@@ -546,21 +619,95 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
          * arrive on top of a human answer.
          */
         if (member.profile_url && replied.has(targetKey(member.profile_url))) {
-          memberWrites.set(member.id, { stepIndex, status: 'replied', nextEligibleAt: null, lastActionId: null, variants: null, updatedAt: nowIso });
+          memberWrites.set(member.id, {
+            stepIndex,
+            status: 'replied',
+            nextEligibleAt: null,
+            lastActionId: null,
+            variants: null,
+            updatedAt: nowIso
+          });
           continue;
         }
 
         const step = steps[stepIndex];
         if (!step) {
-          memberWrites.set(member.id, { stepIndex, status: 'completed', nextEligibleAt: null, lastActionId: null, variants: null, updatedAt: nowIso });
+          memberWrites.set(member.id, {
+            stepIndex,
+            status: 'completed',
+            nextEligibleAt: null,
+            lastActionId: null,
+            variants: null,
+            updatedAt: nowIso
+          });
           result.membersCompleted += 1;
           continue;
+        }
+
+        /* --- Conditional message: accepted connection only. ---
+         * A pending invite must NOT send the message, but it also must not park
+         * the member forever in front of a later stale-invite withdrawal. We
+         * poll acceptance while it is undecided; once the configured withdrawal
+         * age arrives, this branch is skipped and the member advances to that
+         * cleanup step. Accepted/replied proceeds normally, while a terminal
+         * negative outcome skips the conditional message immediately.
+         */
+        if (step.action === 'message' && step.config.requiresAcceptedConnection) {
+          const invite = await tx
+            .prepare(
+              `
+            SELECT id, status,
+                   TO_CHAR(COALESCE(pending_since, recorded_at) AT TIME ZONE 'UTC', ${UTC_ISO}) AS sent_at
+            FROM linkedin_actions
+            WHERE workspace_id=? AND campaign_member_id=? AND kind='invite'
+            ORDER BY created_at DESC LIMIT 1
+          `
+            )
+            .get<InviteRow>(workspaceId, member.id);
+          const accepted = invite && ['accepted', 'replied'].includes(invite.status);
+          if (!accepted) {
+            const terminalNegative =
+              invite && ['declined', 'withdrawn', 'skipped'].includes(invite.status);
+            const nextWithdraw = steps
+              .slice(stepIndex + 1)
+              .find(
+                (candidate): candidate is Extract<WorkflowStep, { action: 'withdraw_pending' }> =>
+                  candidate.action === 'withdraw_pending'
+              );
+            const sentAt = invite ? parseInstant(invite.sent_at) : null;
+            const staleAt =
+              nextWithdraw && sentAt
+                ? new Date(sentAt.getTime() + nextWithdraw.config.afterDays * 86_400_000)
+                : null;
+            const stale = staleAt !== null && now.getTime() >= staleAt.getTime();
+
+            if (terminalNegative || stale) {
+              const advanced = advanceMember({ stepIndex, steps, from: now, actionId: null, now });
+              memberWrites.set(member.id, advanced.write);
+              if (advanced.completed) result.membersCompleted += 1;
+              continue;
+            }
+
+            const recheckAt = new Date(now.getTime() + UNSENT_INVITE_RECHECK_MS);
+            const nextCheck =
+              staleAt && staleAt.getTime() < recheckAt.getTime() ? staleAt : recheckAt;
+            memberWrites.set(member.id, {
+              stepIndex,
+              status: 'waiting',
+              nextEligibleAt: nextCheck.toISOString(),
+              lastActionId: null,
+              variants: null,
+              updatedAt: nowIso
+            });
+            continue;
+          }
         }
 
         /* --- The human checkpoint. --- */
         if (step.action === 'manual_message') {
           const template = step.config.suggestedTemplate ?? '';
-          const suggested = template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
+          const suggested =
+            template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
           // Collected for the one batched insert below, which carries the same
           // ON CONFLICT DO NOTHING against the pending partial unique index:
           // re-ticking a member that is already waiting on a human must not
@@ -572,7 +719,14 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           manualTaskBodies.push(suggested);
           // NOT advanced: `completeManualTask` owns `step_index+1`, and doing it
           // here as well would skip the step after this one.
-          memberWrites.set(member.id, { stepIndex, status: 'manual', nextEligibleAt: null, lastActionId: null, variants: null, updatedAt: nowIso });
+          memberWrites.set(member.id, {
+            stepIndex,
+            status: 'manual',
+            nextEligibleAt: null,
+            lastActionId: null,
+            variants: null,
+            updatedAt: nowIso
+          });
           continue;
         }
 
@@ -613,7 +767,14 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         // forever and hold the contact's one-active-campaign claim. Failed is
         // terminal and releases it.
         if (!member.profile_url) {
-          memberWrites.set(member.id, { stepIndex, status: 'failed', nextEligibleAt: null, lastActionId: null, variants: null, updatedAt: nowIso });
+          memberWrites.set(member.id, {
+            stepIndex,
+            status: 'failed',
+            nextEligibleAt: null,
+            lastActionId: null,
+            variants: null,
+            updatedAt: nowIso
+          });
           result.membersBlocked += 1;
           continue;
         }
@@ -632,13 +793,19 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           // The stored choice wins on every re-run: an A/B split that moved a
           // contact between arms would measure nothing.
           const assigned = parseVariants(member.assigned_variants)[step.id];
-          const variant = step.config.variants.find((candidate) => candidate.id === assigned)
-            ?? chooseMessageVariant(step.config.variants, `${member.id}:${step.id}`);
+          const variant =
+            step.config.variants.find((candidate) => candidate.id === assigned) ??
+            chooseMessageVariant(step.config.variants, `${member.id}:${step.id}`);
           variantId = variant.id;
           body = renderWorkflowTemplate(variant.body, lead);
         }
 
-        const plannedFor = scheduleSlot(seat, now, floors.get(campaign.seat_key) ?? null, `${member.id}:${step.id}`);
+        const plannedFor = scheduleSlot(
+          seat,
+          now,
+          floors.get(campaign.seat_key) ?? null,
+          `${member.id}:${step.id}`
+        );
         if (!plannedFor) {
           result.membersBlocked += 1;
           continue;
@@ -668,10 +835,14 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           // now the CAMPAIGN's transaction rather than this member's, which is
           // strictly stronger -- the row and its bytes still commit together,
           // and so does everything else this tick decided.
-          await tx.prepare(`
+          await tx
+            .prepare(
+              `
             UPDATE linkedin_actions SET body=?, campaign_member_id=?, workflow_step_id=?, variant_id=?
             WHERE id=? AND workspace_id=?
-          `).run(body, member.id, step.id, variantId, written.id, workspaceId);
+          `
+            )
+            .run(body, member.id, step.id, variantId, written.id, workspaceId);
         }
 
         // A duplicate means this member already ran this step -- the slot is not
@@ -682,7 +853,13 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           floors.set(campaign.seat_key, plannedFor);
         }
 
-        const advanced = advanceMember({ stepIndex, steps, from: plannedFor, actionId: written.id, now });
+        const advanced = advanceMember({
+          stepIndex,
+          steps,
+          from: plannedFor,
+          actionId: written.id,
+          now
+        });
         // The variant assignment rides on the same batched update as the step
         // advance, in the same transaction as the ledger row it belongs to.
         memberWrites.set(member.id, {
@@ -693,7 +870,9 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
       }
 
       if (manualTaskIds.length > 0) {
-        const inserted = await tx.prepare(`
+        const inserted = await tx
+          .prepare(
+            `
           INSERT INTO linkedin_manual_tasks (
             id, workspace_id, campaign_id, member_id, contact_id, seat_key, workflow_step_id, suggested_body, status, created_at
           )
@@ -702,18 +881,20 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           )
           ON CONFLICT DO NOTHING
           RETURNING id
-        `).all<{ id: string }>(
-          manualTaskIds,
-          manualTaskIds.map(() => workspaceId),
-          manualTaskIds.map(() => campaign.id),
-          manualTaskMemberIds,
-          manualTaskContactIds,
-          manualTaskIds.map(() => campaign.seat_key),
-          manualTaskStepIds,
-          manualTaskBodies,
-          manualTaskIds.map(() => 'pending'),
-          manualTaskIds.map(() => now.toISOString())
-        );
+        `
+          )
+          .all<{ id: string }>(
+            manualTaskIds,
+            manualTaskIds.map(() => workspaceId),
+            manualTaskIds.map(() => campaign.id),
+            manualTaskMemberIds,
+            manualTaskContactIds,
+            manualTaskIds.map(() => campaign.seat_key),
+            manualTaskStepIds,
+            manualTaskBodies,
+            manualTaskIds.map(() => 'pending'),
+            manualTaskIds.map(() => now.toISOString())
+          );
         result.manualTasksCreated += inserted.length;
       }
 
@@ -722,14 +903,22 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
 
     // A campaign with nothing left to do says so, rather than being re-scanned
     // on every tick forever.
-    const live = await db.prepare(`
+    const live = await db
+      .prepare(
+        `
       SELECT COUNT(*)::int AS total FROM linkedin_campaign_members
       WHERE workspace_id=? AND campaign_id=? AND status = ANY(?::text[])
-    `).get<{ total: number }>(workspaceId, campaign.id, [...LIVE_MEMBER_STATUSES]);
+    `
+      )
+      .get<{ total: number }>(workspaceId, campaign.id, [...LIVE_MEMBER_STATUSES]);
     if ((live?.total ?? 0) === 0) {
-      await db.prepare(`
+      await db
+        .prepare(
+          `
         UPDATE linkedin_campaigns SET status='completed', updated_at=? WHERE workspace_id=? AND id=? AND status='running'
-      `).run(now.toISOString(), workspaceId, campaign.id);
+      `
+        )
+        .run(now.toISOString(), workspaceId, campaign.id);
     }
   }
 
@@ -765,15 +954,13 @@ interface MemberWrite {
  * and the UPDATE was always the same one. Returning the row state lets 500
  * members share one statement instead of paying a round trip each.
  */
-function advanceMember(
-  input: {
-    stepIndex: number;
-    steps: readonly WorkflowStep[];
-    from: Date;
-    actionId: string | null;
-    now: Date;
-  }
-): { write: MemberWrite; completed: boolean } {
+function advanceMember(input: {
+  stepIndex: number;
+  steps: readonly WorkflowStep[];
+  from: Date;
+  actionId: string | null;
+  now: Date;
+}): { write: MemberWrite; completed: boolean } {
   const nextIndex = input.stepIndex + 1;
   const nextStep = input.steps[nextIndex];
   const status = nextStep ? 'waiting' : 'completed';
@@ -814,10 +1001,16 @@ function advanceMember(
  * `workspace_id` is in the WHERE clause for the reason it is everywhere else
  * in this subsystem: a member id is a global identifier.
  */
-async function flushMemberWrites(db: Db, workspaceId: string, writes: Map<string, MemberWrite>): Promise<void> {
+async function flushMemberWrites(
+  db: Db,
+  workspaceId: string,
+  writes: Map<string, MemberWrite>
+): Promise<void> {
   if (writes.size === 0) return;
   const entries = [...writes.entries()];
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE linkedin_campaign_members m
     SET step_index = w.step_index,
         status = w.status,
@@ -831,16 +1024,18 @@ async function flushMemberWrites(db: Db, workspaceId: string, writes: Map<string
     FROM unnest(?::text[], ?::int[], ?::text[], ?::timestamptz[], ?::text[], ?::jsonb[], ?::timestamptz[])
       AS w(id, step_index, status, next_eligible_at, last_action_id, variants, updated_at)
     WHERE m.workspace_id=? AND m.id = w.id
-  `).run(
-    entries.map(([memberId]) => memberId),
-    entries.map(([, write]) => write.stepIndex),
-    entries.map(([, write]) => write.status),
-    entries.map(([, write]) => write.nextEligibleAt),
-    entries.map(([, write]) => write.lastActionId),
-    entries.map(([, write]) => write.variants),
-    entries.map(([, write]) => write.updatedAt),
-    workspaceId
-  );
+  `
+    )
+    .run(
+      entries.map(([memberId]) => memberId),
+      entries.map(([, write]) => write.stepIndex),
+      entries.map(([, write]) => write.status),
+      entries.map(([, write]) => write.nextEligibleAt),
+      entries.map(([, write]) => write.lastActionId),
+      entries.map(([, write]) => write.variants),
+      entries.map(([, write]) => write.updatedAt),
+      workspaceId
+    );
 }
 
 /**
@@ -878,20 +1073,25 @@ async function handleWithdrawStep(
   db: Db,
   input: { workspaceId: string; seatKey: string; memberId: string; afterDays: number; now: Date }
 ): Promise<{ waitUntil: Date | null }> {
-  const invite = await db.prepare(`
+  const invite = await db
+    .prepare(
+      `
     SELECT id, status,
            TO_CHAR(COALESCE(pending_since, recorded_at) AT TIME ZONE 'UTC', ${UTC_ISO}) AS sent_at
     FROM linkedin_actions
     WHERE workspace_id=? AND campaign_member_id=? AND kind='invite'
     ORDER BY created_at DESC LIMIT 1
-  `).get<InviteRow>(input.workspaceId, input.memberId);
+  `
+    )
+    .get<InviteRow>(input.workspaceId, input.memberId);
 
   // Nothing to withdraw, or already decided one way or the other: the step has
   // no work and the workflow moves on. 'skipped' is in the list because a
   // stopped campaign or a removed member releases its queue that way -- there
   // is no invite outstanding and there never will be.
   if (!invite) return { waitUntil: null };
-  if (['accepted', 'replied', 'declined', 'withdrawn', 'skipped'].includes(invite.status)) return { waitUntil: null };
+  if (['accepted', 'replied', 'declined', 'withdrawn', 'skipped'].includes(invite.status))
+    return { waitUntil: null };
 
   const sentAt = parseInstant(invite.sent_at);
   // Queued but not sent (planned, or held by a pause). The withdrawal clock
@@ -918,12 +1118,19 @@ async function handleWithdrawStep(
  * whose queue is empty is exactly the one that needs planning, and a workspace
  * with a seat but no running campaign has nothing to plan.
  */
-export async function runManagedCampaignsForAllWorkspaces(db: Db, now: Date = new Date()): Promise<RunnerResult> {
-  const rows = await db.prepare(`
+export async function runManagedCampaignsForAllWorkspaces(
+  db: Db,
+  now: Date = new Date()
+): Promise<RunnerResult> {
+  const rows = await db
+    .prepare(
+      `
     SELECT DISTINCT workspace_id FROM linkedin_campaigns
     WHERE status='running' AND lead_list_id IS NOT NULL AND workflow_id IS NOT NULL
     ORDER BY workspace_id
-  `).all<{ workspace_id: string }>();
+  `
+    )
+    .all<{ workspace_id: string }>();
 
   const total: RunnerResult = {
     campaignsTicked: 0,

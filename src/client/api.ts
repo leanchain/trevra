@@ -10,15 +10,12 @@ import type {
   AgentScope,
   AgentSetup,
   AgentTokenSummary,
-  AutomationRule,
   AvailableIntegration,
   ConnectionSummary,
   DashboardPayload,
   PlaybookManifest,
   PlaybookRun,
   PlaybookRunStatus,
-  PreparedAction,
-  RecommendationType,
   SkillRun,
   WorkspacePolicy,
   PublicRegistryModule,
@@ -35,7 +32,11 @@ import type {
  * instead of rendering `undefined` beside a number an operator is betting a
  * LinkedIn account on.
  */
-import type { LedgerExportFile, LedgerExportRecord, LedgerExportSection } from '../server/ledger-export';
+import type {
+  LedgerExportFile,
+  LedgerExportRecord,
+  LedgerExportSection
+} from '../server/ledger-export';
 import type {
   LoopCost,
   LoopCostActionCount,
@@ -49,11 +50,29 @@ import type {
 import type { LinkedInActionKind, LinkedInActionStatus } from '../server/linkedin/actions';
 import type { BranchOn, StepCondition } from '../server/linkedin/branching';
 import type { LinkedInSafetyCheck, LinkedInSafetyVerdict } from '../server/linkedin/guard';
-import type { LinkedInConversation, LinkedInMessageRecord, LinkedInThreadRecord } from '../server/linkedin/inbox';
-import type { LeadSourceKind, LeadSourceStatus, LinkedInLead, LinkedInLeadSource } from '../server/linkedin/leads';
-import type { LinkedInLeadContact, LinkedInLeadList, LeadListSourceKind } from '../server/linkedin/lead-lists';
+import type {
+  LinkedInConversation,
+  LinkedInMessageRecord,
+  LinkedInThreadRecord
+} from '../server/linkedin/inbox';
+import type {
+  LeadSourceKind,
+  LeadSourceStatus,
+  LinkedInLead,
+  LinkedInLeadSource
+} from '../server/linkedin/leads';
+import type {
+  LinkedInLeadContact,
+  LinkedInLeadList,
+  LeadListSourceKind
+} from '../server/linkedin/lead-lists';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
-import type { ManagedAnalytics, ManagedCampaign, ManagedCampaignMember, ManualTaskView } from '../server/linkedin/managed-campaigns';
+import type {
+  ManagedAnalytics,
+  ManagedCampaign,
+  ManagedCampaignMember,
+  ManualTaskView
+} from '../server/linkedin/managed-campaigns';
 import type {
   Account,
   AccountImportResult,
@@ -67,7 +86,11 @@ import type {
   ScoreComponent,
   ScoreRationale
 } from '../server/accounts/types';
-import type { WithdrawalCandidate, WithdrawalRecord, WithdrawalStatus } from '../server/linkedin/withdraw';
+import type {
+  WithdrawalCandidate,
+  WithdrawalRecord,
+  WithdrawalStatus
+} from '../server/linkedin/withdraw';
 import type {
   CampaignStatus,
   LinkedInActionView,
@@ -82,10 +105,18 @@ import type { SeatDetectRequest } from '../server/linkedin/local-worker';
 import type { PacingPlan } from '../server/linkedin/pacing';
 import type { CampaignQueued } from '../server/linkedin/queue';
 import type { LinkedInSeat, SeatPatch, SeatPosture } from '../server/linkedin/seats';
-import type { LinkedInIcp, LinkedInOffer, LinkedInSequence, SequenceTone } from '../server/linkedin/sequence';
+import type {
+  LinkedInIcp,
+  LinkedInOffer,
+  LinkedInSequence,
+  SequenceTone
+} from '../server/linkedin/sequence';
 
 export class ApiError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
     super(message);
   }
 }
@@ -142,43 +173,39 @@ export async function getDashboard(): Promise<DashboardPayload> {
 export interface TeamMemberInvited {
   status: 'invited';
   /** better-auth's own created `invitation` row. No email is sent unless the deployment configured one -- see the Team screen's copyable link. */
-  invitation: { id: string; email: string; role: string; organizationId: string; status: string; expiresAt: string };
+  invitation: {
+    id: string;
+    email: string;
+    role: string;
+    organizationId: string;
+    status: string;
+    expiresAt: string;
+  };
 }
 
-export async function addTeamMember(input: { email: string; role?: 'owner' | 'member' }): Promise<TeamMemberInvited> {
+export async function addTeamMember(input: {
+  email: string;
+  role?: 'owner' | 'member';
+}): Promise<TeamMemberInvited> {
   return request('/api/team/members', { method: 'POST', body: JSON.stringify(input) });
 }
 
-export async function prepareRecommendation(id: string): Promise<PreparedAction> {
-  const result = await request<{ action: PreparedAction }>(`/api/recommendations/${id}/prepare`, { method: 'POST' });
-  return result.action;
-}
-
-export async function approveAction(id: string, payload: Pick<PreparedAction, 'recipient' | 'subject' | 'body' | 'scheduledFor'>): Promise<PreparedAction> {
-  const result = await request<{ action: PreparedAction }>(`/api/actions/${id}/approve`, { method: 'POST', body: JSON.stringify(payload) });
-  return result.action;
-}
-
-export async function executeAction(id: string): Promise<PreparedAction> {
-  const result = await request<{ action: PreparedAction }>(`/api/actions/${id}/execute`, { method: 'POST' });
-  return result.action;
-}
-
-export async function snoozeRecommendation(id: string): Promise<void> {
-  await request(`/api/recommendations/${id}/snooze`, { method: 'POST', body: JSON.stringify({ days: 3 }) });
-}
-
-export async function dismissRecommendation(id: string, reason?: string): Promise<void> {
-  await request(`/api/recommendations/${id}/dismiss`, { method: 'POST', body: JSON.stringify({ reason }) });
-}
-
-export async function getIntegrations(): Promise<{ connections: ConnectionSummary[]; available: AvailableIntegration[]; configured: boolean }> {
+export async function getIntegrations(): Promise<{
+  connections: ConnectionSummary[];
+  available: AvailableIntegration[];
+  configured: boolean;
+}> {
   return request('/api/integrations');
 }
 
-export async function createConnectSession(allowedIntegrations: string[]): Promise<{ token: string; expires_at?: string; connect_link?: string; browser_host?: string }> {
-  const result = await request<{ session: { token: string; expires_at?: string; connect_link?: string; browser_host?: string } }>('/api/integrations/connect-session', {
-    method: 'POST', body: JSON.stringify({ allowedIntegrations })
+export async function createConnectSession(
+  allowedIntegrations: string[]
+): Promise<{ token: string; expires_at?: string; connect_link?: string; browser_host?: string }> {
+  const result = await request<{
+    session: { token: string; expires_at?: string; connect_link?: string; browser_host?: string };
+  }>('/api/integrations/connect-session', {
+    method: 'POST',
+    body: JSON.stringify({ allowedIntegrations })
   });
   return result.session;
 }
@@ -191,73 +218,42 @@ export async function disconnectIntegration(id: string): Promise<void> {
   await request(`/api/integrations/${id}`, { method: 'DELETE' });
 }
 
-export async function importMarketplace(provider: 'upwork' | 'fiverr' | 'contra' | 'generic', csv: string): Promise<{ imported: number; skipped: number }> {
-  return request('/api/imports/marketplace', { method: 'POST', body: JSON.stringify({ provider, csv }) });
-}
-
-export async function importCommercialDocument(input: {
-  file: File;
-  clientName?: string;
-  contactName?: string;
-  clientEmail?: string;
-  projectName?: string;
-  currency?: string;
-}): Promise<{
-  extractionMethod: 'model' | 'deterministic';
-  filename: string;
-  textCharacters: number;
-  contractTitle: string;
-  scopeItems: number;
-  clauses: number;
-  milestones: number;
-}> {
-  const form = new FormData();
-  form.append('file', input.file);
-  for (const [key, value] of Object.entries(input)) {
-    if (key !== 'file' && value) form.append(key, String(value));
-  }
-  const response = await fetch('/api/imports/document', { method: 'POST', body: form, credentials: 'include' });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: response.statusText }));
-    throw new ApiError(body.error ?? 'Document import failed', response.status);
-  }
-  return response.json();
-}
-
-export async function updateAutomationRule(type: RecommendationType, input: Omit<AutomationRule, 'id' | 'recommendationType'>): Promise<AutomationRule[]> {
-  const result = await request<{ rules: AutomationRule[] }>(`/api/automation/rules/${type}`, { method: 'PUT', body: JSON.stringify(input) });
-  return result.rules;
-}
-
-export async function runAutomation(): Promise<{ prepared: number; executed: number; failed: number }> {
-  return request('/api/automation/run', { method: 'POST' });
-}
-
-
-
 export async function getPlaybooks(): Promise<PlaybookManifest[]> {
   const result = await request<{ playbooks: PlaybookManifest[] }>('/api/playbooks');
   return result.playbooks;
 }
 
-export async function startPlaybook(id: string, input: unknown, version?: string): Promise<PlaybookRun> {
-  const result = await request<{ run: PlaybookRun }>(`/api/playbooks/${encodeURIComponent(id)}/runs`, {
-    method: 'POST',
-    body: JSON.stringify({ input: input ?? {}, ...(version ? { version } : {}) })
-  });
+export async function startPlaybook(
+  id: string,
+  input: unknown,
+  version?: string
+): Promise<PlaybookRun> {
+  const result = await request<{ run: PlaybookRun }>(
+    `/api/playbooks/${encodeURIComponent(id)}/runs`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ input: input ?? {}, ...(version ? { version } : {}) })
+    }
+  );
   return result.run;
 }
 
-export async function getPlaybookRuns(filters: { status?: PlaybookRunStatus; limit?: number } = {}): Promise<PlaybookRun[]> {
+export async function getPlaybookRuns(
+  filters: { status?: PlaybookRunStatus; limit?: number } = {}
+): Promise<PlaybookRun[]> {
   const query = new URLSearchParams();
   if (filters.status) query.set('status', filters.status);
   if (filters.limit) query.set('limit', String(filters.limit));
-  const result = await request<{ runs: PlaybookRun[] }>(`/api/playbook-runs${query.size ? `?${query}` : ''}`);
+  const result = await request<{ runs: PlaybookRun[] }>(
+    `/api/playbook-runs${query.size ? `?${query}` : ''}`
+  );
   return result.runs;
 }
 
 export async function getPlaybookRun(id: string): Promise<PlaybookRun> {
-  const result = await request<{ run: PlaybookRun }>(`/api/playbook-runs/${encodeURIComponent(id)}`);
+  const result = await request<{ run: PlaybookRun }>(
+    `/api/playbook-runs/${encodeURIComponent(id)}`
+  );
   return result.run;
 }
 
@@ -274,17 +270,18 @@ export async function decidePlaybookStep(
   return result.run;
 }
 
-
 /**
  * Every run of one skill. The route has existed since the skills registry
  * shipped and no client had ever called it, so a module's own history was
  * visible nowhere in the product.
  */
-export async function getSkillRuns(filters: {
-  skillId?: string;
-  status?: 'ok' | 'error';
-  limit?: number;
-} = {}): Promise<SkillRun[]> {
+export async function getSkillRuns(
+  filters: {
+    skillId?: string;
+    status?: 'ok' | 'error';
+    limit?: number;
+  } = {}
+): Promise<SkillRun[]> {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
     if (value !== undefined && value !== '') query.set(key, String(value));
@@ -346,9 +343,14 @@ export async function getAgentSetup(): Promise<AgentSetup | null> {
 }
 
 /** No default endpoint ships, so this is always the operator's own words. */
-export async function saveAgentModelConfig(input: { baseUrl: string; model: string; label?: string }): Promise<AgentModelConfig> {
+export async function saveAgentModelConfig(input: {
+  baseUrl: string;
+  model: string;
+  label?: string;
+}): Promise<AgentModelConfig> {
   const result = await request<{ config: AgentModelConfig }>('/api/agent-setup/config', {
-    method: 'PUT', body: JSON.stringify(input)
+    method: 'PUT',
+    body: JSON.stringify(input)
   });
   return result.config;
 }
@@ -359,9 +361,13 @@ export async function saveAgentModelConfig(input: { baseUrl: string; model: stri
  * call: plaintext leaves exactly one internal function on the server, at the
  * moment of a model request, and no API returns it at any privilege.
  */
-export async function saveAgentKey(input: { apiKey: string; label?: string }): Promise<AgentKeySummary> {
+export async function saveAgentKey(input: {
+  apiKey: string;
+  label?: string;
+}): Promise<AgentKeySummary> {
   const result = await request<{ secret: AgentKeySummary }>('/api/agent-setup/key', {
-    method: 'PUT', body: JSON.stringify(input)
+    method: 'PUT',
+    body: JSON.stringify(input)
   });
   return result.secret;
 }
@@ -370,16 +376,25 @@ export async function deleteAgentKey(): Promise<void> {
   await request('/api/agent-setup/key', { method: 'DELETE' });
 }
 
-export async function saveAgentBudget(input: { monthlyCapCents?: number; enabled?: boolean }): Promise<AgentBudget> {
+export async function saveAgentBudget(input: {
+  monthlyCapCents?: number;
+  enabled?: boolean;
+}): Promise<AgentBudget> {
   const result = await request<{ budget: AgentBudget }>('/api/agent-setup/budget', {
-    method: 'PUT', body: JSON.stringify(input)
+    method: 'PUT',
+    body: JSON.stringify(input)
   });
   return result.budget;
 }
 
-export async function saveAgentSchedule(input: { enabled?: boolean; goal?: string; intervalMinutes?: number }): Promise<AgentSchedule> {
+export async function saveAgentSchedule(input: {
+  enabled?: boolean;
+  goal?: string;
+  intervalMinutes?: number;
+}): Promise<AgentSchedule> {
   const result = await request<{ schedule: AgentSchedule }>('/api/agent-setup/schedule', {
-    method: 'PUT', body: JSON.stringify(input)
+    method: 'PUT',
+    body: JSON.stringify(input)
   });
   return result.schedule;
 }
@@ -390,9 +405,13 @@ export async function saveAgentSchedule(input: { enabled?: boolean; goal?: strin
  * above in the same discipline -- the token is write-only, and there is no
  * companion read function because there is no route that returns one.
  */
-export async function saveAgentCliConfig(input: { cli: 'claude' | 'codex'; model: string }): Promise<AgentCliConfig> {
+export async function saveAgentCliConfig(input: {
+  cli: 'claude' | 'codex';
+  model: string;
+}): Promise<AgentCliConfig> {
   const result = await request<{ config: AgentCliConfig }>('/api/agent-setup/cli-config', {
-    method: 'PUT', body: JSON.stringify(input)
+    method: 'PUT',
+    body: JSON.stringify(input)
   });
   return result.config;
 }
@@ -406,16 +425,23 @@ export async function deleteAgentCliToken(): Promise<void> {
 }
 
 /** Its own immediate-effect call, like {@link saveAgentBudget}'s `enabled` flip -- see the server-side doc comment on `setWorkspaceCliRiskAccepted`. */
-export async function setAgentCliRiskAccepted(accepted: boolean): Promise<AgentCliSetup['riskAccepted']> {
+export async function setAgentCliRiskAccepted(
+  accepted: boolean
+): Promise<AgentCliSetup['riskAccepted']> {
   const result = await request<{ riskAccepted: boolean }>('/api/agent-setup/cli-risk-accept', {
-    method: 'PUT', body: JSON.stringify({ accepted })
+    method: 'PUT',
+    body: JSON.stringify({ accepted })
   });
   return result.riskAccepted;
 }
 
-export async function startAgentRun(input: { goal: string; maxSteps?: number }): Promise<AgentRunSummary> {
+export async function startAgentRun(input: {
+  goal: string;
+  maxSteps?: number;
+}): Promise<AgentRunSummary> {
   const result = await request<{ run: AgentRunSummary }>('/api/agent-runs', {
-    method: 'POST', body: JSON.stringify(input)
+    method: 'POST',
+    body: JSON.stringify(input)
   });
   return result.run;
 }
@@ -457,7 +483,8 @@ export async function createPolicy(input: {
   enabled?: boolean;
 }): Promise<WorkspacePolicy[]> {
   const result = await request<{ policies: WorkspacePolicy[] }>('/api/policies', {
-    method: 'POST', body: JSON.stringify(input)
+    method: 'POST',
+    body: JSON.stringify(input)
   });
   return result.policies;
 }
@@ -492,25 +519,33 @@ export async function revokeAgentToken(id: string): Promise<void> {
   await request(`/api/agent-tokens/${id}`, { method: 'DELETE' });
 }
 
-
 export async function getPublicRegistryModules(): Promise<PublicRegistryModule[]> {
   const result = await request<{ modules: PublicRegistryModule[] }>('/api/public/modules');
   return result.modules;
 }
 
 export async function getInstalledRegistryModules(): Promise<InstalledCommunityModule[]> {
-  const result = await request<{ modules: InstalledCommunityModule[] }>('/api/registry/installations');
+  const result = await request<{ modules: InstalledCommunityModule[] }>(
+    '/api/registry/installations'
+  );
   return result.modules;
 }
 
-export async function installRegistryModule(moduleId: string, version: string, config: Record<string, unknown> = {}): Promise<void> {
+export async function installRegistryModule(
+  moduleId: string,
+  version: string,
+  config: Record<string, unknown> = {}
+): Promise<void> {
   await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, {
-    method: 'POST', body: JSON.stringify({ version, config })
+    method: 'POST',
+    body: JSON.stringify({ version, config })
   });
 }
 
 export async function uninstallRegistryModule(moduleId: string): Promise<void> {
-  await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, { method: 'DELETE' });
+  await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, {
+    method: 'DELETE'
+  });
 }
 
 /* =====================================================================
@@ -547,8 +582,13 @@ export type {
  * section added on the server breaks this line at typecheck rather than
  * silently leaving a checkbox missing from the export panel.
  */
-export const LEDGER_EXPORT_SECTIONS: readonly LedgerExportSection[] =
-  ['runs', 'steps', 'evidence', 'approvals', 'actions'];
+export const LEDGER_EXPORT_SECTIONS: readonly LedgerExportSection[] = [
+  'runs',
+  'steps',
+  'evidence',
+  'approvals',
+  'actions'
+];
 
 /**
  * Render an export and get back what is in it.
@@ -722,7 +762,13 @@ export type {
  * that drifts the first time somebody tunes a multiplier. Every other server
  * module in this file is type-only.
  */
-export { MAX_DAY_OVER_DAY_DELTA, MIN_RAMP_STEP, PACED_KINDS, WARMUP_MULTIPLIERS, WARMUP_WEEKS } from '../server/linkedin/limits';
+export {
+  MAX_DAY_OVER_DAY_DELTA,
+  MIN_RAMP_STEP,
+  PACED_KINDS,
+  WARMUP_MULTIPLIERS,
+  WARMUP_WEEKS
+} from '../server/linkedin/limits';
 
 /**
  * The kinds, statuses and formats that do NOT live in that table.
@@ -732,8 +778,18 @@ export { MAX_DAY_OVER_DAY_DELTA, MIN_RAMP_STEP, PACED_KINDS, WARMUP_MULTIPLIERS,
  * is the guard: adding a kind or a format on the server breaks this line at
  * typecheck rather than silently leaving an option missing from a filter.
  */
-export const LINKEDIN_ACTION_KINDS: readonly LinkedInActionKind[] =
-  ['invite', 'dm', 'reply', 'inmail', 'profile_view', 'comment', 'follow', 'like', 'endorse', 'withdraw'];
+export const LINKEDIN_ACTION_KINDS: readonly LinkedInActionKind[] = [
+  'invite',
+  'dm',
+  'reply',
+  'inmail',
+  'profile_view',
+  'comment',
+  'follow',
+  'like',
+  'endorse',
+  'withdraw'
+];
 /**
  * 'held' IS ON THIS LIST NOW, and its absence was half of a two-sided bug.
  *
@@ -747,9 +803,23 @@ export const LINKEDIN_ACTION_KINDS: readonly LinkedInActionKind[] =
  * here the list stays hand-written because importing the value would drag zod
  * and pg into the browser bundle, so this comment is the guard.
  */
-export const LINKEDIN_ACTION_STATUSES: readonly LinkedInActionStatus[] =
-  ['planned', 'held', 'exported', 'sent', 'accepted', 'replied', 'declined', 'skipped', 'withdrawn'];
-export const LINKEDIN_EXPORT_FORMATS: readonly ExportFormat[] = ['dripify', 'heyreach', 'expandi', 'generic'];
+export const LINKEDIN_ACTION_STATUSES: readonly LinkedInActionStatus[] = [
+  'planned',
+  'held',
+  'exported',
+  'sent',
+  'accepted',
+  'replied',
+  'declined',
+  'skipped',
+  'withdrawn'
+];
+export const LINKEDIN_EXPORT_FORMATS: readonly ExportFormat[] = [
+  'dripify',
+  'heyreach',
+  'expandi',
+  'generic'
+];
 
 /**
  * The five outcomes a step may branch on, restated as values for the reason
@@ -761,8 +831,13 @@ export const LINKEDIN_EXPORT_FORMATS: readonly ExportFormat[] = ['dripify', 'hey
  * /api/linkedin/sequence-templates` returns the same closed list in the
  * server's own order; `branchOnOptions` below reconciles the two.
  */
-export const LINKEDIN_BRANCH_ON: readonly BranchOn[] =
-  ['always', 'accepted', 'replied', 'not_accepted', 'not_replied'];
+export const LINKEDIN_BRANCH_ON: readonly BranchOn[] = [
+  'always',
+  'accepted',
+  'replied',
+  'not_accepted',
+  'not_replied'
+];
 
 /** Whatever the server published, with `always` first and nothing invented. */
 export function branchOnOptions(published?: readonly BranchOn[] | null): readonly BranchOn[] {
@@ -780,14 +855,27 @@ export function branchOnOptions(published?: readonly BranchOn[] | null): readonl
  * could only ever author half of a warm-up. `comment` stays out -- the ledger
  * records one, nothing here schedules one.
  */
-export type SequenceStepKind =
-  Extract<LinkedInActionKind, 'profile_view' | 'invite' | 'dm' | 'inmail' | 'follow' | 'like' | 'endorse'>;
-export const SEQUENCE_STEP_KINDS: readonly SequenceStepKind[] =
-  ['profile_view', 'invite', 'dm', 'inmail', 'follow', 'like', 'endorse'];
+export type SequenceStepKind = Extract<
+  LinkedInActionKind,
+  'profile_view' | 'invite' | 'dm' | 'inmail' | 'follow' | 'like' | 'endorse'
+>;
+export const SEQUENCE_STEP_KINDS: readonly SequenceStepKind[] = [
+  'profile_view',
+  'invite',
+  'dm',
+  'inmail',
+  'follow',
+  'like',
+  'endorse'
+];
 
 /** The three ENGAGEMENT kinds `POST /api/linkedin/engagement` performs. */
 export type LinkedInEngagementKind = Extract<LinkedInActionKind, 'follow' | 'like' | 'endorse'>;
-export const LINKEDIN_ENGAGEMENT_KINDS: readonly LinkedInEngagementKind[] = ['follow', 'like', 'endorse'];
+export const LINKEDIN_ENGAGEMENT_KINDS: readonly LinkedInEngagementKind[] = [
+  'follow',
+  'like',
+  'endorse'
+];
 
 /**
  * The merge fields step copy may carry. A CLOSED set: the server rejects a
@@ -795,7 +883,12 @@ export const LINKEDIN_ENGAGEMENT_KINDS: readonly LinkedInEngagementKind[] = ['fo
  * anything else it finds rather than letting an operator invent one and lose
  * the save at the door.
  */
-export const LINKEDIN_MERGE_FIELDS: readonly string[] = ['firstName', 'lastName', 'company', 'jobTitle'];
+export const LINKEDIN_MERGE_FIELDS: readonly string[] = [
+  'firstName',
+  'lastName',
+  'company',
+  'jobTitle'
+];
 
 /** LinkedIn truncates a connection-request note here -- `INVITE_NOTE_MAX_CHARS` in src/server/linkedin/sequence.ts. */
 export const LINKEDIN_INVITE_NOTE_MAX_CHARS = 300;
@@ -1101,8 +1194,16 @@ export interface LinkedInCampaignInput {
   name: string;
   version?: string;
   input:
-    | (LinkedInCampaignCommonInput & { icp: LinkedInIcp; offer: LinkedInOffer; sequenceSteps?: never })
-    | (LinkedInCampaignCommonInput & { sequenceSteps: EditableSequenceStep[]; icp?: never; offer?: never });
+    | (LinkedInCampaignCommonInput & {
+        icp: LinkedInIcp;
+        offer: LinkedInOffer;
+        sequenceSteps?: never;
+      })
+    | (LinkedInCampaignCommonInput & {
+        sequenceSteps: EditableSequenceStep[];
+        icp?: never;
+        offer?: never;
+      });
 }
 
 /**
@@ -1113,8 +1214,14 @@ export async function getLinkedInSeat(seatKey?: string): Promise<LinkedInSeatRes
   return request(`/api/linkedin/seat${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`);
 }
 
-export async function saveLinkedInSeat(patch: SeatPatch, seatKey?: string): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
-  return request('/api/linkedin/seat', { method: 'PUT', body: JSON.stringify(seatKey ? { ...patch, seatKey } : patch) });
+export async function saveLinkedInSeat(
+  patch: SeatPatch,
+  seatKey?: string
+): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
+  return request('/api/linkedin/seat', {
+    method: 'PUT',
+    body: JSON.stringify(seatKey ? { ...patch, seatKey } : patch)
+  });
 }
 
 /** What one read of the logged-in session produced. */
@@ -1146,8 +1253,14 @@ export interface LinkedInSeatDetection {
  * a login or challenge wall, and the server's message already names the profile
  * directory to log into. Surface that message verbatim.
  */
-export async function detectLinkedInSeat(timezone: string, seatKey?: string): Promise<LinkedInSeatDetection> {
-  return request('/api/linkedin/seat/detect', { method: 'POST', body: JSON.stringify(seatKey ? { timezone, seatKey } : { timezone }) });
+export async function detectLinkedInSeat(
+  timezone: string,
+  seatKey?: string
+): Promise<LinkedInSeatDetection> {
+  return request('/api/linkedin/seat/detect', {
+    method: 'POST',
+    body: JSON.stringify(seatKey ? { timezone, seatKey } : { timezone })
+  });
 }
 
 /**
@@ -1158,7 +1271,11 @@ export async function detectLinkedInSeat(timezone: string, seatKey?: string): Pr
  * server holds it encrypted and hands it to one thing -- the browser session
  * it opens on this machine.
  */
-export async function saveLinkedInCredentials(input: { email: string; password: string; seatKey?: string }): Promise<{
+export async function saveLinkedInCredentials(input: {
+  email: string;
+  password: string;
+  seatKey?: string;
+}): Promise<{
   hasCredentials: true;
   maskedEmail: string;
 }> {
@@ -1166,8 +1283,13 @@ export async function saveLinkedInCredentials(input: { email: string; password: 
 }
 
 /** Removable at any time, which is half of why storing it is defensible at all. */
-export async function deleteLinkedInCredentials(seatKey?: string): Promise<{ hasCredentials: false }> {
-  return request(`/api/linkedin/seat/credentials${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`, { method: 'DELETE' });
+export async function deleteLinkedInCredentials(
+  seatKey?: string
+): Promise<{ hasCredentials: false }> {
+  return request(
+    `/api/linkedin/seat/credentials${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`,
+    { method: 'DELETE' }
+  );
 }
 
 export type LinkedInLoginStatus = 'ok' | 'otp_required' | 'challenge' | 'failed';
@@ -1186,7 +1308,10 @@ export interface LinkedInLoginResult {
  * the body for the reason every one-time code does: a query string is a proxy
  * log.
  */
-export async function loginLinkedInSeat(otp?: string, seatKey?: string): Promise<LinkedInLoginResult> {
+export async function loginLinkedInSeat(
+  otp?: string,
+  seatKey?: string
+): Promise<LinkedInLoginResult> {
   const body: { otp?: string; seatKey?: string } = {};
   if (otp) body.otp = otp;
   if (seatKey) body.seatKey = seatKey;
@@ -1199,8 +1324,14 @@ export async function loginLinkedInSeat(otp?: string, seatKey?: string): Promise
  * `reason` is required by the server rather than defaulted, because "why is
  * this stopped" three weeks later is the question the column answers.
  */
-export async function pauseLinkedInSeat(reason: string, seatKey?: string): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
-  return request('/api/linkedin/seat/pause', { method: 'POST', body: JSON.stringify(seatKey ? { reason, seatKey } : { reason }) });
+export async function pauseLinkedInSeat(
+  reason: string,
+  seatKey?: string
+): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
+  return request('/api/linkedin/seat/pause', {
+    method: 'POST',
+    body: JSON.stringify(seatKey ? { reason, seatKey } : { reason })
+  });
 }
 
 /**
@@ -1216,7 +1347,10 @@ export async function pauseLinkedInSeat(reason: string, seatKey?: string): Promi
  * `seatKey` stays the first parameter so every existing caller keeps working;
  * pass `undefined` for the owner account.
  */
-export async function resumeLinkedInSeat(seatKey?: string, reason?: string): Promise<{
+export async function resumeLinkedInSeat(
+  seatKey?: string,
+  reason?: string
+): Promise<{
   seat: LinkedInSeat;
   posture: SeatPosture;
   /** Exactly what was recorded, or null when the operator gave none. */
@@ -1241,7 +1375,9 @@ export async function deleteLinkedInSeat(seatKey?: string): Promise<{
   clearedThreads: number;
   released: unknown;
 }> {
-  return request(`/api/linkedin/seat${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`, { method: 'DELETE' });
+  return request(`/api/linkedin/seat${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`, {
+    method: 'DELETE'
+  });
 }
 
 /**
@@ -1251,7 +1387,9 @@ export async function deleteLinkedInSeat(seatKey?: string): Promise<{
  * refusal comes back as a 409 with the sentence to show. Owner-only.
  */
 export async function deleteLeadList(listId: string): Promise<{ deleted: unknown }> {
-  return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}`, { method: 'DELETE' });
+  return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}`, {
+    method: 'DELETE'
+  });
 }
 
 /**
@@ -1288,27 +1426,35 @@ export async function planLinkedIn(input: {
   return request('/api/linkedin/plan', { method: 'POST', body: JSON.stringify(input) });
 }
 
-export async function getLinkedInActions(filters: {
-  status?: LinkedInActionStatus;
-  kind?: LinkedInActionKind;
-  campaignId?: string;
-  seatKey?: string;
-  from?: string;
-  to?: string;
-  limit?: number;
-} = {}): Promise<LinkedInActionView[]> {
+export async function getLinkedInActions(
+  filters: {
+    status?: LinkedInActionStatus;
+    kind?: LinkedInActionKind;
+    campaignId?: string;
+    seatKey?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+  } = {}
+): Promise<LinkedInActionView[]> {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
     if (value !== undefined && value !== '') query.set(key, String(value));
   }
-  const result = await request<{ actions: LinkedInActionView[] }>(`/api/linkedin/actions${query.size ? `?${query}` : ''}`);
+  const result = await request<{ actions: LinkedInActionView[] }>(
+    `/api/linkedin/actions${query.size ? `?${query}` : ''}`
+  );
   return result.actions;
 }
 
 export async function skipLinkedInAction(id: string): Promise<LinkedInActionView> {
-  const result = await request<{ action: LinkedInActionView }>(`/api/linkedin/actions/${encodeURIComponent(id)}/skip`, {
-    method: 'POST', body: JSON.stringify({})
-  });
+  const result = await request<{ action: LinkedInActionView }>(
+    `/api/linkedin/actions/${encodeURIComponent(id)}/skip`,
+    {
+      method: 'POST',
+      body: JSON.stringify({})
+    }
+  );
   return result.action;
 }
 
@@ -1319,10 +1465,17 @@ export async function skipLinkedInAction(id: string): Promise<LinkedInActionView
  * hand-queued, still-planned, unclaimed message, and its refusal is a sentence
  * the operator can act on -- show it rather than a generic failure.
  */
-export async function editLinkedInActionBody(id: string, body: string): Promise<LinkedInActionView> {
-  const result = await request<{ action: LinkedInActionView }>(`/api/linkedin/actions/${encodeURIComponent(id)}/body`, {
-    method: 'POST', body: JSON.stringify({ body })
-  });
+export async function editLinkedInActionBody(
+  id: string,
+  body: string
+): Promise<LinkedInActionView> {
+  const result = await request<{ action: LinkedInActionView }>(
+    `/api/linkedin/actions/${encodeURIComponent(id)}/body`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ body })
+    }
+  );
   return result.action;
 }
 
@@ -1341,7 +1494,8 @@ export async function recordLinkedInOutcome(input: {
   occurredAt?: string;
 }): Promise<LinkedInActionView> {
   const result = await request<{ action: LinkedInActionView }>('/api/linkedin/actions/outcome', {
-    method: 'POST', body: JSON.stringify(input)
+    method: 'POST',
+    body: JSON.stringify(input)
   });
   return result.action;
 }
@@ -1363,7 +1517,9 @@ export async function getLinkedInCampaigns(seatKey?: string): Promise<LinkedInCa
 }
 
 /** Runs `gtm.linkedin-outreach`, whose first step is the `gtm.linkedin-sequence` skill. */
-export async function createLinkedInCampaign(input: LinkedInCampaignInput): Promise<LinkedInCampaignCreated> {
+export async function createLinkedInCampaign(
+  input: LinkedInCampaignInput
+): Promise<LinkedInCampaignCreated> {
   return request('/api/linkedin/campaigns', { method: 'POST', body: JSON.stringify(input) });
 }
 
@@ -1464,7 +1620,9 @@ export interface LinkedInCampaignDraft {
 }
 
 export async function getLinkedInSequenceTemplates(): Promise<LinkedInSequenceTemplate[]> {
-  const result = await request<{ templates?: LinkedInSequenceTemplate[] }>('/api/linkedin/sequence-templates');
+  const result = await request<{ templates?: LinkedInSequenceTemplate[] }>(
+    '/api/linkedin/sequence-templates'
+  );
   return result.templates ?? [];
 }
 
@@ -1481,17 +1639,19 @@ export async function getLinkedInSequenceConfig(): Promise<LinkedInSequenceConfi
   return {
     templates: Array.isArray(result.templates) ? result.templates : [],
     defaultTemplateId: result.defaultTemplateId ?? null,
-    mergeFields: Array.isArray(result.mergeFields) && result.mergeFields.length > 0
-      ? result.mergeFields
-      : LINKEDIN_MERGE_FIELDS,
+    mergeFields:
+      Array.isArray(result.mergeFields) && result.mergeFields.length > 0
+        ? result.mergeFields
+        : LINKEDIN_MERGE_FIELDS,
     inviteNoteMaxChars: Number.isFinite(Number(result.inviteNoteMaxChars))
       ? Number(result.inviteNoteMaxChars)
       : LINKEDIN_INVITE_NOTE_MAX_CHARS,
     maxSteps: Number.isFinite(Number(result.maxSteps)) ? Number(result.maxSteps) : 25,
     branchOn: branchOnOptions(Array.isArray(result.branchOn) ? result.branchOn : null),
-    actionKinds: Array.isArray(result.actionKinds) && result.actionKinds.length > 0
-      ? result.actionKinds
-      : LINKEDIN_ACTION_KINDS,
+    actionKinds:
+      Array.isArray(result.actionKinds) && result.actionKinds.length > 0
+        ? result.actionKinds
+        : LINKEDIN_ACTION_KINDS,
     pacedKinds: Array.isArray(result.pacedKinds) ? result.pacedKinds : []
   };
 }
@@ -1570,14 +1730,19 @@ export async function saveLinkedInCampaignSequence(
   settings: LinkedInCampaignSettings = {}
 ): Promise<LinkedInSequenceSaved> {
   return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/sequence`, {
-    method: 'PATCH', body: JSON.stringify({ steps, ...settings })
+    method: 'PATCH',
+    body: JSON.stringify({ steps, ...settings })
   });
 }
 
 /** Renders the APPROVED bytes. Only the format may be chosen at this point. */
-export async function exportLinkedInCampaign(id: string, format?: ExportFormat): Promise<LinkedInExportResponse> {
+export async function exportLinkedInCampaign(
+  id: string,
+  format?: ExportFormat
+): Promise<LinkedInExportResponse> {
   return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/export`, {
-    method: 'POST', body: JSON.stringify(format ? { format } : {})
+    method: 'POST',
+    body: JSON.stringify(format ? { format } : {})
   });
 }
 
@@ -1595,10 +1760,15 @@ export async function exportLinkedInCampaign(id: string, format?: ExportFormat):
  * switch to go hunting for. Surface its message verbatim.
  */
 export async function queueLinkedInCampaign(campaignId: string): Promise<LinkedInCampaignQueued> {
-  return request(`/api/linkedin/campaigns/${encodeURIComponent(campaignId)}/queue`, { method: 'POST', body: '{}' });
+  return request(`/api/linkedin/campaigns/${encodeURIComponent(campaignId)}/queue`, {
+    method: 'POST',
+    body: '{}'
+  });
 }
 
-export async function stopLinkedInCampaign(id: string): Promise<{ campaign: LinkedInCampaign; releasedActions: number }> {
+export async function stopLinkedInCampaign(
+  id: string
+): Promise<{ campaign: LinkedInCampaign; releasedActions: number }> {
   return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/stop`, { method: 'POST' });
 }
 
@@ -1607,11 +1777,18 @@ export function linkedInExportDownloadPath(campaignId: string, exportId: string)
 }
 
 /** Persists nothing. The response splits the file into usable, excluded and already-contacted. */
-export async function importLinkedInTargets(file: File, kind: LinkedInActionKind = 'invite'): Promise<LinkedInImportResponse> {
+export async function importLinkedInTargets(
+  file: File,
+  kind: LinkedInActionKind = 'invite'
+): Promise<LinkedInImportResponse> {
   const form = new FormData();
   form.append('file', file);
   form.append('kind', kind);
-  const response = await fetch('/api/linkedin/targets/import', { method: 'POST', body: form, credentials: 'include' });
+  const response = await fetch('/api/linkedin/targets/import', {
+    method: 'POST',
+    body: form,
+    credentials: 'include'
+  });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
     throw new ApiError(body.error ?? 'Target import failed', response.status);
@@ -1628,7 +1805,10 @@ export async function addLinkedInExclusions(
   targets: Array<{ targetRef: string; reason?: string }>,
   source: 'manual' | 'import' = 'manual'
 ): Promise<{ exclusions: LinkedInExclusion[]; added: number; updated: number }> {
-  return request('/api/linkedin/exclusions', { method: 'POST', body: JSON.stringify({ targets, source }) });
+  return request('/api/linkedin/exclusions', {
+    method: 'POST',
+    body: JSON.stringify({ targets, source })
+  });
 }
 
 /**
@@ -1646,7 +1826,10 @@ export async function addLinkedInExclusions(
  * says which zone it used (`timezone`), and says whether the workspace's seats
  * disagree about that zone (`timezoneSpansSeats`).
  */
-export async function getLinkedInAnalytics(days = 30, seatKey?: string): Promise<LinkedInAnalytics> {
+export async function getLinkedInAnalytics(
+  days = 30,
+  seatKey?: string
+): Promise<LinkedInAnalytics> {
   const query = new URLSearchParams({ days: String(days) });
   if (seatKey) query.set('seatKey', seatKey);
   return request(`/api/linkedin/analytics?${query.toString()}`);
@@ -1659,26 +1842,68 @@ export async function getLinkedInManagerSeats(): Promise<LinkedInSeat[]> {
   return (await request<{ seats: LinkedInSeat[] }>('/api/linkedin/manager/seats')).seats;
 }
 
-export async function createLinkedInManagerSeat(input: SeatPatch & { seatKey: string; label: string; timezone: string }): Promise<LinkedInSeat> {
-  return (await request<{ seat: LinkedInSeat }>('/api/linkedin/manager/seats', { method: 'POST', body: JSON.stringify(input) })).seat;
+export async function createLinkedInManagerSeat(
+  input: SeatPatch & { seatKey: string; label: string; timezone: string }
+): Promise<LinkedInSeat> {
+  return (
+    await request<{ seat: LinkedInSeat }>('/api/linkedin/manager/seats', {
+      method: 'POST',
+      body: JSON.stringify(input)
+    })
+  ).seat;
 }
 
-export async function updateLinkedInManagerSeat(seatKey: string, input: SeatPatch): Promise<LinkedInSeat> {
-  return (await request<{ seat: LinkedInSeat }>(`/api/linkedin/manager/seats/${encodeURIComponent(seatKey)}`, { method: 'PATCH', body: JSON.stringify(input) })).seat;
+export async function updateLinkedInManagerSeat(
+  seatKey: string,
+  input: SeatPatch
+): Promise<LinkedInSeat> {
+  return (
+    await request<{ seat: LinkedInSeat }>(
+      `/api/linkedin/manager/seats/${encodeURIComponent(seatKey)}`,
+      { method: 'PATCH', body: JSON.stringify(input) }
+    )
+  ).seat;
 }
 
-export async function getLinkedInManagerLeadLists(): Promise<LinkedInLeadList[]> {
-  return (await request<{ lists: LinkedInLeadList[] }>('/api/linkedin/manager/lead-lists')).lists;
+export async function getLinkedInManagerLeadLists(seatKey?: string): Promise<LinkedInLeadList[]> {
+  return (
+    await request<{ lists: LinkedInLeadList[] }>(
+      `/api/linkedin/manager/lead-lists${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
+    )
+  ).lists;
 }
 
-export async function createLinkedInManagerLeadList(input: { name: string; sourceKind?: LeadListSourceKind; sourceRef?: string | null }): Promise<LinkedInLeadList> {
-  return (await request<{ list: LinkedInLeadList }>('/api/linkedin/manager/lead-lists', { method: 'POST', body: JSON.stringify(input) })).list;
+export async function createLinkedInManagerLeadList(input: {
+  seatKey?: string;
+  name: string;
+  sourceKind?: LeadListSourceKind;
+  sourceRef?: string | null;
+}): Promise<LinkedInLeadList> {
+  return (
+    await request<{ list: LinkedInLeadList }>('/api/linkedin/manager/lead-lists', {
+      method: 'POST',
+      body: JSON.stringify(input)
+    })
+  ).list;
 }
 
 export interface LinkedInLeadCsvPreview {
   headers: string[];
-  mapping: Partial<Record<'firstName' | 'lastName' | 'company' | 'email' | 'phone' | 'country' | 'profileUrl', string>>;
-  accepted: Array<{ firstName: string; lastName: string; company: string; email: string | null; phone: string | null; country: string | null; profileUrl: string | null }>;
+  mapping: Partial<
+    Record<
+      'firstName' | 'lastName' | 'company' | 'email' | 'phone' | 'country' | 'profileUrl',
+      string
+    >
+  >;
+  accepted: Array<{
+    firstName: string;
+    lastName: string;
+    company: string;
+    email: string | null;
+    phone: string | null;
+    country: string | null;
+    profileUrl: string | null;
+  }>;
   acceptedCount: number;
   rejected: Array<{ row: number; reason: string }>;
   rejectedCount: number;
@@ -1692,7 +1917,11 @@ export async function previewLinkedInManagerLeadCsv(
   const form = new FormData();
   form.append('file', file);
   if (mapping) form.append('mapping', JSON.stringify(mapping));
-  const response = await fetch('/api/linkedin/manager/lead-lists/preview', { method: 'POST', body: form, credentials: 'include' });
+  const response = await fetch('/api/linkedin/manager/lead-lists/preview', {
+    method: 'POST',
+    body: form,
+    credentials: 'include'
+  });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
     throw new ApiError(body.error ?? 'Lead CSV preview failed', response.status);
@@ -1704,12 +1933,23 @@ export async function previewLinkedInManagerLeadCsv(
 export async function importLinkedInManagerLeadCsv(
   listId: string,
   file: File,
-  mapping?: LinkedInLeadCsvPreview['mapping']
-): Promise<{ inserted: number; duplicates: number; rejected: Array<{ row: number; reason: string }>; mapping: LinkedInLeadCsvPreview['mapping']; headers: string[] }> {
+  mapping?: LinkedInLeadCsvPreview['mapping'],
+  seatKey?: string
+): Promise<{
+  inserted: number;
+  duplicates: number;
+  rejected: Array<{ row: number; reason: string }>;
+  mapping: LinkedInLeadCsvPreview['mapping'];
+  headers: string[];
+}> {
   const form = new FormData();
   form.append('file', file);
   if (mapping) form.append('mapping', JSON.stringify(mapping));
-  const response = await fetch(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/import`, { method: 'POST', body: form, credentials: 'include' });
+  if (seatKey) form.append('seatKey', seatKey);
+  const response = await fetch(
+    `/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/import`,
+    { method: 'POST', body: form, credentials: 'include' }
+  );
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
     throw new ApiError(body.error ?? 'Lead CSV import failed', response.status);
@@ -1725,84 +1965,179 @@ export async function importLinkedInManagerLeadCsv(
  * so. Announcing a truncation from the page length alone is how the UI came to
  * claim a first-1,000 that nobody had counted.
  */
-export async function getLinkedInManagerLeadContacts(listId: string): Promise<{
+export async function getLinkedInManagerLeadContacts(
+  listId: string,
+  seatKey?: string
+): Promise<{
   list: LinkedInLeadList;
   contacts: LinkedInLeadContact[];
   total: number;
   /** The server's page bound. `contacts.length` is short of `total` exactly when this is reached. */
   pageLimit: number;
 }> {
-  return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/contacts`);
+  return request(
+    `/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/contacts${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
+  );
 }
 
-export async function updateLinkedInManagerLeadContact(contactId: string, input: {
-  firstName: string; lastName: string; company: string; email?: string | null; phone?: string | null; country?: string | null; profileUrl?: string | null;
-}): Promise<LinkedInLeadContact> {
-  return (await request<{ contact: LinkedInLeadContact }>(`/api/linkedin/manager/contacts/${encodeURIComponent(contactId)}`, { method: 'PATCH', body: JSON.stringify(input) })).contact;
+export async function updateLinkedInManagerLeadContact(
+  contactId: string,
+  input: {
+    firstName: string;
+    lastName: string;
+    company: string;
+    email?: string | null;
+    phone?: string | null;
+    country?: string | null;
+    profileUrl?: string | null;
+  }
+): Promise<LinkedInLeadContact> {
+  return (
+    await request<{ contact: LinkedInLeadContact }>(
+      `/api/linkedin/manager/contacts/${encodeURIComponent(contactId)}`,
+      { method: 'PATCH', body: JSON.stringify(input) }
+    )
+  ).contact;
 }
 
 export async function deleteLinkedInManagerLeadContact(contactId: string): Promise<boolean> {
-  return (await request<{ deleted: boolean }>(`/api/linkedin/manager/contacts/${encodeURIComponent(contactId)}`, { method: 'DELETE' })).deleted;
+  return (
+    await request<{ deleted: boolean }>(
+      `/api/linkedin/manager/contacts/${encodeURIComponent(contactId)}`,
+      { method: 'DELETE' }
+    )
+  ).deleted;
 }
 
 export async function getLinkedInManagerWorkflows(): Promise<LinkedInWorkflow[]> {
-  return (await request<{ workflows: LinkedInWorkflow[] }>('/api/linkedin/manager/workflows')).workflows;
+  return (await request<{ workflows: LinkedInWorkflow[] }>('/api/linkedin/manager/workflows'))
+    .workflows;
 }
 
-export async function createLinkedInManagerWorkflow(input: { name: string; steps: WorkflowStep[] }): Promise<LinkedInWorkflow> {
-  return (await request<{ workflow: LinkedInWorkflow }>('/api/linkedin/manager/workflows', { method: 'POST', body: JSON.stringify(input) })).workflow;
+export async function createLinkedInManagerWorkflow(input: {
+  name: string;
+  steps: WorkflowStep[];
+}): Promise<LinkedInWorkflow> {
+  return (
+    await request<{ workflow: LinkedInWorkflow }>('/api/linkedin/manager/workflows', {
+      method: 'POST',
+      body: JSON.stringify(input)
+    })
+  ).workflow;
 }
 
-export async function updateLinkedInManagerWorkflow(id: string, input: { name: string; steps: WorkflowStep[] }): Promise<LinkedInWorkflow> {
-  return (await request<{ workflow: LinkedInWorkflow }>(`/api/linkedin/manager/workflows/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) })).workflow;
+export async function updateLinkedInManagerWorkflow(
+  id: string,
+  input: { name: string; steps: WorkflowStep[] }
+): Promise<LinkedInWorkflow> {
+  return (
+    await request<{ workflow: LinkedInWorkflow }>(
+      `/api/linkedin/manager/workflows/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: JSON.stringify(input) }
+    )
+  ).workflow;
 }
 
 export async function deleteLinkedInManagerWorkflow(id: string): Promise<boolean> {
-  return (await request<{ deleted: boolean }>(`/api/linkedin/manager/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' })).deleted;
+  return (
+    await request<{ deleted: boolean }>(
+      `/api/linkedin/manager/workflows/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    )
+  ).deleted;
 }
 
 export async function getLinkedInManagedCampaigns(): Promise<ManagedCampaign[]> {
-  return (await request<{ campaigns: ManagedCampaign[] }>('/api/linkedin/manager/campaigns')).campaigns;
+  return (await request<{ campaigns: ManagedCampaign[] }>('/api/linkedin/manager/campaigns'))
+    .campaigns;
 }
 
-export async function createLinkedInManagedCampaign(input: { name: string; seatKey?: string; leadListId: string; workflowId: string }): Promise<{ campaign: ManagedCampaign; enrolled: number; skippedAlreadyActive: number }> {
-  return request('/api/linkedin/manager/campaigns', { method: 'POST', body: JSON.stringify(input) });
+export async function createLinkedInManagedCampaign(input: {
+  name: string;
+  seatKey?: string;
+  leadListId: string;
+  workflowId: string;
+}): Promise<{ campaign: ManagedCampaign; enrolled: number; skippedAlreadyActive: number }> {
+  return request('/api/linkedin/manager/campaigns', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
 }
 
-export async function getLinkedInManagedCampaign(id: string): Promise<{ campaign: ManagedCampaign; members: ManagedCampaignMember[] }> {
+export async function getLinkedInManagedCampaign(
+  id: string
+): Promise<{ campaign: ManagedCampaign; members: ManagedCampaignMember[] }> {
   return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}`);
 }
 
 export async function startLinkedInManagedCampaign(id: string): Promise<ManagedCampaign> {
-  return (await request<{ campaign: ManagedCampaign }>(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/start`, { method: 'POST', body: '{}' })).campaign;
+  return (
+    await request<{ campaign: ManagedCampaign }>(
+      `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/start`,
+      { method: 'POST', body: '{}' }
+    )
+  ).campaign;
 }
 
 export async function pauseLinkedInManagedCampaign(id: string): Promise<ManagedCampaign> {
-  return (await request<{ campaign: ManagedCampaign }>(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/pause`, { method: 'POST', body: '{}' })).campaign;
+  return (
+    await request<{ campaign: ManagedCampaign }>(
+      `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/pause`,
+      { method: 'POST', body: '{}' }
+    )
+  ).campaign;
 }
 
 export async function stopLinkedInManagedCampaign(id: string): Promise<ManagedCampaign> {
-  return (await request<{ campaign: ManagedCampaign }>(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/stop`, { method: 'POST', body: '{}' })).campaign;
+  return (
+    await request<{ campaign: ManagedCampaign }>(
+      `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/stop`,
+      { method: 'POST', body: '{}' }
+    )
+  ).campaign;
 }
 
-export async function setLinkedInManagedMemberPaused(id: string, paused: boolean): Promise<boolean> {
-  return (await request<{ paused: boolean }>(`/api/linkedin/manager/members/${encodeURIComponent(id)}/pause`, { method: 'POST', body: JSON.stringify({ paused }) })).paused;
+export async function setLinkedInManagedMemberPaused(
+  id: string,
+  paused: boolean
+): Promise<boolean> {
+  return (
+    await request<{ paused: boolean }>(
+      `/api/linkedin/manager/members/${encodeURIComponent(id)}/pause`,
+      { method: 'POST', body: JSON.stringify({ paused }) }
+    )
+  ).paused;
 }
 
 export async function removeLinkedInManagedMember(id: string): Promise<boolean> {
-  return (await request<{ removed: boolean }>(`/api/linkedin/manager/members/${encodeURIComponent(id)}`, { method: 'DELETE' })).removed;
+  return (
+    await request<{ removed: boolean }>(`/api/linkedin/manager/members/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    })
+  ).removed;
 }
 
-export async function getLinkedInManualTasks(filters: { seatKey?: string; status?: 'pending' | 'completed' | 'cancelled' } = {}): Promise<ManualTaskView[]> {
+export async function getLinkedInManualTasks(
+  filters: { seatKey?: string; status?: 'pending' | 'completed' | 'cancelled' } = {}
+): Promise<ManualTaskView[]> {
   const query = new URLSearchParams();
   if (filters.seatKey) query.set('seatKey', filters.seatKey);
   if (filters.status) query.set('status', filters.status);
-  return (await request<{ tasks: ManualTaskView[] }>(`/api/linkedin/manager/tasks${query.size ? `?${query}` : ''}`)).tasks;
+  return (
+    await request<{ tasks: ManualTaskView[] }>(
+      `/api/linkedin/manager/tasks${query.size ? `?${query}` : ''}`
+    )
+  ).tasks;
 }
 
 /** Closes the human checkpoint. Sending the message stays the operator's act, in the inbox. */
 export async function completeLinkedInManualTask(id: string): Promise<boolean> {
-  return (await request<{ completed: boolean }>(`/api/linkedin/manager/tasks/${encodeURIComponent(id)}/complete`, { method: 'POST', body: '{}' })).completed;
+  return (
+    await request<{ completed: boolean }>(
+      `/api/linkedin/manager/tasks/${encodeURIComponent(id)}/complete`,
+      { method: 'POST', body: '{}' }
+    )
+  ).completed;
 }
 
 export interface ManagedCampaignTickResult {
@@ -1828,7 +2163,9 @@ export async function tickLinkedInManagedCampaigns(): Promise<ManagedCampaignTic
  */
 export type LinkedInManagedAnalytics = ManagedAnalytics;
 
-export async function getLinkedInManagedAnalytics(filters: { campaignId?: string; seatKey?: string; sinceDays?: number } = {}): Promise<LinkedInManagedAnalytics> {
+export async function getLinkedInManagedAnalytics(
+  filters: { campaignId?: string; seatKey?: string; sinceDays?: number } = {}
+): Promise<LinkedInManagedAnalytics> {
   const query = new URLSearchParams();
   if (filters.campaignId) query.set('campaignId', filters.campaignId);
   if (filters.seatKey) query.set('seatKey', filters.seatKey);
@@ -1890,17 +2227,29 @@ export interface LinkedInActivityResponse {
   runs: LinkedInBackgroundRunHistoryItem[];
 }
 
-export async function getLinkedInActivity(limit = 50): Promise<LinkedInActivityResponse> {
+export async function getLinkedInActivity(
+  limit = 50,
+  seatKey?: string
+): Promise<LinkedInActivityResponse> {
   const query = new URLSearchParams({ limit: String(limit) });
+  if (seatKey) query.set('seatKey', seatKey);
   return request(`/api/linkedin/activity?${query}`);
 }
 
-export async function createLinkedInCompanionPairing(): Promise<{ code: string; expiresAt: string; command: string }> {
+export async function createLinkedInCompanionPairing(): Promise<{
+  code: string;
+  expiresAt: string;
+  command: string;
+}> {
   return request('/api/linkedin/companion/pair', { method: 'POST', body: '{}' });
 }
 
-export async function revokeLinkedInCompanionDevice(deviceId: string): Promise<{ revoked: boolean }> {
-  return request(`/api/linkedin/companion/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+export async function revokeLinkedInCompanionDevice(
+  deviceId: string
+): Promise<{ revoked: boolean }> {
+  return request(`/api/linkedin/companion/devices/${encodeURIComponent(deviceId)}`, {
+    method: 'DELETE'
+  });
 }
 
 /* =====================================================================
@@ -1925,19 +2274,37 @@ export interface LinkedInLeadSourceList {
 }
 
 /** 201 for a new source, 200 with `duplicate` when this URL is already live. */
-export async function createLinkedInLeadSource(input: { kind: LeadSourceKind; url: string }): Promise<{
+export async function createLinkedInLeadSource(input: {
+  kind: LeadSourceKind;
+  url: string;
+  seatKey?: string;
+}): Promise<{
   source: LinkedInLeadSource;
   duplicate: boolean;
 }> {
-  const result = await request<{ source: LinkedInLeadSource; duplicate?: boolean }>('/api/linkedin/lead-sources', {
-    method: 'POST', body: JSON.stringify({ kind: input.kind, url: input.url })
-  });
+  const result = await request<{ source: LinkedInLeadSource; duplicate?: boolean }>(
+    '/api/linkedin/lead-sources',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: input.kind,
+        url: input.url,
+        ...(input.seatKey ? { seatKey: input.seatKey } : {})
+      })
+    }
+  );
   return { source: result.source, duplicate: result.duplicate ?? false };
 }
 
-export async function getLinkedInLeadSources(limit?: number): Promise<LinkedInLeadSourceList> {
+export async function getLinkedInLeadSources(
+  limit?: number,
+  seatKey?: string
+): Promise<LinkedInLeadSourceList> {
+  const query = new URLSearchParams();
+  if (limit) query.set('limit', String(limit));
+  if (seatKey) query.set('seatKey', seatKey);
   const result = await request<Partial<LinkedInLeadSourceList>>(
-    `/api/linkedin/lead-sources${limit ? `?limit=${limit}` : ''}`
+    `/api/linkedin/lead-sources${query.size ? `?${query}` : ''}`
   );
   return {
     sources: Array.isArray(result.sources) ? result.sources : [],
@@ -1946,18 +2313,30 @@ export async function getLinkedInLeadSources(limit?: number): Promise<LinkedInLe
   };
 }
 
-export async function getLinkedInLeadSource(id: string): Promise<LinkedInLeadSource> {
-  const result = await request<{ source: LinkedInLeadSource }>(`/api/linkedin/lead-sources/${encodeURIComponent(id)}`);
+export async function getLinkedInLeadSource(
+  id: string,
+  seatKey?: string
+): Promise<LinkedInLeadSource> {
+  const result = await request<{ source: LinkedInLeadSource }>(
+    `/api/linkedin/lead-sources/${encodeURIComponent(id)}${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
+  );
   return result.source;
 }
 
 /** The people one walk stored, with the source they came from. */
-export async function getLinkedInLeads(id: string, limit?: number): Promise<{
+export async function getLinkedInLeads(
+  id: string,
+  limit?: number,
+  seatKey?: string
+): Promise<{
   source: LinkedInLeadSource | null;
   leads: LinkedInLead[];
 }> {
+  const query = new URLSearchParams();
+  if (limit) query.set('limit', String(limit));
+  if (seatKey) query.set('seatKey', seatKey);
   const result = await request<{ source?: LinkedInLeadSource; leads?: LinkedInLead[] }>(
-    `/api/linkedin/lead-sources/${encodeURIComponent(id)}/leads${limit ? `?limit=${limit}` : ''}`
+    `/api/linkedin/lead-sources/${encodeURIComponent(id)}/leads${query.size ? `?${query}` : ''}`
   );
   return { source: result.source ?? null, leads: Array.isArray(result.leads) ? result.leads : [] };
 }
@@ -1969,12 +2348,20 @@ export interface DailyLeadAllowance {
 }
 
 /** How many new leads a day this workspace is willing to collect at all. */
-export async function getLinkedInLeadAllowance(): Promise<DailyLeadAllowance> {
-  return request('/api/linkedin/lead-sources/allowance');
+export async function getLinkedInLeadAllowance(seatKey?: string): Promise<DailyLeadAllowance> {
+  return request(
+    `/api/linkedin/lead-sources/allowance${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
+  );
 }
 
-export async function setLinkedInLeadAllowance(cap: number): Promise<DailyLeadAllowance> {
-  return request('/api/linkedin/lead-sources/allowance', { method: 'PUT', body: JSON.stringify({ cap }) });
+export async function setLinkedInLeadAllowance(
+  cap: number,
+  seatKey?: string
+): Promise<DailyLeadAllowance> {
+  return request('/api/linkedin/lead-sources/allowance', {
+    method: 'PUT',
+    body: JSON.stringify({ cap, ...(seatKey ? { seatKey } : {}) })
+  });
 }
 
 /**
@@ -1984,14 +2371,26 @@ export async function setLinkedInLeadAllowance(cap: number): Promise<DailyLeadAl
  * between importing the rows they ticked and importing the page they were
  * looking at. Absent means every lead this source found, up to `limit`.
  */
-export async function importLinkedInLeadSource(sourceId: string, input: { listId?: string; listName?: string; limit?: number; leadIds?: string[] } = {}): Promise<{
+export async function importLinkedInLeadSource(
+  sourceId: string,
+  input: {
+    seatKey?: string;
+    listId?: string;
+    listName?: string;
+    limit?: number;
+    leadIds?: string[];
+  } = {}
+): Promise<{
   list: LinkedInLeadList;
   inserted: number;
   duplicates: number;
   reused: number;
   skipped: number;
 }> {
-  return request(`/api/linkedin/lead-sources/${encodeURIComponent(sourceId)}/import`, { method: 'POST', body: JSON.stringify(input) });
+  return request(`/api/linkedin/lead-sources/${encodeURIComponent(sourceId)}/import`, {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
 }
 
 /* =====================================================================
@@ -2059,13 +2458,15 @@ export interface LinkedInQueuedReply {
  * only two states this filter can honestly express are on and off, so a
  * `false` here is dropped rather than sent as its own opposite.
  */
-export async function getLinkedInThreads(filters: {
-  unread?: boolean;
-  hasReply?: boolean;
-  campaignId?: string;
-  seatKey?: string;
-  limit?: number;
-} = {}): Promise<LinkedInThreadRecord[]> {
+export async function getLinkedInThreads(
+  filters: {
+    unread?: boolean;
+    hasReply?: boolean;
+    campaignId?: string;
+    seatKey?: string;
+    limit?: number;
+  } = {}
+): Promise<LinkedInThreadRecord[]> {
   const query = new URLSearchParams();
   if (filters.unread === true) query.set('unread', 'true');
   if (filters.hasReply === true) query.set('hasReply', 'true');
@@ -2086,17 +2487,26 @@ export async function getLinkedInThreads(filters: {
  * reported as not found, which is what this screen used to do to every one of
  * them.
  */
-export async function getLinkedInThread(threadUrn: string, seatKey?: string): Promise<LinkedInConversation> {
-  const result = await request<{ thread: LinkedInThreadRecord; messages?: LinkedInMessageRecord[] }>(
+export async function getLinkedInThread(
+  threadUrn: string,
+  seatKey?: string
+): Promise<LinkedInConversation> {
+  const result = await request<{
+    thread: LinkedInThreadRecord;
+    messages?: LinkedInMessageRecord[];
+  }>(
     `/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
   );
   return { thread: result.thread, messages: Array.isArray(result.messages) ? result.messages : [] };
 }
 
 /** Walks the conversation rail in a real browser. 409 where this process cannot open one. */
-export async function syncLinkedInInbox(input: { maxThreads?: number; maxMessages?: number; seatKey?: string } = {}): Promise<LinkedInInboxSyncResult> {
+export async function syncLinkedInInbox(
+  input: { maxThreads?: number; maxMessages?: number; seatKey?: string } = {}
+): Promise<LinkedInInboxSyncResult> {
   const result = await request<Partial<LinkedInInboxSyncResult>>('/api/linkedin/inbox/sync', {
-    method: 'POST', body: JSON.stringify(input)
+    method: 'POST',
+    body: JSON.stringify(input)
   });
   return {
     blocked: result.blocked ?? null,
@@ -2111,7 +2521,10 @@ export async function syncLinkedInInbox(input: { maxThreads?: number; maxMessage
   };
 }
 
-export async function syncLinkedInThread(threadUrn: string, input: { maxMessages?: number; seatKey?: string } = {}): Promise<LinkedInThreadSyncResult> {
+export async function syncLinkedInThread(
+  threadUrn: string,
+  input: { maxMessages?: number; seatKey?: string } = {}
+): Promise<LinkedInThreadSyncResult> {
   const result = await request<Partial<LinkedInThreadSyncResult>>(
     `/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}/sync`,
     { method: 'POST', body: JSON.stringify(input) }
@@ -2140,7 +2553,11 @@ export async function replyToLinkedInThread(
 ): Promise<LinkedInQueuedReply> {
   return request(`/api/linkedin/inbox/threads/${encodeURIComponent(threadUrn)}/reply`, {
     method: 'POST',
-    body: JSON.stringify({ body, ...(plannedFor ? { plannedFor } : {}), ...(seatKey ? { seatKey } : {}) })
+    body: JSON.stringify({
+      body,
+      ...(plannedFor ? { plannedFor } : {}),
+      ...(seatKey ? { seatKey } : {})
+    })
   });
 }
 
@@ -2186,7 +2603,10 @@ export interface LinkedInWithdrawalsQueued {
 
 /** Re-reads LinkedIn's own sent-invitations list. Browser work: 409 where none can open. */
 export async function syncLinkedInPendingInvites(): Promise<LinkedInPendingSyncResult> {
-  const result = await request<Partial<LinkedInPendingSyncResult>>('/api/linkedin/withdrawals/sync', { method: 'POST' });
+  const result = await request<Partial<LinkedInPendingSyncResult>>(
+    '/api/linkedin/withdrawals/sync',
+    { method: 'POST' }
+  );
   return {
     blocked: result.blocked ?? null,
     listed: result.listed ?? 0,
@@ -2199,12 +2619,15 @@ export async function syncLinkedInPendingInvites(): Promise<LinkedInPendingSyncR
 }
 
 /** A pure query. It shows what WOULD be withdrawn, before anything is. */
-export async function getLinkedInWithdrawalCandidates(filters: {
-  olderThanDays?: number;
-  limit?: number;
-} = {}): Promise<LinkedInWithdrawalCandidates> {
+export async function getLinkedInWithdrawalCandidates(
+  filters: {
+    olderThanDays?: number;
+    limit?: number;
+  } = {}
+): Promise<LinkedInWithdrawalCandidates> {
   const query = new URLSearchParams();
-  if (filters.olderThanDays !== undefined) query.set('olderThanDays', String(filters.olderThanDays));
+  if (filters.olderThanDays !== undefined)
+    query.set('olderThanDays', String(filters.olderThanDays));
   if (filters.limit !== undefined) query.set('limit', String(filters.limit));
   const result = await request<Partial<LinkedInWithdrawalCandidates>>(
     `/api/linkedin/withdrawals/candidates${query.size ? `?${query}` : ''}`
@@ -2224,12 +2647,15 @@ export async function getLinkedInWithdrawalCandidates(filters: {
  * safety gate against each one, and clicks at 30-120s gaps. Clearing a backlog
  * in one burst is the same volume spike as sending one.
  */
-export async function queueLinkedInWithdrawals(input: {
-  olderThanDays?: number;
-  limit?: number;
-} = {}): Promise<LinkedInWithdrawalsQueued> {
+export async function queueLinkedInWithdrawals(
+  input: {
+    olderThanDays?: number;
+    limit?: number;
+  } = {}
+): Promise<LinkedInWithdrawalsQueued> {
   const result = await request<Partial<LinkedInWithdrawalsQueued>>('/api/linkedin/withdrawals', {
-    method: 'POST', body: JSON.stringify(input)
+    method: 'POST',
+    body: JSON.stringify(input)
   });
   return {
     candidates: Array.isArray(result.candidates) ? result.candidates : [],
@@ -2239,11 +2665,13 @@ export async function queueLinkedInWithdrawals(input: {
   };
 }
 
-export async function getLinkedInWithdrawals(filters: {
-  status?: WithdrawalStatus;
-  seatKey?: string;
-  limit?: number;
-} = {}): Promise<WithdrawalRecord[]> {
+export async function getLinkedInWithdrawals(
+  filters: {
+    status?: WithdrawalStatus;
+    seatKey?: string;
+    limit?: number;
+  } = {}
+): Promise<WithdrawalRecord[]> {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
     if (value !== undefined && value !== '') query.set(key, String(value));
@@ -2311,12 +2739,16 @@ export type {
 };
 
 /** Hot first, then by score. The server owns the order; the screen renders it. */
-export async function getRankedAccounts(filters: { tier?: AccountTier; limit?: number } = {}): Promise<RankedAccount[]> {
+export async function getRankedAccounts(
+  filters: { tier?: AccountTier; limit?: number } = {}
+): Promise<RankedAccount[]> {
   const query = new URLSearchParams();
   if (filters.tier) query.set('tier', filters.tier);
   if (filters.limit) query.set('limit', String(filters.limit));
   const suffix = query.toString();
-  const result = await request<{ accounts?: RankedAccount[] }>(`/api/accounts${suffix ? `?${suffix}` : ''}`);
+  const result = await request<{ accounts?: RankedAccount[] }>(
+    `/api/accounts${suffix ? `?${suffix}` : ''}`
+  );
   return Array.isArray(result.accounts) ? result.accounts : [];
 }
 
@@ -2345,7 +2777,8 @@ export async function sendAccountFeedback(
   input: { verdict: 'not_a_fit' | 'good_fit'; reason?: string }
 ): Promise<RankedAccount> {
   return request(`/api/accounts/${encodeURIComponent(id)}/feedback`, {
-    method: 'POST', body: JSON.stringify(input)
+    method: 'POST',
+    body: JSON.stringify(input)
   });
 }
 
@@ -2354,10 +2787,24 @@ export async function rescoreAccounts(): Promise<{ rescored: number }> {
   return request('/api/accounts/rescore', { method: 'POST' });
 }
 
-export async function getResearch(): Promise<{ sources: any[]; runs: any[] }> { return request('/api/research'); }
-export async function createResearchSource(input: Record<string, unknown>): Promise<any> { return request('/api/research/sources', { method: 'POST', body: JSON.stringify(input) }); }
-export async function runResearchSource(id: string, mode: 'incremental'|'backfill'): Promise<any> { return request(`/api/research/sources/${id}/run`, { method: 'POST', body: JSON.stringify({ mode }) }); }
-export async function searchResearch(input: Record<string, unknown>): Promise<{ results:any[] }> { return request('/api/research/search', { method: 'POST', body: JSON.stringify(input) }); }
+export async function getResearch(): Promise<{ sources: any[]; runs: any[] }> {
+  return request('/api/research');
+}
+export async function createResearchSource(input: Record<string, unknown>): Promise<any> {
+  return request('/api/research/sources', { method: 'POST', body: JSON.stringify(input) });
+}
+export async function runResearchSource(
+  id: string,
+  mode: 'incremental' | 'backfill'
+): Promise<any> {
+  return request(`/api/research/sources/${id}/run`, {
+    method: 'POST',
+    body: JSON.stringify({ mode })
+  });
+}
+export async function searchResearch(input: Record<string, unknown>): Promise<{ results: any[] }> {
+  return request('/api/research/search', { method: 'POST', body: JSON.stringify(input) });
+}
 
 /* ---------------------------------------------------------------------------
  * Reddit (migration 041).
@@ -2421,7 +2868,10 @@ export async function getRedditAccount(): Promise<RedditAccountResponse> {
  * nothing else. The server holds the pair encrypted and hands it to one thing
  * -- the browser session it opens on this machine.
  */
-export async function saveRedditCredentials(input: { username: string; password: string }): Promise<{
+export async function saveRedditCredentials(input: {
+  username: string;
+  password: string;
+}): Promise<{
   hasCredentials: true;
   username: string;
 }> {

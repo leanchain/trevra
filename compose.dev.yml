@@ -8,11 +8,11 @@ services:
       POSTGRES_USER: trevra
       POSTGRES_PASSWORD: ${TREVRA_DB_PASSWORD:-trevra-local-password}
     ports:
-      - "${TREVRA_DB_PORT:-45432}:5432"
+      - '${TREVRA_DB_PORT:-45432}:5432'
     volumes:
       - trevra-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trevra -d trevra"]
+      test: ['CMD-SHELL', 'pg_isready -U trevra -d trevra']
       interval: 5s
       timeout: 5s
       retries: 20
@@ -42,6 +42,13 @@ services:
       # Internal container ports; host mappings below use the collision-resistant values.
       TREVRA_WEB_PORT: 5173
       TREVRA_API_PORT: 8787
+      # Vite runs on 5173 inside Docker, but the browser connects through the
+      # host-mapped port. Give its HMR WebSocket the browser-facing port explicitly.
+      VITE_HMR_CLIENT_PORT: ${TREVRA_WEB_PORT:-43173}
+      # tsx/chokidar watchers use the same bind mount as Vite. Polling keeps API
+      # and worker restarts reliable when an editor replaces a file atomically.
+      CHOKIDAR_USEPOLLING: 'true'
+      CHOKIDAR_INTERVAL: '150'
       DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:-trevra-local-password}@postgres:5432/trevra
       DATABASE_POOL_MAX: 10
       TREVRA_ORCHESTRATOR: ${TREVRA_ORCHESTRATOR:-postgres}
@@ -76,9 +83,9 @@ services:
       TRACTION_ADMIN_TOKEN: ${TRACTION_ADMIN_TOKEN:-development-traction-token-change-before-production}
       TREVRA_AGENT_TOKEN_PEPPER: ${TREVRA_AGENT_TOKEN_PEPPER:-development-agent-token-pepper-change-before-production}
       INDEXNOW_KEY: ${INDEXNOW_KEY:-trevra-development-indexnow-key}
-      COOKIE_SECURE: "false"
-      ALLOW_DEMO_AUTH: "true"
-      ALLOW_SIMULATED_EXECUTION: "true"
+      COOKIE_SECURE: 'false'
+      ALLOW_DEMO_AUTH: 'true'
+      ALLOW_SIMULATED_EXECUTION: 'true'
       NANGO_HOST: http://nango-server:3003
       NANGO_PUBLIC_SERVER_URL: http://localhost:${NANGO_API_PORT:-43003}
       NANGO_API_KEY: ${NANGO_API_KEY:-}
@@ -152,8 +159,8 @@ services:
       TREVRA_AGENT_CLI_BIN: ${TREVRA_AGENT_CLI_BIN:-}
       TREVRA_AGENT_CLI_HOME: ${TREVRA_AGENT_CLI_HOME:-}
     ports:
-      - "${TREVRA_WEB_PORT:-43173}:5173"
-      - "${TREVRA_API_PORT:-43887}:8787"
+      - '${TREVRA_WEB_PORT:-43173}:5173'
+      - '${TREVRA_API_PORT:-43887}:8787'
     volumes:
       - ./:/app
       - trevra-node-modules:/app/node_modules
@@ -179,14 +186,13 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-
   temporal:
     image: temporalio/temporal:1.8.1
-    profiles: ["temporal"]
-    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
+    profiles: ['temporal']
+    command: ['server', 'start-dev', '--ip', '0.0.0.0', '--db-filename', '/data/temporal.db']
     ports:
-      - "${TEMPORAL_PORT:-47233}:7233"
-      - "${TEMPORAL_UI_PORT:-48233}:8233"
+      - '${TEMPORAL_PORT:-47233}:7233'
+      - '${TEMPORAL_UI_PORT:-48233}:8233'
     volumes:
       - temporal-data:/data
     restart: unless-stopped
@@ -198,11 +204,11 @@ services:
       POSTGRES_USER: nango
       POSTGRES_PASSWORD: ${NANGO_DB_PASSWORD:-nango-local-password}
     ports:
-      - "${NANGO_DB_PORT:-45433}:5432"
+      - '${NANGO_DB_PORT:-45433}:5432'
     volumes:
       - nango-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nango -d nango"]
+      test: ['CMD-SHELL', 'pg_isready -U nango -d nango']
       interval: 5s
       timeout: 5s
       retries: 20
@@ -212,11 +218,11 @@ services:
     image: redis:7.2-alpine
     command: redis-server --appendonly yes
     ports:
-      - "${NANGO_REDIS_PORT:-46379}:6379"
+      - '${NANGO_REDIS_PORT:-46379}:6379'
     volumes:
       - nango-redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 3s
       retries: 20
@@ -232,7 +238,7 @@ services:
       NANGO_DB_HOST: nango-db
       NANGO_DB_PORT: 5432
       NANGO_DB_NAME: nango
-      NANGO_DB_SSL: "false"
+      NANGO_DB_SSL: 'false'
       NANGO_DB_POOL_MIN: 1
       NANGO_DB_POOL_MAX: 10
       RECORDS_DATABASE_URL: postgresql://nango:${NANGO_DB_PASSWORD:-nango-local-password}@nango-db:5432/nango
@@ -242,21 +248,27 @@ services:
       NANGO_SERVER_URL: http://localhost:${NANGO_API_PORT:-43003}
       NANGO_PUBLIC_SERVER_URL: http://localhost:${NANGO_API_PORT:-43003}
       NANGO_PUBLIC_CONNECT_URL: http://localhost:${NANGO_CONNECT_PORT:-43009}
-      FLAG_SERVE_CONNECT_UI: "true"
-      FLAG_AUTH_ENABLED: "false"
-      CSP_REPORT_ONLY: "true"
+      FLAG_SERVE_CONNECT_UI: 'true'
+      FLAG_AUTH_ENABLED: 'false'
+      CSP_REPORT_ONLY: 'true'
       LOG_LEVEL: ${NANGO_LOG_LEVEL:-info}
-      NANGO_LOGS_ENABLED: "false"
+      NANGO_LOGS_ENABLED: 'false'
     ports:
-      - "${NANGO_API_PORT:-43003}:3003"
-      - "${NANGO_CONNECT_PORT:-43009}:3009"
+      - '${NANGO_API_PORT:-43003}:3003'
+      - '${NANGO_CONNECT_PORT:-43009}:3009'
     depends_on:
       nango-db:
         condition: service_healthy
       nango-redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3003/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3003/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+        ]
       interval: 10s
       timeout: 5s
       retries: 20

@@ -1,6 +1,6 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, unwatchFile, watchFile } from 'node:fs';
 import { resolve } from 'node:path';
-import { defineConfig, loadEnv, type Plugin } from 'vite';
+import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const APP_SHELL_HTML = `<!doctype html>
@@ -55,10 +55,70 @@ function staticDocuments(proxied: string[]): Plugin {
       server.middlewares.use((req, _res, next) => {
         const path = req.url?.split('?')[0] ?? '';
         const owned = proxied.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
-        if (!owned && /^\/[a-z0-9-]+$/i.test(path) && existsSync(resolve('public', path.slice(1), 'index.html'))) {
+        if (
+          !owned &&
+          /^\/[a-z0-9-]+$/i.test(path) &&
+          existsSync(resolve('public', path.slice(1), 'index.html'))
+        ) {
           req.url = `${path}/index.html${req.url!.slice(path.length)}`;
         }
         next();
+      });
+    }
+  };
+}
+
+/**
+ * Docker bind mounts can leave Vite serving an old transform when an editor
+ * atomically replaces a file. `watchFile` polls the pathname itself, so it
+ * follows replacement inodes and feeds the change back through Vite's normal
+ * watcher/HMR pipeline.
+ *
+ * Chokidar polling remains enabled too; this is the fallback that makes the
+ * Docker dev loop deterministic for editors and codegen that replace files.
+ */
+function dockerStatHmr(): Plugin {
+  return {
+    name: 'trevra-docker-stat-hmr',
+    apply: 'serve',
+    configureServer(server: ViteDevServer) {
+      if (!existsSync('/.dockerenv')) return;
+
+      const watched = new Set<string>();
+      const watchPath = (path: string) => {
+        if (watched.has(path)) return;
+        watched.add(path);
+        watchFile(path, { interval: 150, persistent: false }, (current, previous) => {
+          if (
+            current.mtimeMs === previous.mtimeMs &&
+            current.size === previous.size &&
+            current.ino === previous.ino
+          )
+            return;
+          server.watcher.emit(current.nlink === 0 ? 'unlink' : 'change', path);
+        });
+      };
+
+      const scan = (dir: string) => {
+        let entries;
+        try {
+          entries = readdirSync(dir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          const path = resolve(dir, entry.name);
+          if (entry.isDirectory()) scan(path);
+          else if (entry.isFile()) watchPath(path);
+        }
+      };
+
+      scan(resolve('src'));
+      const rescan = setInterval(() => scan(resolve('src')), 2_000);
+      rescan.unref();
+      server.httpServer?.once('close', () => {
+        clearInterval(rescan);
+        for (const path of watched) unwatchFile(path);
       });
     }
   };
@@ -82,22 +142,26 @@ export default defineConfig(({ mode }) => {
     '/how-it-works': apiTarget,
     '/security': apiTarget
   };
+  const inDocker = existsSync('/.dockerenv');
+  const hmrClientPort = Number(env.VITE_HMR_CLIENT_PORT ?? webPort);
 
   return {
-    plugins: [appShellHtml(mode), react(), staticDocuments(Object.keys(proxy))],
+    plugins: [appShellHtml(mode), react(), staticDocuments(Object.keys(proxy)), dockerStatHmr()],
     server: {
       host: '0.0.0.0',
       allowedHosts: ['.trycloudflare.com'],
       port: webPort,
       strictPort: true,
-      // Editors and codegen replace files rather than rewriting them in place,
-      // which changes the inode. Across a Docker bind mount chokidar's inotify
-      // watch follows the OLD inode, so the change is never delivered and Vite
-      // keeps serving a stale transform at HTTP 200 -- the file on disk is new,
-      // the browser is not, and nothing in the log says so. Polling watches the
-      // path instead of the inode. Only inside a container, where the cost is
-      // paid for a reason; a host-run `npm run dev` keeps native inotify.
-      ...(existsSync('/.dockerenv') ? { watch: { usePolling: true, interval: 300 } } : {}),
+      ...(inDocker
+        ? {
+            // Primary Docker watcher: poll the bind-mounted path instead of trusting
+            // inode notifications that can disappear after atomic file replacement.
+            watch: { usePolling: true, interval: 150 },
+            // The browser sees the host-mapped port (43173 by default), not the
+            // container-only 5173. Keep the browser hostname and pin only the port.
+            hmr: { clientPort: hmrClientPort }
+          }
+        : {}),
       proxy
     }
   };

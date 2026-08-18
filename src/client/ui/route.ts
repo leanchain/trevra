@@ -31,22 +31,16 @@ import { useCallback, useEffect, useState } from 'react';
  * on the default route, deliberately: keeping a hash-route reader alive is
  * keeping the ambiguity alive, and the rule above has to be true with no
  * exceptions to stay true at all.
- * -------------------------------------------------------------------------- */
-
-export type Section = 'loop' | 'outreach' | 'money' | 'ledger' | 'setup';
-
-export const SECTIONS: readonly Section[] = ['loop', 'outreach', 'money', 'ledger', 'setup'];
-
-/**
- * Which second segments each section answers to. A segment that is not here --
- * a typo, a link to a screen that was removed, `/outreach/replies` when the
- * inbox lives at `/outreach/inbox` -- falls back to the section root rather
- * than rendering nothing.
  */
+
+export type Section = 'loop' | 'outreach' | 'ledger' | 'setup';
+
+export const SECTIONS: readonly Section[] = ['loop', 'outreach', 'ledger', 'setup'];
+
+/** Which second segments each section answers to. */
 const SUB_ROUTES: Record<Section, readonly string[]> = {
   loop: ['', 'cost'],
-  outreach: ['', 'accounts', 'activity', 'campaigns', 'inbox', 'leads', 'manager', 'plan', 'queue'],
-  money: [''],
+  outreach: ['', 'accounts', 'activity', 'campaigns', 'inbox', 'leads', 'manager', 'plan'],
   ledger: ['', 'run'],
   setup: ['', 'agent', 'data', 'reddit', 'research', 'seat', 'skills', 'limits', 'spend', 'team']
 };
@@ -106,17 +100,24 @@ export function isAppPath(pathname: string): boolean {
 }
 
 /** True for `/login`, the auth screen's own address. */
-export const isLoginPath = (pathname: string): boolean => pathname === '/login' || pathname === '/login/';
+export const isLoginPath = (pathname: string): boolean =>
+  pathname === '/login' || pathname === '/login/';
 
 /** True for `/leads` and `/leads/:id`, the account spine. See `useAccountsRoute`. */
-export const isAccountsPath = (pathname: string): boolean => pathname === '/leads' || pathname.startsWith('/leads/');
+export const isAccountsPath = (pathname: string): boolean =>
+  pathname === '/leads' || pathname.startsWith('/leads/');
 
 export function parseRoute(pathname: string): Route {
   const raw = pathname.replace(/\/+$/, '');
   if (!raw || raw === '/') return DEFAULT;
 
-  const [head, sub = '', ...rest] = raw.replace(/^\//, '').split('/').map((part) => decodeURIComponent(part));
-  const section = (SECTIONS as readonly string[]).includes(head) ? head as Section : DEFAULT.section;
+  const [head, sub = '', ...rest] = raw
+    .replace(/^\//, '')
+    .split('/')
+    .map((part) => decodeURIComponent(part));
+  const section = (SECTIONS as readonly string[]).includes(head)
+    ? (head as Section)
+    : DEFAULT.section;
   if (!SUB_ROUTES[section].includes(sub)) return build(section, '', null);
   const id = rest.length > 0 && rest[0] ? rest.join('/') : null;
   // `/ledger/run` with no id names no run. Send it to the list it came from.
@@ -248,7 +249,9 @@ export function useRoute(): [Route, (path: string) => void] {
  * version ended up with three copies of the same listener.
  */
 export function usePathname(): string {
-  const [pathname, setPathname] = useState(() => (typeof window === 'undefined' ? '/' : window.location.pathname));
+  const [pathname, setPathname] = useState(() =>
+    typeof window === 'undefined' ? '/' : window.location.pathname
+  );
   useEffect(() => {
     const sync = () => setPathname(window.location.pathname);
     sync();

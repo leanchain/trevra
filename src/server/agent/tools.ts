@@ -31,11 +31,6 @@
 import type { AgentScope } from '../agent-access.js';
 import type { Db } from '../db.js';
 import {
-  getAgentRevenueBrief,
-  listAgentPendingActions,
-  prepareRecommendationForAgent
-} from '../agent-operations.js';
-import {
   getPlaybookRun,
   listPlaybookRuns,
   listWorkspacePlaybooks,
@@ -77,7 +72,8 @@ export const BUILT_IN_AGENT_TOOLS: readonly AgentToolDefinition[] = [
   {
     name: 'trevra_list_skills',
     title: 'List Trevra skills',
-    description: 'List installed GTM skills with versions, side effects, approval requirements, and schemas.',
+    description:
+      'List installed GTM skills with versions, side effects, approval requirements, and schemas.',
     // Reading the catalog is what an agent does before it can do anything else,
     // and it reveals nothing a token holder cannot already see.
     scope: null,
@@ -103,7 +99,8 @@ export const BUILT_IN_AGENT_TOOLS: readonly AgentToolDefinition[] = [
   {
     name: 'trevra_start_playbook',
     title: 'Start a Trevra playbook',
-    description: 'Start a durable playbook run. The run persists each step and pauses at approval boundaries.',
+    description:
+      'Start a durable playbook run. The run persists each step and pauses at approval boundaries.',
     scope: 'playbooks:run',
     inputSchema: {
       type: 'object',
@@ -139,7 +136,10 @@ export const BUILT_IN_AGENT_TOOLS: readonly AgentToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        status: { type: 'string', enum: ['queued','running','waiting_approval','completed','failed','cancelled'] },
+        status: {
+          type: 'string',
+          enum: ['queued', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled']
+        },
         limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 }
       },
       additionalProperties: false
@@ -150,8 +150,11 @@ export const BUILT_IN_AGENT_TOOLS: readonly AgentToolDefinition[] = [
     openWorld: false,
     run: (ctx, args) => {
       const input = asObject(args);
-      const status = typeof input.status === 'string' ? input.status as never : undefined;
-      return listPlaybookRuns(ctx.db, ctx.workspaceId, { status, limit: optionalInteger(input.limit) });
+      const status = typeof input.status === 'string' ? (input.status as never) : undefined;
+      return listPlaybookRuns(ctx.db, ctx.workspaceId, {
+        status,
+        limit: optionalInteger(input.limit)
+      });
     }
   },
   {
@@ -170,7 +173,11 @@ export const BUILT_IN_AGENT_TOOLS: readonly AgentToolDefinition[] = [
     idempotent: true,
     openWorld: false,
     run: async (ctx, args) => {
-      const run = await getPlaybookRun(ctx.db, ctx.workspaceId, requiredString(asObject(args).runId, 'runId'));
+      const run = await getPlaybookRun(
+        ctx.db,
+        ctx.workspaceId,
+        requiredString(asObject(args).runId, 'runId')
+      );
       if (!run) throw new Error('Playbook run not found');
       return run;
     }
@@ -247,57 +254,14 @@ export const BUILT_IN_AGENT_TOOLS: readonly AgentToolDefinition[] = [
     idempotent: true,
     openWorld: false,
     run: async (ctx, args) => {
-      const run = await getWorkspaceSkillRun(ctx.db, ctx.workspaceId, requiredString(asObject(args).runId, 'runId'));
+      const run = await getWorkspaceSkillRun(
+        ctx.db,
+        ctx.workspaceId,
+        requiredString(asObject(args).runId, 'runId')
+      );
       if (!run) throw new Error('Skill run not found');
       return run;
     }
-  },
-  {
-    name: 'trevra_revenue_brief',
-    title: 'Read the Trevra revenue brief',
-    description: 'Read current evidence-backed recommendations, connected sources, standing instructions, and pending actions.',
-    scope: 'workspace:read',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    readOnly: true,
-    destructive: false,
-    idempotent: true,
-    openWorld: false,
-    run: (ctx) => getAgentRevenueBrief(ctx.db, ctx.workspaceId)
-  },
-  {
-    name: 'trevra_list_pending_actions',
-    title: 'List pending Trevra actions',
-    description: 'List draft, approved, scheduled, and failed actions in the workspace control plane.',
-    scope: 'workspace:read',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    readOnly: true,
-    destructive: false,
-    idempotent: true,
-    openWorld: false,
-    run: (ctx) => listAgentPendingActions(ctx.db, ctx.workspaceId)
-  },
-  {
-    // The far end of what an agent may do. It stops at 'draft'; a human moves it.
-    name: 'trevra_prepare_recommendation',
-    title: 'Prepare a Trevra recommendation',
-    description: 'Prepare one recommendation as a draft action for founder review. This never approves or executes it.',
-    scope: 'actions:prepare',
-    inputSchema: {
-      type: 'object',
-      properties: { recommendationId: { type: 'string' } },
-      required: ['recommendationId'],
-      additionalProperties: false
-    },
-    readOnly: false,
-    destructive: false,
-    idempotent: true,
-    openWorld: false,
-    run: (ctx, args) => prepareRecommendationForAgent(
-      ctx.db,
-      ctx.workspaceId,
-      ctx.actorId,
-      requiredString(asObject(args).recommendationId, 'recommendationId')
-    )
   }
 ];
 
@@ -315,7 +279,10 @@ export function toolNameForSkill(skillId: string): string {
 /** Built-ins + one tool per enabled workspace skill. */
 export async function listAgentTools(db: Db, workspaceId: string): Promise<AgentToolDefinition[]> {
   const skills = await listWorkspaceSkills(db, workspaceId);
-  return [...BUILT_IN_AGENT_TOOLS, ...skills.filter((skill) => skill.enabled).map(skillToolDefinition)];
+  return [
+    ...BUILT_IN_AGENT_TOOLS,
+    ...skills.filter((skill) => skill.enabled).map(skillToolDefinition)
+  ];
 }
 
 /** Resolve, enforce scope, run. Throws on an unknown tool or a missing scope. */
@@ -340,7 +307,11 @@ export async function callAgentTool(
  * resolving to nothing here would report it as an unknown tool instead and send
  * them looking for a typo. A disabled skill is still unrunnable either way.
  */
-async function resolveAgentTool(db: Db, workspaceId: string, name: string): Promise<AgentToolDefinition | null> {
+async function resolveAgentTool(
+  db: Db,
+  workspaceId: string,
+  name: string
+): Promise<AgentToolDefinition | null> {
   const builtIn = BUILT_IN_BY_NAME.get(name);
   if (builtIn) return builtIn;
   const skills = await listWorkspaceSkills(db, workspaceId);
@@ -349,20 +320,29 @@ async function resolveAgentTool(db: Db, workspaceId: string, name: string): Prom
 }
 
 function skillToolDefinition(skill: PublicSkillManifest): AgentToolDefinition {
-  const approval = skill.requiresApproval ? ' Founder approval is required before consequential use.' : '';
-  const sideEffect = skill.sideEffect === 'none'
-    ? 'Pure computation.'
-    : skill.sideEffect === 'network-read'
-      ? 'Reads public network resources.'
-      : 'Changes an external system and must use the approved-action path.';
+  const approval = skill.requiresApproval
+    ? ' Founder approval is required before consequential use.'
+    : '';
+  const sideEffect =
+    skill.sideEffect === 'none'
+      ? 'Pure computation.'
+      : skill.sideEffect === 'network-read'
+        ? 'Reads public network resources.'
+        : 'Changes an external system and must use the approved-action path.';
   return {
     name: toolNameForSkill(skill.id),
     title: skill.name,
     description: `${skill.description} ${sideEffect}${approval}`,
     scope: 'skills:run',
-    inputSchema: skill.inputSchema.type === 'object'
-      ? skill.inputSchema
-      : { type: 'object', properties: { input: skill.inputSchema }, required: ['input'], additionalProperties: false },
+    inputSchema:
+      skill.inputSchema.type === 'object'
+        ? skill.inputSchema
+        : {
+            type: 'object',
+            properties: { input: skill.inputSchema },
+            required: ['input'],
+            additionalProperties: false
+          },
     readOnly: skill.sideEffect !== 'external-write',
     destructive: skill.sideEffect === 'external-write',
     idempotent: skill.sideEffect !== 'external-write',
@@ -386,7 +366,9 @@ function skillToolDefinition(skill: PublicSkillManifest): AgentToolDefinition {
 }
 
 export function asObject(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 export function requiredString(value: unknown, field: string): string {

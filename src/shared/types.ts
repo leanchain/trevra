@@ -1,16 +1,8 @@
 export type RecommendationType =
-  | 'stale_proposal'
-  | 'scope_creep'
-  | 'unbilled_milestone'
-  | 'overdue_invoice';
+  'stale_proposal' | 'scope_creep' | 'unbilled_milestone' | 'overdue_invoice';
 
 export type RecommendationStatus =
-  | 'detected'
-  | 'ready'
-  | 'approved'
-  | 'completed'
-  | 'dismissed'
-  | 'snoozed';
+  'detected' | 'ready' | 'approved' | 'completed' | 'dismissed' | 'snoozed';
 
 export interface Evidence {
   id: string;
@@ -51,15 +43,7 @@ export interface Recommendation {
 }
 
 export interface DashboardMetrics {
-  revenueAtRisk: number;
-  revenueProtected: number;
-  revenueCollected: number;
-  readyToInvoice: number;
-  openRecommendations: number;
-  overdueInvoices: number;
-  activeClients: number;
   connectedSources: number;
-  currency: string;
 }
 
 export interface ClientSummary {
@@ -116,7 +100,6 @@ export interface AvailableIntegration {
 
 export type AutomationMode = 'suggest' | 'prepare' | 'execute';
 
-
 export interface WorkspacePolicy {
   id: string;
   name: string;
@@ -143,20 +126,24 @@ export interface AutomationRule {
 export interface DashboardPayload {
   workspace: { id: string; name: string };
   metrics: DashboardMetrics;
-  recommendations: Recommendation[];
-  clients: ClientSummary[];
   connections: ConnectionSummary[];
   availableIntegrations: AvailableIntegration[];
-  automationRules: AutomationRule[];
 }
 
 export type AgentScope =
-  | 'skills:read' | 'skills:run' | 'runs:read' | 'workspace:read' | 'actions:prepare'
-  | 'playbooks:read' | 'playbooks:run' | 'workflows:read';
+  | 'skills:read'
+  | 'skills:run'
+  | 'runs:read'
+  | 'workspace:read'
+  | 'actions:prepare'
+  | 'playbooks:read'
+  | 'playbooks:run'
+  | 'workflows:read';
 
-
-export type PlaybookRunStatus = 'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
-export type PlaybookStepStatus = 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'skipped' | 'cancelled';
+export type PlaybookRunStatus =
+  'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
+export type PlaybookStepStatus =
+  'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'skipped' | 'cancelled';
 
 export interface PlaybookManifest {
   id: string;
@@ -210,8 +197,6 @@ export interface PlaybookRun {
   updatedAt: string;
   steps: PlaybookStepRun[];
 }
-
-
 
 export interface ModulePopularity {
   totalRuns: number;

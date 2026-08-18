@@ -15,7 +15,10 @@ beforeEach(async () => {
   // Dropping the workspace cascades every row this file writes, so each test
   // starts from the same empty ledger regardless of order.
   await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-  await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+  await db
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE_ID, 'Agent tools test', new Date().toISOString());
 });
 
@@ -28,7 +31,8 @@ function ctx() {
 }
 
 async function skillRunCount(): Promise<number> {
-  const row = await db.prepare('SELECT COUNT(*)::int AS count FROM skill_runs WHERE workspace_id=?')
+  const row = await db
+    .prepare('SELECT COUNT(*)::int AS count FROM skill_runs WHERE workspace_id=?')
     .get<{ count: number }>(WORKSPACE_ID);
   return row?.count ?? 0;
 }
@@ -47,14 +51,11 @@ const EXPECTED_BUILT_INS: ReadonlyArray<readonly [string, AgentScope | null]> = 
   ['trevra_get_playbook_run', 'workflows:read'],
   ['trevra_list_events', 'workflows:read'],
   ['trevra_list_runs', 'runs:read'],
-  ['trevra_get_run', 'runs:read'],
-  ['trevra_revenue_brief', 'workspace:read'],
-  ['trevra_list_pending_actions', 'workspace:read'],
-  ['trevra_prepare_recommendation', 'actions:prepare']
+  ['trevra_get_run', 'runs:read']
 ];
 
 describe('the built-in tool surface', () => {
-  it('is exactly the eleven tools MCP has always served, with the same scopes', () => {
+  it('is exactly the non-finance built-in tool surface', () => {
     expect(BUILT_IN_AGENT_TOOLS.map((tool) => [tool.name, tool.scope])).toEqual(
       EXPECTED_BUILT_INS.map(([name, scope]) => [name, scope])
     );
@@ -95,35 +96,67 @@ async function installExternalWriteSkill(): Promise<void> {
     requiresApproval: true,
     permissions: { network: ['module.example'], secrets: [], filesystem: 'none' },
     resources: { timeoutSeconds: 5, memoryMb: 64, cpu: 0.25, maxOutputBytes: 10_000 },
-    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
-    outputSchema: { type: 'object', properties: { posted: { type: 'boolean' } }, required: ['posted'], additionalProperties: false },
-    source: { repository: 'https://example.com/test/share-update', commit: 'abcdef1', license: 'MIT' }
+    inputSchema: {
+      type: 'object',
+      properties: { text: { type: 'string' } },
+      required: ['text'],
+      additionalProperties: false
+    },
+    outputSchema: {
+      type: 'object',
+      properties: { posted: { type: 'boolean' } },
+      required: ['posted'],
+      additionalProperties: false
+    },
+    source: {
+      repository: 'https://example.com/test/share-update',
+      commit: 'abcdef1',
+      license: 'MIT'
+    }
   };
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO module_packages (module_id, publisher_id, source_type, name, description, visibility, latest_version)
     VALUES (?, NULL, 'community', ?, ?, 'public', ?)
     ON CONFLICT (module_id) DO NOTHING
-  `).run(manifest.id, manifest.name, manifest.description, manifest.version);
+  `
+    )
+    .run(manifest.id, manifest.name, manifest.description, manifest.version);
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO module_releases (
       module_id, version, runtime, artifact_ref, artifact_digest, manifest_json, permissions_json,
       input_schema_json, output_schema_json, side_effect, requires_approval, signature_payload_hash, status
     ) VALUES (?,?,?,?,?,?::jsonb,?::jsonb,?::jsonb,?::jsonb,'external-write',TRUE,?, 'verified')
     ON CONFLICT (module_id, version) DO NOTHING
-  `).run(
-    manifest.id, manifest.version, manifest.runtime, manifest.artifact.ref, manifest.artifact.digest,
-    JSON.stringify(manifest), JSON.stringify(manifest.permissions),
-    JSON.stringify(manifest.inputSchema), JSON.stringify(manifest.outputSchema),
-    'a'.repeat(64)
-  );
+  `
+    )
+    .run(
+      manifest.id,
+      manifest.version,
+      manifest.runtime,
+      manifest.artifact.ref,
+      manifest.artifact.digest,
+      JSON.stringify(manifest),
+      JSON.stringify(manifest.permissions),
+      JSON.stringify(manifest.inputSchema),
+      JSON.stringify(manifest.outputSchema),
+      'a'.repeat(64)
+    );
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO workspace_module_installations (workspace_id, module_id, version, enabled, config_json)
     VALUES (?,?,?,TRUE,'{}'::jsonb)
     ON CONFLICT (workspace_id, module_id) DO NOTHING
-  `).run(WORKSPACE_ID, manifest.id, manifest.version);
+  `
+    )
+    .run(WORKSPACE_ID, manifest.id, manifest.version);
 }
 
 describe('the invariant (app-spec section 11)', () => {
@@ -132,8 +165,8 @@ describe('the invariant (app-spec section 11)', () => {
     expect(tools.length).toBeGreaterThan(EXPECTED_BUILT_INS.length);
     const forbidden = tools.filter((tool) => /approve|execute|send/i.test(tool.name));
     expect(forbidden.map((tool) => tool.name)).toEqual([]);
-    // Preparing is the far end of the surface, and it stops at a draft.
-    expect(tools.some((tool) => tool.name === 'trevra_prepare_recommendation')).toBe(true);
+    // Finance/recommendation preparation is no longer part of the product surface either.
+    expect(tools.some((tool) => tool.name === 'trevra_prepare_recommendation')).toBe(false);
   });
 
   /**
@@ -160,10 +193,11 @@ describe('the invariant (app-spec section 11)', () => {
 
     // Invoked through the same entry point the hosted loop and MCP both use,
     // holding every scope an agent token can carry. It is still refused.
-    await expect(callAgentTool(ctx(), [...AGENT_SCOPES], EXTERNAL_WRITE_TOOL, { text: 'we shipped' }))
-      .rejects.toThrow(
-        `Skill ${EXTERNAL_WRITE_SKILL_ID} changes an external system and must be executed through a prepared, approved Trevra action`
-      );
+    await expect(
+      callAgentTool(ctx(), [...AGENT_SCOPES], EXTERNAL_WRITE_TOOL, { text: 'we shipped' })
+    ).rejects.toThrow(
+      `Skill ${EXTERNAL_WRITE_SKILL_ID} changes an external system and must be executed through a prepared, approved Trevra action`
+    );
 
     // Refused before anything ran: no skill run, so nothing left the building.
     expect(await skillRunCount()).toBe(0);
@@ -194,17 +228,15 @@ describe('the invariant (app-spec section 11)', () => {
 
 describe('callAgentTool', () => {
   it('refuses a token without the required scope and never reaches the handler', async () => {
-    await expect(callAgentTool(ctx(), ['workspace:read'], SCORE_TOOL, SCORE_ARGS))
-      .rejects.toThrow('Agent token is missing scope: skills:run');
+    await expect(callAgentTool(ctx(), ['workspace:read'], SCORE_TOOL, SCORE_ARGS)).rejects.toThrow(
+      'Agent token is missing scope: skills:run'
+    );
     // The proof that it stopped before the handler: the skill ledger is empty.
     expect(await skillRunCount()).toBe(0);
-
-    await expect(callAgentTool(ctx(), [], 'trevra_prepare_recommendation', { recommendationId: 'rec_x' }))
-      .rejects.toThrow('Agent token is missing scope: actions:prepare');
   });
 
   it('runs the handler once the scope is present', async () => {
-    const result = await callAgentTool(ctx(), ['skills:run'], SCORE_TOOL, SCORE_ARGS) as {
+    const result = (await callAgentTool(ctx(), ['skills:run'], SCORE_TOOL, SCORE_ARGS)) as {
       run: { status: string; output: { wedge: string } };
       instruction: string;
     };
@@ -215,13 +247,16 @@ describe('callAgentTool', () => {
   });
 
   it('runs an ungated tool with no scopes at all', async () => {
-    const skills = await callAgentTool(ctx(), [], 'trevra_list_skills', {}) as Array<{ id: string }>;
+    const skills = (await callAgentTool(ctx(), [], 'trevra_list_skills', {})) as Array<{
+      id: string;
+    }>;
     expect(skills.some((skill) => skill.id === SCORE_SKILL_ID)).toBe(true);
   });
 
   it('throws on an unknown tool name', async () => {
-    await expect(callAgentTool(ctx(), [...AGENT_SCOPES], 'trevra_take_over_the_world', {}))
-      .rejects.toThrow('Unknown Trevra tool: trevra_take_over_the_world');
+    await expect(
+      callAgentTool(ctx(), [...AGENT_SCOPES], 'trevra_take_over_the_world', {})
+    ).rejects.toThrow('Unknown Trevra tool: trevra_take_over_the_world');
   });
 });
 
@@ -235,7 +270,8 @@ describe('skill tools', () => {
     const before = await listAgentTools(db, WORKSPACE_ID);
     expect(before.some((tool) => tool.name === SCORE_TOOL)).toBe(true);
 
-    await db.prepare('UPDATE workspace_skills SET enabled=FALSE WHERE workspace_id=? AND skill_id=?')
+    await db
+      .prepare('UPDATE workspace_skills SET enabled=FALSE WHERE workspace_id=? AND skill_id=?')
       .run(WORKSPACE_ID, SCORE_SKILL_ID);
 
     const after = await listAgentTools(db, WORKSPACE_ID);
@@ -243,7 +279,10 @@ describe('skill tools', () => {
     // Only that one skill went away; the built-ins are untouched.
     expect(after.length).toBe(before.length - 1);
     for (const [name] of EXPECTED_BUILT_INS) {
-      expect(after.some((tool) => tool.name === name), name).toBe(true);
+      expect(
+        after.some((tool) => tool.name === name),
+        name
+      ).toBe(true);
     }
   });
 

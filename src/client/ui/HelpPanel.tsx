@@ -30,17 +30,21 @@ interface HelpTopic {
 const HELP: Record<Section, HelpTopic> = {
   loop: {
     heading: 'Loop',
-    does: 'Shows the GTM loop from finding a lead to getting paid. It highlights the first stage that needs action.',
+    does: 'Shows the outreach loop from finding people to reaching them and handling replies. It highlights the first stage that needs action.',
     vocabulary: [
-      { term: 'Stage', meaning: 'One step in the loop: Find, Reach, Answer, Deliver, Bill, or Paid.' },
-      { term: 'Stuck', meaning: 'The first stage that needs action.' },
-      { term: 'Not built yet', meaning: 'This stage is not available in the current build.' }
+      { term: 'Stage', meaning: 'One step in the loop: Find, Reach, or Answer.' },
+      { term: 'Stuck', meaning: 'The first stage that needs action.' }
     ],
-    more: <p>The loop and the vocabulary behind it are written down in <code>docs/gtm-shell-shape.md</code> and <code>docs/founder-skills.md</code>.</p>
+    more: (
+      <p>
+        The loop and the vocabulary behind it are written down in{' '}
+        <code>docs/gtm-shell-shape.md</code> and <code>docs/founder-skills.md</code>.
+      </p>
+    )
   },
   outreach: {
     heading: 'Outreach',
-    does: 'Manage LinkedIn accounts, lead lists, workflows, campaigns, queues, and replies.',
+    does: 'Manage LinkedIn accounts, lead lists, workflows, campaigns, and replies.',
     vocabulary: [
       { term: 'HARD FACT', meaning: 'A limit published or enforced by LinkedIn.' },
       { term: 'REPORTED', meaning: 'A practitioner-reported limit not confirmed by LinkedIn.' },
@@ -48,24 +52,26 @@ const HELP: Record<Section, HelpTopic> = {
       { term: 'Campaign', meaning: 'A lead list running through a workflow on one account.' },
       { term: 'Manual message', meaning: 'A workflow step that waits for you.' },
       { term: 'Warm-up', meaning: 'Reduced volume for new accounts and campaigns.' },
-      { term: 'Daily limits', meaning: 'Per-account limits for invites, messages, views, and follows.' },
+      {
+        term: 'Daily limits',
+        meaning: 'Per-account limits for invites, messages, views, and follows.'
+      },
       { term: 'Working hours', meaning: 'The days and hours an account may act.' },
       { term: 'Sending status', meaning: 'Ramping, running, slowed, or paused.' },
       { term: 'Safety check', meaning: 'A final limit check before an action runs.' },
       { term: 'Branch', meaning: 'A step that depends on an earlier outcome.' },
-      { term: 'Lead sourcing', meaning: 'Builds lead lists from LinkedIn searches, posts, and keywords.' }
+      {
+        term: 'Lead sourcing',
+        meaning: 'Builds lead lists from LinkedIn searches, posts, and keywords.'
+      }
     ],
-    more: <p>The pacing policy, and where each number came from, is in <code>docs/linkedin-outreach-plan.md</code>. The public write-up is at <a href="/how-it-works">How it works</a>.</p>
-  },
-  money: {
-    heading: 'Money',
-    does: 'Shows agreements, delivery, billing, payments, and actions waiting for approval.',
-    vocabulary: [
-      { term: 'Prepared action', meaning: 'A draft waiting for approval.' },
-      { term: 'Exact-payload approval', meaning: 'Approval applies only to the exact payload shown.' },
-      { term: 'Proof pack', meaning: 'The agreement, request, and delivery evidence behind an action.' }
-    ],
-    more: <p>The promise this screen keeps — no agent approves its own work — is section 11 of <code>docs/app-spec.md</code>, and the public version is at <a href="/security">Security</a>.</p>
+    more: (
+      <p>
+        The pacing policy, and where each number came from, is in{' '}
+        <code>docs/linkedin-outreach-plan.md</code>. The public write-up is at{' '}
+        <a href="/how-it-works">How it works</a>.
+      </p>
+    )
   },
   ledger: {
     heading: 'Run ledger',
@@ -76,7 +82,12 @@ const HELP: Record<Section, HelpTopic> = {
       { term: 'Evidence', meaning: 'The source used by a step.' },
       { term: 'What you signed', meaning: 'The fingerprint of the approved payload.' }
     ],
-    more: <p>Every run is inspectable to the node; what that guarantees is section 10 of <code>docs/app-spec.md</code>.</p>
+    more: (
+      <p>
+        Every run is inspectable to the node; what that guarantees is section 10 of{' '}
+        <code>docs/app-spec.md</code>.
+      </p>
+    )
   },
   setup: {
     heading: 'Setup',
@@ -88,10 +99,18 @@ const HELP: Record<Section, HelpTopic> = {
       { term: 'Skill', meaning: 'One task an agent can run.' },
       { term: 'Hard limit', meaning: 'A rule the agent cannot override.' }
     ],
-    more: <>
-      <p>Publishing a skill needs a signing key on your machine, so it lives in the terminal: <code>npm run module -- help</code>.</p>
-      <p>Connecting an agent is one line, built for you on <strong>Setup → Agent access</strong>. The hosted-agent trade-off is written out in <code>docs/byok-and-hosted-agent.md</code>.</p>
-    </>
+    more: (
+      <>
+        <p>
+          Publishing a skill needs a signing key on your machine, so it lives in the terminal:{' '}
+          <code>npm run module -- help</code>.
+        </p>
+        <p>
+          Connecting an agent is one line, built for you on <strong>Setup → Agent access</strong>.
+          The hosted-agent trade-off is written out in <code>docs/byok-and-hosted-agent.md</code>.
+        </p>
+      </>
+    )
   }
 };
 
@@ -113,10 +132,14 @@ export function HelpPanel({ route, onClose }: { route: Route; onClose: () => voi
       >
         <header>
           <div>
-            <span className="drawer-kicker"><CircleHelp size={14} /> Help</span>
+            <span className="drawer-kicker">
+              <CircleHelp size={14} /> Help
+            </span>
             <h3 id={titleId}>{topic.heading}</h3>
           </div>
-          <button className="icon-button" aria-label="Close help" onClick={onClose}><X size={20} /></button>
+          <button className="icon-button" aria-label="Close help" onClick={onClose}>
+            <X size={20} />
+          </button>
         </header>
         <div className="drawer-body">
           <section className="run-section">
@@ -126,16 +149,20 @@ export function HelpPanel({ route, onClose }: { route: Route; onClose: () => voi
           <section className="run-section">
             <h5>Terms</h5>
             <dl className="field-list">
-              {topic.vocabulary.map((entry) => <div className="field-row" key={entry.term}>
-                <dt>{entry.term}</dt>
-                <dd>{entry.meaning}</dd>
-              </div>)}
+              {topic.vocabulary.map((entry) => (
+                <div className="field-row" key={entry.term}>
+                  <dt>{entry.term}</dt>
+                  <dd>{entry.meaning}</dd>
+                </div>
+              ))}
             </dl>
           </section>
           <section className="run-section">
             <h5>More</h5>
             {topic.more}
-            <p className="panel-note"><kbd>?</kbd> shortcuts · <kbd>Ctrl</kbd>+<kbd>K</kbd> jump</p>
+            <p className="panel-note">
+              <kbd>?</kbd> shortcuts · <kbd>Ctrl</kbd>+<kbd>K</kbd> jump
+            </p>
           </section>
         </div>
       </section>
@@ -149,9 +176,13 @@ export function HelpPanel({ route, onClose }: { route: Route; onClose: () => voi
 const SHORTCUTS: Array<{ keys: string[]; does: string; where: string }> = [
   { keys: ['Ctrl', 'K'], does: 'Jump to any screen', where: 'Anywhere' },
   { keys: ['?'], does: 'This list', where: 'Anywhere, outside a text field' },
-  { keys: ['j'], does: 'Next item', where: 'The list on Loop and Money' },
-  { keys: ['k'], does: 'Previous item', where: 'The list on Loop and Money' },
-  { keys: ['Ctrl', 'Enter'], does: 'Open the last check before it goes out', where: 'The approval drawer' },
+  { keys: ['j'], does: 'Next item', where: 'A focused list' },
+  { keys: ['k'], does: 'Previous item', where: 'A focused list' },
+  {
+    keys: ['Ctrl', 'Enter'],
+    does: 'Open the last check before it goes out',
+    where: 'The approval drawer'
+  },
   { keys: ['Esc'], does: 'Close without changing anything', where: 'Any drawer' },
   { keys: ['Tab'], does: 'Move through the screen; the caret is always visible', where: 'Anywhere' }
 ];
@@ -173,18 +204,36 @@ export function ShortcutSheet({ onClose }: { onClose: () => void }) {
       >
         <header>
           <div>
-            <span className="drawer-kicker"><Keyboard size={14} /> Keyboard</span>
+            <span className="drawer-kicker">
+              <Keyboard size={14} /> Keyboard
+            </span>
             <h3 id={titleId}>Keyboard shortcuts</h3>
           </div>
-          <button className="icon-button" aria-label="Close the shortcut list" onClick={onClose}><X size={20} /></button>
+          <button className="icon-button" aria-label="Close the shortcut list" onClick={onClose}>
+            <X size={20} />
+          </button>
         </header>
         <div className="drawer-body">
-          <p>On a Mac, <kbd>Ctrl</kbd> is <kbd>⌘</kbd>. Nothing here is bound to a bare letter while the caret is in a text field — in a field, a letter is a letter.</p>
+          <p>
+            On a Mac, <kbd>Ctrl</kbd> is <kbd>⌘</kbd>. Nothing here is bound to a bare letter while
+            the caret is in a text field — in a field, a letter is a letter.
+          </p>
           <dl className="field-list">
-            {SHORTCUTS.map((entry) => <div className="field-row" key={entry.does}>
-              <dt>{entry.keys.map((key, index) => <span key={key}>{index > 0 ? ' + ' : ''}<kbd>{key}</kbd></span>)}</dt>
-              <dd>{entry.does} <small>— {entry.where}</small></dd>
-            </div>)}
+            {SHORTCUTS.map((entry) => (
+              <div className="field-row" key={entry.does}>
+                <dt>
+                  {entry.keys.map((key, index) => (
+                    <span key={key}>
+                      {index > 0 ? ' + ' : ''}
+                      <kbd>{key}</kbd>
+                    </span>
+                  ))}
+                </dt>
+                <dd>
+                  {entry.does} <small>— {entry.where}</small>
+                </dd>
+              </div>
+            ))}
           </dl>
         </div>
       </section>
@@ -198,22 +247,56 @@ export function ShortcutSheet({ onClose }: { onClose: () => void }) {
 const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   { path: '/loop', label: 'Loop', hint: 'What the loop is doing, and where it is stuck' },
   { path: '/loop/cost', label: 'What this cost', hint: 'Spent, sent, produced — one period' },
-  { path: '/outreach', label: 'Outreach · LinkedIn accounts', hint: 'The accounts you send from, and what may go out today' },
-  { path: '/outreach/accounts', label: 'Outreach · Target accounts', hint: 'Rank companies by the buying signals Trevra can prove' },
-  { path: '/outreach/manager', label: 'Outreach · Campaigns', hint: 'Run campaigns, read results, and handle work waiting on you' },
-  { path: '/outreach/manager/new', label: 'Outreach · New campaign', hint: 'Choose a sending account, lead list and workflow, then start' },
-  { path: '/outreach/inbox', label: 'Outreach · Inbox', hint: 'Replies, and the messages waiting for you to write' },
-  { path: '/outreach/leads', label: 'Outreach · Find people', hint: 'Turn a search, a post or keywords into a list of people' },
-  { path: '/outreach/campaigns', label: 'Outreach · Approve & export', hint: 'Write a sequence, approve the wording, export it' },
+  {
+    path: '/outreach',
+    label: 'Outreach · Settings',
+    hint: 'LinkedIn accounts, working hours, and sending limits'
+  },
+  {
+    path: '/outreach/accounts',
+    label: 'Outreach · Target accounts',
+    hint: 'Rank companies by the buying signals Trevra can prove'
+  },
+  {
+    path: '/outreach/manager',
+    label: 'Outreach · Campaigns',
+    hint: 'Run campaigns, read results, and handle work waiting on you'
+  },
+  {
+    path: '/outreach/manager/new',
+    label: 'Outreach · New campaign',
+    hint: 'Choose a sending account, lead list and workflow, then start'
+  },
+  {
+    path: '/outreach/inbox',
+    label: 'Outreach · Messages',
+    hint: 'Replies and conversations with campaign contacts'
+  },
+  {
+    path: '/outreach/leads',
+    label: 'Outreach · Find people',
+    hint: 'Turn a search, a post or keywords into a list of people'
+  },
+  {
+    path: '/outreach/campaigns',
+    label: 'Outreach · Approve & export',
+    hint: 'Write a sequence, approve the wording, export it'
+  },
   { path: '/outreach/plan', label: 'Outreach · Plan preview', hint: 'A dry run. Writes nothing' },
-  { path: '/money', label: 'Money', hint: 'Agreed, delivered, billed, paid — and what wasn’t' },
   { path: '/ledger', label: 'Run ledger', hint: 'Every run, with the evidence' },
   { path: '/setup/agent', label: 'Setup · Agent access', hint: 'Connect Claude Code or Codex' },
-  { path: '/setup/spend', label: 'Setup · The spending cap', hint: 'The monthly cap and the switch, inside Agent access' },
+  {
+    path: '/setup/spend',
+    label: 'Setup · The spending cap',
+    hint: 'The monthly cap and the switch, inside Agent access'
+  },
   { path: '/setup/data', label: 'Setup · Connections', hint: 'Where your data comes from' },
-  { path: '/setup/seat', label: 'Setup · LinkedIn', hint: 'Detailed sign-in, worker and safety settings for the active account' },
-  { path: '/setup/skills', label: 'Setup · Skills', hint: 'What your agent can do, and running one by hand' },
-  { path: '/setup/limits', label: 'Setup · Limits', hint: 'Automation rules, hard limits, never-contact list' }
+  {
+    path: '/setup/skills',
+    label: 'Setup · Skills',
+    hint: 'What your agent can do, and running one by hand'
+  },
+  { path: '/setup/limits', label: 'Setup · Limits', hint: 'Hard limits and never-contact list' }
 ];
 
 /**
@@ -223,7 +306,13 @@ const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
  * going to a place is the one thing that is safe to do without confirming it.
  * Nothing here acts.
  */
-export function JumpPalette({ onGo, onClose }: { onGo: (path: string) => void; onClose: () => void }) {
+export function JumpPalette({
+  onGo,
+  onClose
+}: {
+  onGo: (path: string) => void;
+  onClose: () => void;
+}) {
   const dialog = useRef<HTMLElement>(null);
   const titleId = useId();
   const field = useRef<HTMLInputElement>(null);
@@ -234,12 +323,18 @@ export function JumpPalette({ onGo, onClose }: { onGo: (path: string) => void; o
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return DESTINATIONS;
-    return DESTINATIONS.filter((entry) =>
-      entry.label.toLowerCase().includes(needle) || entry.hint.toLowerCase().includes(needle));
+    return DESTINATIONS.filter(
+      (entry) =>
+        entry.label.toLowerCase().includes(needle) || entry.hint.toLowerCase().includes(needle)
+    );
   }, [query]);
 
-  useEffect(() => { field.current?.focus(); }, []);
-  useEffect(() => { setCursor(0); }, [query]);
+  useEffect(() => {
+    field.current?.focus();
+  }, []);
+  useEffect(() => {
+    setCursor(0);
+  }, [query]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -270,35 +365,54 @@ export function JumpPalette({ onGo, onClose }: { onGo: (path: string) => void; o
       >
         <header>
           <div>
-            <span className="drawer-kicker"><Search size={14} /> Jump</span>
+            <span className="drawer-kicker">
+              <Search size={14} /> Jump
+            </span>
             <h3 id={titleId}>Go to a screen</h3>
           </div>
-          <button className="icon-button" aria-label="Close without going anywhere" onClick={onClose}><X size={20} /></button>
+          <button
+            className="icon-button"
+            aria-label="Close without going anywhere"
+            onClick={onClose}
+          >
+            <X size={20} />
+          </button>
         </header>
         <div className="drawer-body">
-          <label>Which screen?<input
-            ref={field}
-            value={query}
-            placeholder="ledger, seat, spending…"
-            aria-describedby={`${titleId}-count`}
-            onChange={(event) => setQuery(event.target.value)}
-          /></label>
+          <label>
+            Which screen?
+            <input
+              ref={field}
+              value={query}
+              placeholder="ledger, seat, spending…"
+              aria-describedby={`${titleId}-count`}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
           <p className="panel-note" id={`${titleId}-count`} role="status">
             {matches.length === 0
               ? 'No screen by that name. Clear the box to see all of them.'
               : `${matches.length} of ${DESTINATIONS.length} screens. Arrow keys move, Enter goes.`}
           </p>
           <nav aria-label="Screens">
-            {matches.map((entry, index) => <button
-              key={entry.path}
-              type="button"
-              className={`nav-item ${index === cursor ? 'active' : ''}`}
-              onMouseEnter={() => setCursor(index)}
-              onClick={() => { onGo(entry.path); onClose(); }}
-            >
-              <span>{entry.label}<small style={{ display: 'block' }}>{entry.hint}</small></span>
-              <ChevronRight size={15} style={{ marginLeft: 'auto' }} />
-            </button>)}
+            {matches.map((entry, index) => (
+              <button
+                key={entry.path}
+                type="button"
+                className={`nav-item ${index === cursor ? 'active' : ''}`}
+                onMouseEnter={() => setCursor(index)}
+                onClick={() => {
+                  onGo(entry.path);
+                  onClose();
+                }}
+              >
+                <span>
+                  {entry.label}
+                  <small style={{ display: 'block' }}>{entry.hint}</small>
+                </span>
+                <ChevronRight size={15} style={{ marginLeft: 'auto' }} />
+              </button>
+            ))}
           </nav>
         </div>
       </section>

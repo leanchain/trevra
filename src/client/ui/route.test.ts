@@ -15,11 +15,36 @@ import { isAccountsPath, isAppPath, isLoginPath, parseRoute } from './route';
 
 describe('parseRoute', () => {
   it('reads a section, a sub-screen and a deep-link id off the pathname', () => {
-    expect(parseRoute('/outreach/inbox')).toMatchObject({ section: 'outreach', sub: 'inbox', id: null, path: '/outreach/inbox' });
-    expect(parseRoute('/outreach/activity')).toMatchObject({ section: 'outreach', sub: 'activity', id: null, path: '/outreach/activity' });
-    expect(parseRoute('/outreach/accounts')).toMatchObject({ section: 'outreach', sub: 'accounts', id: null, path: '/outreach/accounts' });
-    expect(parseRoute('/outreach/manager/new')).toMatchObject({ section: 'outreach', sub: 'manager', id: 'new', path: '/outreach/manager/new' });
-    expect(parseRoute('/ledger/run/run_abc')).toMatchObject({ section: 'ledger', sub: 'run', id: 'run_abc', path: '/ledger/run/run_abc' });
+    expect(parseRoute('/outreach/inbox')).toMatchObject({
+      section: 'outreach',
+      sub: 'inbox',
+      id: null,
+      path: '/outreach/inbox'
+    });
+    expect(parseRoute('/outreach/activity')).toMatchObject({
+      section: 'outreach',
+      sub: 'activity',
+      id: null,
+      path: '/outreach/activity'
+    });
+    expect(parseRoute('/outreach/accounts')).toMatchObject({
+      section: 'outreach',
+      sub: 'accounts',
+      id: null,
+      path: '/outreach/accounts'
+    });
+    expect(parseRoute('/outreach/manager/new')).toMatchObject({
+      section: 'outreach',
+      sub: 'manager',
+      id: 'new',
+      path: '/outreach/manager/new'
+    });
+    expect(parseRoute('/ledger/run/run_abc')).toMatchObject({
+      section: 'ledger',
+      sub: 'run',
+      id: 'run_abc',
+      path: '/ledger/run/run_abc'
+    });
   });
 
   it('answers the default route for the site root', () => {
@@ -28,7 +53,11 @@ describe('parseRoute', () => {
   });
 
   it('falls back to the section root for a sub-screen that does not exist', () => {
-    expect(parseRoute('/outreach/replies')).toMatchObject({ section: 'outreach', sub: '', path: '/outreach' });
+    expect(parseRoute('/outreach/replies')).toMatchObject({
+      section: 'outreach',
+      sub: '',
+      path: '/outreach'
+    });
   });
 
   it('sends an unknown section to the default rather than rendering nothing', () => {
@@ -36,11 +65,24 @@ describe('parseRoute', () => {
   });
 
   it('refuses a run link that names no run', () => {
-    expect(parseRoute('/ledger/run')).toMatchObject({ section: 'ledger', sub: '', path: '/ledger' });
+    expect(parseRoute('/ledger/run')).toMatchObject({
+      section: 'ledger',
+      sub: '',
+      path: '/ledger'
+    });
   });
 
   it('ignores a trailing slash, so a pasted URL and a typed one are one screen', () => {
     expect(parseRoute('/outreach/inbox/').path).toBe('/outreach/inbox');
+  });
+
+  it('does not expose removed Money or Send queue routes', () => {
+    expect(parseRoute('/money')).toMatchObject({ section: 'loop', sub: '', path: '/loop' });
+    expect(parseRoute('/outreach/queue')).toMatchObject({
+      section: 'outreach',
+      sub: '',
+      path: '/outreach'
+    });
   });
 
   /**
@@ -54,7 +96,15 @@ describe('parseRoute', () => {
 
 describe('isAppPath', () => {
   it('claims every section and shell path', () => {
-    for (const path of ['/loop', '/outreach/inbox', '/money', '/ledger/run/x', '/setup/team', '/leads', '/login', '/']) {
+    for (const path of [
+      '/loop',
+      '/outreach/inbox',
+      '/ledger/run/x',
+      '/setup/team',
+      '/leads',
+      '/login',
+      '/'
+    ]) {
       expect(isAppPath(path), path).toBe(true);
     }
   });
@@ -64,7 +114,16 @@ describe('isAppPath', () => {
    * client claims and the server 404s is a broken reload.
    */
   it('leaves shipped documents, files and API routes to the server', () => {
-    for (const path of ['/privacy', '/terms', '/security', '/catalog/modules.json', '/logo.svg', '/robots.txt', '/api/dashboard']) {
+    for (const path of [
+      '/money',
+      '/privacy',
+      '/terms',
+      '/security',
+      '/catalog/modules.json',
+      '/logo.svg',
+      '/robots.txt',
+      '/api/dashboard'
+    ]) {
       expect(isAppPath(path), path).toBe(false);
     }
   });
@@ -87,7 +146,10 @@ const CLIENT_DIR = new URL('..', import.meta.url).pathname;
 function clientSources(dir: string, found: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
-    if (statSync(full).isDirectory()) { clientSources(full, found); continue; }
+    if (statSync(full).isDirectory()) {
+      clientSources(full, found);
+      continue;
+    }
     if (/\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)) found.push(full);
   }
   return found;
@@ -106,11 +168,13 @@ function clientSources(dir: string, found: string[] = []): string[] {
 function offenders(pattern: RegExp): string[] {
   const hits: string[] = [];
   for (const file of clientSources(CLIENT_DIR)) {
-    readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
-      const code = line.trim();
-      if (code.startsWith('*') || code.startsWith('//') || code.startsWith('/*')) return;
-      if (pattern.test(line)) hits.push(`${file.slice(CLIENT_DIR.length)}:${index + 1}: ${code}`);
-    });
+    readFileSync(file, 'utf8')
+      .split('\n')
+      .forEach((line, index) => {
+        const code = line.trim();
+        if (code.startsWith('*') || code.startsWith('//') || code.startsWith('/*')) return;
+        if (pattern.test(line)) hits.push(`${file.slice(CLIENT_DIR.length)}:${index + 1}: ${code}`);
+      });
   }
   return hits;
 }

@@ -3,7 +3,11 @@ import { extname, resolve } from 'node:path';
 import express from 'express';
 import { openDatabase } from './db.js';
 import { createApp } from './app.js';
-import { backfillWorkspaceOrganizations, closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
+import {
+  backfillWorkspaceOrganizations,
+  closeAuthDatabase,
+  migrateAuthDatabase
+} from './auth-service.js';
 import { validateEnvironment } from './config.js';
 import { assertHostedDataReady } from './hosted-readiness.js';
 import { getSiteConfig, renderAppIndex, renderNotFoundPage } from './public-site.js';
@@ -64,8 +68,12 @@ if (process.env.NODE_ENV === 'production') {
    * not is a broken reload, so they change together.
    */
   const APP_PATH_HEADS = new Set([
-    'loop', 'outreach', 'money', 'ledger', 'setup', // SECTIONS in ui/route.ts
-    'leads', 'login'                                // SHELL_PATHS in ui/route.ts
+    'loop',
+    'outreach',
+    'ledger',
+    'setup', // SECTIONS in ui/route.ts
+    'leads',
+    'login' // SHELL_PATHS in ui/route.ts
   ]);
   app.get(/^\/[^.]*$/, (req, res, next) => {
     const head = req.path.replace(/^\//, '').split('/')[0] ?? '';
@@ -96,26 +104,36 @@ if (process.env.NODE_ENV === 'production') {
    * lands on the 404 below, exactly as it did before.
    */
   app.use((req, _res, next) => {
-    if ((req.method === 'GET' || req.method === 'HEAD') && req.path !== '/' && !req.path.endsWith('/') && !extname(req.path)) {
+    if (
+      (req.method === 'GET' || req.method === 'HEAD') &&
+      req.path !== '/' &&
+      !req.path.endsWith('/') &&
+      !extname(req.path)
+    ) {
       req.url = `${req.path}/index.html${req.url.slice(req.path.length)}`;
     }
     next();
   });
-  app.use(express.static(clientDir, {
-    index: 'index.html',
-    maxAge: '1h',
-    etag: true,
-    setHeaders: (res, path) => {
-      if (/assets\/.+-[A-Za-z0-9_-]{8,}\.(?:js|css)$/i.test(path)) {
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      } else if (/[\\/](?:icons|og)[\\/]|favicon\.svg$/i.test(path)) {
-        res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=2592000');
+  app.use(
+    express.static(clientDir, {
+      index: 'index.html',
+      maxAge: '1h',
+      etag: true,
+      setHeaders: (res, path) => {
+        if (/assets\/.+-[A-Za-z0-9_-]{8,}\.(?:js|css)$/i.test(path)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (/[\\/](?:icons|og)[\\/]|favicon\.svg$/i.test(path)) {
+          res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=2592000');
+        }
       }
-    }
-  }));
+    })
+  );
   app.use((req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'API route not found' });
-    res.status(404).type('html').send(renderNotFoundPage(String(res.locals.cspNonce ?? '')));
+    res
+      .status(404)
+      .type('html')
+      .send(renderNotFoundPage(String(res.locals.cspNonce ?? '')));
   });
 }
 
