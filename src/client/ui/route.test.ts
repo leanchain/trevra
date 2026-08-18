@@ -101,17 +101,12 @@ describe('parseRoute', () => {
 });
 
 describe('isAppPath', () => {
-  it('claims /research as an app route', () => {
-    expect(isAppPath('/research')).toBe(true);
-  });
-});
-
-describe('isAppPath', () => {
   it('claims every section and shell path', () => {
     for (const path of [
       '/loop',
       '/outreach/inbox',
       '/ledger/run/x',
+      '/research',
       '/setup/team',
       '/leads',
       '/login',

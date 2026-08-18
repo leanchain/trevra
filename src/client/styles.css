@@ -1572,7 +1572,7 @@ button:disabled {
 /* The phone navigation. Below 760px the sidebar is display:none, so this is
    the only way to change page; it mirrors the sidebar's active treatment.
 
-   Four items: Loop, Outreach, Ledger, Setup. Labels may clip rather than widen
+   Five items: Loop, Outreach, Ledger, Research, Setup. Labels may clip rather than widen
    a cell on the narrowest supported screens. */
 .mobile-tabbar {
   display: none;

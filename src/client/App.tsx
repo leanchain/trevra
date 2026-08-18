@@ -102,7 +102,7 @@ import { LoopCostView, LoopView } from './views/LoopView';
 import { SkillsView } from './views/SkillsView';
 import { initials, money, prettyProvider, usd } from './views/format';
 
-/** Four primary product areas: loop, outreach, ledger, and setup. */
+/** Five primary product areas: loop, outreach, ledger, research, and setup. */
 const NAV_ITEMS: Array<{ section: Section; path: string; icon: React.ReactNode; label: string }> = [
   { section: 'loop', path: '/loop', icon: <Repeat size={18} />, label: 'Loop' },
   {
@@ -733,9 +733,9 @@ function SetupView({
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.location.pathname === '/setup/research') {
-      onNavigate('/research');
+      replaceNavigate('/research');
     }
-  }, [onNavigate]);
+  }, []);
 
   useEffect(() => {
     if (sub !== 'spend') return;

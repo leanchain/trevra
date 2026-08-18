@@ -272,10 +272,16 @@ describe('listOutreachThreads', () => {
   });
 
   it('clamps limit to the same [1, 200] band the skill-run list uses', async () => {
+    await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'c1' }), thread({ externalId: 'c2' }), thread({ externalId: 'c3' })],
+      NOW
+    );
+
     const rows = await listOutreachThreads(db, DEMO_WORKSPACE_ID, { limit: 0 });
-    expect(rows).toEqual([]);
-    // limit=0 clamps to 1, not 0 -- asserting only that the call does not
-    // throw and returns an array proves the clamp did not become a no-op.
-    expect(Array.isArray(rows)).toBe(true);
+    // limit=0 clamps to 1, not 0 -- with 3 rows seeded, [] would mean the
+    // clamp is missing entirely rather than merely rounding down.
+    expect(rows).toHaveLength(1);
   });
 });

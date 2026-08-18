@@ -301,6 +301,11 @@ const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   },
   { path: '/outreach/plan', label: 'Outreach · Plan preview', hint: 'A dry run. Writes nothing' },
   { path: '/ledger', label: 'Run ledger', hint: 'Every run, with the evidence' },
+  {
+    path: '/research',
+    label: 'Research',
+    hint: 'Discovered threads and company research, across every platform'
+  },
   { path: '/setup/agent', label: 'Setup · Agent access', hint: 'Connect Claude Code or Codex' },
   {
     path: '/setup/spend',

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { LoaderCircle, MessageSquare, Newspaper } from 'lucide-react';
+import { CircleAlert, LoaderCircle, MessageSquare, Newspaper } from 'lucide-react';
 import type { ConnectionSummary, SkillRun } from '../../shared/types';
 import { getOutreachThreads, getSkillRuns, type OutreachThreadRow } from '../api';
 import { ResearchScreen } from '../ResearchScreen';
+import { EvidenceList } from './inspector';
 
 /*
  * `/research` -- one feed over three sources that never shared a screen:
@@ -55,17 +56,24 @@ export function ResearchView({
   const [platform, setPlatform] = useState('all');
   const [threads, setThreads] = useState<OutreachThreadRow[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
+  const [threadsError, setThreadsError] = useState(false);
   const [briefs, setBriefs] = useState<SkillRun[]>([]);
   const [briefsLoaded, setBriefsLoaded] = useState(false);
+  const [briefsError, setBriefsError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setThreadsLoaded(false);
     getOutreachThreads(platform === 'all' ? {} : { platform })
-      .catch(() => [] as OutreachThreadRow[])
       .then((rows) => {
         if (cancelled) return;
         setThreads(rows);
+        setThreadsError(false);
+        setThreadsLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setThreadsError(true);
         setThreadsLoaded(true);
       });
     return () => {
@@ -75,17 +83,28 @@ export function ResearchView({
 
   useEffect(() => {
     let cancelled = false;
-    getSkillRuns({ skillId: 'gtm.research-brief', limit: 50 })
-      .catch(() => [] as SkillRun[])
+    getSkillRuns({ skillId: 'gtm.research-brief', status: 'ok', limit: 50 })
       .then((runs) => {
         if (cancelled) return;
         setBriefs(runs);
+        setBriefsError(false);
+        setBriefsLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setBriefsError(true);
         setBriefsLoaded(true);
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const renderableBriefs = briefs
+    .map((run) => ({ run, brief: asResearchBrief(run.output) }))
+    .filter(
+      (entry): entry is { run: SkillRun; brief: ResearchBriefOutput } => entry.brief !== null
+    );
 
   const showBriefs = platform === 'all' || platform === 'linkedin';
   const showRedditCorpus = platform === 'all' || platform === 'reddit';
@@ -154,7 +173,14 @@ export function ResearchView({
               <p>One moment.</p>
             </div>
           )}
-          {threadsLoaded && threads.length === 0 && (
+          {threadsLoaded && threadsError && (
+            <div className="empty-state">
+              <CircleAlert size={26} />
+              <h4 aria-level={3}>Couldn't load discovered threads</h4>
+              <p>Something went wrong fetching this. Try reloading the page.</p>
+            </div>
+          )}
+          {threadsLoaded && !threadsError && threads.length === 0 && (
             <div className="empty-state">
               <MessageSquare size={26} />
               <h4 aria-level={3}>No threads discovered yet</h4>
@@ -173,10 +199,9 @@ export function ResearchView({
             </div>
           </div>
           <div className="client-table">
-            {briefs.map((run) => {
-              const brief = asResearchBrief(run.output);
-              if (!brief) return null;
-              return (
+            {briefsLoaded &&
+              !briefsError &&
+              renderableBriefs.map(({ run, brief }) => (
                 <article className="client-card-large" key={run.id}>
                   <span className="client-avatar large">
                     {(brief.domain ?? '?').slice(0, 1).toUpperCase()}
@@ -185,11 +210,25 @@ export function ResearchView({
                     <h3>{brief.domain ?? 'Unknown domain'}</h3>
                     <p>{brief.findingDetail}</p>
                     <span className="client-status">{brief.topFinding}</span>
+                    {run.evidence.length > 0 && <EvidenceList entries={run.evidence} />}
                   </div>
                 </article>
-              );
-            })}
-            {briefsLoaded && briefs.length === 0 && (
+              ))}
+            {!briefsLoaded && (
+              <div className="empty-state">
+                <LoaderCircle className="spin" size={26} />
+                <h4 aria-level={3}>Loading…</h4>
+                <p>One moment.</p>
+              </div>
+            )}
+            {briefsLoaded && briefsError && (
+              <div className="empty-state">
+                <CircleAlert size={26} />
+                <h4 aria-level={3}>Couldn't load research briefs</h4>
+                <p>Something went wrong fetching this. Try reloading the page.</p>
+              </div>
+            )}
+            {briefsLoaded && !briefsError && renderableBriefs.length === 0 && (
               <div className="empty-state">
                 <Newspaper size={26} />
                 <h4 aria-level={3}>No research briefs yet</h4>
