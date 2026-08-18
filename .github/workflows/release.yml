@@ -283,9 +283,19 @@ jobs:
               "$APP_IP" "$DB_IP" "$DB_PRIVATE_IP" "sha-${SHA}" "$COMPANION_VERSION"
       - name: Public health check
         if: steps.fresh.outputs.current == 'true'
+        # Run from the app box itself, not the GitHub-hosted runner: Cloudflare's
+        # Bot Fight Mode issues curl-from-a-datacenter-ASN (GitHub Actions is
+        # Azure/AS8075) a Managed Challenge it cannot solve, which comes back as
+        # a 403 having never reached the app -- see the deploy runs that failed
+        # this step in ~90ms while the app itself was already healthy. SSHing in
+        # and curling from Oracle's egress still exercises the real public path
+        # (DNS, edge TLS, tunnel), just from an IP Cloudflare doesn't flag.
+        env:
+          APP_IP: ${{ vars.ORACLE_APP_IP }}
         run: |
           set -euo pipefail
-          body="$(curl --fail --silent --show-error --retry 6 --retry-delay 5 https://app.usetrevra.com/api/health)"
+          body="$(ssh -i "$RUNNER_TEMP/ssh/oracle" -o StrictHostKeyChecking=accept-new "ubuntu@${APP_IP}" \
+            'curl --fail --silent --show-error --retry 6 --retry-delay 5 https://app.usetrevra.com/api/health')"
           jq -e '.ok == true' <<<"$body" >/dev/null
 
   app_release:
