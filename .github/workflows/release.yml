@@ -195,6 +195,17 @@ jobs:
           cache: npm
           cache-dependency-path: packages/trevra-cli/package-lock.json
       - run: npm install --global npm@11.6.2
+      - name: TEMP DEBUG - raw OIDC exchange response
+        continue-on-error: true
+        run: |
+          ID_TOKEN=$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" | jq -r '.value')
+          echo "job_workflow_ref claim:"
+          echo "$ID_TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq -r '.job_workflow_ref, .repository, .ref' || true
+          echo "--- exchange response ---"
+          curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -X POST \
+            -H "Authorization: Bearer ${ID_TOKEN}" \
+            https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/trevra || true
       - name: Publish with npm Trusted Publishing
         working-directory: packages/trevra-cli
         env:
