@@ -213,7 +213,7 @@ jobs:
             echo "trevra@${VERSION} already exists; publish is idempotently complete."
             exit 0
           fi
-          npm publish --access public --provenance
+          npm publish --access public --provenance --loglevel http
 
   deploy_oracle:
     name: Deploy Oracle production
