@@ -33,6 +33,7 @@ import type { ManagedCampaign } from '../server/linkedin/managed-campaigns';
 import { useActiveSeatKey } from './LinkedInAccounts';
 import { AcceptanceMeter, ConfidenceTag, LiStat, VolumeChart, WarmupRamp, WindowPicker, type VolumePoint } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
+import { Hint } from './ui/hint';
 
 /**
  * The Safety screen -- the one screen that answers "is my account safe, and
@@ -1041,13 +1042,14 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
             no monthly figure for InMail the sentence simply does not claim one
             rather than falling back to a number nobody sent. */}
         <p>
-          LinkedIn publishes the InMail quota{inmailMonth === null ? '' : <> — <b>{inmailMonth} a month</b> on a Sales
-          Navigator seat</>} — and the one after that is refused by LinkedIn, not by Trevra. It publishes no invite limit
-          at all. Everything else here is practitioner telemetry: the daily and weekly numbers, both warm-ups, the
-          {' '}{Math.round(signals.dayOverDay.maxDelta * 100)}% day-to-day change limit and the
-          {' '}{Math.round(signals.acceptance.floor * 100)}% acceptance floor. It is directionally right and it is not a
-          guarantee — LinkedIn can restrict an account that stayed inside every number on this screen. You are betting
-          your own account; the tags say which numbers are which.
+          <Hint label="Why these numbers are trustworthy" trigger={<>Why these numbers</>}>
+            LinkedIn publishes only the InMail quota{inmailMonth === null ? '' : <> — <b>{inmailMonth} a month</b> on a
+            Sales Navigator seat</>}, refusing the one after that itself, not Trevra; it sets no invite limit.
+            Everything else — the daily and weekly numbers, both warm-ups, the{' '}
+            {Math.round(signals.dayOverDay.maxDelta * 100)}% day-to-day change limit, the{' '}
+            {Math.round(signals.acceptance.floor * 100)}% acceptance floor — is practitioner telemetry: directionally
+            right, not a guarantee. You are betting your own account; the tags say which numbers are which.
+          </Hint>
         </p>
       </div>
     </section>
@@ -1057,9 +1059,11 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
         <div>
           <h3 aria-level={2}>How much went out each day</h3>
           <p>
-            A steady line is what keeps an account alive. A quiet week followed by a busy Monday is the shape LinkedIn
-            restricts accounts for, so no day may differ from the last worked day by more than
-            {' '}{Math.round(signals.dayOverDay.maxDelta * 100)}%, up or down.
+            No day may differ from the last worked day by more than {Math.round(signals.dayOverDay.maxDelta * 100)}%, up or down.
+            <Hint label="Why a steady line matters">
+              A steady line is what keeps an account alive — a quiet week followed by a busy Monday is the shape
+              LinkedIn restricts accounts for.
+            </Hint>
           </p>
         </div>
         <ConfidenceTag confidence={signals.dayOverDay.confidence} source={sourceLabel(signals.dayOverDay.confidence)} />
@@ -1070,25 +1074,27 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
         : <VolumeChart points={points} maxDelta={signals.dayOverDay.maxDelta} minRampStep={signals.dayOverDay.minRampStep}
           caption={`Actions that went out per day, last ${analytics?.windowDays ?? points.length} days`} />}
       <p className="panel-note">
-        A step up is measured against the last day this account actually worked — days off and weekends are skipped, not
-        counted as zero. The smallest step up allowed is {signals.dayOverDay.minRampStep} action a day, so an account
-        sitting at zero is not frozen by a percentage of zero.{' '}
-        {/* “The reported trigger is 50%” used to be typed out here with nothing
-            behind it — no field, no tag, no way to tell whether it was still
-            true. It is a real figure and it lives in exactly one place, the
-            server's own rule sentence, which carries the caveat with it. That
-            sentence is rendered instead of a literal restating half of it. */}
-        {signals.dayOverDay.rule}{' '}
-        {/* WHICH DAY EACH COLUMN IS, said rather than assumed. `linkedinAnalytics`
-            in src/server/linkedin/campaigns.ts groups this series into UTC
-            calendar days and hands back one total per day, so the client holds
-            buckets and not the moments inside them — see `dayLabel` in
-            LinkedInViz for why the labels are pinned to UTC to match. For an
-            account working a long way from UTC that is not the account's own
-            day, and the honest fix for a chart that cannot re-bucket what it
-            was given is to name the bucket it is drawing. */}
-        Each column is a UTC day, which is how this series is grouped — an account working a long way from UTC will see
-        its late-evening actions land in the next column along.
+        <Hint label="How the day-to-day limit works" trigger={<>How the day-to-day limit works</>}>
+          Step-ups compare against the last day this account actually worked — days off and weekends are skipped,
+          not counted as zero. The minimum step up is {signals.dayOverDay.minRampStep} action a day, so an account at
+          zero is not frozen by a percentage of zero.{' '}
+          {/* “The reported trigger is 50%” used to be typed out here with nothing
+              behind it — no field, no tag, no way to tell whether it was still
+              true. It is a real figure and it lives in exactly one place, the
+              server's own rule sentence, which carries the caveat with it. That
+              sentence is rendered instead of a literal restating half of it. */}
+          {signals.dayOverDay.rule}{' '}
+          {/* WHICH DAY EACH COLUMN IS, said rather than assumed. `linkedinAnalytics`
+              in src/server/linkedin/campaigns.ts groups this series into UTC
+              calendar days and hands back one total per day, so the client holds
+              buckets and not the moments inside them — see `dayLabel` in
+              LinkedInViz for why the labels are pinned to UTC to match. For an
+              account working a long way from UTC that is not the account's own
+              day, and the honest fix for a chart that cannot re-bucket what it
+              was given is to name the bucket it is drawing. */}
+          Each column is a UTC day — an account working far from UTC will see late-evening actions land in the next
+          column along.
+        </Hint>
       </p>
     </section>
 
@@ -1105,10 +1111,12 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
         </div>
         <WarmupRamp multipliers={WARMUP_MULTIPLIERS} currentWeek={seat.warmupWeek} weeks={seat.warmupWeeks} />
         <p className="panel-note">
-          Week 1 is quiet on purpose: profile views, follows, likes and endorsements only, no invites and no messages.
-          Those four are never reduced by the warm-up — they are what a warm-up consists of. The clock runs from when this
-          account started sending through Trevra, not from the age of the LinkedIn account, so there is nothing to declare
-          that would lift it early.
+          <Hint label="What week 1 includes" trigger={<>What week 1 includes</>}>
+            Week 1 is profile views, follows, likes and endorsements only — no invites, no messages. Those four are
+            never reduced by the warm-up; they are what it consists of. The clock runs from when this account started
+            sending through Trevra, not from the LinkedIn account’s age, so there is nothing to declare that lifts it
+            early.
+          </Hint>
         </p>
       </section>
 
@@ -1133,10 +1141,11 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
           throttled={signals.acceptance.throttled}
         />
         <p className="panel-note">
-          Under the floor, Trevra {throttleVerb(signals.acceptance.throttleFactor, 'this account’s volume')} until it
-          recovers — reduced, never stopped. An account cut to zero can never earn the acceptances that would clear it,
-          so “{throttleImperative(signals.acceptance.throttleFactor)}” would quietly become “end it”, and ending an
-          account is your decision, not a multiplier’s.
+          <Hint label="What happens under the floor" trigger={<>What happens under the floor</>}>
+            Under the floor, Trevra {throttleVerb(signals.acceptance.throttleFactor, 'this account’s volume')} until
+            it recovers — reduced, never stopped. A seat cut to zero could never earn back the acceptances that would
+            clear it, so ending an account stays your decision, not a multiplier’s.
+          </Hint>
         </p>
       </section>
     </div>
@@ -1144,19 +1153,20 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3 aria-level={2}>Trevra’s own limits, and what {primaryLabel} has used</h3>
+          <h3 aria-level={2}>Trevra’s own limits, and what {primaryLabel} has used
+            <Hint label="How to read these windows">
+              Rolling windows, not calendar ones — “the last 24 hours”, never “since midnight”. These are Trevra’s
+              {' '}<b>{seat.band === 'steady' ? 'steady' : 'warm-up'}</b> band figures — {seat.band === 'steady'
+                ? 'what an account past its ramp gets'
+                : 'the conservative set a paused or slowed-down account draws from too'}. Your own numbers are above;
+              both are separate ceilings and both have to pass.
+            </Hint>
+          </h3>
           {/* WHICH BAND THESE NUMBERS CAME FROM. `seat.band` was in the payload
               and on no screen, so the same table rendered two different sets of
               figures on two different days with nothing on the page to say why
               — and “why did my limits drop” is precisely the question this
               screen exists to answer. */}
-          <p>
-            Rolling windows, not calendar ones: “the last 24 hours”, never “since midnight”. These are Trevra’s
-            {' '}<b>{seat.band === 'steady' ? 'steady' : 'warm-up'}</b> band figures — {seat.band === 'steady'
-              ? 'what an account past its ramp gets'
-              : 'the conservative set, which a paused or slowed-down account draws from too, not only one still on its ramp'}.
-            Your own per-account numbers are in the panel above, and the two are separate ceilings that both have to pass.
-          </p>
         </div>
         <Gauge size={20} className="li-heading-icon" />
       </div>
@@ -1184,24 +1194,24 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
         <LiStat
           label="Working hours"
           value="Each account’s own"
-          detail={<>set per account, in its own timezone. Trevra falls back to {fallbackWindowLabel(signals.rhythm)} only when no account is configured</>}
+          detail={<>per account, in its own timezone. Falls back to {fallbackWindowLabel(signals.rhythm)} only when none is configured</>}
         />
         <LiStat
           label="Gap between actions"
           value={`${signals.rhythm.actionGapSeconds.min}–${signals.rhythm.actionGapSeconds.max}s`}
-          detail="randomised and spread across the day, never a block of back-to-back actions"
+          detail="randomised and spread across the day — never back-to-back"
         />
         <LiStat
           label="Weekends"
           value={signals.rhythm.weekendFactor === 0 ? 'Left empty' : `×${signals.rhythm.weekendFactor}`}
           detail={signals.rhythm.weekendFactor === 0
-            ? 'unless you tick Saturday or Sunday for an account, which Trevra then treats as an ordinary working day'
+            ? 'unless you tick Saturday or Sunday, which then counts as an ordinary working day'
             : 'reduced weekend volume'}
         />
         <LiStat
           label="Days Trevra holds back"
           value={signals.rhythm.enforcementScanWeekdays.map((day) => WEEKDAY_SHORT[day]).join(' · ')}
-          detail="restrictions cluster on these days, so a day’s maximum is never scheduled on one. They are capped, not skipped — skipping two of five working days would create the very sawtooth this engine avoids"
+          detail="restrictions cluster here, so a day’s maximum is never scheduled on one — capped, not skipped, to avoid a sawtooth"
         />
       </div>
     </section>
@@ -1572,19 +1582,20 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
       {caps.map((cap) => <CapCell key={cap.key} cap={cap} />)}
     </div>
     <p className="panel-note">
-      {/* NOT “the smaller one always applies” any more, because for messages it
-          never was: your number is one pool over three kinds and Trevra's is
-          per kind, so they are ceilings on two different quantities and both
-          are checked. */}
-      Your own numbers and Trevra’s researched band are <b>two ceilings and both have to pass</b>, which is exactly how
-      the check immediately before every action composes them. Your messages number is one pool over direct messages,
-      replies and InMail together; Trevra’s is per kind. Yours are editable on{' '}
-      <a className="li-link" href="/setup/seat" onClick={openThisAccount}>this account’s screen</a>:{' '}
-      {caps.map((cap) => `${cap.label.toLowerCase()} ${cap.range.min}–${cap.range.max}`).join(', ')}
-      {caps.every((cap) => cap.range.min === 0) ? ', and 0 switches that action off entirely' : ''}. Every window here is
-      the last 24 hours, rolling.
-      {!report && <> Trevra’s own limits for this account are applied on every action, but this screen can publish them
-        {' '}for the workspace’s first account only.</>}
+      <Hint label="How your numbers and Trevra’s band combine" trigger={<>How your numbers and Trevra’s band combine</>}>
+        {/* NOT “the smaller one always applies” any more, because for messages it
+            never was: your number is one pool over three kinds and Trevra's is
+            per kind, so they are ceilings on two different quantities and both
+            are checked. */}
+        Your numbers and Trevra’s researched band are <b>two ceilings — both have to pass</b>. Your messages number
+        pools direct messages, replies and InMail together; Trevra’s is per kind. Edit yours on{' '}
+        <a className="li-link" href="/setup/seat" onClick={openThisAccount}>this account’s screen</a>:{' '}
+        {caps.map((cap) => `${cap.label.toLowerCase()} ${cap.range.min}–${cap.range.max}`).join(', ')}
+        {caps.every((cap) => cap.range.min === 0) ? ', 0 turns an action off' : ''}. Every window here is the last 24
+        hours, rolling.
+        {!report && <> Trevra’s own limits for this account are applied on every action, but this screen can publish
+          them{' '}for the workspace’s first account only.</>}
+      </Hint>
     </p>
 
     <div className="li-facts">
@@ -1697,7 +1708,7 @@ function BandOverride({ account, caps, week, weeks, rampDays }: {
     ? `${cap.label.toLowerCase()}, your pool of ${cap.yours ?? '—'} against Trevra’s per-kind bands of ${cap.detail.map((entry) => `${entry.band ?? '—'} ${KIND_LABELS[entry.kind].toLowerCase()}`).join(', ')}`
     : `${cap.label.toLowerCase()}, yours ${cap.yours ?? '—'} against Trevra’s band of ${cap.detail[0]?.band ?? '—'}`;
   const comparisons = caps.map(comparison).join('; ');
-  const rampsStillApply = `Both warm-ups still apply. The account ramp (${week > weeks ? `finished, ${weeks} weeks` : `week ${week} of ${weeks}`}) and every campaign’s ${rampDays}-day ramp multiply whichever ceiling ends up binding, so this raises the number the ramps are a percentage OF — it never turns a ramp off.`;
+  const rampsStillApply = `Both warm-ups still apply — the account ramp (${week > weeks ? `finished, ${weeks} weeks` : `week ${week} of ${weeks}`}) and each campaign’s ${rampDays}-day ramp multiply whichever ceiling binds. This raises the base the ramps are a percentage of; it never turns a ramp off.`;
 
   return <>
     {failure && <div className="error-banner">{failure}</div>}
@@ -1709,8 +1720,8 @@ function BandOverride({ account, caps, week, weeks, rampDays }: {
           <strong>Your own ceilings bind on this account, ahead of Trevra’s researched band.</strong>
           <p>
             You set this. Where the two differ — {comparisons} — yours is what the check uses, higher or lower.
-            Trevra’s band is the researched safe number and yours is your own risk: LinkedIn can restrict an account
-            that stayed inside every number on this screen, and it will not ask which of the two you chose.
+            Trevra’s band is the researched safe number; yours is your own risk — LinkedIn can restrict an account
+            that stayed inside every number on this screen.
           </p>
           <p>{rampsStillApply}</p>
           <button className="secondary-button" type="button" disabled={busy} onClick={() => void write(false)}>
@@ -1720,10 +1731,10 @@ function BandOverride({ account, caps, week, weeks, rampDays }: {
       </div>
       : <>
         <p className="panel-note">
-          <b>Trevra’s researched band is what binds on this account</b>, wherever it is the stricter of the two —
-          {' '}{comparisons}. That is the safe default: the band is what the research says keeps an account alive, and a
-          number typed into a settings field is a preference rather than evidence. If you know this account and want
-          your own numbers to bind instead, you can say so — it is your account and your risk, and it is recorded here.
+          <b>Trevra’s researched band binds on this account</b> wherever it is stricter — {comparisons}. That’s the
+          safe default: the band is what research says keeps an account alive; a settings field is a preference, not
+          evidence. Know this account and want your own numbers to bind instead? Say so — it’s your account and your
+          risk, and it’s recorded here.
         </p>
         <button className="secondary-button" type="button" disabled={busy} onClick={() => setPending(true)}>
           <Settings2 size={14} /> Use my own ceilings on this account
@@ -1890,23 +1901,22 @@ function ceilingSentence(limit: LinkedInCeiling, throttleFactor: number): string
        band from the operator who has stepped out from behind it. */
     case 'operator-daily-limit':
       return limit.ceilingSource === 'operator-override'
-        ? `Your own ${limit.operatorLimit} ${kind} ${window} is what binds here — this account is set to use your daily limits ahead of Trevra’s researched ${limit.bandCeiling}.${poolNote(limit)} Every ramp and every rolling window still applies on top of your number.`
-        : `Your own ${limit.operatorLimit} ${kind} ${window} is stricter than Trevra’s ${limit.bandCeiling}, so yours is what binds.${poolNote(limit)}`;
+        ? `Your own ${limit.operatorLimit} ${kind} ${window} binds, ahead of Trevra’s researched ${limit.bandCeiling}.${poolNote(limit)} Every ramp and rolling window still applies on top.`
+        : `Your own ${limit.operatorLimit} ${kind} ${window} is stricter than Trevra’s ${limit.bandCeiling}, so yours binds.${poolNote(limit)}`;
     case 'warmup-multiplier':
-      return `While this account warms up it may take ${limit.ceiling} ${kind} ${window}, instead of the ${unramped} it gets once the ramp is over.`;
+      return `Warming up: ${limit.ceiling} ${kind} ${window}, instead of ${unramped} once the ramp ends.`;
     case 'acceptance-rate':
       return `Too few invites were accepted, so Trevra ${throttleVerb(throttleFactor, 'the volume', true)}: ${limit.ceiling} ${kind} ${window} until acceptance recovers.`;
     case 'seat-paused':
-      return 'You paused this account, so nothing at all is scheduled for it.';
+      return 'You paused this account — nothing is scheduled.';
     case 'seat-unconfigured':
-      return 'No LinkedIn account is configured, so nothing can be scheduled. An undeclared account is treated as brand new, never as established.';
+      return 'No LinkedIn account is configured, so nothing can be scheduled.';
     case 'cooldown-band':
-      return `This account is set to slow down, so the cautious limit applies: ${limit.ceiling} ${kind} ${window}, instead of the ${unramped} it gets when it is running normally.`;
+      return `Slowed down: ${limit.ceiling} ${kind} ${window}, instead of ${unramped} when running normally.`;
     case 'monthly-quota':
       return limit.kind === 'inmail'
-        ? `LinkedIn’s own quota: ${limit.ceiling} InMails a month on a Sales Navigator seat. The 51st is refused by LinkedIn, not by Trevra. `
-          + 'Trevra does not send InMail — there is no InMail step and no InMail driver — so this ceiling binds nothing here; '
-          + 'it is published because it is a real limit on your account, whatever you send from.'
+        ? `LinkedIn’s own quota: ${limit.ceiling} InMails a month on Sales Navigator. The one after that is refused by LinkedIn, not Trevra. `
+          + 'Trevra does not send InMail, so this ceiling binds nothing here — it is published because it is a real limit on your account.'
         : `${limit.ceiling} ${kind} ${window}.`;
     /* `band-ceiling` is ALSO reached with an operator number set -- one that is
        higher than the band, so the band won. Saying only “this is what Trevra
@@ -1916,7 +1926,7 @@ function ceilingSentence(limit: LinkedInCeiling, throttleFactor: number): string
     case 'weekly-band':
       return limit.window === 'day' && limit.ceilingSource === 'band'
         && limit.operatorLimit !== null && limit.operatorLimit !== undefined && limit.operatorLimit > limit.bandCeiling
-        ? `${limit.ceiling} ${kind} ${window} is what Trevra allows this account. Your own setting of ${limit.operatorLimit} is the higher of the two, so it is not what bound this${poolNote(limit)} — letting your own ceilings bind on this account is what would change it.`
+        ? `${limit.ceiling} ${kind} ${window} is what Trevra allows. Your own setting of ${limit.operatorLimit} is higher, so it is not what bound this${poolNote(limit)} — letting your own ceilings bind is what would change it.`
         : `${limit.ceiling} ${kind} ${window} is what Trevra allows this account.`;
     default:
       return limit.rule;
@@ -1934,29 +1944,29 @@ function CeilingRow({ limit, throttleFactor }: { limit: LinkedInCeiling; throttl
       </strong>
       <span className="li-chip">{boundByLabel(limit)}</span>
       <ConfidenceTag confidence={limit.confidence} source={sourceLabel(limit.confidence)} compact />
+      <Hint label={`Why ${WINDOW_LABELS[limit.window]} is ${limit.ceiling}`}>
+        <p>{ceilingSentence(limit, throttleFactor)}</p>
+        {/* Compared against `unrampedOf`, not against the band: with the account's
+            own setting binding, the band is not the number the ramps reduced and
+            naming it here would describe a reduction that never happened. */}
+        {limit.ceiling !== unrampedOf(limit) && <p>
+          Full ramp gets {unrampedOf(limit)} here; {limit.ceiling} applies today.
+        </p>}
+        {limit.ceilingSource === 'operator-override' && <p>
+          Yours, not Trevra’s — the researched band here is {limit.bandCeiling}.
+        </p>}
+        {limit.window !== 'day' && <p>Rolling, not calendar — a calendar cap of {limit.ceiling} delivers {limit.ceiling * 2} across the boundary.</p>}
+        {/* `limit.source` shipped on every ceiling and appeared on no screen. It
+            is the citation behind the tag beside it — which plan section a number
+            came from — and “where did 18 come from” is a question an operator
+            betting their own account is entitled to follow up. The words stay
+            first; the reference is the last thing on the line. */}
+        <p>{limit.remaining} left · {sourceLabel(limit.confidence)} · {limit.source}</p>
+      </Hint>
     </div>
     <div className="li-ceiling-meter">
       <i className={spent ? 'li-ceiling-fill li-ceiling-fill-spent' : 'li-ceiling-fill'} style={{ width: `${share * 100}%` }} />
     </div>
-    <p>{ceilingSentence(limit, throttleFactor)}</p>
-    <small>
-      {/* Compared against `unrampedOf`, not against the band: with the account's
-          own setting binding, the band is not the number the ramps reduced and
-          naming it here would describe a reduction that never happened. */}
-      {limit.ceiling !== unrampedOf(limit) && <>
-        Past every ramp this account gets {unrampedOf(limit)} here; {limit.ceiling} is what applies to it today.{' '}
-      </>}
-      {limit.ceilingSource === 'operator-override' && <>
-        That number is yours rather than Trevra’s — the researched band here is {limit.bandCeiling}.{' '}
-      </>}
-      {limit.window !== 'day' && <>Rolling, not calendar — a calendar cap of {limit.ceiling} delivers {limit.ceiling * 2} across the boundary.{' '}</>}
-      {/* `limit.source` shipped on every ceiling and appeared on no screen. It
-          is the citation behind the tag beside it — which plan section a number
-          came from — and “where did 18 come from” is a question an operator
-          betting their own account is entitled to follow up. The words stay
-          first; the reference is the last thing on the line. */}
-      {limit.remaining} left · {sourceLabel(limit.confidence)} · <code>{limit.source}</code>
-    </small>
   </div>;
 }
 

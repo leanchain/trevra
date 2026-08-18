@@ -1229,8 +1229,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-ceiling-meter { height: 6px; border-radius: var(--t-r-sm); background: var(--green-2); overflow: hidden; }
 .li-ceiling-fill { display: block; height: 100%; background: var(--t-green-fill); }
 .li-ceiling-fill-spent { background: var(--amber); }
-.li-ceiling p { max-width: var(--t-measure); margin: 9px 0 0; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.55; }
-.li-ceiling small { display: block; max-width: var(--t-measure); margin-top: 6px; color: var(--muted); font-size: var(--t-text-xs); line-height: 1.45; }
+/* Moved off .li-ceiling's face and into its Hint's popover -- see .li-hint-pop p below. */
 
 .li-chip { display: inline-flex; align-items: center; border-radius: var(--t-r-sm); padding: 3px 9px; background: var(--t-surface-2); color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; white-space: nowrap; }
 .li-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
@@ -1268,6 +1267,27 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-inline-check { display: flex; align-items: center; gap: 8px; min-height: 24px; font-size: var(--t-text-xs); font-weight: 700; }
 .li-inline-check input { width: 16px; height: 16px; min-height: 0; flex: none; accent-color: var(--t-green-fill); }
 .li-hint { max-width: var(--t-measure); color: var(--muted); font-size: var(--t-text-xs); line-height: 1.45; }
+
+/* The (i) that moves rationale off the surface -- src/client/ui/hint.tsx.
+   Opacity/visibility, never display:none: the popover stays in the
+   accessibility tree at all times so `aria-describedby` can reach it. */
+.li-hint-wrap { position: relative; display: inline-flex; align-items: center; vertical-align: middle; margin-left: 5px; }
+.li-hint-btn { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); background: var(--t-surface-2); color: var(--muted); display: grid; place-items: center; padding: 0; line-height: 0; cursor: pointer; }
+.li-hint-btn:hover, .li-hint-btn:focus-visible { color: var(--ink); border-color: var(--muted); }
+.li-hint-btn-labelled { width: auto; height: auto; border-radius: var(--t-r-sm); padding: 3px 8px; gap: 5px; font-size: var(--t-text-xs); font-weight: 700; color: var(--green); background: transparent; border-color: transparent; }
+.li-hint-btn-labelled:hover, .li-hint-btn-labelled:focus-visible { text-decoration: underline; }
+.li-hint-pop {
+  position: absolute; z-index: 3; top: calc(100% + 6px); left: 0; width: max-content; max-width: min(320px, 80vw);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--t-r-sm); box-shadow: var(--t-shadow-md);
+  padding: 10px 12px; color: var(--ink); font-size: var(--t-text-xs); font-weight: 400; line-height: 1.55; text-align: left;
+  opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .12s ease;
+}
+.li-hint-right .li-hint-pop { left: auto; right: 0; }
+.li-hint-pop p { margin: 0 0 8px; }
+.li-hint-pop p:last-child { margin-bottom: 0; }
+.li-hint-wrap:hover .li-hint-pop,
+.li-hint-wrap:focus-within .li-hint-pop,
+.li-hint-wrap.is-open .li-hint-pop { opacity: 1; visibility: visible; pointer-events: auto; }
 .li-filter-row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-bottom: 12px; }
 .li-filter-standalone { margin-bottom: 0; align-items: center; }
 .li-filter-label { color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }

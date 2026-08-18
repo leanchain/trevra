@@ -51,6 +51,7 @@ import { relativeTime } from './LinkedInScreen';
 import { MAINTENANCE_TASK_LABELS, formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
 import { LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
+import { Hint } from './ui/hint';
 
 /**
  * Every LinkedIn account this workspace sends from -- adding one, connecting
@@ -495,7 +496,7 @@ function stateSentence(state: AccountState, account: LinkedInSeat, detail: Linke
       return 'The sign-in is stored but no LinkedIn session has been confirmed yet.';
     case 'easing-in':
       return detail
-        ? `Week ${detail.warmupWeek} of ${detail.warmupWeeks}. New automation starts slow on purpose — this account may use only part of the limits you set below until the ramp finishes.`
+        ? `Week ${detail.warmupWeek} of ${detail.warmupWeeks} — easing in on purpose. Uses only part of the limits below until the ramp finishes.`
         : 'Easing in: this account may use only part of the limits you set below until the ramp finishes.';
     default:
       return 'Signed in and working to the limits below.';
@@ -658,11 +659,12 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
   return <section className="page-panel li-companion-panel">
     <div className="section-heading">
       <div>
-        <h3 aria-level={2}>Run LinkedIn from your computer</h3>
-        <p>
-          Recommended for hosted Trevra. LinkedIn opens in Chrome on your computer and uses your normal internet
-          connection and IP. Trevra keeps the campaign queue and safety rules; your LinkedIn browser profile stays on this computer.
-        </p>
+        <h3 aria-level={2}>Run LinkedIn from your computer
+          <Hint label="Why run LinkedIn from your computer">
+            Recommended for hosted Trevra. LinkedIn opens in Chrome on your computer, on your own IP — Trevra keeps
+            the queue and safety rules; your browser profile stays local.
+          </Hint>
+        </h3>
       </div>
       <Laptop size={20} className="li-heading-icon" />
     </div>
@@ -698,7 +700,7 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
     {status?.canManage && pairing ? <div className="li-companion-command">
       <div>
         <strong>Install once on this computer</strong>
-        <p>The code expires {relativeTime(pairing.expiresAt)}. Trevra installs a per-user background companion that starts at login and restarts after crashes; the long device token is created only after this one-time code is exchanged and is never shown in Trevra.</p>
+        <p>Expires {relativeTime(pairing.expiresAt)}. Installs a background companion that starts at login and survives crashes; the device token is created only once this code is used, and is never shown in Trevra.</p>
       </div>
       <code>{pairing.command}</code>
       <button className="secondary-button" type="button" onClick={() => void copy()}><Copy size={14} /> Copy command</button>
@@ -708,9 +710,12 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
     </button> : null}
 
     <p className="panel-note">
-      The background companion starts when you sign into this computer and restarts after crashes, so no terminal needs to stay open. Normal work uses the dedicated LinkedIn profile in background Chrome with no window in front of you. Keep a signed-in Trevra tab open when LinkedIn work should run; if the background companion or every Trevra tab disappears, no new LinkedIn cycle is claimed.
-      If LinkedIn asks for sign-in, CAPTCHA, 2FA or a device check, Trevra holds work and shows a reconnect alert. The reconnect command opens the same dedicated profile visibly just for that human step; close the window afterward and background mode resumes automatically.
-      When you return after being offline, Trevra runs one normal bounded sitting and then resumes the ordinary schedule — missed timer ticks are never replayed as a burst.
+      <Hint label="How background mode works" trigger={<>How background mode works</>}>
+        Starts at login and survives crashes — no terminal to keep open. Runs in background Chrome; keep one Trevra
+        tab signed in, or no new LinkedIn cycle is claimed. A sign-in prompt, CAPTCHA, 2FA or device check pauses
+        work and shows a reconnect alert — its command opens the profile visibly for that one step, then background
+        mode resumes. Coming back online runs one bounded state catch-up, then returns to the normal schedule — missed ticks are never replayed.
+      </Hint>
     </p>
   </section>;
 }
@@ -850,7 +855,13 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
           <section className="page-panel">
             <div className="section-heading">
               <div>
-                <h3 aria-level={2}>Your LinkedIn accounts</h3>
+                <h3 aria-level={2}>Your LinkedIn accounts
+                  <Hint label="What switching an account changes">
+                    Pick the account to work in — it follows you to the Inbox, Approve &amp; export, the send queue,
+                    the plan preview, and this screen. Lead sources, your Never contact list and workspace settings
+                    are shared across accounts, not per-account.
+                  </Hint>
+                </h3>
                 {/* WHAT THE SWITCH ACTUALLY REACHES, and no more than that.
                   `useActiveSeatKey` is one value for the whole tab and it is
                   mirrored into the others, so every screen that reads it changes
@@ -866,13 +877,6 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
                   Each of those now filters server-side, and each of those
                   screens carries the same switch above its rows -- so the four
                   names below are four routes that answer for one account. */}
-              <p>
-                Pick the account you are working in. Every outreach screen that reads or sends as one account follows
-                this choice, in this tab and in your other ones: the Inbox, Approve &amp; export, the send queue, the
-                plan preview, and the daily limits and funnel on this screen. Each of them shows the same picker over
-                its rows. Lead sources, your Never contact list and workspace settings are not per-account — they are
-                shared, and switching does not move them.
-              </p>
               </div>
               <button className="secondary-button li-acct-nowrap" type="button" onClick={() => setAdding((open) => !open)}>
                 <Plus size={14} /> {adding ? 'Cancel' : 'Add account'}
@@ -1356,9 +1360,8 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
           <div>
             <strong>No LinkedIn password is needed in Trevra.</strong>
             <p>
-              Keep <code>npx trevra linkedin</code> running, sign into LinkedIn in the Chrome window it opens on your computer,
-              then use <b>Check this account on LinkedIn</b> below. The browser profile and cookies stay on that computer;
-              LinkedIn sees that computer&rsquo;s normal network and IP.
+              Keep <code>npx trevra linkedin</code> running, sign into LinkedIn in the Chrome window it opens, then use{' '}
+              <b>Check this account on LinkedIn</b> below. The profile, cookies and IP stay on that computer.
             </p>
             {auth?.hasCredentials && <button className="ghost-button danger" type="button" disabled={forgetting} onClick={() => void forgetSignIn()}>
               {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />} Remove the old stored password
@@ -1385,10 +1388,8 @@ function AccountPanel({ account, detail, safety, companion, setToast, onChanged,
             <div>
               <strong>Before you type it — what happens to this password.</strong>
               <p>
-                It is encrypted at rest, sent nowhere but LinkedIn, and used for exactly one thing: opening a browser
-                session for this account on the machine running Trevra. You can remove it at any time, and nothing can
-                sign in again once you have. No screen ever shows it back — the masked address is the most Trevra
-                will say.
+                Encrypted at rest, sent nowhere but LinkedIn, used only to open this account’s browser session. Remove
+                it any time — no screen ever shows it back; the masked address is the most Trevra will say.
               </p>
             </div>
           </div>}
@@ -1626,14 +1627,14 @@ function AccountsTable({ accounts, details, reports, activeKey, onSelect }: {
       </table>
     </div>
     <p className="panel-note">
-      The big number is <b>what will actually go out</b> — Trevra’s researched ceiling for that account today, after
-      its warm-up and whatever else is holding it back. Where your own setting is a different number it is named
-      underneath, so the two are never confused: you set 30, 18 goes out, and this is where you see both. Trevra’s
-      band wins whenever it is the lower of the two, unless you have said otherwise on that account.
-      {LIMIT_FIELDS.filter((limit) => limit.pooledKindsLabel).map((limit) => <span key={limit.field}>
-        {' '}{limit.column} is one ceiling shared by {limit.pooledKindsLabel}: a reply spends room a new message would
-        have used, which is exactly how the gate spends it.
-      </span>)}
+      <Hint label="What the big number means" trigger={<>What the big number means</>}>
+        It is <b>what will actually go out</b> — Trevra’s ceiling for that account today, after warm-up and anything
+        else holding it back. Where your own setting differs it is named underneath: you set 30, 18 goes out.
+        Trevra’s band wins whenever it is the lower of the two, unless you have said otherwise on that account.
+        {LIMIT_FIELDS.filter((limit) => limit.pooledKindsLabel).map((limit) => <span key={limit.field}>
+          {' '}{limit.column} is one ceiling shared by {limit.pooledKindsLabel}: a reply spends room a new message would.
+        </span>)}
+      </Hint>
     </p>
   </section>;
 }
