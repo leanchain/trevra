@@ -3,6 +3,17 @@
 # Defaults assume far more RAM than this host has: shared_buffers alone would
 # claim 128 MB and max_connections reserves work_mem per connection. These
 # values leave headroom for the OS and the page cache instead of relying on swap.
+#
+# max_connections=30, not 20: the container's own 320 MB cgroup cap
+# (`mem_limit` below) is the real ceiling, not host RAM, and at steady state
+# it was sitting at ~63 MB used -- comfortable room for the ~30 KB of shared
+# memory each extra connection slot costs, and for work_mem=2MB even if every
+# connection ran an active sort at once (30*2MB=60MB, still well under the
+# cap). App steady-state ceiling is api(DATABASE_POOL_MAX+AUTH_DATABASE_POOL_MAX)
+# + worker(DATABASE_POOL_MAX) = 5+3+5 = 13 (see .env.oracle.example), so 30
+# leaves 17 slots for pg_dump, the migration job, psql, and future growth --
+# the 20/13 pairing that shipped had only 7 to begin with and none of it
+# survived a rollout's transient container overlap.
 
 name: trevra-db
 
@@ -14,13 +25,19 @@ services:
       - -c
       - shared_buffers=64MB
       - -c
-      - max_connections=20
+      - max_connections=30
       - -c
       - work_mem=2MB
       - -c
       - maintenance_work_mem=32MB
       - -c
       - effective_cache_size=256MB
+      # A pooled client (Node's `pg` Pool included) that dies or hangs mid
+      # transaction otherwise holds its slot forever -- exactly the kind of
+      # leak "too many clients already" gets blamed on when the real cause
+      # was undersized ceilings. This reaps it instead of waiting for a human.
+      - -c
+      - idle_in_transaction_session_timeout=30000
     environment:
       POSTGRES_DB: trevra
       POSTGRES_USER: trevra

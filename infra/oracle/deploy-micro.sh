@@ -2,8 +2,15 @@
 # Deploys the split two-micro layout: Postgres on one instance, app + worker +
 # tunnel on the other. Both pull prebuilt images from ghcr.io; neither builds.
 #
-# Usage:  ./deploy-micro.sh <app-ip> <db-ip> <db-private-ip> [image-tag] [companion-version]
+# Usage:  ./deploy-micro.sh [app-ip] [db-ip] [db-private-ip] [image-tag] [companion-version]
 #         (terraform-micro prints the base command as `deploy_command`)
+#
+# Any IP left blank/omitted falls back to TREVRA_ORACLE_APP_IP /
+# TREVRA_ORACLE_DB_IP / TREVRA_ORACLE_DB_PRIVATE_IP, and the tag to
+# TREVRA_ORACLE_TAG (default `main`) -- so a maintainer who exports those
+# once (shell rc, not this tracked file: these boxes are one tenant's, and a
+# script every clone of this repo runs must not default to deploying to them)
+# can just run `./deploy-micro.sh` with no arguments.
 #
 # Each instance needs its own /opt/trevra/.env.oracle:
 #   db  -- TREVRA_DB_PASSWORD
@@ -11,14 +18,15 @@
 #          and matching TREVRA_DB_PASSWORD
 set -euo pipefail
 
-APP_IP="${1:-}"
-DB_IP="${2:-}"
-DB_PRIVATE_IP="${3:-}"
-TAG="${4:-main}"
+APP_IP="${1:-${TREVRA_ORACLE_APP_IP:-}}"
+DB_IP="${2:-${TREVRA_ORACLE_DB_IP:-}}"
+DB_PRIVATE_IP="${3:-${TREVRA_ORACLE_DB_PRIVATE_IP:-}}"
+TAG="${4:-${TREVRA_ORACLE_TAG:-main}}"
 COMPANION_VERSION="${5:-}"
 
 if [ -z "$APP_IP" ] || [ -z "$DB_IP" ] || [ -z "$DB_PRIVATE_IP" ]; then
-  echo "usage: $0 <app-ip> <db-ip> <db-private-ip> [image-tag] [companion-version]" >&2
+  echo "usage: $0 [app-ip] [db-ip] [db-private-ip] [image-tag] [companion-version]" >&2
+  echo "       or export TREVRA_ORACLE_APP_IP / TREVRA_ORACLE_DB_IP / TREVRA_ORACLE_DB_PRIVATE_IP" >&2
   exit 1
 fi
 if [ -n "$COMPANION_VERSION" ] && [[ ! "$COMPANION_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
