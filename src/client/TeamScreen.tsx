@@ -126,13 +126,12 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
     setAddError('');
     try {
       // Always a real invitation now -- no email joins instantly, existing
-      // Trevra account or not (design doc decision #3, superseded: see the
-      // doc comment on POST /api/team/members in app.ts). Same response
-      // shape either way, so the adder never learns whether this email
-      // already had an account.
+      // Trevra account or not. When transactional SMTP is configured, Better
+      // Auth emails the same invitation id automatically; the pending list
+      // keeps a copy-link fallback for delivery failures or manual sharing.
       await addTeamMember({ email: trimmed });
       setEmail('');
-      setToast(`Invitation filed for ${trimmed}. Copy its link below to send it -- they join once they accept it.`);
+      setToast(`Invitation created for ${trimmed}. Trevra will email it automatically when SMTP is configured.`);
       await loadInvitations();
     } catch (err) {
       setAddError(err instanceof ApiError || err instanceof Error ? err.message : 'Unable to add that teammate.');
@@ -173,7 +172,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
     const link = `${window.location.origin}/setup/team/${invitationId}`;
     try {
       await navigator.clipboard.writeText(link);
-      setToast('Invite link copied. There is no email delivery here -- send it yourself.');
+      setToast('Invite link copied. Use it as a fallback if email delivery is unavailable.');
     } catch {
       // No clipboard permission (or none in this browser): the toast becomes
       // the copy surface instead of a silent no-op.
@@ -248,7 +247,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
       <div className="section-heading">
         <div>
           <h3>Pending invitations</h3>
-          <p>No email is sent from here. Copy the link and send it yourself.</p>
+          <p>Invitations are emailed automatically when SMTP is configured. The link remains available as a fallback.</p>
         </div>
       </div>
 

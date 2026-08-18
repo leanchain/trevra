@@ -7,6 +7,9 @@ const nangoMock = vi.hoisted(() => ({
   listRecords: vi.fn(async () => ({ records: [] as Array<Record<string, unknown>>, next_cursor: null as string | null }))
 }));
 
+const notificationMock = vi.hoisted(() => ({ notifyIntegrationNeedsReauth: vi.fn(async () => undefined) }));
+vi.mock('./notifications.js', () => notificationMock);
+
 vi.mock('@nangohq/node', () => ({
   Nango: class {
     createConnectSession = nangoMock.createConnectSession;
@@ -47,6 +50,7 @@ afterEach(async () => {
   nangoMock.createConnectSession.mockClear();
   nangoMock.verifyIncomingWebhookRequest.mockClear();
   nangoMock.listRecords.mockClear();
+  notificationMock.notifyIntegrationNeedsReauth.mockClear();
   if (live) {
     for (const workspaceId of createdWorkspaces.splice(0)) {
       await live.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
@@ -386,5 +390,42 @@ describe('Nango sync tenancy', () => {
       .get<{ status: string; workspace_id: string | null }>('nango', JSON.parse(payload).id);
     expect(audit?.status).toBe('failed');
     expect(audit?.workspace_id).toBeNull();
+  });
+});
+
+
+describe('Nango authorization notifications', () => {
+  it('alerts once per transition into needs_reauth and alerts again after a successful reconnect', async () => {
+    const database = await openLiveDatabase();
+    process.env.NANGO_API_KEY = 'test-nango-key';
+    const tenant = await seedTenant(database, 'INV-AUTH-NOTIFY-1');
+    const providerConfigKey = 'trevra-gmail';
+    const connectionId = `gmail-${id('conn')}`;
+
+    const authEvent = (eventId: string, success: boolean) => JSON.stringify({
+      id: eventId,
+      type: 'auth',
+      success,
+      provider: 'gmail',
+      providerConfigKey,
+      connectionId,
+      error: success ? undefined : 'Authorization expired',
+      tags: { organization_id: tenant.workspaceId, end_user_email: 'owner@example.test' }
+    });
+
+    expect(await handleNangoWebhook(database, authEvent(`evt-${id('reauth')}`, false), {}))
+      .toEqual({ duplicate: false, processed: 'connection-needs-reauth' });
+    expect(notificationMock.notifyIntegrationNeedsReauth).toHaveBeenCalledTimes(1);
+
+    expect(await handleNangoWebhook(database, authEvent(`evt-${id('reauth')}`, false), {}))
+      .toEqual({ duplicate: false, processed: 'connection-needs-reauth' });
+    expect(notificationMock.notifyIntegrationNeedsReauth).toHaveBeenCalledTimes(1);
+
+    expect(await handleNangoWebhook(database, authEvent(`evt-${id('reauth')}`, true), {}))
+      .toEqual({ duplicate: false, processed: 'connection-upserted' });
+
+    expect(await handleNangoWebhook(database, authEvent(`evt-${id('reauth')}`, false), {}))
+      .toEqual({ duplicate: false, processed: 'connection-needs-reauth' });
+    expect(notificationMock.notifyIntegrationNeedsReauth).toHaveBeenCalledTimes(2);
   });
 });

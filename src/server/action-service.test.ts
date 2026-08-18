@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const notificationMock = vi.hoisted(() => ({ notifyActionFailure: vi.fn(async () => undefined) }));
+vi.mock('./notifications.js', () => notificationMock);
 import { id, openDatabase, type Db } from './db.js';
 import { approveAction, executeAction } from './action-service.js';
 
@@ -18,6 +21,7 @@ let db: Db | undefined;
 const createdWorkspaces: string[] = [];
 
 afterEach(async () => {
+  notificationMock.notifyActionFailure.mockClear();
   if (db) {
     for (const workspaceId of createdWorkspaces.splice(0)) {
       await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
@@ -104,5 +108,34 @@ describe('workspace attribution on approvals', () => {
 
     await expect(executeAction(database, owner.workspaceId, owner.actionId))
       .rejects.toThrow('Approved payload no longer matches action payload');
+  });
+});
+
+
+describe('action failure notification', () => {
+  it('alerts once on the first failed execution and does not spam on a retry of the same action', async () => {
+    const database = await openTestDb();
+    const tenant = await seedTenant(database, 'Failure notification tenant');
+
+    await approveAction(database, tenant.workspaceId, tenant.userId, tenant.actionId, {
+      recipient: 'billing@example.test', subject: 'Friendly reminder', body: 'The invoice is overdue.'
+    });
+    await expect(executeAction(database, tenant.workspaceId, tenant.actionId))
+      .rejects.toThrow('Connect Gmail or Microsoft 365 before executing this action');
+
+    expect(notificationMock.notifyActionFailure).toHaveBeenCalledTimes(1);
+    expect(notificationMock.notifyActionFailure).toHaveBeenCalledWith(database, expect.objectContaining({
+      workspaceId: tenant.workspaceId,
+      actionType: 'email_draft',
+      recipient: 'billing@example.test'
+    }));
+
+    await approveAction(database, tenant.workspaceId, tenant.userId, tenant.actionId, {
+      recipient: 'billing@example.test', subject: 'Friendly reminder', body: 'The invoice is overdue.'
+    });
+    await expect(executeAction(database, tenant.workspaceId, tenant.actionId))
+      .rejects.toThrow('Connect Gmail or Microsoft 365 before executing this action');
+
+    expect(notificationMock.notifyActionFailure).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,4 +1,16 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+
+const emailMock = vi.hoisted(() => ({
+  sendOrganizationInvitationEmail: vi.fn(async () => undefined),
+  sendInvitationAcceptedEmail: vi.fn(async () => undefined),
+  sendWorkspaceAccessRemovedEmail: vi.fn(async () => undefined)
+}));
+vi.mock('./email.js', () => ({
+  smtpConfigured: () => true,
+  sendOrganizationInvitationEmail: emailMock.sendOrganizationInvitationEmail,
+  sendInvitationAcceptedEmail: emailMock.sendInvitationAcceptedEmail,
+  sendWorkspaceAccessRemovedEmail: emailMock.sendWorkspaceAccessRemovedEmail
+}));
 import request from 'supertest';
 import type { Express } from 'express';
 import { randomBytes } from 'node:crypto';
@@ -28,6 +40,9 @@ let db: Db | undefined;
 beforeAll(async () => migrateAuthDatabase());
 afterAll(async () => closeAuthDatabase());
 afterEach(async () => {
+  emailMock.sendOrganizationInvitationEmail.mockClear();
+  emailMock.sendInvitationAcceptedEmail.mockClear();
+  emailMock.sendWorkspaceAccessRemovedEmail.mockClear();
   await db?.close();
   db = undefined;
 });
@@ -167,6 +182,11 @@ describe('POST /api/team/members (add teammate: always a real invitation, must b
     const memberRow = await database.prepare('SELECT role FROM member WHERE "organizationId"=? AND "userId"=(SELECT id FROM "user" WHERE lower(email)=?)')
       .get<{ role: string }>(ownerAuth.workspaceId, teammate.email.toLowerCase());
     expect(memberRow?.role).toBe('member');
+    expect(emailMock.sendInvitationAcceptedEmail).toHaveBeenCalledWith(expect.objectContaining({
+      to: owner.email,
+      memberEmail: teammate.email,
+      role: 'member'
+    }));
   });
 
   it('is owner-only: a member operating in this workspace cannot add teammates to it', async () => {
@@ -277,6 +297,10 @@ describe('active-workspace resolution', () => {
     expect((await currentAuth(member.agent)).workspaceId).toBe(ownerAuth.workspaceId);
 
     await owner.agent.post('/api/auth/organization/remove-member').send({ memberIdOrEmail: member.email, organizationId: ownerAuth.workspaceId }).expect(200);
+    expect(emailMock.sendWorkspaceAccessRemovedEmail).toHaveBeenCalledWith(expect.objectContaining({
+      to: member.email,
+      organizationName: expect.any(String)
+    }));
 
     const afterRemoval = await member.agent.get('/api/auth/session');
     expect(afterRemoval.status).toBe(200);
