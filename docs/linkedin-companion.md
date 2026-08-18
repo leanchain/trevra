@@ -1,6 +1,6 @@
 # LinkedIn companion
 
-The LinkedIn companion is the recommended execution path for hosted Trevra when the member is willing to keep their computer and Trevra open while outreach runs.
+The LinkedIn companion is the recommended execution path for hosted Trevra when the member is willing to keep their computer on while outreach runs.
 
 The hosted platform owns campaigns, due work, pacing, safety decisions, leases and the ledger. A tiny local CLI owns one thing: the dedicated Chrome process that is signed into LinkedIn. Normal background-service work runs headless; the same profile is opened visibly only for first sign-in or human-required recovery/debugging. LinkedIn therefore sees the member's own computer and normal network/IP rather than an Oracle or cloud-browser address.
 
@@ -16,7 +16,7 @@ The hosted platform owns campaigns, due work, pacing, safety decisions, leases a
 
 4. Trevra pairs the computer, installs a private per-user companion package and registers the operating system's background service. Chrome opens with a Trevra-specific persistent profile; sign into LinkedIn there if it is not already signed in.
 5. In Trevra choose **Check this account on LinkedIn**. Trevra verifies which LinkedIn account the local browser is using and records the seat identity.
-6. Keep a signed-in Trevra tab open while LinkedIn work should be eligible. The companion itself runs in the background; no terminal has to remain open.
+6. The companion runs independently once paired: it works in the background as long as the paired computer is on, whether or not any Trevra tab is open. No terminal has to remain open.
 
 The background companion also auto-updates on reconnect. Hosted Trevra advertises the required version before it offers any browser relay work. A newer version is installed from Trevra's official versioned GitHub release asset and the OS service restarts; pairing and the local Chrome profile are preserved. If an update cannot be installed, the existing working version stays in place and the failure is written to the local companion log.
 
@@ -41,12 +41,9 @@ No LinkedIn password has to be stored in hosted Trevra for this path. The persis
 
 ## Presence and backlog semantics
 
-A companion workspace is eligible only while **both** of these leases are fresh:
+A companion workspace is eligible only while the paired background companion/WebSocket is online.
 
-- the paired background companion/WebSocket is online;
-- a signed-in Trevra website tab is refreshing the website-presence lease.
-
-Closing the laptop, stopping the background companion or closing every Trevra tab therefore stops new LinkedIn work without rewriting campaign state.
+Closing the laptop or stopping the background companion therefore stops new LinkedIn work without rewriting campaign state. Trevra's web app is a status/config UI only -- closing every Trevra tab has no effect on whether background work runs.
 
 Coming back online does **not** replay scheduler ticks that happened while the computer was away. Timer opportunities are not obligations. Trevra performs one ordinary bounded sitting using the same action budget, visit marker, working hours and rest windows as every other LinkedIn run, then returns to the normal cadence. Business work that is still relevant remains due and is reconsidered on later normal sittings.
 
@@ -107,10 +104,9 @@ Browser-session routes remain ordinary authenticated LinkedIn routes. Companion 
 
 ```text
 POST   /api/linkedin/companion/exchange       one-time CLI pairing exchange
-GET    /api/linkedin/companion                devices + website presence
+GET    /api/linkedin/companion                devices + attention state
 POST   /api/linkedin/companion/pair           owner-only pairing code
 DELETE /api/linkedin/companion/devices/:id    owner-only revoke
-POST   /api/linkedin/companion/presence       signed-in website heartbeat
 ```
 
 WebSockets:

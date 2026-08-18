@@ -10,7 +10,6 @@ export const MAINTENANCE_TASK_LABELS = {
 
 export const QUEUE_WAIT_COPY: Record<LinkedInQueueWaitReason, string> = {
   computer: 'Waiting for your paired computer',
-  trevra_tab: 'Waiting for an open, signed-in Trevra tab',
   account_paused: 'Waiting for this LinkedIn account to be resumed',
   account_cooldown: 'Waiting for this LinkedIn account to leave cooldown',
   worker: 'Waiting for LinkedIn execution to be available'

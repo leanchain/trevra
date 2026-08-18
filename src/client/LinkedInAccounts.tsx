@@ -32,7 +32,6 @@ import {
   getLinkedInSeat,
   getLinkedInWorkerStatus,
   loginLinkedInSeat,
-  markLinkedInCompanionPresence,
   pauseLinkedInSeat,
   resumeLinkedInSeat,
   revokeLinkedInCompanionDevice,
@@ -541,7 +540,8 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
   }, [load]);
   useOutreachRefresh(load);
 
-  if (!status?.attention.length) return null;
+  const noDeviceOnline = Boolean(status) && (status!.devices.length === 0 || !status!.devices.some((device) => device.online));
+  if (!status?.attention.length && !noDeviceOnline) return null;
 
   const copy = async (command: string) => {
     try {
@@ -552,32 +552,66 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
     }
   };
 
-  return <section className="page-panel li-companion-attention" role="alert" aria-live="polite">
-    <div className="section-heading">
-      <div>
-        <h3 aria-level={2}><CircleAlert size={17} /> LinkedIn needs your attention</h3>
-        <p>Background work is held for the affected account until its local LinkedIn session is healthy again.</p>
+  const offlineDevice = status && status.devices.length > 0 ? status.devices.find((device) => !device.online) ?? null : null;
+
+  return <>
+    {/* Nothing at all can run LinkedIn work right now -- a different, more
+        fundamental problem than a single account needing a human (below).
+        Kept visually heavier (danger vs. warning) so the two are never
+        confused at a glance. */}
+    {noDeviceOnline && <section className="page-panel li-companion-attention li-companion-offline" role="alert" aria-live="polite">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}><Laptop size={17} /> No computer connected for LinkedIn</h3>
+          {status!.devices.length === 0
+            ? <p>Background LinkedIn work is paused. Connect a computer from the Accounts panel below to start it.</p>
+            : <p>Background LinkedIn work is paused because the paired computer is offline.</p>}
+        </div>
       </div>
-    </div>
-    <div className="li-companion-attention-list">
-      {status.attention.map((item) => {
-        const command = item.seatKey === OWNER_ACCOUNT_KEY
-          ? 'trevra linkedin reconnect'
-          : `trevra linkedin reconnect --seat ${item.seatKey}`;
-        return <div className="li-companion-attention-row" key={item.seatKey}>
+      <div className="li-companion-attention-list">
+        <div className="li-companion-attention-row">
           <div>
-            <strong>{item.label}</strong>
-            <p>{item.message}</p>
-            <small>Raised {relativeTime(item.since)}. Complete the LinkedIn check in the visible Trevra Chrome window, then close that window; the background service resumes automatically.</small>
+            {status!.devices.length === 0
+              ? <>
+                <strong>No computer has ever been paired</strong>
+                <p>Connect a computer from the Accounts panel below to run LinkedIn work in the background.</p>
+              </>
+              : <>
+                <strong>{offlineDevice?.label ?? 'Paired computer'} is offline</strong>
+                <p>{offlineDevice?.lastSeenAt ? <>Not seen since {relativeTime(offlineDevice.lastSeenAt)}.</> : 'Never connected.'} LinkedIn work is paused until it is back online.</p>
+              </>}
           </div>
-          <div className="li-companion-reconnect-command">
-            <code>{command}</code>
-            <button className="secondary-button" type="button" onClick={() => void copy(command)}><Copy size={14} /> Copy</button>
-          </div>
-        </div>;
-      })}
-    </div>
-  </section>;
+        </div>
+      </div>
+    </section>}
+
+    {status?.attention.length ? <section className="page-panel li-companion-attention" role="alert" aria-live="polite">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}><CircleAlert size={17} /> LinkedIn needs your attention</h3>
+          <p>Background work is held for the affected account until its local LinkedIn session is healthy again.</p>
+        </div>
+      </div>
+      <div className="li-companion-attention-list">
+        {status.attention.map((item) => {
+          const command = item.seatKey === OWNER_ACCOUNT_KEY
+            ? 'trevra linkedin reconnect'
+            : `trevra linkedin reconnect --seat ${item.seatKey}`;
+          return <div className="li-companion-attention-row" key={item.seatKey}>
+            <div>
+              <strong>{item.label}</strong>
+              <p>{item.message}</p>
+              <small>Raised {relativeTime(item.since)}. Complete the LinkedIn check in the visible Trevra Chrome window, then close that window; the background service resumes automatically.</small>
+            </div>
+            <div className="li-companion-reconnect-command">
+              <code>{command}</code>
+              <button className="secondary-button" type="button" onClick={() => void copy(command)}><Copy size={14} /> Copy</button>
+            </div>
+          </div>;
+        })}
+      </div>
+    </section> : null}
+  </>;
 }
 
 /* -------------------------------------------------------------------------
@@ -597,15 +631,9 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
       setStatus(next);
       setError('');
       if (next.devices.length > 0) {
-        // Only the workspace owner can turn browser presence into executable
-        // LinkedIn presence. Members can see which computer is online without
-        // being able to start it indirectly by keeping this screen open.
-        if (next.canManage) {
-          void markLinkedInCompanionPresence().catch(() => undefined);
-          if (!hadDevice.current) {
-            hadDevice.current = true;
-            window.dispatchEvent(new Event('trevra:linkedin-companion-changed'));
-          }
+        if (!hadDevice.current) {
+          hadDevice.current = true;
+          window.dispatchEvent(new Event('trevra:linkedin-companion-changed'));
         }
       } else {
         hadDevice.current = false;
@@ -676,9 +704,6 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
         <i className={`li-acct-dot ${online ? 'li-acct-dot-ok' : 'li-acct-dot-off'}`} aria-hidden="true" />
         {online ? `${online.label} online` : 'No paired computer online'}
       </span>
-      {status?.devices.length ? <span className="li-hint">
-        {status.websitePresent ? 'This Trevra tab is keeping LinkedIn work active.' : 'Keep this Trevra tab open to allow a cycle.'}
-      </span> : null}
     </div>
 
     {status && status.devices.length > 0
@@ -711,8 +736,8 @@ function CompanionPanel({ setToast }: { setToast: (message: string) => void }) {
 
     <p className="panel-note">
       <Hint label="How background mode works" trigger={<>How background mode works</>}>
-        Starts at login and survives crashes — no terminal to keep open. Runs in background Chrome; keep one Trevra
-        tab signed in, or no new LinkedIn cycle is claimed. A sign-in prompt, CAPTCHA, 2FA or device check pauses
+        Starts at login and survives crashes — no terminal to keep open. Runs in background Chrome — no Trevra tab
+        needs to stay open. A sign-in prompt, CAPTCHA, 2FA or device check pauses
         work and shows a reconnect alert — its command opens the profile visibly for that one step, then background
         mode resumes. Coming back online runs one bounded state catch-up, then returns to the normal schedule — missed ticks are never replayed.
       </Hint>

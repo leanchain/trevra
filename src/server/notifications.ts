@@ -1,6 +1,8 @@
 import type { Db } from './db.js';
 import {
   sendActionFailureEmail,
+  sendCompanionDeviceDisconnectedEmail,
+  sendCompanionDeviceReconnectedEmail,
   sendIntegrationNeedsReauthEmail,
   smtpConfigured
 } from './email.js';
@@ -85,6 +87,40 @@ export async function notifyActionFailure(db: Db, input: {
     provider: input.provider,
     reason,
     reviewUrl
+  }));
+}
+
+export async function notifyCompanionDeviceDisconnected(db: Db, input: {
+  workspaceId: string;
+  deviceLabel: string;
+  lastSeenAt: string;
+}): Promise<void> {
+  if (!smtpConfigured()) return;
+  const owners = await workspaceOwners(db, input.workspaceId);
+  if (owners.length === 0) return;
+  const name = await workspaceName(db, input.workspaceId);
+  const reviewUrl = `${appBaseUrl()}/outreach`;
+  await deliverOwners(owners, (owner) => sendCompanionDeviceDisconnectedEmail({
+    to: owner.email,
+    workspaceName: name,
+    deviceLabel: input.deviceLabel,
+    lastSeenAt: input.lastSeenAt,
+    reviewUrl
+  }));
+}
+
+export async function notifyCompanionDeviceReconnected(db: Db, input: {
+  workspaceId: string;
+  deviceLabel: string;
+}): Promise<void> {
+  if (!smtpConfigured()) return;
+  const owners = await workspaceOwners(db, input.workspaceId);
+  if (owners.length === 0) return;
+  const name = await workspaceName(db, input.workspaceId);
+  await deliverOwners(owners, (owner) => sendCompanionDeviceReconnectedEmail({
+    to: owner.email,
+    workspaceName: name,
+    deviceLabel: input.deviceLabel
   }));
 }
 

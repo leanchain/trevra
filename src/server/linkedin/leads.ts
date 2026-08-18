@@ -169,7 +169,7 @@ export const LEAD_SOURCE_KINDS = ['search', 'post', 'sales_navigator', 'content'
 export type LeadSourceStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 /** A small wire vocabulary shared by queue rows and account status. */
-export type LinkedInQueueWaitReason = 'computer' | 'trevra_tab' | 'account_paused' | 'account_cooldown' | 'worker';
+export type LinkedInQueueWaitReason = 'computer' | 'account_paused' | 'account_cooldown' | 'worker';
 
 export interface LinkedInLeadSource {
   id: string;

@@ -16,7 +16,7 @@ import {
   revokeHostedExecutionAck
 } from './hosted-execution.js';
 import { claimSeatLease, isRemoteSessionHome, remoteSessionHome, seatSessionHome } from './local-worker.js';
-import { authenticateCompanionToken, createCompanionPairing, exchangeCompanionPairing, markCompanionWebsitePresence } from './companion.js';
+import { authenticateCompanionToken, createCompanionPairing, exchangeCompanionPairing } from './companion.js';
 
 /**
  * WHEN TREVRA'S OWN SERVERS MAY ACT ON SOMEBODY'S LINKEDIN ACCOUNT.
@@ -69,7 +69,6 @@ beforeEach(async () => {
       .run(id, 'Hosted execution test', NOW.toISOString());
     await db.prepare('DELETE FROM linkedin_hosted_execution_ack WHERE workspace_id=?').run(id);
     await db.prepare('DELETE FROM linkedin_seat_leases WHERE workspace_id=?').run(id);
-    await db.prepare('DELETE FROM linkedin_companion_presence WHERE workspace_id=?').run(id);
     await db.prepare('DELETE FROM linkedin_companion_devices WHERE workspace_id=?').run(id);
     await db.prepare('DELETE FROM linkedin_companion_pairings WHERE workspace_id=?').run(id);
   }
@@ -107,7 +106,7 @@ describe('the hosted execution gate', () => {
     expect(await filter!({ workspaceId: OTHER_WORKSPACE_ID })).toBe(true);
   });
 
-  it('gates the paired-computer runner on live computer + website presence instead of cloud consent', async () => {
+  it('gates the paired-computer runner on live computer presence instead of cloud consent', async () => {
     const filter = hostedSeatFilter(db, HOSTED_WITH_COMPANION);
     expect(filter).not.toBeNull();
     expect(await filter!({ workspaceId: WORKSPACE_ID })).toBe(false);
@@ -116,7 +115,6 @@ describe('the hosted execution gate', () => {
     const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_1', now: liveNow });
     const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: liveNow });
     await authenticateCompanionToken(db, paired.token, liveNow);
-    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_1', liveNow);
 
     // Rebuild the filter: it intentionally memoises one tick, so a workspace
     // coming online is picked up on the next worker tick rather than changing a

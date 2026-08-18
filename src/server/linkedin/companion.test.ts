@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const notificationMock = vi.hoisted(() => ({
+  notifyCompanionDeviceDisconnected: vi.fn(async () => undefined),
+  notifyCompanionDeviceReconnected: vi.fn(async () => undefined)
+}));
+vi.mock('../notifications.js', () => notificationMock);
+
 import { openDatabase, type Db } from '../db.js';
 import { recordSeatEvent } from './seat-events.js';
 import { upsertSeat } from './seats.js';
@@ -9,8 +16,8 @@ import {
   sideTaskRuns
 } from './side-tasks.js';
 import {
+  COMPANION_DEVICE_DISCONNECT_GRACE_MS,
   COMPANION_DEVICE_ONLINE_MS,
-  COMPANION_WEB_PRESENCE_MS,
   authenticateCompanionToken,
   companionBrowserConfigured,
   companionBrowserSettings,
@@ -18,7 +25,7 @@ import {
   createCompanionPairing,
   exchangeCompanionPairing,
   listCompanionStatus,
-  markCompanionWebsitePresence,
+  notifyDisconnectedCompanionDevices,
   revokeCompanionDevice
 } from './companion.js';
 
@@ -35,11 +42,12 @@ beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
     .run(WORKSPACE_ID, 'Companion test', NOW.toISOString());
-  await db.prepare('DELETE FROM linkedin_companion_presence WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_companion_devices WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_companion_pairings WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_side_task_runs WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
+  notificationMock.notifyCompanionDeviceDisconnected.mockClear();
+  notificationMock.notifyCompanionDeviceReconnected.mockClear();
 });
 
 afterEach(async () => {
@@ -120,23 +128,20 @@ describe('LinkedIn companion pairing and presence', () => {
     expect(active?.total).toBe(1);
   });
 
-  it('requires both the computer and an open Trevra website lease before work is eligible', async () => {
+  it('requires the paired computer to be online before work is eligible', async () => {
     const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
     const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });
 
-    expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(false);
-    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', NOW);
     // Pairing alone is not presence. The device becomes online only when its
     // bearer token actually authenticates a control connection.
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(false);
     await authenticateCompanionToken(db, paired.token, NOW);
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(true);
 
-    // Website leases age out even if the laptop is still considered recently online.
-    expect(await companionWorkspaceReady(db, WORKSPACE_ID, new Date(NOW.getTime() + 151_000))).toBe(false);
+    // Readiness ages out once the device heartbeat goes stale.
+    expect(await companionWorkspaceReady(db, WORKSPACE_ID, new Date(NOW.getTime() + COMPANION_DEVICE_ONLINE_MS + 1))).toBe(false);
 
     const status = await listCompanionStatus(db, WORKSPACE_ID, NOW);
-    expect(status.websitePresent).toBe(true);
     expect(status.devices).toEqual([expect.objectContaining({ id: paired.deviceId, online: true, label: 'Laptop' })]);
   });
 
@@ -157,24 +162,6 @@ describe('LinkedIn companion pairing and presence', () => {
 
     const returned = new Date(heartbeat.getTime() + COMPANION_DEVICE_ONLINE_MS + 1);
     await authenticateCompanionToken(db, paired.token, returned);
-    runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
-    expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(returned.getTime());
-  });
-
-  it('marks one catch-up opportunity when the Trevra tab returns after its presence lease expired', async () => {
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, NOW);
-    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', NOW);
-    let runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
-    expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(NOW.getTime());
-
-    await markSideTaskRun(db, WORKSPACE_ID, 'owner', AVAILABILITY_CATCHUP_MARKER, new Date(NOW.getTime() + 1));
-    const heartbeat = new Date(NOW.getTime() + 30_000);
-    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', heartbeat);
-    runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
-    expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(NOW.getTime());
-
-    const returned = new Date(heartbeat.getTime() + COMPANION_WEB_PRESENCE_MS + 1);
-    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', returned);
     runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
     expect(runs.get(AVAILABILITY_RETURN_MARKER)?.getTime()).toBe(returned.getTime());
   });
@@ -207,13 +194,94 @@ describe('LinkedIn companion pairing and presence', () => {
   it('revocation invalidates the device token and immediately removes readiness', async () => {
     const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
     const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });
-    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', NOW);
     await authenticateCompanionToken(db, paired.token, NOW);
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(true);
 
     expect(await revokeCompanionDevice(db, WORKSPACE_ID, paired.deviceId, NOW)).toBe(true);
     expect(await authenticateCompanionToken(db, paired.token, NOW)).toBeNull();
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(false);
+  });
+});
+
+describe('LinkedIn companion disconnect/reconnect notifications', () => {
+  async function pairedDevice(label = 'Laptop') {
+    const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
+    return exchangeCompanionPairing(db, { code: pairing.code, label, now: NOW });
+  }
+
+  async function setLastSeen(deviceId: string, at: Date): Promise<void> {
+    await db.prepare('UPDATE linkedin_companion_devices SET last_seen_at=? WHERE id=?').run(at.toISOString(), deviceId);
+  }
+
+  async function disconnectNotifiedAt(deviceId: string): Promise<string | null> {
+    const row = await db.prepare('SELECT disconnect_notified_at FROM linkedin_companion_devices WHERE id=?')
+      .get<{ disconnect_notified_at: string | null }>(deviceId);
+    return row?.disconnect_notified_at ?? null;
+  }
+
+  it('sends no disconnect email before the grace period elapses', async () => {
+    const paired = await pairedDevice();
+    await setLastSeen(paired.deviceId, NOW);
+
+    await notifyDisconnectedCompanionDevices(db, new Date(NOW.getTime() + COMPANION_DEVICE_DISCONNECT_GRACE_MS - 1));
+    expect(notificationMock.notifyCompanionDeviceDisconnected).not.toHaveBeenCalled();
+    expect(await disconnectNotifiedAt(paired.deviceId)).toBeNull();
+  });
+
+  it('sends exactly one disconnect email once the device is stale past the grace period', async () => {
+    const paired = await pairedDevice('Office desktop');
+    await setLastSeen(paired.deviceId, NOW);
+
+    const scanAt = new Date(NOW.getTime() + COMPANION_DEVICE_DISCONNECT_GRACE_MS + 1);
+    await notifyDisconnectedCompanionDevices(db, scanAt);
+    expect(notificationMock.notifyCompanionDeviceDisconnected).toHaveBeenCalledTimes(1);
+    expect(notificationMock.notifyCompanionDeviceDisconnected).toHaveBeenCalledWith(db, expect.objectContaining({
+      workspaceId: WORKSPACE_ID,
+      deviceLabel: 'Office desktop'
+    }));
+    expect(await disconnectNotifiedAt(paired.deviceId)).not.toBeNull();
+  });
+
+  it('does not send a duplicate disconnect email on a later scan before the device reconnects', async () => {
+    const paired = await pairedDevice();
+    await setLastSeen(paired.deviceId, NOW);
+
+    const firstScan = new Date(NOW.getTime() + COMPANION_DEVICE_DISCONNECT_GRACE_MS + 1);
+    await notifyDisconnectedCompanionDevices(db, firstScan);
+    await notifyDisconnectedCompanionDevices(db, new Date(firstScan.getTime() + 60_000));
+    expect(notificationMock.notifyCompanionDeviceDisconnected).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears disconnect_notified_at and sends a reconnect email only after a real disconnect email went out', async () => {
+    const paired = await pairedDevice();
+    await setLastSeen(paired.deviceId, NOW);
+
+    const scanAt = new Date(NOW.getTime() + COMPANION_DEVICE_DISCONNECT_GRACE_MS + 1);
+    await notifyDisconnectedCompanionDevices(db, scanAt);
+    expect(await disconnectNotifiedAt(paired.deviceId)).not.toBeNull();
+
+    const returned = new Date(scanAt.getTime() + 60_000);
+    await authenticateCompanionToken(db, paired.token, returned);
+    expect(notificationMock.notifyCompanionDeviceReconnected).toHaveBeenCalledTimes(1);
+    expect(notificationMock.notifyCompanionDeviceReconnected).toHaveBeenCalledWith(db, expect.objectContaining({
+      workspaceId: WORKSPACE_ID,
+      deviceLabel: paired.label
+    }));
+    expect(await disconnectNotifiedAt(paired.deviceId)).toBeNull();
+  });
+
+  it('a sub-grace blip triggers neither a disconnect nor a reconnect email', async () => {
+    const paired = await pairedDevice();
+    await setLastSeen(paired.deviceId, NOW);
+
+    // Scan mid-blip, still under the 10-minute grace period.
+    await notifyDisconnectedCompanionDevices(db, new Date(NOW.getTime() + 3 * 60_000));
+    expect(notificationMock.notifyCompanionDeviceDisconnected).not.toHaveBeenCalled();
+
+    // The device heartbeats again before a disconnect email was ever sent.
+    await authenticateCompanionToken(db, paired.token, new Date(NOW.getTime() + 3 * 60_000 + 1_000));
+    expect(notificationMock.notifyCompanionDeviceReconnected).not.toHaveBeenCalled();
+    expect(await disconnectNotifiedAt(paired.deviceId)).toBeNull();
   });
 });
 

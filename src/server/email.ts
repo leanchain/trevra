@@ -189,6 +189,48 @@ export async function sendActionFailureEmail(input: {
   await sendTransactionalEmail({ to: input.to, subject, text, html });
 }
 
+export async function sendCompanionDeviceDisconnectedEmail(input: {
+  to: string;
+  workspaceName: string;
+  deviceLabel: string;
+  lastSeenAt: string;
+  reviewUrl: string;
+}): Promise<void> {
+  const subject = 'Your paired LinkedIn computer disconnected';
+  const lastSeen = `${new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(input.lastSeenAt))} UTC`;
+  const text = [
+    `${input.workspaceName}'s paired computer "${input.deviceLabel}" has not been seen since ${lastSeen}.`,
+    '',
+    'LinkedIn work is paused for this workspace until it reconnects. Make sure the computer is powered on, online, and the Trevra companion is still running.',
+    '',
+    `Review in Trevra: ${input.reviewUrl}`
+  ].join('\n');
+  const html = `
+    <p><strong>${escapeHtml(input.deviceLabel)}</strong>, the computer paired to run LinkedIn for <strong>${escapeHtml(input.workspaceName)}</strong>, has not been seen since ${escapeHtml(lastSeen)}.</p>
+    <p>LinkedIn work is paused for this workspace until it reconnects. Make sure the computer is powered on, online, and the Trevra companion is still running.</p>
+    <p><a href="${escapeHtml(input.reviewUrl)}">Review in Trevra</a></p>
+  `.trim();
+  await sendTransactionalEmail({ to: input.to, subject, text, html });
+}
+
+export async function sendCompanionDeviceReconnectedEmail(input: {
+  to: string;
+  workspaceName: string;
+  deviceLabel: string;
+}): Promise<void> {
+  const subject = 'Your paired LinkedIn computer reconnected';
+  const text = [
+    `${input.deviceLabel} is back online for ${input.workspaceName}.`,
+    '',
+    'LinkedIn work has resumed. No action is needed.'
+  ].join('\n');
+  const html = `
+    <p><strong>${escapeHtml(input.deviceLabel)}</strong> is back online for <strong>${escapeHtml(input.workspaceName)}</strong>.</p>
+    <p>LinkedIn work has resumed. No action is needed.</p>
+  `.trim();
+  await sendTransactionalEmail({ to: input.to, subject, text, html });
+}
+
 export async function sendIntegrationNeedsReauthEmail(input: {
   to: string;
   workspaceName: string;

@@ -307,8 +307,8 @@ export function hostedSeatFilter(
     const cached = decided.get(seat.workspaceId);
     if (cached !== undefined) return cached;
     // Cloud execution is consent-gated. Companion execution is presence-gated:
-    // it may run only while both the paired laptop and a signed-in Trevra tab
-    // are alive. Those are deliberately different permissions.
+    // it may run only while the paired computer is online. Those are
+    // deliberately different permissions.
     const allowed = worker.companionBrowser && !mode.remoteBrowser
       ? await companionWorkspaceReady(db, seat.workspaceId)
       : (await hostedExecutionGate(db, seat.workspaceId, env)).allowed;

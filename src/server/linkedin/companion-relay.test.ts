@@ -5,8 +5,7 @@ import { openDatabase, type Db } from '../db.js';
 import {
   companionRelaySecret,
   createCompanionPairing,
-  exchangeCompanionPairing,
-  markCompanionWebsitePresence
+  exchangeCompanionPairing
 } from './companion.js';
 import { installLinkedInCompanionRelay } from './companion-relay.js';
 import { COMPANION_RELEASE_VERSION } from './companion-release.js';
@@ -40,7 +39,6 @@ beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
     .run(WORKSPACE_ID, 'Relay test', NOW.toISOString());
-  await db.prepare('DELETE FROM linkedin_companion_presence WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_companion_devices WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_companion_pairings WHERE workspace_id=?').run(WORKSPACE_ID);
 
@@ -75,10 +73,9 @@ describe('LinkedIn companion reverse CDP relay', () => {
     expect(hello).toMatchObject({ type: 'hello', workspaceId: WORKSPACE_ID, companionVersion: COMPANION_RELEASE_VERSION });
   });
 
-  it('bridges raw browser frames only after a paired laptop and website presence are both active', async () => {
+  it('bridges raw browser frames only after a paired laptop is online', async () => {
     const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
     const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });
-    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', NOW);
 
     const control = await openSocket(`${base}/api/linkedin/companion/socket`, paired.token);
 
@@ -106,7 +103,6 @@ describe('LinkedIn companion reverse CDP relay', () => {
   it('keeps only one live control socket for a workspace, even when the same device starts twice', async () => {
     const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
     const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });
-    await markCompanionWebsitePresence(db, WORKSPACE_ID, 'usr_owner', NOW);
 
     const first = await openSocket(`${base}/api/linkedin/companion/socket`, paired.token);
     const firstClosed = new Promise<number>((resolve) => first.once('close', (code) => resolve(code)));
@@ -120,11 +116,7 @@ describe('LinkedIn companion reverse CDP relay', () => {
     browser.close();
   });
 
-  it('refuses the worker browser socket when no Trevra website lease is alive', async () => {
-    const pairing = await createCompanionPairing(db, { workspaceId: WORKSPACE_ID, actorUserId: 'usr_owner', now: NOW });
-    const paired = await exchangeCompanionPairing(db, { code: pairing.code, label: 'Laptop', now: NOW });
-    await openSocket(`${base}/api/linkedin/companion/socket`, paired.token);
-
+  it('refuses the worker browser socket when no companion device is online', async () => {
     const token = companionRelaySecret();
     await expect(openSocket(`${base}/api/linkedin/companion/browser/${WORKSPACE_ID}/owner`, token!))
       .rejects.toThrow(/503/);

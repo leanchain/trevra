@@ -42,7 +42,6 @@ beforeEach(async () => {
   previousKey = process.env.TREVRA_SECRETS_KEY;
   process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
-  await db.prepare('DELETE FROM linkedin_companion_presence WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_companion_devices WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_companion_pairings WHERE workspace_id=?').run(WORKSPACE_ID);
   session = await seedSession();
@@ -75,10 +74,6 @@ describe('LinkedIn companion HTTP journey', () => {
     expect(status.body.devices).toEqual([
       expect.objectContaining({ id: exchange.body.deviceId, label: 'Pankaj laptop', online: false })
     ]);
-
-    await authed().post('/api/linkedin/companion/presence').send({}).expect(200, { active: true });
-    const present = await authed().get('/api/linkedin/companion').expect(200);
-    expect(present.body.websitePresent).toBe(true);
 
     await authed().delete(`/api/linkedin/companion/devices/${exchange.body.deviceId}`).expect(200, { revoked: true });
     const after = await authed().get('/api/linkedin/companion').expect(200);

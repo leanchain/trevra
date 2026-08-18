@@ -948,7 +948,7 @@ export interface LinkedInLimitsReport {
  * `seat.detectedAt` is when the profile was last read out of the logged-in
  * session. Both come off `LinkedInSeat`, which owns them.
  */
-export type LinkedInQueueWaitReason = 'computer' | 'trevra_tab' | 'account_paused' | 'account_cooldown' | 'worker';
+export type LinkedInQueueWaitReason = 'computer' | 'account_paused' | 'account_cooldown' | 'worker';
 
 export interface LinkedInMaintenanceTiming {
   task: 'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
@@ -1859,8 +1859,6 @@ export interface LinkedInCompanionAttention {
 
 export interface LinkedInCompanionStatus {
   devices: LinkedInCompanionDevice[];
-  websitePresent: boolean;
-  websiteLastSeenAt: string | null;
   attention: LinkedInCompanionAttention[];
   /** Owner-only: pair or replace the workspace's trusted computer. */
   canManage: boolean;
@@ -1903,14 +1901,6 @@ export async function createLinkedInCompanionPairing(): Promise<{ code: string; 
 
 export async function revokeLinkedInCompanionDevice(deviceId: string): Promise<{ revoked: boolean }> {
   return request(`/api/linkedin/companion/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
-}
-
-export async function markLinkedInCompanionPresence(): Promise<{ active: true }> {
-  return request('/api/linkedin/companion/presence', { method: 'POST', body: '{}' });
-}
-
-export async function stopLinkedInCompanionPresence(): Promise<{ active: false }> {
-  return request('/api/linkedin/companion/presence/stop', { method: 'POST', body: '{}' });
 }
 
 /* =====================================================================

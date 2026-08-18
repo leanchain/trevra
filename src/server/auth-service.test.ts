@@ -235,7 +235,6 @@ describe('companion member permissions', () => {
     const status = await member.agent.get('/api/linkedin/companion').expect(200);
     expect(status.body).toMatchObject({ canManage: false, canUse: true, canDisconnect: true });
 
-    await member.agent.post('/api/linkedin/companion/presence').send({}).expect(200, { active: true });
     await member.agent.post('/api/linkedin/companion/pair').send({}).expect(403);
     await member.agent.delete(`/api/linkedin/companion/devices/${exchange.body.deviceId}`).expect(200, { revoked: true });
   });

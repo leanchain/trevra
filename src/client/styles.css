@@ -1578,12 +1578,24 @@ button:disabled { opacity: .55; cursor: not-allowed; }
    their own, and neither introduces a colour: inbound and outbound are told
    apart by side, surface and a word, never by hue alone. */
 .li-inbox { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 18px; align-items: start; }
-.li-thread-pane { max-height: 720px; overflow-y: auto; }
+.li-thread-pane { display: flex; flex-direction: column; max-height: 720px; overflow-y: auto; }
+
+/* Narrows what's already in memory -- never a read of its own -- so it sits
+   at the top of the list it narrows, apart from the server-driving filters
+   in the panel above. */
+.li-search-row { position: relative; margin-bottom: 10px; flex: none; }
+.li-search-icon { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.li-search-input { width: 100%; min-height: var(--t-tap); border: 1px solid var(--line); border-radius: var(--t-r-pill); background: var(--t-surface-2); padding: 0 12px 0 33px; color: var(--ink); font-size: var(--t-text-sm); }
+.li-search-input::placeholder { color: var(--muted); }
+.li-search-input:focus-visible { background: var(--t-field); }
+
 .li-thread-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
 .li-thread-list > li { min-width: 0; }
-.li-thread { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--t-line-soft); background: transparent; color: var(--ink); padding: 12px 6px; min-height: var(--t-tap); cursor: pointer; }
+.li-thread { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--t-line-soft); border-left: 3px solid transparent; background: transparent; color: var(--ink); padding: 11px 8px 11px 6px; min-height: var(--t-tap); cursor: pointer; }
 .li-thread-list li:first-child .li-thread { border-top: 0; }
-.li-thread.is-open { background: var(--green-3); border-radius: var(--t-r-sm); }
+.li-thread:hover { background: var(--t-surface-2); }
+.li-thread.is-open { background: var(--green-3); border-left-color: var(--green); }
+.li-thread-body { display: grid; gap: 5px; min-width: 0; flex: 1 1 auto; }
 .li-thread-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 /* The thread list and the conversation are the reading surfaces on this
    screen -- a real name, a real sentence, a real message -- so they are set at
@@ -1594,20 +1606,45 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .li-thread-snippet { color: var(--muted); font-size: var(--t-text-sm); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .li-thread-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--muted); font-size: var(--t-text-xs); }
 
+/* Initials-in-a-circle: the avatar-led row a native message UI draws with a
+   photo Trevra never has. One tone per person, held for the session -- see
+   `avatarTone`. Reuses the existing chip palette rather than adding one. */
+.li-avatar { flex: none; width: 34px; height: 34px; border-radius: var(--t-r-pill); display: grid; place-items: center; font-size: var(--t-text-chip); font-weight: 700; }
+.li-avatar-lg { width: 42px; height: 42px; font-size: var(--t-text-xs); }
+.li-avatar-a { background: var(--green-3); color: var(--green); }
+.li-avatar-b { background: var(--blue-bg); color: var(--blue); }
+.li-avatar-c { background: var(--amber-bg); color: var(--amber); }
+.li-avatar-d { background: var(--red-bg); color: var(--red); }
+.li-avatar-e { background: var(--t-surface-2); color: var(--muted); }
+
+.li-convo { display: flex; flex-direction: column; max-height: 720px; }
 .li-convo-head { align-items: start; }
 .li-convo-head p { overflow-wrap: anywhere; }
-.li-msgs { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 10px; max-height: 460px; overflow-y: auto; }
-.li-msg { display: grid; gap: 4px; max-width: min(var(--t-measure), 84%); border: 1px solid var(--line); border-radius: var(--t-r-md); padding: 10px 12px; }
-.li-msg-in { justify-self: start; background: var(--t-surface-2); border-bottom-left-radius: var(--t-r-xs); }
-.li-msg-out { justify-self: end; background: var(--green-3); border-color: var(--t-green-200); border-bottom-right-radius: var(--t-r-xs); }
-.li-msg-who { color: var(--muted); font-size: var(--t-text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); }
-.li-msg-out .li-msg-who { color: var(--green); }
-/* Someone's actual words to a prospect. Body size, like body text. */
-.li-msg p { margin: 0; color: var(--ink); font-size: var(--t-text-md); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.li-msg-time { color: var(--muted); font-size: var(--t-text-xs); }
+.li-convo-title { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
 
-.li-composer { border-top: 1px solid var(--t-line-soft); padding-top: 14px; }
-.li-composer textarea { width: 100%; border: 1px solid var(--line); border-radius: var(--t-r-sm); background: var(--t-field); padding: 10px 11px; color: var(--ink); font-size: var(--t-text-xs); line-height: 1.5; font-family: inherit; resize: vertical; }
+/* The header and composer stay put; this is the only child of .li-convo that
+   scrolls, so a long conversation grows here and nowhere else. */
+.li-msgs { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 6px; flex: 1 1 auto; min-height: 120px; overflow-y: auto; }
+.li-day-divider { display: flex; justify-content: center; margin: 8px 0 4px; }
+.li-day-divider span { background: var(--t-surface-2); color: var(--muted); font-size: var(--t-text-chip); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); padding: 3px 10px; border-radius: var(--t-r-pill); }
+/* A run of same-direction messages reads as one group -- the who/when caption
+   is said once, not once per bubble. See `groupMessages`. */
+.li-msg-group { display: grid; gap: 2px; max-width: min(var(--t-measure), 84%); margin-top: 6px; }
+.li-msg-group-in { justify-self: start; }
+.li-msg-group-out { justify-self: end; }
+.li-msg-who { color: var(--muted); font-size: var(--t-text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: var(--t-track-caps); margin-bottom: 2px; }
+.li-msg-group-out .li-msg-who { color: var(--green); text-align: right; }
+/* Someone's actual words to a prospect. Body size, like body text. */
+.li-msg-bubble { margin: 0; border: 1px solid var(--line); border-radius: var(--t-r-lg); padding: 9px 12px; color: var(--ink); font-size: var(--t-text-md); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--t-surface-2); }
+.li-msg-bubble + .li-msg-bubble { margin-top: 2px; }
+.li-msg-group-out .li-msg-bubble { background: var(--green-3); border-color: var(--t-green-200); }
+.li-msg-group-in .li-msg-bubble:last-of-type { border-bottom-left-radius: var(--t-r-xs); }
+.li-msg-group-out .li-msg-bubble:last-of-type { border-bottom-right-radius: var(--t-r-xs); }
+.li-msg-time { display: block; margin-top: 3px; color: var(--muted); font-size: var(--t-text-xs); }
+.li-msg-group-out .li-msg-time { text-align: right; }
+
+.li-composer { border-top: 1px solid var(--t-line-soft); padding-top: 14px; flex: none; }
+.li-composer textarea { width: 100%; border: 1px solid var(--line); border-radius: var(--t-r-xl); background: var(--t-field); padding: 11px 14px; color: var(--ink); font-size: var(--t-text-sm); line-height: 1.55; font-family: inherit; resize: vertical; }
 .li-composer-foot span { max-width: var(--t-measure); line-height: 1.55; }
 /* A refusal is a DECISION with a reason, not a fault. Amber, like every other
    "there is one thing to go and do" surface on these screens -- red is kept
@@ -1759,6 +1796,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
      read, so they stack: the list first, because it is what you pick from. */
   .li-inbox { grid-template-columns: minmax(0, 1fr); }
   .li-thread-pane { max-height: 420px; }
+  .li-convo { max-height: none; }
 }
 @media (max-width: 760px) {
   .li-approval { grid-template-columns: 1fr; }
@@ -1769,7 +1807,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   .li-seat-facts { grid-template-columns: 1fr; }
   .li-stat-row { grid-template-columns: 1fr; }
   .li-funnel-row { grid-template-columns: 1fr; gap: 5px; }
-  .li-msg { max-width: 100%; }
+  .li-msg-group { max-width: 100%; }
   /* The connector needs a gutter it does not have on a phone. The branch is
      still legible: the chip in the card header says it in words. */
   .li-step-branched { margin-left: 0; }
@@ -2965,6 +3003,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   background: color-mix(in srgb, var(--warning) 7%, var(--t-surface));
 }
 .li-companion-attention .section-heading h3 { display: flex; align-items: center; gap: 7px; }
+/* Nothing connected to run LinkedIn at all is a step up from a single account
+   needing a human (the warning-toned block above): same panel family, red
+   instead of amber, so the two never read as the same severity. */
+.li-companion-offline {
+  border-color: color-mix(in srgb, var(--red) 42%, var(--line));
+  background: color-mix(in srgb, var(--red) 7%, var(--t-surface));
+}
 .li-companion-attention-list { display: grid; gap: 10px; }
 .li-companion-attention-row {
   display: grid;

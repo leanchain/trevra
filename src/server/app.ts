@@ -203,12 +203,10 @@ import {
 } from './linkedin/hosted-execution.js';
 import { companionReleasePackage } from './linkedin/companion-release.js';
 import {
-  clearCompanionWebsitePresence,
   companionWorkspaceReady,
   createCompanionPairing,
   exchangeCompanionPairing,
   listCompanionStatus,
-  markCompanionWebsitePresence,
   revokeCompanionDevice
 } from './linkedin/companion.js';
 import {
@@ -774,20 +772,6 @@ export function createApp(db: Db) {
     try {
       const revoked = await revokeCompanionDevice(db, req.auth!.workspaceId, String(req.params.id));
       res.status(revoked ? 200 : 404).json({ revoked });
-    } catch (error) { next(error); }
-  });
-
-  app.post('/api/linkedin/companion/presence', async (req: AuthedRequest, res, next) => {
-    try {
-      await markCompanionWebsitePresence(db, req.auth!.workspaceId, req.auth!.userId);
-      res.json({ active: true });
-    } catch (error) { next(error); }
-  });
-
-  app.post('/api/linkedin/companion/presence/stop', async (req: AuthedRequest, res, next) => {
-    try {
-      await clearCompanionWebsitePresence(db, req.auth!.workspaceId);
-      res.json({ active: false });
     } catch (error) { next(error); }
   });
 
@@ -5517,7 +5501,6 @@ async function linkedinQueueWaitReason(
   if (worker.companionBrowser) {
     const companion = await listCompanionStatus(db, workspaceId, now);
     if (!companion.devices.some((device) => device.online)) return 'computer';
-    if (!companion.websitePresent) return 'trevra_tab';
   }
   return null;
 }

@@ -21,6 +21,7 @@ import {
   workerIdentity,
   workerShard
 } from '../server/linkedin/local-worker.js';
+import { notifyDisconnectedCompanionDevices } from '../server/linkedin/companion.js';
 import { runLinkedInCampaignTick, runLinkedInSideTasks } from '../server/linkedin/jobs.js';
 import { hostedExecutionMode, hostedSeatFilter } from '../server/linkedin/hosted-execution.js';
 import { runDueResearchSources } from '../server/research/service.js';
@@ -85,7 +86,7 @@ async function cycle():Promise<void>{
   // Its own try -- a failed reap must not cost the rest of the cycle.
   try{await reapStaleAgentRuns(db);}
   catch(error){console.error('Worker could not reap abandoned agent runs',error);}
-  try{await Promise.all([runAllAutomationCycles(db),runReadyPlaybooks(db),runCommercialProjectionCycle(db),runDueAgentSchedules(db),runDueResearchSources(db)]);}
+  try{await Promise.all([runAllAutomationCycles(db),runReadyPlaybooks(db),runCommercialProjectionCycle(db),runDueAgentSchedules(db),runDueResearchSources(db),notifyDisconnectedCompanionDevices(db)]);}
   catch(error){console.error('Worker control-plane cycle failed',error);}
   finally{running=false;}
 }
