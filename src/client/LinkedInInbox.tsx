@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Pencil,
   RefreshCw,
+  Search,
   ShieldCheck,
   X
 } from 'lucide-react';
@@ -33,6 +34,7 @@ import {
   type LinkedInActionView,
   type LinkedInCampaign,
   type LinkedInConversation,
+  type LinkedInMessageRecord,
   type LinkedInSafetyVerdict,
   type LinkedInSeat,
   type LinkedInSeatResponse,
@@ -251,6 +253,91 @@ const replyStage = (action: LinkedInActionView, waitingFor?: LinkedInSeatRespons
   };
 };
 
+/** LinkedIn draws this from a photo; Trevra has none, so a solid tone stands in. Five tones, reused from the existing chip palette -- not a new one. */
+const AVATAR_TONES = ['a', 'b', 'c', 'd', 'e'] as const;
+
+/** First and last initial. `name` is never empty by the time this is called for real data, but a stray blank never renders nothing. */
+const initials = (name: string | null | undefined) => {
+  const parts = (name ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  const first = parts[0][0];
+  const last = parts.length > 1 ? parts[parts.length - 1][0] : '';
+  return (first + last).toUpperCase();
+};
+
+/** Same person, same tint, for as long as this tab stays open -- a small hash over a fixed tone set, not a new palette and not a stored preference. */
+const avatarTone = (seed: string) => {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  return AVATAR_TONES[hash % AVATAR_TONES.length];
+};
+
+/** The avatar-led row every native message UI draws. `seed` keys the tint to the PERSON (a profile URL, ideally), not the row, so a task and its later conversation read as the same person. */
+function LiAvatar({ name, seed, large }: { name: string | null | undefined; seed: string; large?: boolean }) {
+  return <span
+    className={`li-avatar li-avatar-${avatarTone(seed || name || '?')}${large ? ' li-avatar-lg' : ''}`}
+    aria-hidden="true"
+  >{initials(name)}</span>;
+}
+
+/** "Today" / "Yesterday" / a date -- read the way a person reads a calendar, never off a raw millisecond subtraction (which a timezone or a DST flip can push across midnight either direction). */
+const dayLabel = (ms: number) => {
+  const date = new Date(ms);
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) return 'Today';
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric'
+  });
+};
+
+type ThreadItem =
+  | { kind: 'divider'; key: string; label: string }
+  | { kind: 'group'; key: string; direction: 'in' | 'out'; items: LinkedInMessageRecord[] };
+
+/**
+ * Consecutive same-direction messages collapse into one visual group -- the
+ * who/when caption is said once per group, not once per bubble, the way
+ * LinkedIn's own thread reads. A day divider is inserted only where `sentAt`
+ * actually parsed, the same defensive read `messageTime` already does; a
+ * null timestamp never invents a date or a divider.
+ */
+const groupMessages = (messages: LinkedInMessageRecord[]): ThreadItem[] => {
+  const items: ThreadItem[] = [];
+  let lastDay: string | null = null;
+  let current: Extract<ThreadItem, { kind: 'group' }> | null = null;
+  for (const message of messages) {
+    const parsed = message.sentAt ? Date.parse(message.sentAt) : Number.NaN;
+    if (Number.isFinite(parsed)) {
+      const day = new Date(parsed).toDateString();
+      if (day !== lastDay) {
+        items.push({ kind: 'divider', key: `day-${message.id}`, label: dayLabel(parsed) });
+        lastDay = day;
+        current = null;
+      }
+    }
+    if (current && current.direction === message.direction) current.items.push(message);
+    else {
+      current = { kind: 'group', key: `group-${message.id}`, direction: message.direction, items: [message] };
+      items.push(current);
+    }
+  }
+  return items;
+};
+
+/**
+ * One row in the unified thread list -- a real conversation or a campaign
+ * step waiting on the operator, sorted together by recency. See `inboxRows`
+ * for what keeps a task from ever reading as a received message.
+ */
+type InboxRow =
+  | { kind: 'task'; key: string; ts: number; task: ManualTaskView }
+  | { kind: 'thread'; key: string; ts: number; thread: LinkedInThreadRecord };
+
 export function OutreachInbox({ setToast }: { setToast: (message: string) => void }) {
   // Who queued each outbound message -- team-workspace-access design goal 5.
   // The same member list the switcher and Team settings read, not a second
@@ -283,6 +370,8 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
   /** True when that read came back full, so a task's conversation may be past the ceiling. */
   const [taskThreadsTruncated, setTaskThreadsTruncated] = useState(false);
   const [filters, setFilters] = useState<InboxFilters>(EMPTY_FILTERS);
+  /** Narrows the same in-memory list the filters do -- name, snippet, or a task's draft. Never triggers a read of its own. */
+  const [search, setSearch] = useState('');
   /** How deep the conversation list is currently reading. Raised a page at a time, never past `THREAD_MAX`. */
   const [threadLimit, setThreadLimit] = useState(THREAD_PAGE);
   const [openUrn, setOpenUrn] = useState<string | null>(null);
@@ -738,8 +827,37 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     </div>;
   };
 
-  const filtered = filters.unread || filters.hasReply || Boolean(filters.campaignId) || Boolean(filters.seatKey);
+  const filtered = filters.unread || filters.hasReply || Boolean(filters.campaignId) || Boolean(filters.seatKey) || Boolean(search.trim());
   const messages = conversation?.messages ?? [];
+  /**
+   * ONE LIST, NOT TWO. A native inbox is a single rail sorted by recency; a
+   * task's "recency" is when the campaign asked for it (`createdAt`), a
+   * conversation's is its last message. Search narrows this same in-memory
+   * list and never triggers a read of its own -- it says nothing about what
+   * the server returned. Nothing here changes what counts as unread or
+   * has-a-reply: those stay properties of `threads` alone (the filters
+   * above), so a task can never satisfy either one.
+   */
+  const inboxRows = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const matches = (parts: Array<string | null | undefined>) =>
+      query === '' || parts.some((part) => (part ?? '').toLowerCase().includes(query));
+    const rows: InboxRow[] = [];
+    for (const task of visibleTasks) {
+      if (!matches([task.firstName, task.lastName, task.company, task.suggestedBody])) continue;
+      rows.push({ kind: 'task', key: `task-${task.id}`, ts: Date.parse(task.createdAt) || 0, task });
+    }
+    for (const thread of threads) {
+      if (!matches([thread.name, thread.snippet])) continue;
+      rows.push({
+        kind: 'thread',
+        key: `thread-${thread.threadUrn}`,
+        ts: thread.lastMessageAt ? Date.parse(thread.lastMessageAt) || 0 : 0,
+        thread
+      });
+    }
+    return rows.sort((a, b) => b.ts - a.ts);
+  }, [visibleTasks, threads, search]);
   /**
    * Whether a message to the person in front of the operator is still in
    * flight, for each of the two panes. This is what the queue buttons below
@@ -827,49 +945,26 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
 
     <div className="li-inbox">
       <section className="page-panel li-thread-pane">
-        {(visibleTasks.length > 0 || taskError) && <div className="li-suggested">
-          <ClipboardList size={15} />
-          <div>
-            <strong>{visibleTasks.length === 0 && taskError
-              ? 'Messages for you to write'
-              : `${visibleTasks.length} message${visibleTasks.length === 1 ? '' : 's'} for you to write`}</strong>
-            <p>
-              Nobody sent you these. A campaign reached a step it will not do on its own, so it is waiting on you.
-              Pick one to write it and close it off.
-            </p>
-            {taskError && <p className="li-hint">{taskError}</p>}
-            <ul className="li-thread-list">
-              {visibleTasks.map((task) => <li key={task.id}>
-                <button
-                  type="button"
-                  className={`li-thread ${openTaskId === task.id ? 'is-open' : ''}`}
-                  onClick={() => selectTask(task)}
-                >
-                  <span className="li-thread-top">
-                    <strong className="li-thread-name">{task.firstName} {task.lastName}</strong>
-                    <span className="li-thread-time">{relativeTime(task.createdAt)}</span>
-                  </span>
-                  <span className="li-thread-snippet">
-                    {task.suggestedBody?.trim() || 'No draft was written for this step — the words are yours.'}
-                  </span>
-                  <span className="li-thread-meta">
-                    <span className="li-chip li-status-planned">To write</span>
-                    {task.company && <span>{task.company}</span>}
-                    <span>{campaignName(task.campaignId)}</span>
-                    {multiSeat && <span className="li-chip">{seatLabel(task.seatKey)}</span>}
-                  </span>
-                </button>
-              </li>)}
-            </ul>
-          </div>
-        </div>}
+        <div className="li-search-row">
+          <Search className="li-search-icon" size={14} aria-hidden="true" />
+          <input
+            type="search"
+            className="li-search-input"
+            placeholder="Search messages"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            aria-label="Search conversations and messages to write"
+          />
+        </div>
 
-        {threads.length === 0
+        {taskError && <p className="li-hint">{taskError}</p>}
+
+        {inboxRows.length === 0
           ? <div className="empty-state">
             <Inbox size={26} />
-            <h4 aria-level={3}>{filtered ? 'No conversation matches this filter' : 'Nothing has been synced yet'}</h4>
+            <h4 aria-level={3}>{filtered ? 'Nothing matches' : 'Nothing has been synced yet'}</h4>
             <p>{filtered
-              ? 'The filters above narrow what the last sync stored; they never fetch anything new.'
+              ? 'The filters and search above narrow what the last sync stored; they never fetch anything new.'
               : 'Sync the inbox to walk the conversation rail. Trevra stores what LinkedIn rendered — it invents no message and no timestamp.'}</p>
             {/* Clearing drops the narrowing, not the account: the account is a
                 choice made across outreach, and silently widening the inbox to
@@ -877,81 +972,126 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
             {filtered && <button
               className="secondary-button"
               type="button"
-              onClick={() => setFilters({
-                ...EMPTY_FILTERS,
-                seatKey: seats.length > 1 && seats.some((seat) => seat.seatKey === activeSeatKey) ? activeSeatKey : ''
-              })}
+              onClick={() => {
+                setSearch('');
+                setFilters({
+                  ...EMPTY_FILTERS,
+                  seatKey: seats.length > 1 && seats.some((seat) => seat.seatKey === activeSeatKey) ? activeSeatKey : ''
+                });
+              }}
             >
               Clear the filters
             </button>}
           </div>
-          : <>
-            <ul className="li-thread-list">
-              {threads.map((thread) => <li key={thread.threadUrn}>
+          : <ul className="li-thread-list">
+            {inboxRows.map((row) => row.kind === 'task'
+              ? <li key={row.key}>
                 <button
                   type="button"
-                  className={`li-thread ${openUrn === thread.threadUrn ? 'is-open' : ''}`}
-                  onClick={() => void openThread(thread.threadUrn)}
+                  className={`li-thread ${openTaskId === row.task.id ? 'is-open' : ''}`}
+                  onClick={() => selectTask(row.task)}
                 >
-                  <span className="li-thread-top">
-                    {thread.unread && <i className="li-unread-dot" aria-label="Unread at the last sync" />}
-                    <strong className="li-thread-name">{thread.name ?? <em className="li-unknown">Name unknown</em>}</strong>
-                    <span className="li-thread-time">
-                      {thread.lastMessageAt ? relativeTime(thread.lastMessageAt) : '—'}
+                  <LiAvatar
+                    name={`${row.task.firstName} ${row.task.lastName}`}
+                    seed={profileKey(row.task.profileUrl) || `${row.task.firstName} ${row.task.lastName}`}
+                  />
+                  <span className="li-thread-body">
+                    <span className="li-thread-top">
+                      <strong className="li-thread-name">{row.task.firstName} {row.task.lastName}</strong>
+                      <span className="li-thread-time">{relativeTime(row.task.createdAt)}</span>
+                    </span>
+                    <span className="li-thread-snippet">
+                      {row.task.suggestedBody?.trim() || 'No draft was written for this step — the words are yours.'}
+                    </span>
+                    <span className="li-thread-meta">
+                      <span className="li-chip li-status-planned">To write</span>
+                      {row.task.company && <span>{row.task.company}</span>}
+                      <span>{campaignName(row.task.campaignId)}</span>
+                      {multiSeat && <span className="li-chip">{seatLabel(row.task.seatKey)}</span>}
                     </span>
                   </span>
-                  <span className="li-thread-snippet">{thread.snippet || 'No snippet was rendered for this conversation.'}</span>
-                  <span className="li-thread-meta">
-                    {thread.messageCount} message{thread.messageCount === 1 ? '' : 's'}
-                    {thread.hasReply && <span className="li-chip li-status-replied">replied</span>}
-                    {thread.campaignId && <span className="li-chip">campaign</span>}
-                    {multiSeat && <span className="li-chip">{seatLabel(thread.seatKey)}</span>}
+                </button>
+              </li>
+              : <li key={row.key}>
+                <button
+                  type="button"
+                  className={`li-thread ${openUrn === row.thread.threadUrn ? 'is-open' : ''}`}
+                  onClick={() => void openThread(row.thread.threadUrn)}
+                >
+                  <LiAvatar
+                    name={row.thread.name}
+                    seed={profileKey(row.thread.profileUrl) || row.thread.name || row.thread.threadUrn}
+                  />
+                  <span className="li-thread-body">
+                    <span className="li-thread-top">
+                      {row.thread.unread && <i className="li-unread-dot" aria-label="Unread at the last sync" />}
+                      <strong className="li-thread-name">{row.thread.name ?? <em className="li-unknown">Name unknown</em>}</strong>
+                      <span className="li-thread-time">
+                        {row.thread.lastMessageAt ? relativeTime(row.thread.lastMessageAt) : '—'}
+                      </span>
+                    </span>
+                    <span className="li-thread-snippet">{row.thread.snippet || 'No snippet was rendered for this conversation.'}</span>
+                    <span className="li-thread-meta">
+                      {row.thread.messageCount} message{row.thread.messageCount === 1 ? '' : 's'}
+                      {row.thread.hasReply && <span className="li-chip li-status-replied">replied</span>}
+                      {row.thread.campaignId && <span className="li-chip">campaign</span>}
+                      {multiSeat && <span className="li-chip">{seatLabel(row.thread.seatKey)}</span>}
+                    </span>
                   </span>
                 </button>
-              </li>)}
-            </ul>
+              </li>
+            )}
+          </ul>}
 
-            {/* A full page means there are older conversations this read did not
-                ask for. It is deliberately not phrased as "N of M": the route
-                returns rows and no count, so the total is a number nobody has
-                measured and this screen will not print one. */}
-            {threads.length >= threadLimit && <div className="panel-footer">
-              <span>{threadLimit < THREAD_MAX
-                ? <>The {threads.length} most recently active conversations are shown. There are older ones — this read
-                  simply did not ask for them.</>
-                : <>The {THREAD_MAX} most recently active conversations are shown, which is as far as one read of this
-                  list reaches. Narrow it by campaign{multiSeat ? ' or account' : ''} above to bring older ones into
-                  range.</>}</span>
-              {threadLimit < THREAD_MAX && <button
-                className="secondary-button"
-                type="button"
-                disabled={loading}
-                onClick={() => setThreadLimit((current) => Math.min(THREAD_MAX, current + THREAD_PAGE))}
-              >
-                {loading ? <LoaderCircle className="spin" size={14} /> : <Inbox size={14} />} Show older conversations
-              </button>}
-            </div>}
-          </>}
+        {/* A full page means there are older conversations this read did not
+            ask for. It is deliberately not phrased as "N of M": the route
+            returns rows and no count, so the total is a number nobody has
+            measured and this screen will not print one. Keyed to `threads`,
+            not `inboxRows`: this is about the server's own paging, and
+            neither search nor folding tasks in changes what was asked for. */}
+        {threads.length >= threadLimit && <div className="panel-footer">
+          <span>{threadLimit < THREAD_MAX
+            ? <>The {threads.length} most recently active conversations are shown. There are older ones — this read
+              simply did not ask for them.</>
+            : <>The {THREAD_MAX} most recently active conversations are shown, which is as far as one read of this
+              list reaches. Narrow it by campaign{multiSeat ? ' or account' : ''} above to bring older ones into
+              range.</>}</span>
+          {threadLimit < THREAD_MAX && <button
+            className="secondary-button"
+            type="button"
+            disabled={loading}
+            onClick={() => setThreadLimit((current) => Math.min(THREAD_MAX, current + THREAD_PAGE))}
+          >
+            {loading ? <LoaderCircle className="spin" size={14} /> : <Inbox size={14} />} Show older conversations
+          </button>}
+        </div>}
       </section>
 
       <section className="page-panel li-convo">
         {openTask
           ? <>
             <div className="section-heading li-convo-head">
-              <div>
-                <h3 aria-level={2}><ClipboardList size={16} /> Write to {openTask.firstName} {openTask.lastName}</h3>
-                <p>
-                  {openTask.company || 'Company unknown'} · {campaignName(openTask.campaignId)} reached a step it will
-                  not do on its own, and has been waiting since {new Date(openTask.createdAt).toLocaleString()}.
-                </p>
-                <p>
-                  {openTask.profileUrl
-                    ? <a className="li-seat-vanity" href={openTask.profileUrl} target="_blank" rel="noreferrer">
-                      {openTask.profileUrl}<ExternalLink size={11} />
-                    </a>
-                    : <span className="li-unknown">No profile URL is stored for this person.</span>}
-                </p>
-                {multiSeat && <p>From {seatLabel(openTask.seatKey)}.</p>}
+              <div className="li-convo-title">
+                <LiAvatar
+                  name={`${openTask.firstName} ${openTask.lastName}`}
+                  seed={profileKey(openTask.profileUrl) || `${openTask.firstName} ${openTask.lastName}`}
+                  large
+                />
+                <div>
+                  <h3 aria-level={2}><ClipboardList size={16} /> Write to {openTask.firstName} {openTask.lastName}</h3>
+                  <p>
+                    {openTask.company || 'Company unknown'} · {campaignName(openTask.campaignId)} reached a step it will
+                    not do on its own, and has been waiting since {new Date(openTask.createdAt).toLocaleString()}.
+                  </p>
+                  <p>
+                    {openTask.profileUrl
+                      ? <a className="li-seat-vanity" href={openTask.profileUrl} target="_blank" rel="noreferrer">
+                        {openTask.profileUrl}<ExternalLink size={11} />
+                      </a>
+                      : <span className="li-unknown">No profile URL is stored for this person.</span>}
+                  </p>
+                  {multiSeat && <p>From {seatLabel(openTask.seatKey)}.</p>}
+                </div>
               </div>
               {taskThread && <button
                 className="secondary-button"
@@ -1077,19 +1217,26 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
               : 'Pick a conversation on the left, or one of the messages a campaign is waiting on you to write. A conversation shows what the last sync stored, oldest first.'}</p>
             : <>
               <div className="section-heading li-convo-head">
-                <div>
-                  <h3 aria-level={2}>{conversation.thread.name ?? 'Conversation'}</h3>
-                  <p>
-                    {conversation.thread.profileUrl
-                      ? <a className="li-seat-vanity" href={conversation.thread.profileUrl} target="_blank" rel="noreferrer">
-                        {conversation.thread.profileUrl}<ExternalLink size={11} />
-                      </a>
-                      : <span className="li-unknown">No profile URL was resolved, so this conversation cannot be replied to yet.</span>}
-                  </p>
-                  <p>
-                    Last synced {relativeTime(conversation.thread.syncedAt)}.
-                    {multiSeat && ` On ${seatLabel(conversation.thread.seatKey)}.`}
-                  </p>
+                <div className="li-convo-title">
+                  <LiAvatar
+                    name={conversation.thread.name}
+                    seed={profileKey(conversation.thread.profileUrl) || conversation.thread.name || conversation.thread.threadUrn}
+                    large
+                  />
+                  <div>
+                    <h3 aria-level={2}>{conversation.thread.name ?? 'Conversation'}</h3>
+                    <p>
+                      {conversation.thread.profileUrl
+                        ? <a className="li-seat-vanity" href={conversation.thread.profileUrl} target="_blank" rel="noreferrer">
+                          {conversation.thread.profileUrl}<ExternalLink size={11} />
+                        </a>
+                        : <span className="li-unknown">No profile URL was resolved, so this conversation cannot be replied to yet.</span>}
+                    </p>
+                    <p>
+                      Last synced {relativeTime(conversation.thread.syncedAt)}.
+                      {multiSeat && ` On ${seatLabel(conversation.thread.seatKey)}.`}
+                    </p>
+                  </div>
                 </div>
                 <button
                   className="secondary-button"
@@ -1104,14 +1251,18 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
               {messages.length === 0
                 ? <p className="empty-copy">No message has been stored for this conversation. Sync it to read what LinkedIn shows.</p>
                 : <ol className="li-msgs">
-                  {messages.map((message) => {
-                    const queuedBy = message.actionId ? nameFor(message.queuedByUserId) : null;
-                    return <li key={message.id} className={`li-msg li-msg-${message.direction}`}>
-                      <span className="li-msg-who">{message.direction === 'in' ? 'Them' : 'You'}</span>
-                      <p>{message.body}</p>
+                  {groupMessages(messages).map((item) => {
+                    if (item.kind === 'divider') {
+                      return <li key={item.key} className="li-day-divider" role="presentation"><span>{item.label}</span></li>;
+                    }
+                    const last = item.items[item.items.length - 1];
+                    const queuedBy = last.actionId ? nameFor(last.queuedByUserId) : null;
+                    return <li key={item.key} className={`li-msg-group li-msg-group-${item.direction}`}>
+                      <span className="li-msg-who">{item.direction === 'in' ? 'Them' : 'You'}</span>
+                      {item.items.map((message) => <p key={message.id} className="li-msg-bubble">{message.body}</p>)}
                       <span className="li-msg-time">
-                        {messageTime(message.sentAt) ?? 'No timestamp was rendered'}
-                        {message.actionId && ` · sent through Trevra${queuedBy ? ` by ${queuedBy}` : ''}`}
+                        {messageTime(last.sentAt) ?? 'No timestamp was rendered'}
+                        {last.actionId && ` · sent through Trevra${queuedBy ? ` by ${queuedBy}` : ''}`}
                       </span>
                     </li>;
                   })}
