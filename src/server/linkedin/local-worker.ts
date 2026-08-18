@@ -34,12 +34,13 @@ import {
   type LinkedInLocator,
   type LinkedInPage
 } from './driver.js';
+import { isThreadListing, isThreadTranscript, type LinkedInInboxMessage, type LinkedInThreadSummary } from './driver-inbox.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
 import { readPage, setHumanSessionSalt, settle, type HumanPage } from './human.js';
 import { pruneSeatEvents, recordSeatEvent, seatRestingUntil, setSeatRestingUntil } from './seat-events.js';
 import { ACTION_GAP_SECONDS, type PacedKind } from './limits.js';
 import { dayShapeFor, localDateOf, visitsForDay, workWindowOf, zonedToUtc } from './pacing.js';
-import { clearInboxForSeat } from './inbox.js';
+import { clearInboxForSeat, syncThreadMessages, syncThreads } from './inbox.js';
 import {
   OWNER_SEAT_KEY,
   assertTimezone,
@@ -487,6 +488,24 @@ export interface LocalWorkerStore {
    */
   hasUnacceptedInvite(action: DueLinkedInAction): Promise<boolean>;
   settleSent(actionId: string, externalRef: string | null, now: Date): Promise<void>;
+  /**
+   * File a reply's own words into its conversation the moment it lands, off
+   * the SAME re-read `runLinkedInLocalBatch` just took, so the thread shows
+   * what Trevra typed without an operator clicking "Sync this thread"
+   * afterwards. Optional: a store with no inbox table behind it (or a test
+   * that never exercises this) simply skips it -- the send this follows has
+   * already settled either way, and a failure here must never undo that.
+   */
+  recordReplyMessages?(threadUrn: string, messages: readonly LinkedInInboxMessage[], now: Date): Promise<void>;
+  /**
+   * File the conversation a first message just opened, so it exists to hold
+   * the reply it did not have a moment ago. Always called before
+   * `recordReplyMessages` for the same thread -- that method requires the row
+   * this one creates. Optional for the same reason every method in this pair
+   * is: a store with no inbox table, or a test that never exercises this,
+   * simply skips it.
+   */
+  recordNewThread?(summary: LinkedInThreadSummary, now: Date): Promise<void>;
   settleSkipped(actionId: string, failureKind: LinkedInFailureKind): Promise<void>;
   /**
    * This step's branch can never be satisfied: retire the row.
@@ -554,6 +573,17 @@ export interface LocalBatchDeps {
  * already far longer than an automation interval.
  */
 const DEFAULT_MAX_ACTIONS = 25;
+
+/**
+ * How many conversations deep a `dm` send looks for the thread it just
+ * opened, right after sending -- never the full rail `syncRail` walks.
+ * LinkedIn sorts the rail by recency, so the conversation a message just
+ * opened is at or near the top; this only needs to be deep enough to survive
+ * something else having moved above it in the moment between the send and
+ * this read. Missing it costs nothing beyond what already happens today --
+ * the operator's existing "Sync the inbox" / "mark as sent" fallback.
+ */
+const NEW_DM_THREAD_LOOKUP_DEPTH = 5;
 
 /**
  * HOW LONG ONE SITTING LASTS, AND HOW LONG THE SEAT IS AWAY AFTERWARDS.
@@ -997,6 +1027,61 @@ export async function runLinkedInLocalBatch(store: LocalWorkerStore, deps: Local
 
     if (outcome.ok) {
       await store.settleSent(action.id, outcome.externalRef ?? null, at);
+      // BEST-EFFORT, AND STRICTLY AFTER THE SETTLE ABOVE: the reply already
+      // landed on LinkedIn and the ledger already says so. Re-reading the
+      // conversation is only so the transcript catches up to that same fact
+      // without a separate manual sync -- a failure here changes nothing
+      // about what was sent, so it is swallowed rather than turned into a
+      // batch failure over a message that already went out.
+      if (action.kind === 'reply' && action.threadUrn && deps.driver.readThread && store.recordReplyMessages) {
+        try {
+          const transcript = await deps.driver.readThread(deps.page, action.threadUrn, { now });
+          if (isThreadTranscript(transcript)) {
+            await store.recordReplyMessages(action.threadUrn, transcript.messages, at);
+          }
+        } catch (cause) {
+          log(`LinkedIn local worker sent action ${action.id} but could not re-sync its conversation: ${cause instanceof Error ? cause.message : String(cause)}. "Sync this thread" in the inbox still catches it up.`);
+        }
+      }
+      // A FIRST MESSAGE HAS NO THREAD ID TO HAND `readThread` -- that is the
+      // whole difference from a reply. LinkedIn only assigns one once the
+      // conversation exists, so the only way to find it is the same rail walk
+      // `syncRail` does, just a few conversations deep instead of the whole
+      // inbox: the one this send just opened is new, so it sorts at or near
+      // the top. Matched by `action.targetRef` against `profileUrl`, the same
+      // key `syncThreadMessages` already ties a reply back to its action with.
+      //
+      // NOT FOUND IS NOT AN ERROR. It means this walk's bounded depth did not
+      // reach it -- somebody else's conversation moved above it, say -- and the
+      // operator is exactly as covered as before this existed: the task
+      // composer's "Sync the inbox" / "mark as sent" fallback still applies.
+      if (
+        action.kind === 'dm'
+        && deps.driver.listConversations
+        && deps.driver.readThread
+        && store.recordNewThread
+        && store.recordReplyMessages
+      ) {
+        try {
+          const listing = await deps.driver.listConversations(deps.page, {
+            maxThreads: NEW_DM_THREAD_LOOKUP_DEPTH,
+            needsProfileUrl: () => true,
+            now
+          });
+          if (isThreadListing(listing)) {
+            const summary = listing.threads.find((thread) => thread.profileUrl === action.targetRef);
+            if (summary) {
+              await store.recordNewThread(summary, at);
+              const transcript = await deps.driver.readThread(deps.page, summary.threadUrn, { now });
+              if (isThreadTranscript(transcript)) {
+                await store.recordReplyMessages(summary.threadUrn, transcript.messages, at);
+              }
+            }
+          }
+        } catch (cause) {
+          log(`LinkedIn local worker sent action ${action.id} but could not find its new conversation: ${cause instanceof Error ? cause.message : String(cause)}. "Sync the inbox" still catches it up.`);
+        }
+      }
       result.executed += 1;
       continue;
     }
@@ -1554,6 +1639,14 @@ export function postgresLocalWorkerStore(
             claimed_by=NULL, lease_expires_at=NULL
         WHERE id=? AND workspace_id=?
       `).run(now.toISOString(), externalRef, actionId, workspaceId);
+    },
+
+    async recordReplyMessages(threadUrn, messages, now) {
+      await syncThreadMessages(db, { workspaceId, seatKey, threadUrn, messages: [...messages] }, now);
+    },
+
+    async recordNewThread(summary, now) {
+      await syncThreads(db, { workspaceId, seatKey, threads: [summary] }, now);
     },
 
     async settleSkipped(actionId, failureKind) {

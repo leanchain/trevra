@@ -52,7 +52,7 @@
 // The sibling selector tables. Type-only in the other direction, so this pair
 // of cycles resolves before either module body needs a binding from the other.
 import { endorseSkills, followProfile, likeRecentPost } from './driver-engage.js';
-import { sendReply } from './driver-inbox.js';
+import { listConversations, readThread, sendReply, type LinkedInThreadListing, type LinkedInThreadTranscript } from './driver-inbox.js';
 import { hoverClick, readPage, settle, typeLike } from './human.js';
 
 /** The six outcomes a routine may report. Ordered as in plan 4.5. */
@@ -198,6 +198,33 @@ export interface LinkedInDriver {
    * the wrong surface and can start a second conversation with the same person.
    */
   sendReply(page: LinkedInPage, threadUrn: string, body: string): Promise<LinkedInDriverResult>;
+  /**
+   * Re-read a conversation, LinkedIn's own record of it rather than Trevra's.
+   *
+   * Optional, and used for exactly one thing: `runLinkedInLocalBatch` calls it
+   * right after `sendReply` lands, so the words just typed show up in the
+   * transcript without an operator having to click "Sync this thread"
+   * afterwards. A driver with no inbox-reading capability, or a test double
+   * that never exercises this path, simply omits it -- the reply itself does
+   * not depend on it.
+   */
+  readThread?(
+    page: LinkedInPage,
+    threadUrn: string,
+    options?: { maxMessages?: number; now?: () => Date }
+  ): Promise<LinkedInThreadTranscript | LinkedInDriverResult>;
+  /**
+   * Walk the inbox rail. Optional, and used for exactly one thing: right
+   * after `sendDm` succeeds, `runLinkedInLocalBatch` looks a few conversations
+   * deep for the one LinkedIn just opened -- a first message has no thread id
+   * to hand `readThread` the way a reply does, and this is the only way to
+   * find one. A driver with no inbox-reading capability simply omits it, same
+   * as `readThread`.
+   */
+  listConversations?(
+    page: LinkedInPage,
+    options?: { maxThreads?: number; needsProfileUrl?: (threadUrn: string) => boolean; now?: () => Date }
+  ): Promise<LinkedInThreadListing | LinkedInDriverResult>;
   viewProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
   followProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
   /** `seed` is the batch-scoped seed for the deterministic in-action click jitter. */
@@ -1434,6 +1461,8 @@ export const playwrightDriver: LinkedInDriver = {
   sendInvite,
   sendDm,
   sendReply,
+  readThread,
+  listConversations,
   viewProfile,
   followProfile,
   likeRecentPost,

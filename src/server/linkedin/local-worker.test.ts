@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase, type Db } from '../db.js';
 import { SELECTORS, type LinkedInDriver, type LinkedInDriverResult, type LinkedInPage, type LinkedInSeatRead } from './driver.js';
+import type { LinkedInInboxMessage, LinkedInThreadListing, LinkedInThreadSummary, LinkedInThreadTranscript } from './driver-inbox.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyCheck, type LinkedInSafetyVerdict } from './guard.js';
 import { ACTION_GAP_SECONDS } from './limits.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
@@ -133,6 +134,8 @@ interface StoreHarness {
   heartbeats: Array<{ batchId: string; id: string | null }>;
   cooldowns: number;
   closed: Array<{ status: string; haltReason: string | null; executed: number }>;
+  recordedReplyMessages: Array<{ threadUrn: string; messages: LinkedInInboxMessage[] }>;
+  recordedNewThreads: LinkedInThreadSummary[];
   remaining(): number;
   setPosture(next: SeatPosture | null): void;
   requestStop(): void;
@@ -171,6 +174,8 @@ function fakeStore(
     heartbeats: [],
     cooldowns: 0,
     closed: [],
+    recordedReplyMessages: [],
+    recordedNewThreads: [],
     remaining: () => queue.length,
     setPosture: (next) => {
       posture = next;
@@ -231,6 +236,16 @@ function fakeStore(
       },
       enterCooldown: async () => {
         harness.cooldowns += 1;
+      },
+      // Both optional, and recorded rather than persisted anywhere: the tests
+      // in 'sync after send' are the only ones that hand the fake driver a
+      // `readThread`/`listConversations` able to reach this far, so every
+      // other test in this file exercises the exact same store it always did.
+      recordReplyMessages: async (threadUrn, messages) => {
+        harness.recordedReplyMessages.push({ threadUrn, messages: [...messages] });
+      },
+      recordNewThread: async (summary) => {
+        harness.recordedNewThreads.push(summary);
       }
     }
   };
@@ -401,6 +416,151 @@ describe('dispatch is exhaustive', () => {
     expect(calls).toHaveLength(0);
     expect(result.executed).toBe(0);
     expect(harness.skipped).toEqual([{ id: 'lact_orphan', failureKind: 'not_found' }]);
+  });
+});
+
+describe('sync after send', () => {
+  it('re-reads the conversation right after a reply lands, so the transcript catches up without a manual sync', async () => {
+    const harness = fakeStore([
+      action({ id: 'lact_reply', kind: 'reply', targetRef: 'https://www.linkedin.com/in/c/', body: 'thanks', threadUrn: '2-thread==' })
+    ]);
+    const { driver } = fakeDriver();
+    const transcript: LinkedInThreadTranscript = {
+      ok: true,
+      threadUrn: '2-thread==',
+      messages: [{ at: '2026-08-16T10:00:00.000Z', direction: 'out', body: 'thanks' }],
+      degraded: []
+    };
+    const readThreadCalls: string[] = [];
+    const testDriver: LinkedInDriver = {
+      ...driver,
+      readThread: async (_page, threadUrn) => {
+        readThreadCalls.push(threadUrn);
+        return transcript;
+      }
+    };
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver: testDriver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(result.executed).toBe(1);
+    expect(readThreadCalls).toEqual(['2-thread==']);
+    expect(harness.recordedReplyMessages).toEqual([{ threadUrn: '2-thread==', messages: transcript.messages }]);
+  });
+
+  it('does not let a failed re-sync undo the settled send', async () => {
+    const harness = fakeStore([
+      action({ id: 'lact_reply', kind: 'reply', targetRef: 'https://www.linkedin.com/in/c/', body: 'thanks', threadUrn: '2-thread==' })
+    ]);
+    const { driver } = fakeDriver();
+    const testDriver: LinkedInDriver = {
+      ...driver,
+      readThread: async () => {
+        throw new Error('boom');
+      }
+    };
+    const logs: string[] = [];
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver: testDriver,
+      page,
+      sleep: noSleep,
+      log: (message) => logs.push(message),
+      evaluate: async () => verdict()
+    });
+
+    expect(result.executed).toBe(1);
+    expect(harness.sent).toEqual(['lact_reply']);
+    expect(harness.recordedReplyMessages).toEqual([]);
+    expect(logs.some((line) => line.includes('could not re-sync'))).toBe(true);
+  });
+
+  it('finds and files the conversation a first message just opened', async () => {
+    const harness = fakeStore([
+      action({ id: 'lact_dm', kind: 'dm', targetRef: 'https://www.linkedin.com/in/new-person/', body: 'hi there' })
+    ]);
+    const { driver } = fakeDriver();
+    const summary: LinkedInThreadSummary = {
+      threadUrn: 'new-thread==',
+      profileUrl: 'https://www.linkedin.com/in/new-person/',
+      name: 'New Person',
+      lastMessageAt: '2026-08-18T09:00:00.000Z',
+      snippet: 'hi there',
+      unread: false
+    };
+    const listing: LinkedInThreadListing = { ok: true, threads: [summary], degraded: [] };
+    const transcript: LinkedInThreadTranscript = {
+      ok: true,
+      threadUrn: 'new-thread==',
+      messages: [{ at: '2026-08-18T09:00:00.000Z', direction: 'out', body: 'hi there' }],
+      degraded: []
+    };
+    const testDriver: LinkedInDriver = {
+      ...driver,
+      listConversations: async () => listing,
+      readThread: async () => transcript
+    };
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver: testDriver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(result.executed).toBe(1);
+    expect(harness.recordedNewThreads).toEqual([summary]);
+    expect(harness.recordedReplyMessages).toEqual([{ threadUrn: 'new-thread==', messages: transcript.messages }]);
+  });
+
+  it('leaves a dm alone when the new conversation is not among the newest few, same as before this existed', async () => {
+    const harness = fakeStore([
+      action({ id: 'lact_dm', kind: 'dm', targetRef: 'https://www.linkedin.com/in/new-person/', body: 'hi there' })
+    ]);
+    const { driver } = fakeDriver();
+    const testDriver: LinkedInDriver = {
+      ...driver,
+      listConversations: async () => ({ ok: true, threads: [], degraded: [] }),
+      readThread: async () => {
+        throw new Error('should not be reached: no thread was matched');
+      }
+    };
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver: testDriver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(result.executed).toBe(1);
+    expect(harness.sent).toEqual(['lact_dm']);
+    expect(harness.recordedNewThreads).toEqual([]);
+    expect(harness.recordedReplyMessages).toEqual([]);
+  });
+
+  it('does not reach for the rail at all on kinds that are not a dm or a reply', async () => {
+    const harness = fakeStore([action({ id: 'lact_invite', kind: 'invite', targetRef: 'https://www.linkedin.com/in/z/' })]);
+    const { driver } = fakeDriver();
+    let listCalls = 0;
+    const testDriver: LinkedInDriver = {
+      ...driver,
+      listConversations: async () => {
+        listCalls += 1;
+        return { ok: true, threads: [], degraded: [] };
+      }
+    };
+
+    await runLinkedInLocalBatch(harness.store, { driver: testDriver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+
+    expect(listCalls).toBe(0);
   });
 });
 
