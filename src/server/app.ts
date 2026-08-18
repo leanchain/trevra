@@ -56,6 +56,7 @@ import {
   listWorkspaceSkills,
   SkillApiError
 } from './skill-api.js';
+import { listOutreachThreads } from './outreach/store.js';
 import { handleMcpHttpRequest, rejectMcpNonPost } from './mcp-http.js';
 import {
   decidePlaybookApproval,
@@ -1003,6 +1004,15 @@ export function createApp(db: Db) {
       const run = await getWorkspaceSkillRun(db, req.auth!.workspaceId, String(req.params.id));
       if (!run) return res.status(404).json({ error: 'Skill run not found' });
       res.json({ run });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/outreach/threads', async (req: AuthedRequest, res, next) => {
+    try {
+      const filters = outreachThreadFiltersSchema.parse(req.query);
+      res.json({ threads: await listOutreachThreads(db, req.auth!.workspaceId, filters) });
     } catch (error) {
       next(error);
     }
@@ -4498,15 +4508,13 @@ export function createApp(db: Db) {
     linkedinRoute(async (req, res) => {
       const input = linkedinWorkflowWriteSchema.parse(req.body ?? {});
       try {
-        res
-          .status(201)
-          .json({
-            workflow: await saveWorkflow(
-              db,
-              { workspaceId: req.auth!.workspaceId, name: input.name, steps: input.steps },
-              new Date()
-            )
-          });
+        res.status(201).json({
+          workflow: await saveWorkflow(
+            db,
+            { workspaceId: req.auth!.workspaceId, name: input.name, steps: input.steps },
+            new Date()
+          )
+        });
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
@@ -5086,15 +5094,13 @@ export function createApp(db: Db) {
         );
       }
 
-      res
-        .status(201)
-        .json({
-          actionId: filed.id,
-          kind: input.kind,
-          targetRef: input.targetRef,
-          plannedFor,
-          verdict
-        });
+      res.status(201).json({
+        actionId: filed.id,
+        kind: input.kind,
+        targetRef: input.targetRef,
+        plannedFor,
+        verdict
+      });
     })
   );
 
@@ -5489,6 +5495,11 @@ export function createApp(db: Db) {
 const skillRunFiltersSchema = z.object({
   skillId: z.string().min(1).max(200).optional(),
   status: z.enum(['ok', 'error']).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50)
+});
+
+const outreachThreadFiltersSchema = z.object({
+  platform: z.string().min(1).max(50).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50)
 });
 

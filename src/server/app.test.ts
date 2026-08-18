@@ -1771,3 +1771,38 @@ describe('export and erasure', () => {
     await owner.agent.get('/api/dashboard').expect(401);
   });
 });
+
+describe('GET /api/outreach/threads', () => {
+  it('lists discovered threads, scoped to the caller workspace, filterable by platform', async () => {
+    const agent = await agentWithSession();
+
+    const { recordSeenThreads } = await import('./outreach/store.js');
+    await recordSeenThreads(
+      db!,
+      DEMO_WORKSPACE_ID,
+      [
+        {
+          platform: 'linkedin',
+          externalId: 'li-1',
+          url: 'https://linkedin.test/post/1',
+          title: 'Token costs are out of control',
+          content: 'body',
+          author: 'someone',
+          community: null,
+          score: 7,
+          numComments: 2,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          metadata: {}
+        }
+      ],
+      new Date('2026-08-01T00:00:00.000Z')
+    );
+
+    const all = await agent.get('/api/outreach/threads').expect(200);
+    expect(all.body.threads).toHaveLength(1);
+    expect(all.body.threads[0].platform).toBe('linkedin');
+
+    const filtered = await agent.get('/api/outreach/threads?platform=reddit').expect(200);
+    expect(filtered.body.threads).toEqual([]);
+  });
+});
