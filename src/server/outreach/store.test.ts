@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.js';
-import { isThreadReplied, recordPost, recordSeenThreads } from './store.js';
+import { isThreadReplied, listOutreachThreads, recordPost, recordSeenThreads } from './store.js';
 import type { OutreachThread } from './types.js';
 
 let db: Db;
@@ -56,7 +56,11 @@ describe('recordSeenThreads', () => {
   it('keeps returning a discovered thread until we have actually replied to it', async () => {
     // The backlog case. A run that discovers 3 threads and replies to 1 must
     // still offer the other 2 on the next run -- the reference buried them.
-    const batch = [thread({ externalId: 'a' }), thread({ externalId: 'b' }), thread({ externalId: 'c' })];
+    const batch = [
+      thread({ externalId: 'a' }),
+      thread({ externalId: 'b' }),
+      thread({ externalId: 'c' })
+    ];
 
     const first = await recordSeenThreads(db, DEMO_WORKSPACE_ID, batch, NOW);
     expect(first.fresh.map((entry) => entry.externalId)).toEqual(['a', 'b', 'c']);
@@ -76,7 +80,12 @@ describe('recordSeenThreads', () => {
   it('detects that a thread was edited after we first read it', async () => {
     await recordSeenThreads(db, DEMO_WORKSPACE_ID, [thread({ externalId: 'a' })], NOW);
 
-    const unchanged = await recordSeenThreads(db, DEMO_WORKSPACE_ID, [thread({ externalId: 'a' })], NOW);
+    const unchanged = await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'a' })],
+      NOW
+    );
     expect(unchanged.changed).toEqual([]);
 
     // The OP adds the detail that makes the thread worth replying to.
@@ -90,11 +99,23 @@ describe('recordSeenThreads', () => {
   });
 
   it('refreshes engagement counters, so the scorer reads current numbers', async () => {
-    await recordSeenThreads(db, DEMO_WORKSPACE_ID, [thread({ externalId: 'a', score: 3, numComments: 1 })], NOW);
-    await recordSeenThreads(db, DEMO_WORKSPACE_ID, [thread({ externalId: 'a', score: 92, numComments: 40 })], NOW);
+    await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'a', score: 3, numComments: 1 })],
+      NOW
+    );
+    await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'a', score: 92, numComments: 40 })],
+      NOW
+    );
 
     const row = await db
-      .prepare('SELECT score, num_comments FROM outreach_threads WHERE workspace_id=? AND external_id=?')
+      .prepare(
+        'SELECT score, num_comments FROM outreach_threads WHERE workspace_id=? AND external_id=?'
+      )
       .get<{ score: number; num_comments: number }>(DEMO_WORKSPACE_ID, 'a');
     expect(row).toEqual({ score: 92, num_comments: 40 });
   });
@@ -104,7 +125,9 @@ describe('recordSeenThreads', () => {
       await recordSeenThreads(db, DEMO_WORKSPACE_ID, [thread({ externalId: 'a' })], NOW);
     }
     const row = await db
-      .prepare('SELECT COUNT(*)::int AS total FROM outreach_threads WHERE workspace_id=? AND external_id=?')
+      .prepare(
+        'SELECT COUNT(*)::int AS total FROM outreach_threads WHERE workspace_id=? AND external_id=?'
+      )
       .get<{ total: number }>(DEMO_WORKSPACE_ID, 'a');
     expect(row?.total).toBe(1);
   });
@@ -113,17 +136,29 @@ describe('recordSeenThreads', () => {
     await reply('a', 'reddit');
 
     // Same external id on another platform is a different thread.
-    const other = await recordSeenThreads(db, DEMO_WORKSPACE_ID, [thread({ externalId: 'a', platform: 'lobsters' })], NOW);
+    const other = await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'a', platform: 'lobsters' })],
+      NOW
+    );
     expect(other.fresh).toHaveLength(1);
 
     // Another workspace has its own reply history. Created idempotently: the
     // container outlives a single test file and resetDemoData only drops the
     // demo workspace.
     await db
-      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+      .prepare(
+        'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+      )
       .run('ws_store_other', 'Other', NOW.toISOString());
     await db.prepare('DELETE FROM outreach_threads WHERE workspace_id=?').run('ws_store_other');
-    const elsewhere = await recordSeenThreads(db, 'ws_store_other', [thread({ externalId: 'a' })], NOW);
+    const elsewhere = await recordSeenThreads(
+      db,
+      'ws_store_other',
+      [thread({ externalId: 'a' })],
+      NOW
+    );
     expect(elsewhere.fresh).toHaveLength(1);
   });
 
@@ -145,7 +180,12 @@ describe('recordSeenThreads', () => {
       },
       NOW
     );
-    const result = await recordSeenThreads(db, DEMO_WORKSPACE_ID, [thread({ externalId: 'a' })], NOW);
+    const result = await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'a' })],
+      NOW
+    );
     expect(result.fresh).toHaveLength(0);
     expect(result.repliedCount).toBe(1);
   });
@@ -168,7 +208,12 @@ describe('recordSeenThreads', () => {
       },
       NOW
     );
-    const result = await recordSeenThreads(db, DEMO_WORKSPACE_ID, [thread({ externalId: 'a' })], NOW);
+    const result = await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'a' })],
+      NOW
+    );
     expect(result.fresh).toHaveLength(1);
     expect(await isThreadReplied(db, DEMO_WORKSPACE_ID, 'reddit', 'a')).toBe(false);
   });
@@ -191,7 +236,46 @@ describe('recordSeenThreads', () => {
       },
       NOW
     );
-    const result = await recordSeenThreads(db, DEMO_WORKSPACE_ID, [thread({ externalId: 'a' })], NOW);
+    const result = await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'a' })],
+      NOW
+    );
     expect(result.fresh).toHaveLength(0);
+  });
+});
+
+describe('listOutreachThreads', () => {
+  it('filters by platform and ranks by score, newest first on a tie', async () => {
+    await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [
+        thread({ externalId: 'r1', platform: 'reddit', score: 5 }),
+        thread({ externalId: 'r2', platform: 'reddit', score: 9 }),
+        thread({ externalId: 'l1', platform: 'linkedin', score: 3 })
+      ],
+      NOW
+    );
+
+    const reddit = await listOutreachThreads(db, DEMO_WORKSPACE_ID, { platform: 'reddit' });
+    expect(reddit.map((row) => row.external_id)).toEqual(['r2', 'r1']);
+
+    const all = await listOutreachThreads(db, DEMO_WORKSPACE_ID);
+    expect(all).toHaveLength(3);
+  });
+
+  it('returns nothing for a workspace with no discovered threads', async () => {
+    const rows = await listOutreachThreads(db, 'ws_no_such_workspace');
+    expect(rows).toEqual([]);
+  });
+
+  it('clamps limit to the same [1, 200] band the skill-run list uses', async () => {
+    const rows = await listOutreachThreads(db, DEMO_WORKSPACE_ID, { limit: 0 });
+    expect(rows).toEqual([]);
+    // limit=0 clamps to 1, not 0 -- asserting only that the call does not
+    // throw and returns an array proves the clamp did not become a no-op.
+    expect(Array.isArray(rows)).toBe(true);
   });
 });

@@ -63,7 +63,9 @@ export async function recordSeenThreads(
     // The prior hash is read in a CTE that is evaluated against the snapshot
     // BEFORE the upsert writes the new one. Reading it from RETURNING instead
     // would always report the value just written, making an edit undetectable.
-    const row = await db.prepare(`
+    const row = await db
+      .prepare(
+        `
       WITH prior AS (
         SELECT content_hash, TRUE AS existed FROM outreach_threads
         WHERE workspace_id=? AND platform=? AND external_id=?
@@ -90,31 +92,34 @@ export async function recordSeenThreads(
         COALESCE((SELECT existed FROM prior), FALSE) AS existed,
         COALESCE((SELECT done FROM replied), FALSE) AS replied
       FROM upserted
-    `).get<{ previous_hash: string | null; existed: boolean; replied: boolean }>(
-      workspaceId,
-      thread.platform,
-      thread.externalId,
-      workspaceId,
-      thread.platform,
-      thread.externalId,
-      id('othr'),
-      workspaceId,
-      thread.platform,
-      thread.externalId,
-      thread.url,
-      thread.title,
-      hash,
-      thread.author,
-      thread.community,
-      Math.trunc(thread.score),
-      Math.trunc(thread.numComments),
-      thread.createdAt,
-      JSON.stringify(thread.metadata ?? {}),
-      timestamp,
-      timestamp
-    );
+    `
+      )
+      .get<{ previous_hash: string | null; existed: boolean; replied: boolean }>(
+        workspaceId,
+        thread.platform,
+        thread.externalId,
+        workspaceId,
+        thread.platform,
+        thread.externalId,
+        id('othr'),
+        workspaceId,
+        thread.platform,
+        thread.externalId,
+        thread.url,
+        thread.title,
+        hash,
+        thread.author,
+        thread.community,
+        Math.trunc(thread.score),
+        Math.trunc(thread.numComments),
+        thread.createdAt,
+        JSON.stringify(thread.metadata ?? {}),
+        timestamp,
+        timestamp
+      );
 
-    if (row?.existed && row.previous_hash !== null && row.previous_hash !== hash) changed.push(thread.externalId);
+    if (row?.existed && row.previous_hash !== null && row.previous_hash !== hash)
+      changed.push(thread.externalId);
 
     if (row?.replied) repliedCount += 1;
     else fresh.push(thread);
@@ -124,12 +129,21 @@ export async function recordSeenThreads(
 }
 
 /** True when we have already replied to (or handed off) this thread. */
-export async function isThreadReplied(db: Db, workspaceId: string, platform: string, externalId: string): Promise<boolean> {
-  const row = await db.prepare(`
+export async function isThreadReplied(
+  db: Db,
+  workspaceId: string,
+  platform: string,
+  externalId: string
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `
     SELECT id FROM outreach_posts
     WHERE workspace_id=? AND platform=? AND thread_external_id=? AND status <> 'failed'
     LIMIT 1
-  `).get<{ id: string }>(workspaceId, platform, externalId);
+  `
+    )
+    .get<{ id: string }>(workspaceId, platform, externalId);
   return row !== undefined;
 }
 
@@ -140,12 +154,21 @@ export async function isThreadReplied(db: Db, workspaceId: string, platform: str
  * matched today's, which let a cap of 5 deliver 10 posts across a midnight
  * boundary -- and midnight in whose timezone was never defined.
  */
-export async function countPostsToday(db: Db, workspaceId: string, platform: string, now: Date): Promise<number> {
+export async function countPostsToday(
+  db: Db,
+  workspaceId: string,
+  platform: string,
+  now: Date
+): Promise<number> {
   const since = new Date(now.getTime() - 86_400_000).toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT COUNT(*)::int AS total FROM outreach_posts
     WHERE workspace_id=? AND platform=? AND status <> 'failed' AND created_at > ?
-  `).get<{ total: number }>(workspaceId, platform, since);
+  `
+    )
+    .get<{ total: number }>(workspaceId, platform, since);
   return row?.total ?? 0;
 }
 
@@ -160,12 +183,16 @@ export async function lastPostInCommunity(
   // pool sets a pass-through type parser for 1184, so the driver hands back
   // '2026-08-03 10:00:00+00' and leaves the parsing to us. Doing it here keeps
   // one unambiguous ISO shape instead of relying on Date's tolerance.
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT TO_CHAR(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS posted_at
     FROM outreach_posts
     WHERE workspace_id=? AND platform=? AND LOWER(community)=LOWER(?) AND status <> 'failed'
     ORDER BY created_at DESC LIMIT 1
-  `).get<{ posted_at: string }>(workspaceId, platform, community);
+  `
+    )
+    .get<{ posted_at: string }>(workspaceId, platform, community);
   if (!row?.posted_at) return null;
   return new Date(row.posted_at);
 }
@@ -182,14 +209,22 @@ export async function communityVolume(
   platform: string,
   community: string
 ): Promise<CommunityVolume> {
-  const discovered = await db.prepare(`
+  const discovered = await db
+    .prepare(
+      `
     SELECT COUNT(*)::int AS total FROM outreach_threads
     WHERE workspace_id=? AND platform=? AND LOWER(community)=LOWER(?)
-  `).get<{ total: number }>(workspaceId, platform, community);
-  const posted = await db.prepare(`
+  `
+    )
+    .get<{ total: number }>(workspaceId, platform, community);
+  const posted = await db
+    .prepare(
+      `
     SELECT COUNT(*)::int AS total FROM outreach_posts
     WHERE workspace_id=? AND platform=? AND LOWER(community)=LOWER(?) AND status <> 'failed'
-  `).get<{ total: number }>(workspaceId, platform, community);
+  `
+    )
+    .get<{ total: number }>(workspaceId, platform, community);
   return { discovered: discovered?.total ?? 0, posted: posted?.total ?? 0 };
 }
 
@@ -201,23 +236,40 @@ export interface ExistingPost {
 }
 
 /** The non-failed post already logged under this payload hash, if any. */
-export async function existingPost(db: Db, workspaceId: string, payloadHash: string): Promise<ExistingPost | undefined> {
-  return db.prepare(`
+export async function existingPost(
+  db: Db,
+  workspaceId: string,
+  payloadHash: string
+): Promise<ExistingPost | undefined> {
+  return db
+    .prepare(
+      `
     SELECT id, status, provider, external_ref FROM outreach_posts
     WHERE workspace_id=? AND payload_hash=? AND status <> 'failed'
     ORDER BY created_at DESC LIMIT 1
-  `).get<ExistingPost>(workspaceId, payloadHash);
+  `
+    )
+    .get<ExistingPost>(workspaceId, payloadHash);
 }
 
 /** Resolve a claimed (`pending`) row once the platform's answer is known. */
 export async function settlePost(
   db: Db,
   postId: string,
-  outcome: { status: OutreachPostStatus; provider: string | null; externalRef: string | null; error: string | null }
+  outcome: {
+    status: OutreachPostStatus;
+    provider: string | null;
+    externalRef: string | null;
+    error: string | null;
+  }
 ): Promise<void> {
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE outreach_posts SET status=?, provider=?, external_ref=?, error=? WHERE id=?
-  `).run(outcome.status, outcome.provider, outcome.externalRef, outcome.error, postId);
+  `
+    )
+    .run(outcome.status, outcome.provider, outcome.externalRef, outcome.error, postId);
 }
 
 /**
@@ -249,37 +301,94 @@ export interface OutreachPostRecord {
  * retried action step is a no-op rather than a duplicate comment. The unique
  * index does the enforcing; this just reports it without throwing.
  */
-export async function recordPost(db: Db, record: OutreachPostRecord, now: Date): Promise<{ id: string; duplicate: boolean }> {
+export async function recordPost(
+  db: Db,
+  record: OutreachPostRecord,
+  now: Date
+): Promise<{ id: string; duplicate: boolean }> {
   const postId = id('opst');
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     INSERT INTO outreach_posts (
       id, workspace_id, platform, community, thread_external_id, thread_url,
       payload_hash, status, provider, external_ref, error, body, created_at
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, payload_hash) WHERE status <> 'failed' DO NOTHING
     RETURNING id
-  `).get<{ id: string }>(
-    postId,
-    record.workspaceId,
-    record.platform,
-    record.community,
-    record.threadExternalId,
-    record.threadUrl,
-    record.payloadHash,
-    record.status,
-    record.provider,
-    record.externalRef,
-    record.error,
-    record.body,
-    now.toISOString()
-  );
+  `
+    )
+    .get<{ id: string }>(
+      postId,
+      record.workspaceId,
+      record.platform,
+      record.community,
+      record.threadExternalId,
+      record.threadUrl,
+      record.payloadHash,
+      record.status,
+      record.provider,
+      record.externalRef,
+      record.error,
+      record.body,
+      now.toISOString()
+    );
 
   if (row) return { id: row.id, duplicate: false };
 
-  const existing = await db.prepare(`
+  const existing = await db
+    .prepare(
+      `
     SELECT id FROM outreach_posts
     WHERE workspace_id=? AND payload_hash=? AND status <> 'failed'
     ORDER BY created_at DESC LIMIT 1
-  `).get<{ id: string }>(record.workspaceId, record.payloadHash);
+  `
+    )
+    .get<{ id: string }>(record.workspaceId, record.payloadHash);
   return { id: existing?.id ?? postId, duplicate: true };
+}
+
+export interface OutreachThreadRow {
+  id: string;
+  platform: string;
+  external_id: string;
+  url: string;
+  title: string;
+  author: string | null;
+  community: string | null;
+  score: number;
+  num_comments: number;
+  thread_created_at: string | null;
+  first_seen_at: string;
+}
+
+/**
+ * Discovered threads, best-scored first, tied breaking newest-first. The read
+ * path `outreach_threads` never had -- see docs/superpowers/specs/2026-08-18-research-hub-design.md.
+ */
+export async function listOutreachThreads(
+  db: Db,
+  workspaceId: string,
+  filters: { platform?: string; limit?: number } = {}
+): Promise<OutreachThreadRow[]> {
+  const limit = Math.max(1, Math.min(filters.limit ?? 50, 200));
+  const clauses = ['workspace_id=?'];
+  const params: unknown[] = [workspaceId];
+  if (filters.platform) {
+    clauses.push('platform=?');
+    params.push(filters.platform);
+  }
+  params.push(limit);
+  return db
+    .prepare(
+      `
+    SELECT id, platform, external_id, url, title, author, community, score,
+           num_comments, thread_created_at, first_seen_at
+    FROM outreach_threads
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY score DESC, first_seen_at DESC
+    LIMIT ?
+  `
+    )
+    .all<OutreachThreadRow>(...params);
 }
