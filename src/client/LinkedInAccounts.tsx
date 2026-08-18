@@ -848,7 +848,16 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
             safety={safety}
             firstOne
             onCancel={null}
-            onCreated={(created) => { setActiveKey(created.seatKey); setToast(`${created.label} added. Connect it below to start sending from it.`); void load(); }}
+            onCreated={(created) => {
+              // `load()` must land BEFORE the switch: `accounts` here is still the
+              // pre-creation list, and setting `activeKey` to a key that list does
+              // not contain yet trips the correction effect below straight back to
+              // `accounts[0]` -- the account this form just added becomes
+              // unreachable by clicking it, because the click set the very key this
+              // race keeps erasing.
+              setToast(`${created.label} added. Connect it below to start sending from it.`);
+              void load().then(() => setActiveKey(created.seatKey));
+            }}
           />
         </section>
         : <>
@@ -911,9 +920,10 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
               onCancel={() => setAdding(false)}
               onCreated={(created) => {
                 setAdding(false);
-                setActiveKey(created.seatKey);
                 setToast(`${created.label} added. Connect it below to start sending from it.`);
-                void load();
+                // Same ordering as the first-account form above, and for the same
+                // reason: switch only once `accounts` actually contains this key.
+                void load().then(() => setActiveKey(created.seatKey));
               }}
             />}
           </section>
