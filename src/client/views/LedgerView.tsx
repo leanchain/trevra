@@ -42,9 +42,8 @@ import {
  * under a marketing sentence about autopilot, behind a playbook launcher that
  * `docs/app-spec.md` §4 had already ruled was not the front door.
  *
- * The launcher moved to `/setup/skills` under "Run one by hand". The hero
- * went. What is left is the list, its inspector, and the control that earns
- * the export claim.
+ * The launcher is gone. The hero went too. What is left is the list, its
+ * inspector, and the control that earns the export claim.
  * -------------------------------------------------------------------------- */
 
 type ActivityRow =
@@ -368,12 +367,6 @@ export function LedgerView({
             <div className="empty-state">
               <Workflow size={28} />
               <h4 aria-level={3}>No runs yet</h4>
-              <p>
-                Start a job in <strong>Setup → Skills</strong>.
-              </p>
-              <button className="secondary-button" onClick={() => onNavigate('/setup/skills')}>
-                Start a job <ChevronRight size={15} />
-              </button>
             </div>
           )}
           {loaded && activity.length > 0 && shown.length === 0 && (

@@ -10,6 +10,7 @@ import {
   type FeedThread,
   type OutreachOffer
 } from '../api';
+import { RedditAccountPanel } from '../RedditScreen';
 import { ResearchScreen } from '../ResearchScreen';
 import { EvidenceList } from './inspector';
 import { chipPoints, factsLine, platformLabel, whyChips } from './researchFormat';
@@ -539,6 +540,7 @@ export function ResearchView({
             <Database size={13} /> Reddit research corpus
           </summary>
           <div className="mgr-inputs-body">
+            {redditOpen && <RedditAccountPanel setToast={setToast} />}
             {redditOpen && <ResearchScreen connections={connections} setToast={setToast} />}
           </div>
         </details>

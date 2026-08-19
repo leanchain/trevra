@@ -6,20 +6,16 @@ import type {
   AgentModelConfig,
   AgentRun,
   AgentRunSummary,
-  AgentSchedule,
   AgentScope,
   AgentSetup,
   AgentTokenSummary,
   AvailableIntegration,
   ConnectionSummary,
   DashboardPayload,
-  PlaybookManifest,
   PlaybookRun,
   PlaybookRunStatus,
   SkillRun,
-  WorkspacePolicy,
-  PublicRegistryModule,
-  InstalledCommunityModule
+  WorkspacePolicy
 } from '../shared/types';
 /**
  * LinkedIn (docs/linkedin-outreach-plan.md sections 5 and 6).
@@ -210,17 +206,8 @@ export async function createConnectSession(
   return result.session;
 }
 
-export async function syncIntegration(id: string): Promise<void> {
-  await request(`/api/integrations/${id}/sync`, { method: 'POST' });
-}
-
 export async function disconnectIntegration(id: string): Promise<void> {
   await request(`/api/integrations/${id}`, { method: 'DELETE' });
-}
-
-export async function getPlaybooks(): Promise<PlaybookManifest[]> {
-  const result = await request<{ playbooks: PlaybookManifest[] }>('/api/playbooks');
-  return result.playbooks;
 }
 
 export async function startPlaybook(
@@ -445,18 +432,6 @@ export async function saveAgentBudget(input: {
   return result.budget;
 }
 
-export async function saveAgentSchedule(input: {
-  enabled?: boolean;
-  goal?: string;
-  intervalMinutes?: number;
-}): Promise<AgentSchedule> {
-  const result = await request<{ schedule: AgentSchedule }>('/api/agent-setup/schedule', {
-    method: 'PUT',
-    body: JSON.stringify(input)
-  });
-  return result.schedule;
-}
-
 /**
  * The third way to run the hosted agent: a workspace's own Claude/Codex
  * subscription (docs/cli-agent-and-hosted.md). Mirrors the BYOK functions
@@ -551,6 +526,24 @@ export async function deletePolicy(id: string): Promise<void> {
   await request(`/api/policies/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export async function updatePolicy(
+  id: string,
+  input: Partial<{
+    name: string;
+    priority: number;
+    actionPattern: string;
+    effect: WorkspacePolicy['effect'];
+    conditions: Record<string, unknown>;
+    enabled: boolean;
+  }>
+): Promise<WorkspacePolicy[]> {
+  const result = await request<{ policies: WorkspacePolicy[] }>(
+    `/api/policies/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: JSON.stringify(input) }
+  );
+  return result.policies;
+}
+
 export interface PublicConfig {
   googleAuthEnabled: boolean;
   emailPasswordAuthEnabled: boolean;
@@ -575,35 +568,6 @@ export async function createAgentToken(input: {
 
 export async function revokeAgentToken(id: string): Promise<void> {
   await request(`/api/agent-tokens/${id}`, { method: 'DELETE' });
-}
-
-export async function getPublicRegistryModules(): Promise<PublicRegistryModule[]> {
-  const result = await request<{ modules: PublicRegistryModule[] }>('/api/public/modules');
-  return result.modules;
-}
-
-export async function getInstalledRegistryModules(): Promise<InstalledCommunityModule[]> {
-  const result = await request<{ modules: InstalledCommunityModule[] }>(
-    '/api/registry/installations'
-  );
-  return result.modules;
-}
-
-export async function installRegistryModule(
-  moduleId: string,
-  version: string,
-  config: Record<string, unknown> = {}
-): Promise<void> {
-  await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, {
-    method: 'POST',
-    body: JSON.stringify({ version, config })
-  });
-}
-
-export async function uninstallRegistryModule(moduleId: string): Promise<void> {
-  await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, {
-    method: 'DELETE'
-  });
 }
 
 /* =====================================================================
@@ -766,9 +730,7 @@ export async function fetchLoopCost(windowDays: number): Promise<LoopCost> {
  *
  * NOTHING HERE SENDS ANYTHING, and the client half of that invariant is worth
  * stating where the fetches live: there is no `send` call below because there
- * is no route to call. `recordLinkedInOutcome` is the one function that moves
- * an action to sent/accepted/replied, and it is a REPORT of something that
- * already happened in the operator's own tool.
+ * is no route to call.
  * ================================================================== */
 
 /** Re-exported so the screens read one vocabulary and never reach into src/server themselves. */
@@ -1534,27 +1496,6 @@ export async function editLinkedInActionBody(
       body: JSON.stringify({ body })
     }
   );
-  return result.action;
-}
-
-/**
- * Report what already happened in the operator's own tool.
- *
- * `occurredAt` is not decoration: every rolling window reads it, so an outcome
- * reported on Friday for a send that happened on Tuesday must charge Tuesday.
- */
-export async function recordLinkedInOutcome(input: {
-  actionId?: string;
-  kind?: LinkedInActionKind;
-  targetRef?: string;
-  seatKey?: string;
-  outcome: 'sent' | 'accepted' | 'replied' | 'declined';
-  occurredAt?: string;
-}): Promise<LinkedInActionView> {
-  const result = await request<{ action: LinkedInActionView }>('/api/linkedin/actions/outcome', {
-    method: 'POST',
-    body: JSON.stringify(input)
-  });
   return result.action;
 }
 

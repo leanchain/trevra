@@ -94,13 +94,6 @@ const LIMIT_REASON: Record<string, string> = {
 export const limitReason = (boundBy: string) =>
   LIMIT_REASON[boundBy] ?? boundBy.replaceAll('-', ' ');
 
-/** Where a queued action came from. The stored values are `campaign`, `export` and `manual`. */
-const ACTION_SOURCE_LABELS: Record<string, string> = {
-  campaign: 'A campaign',
-  export: 'An export file',
-  manual: 'Added by hand'
-};
-
 /* -------------------------------------------------------------------------
  * `/setup/limits` -- the never-contact list.
  * ---------------------------------------------------------------------- */
@@ -163,10 +156,6 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
         <div className="section-heading">
           <div>
             <h3 aria-level={2}>Never contact</h3>
-            <p>
-              Checked before a campaign starts and before any plan is built, so nobody on this list
-              ever reaches a queue.
-            </p>
           </div>
         </div>
         {error && <div className="error-banner">{error}</div>}
@@ -190,10 +179,8 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
         </div>
         <div className="panel-footer">
           <span>
-            Matching is on the text, ignoring case — a plain LinkedIn URL here also matches a
-            harvested copy of it carrying tracking parameters, since both fold to the same profile.
-            Trevra never looks a handle up on LinkedIn to check it. There is no Remove button here —
-            taking somebody off this list is a database change, on purpose.
+            There is no Remove button here — taking somebody off this list is a database change, on
+            purpose.
           </span>
           <button className="primary-button" disabled={busy} onClick={() => void add()}>
             {busy ? <LoaderCircle className="spin" size={15} /> : <Ban size={15} />} Add to the list
@@ -202,16 +189,13 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
       </section>
 
       <section className="page-panel">
-        {exclusions.length === 0 ? (
-          <p className="empty-copy">Nobody is excluded yet.</p>
-        ) : (
+        {exclusions.length > 0 && (
           <div className="li-table-scroll">
             <table className="li-table">
               <thead>
                 <tr>
                   <th>Person</th>
                   <th>Reason</th>
-                  <th>Added from</th>
                   <th>Added</th>
                 </tr>
               </thead>
@@ -220,7 +204,6 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
                   <tr key={entry.id}>
                     <td className="li-target">{entry.targetRef}</td>
                     <td>{entry.reason || '—'}</td>
-                    <td>{entry.source}</td>
                     <td>{new Date(entry.createdAt).toLocaleDateString()}</td>
                   </tr>
                 ))}

@@ -308,16 +308,11 @@ const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   },
   { path: '/setup/agent', label: 'Setup · Agent access', hint: 'Connect Claude Code or Codex' },
   {
-    path: '/setup/spend',
+    path: '/setup',
     label: 'Setup · The spending cap',
     hint: 'The monthly cap and the switch, inside Agent access'
   },
   { path: '/setup/data', label: 'Setup · Connections', hint: 'Where your data comes from' },
-  {
-    path: '/setup/skills',
-    label: 'Setup · Skills',
-    hint: 'What your agent can do, and running one by hand'
-  },
   { path: '/setup/limits', label: 'Setup · Limits', hint: 'Hard limits and never-contact list' }
 ];
 

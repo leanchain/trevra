@@ -2,90 +2,39 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ArrowLeft,
   Check,
-  CircleAlert,
-  ExternalLink,
   LoaderCircle,
   LogIn,
   MessageSquare,
-  Search,
-  Send,
   ShieldCheck,
   Unplug
 } from 'lucide-react';
 import {
-  commentOnReddit,
   deleteRedditCredentials,
   getRedditAccount,
   loginReddit,
-  researchReddit,
   saveRedditCredentials,
   type RedditAccountResponse,
   type RedditLoginResult,
-  type RedditResearchResult,
-  type RedditThread,
   type RedditWorkerStatus
 } from './api';
 import { errorMessage } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 
 /**
- * Reddit, on one screen, in the order the work actually happens: connect the
- * account, read what people are saying, answer one of them.
+ * The Reddit account: connect with credentials, confirm the session, or
+ * disconnect. Reading subreddits and posting comments live next to the
+ * research corpus now, not here.
  *
- * Two things are true here that are not true of the LinkedIn screens:
- *
- * 1. THERE IS NO PACING ENGINE BEHIND THIS SCREEN. A LinkedIn reply becomes a
- *    gated row that a worker drains at a randomised gap. A Reddit comment is
- *    posted by the button that says it posts one. The operator is the pacing
- *    engine, which is why every send affordance here says what it does in the
- *    same breath it offers to do it.
- * 2. THE HANDLE IS NOT SECRET. LinkedIn masks the sign-in email because nobody
- *    else ever sees it. Reddit prints `u/name` under every comment the account
- *    posts, so masking it here would only hide from the operator which account
- *    is about to speak.
+ * THE HANDLE IS NOT SECRET. LinkedIn masks the sign-in email because nobody
+ * else ever sees it. Reddit prints `u/name` under the account, so masking it
+ * here would only hide from the operator which account is connected.
  */
-
-/** The four listings Reddit itself offers. Taken from the response type so the two cannot drift. */
-type RedditSort = RedditResearchResult['reads'][number]['sort'];
-
-const SORTS: RedditSort[] = ['hot', 'new', 'top', 'rising'];
-
-/**
- * `SaaS, r/Entrepreneur selfhosted` -> `['SaaS', 'Entrepreneur', 'selfhosted']`.
- *
- * Commas and spaces both separate because both are how people write a list of
- * subreddits, and a leading `r/` is stripped because it is how people write a
- * subreddit. Deduplicated: the server walks these one at a time to stay under
- * the rate limit, so a name typed twice would cost a whole extra read.
- */
-const parseSubreddits = (raw: string) =>
-  Array.from(
-    new Set(
-      raw
-        .split(/[\s,]+/)
-        .map((name) => name.trim().replace(/^\/?r\//i, ''))
-        .filter(Boolean)
-    )
-  );
-
-/**
- * A count Reddit did not render comes back as null, and it renders as a dash.
- *
- * NULL IS NOT ZERO. A thread whose score the listing withheld has not scored
- * nothing; printing `0` would state a number nobody measured, and the operator
- * picking which thread to answer would be reading a fact we invented.
- */
-const countOf = (value: number | null) => (value === null ? '—' : value.toLocaleString());
-
-/** `u/name`, whether or not the listing already prefixed it. */
-const authorHandle = (author: string | null) =>
-  author === null ? null : `u/${author.replace(/^u\//, '')}`;
 
 /** One sentence each, deduplicated. The server already scopes `blockers` to this auth mode. */
 const blockersOf = (worker: RedditWorkerStatus | null) =>
   worker ? Array.from(new Set(worker.blockers)) : [];
 
-export function RedditScreen({ setToast }: { setToast: (message: string) => void }) {
+export function RedditAccountPanel({ setToast }: { setToast: (message: string) => void }) {
   const [account, setAccount] = useState<RedditAccountResponse | null>(null);
   const [loadError, setLoadError] = useState('');
 
@@ -100,19 +49,6 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
   const [disconnecting, setDisconnecting] = useState(false);
   /** The server's own sentence. 'instruction' is a step to take; 'error' is something that went wrong. */
   const [note, setNote] = useState<{ tone: 'error' | 'instruction'; message: string } | null>(null);
-
-  const [subreddits, setSubreddits] = useState('');
-  const [sort, setSort] = useState<RedditSort>('hot');
-  const [limit, setLimit] = useState('25');
-  const [reading, setReading] = useState(false);
-  const [research, setResearch] = useState<RedditResearchResult | null>(null);
-  const [researchError, setResearchError] = useState('');
-
-  /** The URL of the one thread whose composer is open. One at a time; a reply deserves the whole attention. */
-  const [composing, setComposing] = useState<string | null>(null);
-  const [replyBody, setReplyBody] = useState('');
-  const [posting, setPosting] = useState(false);
-  const [replyError, setReplyError] = useState<string | null>(null);
 
   const auth = account?.auth ?? null;
   const worker = account?.worker ?? null;
@@ -232,63 +168,6 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
       });
     } finally {
       setDisconnecting(false);
-    }
-  };
-
-  const read = async () => {
-    const names = parseSubreddits(subreddits);
-    if (names.length === 0) {
-      setResearchError('Name at least one subreddit to read.');
-      return;
-    }
-    setReading(true);
-    setResearchError('');
-    try {
-      const count = Number(limit);
-      setResearch(
-        await researchReddit({
-          subreddits: names,
-          sort,
-          // An unreadable box is not an instruction to read everything: fall back
-          // to the server's own default rather than sending NaN.
-          limit: Number.isFinite(count) && count > 0 ? Math.min(100, Math.round(count)) : undefined
-        })
-      );
-    } catch (err) {
-      setResearchError(errorMessage(err, 'Unable to read those subreddits'));
-    } finally {
-      setReading(false);
-    }
-  };
-
-  const openComposer = (url: string) => {
-    setComposing(url);
-    setReplyBody('');
-    setReplyError(null);
-  };
-
-  /**
-   * Post the comment, now, once.
-   *
-   * THERE IS NO RETRY BUTTON AND THERE MUST NOT BE ONE. A failure here does not
-   * mean nothing was posted -- the request may have reached Reddit and only its
-   * answer got lost -- and a comment that is already live cannot be un-posted.
-   * So the server's sentence is shown verbatim, the composer stays open with
-   * the words still in it, and the operator decides after looking at the
-   * thread. Retrying on their behalf would risk a double post nobody can undo.
-   */
-  const postComment = async (url: string) => {
-    setPosting(true);
-    setReplyError(null);
-    try {
-      await commentOnReddit({ url, body: replyBody });
-      setComposing(null);
-      setReplyBody('');
-      setToast('Comment posted to Reddit.');
-    } catch (err) {
-      setReplyError(errorMessage(err, 'Reddit did not accept the comment'));
-    } finally {
-      setPosting(false);
     }
   };
 
@@ -463,272 +342,6 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
           </p>
         )}
       </section>
-
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>Read subreddits</h3>
-            <p>
-              Read-only. This button opens listings through the signed-in session and posts nothing.
-            </p>
-          </div>
-          <Search size={20} className="li-heading-icon" />
-        </div>
-
-        {researchError && <div className="error-banner">{researchError}</div>}
-
-        <div className="li-filter-row">
-          <label>
-            Subreddits
-            <input
-              value={subreddits}
-              onChange={(event) => setSubreddits(event.target.value)}
-              placeholder="SaaS, Entrepreneur, selfhosted"
-            />
-          </label>
-          <label>
-            Sort
-            <select value={sort} onChange={(event) => setSort(event.target.value as RedditSort)}>
-              {SORTS.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Posts each
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={limit}
-              onChange={(event) => setLimit(event.target.value)}
-            />
-          </label>
-          <button className="primary-button" disabled={reading} onClick={() => void read()}>
-            {reading ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />} Read
-          </button>
-        </div>
-
-        <p className="li-hint">
-          Separate names with commas or spaces; a leading <code>r/</code> is fine. They are walked
-          one at a time rather than at once, because a burst of listing reads from one account is
-          what gets an account rate-limited — several names take a while on purpose.
-        </p>
-      </section>
-
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>Threads</h3>
-            <p>
-              Replying here posts the comment immediately. There is no queue and nothing to approve
-              afterwards.
-            </p>
-          </div>
-          <Send size={20} className="li-heading-icon" />
-        </div>
-
-        {/* Named rather than dropped. A private, banned or misspelled subreddit is
-          the operator's next action, and a silent absence from the list below
-          reads as "nobody is posting there". */}
-        {research && research.refused.length > 0 && (
-          <div className="li-degraded">
-            <strong>Not read at all:</strong>
-            <ul>
-              {research.refused.map((entry) => (
-                <li key={entry.subreddit}>
-                  r/{entry.subreddit} — {entry.reason}
-                </li>
-              ))}
-            </ul>
-            <p>Nothing was read from these, so nothing below came from them.</p>
-          </div>
-        )}
-
-        {!research ? (
-          <div className="empty-state">
-            <MessageSquare size={22} />
-            <h4 aria-level={3}>Nothing read yet</h4>
-            <p>
-              Name a subreddit above and read it. What comes back is what the listing showed,
-              unranked and unfiltered.
-            </p>
-          </div>
-        ) : research.reads.length === 0 ? (
-          <p className="empty-copy">
-            No subreddit could be read. Every name is accounted for above.
-          </p>
-        ) : (
-          <div className="automation-list">
-            {research.reads.map((entry) => (
-              <article key={`${entry.subreddit}:${entry.sort}`} className="automation-card">
-                <div className="li-thread-top">
-                  <strong className="li-thread-name">
-                    r/{entry.subreddit} · {entry.sort}
-                  </strong>
-                  <span className="li-thread-time">{entry.threads.length} thread(s)</span>
-                </div>
-
-                {/* Verbatim, and never swallowed: a read that came back short is
-                  not a subreddit that went quiet. */}
-                {entry.degraded.length > 0 && (
-                  <div className="li-degraded">
-                    <strong>Read, but not all of it came back:</strong>
-                    <ul>
-                      {entry.degraded.map((line) => (
-                        <li key={line}>{line}</li>
-                      ))}
-                    </ul>
-                    <p>Anything missing is held as unknown, never as zero.</p>
-                  </div>
-                )}
-
-                {entry.threads.length === 0 ? (
-                  <p className="empty-copy">The listing rendered no posts.</p>
-                ) : (
-                  <div className="proof-items">
-                    {entry.threads.map((thread) => (
-                      <ThreadRow
-                        key={thread.id}
-                        thread={thread}
-                        open={composing === thread.url}
-                        body={replyBody}
-                        posting={posting}
-                        error={composing === thread.url ? replyError : null}
-                        onOpen={() => openComposer(thread.url)}
-                        onCancel={() => {
-                          setComposing(null);
-                          setReplyBody('');
-                          setReplyError(null);
-                        }}
-                        onBody={setReplyBody}
-                        onPost={() => void postComment(thread.url)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
-/**
- * One post, and the composer that answers it.
- *
- * The row holds no state of its own: which composer is open, what is typed in
- * it and what the last post attempt said all live one level up, so opening a
- * second composer cannot leave a half-written reply behind in the first.
- */
-function ThreadRow({
-  thread,
-  open,
-  body,
-  posting,
-  error,
-  onOpen,
-  onCancel,
-  onBody,
-  onPost
-}: {
-  thread: RedditThread;
-  open: boolean;
-  body: string;
-  posting: boolean;
-  error: string | null;
-  onOpen: () => void;
-  onCancel: () => void;
-  onBody: (value: string) => void;
-  onPost: () => void;
-}) {
-  const author = authorHandle(thread.author);
-
-  return (
-    <div className="proof-item">
-      <div className="li-thread-top">
-        <a className="li-thread-name" href={thread.url} target="_blank" rel="noopener noreferrer">
-          {thread.title} <ExternalLink size={11} />
-        </a>
-        <span className="li-thread-time">
-          {thread.createdAt ? relativeTime(thread.createdAt) : '—'}
-        </span>
-      </div>
-
-      <p className="li-thread-meta">
-        <span>{author ?? <span className="li-unknown">author unknown</span>}</span>
-        <span>· {countOf(thread.score)} points</span>
-        <span>· {countOf(thread.comments)} comments</span>
-      </p>
-
-      {open ? (
-        <div className="li-composer">
-          <label className="li-block-label">
-            Your reply
-            <textarea
-              rows={4}
-              value={body}
-              onChange={(event) => onBody(event.target.value)}
-              placeholder="Write the comment. Trevra posts the words you approved and does not compose them."
-            />
-          </label>
-
-          {error && (
-            <>
-              <div className="error-banner">{error}</div>
-              {/* The copy has to say this, not just the code: an operator who presses
-              a Reply button again after an error is not retrying, they are
-              posting a second comment. */}
-              <p className="li-hint">
-                <CircleAlert size={13} /> There is no retry, on purpose. The comment may already be
-                live — Reddit can accept a post and still fail to say so — and a duplicate cannot be
-                un-posted. Open the thread and look before you send this again.
-              </p>
-            </>
-          )}
-
-          <div className="panel-footer li-composer-foot">
-            <span>
-              {!body.trim() ? (
-                'Type a reply above — an empty comment has nothing to post.'
-              ) : (
-                <>
-                  <b>This posts the comment now.</b> No queue, no approval step, no safety gate
-                  between this button and r/{thread.subreddit ?? 'the thread'} — the account signed
-                  in above is the one that will have said it.
-                </>
-              )}
-            </span>
-            <div className="li-signin-actions">
-              <button
-                className="secondary-button"
-                type="button"
-                disabled={posting}
-                onClick={onCancel}
-              >
-                Cancel
-              </button>
-              <button
-                className="primary-button"
-                type="button"
-                disabled={posting || !body.trim()}
-                onClick={onPost}
-              >
-                {posting ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />} Post
-                comment
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <button className="secondary-button" type="button" onClick={onOpen}>
-          <Send size={13} /> Reply
-        </button>
-      )}
     </div>
   );
 }

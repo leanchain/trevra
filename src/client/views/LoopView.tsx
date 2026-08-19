@@ -644,7 +644,7 @@ export function LoopCostView({ onNavigate }: { onNavigate: (path: string) => voi
               <button
                 className="secondary-button"
                 type="button"
-                onClick={() => onNavigate('/setup/spend')}
+                onClick={() => onNavigate('/setup')}
               >
                 Change the cap <ChevronRight size={15} />
               </button>

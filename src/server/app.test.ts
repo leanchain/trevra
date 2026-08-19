@@ -1583,6 +1583,39 @@ describe('owner-only acts', () => {
   });
 });
 
+describe('PATCH /api/policies/:id', () => {
+  it('patches one field of a policy and leaves the rest alone', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    const { owner } = await ownerAndMember(app);
+
+    const created = await owner.agent
+      .post('/api/policies')
+      .send({ name: 'Ask me first', actionPattern: 'skill:*', effect: 'require_approval' })
+      .expect(201);
+    const policy = created.body.policies[0];
+
+    const patched = await owner.agent
+      .patch(`/api/policies/${policy.id}`)
+      .send({ enabled: false })
+      .expect(200);
+
+    const updated = patched.body.policies.find((p: { id: string }) => p.id === policy.id);
+    expect(updated.enabled).toBe(false);
+    expect(updated.name).toBe('Ask me first');
+    expect(updated.effect).toBe('require_approval');
+  });
+
+  it('refuses a policy patch from a member and an unknown id', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    const { owner, member } = await ownerAndMember(app);
+
+    await owner.agent.patch('/api/policies/pol_nope').send({ enabled: false }).expect(404);
+    await member.agent.patch('/api/policies/pol_nope').send({ enabled: false }).expect(403);
+  });
+});
+
 describe('pause is honoured by the legacy campaign routes', () => {
   /**
    * The bug this pins: `pauseManagedCampaign` writes `status='paused'` and

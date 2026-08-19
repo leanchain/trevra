@@ -18,39 +18,3 @@ export function formatDuration(ms: number | null): string | null {
   if (minutes < 60) return `${minutes}m ${String(whole % 60).padStart(2, '0')}s`;
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
-
-/** How often something repeats, said the way a person says it. */
-export function formatEvery(minutes: number): string {
-  const ladder: Array<[size: number, one: string, many: (count: number) => string]> = [
-    [10080, 'Once a week', (count) => `Every ${count} weeks`],
-    [1440, 'Once a day', (count) => `Every ${count} days`],
-    [60, 'Every hour', (count) => `Every ${count} hours`]
-  ];
-  for (const [size, one, many] of ladder) {
-    if (minutes > 0 && minutes % size === 0) {
-      const count = minutes / size;
-      return count === 1 ? one : many(count);
-    }
-  }
-  return `Every ${minutes} minutes`;
-}
-
-/**
- * How long ago: "2 hours ago". For the timestamps an operator reads as a
- * duration -- how stale a signed-in session is -- where an absolute clock time
- * answers a question nobody asked.
- */
-export function relativeTime(iso: string): string {
-  const seconds = Math.round((Date.parse(iso) - Date.now()) / 1000);
-  if (!Number.isFinite(seconds)) return iso;
-  const format = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-  const steps: Array<[Intl.RelativeTimeFormatUnit, number]> = [
-    ['second', 60], ['minute', 60], ['hour', 24], ['day', 7], ['week', 4.35], ['month', 12]
-  ];
-  let value = seconds;
-  for (const [unit, size] of steps) {
-    if (Math.abs(value) < size) return format.format(Math.round(value), unit);
-    value /= size;
-  }
-  return format.format(Math.round(value), 'year');
-}

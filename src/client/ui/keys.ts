@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from 'react';
+import { useEffect, useRef } from 'react';
 
 /* --------------------------------------------------------------------------
  * Keyboard shortcuts.
@@ -14,24 +14,6 @@ import { useEffect, useRef, type RefObject } from 'react';
  *    list is the only place bindings are written down, and a binding that is
  *    not on it does not exist.
  * -------------------------------------------------------------------------- */
-
-/**
- * With the caret outside every list, the first list on the page is the one
- * `j` starts in.
- *
- * Peers are the lists that ACTUALLY BOUND THE KEY, marked as they arm. Matching
- * on the container's class name instead handed the key to whichever list came
- * first in the DOM even when that list was too short to bind it, which is how
- * `j` came to do nothing at all on a screen holding three lists.
- */
-function ownsTheKey(root: HTMLElement): boolean {
-  const peers = Array.from(document.querySelectorAll<HTMLElement>('[data-list-keys="on"]'));
-  if (peers.length <= 1) return true;
-  const owner = peers.find(
-    (peer) => document.activeElement instanceof Node && peer.contains(document.activeElement)
-  );
-  return owner ? owner === root : peers[0] === root;
-}
 
 /** Is the caret somewhere a letter means a letter? */
 export function isTypingTarget(target: EventTarget | null): boolean {
@@ -75,59 +57,4 @@ export function useShortcuts({ onJump, onSheet, suspended }: ShortcutHandlers): 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [suspended]);
-}
-
-/**
- * `j` and `k` down and up a list.
- *
- * They move real focus onto the row rather than painting a private highlight,
- * so the caret a screen reader follows and the caret the eye follows are the
- * same one, and Tab carries on from wherever j left off.
- *
- * ONE LIST ACTS PER KEYPRESS. If several lists are mounted, whichever already
- * holds the caret owns the key; if none does, the first one in the document does.
- */
-export function useListKeys(
-  container: RefObject<HTMLElement | null>,
-  selector: string,
-  enabled: boolean
-): void {
-  useEffect(() => {
-    if (!enabled) return;
-    const armed = container.current;
-    // Declares this list as one of the peers `ownsTheKey` chooses between.
-    if (armed) armed.dataset.listKeys = 'on';
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key !== 'j' && event.key !== 'k') return;
-      if (isTypingTarget(event.target)) return;
-      const root = container.current;
-      if (!root) return;
-      const rows = Array.from(root.querySelectorAll<HTMLElement>(selector));
-      if (rows.length === 0) return;
-      const active = document.activeElement;
-      const inside = active instanceof Node && root.contains(active);
-      if (!inside && !ownsTheKey(root)) return;
-      event.preventDefault();
-      const current = rows.findIndex(
-        (row) => row === active || (active instanceof Node && row.contains(active))
-      );
-      const step = event.key === 'j' ? 1 : -1;
-      const next =
-        current === -1
-          ? step === 1
-            ? 0
-            : rows.length - 1
-          : Math.min(rows.length - 1, Math.max(0, current + step));
-      const row = rows[next];
-      if (!row.hasAttribute('tabindex')) row.setAttribute('tabindex', '-1');
-      row.focus({ preventScroll: false });
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      if (armed) delete armed.dataset.listKeys;
-    };
-  }, [container, selector, enabled]);
 }

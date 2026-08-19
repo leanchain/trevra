@@ -1,11 +1,10 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Bot,
   Check,
   CheckCircle2,
   ChevronRight,
-  CircleAlert,
   CircleHelp,
   Compass,
   Copy,
@@ -17,7 +16,6 @@ import {
   LogOut,
   Pencil,
   Play,
-  RefreshCw,
   Repeat,
   Settings2,
   ShieldCheck,
@@ -41,29 +39,32 @@ import {
   createConnectSession,
   ApiError,
   deleteAgentCliToken,
-  disconnectIntegration,
   deleteAgentKey,
   deletePolicy,
+  disconnectIntegration,
   endDemoSession,
   ensureSession,
+  eraseWorkspace,
   getAgentSetup,
   getAgentTokens,
   getDashboard,
   getPolicies,
   getPublicConfig,
+  previewWorkspaceErasure,
   revokeAgentToken,
   saveAgentBudget,
   saveAgentCliConfig,
   saveAgentCliToken,
   saveAgentKey,
   saveAgentModelConfig,
-  saveAgentSchedule,
   setAgentCliRiskAccepted,
   startAgentRun,
   startDemoSession,
-  syncIntegration
+  updatePolicy,
+  workspaceExportDownloadPath,
+  type WorkspaceErasurePreview
 } from './api';
-import { authClient } from './auth-client';
+import { authClient, useIsWorkspaceOwner } from './auth-client';
 import { AccountsScreen } from './AccountsScreen';
 import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
 import { OutreachInbox } from './LinkedInInbox';
@@ -77,9 +78,8 @@ import { OutreachActivity } from './LinkedInActivity';
 import { OutreachManagerBuilder } from './LinkedInManagerBuilder';
 import { OutreachManagerRead } from './LinkedInManagerRead';
 import { reloadOutreach } from './LinkedInSafety';
-import { LinkedInExclusions } from './LinkedInScreen';
+import { LinkedInExclusions, relativeTime } from './LinkedInScreen';
 import { TeamSettingsView } from './TeamScreen';
-import { RedditScreen } from './RedditScreen';
 import { ResearchView } from './views/ResearchView';
 import { trackEvent, trackPageView } from './analytics';
 import { ConfirmDrawer } from './ui/dialog';
@@ -96,11 +96,9 @@ import {
   type Section
 } from './ui/route';
 import { SeatPauseButton, StopBar, useStopControls } from './ui/StopBar';
-import { formatEvery } from './ui/duration';
-import { formatMoment } from './views/inspector';
+import { scrollToId } from './ui/scrollToId';
 import { LedgerView } from './views/LedgerView';
 import { LoopCostView, LoopView } from './views/LoopView';
-import { SkillsView } from './views/SkillsView';
 import { initials, money, prettyProvider, usd } from './views/format';
 
 /** Five primary product areas: loop, outreach, ledger, research, and setup. */
@@ -662,42 +660,34 @@ const HIDDEN_LIVE_REGION: React.CSSProperties = {
   pointerEvents: 'none'
 };
 
-/* --------------------------------------------------------------------------
- * Setup, split into routes.
- *
- * It used to be one unbroken scroll of agent access, keys, spending,
- * connections, imports, autopilot, limits and modules, with a jump strip on
- * top. Changing a spend cap meant scrolling past all of it, and a jump is not
- * a URL: nobody could be sent a link to the limits.
- * -------------------------------------------------------------------------- */
-
 /**
- * `spend` is deliberately NOT in here.
- *
- * It was a tab that rendered the Agent access screen and then scroll-jumped
- * inside it, so the strip underlined a section you were not on and the title
- * named a screen that does not exist. The block's own reasoning is why it
- * cannot be split out: where your key goes, your key, and what it may spend
- * are one decision in one order, and a separate screen would ask an operator
- * to set a cap for a key nobody has asked them for yet.
- *
- * So `/setup/spend` survives as a DEEP LINK -- "Change the cap" on the cost
- * screen still points at it, and it still lands on the cap -- and stops
- * pretending to be a peer of the six screens that are real.
+ * Setup is two screens. Access is what may reach the workspace; Workspace is
+ * what the workspace itself holds. Everything else is a redirect kept for
+ * bookmarks -- a URL that used to name a tab now names a section anchor.
  */
-const SETUP_ROUTES: Array<{ sub: string; label: string; advanced?: true }> = [
-  { sub: 'agent', label: 'Agent access' },
-  { sub: 'data', label: 'Connections' },
-  // Safety controls stay visible. They are not expert configuration even when
-  // most people change them rarely.
-  { sub: 'limits', label: 'Limits' },
-  { sub: 'team', label: 'Team' },
-  { sub: 'reddit', label: 'Reddit', advanced: true },
-  { sub: 'skills', label: 'Skills', advanced: true }
-];
+const SETUP_TABS = [
+  { sub: '', label: 'Access', path: '/setup' },
+  { sub: 'workspace', label: 'Workspace', path: '/setup/workspace' }
+] as const;
 
-const SETUP_PRIMARY_ROUTES = SETUP_ROUTES.filter((entry) => !entry.advanced);
-const SETUP_ADVANCED_ROUTES = SETUP_ROUTES.filter((entry) => entry.advanced);
+const SETUP_LEGACY_REDIRECTS: Record<string, string> = {
+  agent: '/setup',
+  spend: '/setup',
+  data: '/setup/workspace',
+  limits: '/setup/workspace',
+  team: '/setup/workspace',
+  skills: '/setup/workspace',
+  reddit: '/research',
+  seat: '/outreach',
+  research: '/research'
+};
+
+/** Legacy sub -> the section it should land on inside Workspace. */
+const SETUP_LEGACY_ANCHORS: Record<string, string> = {
+  data: 'connections',
+  limits: 'limits',
+  team: 'team'
+};
 
 function SetupView({
   route,
@@ -716,87 +706,74 @@ function SetupView({
   setBusyId: (id: string | null) => void;
   onNavigate: (path: string) => void;
 }) {
-  // `/setup` on its own is agent access: nothing else in Trevra works until
-  // an agent can reach the workspace, so it is both the first tab and the
-  // default one. See docs/app-spec.md §9.
-  const sub = route.sub === '' ? 'agent' : route.sub;
-
-  // `/setup/spend` is a deep link into the Agent access screen, not a screen.
-  // The strip below underlines Agent access for it, because that is where the
-  // reader ends up.
-  const navSub = sub === 'spend' ? 'agent' : sub;
-
-  // LinkedIn configuration now has one home: Outreach → Settings. Keep the old
-  // Setup URL as a redirect so bookmarks do not strand anyone on a duplicate screen.
-  useEffect(() => {
-    if (sub === 'seat') onNavigate('/outreach');
-  }, [sub, onNavigate]);
+  const sub = route.sub;
+  // `/setup/team/:id` is the accept-invitation link from an email. It is a
+  // full screen with no tabs: the reader has no workspace to configure yet.
+  const invitationId = sub === 'team' ? route.id : null;
+  const [anchor, setAnchor] = useState<{ id: string; seq: number } | null>(null);
+  const anchorSeq = useRef(0);
+  // The shared owner signal (`useIsWorkspaceOwner`, auth-client.ts): a
+  // member never sees the export/erase block flash before disappearing.
+  const isOwner = useIsWorkspaceOwner();
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.location.pathname === '/setup/research') {
-      replaceNavigate('/research');
-    }
-  }, []);
+    if (invitationId) return;
+    const target = SETUP_LEGACY_REDIRECTS[sub];
+    if (!target) return;
+    const anchorId = SETUP_LEGACY_ANCHORS[sub];
+    if (anchorId) setAnchor({ id: anchorId, seq: ++anchorSeq.current });
+    replaceNavigate(target);
+  }, [sub, invitationId]);
 
   useEffect(() => {
-    if (sub !== 'spend') return;
-    // The block is inside a panel that renders nothing until its own read
-    // lands, so the element is not there on the first frame. Look for it for a
-    // couple of seconds and then stop -- a deployment without the hosted agent
-    // has no such block at all, and hunting forever would be a leak.
-    let tries = 0;
-    const timer = window.setInterval(() => {
-      const target = document.getElementById('setup-spend');
-      if (target) {
-        window.clearInterval(timer);
-        target.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
-        // The caret follows the eye, so the keyboard carries on from the jump
-        // rather than from the top of the page.
-        if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
-        target.focus({ preventScroll: true });
-        return;
-      }
-      if (++tries > 20) window.clearInterval(timer);
-    }, 100);
-    return () => window.clearInterval(timer);
-  }, [sub]);
+    if (!anchor) return;
+    return scrollToId(anchor.id);
+  }, [anchor]);
+
+  if (invitationId) {
+    return (
+      <TeamSettingsView route={route} setToast={setToast} reload={reload} onNavigate={onNavigate} />
+    );
+  }
+
+  const onWorkspace = sub === 'workspace';
 
   return (
     <div className="page-stack">
       <nav className="setup-nav" aria-label="Setup sections">
-        {SETUP_PRIMARY_ROUTES.map((entry) => (
+        {SETUP_TABS.map((tab) => (
           <button
-            key={entry.sub}
+            key={tab.path}
             type="button"
-            className={navSub === entry.sub ? 'is-active' : undefined}
-            aria-current={navSub === entry.sub ? 'page' : undefined}
-            onClick={() => onNavigate(`/setup/${entry.sub}`)}
+            className={(tab.sub === 'workspace') === onWorkspace ? 'is-active' : undefined}
+            aria-current={(tab.sub === 'workspace') === onWorkspace ? 'page' : undefined}
+            onClick={() => onNavigate(tab.path)}
           >
-            {entry.label}
+            {tab.label}
           </button>
         ))}
-        <label
-          className={`setup-more-select${SETUP_ADVANCED_ROUTES.some((entry) => entry.sub === navSub) ? ' is-active' : ''}`}
-        >
-          <span className="sr-only">More setup sections</span>
-          <select
-            aria-label="More setup sections"
-            value={SETUP_ADVANCED_ROUTES.some((entry) => entry.sub === navSub) ? navSub : ''}
-            onChange={(event) => {
-              if (event.target.value) onNavigate(`/setup/${event.target.value}`);
-            }}
-          >
-            <option value="">More…</option>
-            {SETUP_ADVANCED_ROUTES.map((entry) => (
-              <option key={entry.sub} value={entry.sub}>
-                {entry.label}
-              </option>
-            ))}
-          </select>
-        </label>
       </nav>
 
-      {(sub === 'agent' || sub === 'spend') && (
+      {onWorkspace ? (
+        <>
+          <ConnectionsView
+            data={data}
+            reload={reload}
+            setToast={setToast}
+            busyId={busyId}
+            setBusyId={setBusyId}
+          />
+          <LimitsView setToast={setToast} />
+          <LinkedInExclusions setToast={setToast} />
+          <TeamSettingsView
+            route={route}
+            setToast={setToast}
+            reload={reload}
+            onNavigate={onNavigate}
+          />
+          {isOwner && <WorkspaceDataBlock setToast={setToast} />}
+        </>
+      ) : (
         <>
           <AgentAccessPanel setToast={setToast} />
           <HostedAgentPanel
@@ -804,36 +781,6 @@ function SetupView({
             onInspectRun={(runId) => onNavigate(`/ledger/run/${runId}`)}
           />
         </>
-      )}
-
-      {sub === 'data' && (
-        <ConnectionsView
-          data={data}
-          reload={reload}
-          setToast={setToast}
-          busyId={busyId}
-          setBusyId={setBusyId}
-        />
-      )}
-
-      {sub === 'reddit' && <RedditScreen setToast={setToast} />}
-
-      {sub === 'skills' && <SkillsView setToast={setToast} onNavigate={onNavigate} />}
-
-      {sub === 'limits' && (
-        <>
-          <LimitsView setToast={setToast} />
-          <LinkedInExclusions setToast={setToast} />
-        </>
-      )}
-
-      {sub === 'team' && (
-        <TeamSettingsView
-          route={route}
-          setToast={setToast}
-          reload={reload}
-          onNavigate={onNavigate}
-        />
       )}
     </div>
   );
@@ -1060,6 +1007,44 @@ function AuthScreen({
     </main>
   );
 }
+
+/** One CLI's connect command: its own label, its own Copy button, its own
+ * reveal-state note. Both Claude Code and Codex render one of these, always
+ * together -- no toggle decides which one a founder sees. */
+function AgentCommandBox({
+  label,
+  command,
+  copied,
+  onCopy
+}: {
+  label: string;
+  command: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="agent-command">
+      <div className="agent-command-head">
+        <span>{label}</span>
+        <button className="secondary-button" onClick={onCopy}>
+          {copied ? (
+            <>
+              <Check size={15} /> Copied
+            </>
+          ) : (
+            <>
+              <Copy size={15} /> Copy
+            </>
+          )}
+        </button>
+      </div>
+      <pre>
+        <code>{command}</code>
+      </pre>
+    </div>
+  );
+}
+
 /**
  * Connect Claude Code or Codex in one click.
  *
@@ -1076,9 +1061,8 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
   const [tokens, setTokens] = useState<AgentTokenSummary[]>([]);
   const [revealed, setRevealed] = useState('');
   const [apiBaseUrl, setApiBaseUrl] = useState('');
-  const [target, setTarget] = useState<'claude' | 'codex'>('claude');
   const [busy, setBusy] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [copiedTarget, setCopiedTarget] = useState<'claude' | 'codex' | ''>('');
   const [confirmRevoke, setConfirmRevoke] = useState<AgentTokenSummary | null>(null);
 
   const reload = async () => setTokens(await getAgentTokens());
@@ -1096,9 +1080,10 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
     setBusy('create');
     try {
       // Auto-named. Asking a founder to invent a token name before they can
-      // connect anything was a question with no useful answer.
+      // connect anything was a question with no useful answer. One stable
+      // name either way: the same token backs both commands below.
       const created = await createAgentToken({
-        name: `${target === 'claude' ? 'Claude Code' : 'Codex'} · ${new Date().toLocaleDateString()}`
+        name: `Agent access · ${new Date().toLocaleDateString()}`
       });
       setRevealed(created.token);
       await reload();
@@ -1129,12 +1114,10 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
 
   const mcpUrl = `${apiBaseUrl || window.location.origin}/api/agent/mcp`;
   const secret = revealed || '<your-token>';
-  const command =
-    target === 'claude'
-      ? `claude mcp add trevra --scope project --transport http ${mcpUrl} --header "Authorization: Bearer ${secret}"`
-      : `export TREVRA_AGENT_TOKEN=${secret}\ncodex mcp add trevra --url ${mcpUrl} --bearer-token-env-var TREVRA_AGENT_TOKEN`;
+  const claudeCommand = `claude mcp add trevra --scope project --transport http ${mcpUrl} --header "Authorization: Bearer ${secret}"`;
+  const codexCommand = `export TREVRA_AGENT_TOKEN=${secret}\ncodex mcp add trevra --url ${mcpUrl} --bearer-token-env-var TREVRA_AGENT_TOKEN`;
 
-  const copy = async () => {
+  const copy = async (which: 'claude' | 'codex', command: string) => {
     if (!revealed) {
       setToast('Click "Create access" first to generate your command');
       return;
@@ -1142,8 +1125,8 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
     try {
       await navigator.clipboard.writeText(command);
       setToast('Command copied — paste it in your terminal');
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
+      setCopiedTarget(which);
+      window.setTimeout(() => setCopiedTarget(''), 2000);
     } catch {
       setToast('Could not copy. Select the command and copy it manually.');
     }
@@ -1159,27 +1142,7 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
           <h3 aria-level={2}>
             <Terminal size={18} /> Connect Claude Code or Codex
           </h3>
-          <p>
-            Trevra is run by your coding agent. Paste one line and it can read your revenue brief,
-            run jobs, and prepare work — it can never approve or send anything.
-          </p>
         </div>
-        <span className="status-pill">{active.length} connected</span>
-      </div>
-
-      <div className="agent-target-switch">
-        <button
-          className={target === 'claude' ? 'is-active' : undefined}
-          onClick={() => setTarget('claude')}
-        >
-          Claude Code
-        </button>
-        <button
-          className={target === 'codex' ? 'is-active' : undefined}
-          onClick={() => setTarget('codex')}
-        >
-          Codex
-        </button>
       </div>
 
       {!revealed && (
@@ -1189,51 +1152,23 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
           disabled={busy === 'create'}
         >
           {busy === 'create' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
-          Create access for {target === 'claude' ? 'Claude Code' : 'Codex'}
+          Create access
         </button>
       )}
 
-      <div className="agent-command">
-        <div className="agent-command-head">
-          <span>
-            {revealed ? 'Paste this in your terminal' : 'Your command will look like this'}
-          </span>
-          <button className="secondary-button" onClick={() => void copy()}>
-            {copied ? (
-              <>
-                <Check size={15} /> Copied
-              </>
-            ) : (
-              <>
-                <Copy size={15} /> Copy
-              </>
-            )}
-          </button>
-        </div>
-        <pre>
-          <code>{command}</code>
-        </pre>
-        {revealed ? (
-          <p className="agent-command-note">
-            This is the only time the token is shown — Trevra stores it hashed. Lost it? Create
-            another.
-          </p>
-        ) : (
-          <p className="agent-command-note">
-            Create access above and the real token drops straight into this command.
-          </p>
-        )}
-        {target === 'claude' && (
-          <p className="agent-command-note">
-            Run this from the project directory you want Trevra wired into.{' '}
-            <code>--scope project</code> writes the server to that project's <code>.mcp.json</code>{' '}
-            instead of your global config, so it only loads there — not in every Claude Code session
-            — and can be shared with teammates via version control. Prefer it truly local and
-            unshared? Drop <code>--scope project</code> to use the default <code>local</code> scope
-            instead.
-          </p>
-        )}
-      </div>
+      <AgentCommandBox
+        label="Claude Code"
+        command={claudeCommand}
+        copied={copiedTarget === 'claude'}
+        onCopy={() => void copy('claude', claudeCommand)}
+      />
+
+      <AgentCommandBox
+        label="Codex"
+        command={codexCommand}
+        copied={copiedTarget === 'codex'}
+        onCopy={() => void copy('codex', codexCommand)}
+      />
 
       {active.length > 0 && (
         <div className="agent-token-list">
@@ -1296,9 +1231,6 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
   );
 }
 
-/** How often the standing job runs, said the way a person would say it. */
-const SCHEDULE_CHOICES = [60, 240, 720, 1440, 10080];
-
 /**
  * Turn a failure from the setup routes into something a founder can act on.
  *
@@ -1332,36 +1264,28 @@ const andList = (parts: string[]) =>
  * the laptop agent, on Trevra's side, so it keeps working when the laptop is
  * shut. Nothing here can approve or send -- see app-spec §11.
  *
- * Two deliberate absences.
+ * One deliberate absence.
  *
  * There is no reveal, no "show key", no copy-key control. Plaintext leaves
  * exactly one internal function on the server, at the moment of a model call,
  * and no route returns it at any privilege -- so such a control could not be
  * wired to anything, and adding one is a server redesign, not a UI change.
  *
- * And the warning is the first thing in the panel rather than a footnote under
- * the field. A hosted service holding customer model keys is a real,
- * concentrated liability; the design doc's §7 says the operator deserves to
- * weigh that before pasting, which only means anything if they read it first.
- *
  * ONE SAVE, NOT FOUR -- mostly. Setting this up used to cost four round-trips
  * and four toasts -- Save endpoint, Store key, Save cap, Save schedule -- for
  * what is one sitting. The blocks keep their order, their headings and their
  * argument, because that order IS the decision: where your key goes, then your
- * key, then what it may spend. The endpoint, the key, the subscription CLI and
- * the schedule share one bottom button that writes only the parts that
- * changed.
+ * key, then what it may spend. The endpoint, the key and the subscription CLI
+ * share one bottom button that writes only the parts that changed.
  *
  * The cap is the one field that opted back out of that shared button. It has
- * its own scoped save right next to the amount, because `/setup/spend` is a
- * deep link that lands an operator here to touch only the cap, and a shared
- * button that also flushes whatever else happens to be dirty in the endpoint,
- * key, CLI or schedule fields is exactly the accident that button exists to
- * prevent.
+ * its own scoped save right next to the amount, so touching only the cap can
+ * never also flush whatever else happens to be dirty in the endpoint, key or
+ * CLI fields -- exactly the accident that button exists to prevent.
  *
- * Two more writes stay on their own, and both for the same stated reason: an
- * off switch that needs a second click to take effect is not an off switch.
- * The spending toggle and the schedule toggle fire immediately.
+ * One more write stays on its own, for the same stated reason: an off switch
+ * that needs a second click to take effect is not an off switch. The
+ * spending toggle fires immediately.
  */
 function HostedAgentPanel({
   setToast,
@@ -1376,12 +1300,10 @@ function HostedAgentPanel({
   const [problem, setProblem] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
-  const [providerLabel, setProviderLabel] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [replacingKey, setReplacingKey] = useState(false);
   const [capDollars, setCapDollars] = useState('20');
   const [goal, setGoal] = useState('');
-  const [every, setEvery] = useState('1440');
   const [confirmRemoveKey, setConfirmRemoveKey] = useState(false);
   // The third way to run the hosted agent: a workspace's own Claude/Codex
   // subscription (docs/cli-agent-and-hosted.md). Mirrors the BYOK state above.
@@ -1398,12 +1320,7 @@ function HostedAgentPanel({
         setSetup(next);
         setBaseUrl(next.config?.baseUrl ?? '');
         setModel(next.config?.model ?? '');
-        setProviderLabel(next.config?.label ?? next.secret?.label ?? '');
         setCapDollars(String(Math.round(next.budget.monthlyCapCents / 100)));
-        if (next.schedule) {
-          setGoal(next.schedule.goal ?? '');
-          if (next.schedule.intervalMinutes > 0) setEvery(String(next.schedule.intervalMinutes));
-        }
         if (next.cli.config) {
           setCliKind(next.cli.config.cli);
           setCliModel(next.cli.config.model);
@@ -1449,9 +1366,9 @@ function HostedAgentPanel({
     }
   };
 
-  // Its own write, not part of Save, for the same reason the spend and
-  // schedule switches are: revoking consent must take effect in one click, and
-  // must never be a side effect of saving something else.
+  // Its own write, not part of Save, for the same reason the spend switch is:
+  // revoking consent must take effect in one click, and must never be a side
+  // effect of saving something else.
   const setCliRisk = async (accepted: boolean) => {
     setBusy('cli-risk');
     setProblem('');
@@ -1490,20 +1407,6 @@ function HostedAgentPanel({
     }
   };
 
-  const setScheduleEnabled = async (enabled: boolean) => {
-    setBusy('schedule-switch');
-    setProblem('');
-    try {
-      const schedule = await saveAgentSchedule({ enabled });
-      setSetup((current) => current && { ...current, schedule });
-      setToast(enabled ? 'Autopilot on' : 'Autopilot off');
-    } catch (error) {
-      setProblem(agentSetupMessage(error, 'Could not change the schedule switch'));
-    } finally {
-      setBusy('');
-    }
-  };
-
   const runNow = async () => {
     const job = goal.trim();
     if (!job) return;
@@ -1526,8 +1429,11 @@ function HostedAgentPanel({
   if (!loaded || !setup) return null;
 
   const { available, config, secret, budget } = setup;
-  const schedule = setup.schedule;
-  const hasSchedule = schedule !== undefined;
+
+  // A configured workspace never hides its own configuration: open what is
+  // already set, keep the rest shut.
+  const computeOpen = Boolean(secret) || Boolean(setup.cli?.tokenStored);
+  const spendOpen = Boolean(budget?.enabled);
 
   const heading = (
     <div className="section-heading">
@@ -1535,41 +1441,14 @@ function HostedAgentPanel({
         <h3 aria-level={2}>
           <Bot size={18} /> Or let Trevra run the agent, on your key
         </h3>
-        <p>
-          The same work, the same limits, on Trevra’s side instead of yours — so it keeps going with
-          your laptop closed. It reads, researches and prepares. Like the agent above, it can never
-          approve or send anything.
-        </p>
       </div>
-      <span className="status-pill">
-        {!available ? 'Switched off' : secret ? 'Key stored' : 'Not set up'}
-      </span>
     </div>
   );
 
-  // No key field at all when the deployment cannot encrypt one. Offering a
-  // paste box that is guaranteed to fail is worse than saying so.
-  if (!available)
-    return (
-      <section className="page-panel agent-panel byok-panel">
-        {heading}
-        <div className="byok-warning byok-warning-off">
-          <CircleAlert size={18} />
-          <div>
-            <strong>This is switched off on this server.</strong>
-            <p>
-              There is nowhere here to encrypt a model key, so there is nothing to set up and
-              nothing to paste. Your own agent above is unaffected and does the same work while you
-              are at the keyboard.
-            </p>
-            <p>
-              Running Trevra yourself? Whoever administers this server can switch it on, and this
-              section fills in.
-            </p>
-          </div>
-        </div>
-      </section>
-    );
+  // Nothing at all when the deployment cannot encrypt a key: there is
+  // nowhere to put one, so there is nothing here to set up or paste.
+  // AgentAccessPanel above is unaffected and still renders.
+  if (!available) return null;
 
   const capCents = Math.round(Number(capDollars) * 100);
   const capValid =
@@ -1579,38 +1458,30 @@ function HostedAgentPanel({
   // also what the single Save writes -- it never sends a call for a block
   // nobody touched.
   const dirtyConfig = config
-    ? baseUrl.trim() !== config.baseUrl ||
-      model.trim() !== config.model ||
-      (providerLabel.trim() || '') !== (config.label ?? '')
+    ? baseUrl.trim() !== config.baseUrl || model.trim() !== config.model
     : Boolean(baseUrl.trim() || model.trim());
   const dirtyKey = apiKey.trim().length > 0;
   const dirtyCap = capValid && capCents !== budget.monthlyCapCents;
-  const dirtySchedule =
-    hasSchedule &&
-    Boolean(schedule) &&
-    (goal.trim() !== (schedule?.goal ?? '') || Number(every) !== schedule?.intervalMinutes);
 
   const cliSetup = setup.cli;
   const dirtyCliConfig = cliSetup.config
     ? cliKind !== cliSetup.config.cli || cliModel.trim() !== cliSetup.config.model
     : Boolean(cliModel.trim());
-  // Saved and not currently being edited -- the same gate the schedule toggle
-  // below uses on its own goal ("disabled={... || !goal.trim() || dirtySchedule}"):
-  // there is nothing to accept the risk of until a CLI and a model are on
-  // record, and editing them mid-flight should not leave a stale acceptance
-  // pointed at a config that no longer matches what is on screen.
+  // Saved and not currently being edited: there is nothing to accept the risk
+  // of until a CLI and a model are on record, and editing them mid-flight
+  // should not leave a stale acceptance pointed at a config that no longer
+  // matches what is on screen.
   const cliConfigSaved = Boolean(cliSetup.config) && !dirtyCliConfig;
   const dirtyCliToken = cliSetup.riskAccepted && cliToken.trim().length > 0;
 
   // The cap is deliberately not part of this: it has its own save button
   // right next to the amount field, so it can never be swept in with
   // whatever else on this panel happens to be dirty.
-  const dirty = dirtyConfig || dirtyKey || dirtySchedule || dirtyCliConfig || dirtyCliToken;
+  const dirty = dirtyConfig || dirtyKey || dirtyCliConfig || dirtyCliToken;
 
   const pendingLabels = [
     dirtyConfig ? 'the endpoint' : null,
     dirtyKey ? (secret ? 'the replacement key' : 'your key') : null,
-    dirtySchedule ? 'the standing job' : null,
     dirtyCliConfig ? 'the subscription CLI' : null,
     dirtyCliToken
       ? cliSetup.tokenStored
@@ -1644,26 +1515,19 @@ function HostedAgentPanel({
       if (dirtyConfig) {
         const next = await saveAgentModelConfig({
           baseUrl: baseUrl.trim(),
-          model: model.trim(),
-          label: providerLabel.trim() || undefined
+          model: model.trim()
         });
         setSetup((current) => current && { ...current, config: next });
         done.push('the endpoint');
       }
       if (dirtyKey) {
         const next = await saveAgentKey({
-          apiKey: apiKey.trim(),
-          label: providerLabel.trim() || undefined
+          apiKey: apiKey.trim()
         });
         setSetup((current) => current && { ...current, secret: next });
         setApiKey('');
         setReplacingKey(false);
         done.push('your key');
-      }
-      if (dirtySchedule) {
-        const next = await saveAgentSchedule({ goal: goal.trim(), intervalMinutes: Number(every) });
-        setSetup((current) => current && { ...current, schedule: next });
-        done.push('the standing job');
       }
       if (dirtyCliConfig) {
         const next = await saveAgentCliConfig({ cli: cliKind, model: cliModel.trim() });
@@ -1696,10 +1560,9 @@ function HostedAgentPanel({
   };
 
   // Its own write, not part of Save: the cap sits in the same panel as the
-  // endpoint, the key, the subscription CLI and the schedule, but changing it
-  // must never also submit whatever else on the panel happens to be dirty --
-  // especially on the `/setup/spend` deep link, which lands here to touch
-  // only the cap. Its own button, right next to the amount, calls only this.
+  // endpoint, the key and the subscription CLI, but changing it must never
+  // also submit whatever else on the panel happens to be dirty. Its own
+  // button, right next to the amount, calls only this.
   const saveCap = async () => {
     if (!capValid) {
       setProblem('Set a monthly cap between $0 and $10,000.');
@@ -1720,18 +1583,6 @@ function HostedAgentPanel({
   };
 
   const capReached = budget.spentCents >= budget.monthlyCapCents && budget.monthlyCapCents > 0;
-  const spendLine =
-    budget.spentCents > 0
-      ? `${usd(budget.spentCents)} of ${usd(budget.monthlyCapCents)} used this month.`
-      : `Nothing spent this month. The cap is ${usd(budget.monthlyCapCents)} a month.`;
-
-  const nextRun = schedule ? formatMoment(schedule.nextRunAt) : null;
-  const scheduleLine =
-    !schedule || !schedule.enabled
-      ? 'Off. Write the standing job, save it, then switch it on.'
-      : schedule.lastRunAt
-        ? `Last ran ${formatMoment(schedule.lastRunAt) ?? 'earlier'}${nextRun ? ` · next ${nextRun}` : ''}.`
-        : `On. It has not run yet${nextRun ? ` — first run ${nextRun}` : ''}.`;
 
   // Two independent ways to be ready to run: a stored key against a configured
   // endpoint (BYOK), or a fully accepted subscription CLI. Either is enough --
@@ -1771,481 +1622,270 @@ function HostedAgentPanel({
     </label>
   );
 
-  const scheduleOptions = Array.from(new Set([...SCHEDULE_CHOICES, Number(every) || 1440])).sort(
-    (a, b) => a - b
-  );
-
   return (
     <section className="page-panel agent-panel byok-panel">
       {heading}
 
       {problem && <div className="error-banner byok-error">{problem}</div>}
 
-      {/* Deliberately not inside the collapsed section below: a hosted
-        service holding customer model keys is a real, concentrated
-        liability, and the operator deserves to weigh that before pasting --
-        which only means anything if they read it first, not after opening a
-        toggle. See the panel doc comment above. */}
-      <div className="byok-warning">
-        <CircleAlert size={18} />
-        <div>
-          <strong>Read this before you paste a key.</strong>
-          <p>
-            Trevra encrypts your key and uses it on your behalf. Nobody gets it back out — not you,
-            not us, not through any screen, export or support ticket. But storing it here moves a
-            real risk onto Trevra: on the hosted service, one break-in exposes the stored key of
-            every workspace, including yours. You deserve to weigh that before pasting.
-          </p>
-          <p>
-            You do not have to. Your own agent on your laptop does the same work and stores no key
-            at all — that stays the default, and it stays the safer one. If you do paste a key, use
-            one you can revoke at your provider in seconds, and set the monthly cap below.
-          </p>
-        </div>
-      </div>
-
-      <details className="mgr-inputs">
-        <summary>
-          Endpoint &amp; key
-          <span>
-            {config ? 'Endpoint saved' : 'No endpoint yet'}
-            {secret ? ' · key stored' : ' · no key yet'}
-          </span>
-        </summary>
+      <details className="mgr-inputs" open={computeOpen}>
+        <summary>Run it on Trevra’s compute</summary>
         <div className="mgr-inputs-body">
-          <div className="byok-block">
-            <div className="byok-block-head">
-              <div>
-                <h4 aria-level={3}>Where your key goes</h4>
-                <p>
-                  Any endpoint that speaks the OpenAI format works — OpenAI, Azure, Groq,
-                  OpenRouter, Together, or a server you run yourself. Trevra ships no default and
-                  does not guess: your key goes exactly where you name here, and nowhere else.
-                </p>
+          <div>
+            <h4 aria-level={3}>Endpoint &amp; key</h4>
+            <div className="byok-block">
+              <div className="byok-fields">
+                <label>
+                  Endpoint address
+                  <input
+                    value={baseUrl}
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                    placeholder="https://api.openai.com/v1"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label>
+                  Model
+                  <input
+                    value={model}
+                    onChange={(event) => setModel(event.target.value)}
+                    placeholder="the model name your provider uses"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
               </div>
             </div>
-            <div className="byok-fields">
-              <label>
-                Endpoint address
-                <input
-                  value={baseUrl}
-                  onChange={(event) => setBaseUrl(event.target.value)}
-                  placeholder="https://api.openai.com/v1"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              <label>
-                Model
-                <input
-                  value={model}
-                  onChange={(event) => setModel(event.target.value)}
-                  placeholder="the model name your provider uses"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              <label>
-                Call it something (optional)
-                <input
-                  value={providerLabel}
-                  onChange={(event) => setProviderLabel(event.target.value)}
-                  placeholder="Work account"
-                  maxLength={120}
-                />
-              </label>
-            </div>
-            <p className="byok-meter-copy">
-              {config
-                ? `Saved ${formatMoment(config.updatedAt) ?? 'earlier'}.${dirtyConfig ? ' Edited since — Save at the bottom.' : ''}`
-                : 'Nothing saved yet. Fill in the endpoint and the model, then save at the bottom.'}
-            </p>
-          </div>
 
-          <div className="byok-block">
-            <div className="byok-block-head">
-              <div>
-                <h4 aria-level={3}>Your key</h4>
-                <p>
-                  It goes in and never comes out. Trevra keeps it encrypted, applies it at the
-                  moment of a call, and shows you the last four characters so you can find this key
-                  at your provider. There is no screen anywhere that can display it back to you.
-                </p>
-              </div>
-            </div>
-            {secret && !replacingKey ? (
-              <div className="byok-key-stored">
-                <span className="byok-key-mask">
-                  <KeyRound size={16} /> •••• {secret.last4}
-                </span>
-                <span>
-                  {secret.label ? `${secret.label} · ` : ''}Added{' '}
-                  {new Date(secret.createdAt).toLocaleDateString()}
-                </span>
-                <div className="byok-key-actions">
-                  <button className="secondary-button" onClick={() => setReplacingKey(true)}>
-                    Replace
-                  </button>
-                  {/* Removal is destructive and irreversible, so it is its own act with
-                  its own confirmation. It is not folded into Save. */}
-                  <button
-                    className="ghost-button danger"
-                    disabled={busy === 'key-remove'}
-                    onClick={() => setConfirmRemoveKey(true)}
-                  >
-                    {busy === 'key-remove' ? (
-                      <LoaderCircle className="spin" size={15} />
-                    ) : (
-                      <Trash2 size={15} />
-                    )}{' '}
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="byok-fields byok-fields-one">
-                  <label>
-                    {secret ? 'New key' : 'Paste your key'}
-                    <input
-                      type="password"
-                      value={apiKey}
-                      onChange={(event) => setApiKey(event.target.value)}
-                      placeholder="Paste it here"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </label>
-                </div>
-                <p className="byok-meter-copy">
-                  {secret
-                    ? `This replaces •••• ${secret.last4} here when you save. The old key keeps working at your provider until you revoke it there.`
-                    : 'Trevra stores it encrypted and keeps it out of every log, error and transcript.'}
-                </p>
-                {secret && (
+            <div className="byok-block">
+              {secret && !replacingKey ? (
+                <div className="byok-key-stored">
+                  <span className="byok-key-mask">
+                    <KeyRound size={16} /> •••• {secret.last4}
+                  </span>
+                  <span>
+                    {secret.label ? `${secret.label} · ` : ''}Added{' '}
+                    {new Date(secret.createdAt).toLocaleDateString()}
+                  </span>
                   <div className="byok-key-actions">
+                    <button className="secondary-button" onClick={() => setReplacingKey(true)}>
+                      Replace
+                    </button>
+                    {/* Removal is destructive and irreversible, so it is its own act with
+                  its own confirmation. It is not folded into Save. */}
                     <button
-                      className="ghost-button"
-                      onClick={() => {
-                        setReplacingKey(false);
-                        setApiKey('');
-                      }}
+                      className="ghost-button danger"
+                      disabled={busy === 'key-remove'}
+                      onClick={() => setConfirmRemoveKey(true)}
                     >
-                      Cancel the replacement
+                      {busy === 'key-remove' ? (
+                        <LoaderCircle className="spin" size={15} />
+                      ) : (
+                        <Trash2 size={15} />
+                      )}{' '}
+                      Remove
                     </button>
                   </div>
-                )}
-              </>
-            )}
+                </div>
+              ) : (
+                <>
+                  <div className="byok-fields byok-fields-one">
+                    <label>
+                      {secret ? 'New key' : 'Paste your key'}
+                      <input
+                        type="password"
+                        value={apiKey}
+                        onChange={(event) => setApiKey(event.target.value)}
+                        placeholder="Paste it here"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                    </label>
+                  </div>
+                  {secret && (
+                    <div className="byok-key-actions">
+                      <button
+                        className="ghost-button"
+                        onClick={() => {
+                          setReplacingKey(false);
+                          setApiKey('');
+                        }}
+                      >
+                        Cancel the replacement
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <h4 aria-level={3}>
+              <Terminal size={15} /> Your own Claude/Codex subscription
+            </h4>
+            <div className="byok-block">
+              <div className="byok-fields byok-fields-schedule">
+                <label>
+                  Which subscription
+                  <select
+                    value={cliKind}
+                    onChange={(event) => setCliKind(event.target.value as 'claude' | 'codex')}
+                  >
+                    <option value="claude">Claude</option>
+                    <option value="codex">Codex</option>
+                  </select>
+                </label>
+                <label>
+                  Model
+                  <input
+                    value={cliModel}
+                    onChange={(event) => setCliModel(event.target.value)}
+                    placeholder="the model name your subscription CLI uses"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+              </div>
+              <label className="byok-risk-check">
+                <input
+                  type="checkbox"
+                  checked={cliSetup.riskAccepted}
+                  disabled={busy === 'cli-risk' || !cliConfigSaved}
+                  onChange={(event) => void setCliRisk(event.target.checked)}
+                />
+                <span>
+                  Using a personal subscription this way may breach your provider's terms.
+                </span>
+              </label>
+
+              {cliSetup.riskAccepted && (
+                <>
+                  {cliSetup.tokenStored && !replacingCliToken ? (
+                    <div className="byok-key-stored">
+                      <span className="byok-key-mask">
+                        <KeyRound size={16} /> Subscription token stored
+                      </span>
+                      <span />
+                      <div className="byok-key-actions">
+                        <button
+                          className="secondary-button"
+                          onClick={() => setReplacingCliToken(true)}
+                        >
+                          Replace
+                        </button>
+                        {/* Removal is destructive and irreversible, so it is its own act with
+                    its own confirmation, same as the model key above. Not folded into Save. */}
+                        <button
+                          className="ghost-button danger"
+                          disabled={busy === 'cli-token-remove'}
+                          onClick={() => setConfirmRemoveCliToken(true)}
+                        >
+                          {busy === 'cli-token-remove' ? (
+                            <LoaderCircle className="spin" size={15} />
+                          ) : (
+                            <Trash2 size={15} />
+                          )}{' '}
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="byok-fields byok-fields-one">
+                        <label>
+                          {cliSetup.tokenStored
+                            ? 'New subscription token'
+                            : 'Paste your subscription token'}
+                          <input
+                            type="password"
+                            value={cliToken}
+                            onChange={(event) => setCliToken(event.target.value)}
+                            placeholder="Paste it here"
+                            autoComplete="off"
+                            spellCheck={false}
+                          />
+                        </label>
+                      </div>
+                      {cliSetup.tokenStored && (
+                        <div className="byok-key-actions">
+                          <button
+                            className="ghost-button"
+                            onClick={() => {
+                              setReplacingCliToken(false);
+                              setCliToken('');
+                            }}
+                          >
+                            Cancel the replacement
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </div>
       </details>
 
-      <details className="mgr-inputs">
-        <summary>
-          Your own Claude/Codex subscription
-          <span>
-            {cliSetup.tokenStored
-              ? `${cliSetup.config?.cli === 'codex' ? 'Codex' : 'Claude'} connected`
-              : cliSetup.riskAccepted
-                ? 'Risk accepted'
-                : cliConfigSaved
-                  ? 'Needs risk acceptance'
-                  : 'Not set up'}
-          </span>
-        </summary>
+      <details className="mgr-inputs" open={spendOpen}>
+        <summary>What it may spend</summary>
         <div className="mgr-inputs-body">
           <div className="byok-block">
             <div className="byok-block-head">
-              <div>
-                <h4 aria-level={3}>
-                  <Terminal size={15} /> Or run it through your own Claude/Codex subscription
-                </h4>
-                <p>
-                  Instead of a metered model key, Trevra can drive this workspace's own Claude Code
-                  or Codex subscription. Same limits, same run ledger, same rule that nothing sends
-                  itself — this only changes what pays for the tokens.
-                </p>
-              </div>
-            </div>
-
-            <div className="byok-warning">
-              <CircleAlert size={18} />
-              <div>
-                <strong>Read this before you accept it below.</strong>
-                <p>
-                  This uses this workspace's own personal Claude or Codex subscription, not a
-                  metered API plan. Automated, server-side use of a personal subscription may itself
-                  violate that subscription's own consumer terms, independent of anything Trevra
-                  does — and the account could be suspended for it. That risk has nothing to do with
-                  Trevra and Trevra cannot mitigate it; it is the workspace's own to weigh, for its
-                  own subscription.
-                </p>
-              </div>
-            </div>
-
-            <div className="byok-fields byok-fields-schedule">
-              <label>
-                Which subscription
-                <select
-                  value={cliKind}
-                  onChange={(event) => setCliKind(event.target.value as 'claude' | 'codex')}
-                >
-                  <option value="claude">Claude</option>
-                  <option value="codex">Codex</option>
-                </select>
-              </label>
-              <label>
-                Model
+              <label className="toggle">
                 <input
-                  value={cliModel}
-                  onChange={(event) => setCliModel(event.target.value)}
-                  placeholder="the model name your subscription CLI uses"
-                  autoComplete="off"
-                  spellCheck={false}
+                  type="checkbox"
+                  checked={budget.enabled}
+                  disabled={busy === 'spend'}
+                  aria-label="What it may spend"
+                  onChange={(event) => void setSpending(event.target.checked)}
                 />
+                <span />
               </label>
             </div>
-            <p className="byok-meter-copy">
-              {cliSetup.config
-                ? `Saved: ${cliSetup.config.cli === 'codex' ? 'Codex' : 'Claude'}, ${cliSetup.config.model}.${dirtyCliConfig ? ' Edited since — Save at the bottom.' : ''}`
-                : 'Choose a CLI and a model, then save at the bottom.'}
-            </p>
-
-            <label className="byok-risk-check">
-              <input
-                type="checkbox"
-                checked={cliSetup.riskAccepted}
-                disabled={busy === 'cli-risk' || !cliConfigSaved}
-                onChange={(event) => void setCliRisk(event.target.checked)}
-              />
-              <span>
-                I understand this uses this workspace's own Claude or Codex subscription, not a
-                metered plan. Automated, server-side use like this may itself violate that
-                subscription's own consumer terms, independent of anything Trevra does, and the
-                account could be suspended for it. This workspace is accepting that risk for its own
-                subscription.
-              </span>
-            </label>
-            {!cliConfigSaved && (
-              <p className="byok-meter-copy">
-                Save the subscription CLI and model above first — there is nothing to accept the
-                risk of yet.
-              </p>
-            )}
-
-            {cliSetup.riskAccepted && (
-              <>
-                {cliSetup.tokenStored && !replacingCliToken ? (
-                  <div className="byok-key-stored">
-                    <span className="byok-key-mask">
-                      <KeyRound size={16} /> Subscription token stored
-                    </span>
-                    <span />
-                    <div className="byok-key-actions">
-                      <button
-                        className="secondary-button"
-                        onClick={() => setReplacingCliToken(true)}
-                      >
-                        Replace
-                      </button>
-                      {/* Removal is destructive and irreversible, so it is its own act with
-                    its own confirmation, same as the model key above. Not folded into Save. */}
-                      <button
-                        className="ghost-button danger"
-                        disabled={busy === 'cli-token-remove'}
-                        onClick={() => setConfirmRemoveCliToken(true)}
-                      >
-                        {busy === 'cli-token-remove' ? (
-                          <LoaderCircle className="spin" size={15} />
-                        ) : (
-                          <Trash2 size={15} />
-                        )}{' '}
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="byok-fields byok-fields-one">
-                      <label>
-                        {cliSetup.tokenStored
-                          ? 'New subscription token'
-                          : 'Paste your subscription token'}
-                        <input
-                          type="password"
-                          value={cliToken}
-                          onChange={(event) => setCliToken(event.target.value)}
-                          placeholder="Paste it here"
-                          autoComplete="off"
-                          spellCheck={false}
-                        />
-                      </label>
-                    </div>
-                    <p className="byok-meter-copy">
-                      {cliSetup.tokenStored
-                        ? 'This replaces the stored token here when you save. The old session keeps working at your provider until you sign it out there.'
-                        : 'Trevra stores it encrypted and keeps it out of every log, error and transcript. There is no screen anywhere that can display it back to you.'}
-                    </p>
-                    {cliSetup.tokenStored && (
-                      <div className="byok-key-actions">
-                        <button
-                          className="ghost-button"
-                          onClick={() => {
-                            setReplacingCliToken(false);
-                            setCliToken('');
-                          }}
-                        >
-                          Cancel the replacement
-                        </button>
-                      </div>
-                    )}
-                  </>
-                )}
-              </>
-            )}
+            <div className="byok-fields byok-fields-one">
+              <label>
+                Most it may spend a month
+                <span className="byok-amount">
+                  <small>$</small>
+                  <input
+                    type="number"
+                    min="0"
+                    max="10000"
+                    step="1"
+                    value={capDollars}
+                    onChange={(event) => setCapDollars(event.target.value)}
+                  />
+                  {/* Scoped to this one field: it only ever calls the budget save,
+              never the endpoint/key/CLI fields the panel's shared Save button
+              also writes -- so pressing it can never submit something else
+              that happened to be dirty elsewhere on the page. */}
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!capValid || !dirtyCap || busy === 'cap-save'}
+                    onClick={() => void saveCap()}
+                  >
+                    {busy === 'cap-save' ? (
+                      <LoaderCircle className="spin" size={14} />
+                    ) : (
+                      <Check size={14} />
+                    )}{' '}
+                    Save cap
+                  </button>
+                </span>
+              </label>
+            </div>
           </div>
         </div>
       </details>
-
-      <div className="byok-block" id="setup-spend">
-        <div className="byok-block-head">
-          <div>
-            <h4 aria-level={3}>What it may spend</h4>
-            <p>
-              Storing a key is not permission to spend it. Until you switch this on, Trevra will not
-              make a single paid call — and it stops the moment you switch it back off.
-            </p>
-          </div>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={budget.enabled}
-              disabled={busy === 'spend'}
-              onChange={(event) => void setSpending(event.target.checked)}
-            />
-            <span />
-          </label>
-        </div>
-        <div className="byok-fields byok-fields-one">
-          <label>
-            Most it may spend a month
-            <span className="byok-amount">
-              <small>$</small>
-              <input
-                type="number"
-                min="0"
-                max="10000"
-                step="1"
-                value={capDollars}
-                onChange={(event) => setCapDollars(event.target.value)}
-              />
-              {/* Scoped to this one field: it only ever calls the budget save,
-              never the endpoint/key/CLI/schedule fields the panel's shared
-              Save button also writes -- so reaching this on the `/setup/spend`
-              deep link and pressing it can never submit something else that
-              happened to be dirty elsewhere on the page. */}
-              <button
-                className="secondary-button"
-                type="button"
-                disabled={!capValid || !dirtyCap || busy === 'cap-save'}
-                onClick={() => void saveCap()}
-              >
-                {busy === 'cap-save' ? (
-                  <LoaderCircle className="spin" size={14} />
-                ) : (
-                  <Check size={14} />
-                )}{' '}
-                Save cap
-              </button>
-            </span>
-          </label>
-        </div>
-        <p className="byok-meter-copy">
-          {spendLine}
-          {!capValid
-            ? ' Enter a cap between $0 and $10,000 to save it.'
-            : dirtyCap
-              ? ' The cap on screen is not saved yet.'
-              : ' Matches what is stored.'}
-        </p>
-        {budget.spentCents > 0 && (
-          <div className="byok-meter">
-            <i
-              style={{
-                width: `${Math.min(100, Math.round((budget.spentCents / Math.max(budget.monthlyCapCents, 1)) * 100))}%`
-              }}
-            />
-          </div>
-        )}
-        <p className="byok-meter-copy">
-          {budget.enabled
-            ? 'On. Trevra checks the cap before each call, so a long job cannot run past it.'
-            : 'Off. Nothing Trevra’s agent does can cost you money.'}
-        </p>
-      </div>
-
-      {/* Absent from the response means this build has no schedule yet. Hide it
-        rather than show a control that writes to a route that is not there. */}
-      {hasSchedule && (
-        <details className="mgr-inputs">
-          <summary>
-            Work on a schedule
-            <span>{schedule?.enabled ? 'On' : 'Off'}</span>
-          </summary>
-          <div className="mgr-inputs-body">
-            <div className="byok-block">
-              <div className="byok-block-head">
-                <div>
-                  <h4 aria-level={3}>Work on a schedule</h4>
-                  <p>
-                    Give it a standing job and Trevra picks it up on its own, with your laptop
-                    closed. It still stops at every approval — nothing leaves your business without
-                    you.
-                  </p>
-                </div>
-                <label className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={schedule?.enabled ?? false}
-                    disabled={busy === 'schedule-switch' || !goal.trim() || dirtySchedule}
-                    onChange={(event) => void setScheduleEnabled(event.target.checked)}
-                  />
-                  <span />
-                </label>
-              </div>
-              <div className="byok-fields byok-fields-schedule">
-                {goalField('Standing job')}
-                <label>
-                  How often
-                  <select value={every} onChange={(event) => setEvery(event.target.value)}>
-                    {scheduleOptions.map((minutes) => (
-                      <option key={minutes} value={String(minutes)}>
-                        {formatEvery(minutes)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <p className="byok-meter-copy">
-                {scheduleLine}
-                {dirtySchedule
-                  ? ' The job on screen is not saved yet, so the switch is held until it is.'
-                  : ''}
-              </p>
-            </div>
-          </div>
-        </details>
-      )}
 
       {/* One button for the whole sitting. It writes only what changed, in the
         order the blocks are read, and names each part by what it is. */}
       <div className="panel-footer">
-        <span>
-          {dirty
-            ? `Not saved yet: ${andList(pendingLabels)}.`
-            : 'Everything on this panel matches what is stored.'}
-        </span>
         <button
           className="primary-button"
           disabled={!dirty || busy === 'save'}
@@ -2260,21 +1900,10 @@ function HostedAgentPanel({
         <div className="byok-block-head">
           <div>
             <h4 aria-level={3}>Run it once, now</h4>
-            <p>
-              {hasSchedule
-                ? 'The same job, straight away, without waiting for the schedule.'
-                : 'Give it a job and watch it work. Every step lands in the run ledger while it runs.'}
-            </p>
           </div>
         </div>
-        {!hasSchedule && (
-          <div className="byok-fields byok-fields-one">{goalField('What should it work on?')}</div>
-        )}
+        <div className="byok-fields byok-fields-one">{goalField('What should it work on?')}</div>
         <div className="panel-footer">
-          <span>
-            {runBlocker ??
-              'It stops at the first thing that needs your decision, and waits for you in the Ledger.'}
-          </span>
           <button
             className="secondary-button"
             disabled={Boolean(runBlocker) || busy === 'run'}
@@ -2362,10 +1991,10 @@ function ConnectionsView({
     (item) => item.mode !== 'import'
   );
 
-  const connect = async (item: AvailableIntegration) => {
-    setBusyId(item.key);
+  const openConnect = async (key: string) => {
+    setBusyId(key);
     try {
-      const session = await createConnectSession([item.key]);
+      const session = await createConnectSession([key]);
       const { default: Nango } = await import('@nangohq/frontend');
       const nango = new Nango({ connectSessionToken: session.token, host: session.browser_host });
       nango.openConnectUI({
@@ -2386,11 +2015,10 @@ function ConnectionsView({
 
   return (
     <div className="page-stack">
-      <section className="page-panel" id="setup-connections">
+      <section className="page-panel" id="connections">
         <div className="section-heading">
           <div>
             <h3 aria-level={2}>Connected accounts</h3>
-            <p>Connect the tools Trevra needs for your workflows.</p>
           </div>
         </div>
         <div className="connection-grid">
@@ -2403,27 +2031,22 @@ function ConnectionsView({
                 <span className={`connection-status ${connection.status}`}>
                   {connection.isDemo ? 'Demo' : connection.status.replace('_', ' ')}
                 </span>
+                {connection.lastSyncedAt && <p>Synced {relativeTime(connection.lastSyncedAt)}</p>}
+                {connection.lastError && <p>{connection.lastError}</p>}
               </div>
               <div className="connection-actions">
-                {!connection.isDemo && (
+                {(connection.status === 'needs_reauth' || connection.status === 'error') && (
                   <button
-                    className="icon-button"
-                    aria-label={`Sync ${prettyProvider(connection.provider)} now`}
-                    title="Sync now"
-                    disabled={busyId === connection.id}
-                    onClick={() => {
-                      setBusyId(connection.id);
-                      void syncIntegration(connection.id)
-                        .then(() => setToast('Sync requested'))
-                        .catch((err) => setToast(err.message))
-                        .finally(() => setBusyId(null));
-                    }}
+                    className="secondary-button"
+                    disabled={busyId === connection.providerConfigKey}
+                    onClick={() => void openConnect(connection.providerConfigKey)}
                   >
-                    {busyId === connection.id ? (
-                      <LoaderCircle className="spin" size={17} />
+                    {busyId === connection.providerConfigKey ? (
+                      <LoaderCircle className="spin" size={16} />
                     ) : (
-                      <RefreshCw size={17} />
+                      <Link2 size={16} />
                     )}
+                    Reconnect
                   </button>
                 )}
                 {!connection.isDemo && (
@@ -2440,13 +2063,6 @@ function ConnectionsView({
               </div>
             </article>
           ))}
-          {data.connections.length === 0 && (
-            <div className="empty-state">
-              <Link2 size={28} />
-              <h4 aria-level={3}>No tools connected</h4>
-              <p>Pick one below and sign in on the provider’s own screen.</p>
-            </div>
-          )}
         </div>
       </section>
 
@@ -2454,9 +2070,6 @@ function ConnectionsView({
         <div className="section-heading">
           <div>
             <h3 aria-level={2}>Connect a tool</h3>
-            <p>
-              You sign in on the provider’s own screen. Trevra never sees or stores your password.
-            </p>
           </div>
         </div>
         <div className="integration-grid">
@@ -2470,7 +2083,7 @@ function ConnectionsView({
               <button
                 className="secondary-button"
                 disabled={item.connected || busyId === item.key}
-                onClick={() => void connect(item)}
+                onClick={() => void openConnect(item.key)}
               >
                 {busyId === item.key ? (
                   <LoaderCircle className="spin" size={16} />
@@ -2539,20 +2152,10 @@ type ConditionChoice = { value: string; label: string };
 
 type ConditionDraft = {
   sideEffects: string[];
-  actorTypes: string[];
-  environments: string[];
-  maxAmount: string;
-  minConfidence: string;
-  maxRecipients: string;
 };
 
 const EMPTY_CONDITIONS: ConditionDraft = {
-  sideEffects: [],
-  actorTypes: [],
-  environments: [],
-  maxAmount: '',
-  minConfidence: '',
-  maxRecipients: ''
+  sideEffects: []
 };
 
 const conditionLabel = (choices: readonly ConditionChoice[], value: string) =>
@@ -2570,20 +2173,20 @@ const asNumber = (value: unknown): number | null =>
  * Emit exactly the object the server matches on, with empty keys omitted:
  * `{sideEffects: []}` matches nothing, so sending it would silently disarm the
  * rule the founder just wrote.
+ *
+ * `base` is the raw conditions of the policy being edited (omitted for a new
+ * one). The form only models `sideEffects`, but a policy authored before it
+ * shrank may carry maxAmount/minConfidence/maxRecipients/actorTypes/
+ * environments -- keys this form never shows and so must never delete.
+ * Those ride forward unchanged; only `sideEffects` is replaced by the form.
  */
-function buildConditions(draft: ConditionDraft): Record<string, unknown> {
-  const conditions: Record<string, unknown> = {};
+function buildConditions(
+  draft: ConditionDraft,
+  base: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const conditions: Record<string, unknown> = { ...base };
   if (draft.sideEffects.length > 0) conditions.sideEffects = draft.sideEffects;
-  if (draft.actorTypes.length > 0) conditions.actorTypes = draft.actorTypes;
-  if (draft.environments.length > 0) conditions.environments = draft.environments;
-  const amount = Number(draft.maxAmount);
-  if (draft.maxAmount.trim() !== '' && Number.isFinite(amount)) conditions.maxAmount = amount;
-  const confidence = Number(draft.minConfidence);
-  if (draft.minConfidence.trim() !== '' && Number.isFinite(confidence))
-    conditions.minConfidence = confidence / 100;
-  const recipients = Number(draft.maxRecipients);
-  if (draft.maxRecipients.trim() !== '' && Number.isFinite(recipients))
-    conditions.maxRecipients = recipients;
+  else delete conditions.sideEffects;
   return conditions;
 }
 
@@ -2635,17 +2238,13 @@ function describePolicy(
  * policy's stored conditions, so editing one starts from what is already
  * there instead of a blank form. */
 function conditionDraftFromPolicy(conditions: Record<string, unknown>): ConditionDraft {
-  const maxAmount = asNumber(conditions.maxAmount);
-  const minConfidence = asNumber(conditions.minConfidence);
-  const maxRecipients = asNumber(conditions.maxRecipients);
-  return {
-    sideEffects: asStringList(conditions.sideEffects),
-    actorTypes: asStringList(conditions.actorTypes),
-    environments: asStringList(conditions.environments),
-    maxAmount: maxAmount === null ? '' : String(maxAmount),
-    minConfidence: minConfidence === null ? '' : String(Math.round(minConfidence * 100)),
-    maxRecipients: maxRecipients === null ? '' : String(maxRecipients)
-  };
+  // Ignores any other condition keys a saved policy may carry (actorTypes,
+  // environments, thresholds, ...) -- this draft no longer models them, and
+  // does not need to: describePolicy renders those keys straight from the
+  // policy record, and buildConditions is handed the policy's raw conditions
+  // as its `base` on save, so those keys survive the round-trip untouched
+  // even though this draft never shows them.
+  return { sideEffects: asStringList(conditions.sideEffects) };
 }
 
 function ConditionChecklist({
@@ -2676,7 +2275,19 @@ function ConditionChecklist({
   );
 }
 
+/**
+ * The two fields the form stopped asking for.
+ *
+ * `actionPattern` is required by the server schema and `skill:*` is what every
+ * policy this UI has ever written used; `priority` only breaks ties between
+ * rules nobody has been able to author more than one of.
+ */
+const POLICY_DEFAULTS = { actionPattern: 'skill:*', priority: 100 } as const;
+
 function LimitsView({ setToast }: { setToast: (message: string) => void }) {
+  // The shared owner signal (`useIsWorkspaceOwner`, auth-client.ts): a
+  // member never sees New/Edit/Delete/the switch flash before disappearing.
+  const isOwner = useIsWorkspaceOwner();
   const [busy, setBusy] = useState('');
   const [policies, setPolicies] = useState<WorkspacePolicy[]>([]);
   const [confirmDeletePolicy, setConfirmDeletePolicy] = useState<WorkspacePolicy | null>(null);
@@ -2687,16 +2298,14 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   const [editingPolicy, setEditingPolicy] = useState<WorkspacePolicy | null>(null);
   const [policyDraft, setPolicyDraft] = useState({
     name: 'Ask me before anything leaves my business',
-    actionPattern: 'skill:*',
-    effect: 'require_approval' as WorkspacePolicy['effect'],
-    priority: 100
+    effect: 'require_approval' as WorkspacePolicy['effect']
   });
   const [conditionDraft, setConditionDraft] = useState<ConditionDraft>({
     ...EMPTY_CONDITIONS,
     sideEffects: ['external-write']
   });
 
-  const toggleCondition = (key: 'sideEffects' | 'actorTypes' | 'environments', value: string) =>
+  const toggleCondition = (key: 'sideEffects', value: string) =>
     setConditionDraft((current) => ({
       ...current,
       [key]: current[key].includes(value)
@@ -2713,9 +2322,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   const resetDraft = () => {
     setPolicyDraft({
       name: 'Ask me before anything leaves my business',
-      actionPattern: 'skill:*',
-      effect: 'require_approval',
-      priority: 100
+      effect: 'require_approval'
     });
     setConditionDraft({ ...EMPTY_CONDITIONS, sideEffects: ['external-write'] });
   };
@@ -2732,9 +2339,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
     setEditingPolicy(policy);
     setPolicyDraft({
       name: policy.name,
-      actionPattern: policy.actionPattern,
-      effect: policy.effect,
-      priority: policy.priority
+      effect: policy.effect
     });
     setConditionDraft(conditionDraftFromPolicy(policy.conditions));
     setFormOpen(true);
@@ -2746,39 +2351,30 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   };
 
   const savePolicy = async () => {
-    if (!policyDraft.name.trim() || !policyDraft.actionPattern.trim()) return;
+    if (!policyDraft.name.trim()) return;
+    // `POLICY_DEFAULTS` still rides along on every write: the form only
+    // exposes name, effect and side-effects now, but the PATCH body must not
+    // blank actionPattern/priority just because this form stopped showing
+    // them.
     const payload = {
       name: policyDraft.name.trim(),
-      actionPattern: policyDraft.actionPattern.trim(),
+      actionPattern: POLICY_DEFAULTS.actionPattern,
       effect: policyDraft.effect,
-      priority: policyDraft.priority,
-      conditions: buildConditions(conditionDraft),
-      enabled: true
+      priority: POLICY_DEFAULTS.priority,
+      conditions: buildConditions(conditionDraft, editingPolicy?.conditions)
     };
     setBusy(editingPolicy ? 'policy-edit' : 'policy-create');
     try {
       if (editingPolicy) {
-        const editingId = editingPolicy.id;
-        // There is no PATCH route for a policy (src/server/app.ts has only
-        // POST and DELETE), so an edit creates the new version first and only
-        // deletes the old one once that succeeds -- in that order, so a
-        // failed create leaves the original limit in place instead of a
-        // delete losing it outright.
-        const created = await createPolicy(payload);
-        try {
-          await deletePolicy(editingId);
-          setPolicies(created.filter((policy) => policy.id !== editingId));
-          setToast('Limit updated.');
-        } catch (err) {
-          setPolicies(created);
-          setToast(
-            `Saved the new version, but could not remove the old “${editingPolicy.name}”: ${
-              err instanceof Error ? err.message : 'unknown error'
-            }. Delete it by hand below.`
-          );
-        }
+        // The form has no enabled/disabled control -- that lives on the row's
+        // own toggle -- so an edit must carry the policy's current `enabled`
+        // forward rather than force it back on.
+        setPolicies(
+          await updatePolicy(editingPolicy.id, { ...payload, enabled: editingPolicy.enabled })
+        );
+        setToast('Limit updated.');
       } else {
-        setPolicies(await createPolicy(payload));
+        setPolicies(await createPolicy({ ...payload, enabled: true }));
         setToast('Limit saved');
       }
       closeForm();
@@ -2805,21 +2401,19 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   };
 
   const saving = busy === 'policy-create' || busy === 'policy-edit';
-  const draftIncomplete = !policyDraft.name.trim() || !policyDraft.actionPattern.trim();
+  const draftIncomplete = !policyDraft.name.trim();
 
   return (
     <div className="page-stack">
-      <section className="page-panel policy-panel" id="setup-limits">
+      <section className="page-panel policy-panel" id="limits">
         <div className="section-heading">
           <div>
             <h3 aria-level={2}>
               <ShieldCheck size={18} /> Hard limits
             </h3>
-            <p>Rules Trevra can never break, whatever else it is told to do.</p>
           </div>
           <div className="mgr-actions">
-            <span className="status-pill">{policies.length} set</span>
-            {!formOpen && (
+            {isOwner && !formOpen && (
               <button className="secondary-button" type="button" onClick={openNewPolicyForm}>
                 <ShieldCheck size={14} /> New policy
               </button>
@@ -2838,17 +2432,6 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                 />
               </label>
               <label>
-                What it covers
-                <input
-                  value={policyDraft.actionPattern}
-                  onChange={(event) =>
-                    setPolicyDraft({ ...policyDraft, actionPattern: event.target.value })
-                  }
-                  placeholder="skill:*"
-                />
-                <small>* stands for everything</small>
-              </label>
-              <label>
                 What happens
                 <select
                   value={policyDraft.effect}
@@ -2864,23 +2447,9 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                   <option value="deny">Block it</option>
                 </select>
               </label>
-              <label>
-                Priority
-                <input
-                  type="number"
-                  value={policyDraft.priority}
-                  onChange={(event) =>
-                    setPolicyDraft({ ...policyDraft, priority: Number(event.target.value) })
-                  }
-                />
-                <small>higher wins a tie</small>
-              </label>
             </div>
             <fieldset className="policy-conditions">
               <legend>When does it apply?</legend>
-              <p className="condition-hint">
-                Leave a group untouched and it applies to all of them.
-              </p>
               <div className="condition-groups">
                 <ConditionChecklist
                   legend="What is being done"
@@ -2888,80 +2457,9 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                   selected={conditionDraft.sideEffects}
                   onToggle={(value) => toggleCondition('sideEffects', value)}
                 />
-                <ConditionChecklist
-                  legend="Who is doing it"
-                  choices={ACTOR_CHOICES}
-                  selected={conditionDraft.actorTypes}
-                  onToggle={(value) => toggleCondition('actorTypes', value)}
-                />
-                <ConditionChecklist
-                  legend="Where it runs"
-                  choices={ENVIRONMENT_CHOICES}
-                  selected={conditionDraft.environments}
-                  onToggle={(value) => toggleCondition('environments', value)}
-                />
               </div>
-              <div className="condition-numbers">
-                <label>
-                  Only when the amount is at most
-                  <span className="condition-number">
-                    <input
-                      type="number"
-                      min="0"
-                      step="100"
-                      placeholder="any amount"
-                      value={conditionDraft.maxAmount}
-                      onChange={(event) =>
-                        setConditionDraft({ ...conditionDraft, maxAmount: event.target.value })
-                      }
-                    />
-                    <small>EUR</small>
-                  </span>
-                </label>
-                <label>
-                  Only when Trevra is at least this sure
-                  <span className="condition-number">
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      placeholder="any confidence"
-                      value={conditionDraft.minConfidence}
-                      onChange={(event) =>
-                        setConditionDraft({ ...conditionDraft, minConfidence: event.target.value })
-                      }
-                    />
-                    <small>%</small>
-                  </span>
-                </label>
-                <label>
-                  Only when it reaches at most
-                  <span className="condition-number">
-                    <input
-                      type="number"
-                      min="1"
-                      placeholder="any number"
-                      value={conditionDraft.maxRecipients}
-                      onChange={(event) =>
-                        setConditionDraft({ ...conditionDraft, maxRecipients: event.target.value })
-                      }
-                    />
-                    <small>people</small>
-                  </span>
-                </label>
-              </div>
-              <p className="policy-preview">
-                {describePolicy(policyDraft.effect, buildConditions(conditionDraft))}
-              </p>
             </fieldset>
             <div className="panel-footer">
-              <span>
-                {draftIncomplete
-                  ? 'Name it and say what it covers to save.'
-                  : editingPolicy
-                    ? 'Saving replaces the old version of this limit with what is on screen.'
-                    : 'Takes effect the moment you add it.'}
-              </span>
               <div className="mgr-actions">
                 <button
                   className="ghost-button"
@@ -2991,34 +2489,49 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                 <strong>{policy.name}</strong>
                 <code>{policy.actionPattern}</code>
               </div>
-              <span className={`policy-effect effect-${policy.effect}`}>
-                {policy.effect.replace('_', ' ')}
-              </span>
               <p className="policy-summary">{describePolicy(policy.effect, policy.conditions)}</p>
-              <div className="mgr-actions">
-                <button
-                  className="ghost-button"
-                  disabled={busy === policy.id}
-                  onClick={() => openEditPolicyForm(policy)}
-                >
-                  <Pencil size={15} /> Edit
-                </button>
-                <button
-                  className="ghost-button danger"
-                  disabled={busy === policy.id}
-                  onClick={() => setConfirmDeletePolicy(policy)}
-                >
-                  {busy === policy.id ? (
-                    <LoaderCircle className="spin" size={15} />
-                  ) : (
-                    <Trash2 size={15} />
-                  )}{' '}
-                  Delete
-                </button>
-              </div>
+              {isOwner && (
+                <div className="mgr-actions">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={busy === `policy-toggle-${policy.id}`}
+                    onClick={async () => {
+                      setBusy(`policy-toggle-${policy.id}`);
+                      try {
+                        setPolicies(await updatePolicy(policy.id, { enabled: !policy.enabled }));
+                      } catch (error) {
+                        setToast(agentSetupMessage(error, 'Could not change that limit.'));
+                      } finally {
+                        setBusy('');
+                      }
+                    }}
+                  >
+                    {policy.enabled ? 'On' : 'Off'}
+                  </button>
+                  <button
+                    className="ghost-button"
+                    disabled={busy === policy.id}
+                    onClick={() => openEditPolicyForm(policy)}
+                  >
+                    <Pencil size={15} /> Edit
+                  </button>
+                  <button
+                    className="ghost-button danger"
+                    disabled={busy === policy.id}
+                    onClick={() => setConfirmDeletePolicy(policy)}
+                  >
+                    {busy === policy.id ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <Trash2 size={15} />
+                    )}{' '}
+                    Delete
+                  </button>
+                </div>
+              )}
             </article>
           ))}
-          {policies.length === 0 && <p className="empty-copy">No limits of your own yet.</p>}
         </div>
       </section>
 
@@ -3044,6 +2557,114 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
     </div>
   );
 }
+
+/**
+ * The export the privacy policy promises, and the erasure it promises after
+ * it. Both routes have existed and been tested since the workspace shipped;
+ * neither had a way in.
+ */
+function WorkspaceDataBlock({ setToast }: { setToast: (message: string) => void }) {
+  const [preview, setPreview] = useState<WorkspaceErasurePreview | null>(null);
+  const [confirmErase, setConfirmErase] = useState(false);
+  const [typed, setTyped] = useState('');
+  const [eraseError, setEraseError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const closeDrawer = () => {
+    setConfirmErase(false);
+    setTyped('');
+    setEraseError(null);
+  };
+
+  // `ConfirmDrawer` has no `disabled` prop -- the gate lives here instead of
+  // on the button. A click that does not satisfy it never reaches the DELETE;
+  // it only ever surfaces why, through the drawer's own `error` banner.
+  const confirmErasure = async () => {
+    if (!preview) return;
+    if (!preview.erasable || preview.inFlight.length > 0) {
+      setEraseError('Stop what is listed above first.');
+      return;
+    }
+    if (typed !== preview.confirmationPhrase) {
+      setEraseError(`Type ${preview.confirmationPhrase} to confirm.`);
+      return;
+    }
+    setBusy(true);
+    setEraseError(null);
+    try {
+      await eraseWorkspace(typed);
+      // The server clears the session on success -- a full page load, not a
+      // refetch, since there is nothing left here to refetch into.
+      window.location.assign('/login');
+    } catch (error) {
+      setEraseError(agentSetupMessage(error, 'Could not erase this workspace.'));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <details className="mgr-inputs" id="workspace-data">
+      <summary>Export or erase this workspace</summary>
+      <div className="mgr-inputs-body">
+        <a className="ghost-button" href={workspaceExportDownloadPath()} download>
+          Export everything
+        </a>
+        <button
+          type="button"
+          className="ghost-button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const next = await previewWorkspaceErasure();
+              setPreview(next);
+              setEraseError(null);
+              setTyped('');
+              setConfirmErase(true);
+            } catch (error) {
+              setToast(agentSetupMessage(error, 'Could not read what erasure would remove.'));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Erase this workspace
+        </button>
+
+        {confirmErase && preview && (
+          <ConfirmDrawer
+            title="Erase this workspace"
+            tone="danger"
+            body={
+              <>
+                <p>
+                  {preview.totalRows} rows across {preview.inventory.length} tables. Not reversible.
+                </p>
+                {preview.inFlight.length > 0 && (
+                  <ul>
+                    {preview.inFlight.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
+                <label>
+                  Type {preview.confirmationPhrase}
+                  <input value={typed} onChange={(event) => setTyped(event.target.value)} />
+                </label>
+              </>
+            }
+            confirmLabel="Erase"
+            busy={busy}
+            error={eraseError}
+            onCancel={closeDrawer}
+            onConfirm={() => void confirmErasure()}
+          />
+        )}
+      </div>
+    </details>
+  );
+}
+
 function WorkspaceSwitcher({
   activeWorkspaceId,
   onSwitched
@@ -3121,7 +2742,7 @@ function viewTitle(route: Route): string {
   }
   if (route.section === 'ledger') return 'Run ledger';
   if (route.section === 'research') return 'Research';
-  const sub = route.sub === 'spend' ? 'agent' : route.sub;
-  const setup = SETUP_ROUTES.find((entry) => entry.sub === sub);
-  return setup ? `Setup · ${setup.label}` : 'Setup';
+  if (route.section === 'setup')
+    return route.sub === 'workspace' ? 'Setup · Workspace' : 'Setup · Access';
+  return 'Setup';
 }
