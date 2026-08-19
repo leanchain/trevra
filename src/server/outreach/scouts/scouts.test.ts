@@ -18,14 +18,19 @@ function jsonFetch(routes: Record<string, unknown>): { fetchImpl: FetchLike; cal
       calls.push(input);
       const match = Object.keys(routes).find((key) => input.includes(key));
       if (!match) return new Response('not found', { status: 404 });
-      return new Response(JSON.stringify(routes[match]), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify(routes[match]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
     }
   };
 }
 
 describe('scout registry', () => {
   it('reports honest availability for every platform with no credentials set', () => {
-    const modes = Object.fromEntries(listScouts().map((scout) => [scout.platform, scout.availability(noCredentials).mode]));
+    const modes = Object.fromEntries(
+      listScouts().map((scout) => [scout.platform, scout.availability(noCredentials).mode])
+    );
     expect(modes).toEqual({
       devto: 'ready',
       github: 'ready',
@@ -49,7 +54,10 @@ describe('scout registry', () => {
   it('registers LinkedIn as a policy decision that returns nothing rather than omitting it', async () => {
     const linkedin = getScout('linkedin');
     expect(linkedin?.availability(noCredentials).mode).toBe('disabled');
-    const result = await linkedin!.search({ queries: ['token cost'], limit: 10 }, { credentials: noCredentials });
+    const result = await linkedin!.search(
+      { queries: ['token cost'], limit: 10 },
+      { credentials: noCredentials }
+    );
     expect(result.threads).toEqual([]);
     expect(result.warnings[0]).toMatch(/disabled by policy, not by configuration/);
   });
@@ -58,12 +66,35 @@ describe('scout registry', () => {
 describe('devto scout', () => {
   it('filters the tag feeds down to threads matching the query terms', async () => {
     const articles = [
-      { id: 1, url: 'https://dev.to/a/1', title: 'Cutting my token cost in half', description: 'notes', tag_list: ['ai'], positive_reactions_count: 40, comments_count: 8, published_at: '2026-08-01T00:00:00Z', user: { username: 'ann' } },
-      { id: 2, url: 'https://dev.to/a/2', title: 'My sourdough starter', description: 'bread', tag_list: ['food'], positive_reactions_count: 3, comments_count: 0, published_at: '2026-08-01T00:00:00Z', user: { username: 'bob' } }
+      {
+        id: 1,
+        url: 'https://dev.to/a/1',
+        title: 'Cutting my token cost in half',
+        description: 'notes',
+        tag_list: ['ai'],
+        positive_reactions_count: 40,
+        comments_count: 8,
+        published_at: '2026-08-01T00:00:00Z',
+        user: { username: 'ann' }
+      },
+      {
+        id: 2,
+        url: 'https://dev.to/a/2',
+        title: 'My sourdough starter',
+        description: 'bread',
+        tag_list: ['food'],
+        positive_reactions_count: 3,
+        comments_count: 0,
+        published_at: '2026-08-01T00:00:00Z',
+        user: { username: 'bob' }
+      }
     ];
     const { fetchImpl } = jsonFetch({ '/api/articles': articles });
 
-    const result = await devtoScout.search({ queries: ['token cost'], limit: 10 }, { credentials: noCredentials, fetchImpl });
+    const result = await devtoScout.search(
+      { queries: ['token cost'], limit: 10 },
+      { credentials: noCredentials, fetchImpl }
+    );
 
     expect(result.threads).toHaveLength(1);
     expect(result.threads[0]).toMatchObject({
@@ -79,7 +110,10 @@ describe('devto scout', () => {
 
   it('degrades to a warning when the feed errors, rather than throwing', async () => {
     const fetchImpl: FetchLike = async () => new Response('rate limited', { status: 429 });
-    const result = await devtoScout.search({ queries: ['token cost'], limit: 10 }, { credentials: noCredentials, fetchImpl });
+    const result = await devtoScout.search(
+      { queries: ['token cost'], limit: 10 },
+      { credentials: noCredentials, fetchImpl }
+    );
     expect(result.threads).toEqual([]);
     expect(result.warnings.length).toBeGreaterThan(0);
   });
@@ -90,11 +124,17 @@ describe('devto scout', () => {
       seen.push((init?.headers ?? {}) as Record<string, string>);
       return new Response('[]', { status: 200 });
     };
-    await devtoScout.search({ queries: ['x'], limit: 1 }, { credentials: noCredentials, fetchImpl });
+    await devtoScout.search(
+      { queries: ['x'], limit: 1 },
+      { credentials: noCredentials, fetchImpl }
+    );
     expect(seen[0]['api-key']).toBeUndefined();
 
     seen.length = 0;
-    await devtoScout.search({ queries: ['x'], limit: 1 }, { credentials: { get: (n) => (n === 'DEVTO_API_KEY' ? 'k' : undefined) }, fetchImpl });
+    await devtoScout.search(
+      { queries: ['x'], limit: 1 },
+      { credentials: { get: (n) => (n === 'DEVTO_API_KEY' ? 'k' : undefined) }, fetchImpl }
+    );
     expect(seen[0]['api-key']).toBe('k');
   });
 });
@@ -118,7 +158,10 @@ describe('hackernews scout', () => {
       }
     });
 
-    const result = await hackernewsScout.search({ queries: ['token cost'], limit: 10 }, { credentials: noCredentials, fetchImpl });
+    const result = await hackernewsScout.search(
+      { queries: ['token cost'], limit: 10 },
+      { credentials: noCredentials, fetchImpl }
+    );
 
     expect(result.threads).toHaveLength(1);
     const thread = result.threads[0];
@@ -133,10 +176,52 @@ describe('hackernews scout', () => {
     expect(calls[0]).toContain('tags=%28story%2Ccomment%2Cask_hn%2Cshow_hn%29');
   });
 
+  it('points url at the HN item page even when the story links elsewhere', async () => {
+    // `url` is the reply target: draft-reply copies it into submitUrl, and a
+    // story's own link is somebody else's site, where no reply can be posted.
+    const { fetchImpl } = jsonFetch({
+      '/search': {
+        hits: [
+          {
+            objectID: '77',
+            url: 'https://example.com/blog/post',
+            title: 'token cost',
+            author: 'a',
+            points: 5,
+            num_comments: 2,
+            created_at_i: 1_785_000_000,
+            _tags: ['story']
+          }
+        ]
+      }
+    });
+
+    const result = await hackernewsScout.search(
+      { queries: ['token cost'], limit: 10 },
+      { credentials: noCredentials, fetchImpl }
+    );
+
+    expect(result.threads[0].url).toBe('https://news.ycombinator.com/item?id=77');
+    // The submitted link is still worth having -- it is the thread's subject.
+    expect(result.threads[0].metadata.storyUrl).toBe('https://example.com/blog/post');
+  });
+
   it('merges results across query terms without duplicating a thread', async () => {
-    const hit = { objectID: '1', title: 'token cost', story_text: 'x', author: 'a', points: 1, num_comments: 0, created_at_i: 1_785_000_000, _tags: ['story'] };
+    const hit = {
+      objectID: '1',
+      title: 'token cost',
+      story_text: 'x',
+      author: 'a',
+      points: 1,
+      num_comments: 0,
+      created_at_i: 1_785_000_000,
+      _tags: ['story']
+    };
     const { fetchImpl } = jsonFetch({ '/search': { hits: [hit] } });
-    const result = await hackernewsScout.search({ queries: ['a', 'b', 'c'], limit: 10 }, { credentials: noCredentials, fetchImpl });
+    const result = await hackernewsScout.search(
+      { queries: ['a', 'b', 'c'], limit: 10 },
+      { credentials: noCredentials, fetchImpl }
+    );
     expect(result.threads).toHaveLength(1);
   });
 });
@@ -149,7 +234,10 @@ describe('http helpers', () => {
   });
 
   it('dedupes across batches and honours the limit', () => {
-    const batches = [[{ externalId: 'a' }, { externalId: 'b' }], [{ externalId: 'b' }, { externalId: 'c' }]];
+    const batches = [
+      [{ externalId: 'a' }, { externalId: 'b' }],
+      [{ externalId: 'b' }, { externalId: 'c' }]
+    ];
     expect(dedupeById(batches, 10).map((entry) => entry.externalId)).toEqual(['a', 'b', 'c']);
     expect(dedupeById(batches, 2).map((entry) => entry.externalId)).toEqual(['a', 'b']);
   });

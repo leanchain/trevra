@@ -48,7 +48,12 @@ function parseHit(hit: AlgoliaHit): OutreachThread | null {
   return {
     platform: 'hackernews',
     externalId,
-    url: typeof hit.url === 'string' && hit.url ? hit.url : `https://news.ycombinator.com/item?id=${externalId}`,
+    // ALWAYS the HN item page, never `hit.url`. For a link submission `hit.url`
+    // is the site somebody submitted -- another party's blog, a repo, a docs
+    // page -- and `url` is the reply target every downstream step trusts:
+    // draft-reply copies it into `submitUrl`, and the founder opens it to
+    // reply. The submitted link survives as `metadata.storyUrl`.
+    url: `https://news.ycombinator.com/item?id=${externalId}`,
     title,
     content: cleanText(body || title),
     author: typeof hit.author === 'string' ? hit.author : null,
@@ -61,6 +66,7 @@ function parseHit(hit: AlgoliaHit): OutreachThread | null {
     metadata: {
       parentId: hit.parent_id ?? null,
       storyId: hit.story_id ?? null,
+      storyUrl: typeof hit.url === 'string' && hit.url ? hit.url : null,
       tags: Array.isArray(hit._tags) ? hit._tags.map((tag) => String(tag)) : []
     }
   };
@@ -72,7 +78,11 @@ export const hackernewsScout: OutreachScout = {
   docsUrl: 'https://hn.algolia.com/api',
   credentialEnvVars: [],
   availability() {
-    return { mode: 'ready', reason: 'The Algolia Hacker News index is public and needs no credential.', docsUrl: 'https://hn.algolia.com/api' };
+    return {
+      mode: 'ready',
+      reason: 'The Algolia Hacker News index is public and needs no credential.',
+      docsUrl: 'https://hn.algolia.com/api'
+    };
   },
   async search(query, options) {
     const client = scoutClient(options.fetchImpl);
@@ -86,7 +96,9 @@ export const hackernewsScout: OutreachScout = {
       url.searchParams.set('hitsPerPage', String(Math.min(query.limit, 50)));
       const body = await getJson<{ hits?: unknown }>(client, url.toString(), warnings);
       const hits = Array.isArray(body?.hits) ? (body.hits as AlgoliaHit[]) : [];
-      batches.push(hits.map(parseHit).filter((thread): thread is OutreachThread => thread !== null));
+      batches.push(
+        hits.map(parseHit).filter((thread): thread is OutreachThread => thread !== null)
+      );
     }
 
     const threads = dedupeById(batches, query.limit);

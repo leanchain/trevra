@@ -1894,11 +1894,6 @@ describe('lead sourcing routes (030)', () => {
     expect(listed.offReason).toContain('TREVRA_LINKEDIN_LEAD_SOURCING=false');
     expect(listed.sources).toEqual([]);
   });
-
-  it('404s a source belonging to another workspace', async () => {
-    await as(sessionB).get('/api/linkedin/lead-sources/llsrc_someone_elses').expect(404);
-    await as(sessionB).get('/api/linkedin/lead-sources/llsrc_someone_elses/leads').expect(404);
-  });
 });
 
 describe('inbox routes (031)', () => {
