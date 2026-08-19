@@ -98,6 +98,27 @@ describe('parseRoute', () => {
   it('does not honour an old hash-route URL', () => {
     expect(parseRoute('/').path).toBe('/loop');
   });
+
+  it('parses the two setup screens', () => {
+    expect(parseRoute('/setup').sub).toBe('');
+    expect(parseRoute('/setup/workspace')).toEqual({
+      section: 'setup',
+      sub: 'workspace',
+      id: null,
+      path: '/setup/workspace'
+    });
+  });
+
+  /**
+   * Legacy subs must keep PARSING so SetupView can redirect them. A sub that
+   * falls out of this list parses to '' and silently lands on Access instead.
+   */
+  it('still parses every legacy setup sub', () => {
+    for (const sub of ['agent', 'data', 'limits', 'team', 'skills', 'spend', 'reddit', 'seat']) {
+      expect(parseRoute(`/setup/${sub}`).sub, sub).toBe(sub);
+    }
+    expect(parseRoute('/setup/team/inv_1').id).toBe('inv_1');
+  });
 });
 
 describe('isAppPath', () => {
