@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle2,
   ChevronRight,
   Circle,
-  CircleAlert,
   Clock3,
   Inbox,
   LoaderCircle,
@@ -22,8 +21,8 @@ import {
   type LinkedInLimitsReport,
   type LoopCost
 } from '../api';
-import { useSeatLimits } from '../LinkedInSafety';
-import { LinkedInFunnel } from '../LinkedInAnalyticsScreen';
+import { errorMessage, useOutreachRefresh, useSeatLimits } from '../LinkedInSafety';
+import { DEFAULT_WINDOW_DAYS, LinkedInFunnel } from '../LinkedInAnalyticsScreen';
 import { ConfidenceTag, WindowPicker } from '../LinkedInViz';
 import { money, usd } from './format';
 
@@ -48,8 +47,10 @@ interface Block {
 export interface LoopData {
   planned: number;
   exported: number;
+  /** Of `planned`/`exported`, the subset that is an invite rather than a follow-up step. */
+  plannedInvites: number;
+  exportedInvites: number;
   waitingApprovals: PlaybookRun[];
-  analytics: LinkedInAnalytics | null;
 }
 
 export function LoopView({
@@ -63,26 +64,35 @@ export function LoopView({
   const [loop, setLoop] = useState<LoopData>({
     planned: 0,
     exported: 0,
-    waitingApprovals: [],
-    analytics: null
+    plannedInvites: 0,
+    exportedInvites: 0,
+    waitingApprovals: []
   });
   const [cost, setCost] = useState<LoopCost | null>(null);
+
+  // The one operator-controlled window for this page's outreach numbers --
+  // shared by the metric cards below and by <LinkedInFunnel>, so the two can
+  // never disagree about what period they are counting.
+  const [days, setDays] = useState(DEFAULT_WINDOW_DAYS);
+  const [analytics, setAnalytics] = useState<LinkedInAnalytics | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [analyticsError, setAnalyticsError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [planned, exported, waiting, analytics] = await Promise.all([
+      const [planned, exported, waiting] = await Promise.all([
         getLinkedInActions({ status: 'planned', limit: 200 }).catch(() => []),
         getLinkedInActions({ status: 'exported', limit: 200 }).catch(() => []),
-        getPlaybookRuns({ status: 'waiting_approval', limit: 20 }).catch(() => [] as PlaybookRun[]),
-        getLinkedInAnalytics(7).catch(() => null)
+        getPlaybookRuns({ status: 'waiting_approval', limit: 20 }).catch(() => [] as PlaybookRun[])
       ]);
       if (!cancelled)
         setLoop({
           planned: planned.length,
           exported: exported.length,
-          waitingApprovals: waiting,
-          analytics
+          plannedInvites: planned.filter((action) => action.kind === 'invite').length,
+          exportedInvites: exported.filter((action) => action.kind === 'invite').length,
+          waitingApprovals: waiting
         });
     })();
     void fetchLoopCost(30)
@@ -95,9 +105,30 @@ export function LoopView({
     };
   }, []);
 
+  const loadAnalytics = useCallback(async () => {
+    setAnalyticsLoading(true);
+    try {
+      setAnalytics(await getLinkedInAnalytics(days));
+      setAnalyticsError('');
+    } catch (err) {
+      setAnalyticsError(
+        errorMessage(err, 'Unable to read the outreach ledger. Nothing was changed — try again.')
+      );
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  }, [days]);
+
+  useEffect(() => {
+    void loadAnalytics();
+  }, [loadAnalytics]);
+  useOutreachRefresh(loadAnalytics);
+
   const seat = limits?.seat ?? null;
   const queued = loop.planned + loop.exported;
-  const funnel = loop.analytics?.total ?? null;
+  const invitesQueued = loop.plannedInvites + loop.exportedInvites;
+  const followUpsQueued = queued - invitesQueued;
+  const funnel = analytics?.total ?? null;
   const waitingCount = loop.waitingApprovals.length;
   const inviteDay =
     limits?.limits.find((limit) => limit.kind === 'invite' && limit.window === 'day') ?? null;
@@ -232,23 +263,24 @@ export function LoopView({
       </section>
 
       <section className="metrics-grid metrics-grid-four">
+        {/* Repurposed from a bare queued count -- the Reach stage tile above
+            already states that number once. This tile instead breaks it down
+            by what it is: an invite vs. a follow-up in an existing sequence. */}
         <Metric
           icon={<Send />}
           label="Going out"
-          value={String(queued)}
+          value={seat?.configured ? `${invitesQueued} / ${followUpsQueued}` : '—'}
           detail={
             !seat?.configured
               ? 'No LinkedIn account connected'
-              : inviteDay
-                ? `${inviteDay.ceiling} invite daily limit`
-                : 'Daily limit not available'
+              : `${invitesQueued} invite${invitesQueued === 1 ? '' : 's'} · ${followUpsQueued} follow-up${followUpsQueued === 1 ? '' : 's'} queued${inviteDay ? ` · ${inviteDay.ceiling}/day invite limit` : ''}`
           }
         />
         <Metric
           icon={<Inbox />}
           label="Waiting on a reply"
           value={String(awaitingReply)}
-          detail="Last 7 days"
+          detail={`Last ${days} days`}
         />
         <Metric
           icon={<CheckCircle2 />}
@@ -260,7 +292,7 @@ export function LoopView({
           icon={<Clock3 />}
           label="Waiting on you"
           value={String(waitingCount)}
-          detail={waitingCount ? 'Approval required in Ledger' : 'No approvals waiting'}
+          detail={waitingCount ? 'See the ledger below' : 'Nothing waiting'}
         />
       </section>
 
@@ -293,7 +325,14 @@ export function LoopView({
         </section>
       )}
 
-      <LinkedInFunnel />
+      <LinkedInFunnel
+        analytics={analytics}
+        loading={analyticsLoading}
+        error={analyticsError}
+        reload={loadAnalytics}
+        days={days}
+        onDaysChange={setDays}
+      />
 
       {loop.waitingApprovals.length > 0 && (
         <section className="recommendations-panel">
@@ -304,15 +343,11 @@ export function LoopView({
             </div>
             <span className="status-pill">{waitingCount} open</span>
           </div>
+          {/* The count and the "needs your approval" fact are already stated
+              once each above (status pill; loop-block CTA when this is the
+              loop's top issue) -- this panel's job is the list of runs, not a
+              third restatement of the sentence. */}
           <div className="workflow-approval">
-            <div className="approval-banner">
-              <CircleAlert size={19} />
-              <p>
-                <strong>
-                  {waitingCount} {waitingCount === 1 ? 'job needs' : 'jobs need'} approval.
-                </strong>
-              </p>
-            </div>
             <div>
               {loop.waitingApprovals.map((run) => (
                 <button
@@ -640,28 +675,38 @@ export function LoopCostView({ onNavigate }: { onNavigate: (path: string) => voi
                 <p className="empty-copy">Nothing went out in this window.</p>
               )}
             </div>
-            <div className="run-facts">
-              <div className="run-fact">
-                <span>Agent runs</span>
-                <strong>{cost.sent.agentRuns.total.toLocaleString('en-US')}</strong>
+            {/* Operational/debugging detail -- how the agent runs behind this
+                spend behaved -- not part of the cost summary itself, so it
+                stays closed by default. The counts are already in `cost`,
+                fetched above for this same window; opening this costs no
+                extra read. */}
+            <details className="run-raw">
+              <summary>
+                Agent run detail ({cost.sent.agentRuns.total.toLocaleString('en-US')} runs)
+              </summary>
+              <div className="run-facts">
+                <div className="run-fact">
+                  <span>Agent runs</span>
+                  <strong>{cost.sent.agentRuns.total.toLocaleString('en-US')}</strong>
+                </div>
+                <div className="run-fact">
+                  <span>Completed</span>
+                  <strong>{cost.sent.agentRuns.completed.toLocaleString('en-US')}</strong>
+                </div>
+                <div className="run-fact">
+                  <span>Failed</span>
+                  <strong>{cost.sent.agentRuns.failed.toLocaleString('en-US')}</strong>
+                </div>
+                <div className="run-fact">
+                  <span>Stopped</span>
+                  <strong>{cost.sent.agentRuns.stopped.toLocaleString('en-US')}</strong>
+                </div>
+                <div className="run-fact">
+                  <span>Still running</span>
+                  <strong>{cost.sent.agentRuns.running.toLocaleString('en-US')}</strong>
+                </div>
               </div>
-              <div className="run-fact">
-                <span>Completed</span>
-                <strong>{cost.sent.agentRuns.completed.toLocaleString('en-US')}</strong>
-              </div>
-              <div className="run-fact">
-                <span>Failed</span>
-                <strong>{cost.sent.agentRuns.failed.toLocaleString('en-US')}</strong>
-              </div>
-              <div className="run-fact">
-                <span>Stopped</span>
-                <strong>{cost.sent.agentRuns.stopped.toLocaleString('en-US')}</strong>
-              </div>
-              <div className="run-fact">
-                <span>Still running</span>
-                <strong>{cost.sent.agentRuns.running.toLocaleString('en-US')}</strong>
-              </div>
-            </div>
+            </details>
           </section>
           <section className="page-panel">
             <div className="section-heading">

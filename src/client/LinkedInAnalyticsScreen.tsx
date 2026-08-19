@@ -45,7 +45,8 @@ const WINDOWS = [
   { label: 'All time', days: 0 }
 ] as const;
 
-const DEFAULT_WINDOW_DAYS = 30;
+/** Shared with `LoopView`, which lifts this window for its metric cards and this funnel together. */
+export const DEFAULT_WINDOW_DAYS = 30;
 
 /**
  * The period the numbers on screen were counted over, in words.
@@ -153,11 +154,28 @@ function ReadFailure({
  * Rendered by the shell on `/loop`, where it answers the second stage of the
  * loop -- what goes out, and how far does it get -- for somebody who has not
  * opened Outreach and may not know the word “funnel” applies to a LinkedIn
- * seat. It is therefore self-contained: it reads its own numbers, names its
- * own window in words, and links to the screen that can change them.
+ * seat. `days` and `analytics` are owned by `LoopView`, not by this
+ * component: the loop screen's own metric cards count the same ledger over
+ * the same window, and two independent fetches here and there were how they
+ * used to disagree. This panel stays otherwise self-contained -- it names its
+ * own window in words and links to the screen that can change it -- it just
+ * no longer decides the window on its own.
  */
-export function LinkedInFunnel() {
-  const { analytics, loading, error, reload, days, setDays } = useOutreachAnalytics();
+export function LinkedInFunnel({
+  analytics,
+  loading,
+  error,
+  reload,
+  days,
+  onDaysChange
+}: {
+  analytics: LinkedInAnalytics | null;
+  loading: boolean;
+  error: string;
+  reload: () => Promise<void>;
+  days: number;
+  onDaysChange: (days: number) => void;
+}) {
   const total = analytics?.total;
   const invites = analytics?.invites;
   const anything = total ? total.planned + total.exported + total.sent + total.skipped > 0 : false;
@@ -172,7 +190,7 @@ export function LinkedInFunnel() {
         <TrendingUp size={20} className="li-heading-icon" />
       </div>
 
-      <WindowChoice days={days} onChange={setDays} loading={loading} />
+      <WindowChoice days={days} onChange={onDaysChange} loading={loading} />
 
       {error && <ReadFailure message={error} loading={loading} onRetry={() => void reload()} />}
 
