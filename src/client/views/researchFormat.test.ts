@@ -46,6 +46,27 @@ describe('ageLabel', () => {
     const row = { ...entry().row, thread_created_at: null };
     expect(ageLabel(entry({ row }), NOW)).toBe('first seen 3h ago');
   });
+
+  it('never reads "24h" -- 23.5h rounds into the day unit, not past the hour cap', () => {
+    const row = { ...entry().row, thread_created_at: '2026-08-18T12:30:00.000Z' };
+    const label = ageLabel(entry({ row }), NOW);
+    expect(label).not.toContain('24h');
+    expect(label).toBe('1d old');
+  });
+
+  it('never reads "24h" -- exactly 24h is a day', () => {
+    const row = { ...entry().row, thread_created_at: '2026-08-18T12:00:00.000Z' };
+    const label = ageLabel(entry({ row }), NOW);
+    expect(label).not.toContain('24h');
+    expect(label).toBe('1d old');
+  });
+
+  it('never reads "24h" -- 36h is a day and a half, rounded', () => {
+    const row = { ...entry().row, thread_created_at: '2026-08-18T00:00:00.000Z' };
+    const label = ageLabel(entry({ row }), NOW);
+    expect(label).not.toContain('24h');
+    expect(label).toBe('2d old');
+  });
 });
 
 describe('whyChips', () => {

@@ -15,9 +15,13 @@ export function platformLabel(platform: string): string {
   return PLATFORM_LABELS[platform] ?? platform;
 }
 
+// Round the hours first, then pick the unit off the rounded value -- deciding
+// on the raw hours would let a 23.5h span round up to display as "24h", a
+// boundary this label claims it never crosses.
 function elapsed(from: string, now: Date): string {
   const hours = Math.max(0, (now.getTime() - Date.parse(from)) / 3_600_000);
-  if (hours < 24) return `${Math.round(hours)}h`;
+  const roundedHours = Math.round(hours);
+  if (roundedHours < 24) return `${roundedHours}h`;
   return `${Math.round(hours / 24)}d`;
 }
 
