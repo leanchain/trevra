@@ -80,6 +80,21 @@ test('auto-update accepts only newer plain semver releases from the official pac
 });
 
 test('background companion auto-updates before accepting relay work', async () => {
+  // The target must be strictly newer than whatever this checkout's own
+  // package.json currently says -- CI's release job runs `npm version
+  // "$VERSION"` (bumping package.json to the release-in-progress version)
+  // *before* `npm test`. A hardcoded '0.2.3' here only worked by accident
+  // while nothing had ever bumped past it; once a real release version
+  // reached or passed it, isNewerVersion() correctly saw nothing to update,
+  // the child never exited, and the test hung. Deriving the target from the
+  // live version keeps this true regardless of what CI bumped it to.
+  const currentVersion = String(
+    JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'))
+      .version
+  );
+  const [major, minor, patch] = parseVersion(currentVersion);
+  const targetVersion = `${major}.${minor}.${patch + 1}`;
+
   const home = mkdtempSync(join(tmpdir(), 'trevra-auto-update-test-'));
   const updatePackage = mkdtempSync(join(tmpdir(), 'trevra-update-package-'));
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
@@ -90,7 +105,7 @@ test('background companion auto-updates before accepting relay work', async () =
       join(updatePackage, 'package.json'),
       JSON.stringify({
         name: 'trevra',
-        version: '0.2.3',
+        version: targetVersion,
         type: 'module',
         bin: { trevra: 'bin/trevra.js' },
         files: ['bin']
@@ -98,14 +113,14 @@ test('background companion auto-updates before accepting relay work', async () =
     );
     writeFileSync(
       join(updatePackage, 'bin', 'trevra.js'),
-      '#!/usr/bin/env node\nconsole.log("0.2.3")\n'
+      `#!/usr/bin/env node\nconsole.log("${targetVersion}")\n`
     );
 
     await new Promise((resolve) => server.once('listening', resolve));
     const address = server.address();
     assert.ok(address && typeof address !== 'string');
     server.on('connection', (socket) => {
-      socket.send(JSON.stringify({ type: 'hello', companionVersion: '0.2.3' }));
+      socket.send(JSON.stringify({ type: 'hello', companionVersion: targetVersion }));
     });
 
     mkdirSync(join(home, '.trevra'), { recursive: true });
@@ -158,10 +173,18 @@ test('background companion auto-updates before accepting relay work', async () =
         'utf8'
       )
     );
-    assert.equal(installed.version, '0.2.3');
+    assert.equal(installed.version, targetVersion);
     const log = readFileSync(join(home, '.trevra', 'logs', 'linkedin-companion.log'), 'utf8');
-    assert.match(log, /update_available from=0\.2\.2 to=0\.2\.3/);
-    assert.match(log, /update_installed version=0\.2\.3/);
+    assert.match(
+      log,
+      new RegExp(
+        `update_available from=${currentVersion.replace(/\./g, '\\.')} to=${targetVersion.replace(/\./g, '\\.')}`
+      )
+    );
+    assert.match(
+      log,
+      new RegExp(`update_installed version=${targetVersion.replace(/\./g, '\\.')}`)
+    );
   } finally {
     // A child stuck mid-update must not be left running past this test: an
     // unreaped child with open stdio pipes keeps `node --test`'s own process
