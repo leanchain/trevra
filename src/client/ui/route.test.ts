@@ -114,7 +114,17 @@ describe('parseRoute', () => {
    * falls out of this list parses to '' and silently lands on Access instead.
    */
   it('still parses every legacy setup sub', () => {
-    for (const sub of ['agent', 'data', 'limits', 'team', 'skills', 'spend', 'reddit', 'seat']) {
+    for (const sub of [
+      'agent',
+      'data',
+      'limits',
+      'team',
+      'skills',
+      'spend',
+      'reddit',
+      'seat',
+      'research'
+    ]) {
       expect(parseRoute(`/setup/${sub}`).sub, sub).toBe(sub);
     }
     expect(parseRoute('/setup/team/inv_1').id).toBe('inv_1');

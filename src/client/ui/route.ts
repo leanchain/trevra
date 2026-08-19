@@ -43,7 +43,19 @@ const SUB_ROUTES: Record<Section, readonly string[]> = {
   outreach: ['', 'accounts', 'activity', 'campaigns', 'inbox', 'leads', 'manager', 'plan'],
   ledger: ['', 'run'],
   research: [''],
-  setup: ['', 'workspace', 'agent', 'data', 'reddit', 'seat', 'skills', 'limits', 'spend', 'team']
+  setup: [
+    '',
+    'workspace',
+    'agent',
+    'data',
+    'reddit',
+    'research',
+    'seat',
+    'skills',
+    'limits',
+    'spend',
+    'team'
+  ]
 };
 
 /**
