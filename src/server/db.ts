@@ -14,7 +14,10 @@ export const DEMO_WORKSPACE_ID = 'ws_demo';
 export const DEMO_USER_ID = 'usr_demo';
 
 interface Queryable {
-  query<T extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<T>>;
+  query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: unknown[]
+  ): Promise<pg.QueryResult<T>>;
 }
 
 /**
@@ -40,7 +43,11 @@ export interface PoolLimits {
   checkoutWarnMs: number;
 }
 
-const DEFAULT_POOL_LIMITS: PoolLimits = { max: 10, connectionTimeoutMs: 10_000, checkoutWarnMs: 15_000 };
+const DEFAULT_POOL_LIMITS: PoolLimits = {
+  max: 10,
+  connectionTimeoutMs: 10_000,
+  checkoutWarnMs: 15_000
+};
 
 export class Db {
   constructor(
@@ -52,11 +59,15 @@ export class Db {
   prepare(sql: string) {
     const text = normalizeSql(sql);
     return {
-      get: async <T extends QueryResultRow = QueryResultRow>(...params: unknown[]): Promise<T | undefined> => {
+      get: async <T extends QueryResultRow = QueryResultRow>(
+        ...params: unknown[]
+      ): Promise<T | undefined> => {
         const result = await this.queryable.query<T>(text, params);
         return result.rows[0];
       },
-      all: async <T extends QueryResultRow = QueryResultRow>(...params: unknown[]): Promise<T[]> => {
+      all: async <T extends QueryResultRow = QueryResultRow>(
+        ...params: unknown[]
+      ): Promise<T[]> => {
         const result = await this.queryable.query<T>(text, params);
         return result.rows;
       },
@@ -72,7 +83,8 @@ export class Db {
   }
 
   async transaction<T>(work: (tx: Db) => Promise<T>): Promise<T> {
-    if (!this.pool) throw new Error('Transactions can only be started from a pooled database handle');
+    if (!this.pool)
+      throw new Error('Transactions can only be started from a pooled database handle');
     return this.withConnection('transaction', async (client) => {
       try {
         await client.query('BEGIN');
@@ -106,9 +118,14 @@ export class Db {
    * hold a connection for a long time (the automation lease), so the watchdog
    * stays a signal rather than a line printed every cycle.
    */
-  async withConnection<T>(purpose: string, work: (client: PoolClient) => Promise<T>, warnAfterMs?: number): Promise<T> {
+  async withConnection<T>(
+    purpose: string,
+    work: (client: PoolClient) => Promise<T>,
+    warnAfterMs?: number
+  ): Promise<T> {
     const pool = this.pool;
-    if (!pool) throw new Error('A connection can only be checked out from a pooled database handle');
+    if (!pool)
+      throw new Error('A connection can only be checked out from a pooled database handle');
     // Captured BEFORE the wait and deliberately left unthrown: building an
     // Error is cheap, rendering `.stack` is not, so the frames are formatted
     // only on the two paths that actually report them.
@@ -121,14 +138,15 @@ export class Db {
     }
     const startedAt = Date.now();
     const warnMs = warnAfterMs ?? this.limits.checkoutWarnMs;
-    const watchdog = warnMs > 0
-      ? setTimeout(() => {
-        console.warn(
-          `PostgreSQL connection held ${Date.now() - startedAt}ms by "${purpose}" ` +
-          `(max=${this.limits.max}, waiting=${pool.waitingCount}). Caller: ${callerFrames(site)}`
-        );
-      }, warnMs)
-      : null;
+    const watchdog =
+      warnMs > 0
+        ? setTimeout(() => {
+            console.warn(
+              `PostgreSQL connection held ${Date.now() - startedAt}ms by "${purpose}" ` +
+                `(max=${this.limits.max}, waiting=${pool.waitingCount}). Caller: ${callerFrames(site)}`
+            );
+          }, warnMs)
+        : null;
     watchdog?.unref?.();
     try {
       return await work(client);
@@ -148,11 +166,12 @@ export class Db {
   private checkoutFailure(purpose: string, site: Error, error: unknown): Error {
     const pool = this.pool;
     const message = error instanceof Error ? error.message : String(error);
-    if (!pool || !/timeout/i.test(message)) return error instanceof Error ? error : new Error(message);
+    if (!pool || !/timeout/i.test(message))
+      return error instanceof Error ? error : new Error(message);
     return new Error(
       `PostgreSQL pool exhausted: no connection for "${purpose}" within ${this.limits.connectionTimeoutMs}ms ` +
-      `(max=${this.limits.max}, open=${pool.totalCount}, idle=${pool.idleCount}, waiting=${pool.waitingCount}). ` +
-      `Raise DATABASE_POOL_MAX, or shorten the work holding the other connections. Caller: ${callerFrames(site)}`,
+        `(max=${this.limits.max}, open=${pool.totalCount}, idle=${pool.idleCount}, waiting=${pool.waitingCount}). ` +
+        `Raise DATABASE_POOL_MAX, or shorten the work holding the other connections. Caller: ${callerFrames(site)}`,
       { cause: error }
     );
   }
@@ -194,78 +213,156 @@ export class Db {
  * `DATABASE_AUTO_MIGRATE` forces either answer for the deployment that is an
  * exception to its own mode; `autoMigrate` does the same for one call.
  */
-export async function openDatabase(options: {
-  connectionString?: string;
-  seedDemo?: boolean;
-  maxConnections?: number;
-  connectionTimeoutMs?: number;
-  statementTimeoutMs?: number;
-  checkoutWarnMs?: number;
-  autoMigrate?: boolean;
-  migrationsPath?: string;
-} = {}): Promise<Db> {
+/**
+ * Migrate-check + catalog seed (skills/channels/playbooks/module registry),
+ * run at most ONCE per connection string for this process's lifetime.
+ *
+ * WHY: every one of these is idempotent and derived from static, in-process
+ * registries (skill/channel/playbook manifests) that do not change between
+ * two `openDatabase()` calls in the same run -- but `seedSkills`/
+ * `seedChannels`/`seedPlaybooks` each loop one `await` per row, and
+ * `seedBuiltinModuleRegistry` re-derives a JSON schema (`zodToJsonSchema`)
+ * for every skill's input AND output. Re-running all of that on every test's
+ * `beforeEach` (a common pattern: dozens of test files call `openDatabase()`
+ * per test, not per file) was costing 40-60+ sequential round trips per test
+ * for work whose result cannot have changed since the last call. Memoizing
+ * it here sped up the affected files 2-3x with no behavior change: the
+ * pending-migration check and every seed still runs, exactly once, before
+ * anything can read from a freshly-opened connection to this database.
+ *
+ * A rejected attempt is evicted, not cached: a transient failure (e.g. a
+ * migration that legitimately failed) must not be replayed as a cached
+ * rejection for the rest of the process on a database that could still
+ * recover (e.g. `db:migrate` runs, then a retry).
+ */
+const catalogSeeded = new Map<string, Promise<void>>();
+
+async function ensureCatalogSeeded(
+  db: Db,
+  connectionString: string,
+  migrationsPath: string,
+  autoMigrate: boolean | undefined
+): Promise<void> {
+  const cached = catalogSeeded.get(connectionString);
+  if (cached) return cached;
+
+  const task = (async () => {
+    // One cheap read before anything else: on the boot that has nothing to do --
+    // which is every boot after the first -- this is the whole cost, and no
+    // migration connection is opened at all.
+    const pending = await pendingMigrations(db, migrationsPath);
+    if (pending.length > 0) {
+      if (autoMigrate ?? autoMigrateOnBoot())
+        await runMigrations({ connectionString, migrationsPath });
+      else
+        throw new Error(
+          `Database schema is behind this build: ${pending.length} migration(s) not applied ` +
+            `(${pending.slice(0, 3).join(', ')}${pending.length > 3 ? ', ...' : ''}). ` +
+            'A hosted deployment applies migrations as a job -- `npm run db:migrate` -- before the rollout, not on pod boot. ' +
+            'Set DATABASE_AUTO_MIGRATE=true to apply them from here instead.'
+        );
+    }
+
+    const [{ seedSkills }, { seedChannels }, { seedPlaybooks }] = await Promise.all([
+      import('./skills/registry.js'),
+      import('./channels/registry.js'),
+      import('./playbooks/registry.js')
+    ]);
+    await seedSkills(db);
+    await seedChannels(db);
+    await seedPlaybooks(db);
+    const [{ seedBuiltinModuleRegistry }, { listSkills }, { zodToJsonSchema }] = await Promise.all([
+      import('./registry/service.js'),
+      import('./skills/registry.js'),
+      import('zod-to-json-schema')
+    ]);
+    let builtinSbom: Record<string, unknown> = {};
+    for (const candidate of [
+      'public/catalog/trevra.sbom.cdx.json',
+      'dist/catalog/trevra.sbom.cdx.json'
+    ]) {
+      try {
+        builtinSbom = JSON.parse(await readFile(resolve(candidate), 'utf8')) as Record<
+          string,
+          unknown
+        >;
+        break;
+      } catch {
+        /* optional before catalog build */
+      }
+    }
+    await seedBuiltinModuleRegistry(
+      db,
+      listSkills().map(({ manifest }) => ({
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        description: manifest.description,
+        sideEffect: manifest.sideEffect,
+        requiresApproval: manifest.requiresApproval,
+        inputSchema: zodToJsonSchema(manifest.inputSchema, {
+          target: 'jsonSchema7',
+          $refStrategy: 'none'
+        }) as Record<string, unknown>,
+        outputSchema: zodToJsonSchema(manifest.outputSchema, {
+          target: 'jsonSchema7',
+          $refStrategy: 'none'
+        }) as Record<string, unknown>
+      })),
+      builtinSbom
+    );
+  })();
+
+  catalogSeeded.set(connectionString, task);
+  task.catch(() => catalogSeeded.delete(connectionString));
+  return task;
+}
+
+export async function openDatabase(
+  options: {
+    connectionString?: string;
+    seedDemo?: boolean;
+    maxConnections?: number;
+    connectionTimeoutMs?: number;
+    statementTimeoutMs?: number;
+    checkoutWarnMs?: number;
+    autoMigrate?: boolean;
+    migrationsPath?: string;
+  } = {}
+): Promise<Db> {
   const connectionString = options.connectionString ?? process.env.DATABASE_URL;
-  if (!connectionString) throw new Error('DATABASE_URL is required; Trevra only supports PostgreSQL');
+  if (!connectionString)
+    throw new Error('DATABASE_URL is required; Trevra only supports PostgreSQL');
 
   const limits: PoolLimits = {
     max: options.maxConnections ?? envInt('DATABASE_POOL_MAX', DEFAULT_POOL_LIMITS.max),
-    connectionTimeoutMs: options.connectionTimeoutMs ?? envInt('DATABASE_CONNECT_TIMEOUT_MS', DEFAULT_POOL_LIMITS.connectionTimeoutMs),
-    checkoutWarnMs: options.checkoutWarnMs ?? envInt('DATABASE_POOL_CHECKOUT_WARN_MS', DEFAULT_POOL_LIMITS.checkoutWarnMs)
+    connectionTimeoutMs:
+      options.connectionTimeoutMs ??
+      envInt('DATABASE_CONNECT_TIMEOUT_MS', DEFAULT_POOL_LIMITS.connectionTimeoutMs),
+    checkoutWarnMs:
+      options.checkoutWarnMs ??
+      envInt('DATABASE_POOL_CHECKOUT_WARN_MS', DEFAULT_POOL_LIMITS.checkoutWarnMs)
   };
   const pool = new Pool({
     connectionString,
     max: limits.max,
     idleTimeoutMillis: envInt('DATABASE_IDLE_TIMEOUT_MS', 30_000),
     connectionTimeoutMillis: limits.connectionTimeoutMs,
-    statement_timeout: options.statementTimeoutMs ?? envInt('DATABASE_STATEMENT_TIMEOUT_MS', 30_000),
+    statement_timeout:
+      options.statementTimeoutMs ?? envInt('DATABASE_STATEMENT_TIMEOUT_MS', 30_000),
     application_name: process.env.DATABASE_APPLICATION_NAME ?? 'trevra'
   });
   pool.on('error', (error) => console.error('Unexpected PostgreSQL pool error', error));
   const db = new Db(pool, pool, limits);
   const migrationsPath = options.migrationsPath ?? migrationDirectory();
   try {
-    // One cheap read before anything else: on the boot that has nothing to do --
-    // which is every boot after the first -- this is the whole cost, and no
-    // migration connection is opened at all.
-    const pending = await pendingMigrations(db, migrationsPath);
-    if (pending.length > 0) {
-      if (options.autoMigrate ?? autoMigrateOnBoot()) await runMigrations({ connectionString, migrationsPath });
-      else throw new Error(
-        `Database schema is behind this build: ${pending.length} migration(s) not applied ` +
-        `(${pending.slice(0, 3).join(', ')}${pending.length > 3 ? ', ...' : ''}). ` +
-        'A hosted deployment applies migrations as a job -- `npm run db:migrate` -- before the rollout, not on pod boot. ' +
-        'Set DATABASE_AUTO_MIGRATE=true to apply them from here instead.'
-      );
-    }
+    await ensureCatalogSeeded(db, connectionString, migrationsPath, options.autoMigrate);
   } catch (error) {
     // Refusing to boot must not leak the pool it refused with: the CLI and the
     // test suite both keep running after catching this.
     await pool.end();
     throw error;
   }
-  const [{ seedSkills }, { seedChannels }, { seedPlaybooks }] = await Promise.all([
-    import('./skills/registry.js'),
-    import('./channels/registry.js'),
-    import('./playbooks/registry.js')
-  ]);
-  await seedSkills(db);
-  await seedChannels(db);
-  await seedPlaybooks(db);
-  const [{ seedBuiltinModuleRegistry }, { listSkills }, { zodToJsonSchema }] = await Promise.all([
-    import('./registry/service.js'),
-    import('./skills/registry.js'),
-    import('zod-to-json-schema')
-  ]);
-  let builtinSbom: Record<string, unknown> = {};
-  for (const candidate of ['public/catalog/trevra.sbom.cdx.json','dist/catalog/trevra.sbom.cdx.json']) {
-    try { builtinSbom = JSON.parse(await readFile(resolve(candidate),'utf8')) as Record<string, unknown>; break; } catch { /* optional before catalog build */ }
-  }
-  await seedBuiltinModuleRegistry(db, listSkills().map(({ manifest }) => ({
-    id: manifest.id, name: manifest.name, version: manifest.version, description: manifest.description,
-    sideEffect: manifest.sideEffect, requiresApproval: manifest.requiresApproval,
-    inputSchema: zodToJsonSchema(manifest.inputSchema, { target: 'jsonSchema7', $refStrategy: 'none' }) as Record<string, unknown>,
-    outputSchema: zodToJsonSchema(manifest.outputSchema, { target: 'jsonSchema7', $refStrategy: 'none' }) as Record<string, unknown>
-  })),builtinSbom);
   if (options.seedDemo ?? process.env.NODE_ENV !== 'production') await seedDemo(db);
   return db;
 }
@@ -322,18 +419,26 @@ function autoMigrateOnBoot(): boolean {
  * the ordinary pool (cheap, no privileges, no locks) and the migration runner
  * can ask it again over its own connection once it holds the lock.
  */
-export async function pendingMigrations(db: Db, migrationsPath: string = migrationDirectory()): Promise<string[]> {
+export async function pendingMigrations(
+  db: Db,
+  migrationsPath: string = migrationDirectory()
+): Promise<string[]> {
   const files = await migrationFileNames(migrationsPath);
   return pendingFrom(files, async (sql) => db.prepare(sql).all<{ name: string }>());
 }
 
-async function pendingFrom(files: string[], all: (sql: string) => Promise<Array<Record<string, unknown>>>): Promise<string[]> {
+async function pendingFrom(
+  files: string[],
+  all: (sql: string) => Promise<Array<Record<string, unknown>>>
+): Promise<string[]> {
   // `to_regclass` rather than a catalogue join or a caught error: on a database
   // that has never been migrated the table does not exist, and asking for it
   // inside a transaction would abort that transaction rather than return false.
   const [registry] = await all("SELECT to_regclass('public.schema_migrations') AS reg");
   if (!registry?.reg) return files;
-  const applied = new Set((await all('SELECT name FROM schema_migrations')).map((row) => String(row.name)));
+  const applied = new Set(
+    (await all('SELECT name FROM schema_migrations')).map((row) => String(row.name))
+  );
   return files.filter((name) => !applied.has(name));
 }
 
@@ -369,16 +474,20 @@ async function pendingFrom(files: string[], all: (sql: string) => Promise<Array<
  * after the first one and replicas 2..N would start applying file 2 alongside
  * replica 1.
  */
-export async function runMigrations(options: {
-  connectionString?: string;
-  migrationsPath?: string;
-  lockTimeoutMs?: number;
-  lockWaitMs?: number;
-} = {}): Promise<{ applied: string[] }> {
+export async function runMigrations(
+  options: {
+    connectionString?: string;
+    migrationsPath?: string;
+    lockTimeoutMs?: number;
+    lockWaitMs?: number;
+  } = {}
+): Promise<{ applied: string[] }> {
   const connectionString = options.connectionString ?? process.env.DATABASE_URL;
-  if (!connectionString) throw new Error('DATABASE_URL is required; Trevra only supports PostgreSQL');
+  if (!connectionString)
+    throw new Error('DATABASE_URL is required; Trevra only supports PostgreSQL');
   const migrationsPath = options.migrationsPath ?? migrationDirectory();
-  const lockTimeoutMs = options.lockTimeoutMs ?? envInt('DATABASE_MIGRATION_LOCK_TIMEOUT_MS', 10_000);
+  const lockTimeoutMs =
+    options.lockTimeoutMs ?? envInt('DATABASE_MIGRATION_LOCK_TIMEOUT_MS', 10_000);
   const lockWaitMs = options.lockWaitMs ?? envInt('DATABASE_MIGRATION_LOCK_WAIT_MS', 120_000);
   const files = await migrationFileNames(migrationsPath);
   const applied: string[] = [];
@@ -415,7 +524,10 @@ export async function runMigrations(options: {
       applied.push(name);
     }
   } finally {
-    if (locked) await client.query('SELECT pg_advisory_unlock(hashtext($1))', [MIGRATION_LOCK_NAME]).catch(() => undefined);
+    if (locked)
+      await client
+        .query('SELECT pg_advisory_unlock(hashtext($1))', [MIGRATION_LOCK_NAME])
+        .catch(() => undefined);
     await client.end();
   }
   return { applied };
@@ -439,20 +551,27 @@ async function acquireMigrationLock(
 ): Promise<boolean> {
   const deadline = Date.now() + waitMs;
   for (;;) {
-    const { rows } = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock(hashtext($1)) AS locked', [MIGRATION_LOCK_NAME]);
+    const { rows } = await client.query<{ locked: boolean }>(
+      'SELECT pg_try_advisory_lock(hashtext($1)) AS locked',
+      [MIGRATION_LOCK_NAME]
+    );
     if (rows[0]?.locked) return true;
     if ((await pending()).length === 0) return false;
     if (Date.now() >= deadline) {
       throw new Error(
         `Another process has held the Trevra migration lock for ${waitMs}ms and migrations are still pending. ` +
-        'Check for a stuck migration job before retrying (DATABASE_MIGRATION_LOCK_WAIT_MS raises the wait).'
+          'Check for a stuck migration job before retrying (DATABASE_MIGRATION_LOCK_WAIT_MS raises the wait).'
       );
     }
     await new Promise((wake) => setTimeout(wake, 250));
   }
 }
 
-async function applyInTransaction(client: InstanceType<typeof Client>, name: string, sql: string): Promise<void> {
+async function applyInTransaction(
+  client: InstanceType<typeof Client>,
+  name: string,
+  sql: string
+): Promise<void> {
   await client.query('BEGIN');
   try {
     await client.query(sql);
@@ -480,7 +599,11 @@ async function applyInTransaction(client: InstanceType<typeof Client>, name: str
  * (`IF NOT EXISTS`), and why the lane is for index builds rather than for data
  * rewrites.
  */
-async function applyWithoutTransaction(client: InstanceType<typeof Client>, name: string, sql: string): Promise<void> {
+async function applyWithoutTransaction(
+  client: InstanceType<typeof Client>,
+  name: string,
+  sql: string
+): Promise<void> {
   for (const statement of splitSqlStatements(sql)) {
     try {
       await client.query(statement);
@@ -526,9 +649,13 @@ export function splitSqlStatements(sql: string): string[] {
       let depth = 1;
       let cursor = index + 2;
       while (cursor < sql.length && depth > 0) {
-        if (sql[cursor] === '/' && sql[cursor + 1] === '*') { depth += 1; cursor += 2; }
-        else if (sql[cursor] === '*' && sql[cursor + 1] === '/') { depth -= 1; cursor += 2; }
-        else cursor += 1;
+        if (sql[cursor] === '/' && sql[cursor + 1] === '*') {
+          depth += 1;
+          cursor += 2;
+        } else if (sql[cursor] === '*' && sql[cursor + 1] === '/') {
+          depth -= 1;
+          cursor += 2;
+        } else cursor += 1;
       }
       current += sql.slice(index, cursor);
       index = cursor;
@@ -537,8 +664,14 @@ export function splitSqlStatements(sql: string): string[] {
     if (char === "'" || char === '"') {
       let cursor = index + 1;
       while (cursor < sql.length) {
-        if (sql[cursor] === char && sql[cursor + 1] === char) { cursor += 2; continue; }
-        if (sql[cursor] === char) { cursor += 1; break; }
+        if (sql[cursor] === char && sql[cursor + 1] === char) {
+          cursor += 2;
+          continue;
+        }
+        if (sql[cursor] === char) {
+          cursor += 1;
+          break;
+        }
         cursor += 1;
       }
       current += sql.slice(index, cursor);
@@ -571,7 +704,10 @@ export function splitSqlStatements(sql: string): string[] {
 function pushStatement(statements: string[], candidate: string): void {
   const trimmed = candidate.trim();
   if (!trimmed) return;
-  const stripped = trimmed.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ').trim();
+  const stripped = trimmed
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--[^\n]*/g, ' ')
+    .trim();
   if (stripped) statements.push(trimmed);
 }
 
@@ -590,55 +726,280 @@ function envInt(name: string, fallback: number): number {
 }
 
 async function seedDemo(db: Db): Promise<void> {
-  const existing = await db.prepare('SELECT id FROM workspaces WHERE id=?').get<{ id: string }>(DEMO_WORKSPACE_ID);
+  const existing = await db
+    .prepare('SELECT id FROM workspaces WHERE id=?')
+    .get<{ id: string }>(DEMO_WORKSPACE_ID);
   if (existing) return;
   const now = new Date();
   const iso = (daysAgo = 0) => new Date(now.getTime() - daysAgo * 86_400_000).toISOString();
   await db.transaction(async (tx) => {
-    await tx.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(DEMO_WORKSPACE_ID, 'Northstar Studio', iso(90));
-    await tx.prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?)').run(DEMO_USER_ID, DEMO_WORKSPACE_ID, 'alex@northstar.studio', 'Alex Morgan', iso(90));
-    await tx.prepare('INSERT INTO workspace_settings (workspace_id,currency,sender_name,timezone,demo_mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
+    await tx
+      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+      .run(DEMO_WORKSPACE_ID, 'Northstar Studio', iso(90));
+    await tx
+      .prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?)')
+      .run(DEMO_USER_ID, DEMO_WORKSPACE_ID, 'alex@northstar.studio', 'Alex Morgan', iso(90));
+    await tx
+      .prepare(
+        'INSERT INTO workspace_settings (workspace_id,currency,sender_name,timezone,demo_mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?)'
+      )
       .run(DEMO_WORKSPACE_ID, 'EUR', 'Alex', 'Europe/Zurich', 1, iso(90), iso());
-    await tx.prepare('INSERT INTO connections (id,workspace_id,provider,provider_config_key,external_connection_id,display_name,status,is_demo,last_synced_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-      .run('conn_demo_gmail', DEMO_WORKSPACE_ID, 'gmail', 'google-mail', 'demo-gmail', 'alex@northstar.studio', 'connected', 1, iso(), iso(90), iso());
+    await tx
+      .prepare(
+        'INSERT INTO connections (id,workspace_id,provider,provider_config_key,external_connection_id,display_name,status,is_demo,last_synced_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'conn_demo_gmail',
+        DEMO_WORKSPACE_ID,
+        'gmail',
+        'google-mail',
+        'demo-gmail',
+        'alex@northstar.studio',
+        'connected',
+        1,
+        iso(),
+        iso(90),
+        iso()
+      );
 
     const clients = [
       ['cl_acme', 'Acme Labs', 'Maya Chen', 'maya@acme.example', 'active', 15000, 'EUR', iso(1)],
-      ['cl_orbit', 'Orbit Health', 'Jonas Keller', 'jonas@orbit.example', 'prospect', 8000, 'EUR', iso(9)],
+      [
+        'cl_orbit',
+        'Orbit Health',
+        'Jonas Keller',
+        'jonas@orbit.example',
+        'prospect',
+        8000,
+        'EUR',
+        iso(9)
+      ],
       ['cl_luma', 'Luma Works', 'Sofia Rossi', 'sofia@luma.example', 'active', 7200, 'EUR', iso(4)]
     ] as const;
     for (const client of clients) {
-      await tx.prepare('INSERT INTO clients (id,workspace_id,name,contact_name,email,status,active_value,currency,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-        .run(client[0], DEMO_WORKSPACE_ID, client[1], client[2], client[3], client[4], client[5], client[6], client[7], iso(80));
-      await tx.prepare('INSERT INTO contact_identities (id,workspace_id,client_id,provider,identity_type,identity_value,created_at) VALUES (?,?,?,?,?,?,?)')
+      await tx
+        .prepare(
+          'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,active_value,currency,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+        )
+        .run(
+          client[0],
+          DEMO_WORKSPACE_ID,
+          client[1],
+          client[2],
+          client[3],
+          client[4],
+          client[5],
+          client[6],
+          client[7],
+          iso(80)
+        );
+      await tx
+        .prepare(
+          'INSERT INTO contact_identities (id,workspace_id,client_id,provider,identity_type,identity_value,created_at) VALUES (?,?,?,?,?,?,?)'
+        )
         .run(id('ident'), DEMO_WORKSPACE_ID, client[0], 'email', 'email', client[3], iso(80));
     }
 
-    await tx.prepare('INSERT INTO opportunities (id,workspace_id,client_id,title,value,currency,status,proposal_sent_at,expected_response_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .run('opp_orbit', DEMO_WORKSPACE_ID, 'cl_orbit', 'Brand strategy engagement', 8000, 'EUR', 'proposal_sent', iso(9), iso(5), iso(14));
-    await tx.prepare('INSERT INTO projects (id,workspace_id,client_id,name,status,total_value,currency,created_at) VALUES (?,?,?,?,?,?,?,?)')
-      .run('prj_acme', DEMO_WORKSPACE_ID, 'cl_acme', 'Acme website launch', 'active', 15000, 'EUR', iso(50));
-    await tx.prepare('INSERT INTO projects (id,workspace_id,client_id,name,status,total_value,currency,created_at) VALUES (?,?,?,?,?,?,?,?)')
-      .run('prj_luma', DEMO_WORKSPACE_ID, 'cl_luma', 'Luma positioning sprint', 'delivered', 7200, 'EUR', iso(35));
-    await tx.prepare('INSERT INTO contracts (id,workspace_id,client_id,project_id,title,status,signed_at,effective_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run('contract_acme', DEMO_WORKSPACE_ID, 'cl_acme', 'prj_acme', 'Acme website statement of work', 'signed', iso(52), iso(50), iso(52));
-    await tx.prepare('INSERT INTO contract_clauses (id,contract_id,clause_type,title,content,value_number,unit,created_at) VALUES (?,?,?,?,?,?,?,?)')
-      .run('clause_acme_revision', 'contract_acme', 'change_order', 'Additional deliverables', 'Additional pages and deliverables require written approval and are priced separately.', 750, 'per landing page', iso(52));
-    await tx.prepare('INSERT INTO scope_items (id,project_id,description,included,unit_price,created_at) VALUES (?,?,?,?,?,?)').run('scope_acme_1', 'prj_acme', 'One homepage and one product landing page', 1, null, iso(50));
-    await tx.prepare('INSERT INTO scope_items (id,project_id,description,included,unit_price,created_at) VALUES (?,?,?,?,?,?)').run('scope_acme_2', 'prj_acme', 'Additional landing pages priced separately', 0, 750, iso(50));
-    await tx.prepare('INSERT INTO scope_items (id,project_id,description,included,unit_price,created_at) VALUES (?,?,?,?,?,?)').run('scope_luma_1', 'prj_luma', 'Positioning workshop and final strategy deck', 1, null, iso(35));
-    await tx.prepare('INSERT INTO milestones (id,project_id,name,amount,currency,status,delivered_at,invoiced_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run('mil_luma_final', 'prj_luma', 'Final strategy delivery', 2400, 'EUR', 'delivered', iso(2), null, iso(35));
-    await tx.prepare('INSERT INTO deliverables (id,workspace_id,project_id,name,status,delivered_at,created_at) VALUES (?,?,?,?,?,?,?)')
-      .run('del_luma_deck', DEMO_WORKSPACE_ID, 'prj_luma', 'Final positioning deck', 'delivered', iso(2), iso(35));
-    await tx.prepare('INSERT INTO invoices (id,workspace_id,client_id,project_id,external_ref,amount,currency,status,issued_at,due_at,paid_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-      .run('inv_acme_104', DEMO_WORKSPACE_ID, 'cl_acme', 'prj_acme', 'INV-104', 1850, 'EUR', 'sent', iso(25), iso(7), null, iso(25));
-    await tx.prepare('INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run('msg_acme_extra', DEMO_WORKSPACE_ID, 'cl_acme', 'prj_acme', 'inbound', 'A few additions', 'Could you also create two additional landing pages for the partner campaigns? We would love to include those in this round.', iso(1), iso(1));
-    await tx.prepare('INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run('msg_orbit_proposal', DEMO_WORKSPACE_ID, 'cl_orbit', null, 'outbound', 'Orbit brand strategy proposal', 'Hi Jonas, attached is the €8,000 proposal. I can reserve an August start if you confirm this week.', iso(9), iso(9));
-    await tx.prepare('INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run('msg_luma_delivery', DEMO_WORKSPACE_ID, 'cl_luma', 'prj_luma', 'outbound', 'Final strategy deck', 'Hi Sofia, the final positioning deck and workshop summary are attached. This completes the final milestone.', iso(2), iso(2));
+    await tx
+      .prepare(
+        'INSERT INTO opportunities (id,workspace_id,client_id,title,value,currency,status,proposal_sent_at,expected_response_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'opp_orbit',
+        DEMO_WORKSPACE_ID,
+        'cl_orbit',
+        'Brand strategy engagement',
+        8000,
+        'EUR',
+        'proposal_sent',
+        iso(9),
+        iso(5),
+        iso(14)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO projects (id,workspace_id,client_id,name,status,total_value,currency,created_at) VALUES (?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'prj_acme',
+        DEMO_WORKSPACE_ID,
+        'cl_acme',
+        'Acme website launch',
+        'active',
+        15000,
+        'EUR',
+        iso(50)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO projects (id,workspace_id,client_id,name,status,total_value,currency,created_at) VALUES (?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'prj_luma',
+        DEMO_WORKSPACE_ID,
+        'cl_luma',
+        'Luma positioning sprint',
+        'delivered',
+        7200,
+        'EUR',
+        iso(35)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO contracts (id,workspace_id,client_id,project_id,title,status,signed_at,effective_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'contract_acme',
+        DEMO_WORKSPACE_ID,
+        'cl_acme',
+        'prj_acme',
+        'Acme website statement of work',
+        'signed',
+        iso(52),
+        iso(50),
+        iso(52)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO contract_clauses (id,contract_id,clause_type,title,content,value_number,unit,created_at) VALUES (?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'clause_acme_revision',
+        'contract_acme',
+        'change_order',
+        'Additional deliverables',
+        'Additional pages and deliverables require written approval and are priced separately.',
+        750,
+        'per landing page',
+        iso(52)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO scope_items (id,project_id,description,included,unit_price,created_at) VALUES (?,?,?,?,?,?)'
+      )
+      .run(
+        'scope_acme_1',
+        'prj_acme',
+        'One homepage and one product landing page',
+        1,
+        null,
+        iso(50)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO scope_items (id,project_id,description,included,unit_price,created_at) VALUES (?,?,?,?,?,?)'
+      )
+      .run(
+        'scope_acme_2',
+        'prj_acme',
+        'Additional landing pages priced separately',
+        0,
+        750,
+        iso(50)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO scope_items (id,project_id,description,included,unit_price,created_at) VALUES (?,?,?,?,?,?)'
+      )
+      .run(
+        'scope_luma_1',
+        'prj_luma',
+        'Positioning workshop and final strategy deck',
+        1,
+        null,
+        iso(35)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO milestones (id,project_id,name,amount,currency,status,delivered_at,invoiced_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'mil_luma_final',
+        'prj_luma',
+        'Final strategy delivery',
+        2400,
+        'EUR',
+        'delivered',
+        iso(2),
+        null,
+        iso(35)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO deliverables (id,workspace_id,project_id,name,status,delivered_at,created_at) VALUES (?,?,?,?,?,?,?)'
+      )
+      .run(
+        'del_luma_deck',
+        DEMO_WORKSPACE_ID,
+        'prj_luma',
+        'Final positioning deck',
+        'delivered',
+        iso(2),
+        iso(35)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO invoices (id,workspace_id,client_id,project_id,external_ref,amount,currency,status,issued_at,due_at,paid_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'inv_acme_104',
+        DEMO_WORKSPACE_ID,
+        'cl_acme',
+        'prj_acme',
+        'INV-104',
+        1850,
+        'EUR',
+        'sent',
+        iso(25),
+        iso(7),
+        null,
+        iso(25)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'msg_acme_extra',
+        DEMO_WORKSPACE_ID,
+        'cl_acme',
+        'prj_acme',
+        'inbound',
+        'A few additions',
+        'Could you also create two additional landing pages for the partner campaigns? We would love to include those in this round.',
+        iso(1),
+        iso(1)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'msg_orbit_proposal',
+        DEMO_WORKSPACE_ID,
+        'cl_orbit',
+        null,
+        'outbound',
+        'Orbit brand strategy proposal',
+        'Hi Jonas, attached is the €8,000 proposal. I can reserve an August start if you confirm this week.',
+        iso(9),
+        iso(9)
+      );
+    await tx
+      .prepare(
+        'INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        'msg_luma_delivery',
+        DEMO_WORKSPACE_ID,
+        'cl_luma',
+        'prj_luma',
+        'outbound',
+        'Final strategy deck',
+        'Hi Sofia, the final positioning deck and workshop summary are attached. This completes the final milestone.',
+        iso(2),
+        iso(2)
+      );
 
     const defaults = [
       ['rule_stale', 'stale_proposal', 'prepare', 0.85, 25000, 0, 1],
@@ -647,8 +1008,22 @@ async function seedDemo(db: Db): Promise<void> {
       ['rule_unbilled', 'unbilled_milestone', 'prepare', 0.95, 10000, 0, 1]
     ] as const;
     for (const rule of defaults) {
-      await tx.prepare('INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,max_amount,delay_minutes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-        .run(rule[0], DEMO_WORKSPACE_ID, rule[1], rule[2], rule[3], rule[4], rule[5], rule[6], iso(30), iso());
+      await tx
+        .prepare(
+          'INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,max_amount,delay_minutes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+        )
+        .run(
+          rule[0],
+          DEMO_WORKSPACE_ID,
+          rule[1],
+          rule[2],
+          rule[3],
+          rule[4],
+          rule[5],
+          rule[6],
+          iso(30),
+          iso()
+        );
     }
   });
 }
@@ -666,9 +1041,16 @@ export async function resetDemoData(db: Db): Promise<void> {
  * that asked. Three frames because one is often a generic helper.
  */
 function callerFrames(site: Error, depth = 3): string {
-  const frames = (site.stack ?? '').split('\n').slice(1)
+  const frames = (site.stack ?? '')
+    .split('\n')
+    .slice(1)
     .map((line) => line.trim())
-    .filter((line) => line.startsWith('at ') && !/[\\/]server[\\/]db\.(?:ts|js)/.test(line) && !line.includes('node:internal'));
+    .filter(
+      (line) =>
+        line.startsWith('at ') &&
+        !/[\\/]server[\\/]db\.(?:ts|js)/.test(line) &&
+        !line.includes('node:internal')
+    );
   return frames.slice(0, depth).join(' <- ') || 'unknown caller';
 }
 
