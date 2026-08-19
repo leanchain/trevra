@@ -165,6 +165,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
       // keeps a copy-link fallback for delivery failures or manual sharing.
       await addTeamMember({ email: trimmed, role });
       setEmail('');
+      setRole('member');
       setToast(
         `Invitation created for ${trimmed}. Trevra will email it automatically when SMTP is configured.`
       );
