@@ -308,7 +308,7 @@ const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   },
   { path: '/setup/agent', label: 'Setup · Agent access', hint: 'Connect Claude Code or Codex' },
   {
-    path: '/setup/spend',
+    path: '/setup',
     label: 'Setup · The spending cap',
     hint: 'The monthly cap and the switch, inside Agent access'
   },

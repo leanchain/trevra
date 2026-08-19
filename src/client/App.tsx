@@ -57,7 +57,6 @@ import {
   saveAgentCliToken,
   saveAgentKey,
   saveAgentModelConfig,
-  saveAgentSchedule,
   setAgentCliRiskAccepted,
   startAgentRun,
   startDemoSession,
@@ -95,7 +94,6 @@ import {
   type Section
 } from './ui/route';
 import { SeatPauseButton, StopBar, useStopControls } from './ui/StopBar';
-import { formatEvery } from './ui/duration';
 import { scrollToId } from './ui/scrollToId';
 import { formatMoment } from './views/inspector';
 import { LedgerView } from './views/LedgerView';
@@ -1240,9 +1238,6 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
   );
 }
 
-/** How often the standing job runs, said the way a person would say it. */
-const SCHEDULE_CHOICES = [60, 240, 720, 1440, 10080];
-
 /**
  * Turn a failure from the setup routes into something a founder can act on.
  *
@@ -1293,20 +1288,18 @@ const andList = (parts: string[]) =>
  * and four toasts -- Save endpoint, Store key, Save cap, Save schedule -- for
  * what is one sitting. The blocks keep their order, their headings and their
  * argument, because that order IS the decision: where your key goes, then your
- * key, then what it may spend. The endpoint, the key, the subscription CLI and
- * the schedule share one bottom button that writes only the parts that
- * changed.
+ * key, then what it may spend. The endpoint, the key and the subscription CLI
+ * share one bottom button that writes only the parts that changed.
  *
  * The cap is the one field that opted back out of that shared button. It has
  * its own scoped save right next to the amount, because `/setup/spend` is a
  * deep link that lands an operator here to touch only the cap, and a shared
  * button that also flushes whatever else happens to be dirty in the endpoint,
- * key, CLI or schedule fields is exactly the accident that button exists to
- * prevent.
+ * key or CLI fields is exactly the accident that button exists to prevent.
  *
- * Two more writes stay on their own, and both for the same stated reason: an
- * off switch that needs a second click to take effect is not an off switch.
- * The spending toggle and the schedule toggle fire immediately.
+ * One more write stays on its own, for the same stated reason: an off switch
+ * that needs a second click to take effect is not an off switch. The
+ * spending toggle fires immediately.
  */
 function HostedAgentPanel({
   setToast,
@@ -1326,7 +1319,6 @@ function HostedAgentPanel({
   const [replacingKey, setReplacingKey] = useState(false);
   const [capDollars, setCapDollars] = useState('20');
   const [goal, setGoal] = useState('');
-  const [every, setEvery] = useState('1440');
   const [confirmRemoveKey, setConfirmRemoveKey] = useState(false);
   // The third way to run the hosted agent: a workspace's own Claude/Codex
   // subscription (docs/cli-agent-and-hosted.md). Mirrors the BYOK state above.
@@ -1345,10 +1337,6 @@ function HostedAgentPanel({
         setModel(next.config?.model ?? '');
         setProviderLabel(next.config?.label ?? next.secret?.label ?? '');
         setCapDollars(String(Math.round(next.budget.monthlyCapCents / 100)));
-        if (next.schedule) {
-          setGoal(next.schedule.goal ?? '');
-          if (next.schedule.intervalMinutes > 0) setEvery(String(next.schedule.intervalMinutes));
-        }
         if (next.cli.config) {
           setCliKind(next.cli.config.cli);
           setCliModel(next.cli.config.model);
@@ -1394,9 +1382,9 @@ function HostedAgentPanel({
     }
   };
 
-  // Its own write, not part of Save, for the same reason the spend and
-  // schedule switches are: revoking consent must take effect in one click, and
-  // must never be a side effect of saving something else.
+  // Its own write, not part of Save, for the same reason the spend switch is:
+  // revoking consent must take effect in one click, and must never be a side
+  // effect of saving something else.
   const setCliRisk = async (accepted: boolean) => {
     setBusy('cli-risk');
     setProblem('');
@@ -1435,20 +1423,6 @@ function HostedAgentPanel({
     }
   };
 
-  const setScheduleEnabled = async (enabled: boolean) => {
-    setBusy('schedule-switch');
-    setProblem('');
-    try {
-      const schedule = await saveAgentSchedule({ enabled });
-      setSetup((current) => current && { ...current, schedule });
-      setToast(enabled ? 'Autopilot on' : 'Autopilot off');
-    } catch (error) {
-      setProblem(agentSetupMessage(error, 'Could not change the schedule switch'));
-    } finally {
-      setBusy('');
-    }
-  };
-
   const runNow = async () => {
     const job = goal.trim();
     if (!job) return;
@@ -1471,8 +1445,6 @@ function HostedAgentPanel({
   if (!loaded || !setup) return null;
 
   const { available, config, secret, budget } = setup;
-  const schedule = setup.schedule;
-  const hasSchedule = schedule !== undefined;
 
   // A configured workspace never hides its own configuration: open what is
   // already set, keep the rest shut.
@@ -1535,32 +1507,26 @@ function HostedAgentPanel({
     : Boolean(baseUrl.trim() || model.trim());
   const dirtyKey = apiKey.trim().length > 0;
   const dirtyCap = capValid && capCents !== budget.monthlyCapCents;
-  const dirtySchedule =
-    hasSchedule &&
-    Boolean(schedule) &&
-    (goal.trim() !== (schedule?.goal ?? '') || Number(every) !== schedule?.intervalMinutes);
 
   const cliSetup = setup.cli;
   const dirtyCliConfig = cliSetup.config
     ? cliKind !== cliSetup.config.cli || cliModel.trim() !== cliSetup.config.model
     : Boolean(cliModel.trim());
-  // Saved and not currently being edited -- the same gate the schedule toggle
-  // below uses on its own goal ("disabled={... || !goal.trim() || dirtySchedule}"):
-  // there is nothing to accept the risk of until a CLI and a model are on
-  // record, and editing them mid-flight should not leave a stale acceptance
-  // pointed at a config that no longer matches what is on screen.
+  // Saved and not currently being edited: there is nothing to accept the risk
+  // of until a CLI and a model are on record, and editing them mid-flight
+  // should not leave a stale acceptance pointed at a config that no longer
+  // matches what is on screen.
   const cliConfigSaved = Boolean(cliSetup.config) && !dirtyCliConfig;
   const dirtyCliToken = cliSetup.riskAccepted && cliToken.trim().length > 0;
 
   // The cap is deliberately not part of this: it has its own save button
   // right next to the amount field, so it can never be swept in with
   // whatever else on this panel happens to be dirty.
-  const dirty = dirtyConfig || dirtyKey || dirtySchedule || dirtyCliConfig || dirtyCliToken;
+  const dirty = dirtyConfig || dirtyKey || dirtyCliConfig || dirtyCliToken;
 
   const pendingLabels = [
     dirtyConfig ? 'the endpoint' : null,
     dirtyKey ? (secret ? 'the replacement key' : 'your key') : null,
-    dirtySchedule ? 'the standing job' : null,
     dirtyCliConfig ? 'the subscription CLI' : null,
     dirtyCliToken
       ? cliSetup.tokenStored
@@ -1610,11 +1576,6 @@ function HostedAgentPanel({
         setReplacingKey(false);
         done.push('your key');
       }
-      if (dirtySchedule) {
-        const next = await saveAgentSchedule({ goal: goal.trim(), intervalMinutes: Number(every) });
-        setSetup((current) => current && { ...current, schedule: next });
-        done.push('the standing job');
-      }
       if (dirtyCliConfig) {
         const next = await saveAgentCliConfig({ cli: cliKind, model: cliModel.trim() });
         setSetup((current) => current && { ...current, cli: { ...current.cli, config: next } });
@@ -1646,10 +1607,10 @@ function HostedAgentPanel({
   };
 
   // Its own write, not part of Save: the cap sits in the same panel as the
-  // endpoint, the key, the subscription CLI and the schedule, but changing it
-  // must never also submit whatever else on the panel happens to be dirty --
-  // especially on the `/setup/spend` deep link, which lands here to touch
-  // only the cap. Its own button, right next to the amount, calls only this.
+  // endpoint, the key and the subscription CLI, but changing it must never
+  // also submit whatever else on the panel happens to be dirty -- especially
+  // on the `/setup/spend` deep link, which lands here to touch only the cap.
+  // Its own button, right next to the amount, calls only this.
   const saveCap = async () => {
     if (!capValid) {
       setProblem('Set a monthly cap between $0 and $10,000.');
@@ -1674,14 +1635,6 @@ function HostedAgentPanel({
     budget.spentCents > 0
       ? `${usd(budget.spentCents)} of ${usd(budget.monthlyCapCents)} used this month.`
       : `Nothing spent this month. The cap is ${usd(budget.monthlyCapCents)} a month.`;
-
-  const nextRun = schedule ? formatMoment(schedule.nextRunAt) : null;
-  const scheduleLine =
-    !schedule || !schedule.enabled
-      ? 'Off. Write the standing job, save it, then switch it on.'
-      : schedule.lastRunAt
-        ? `Last ran ${formatMoment(schedule.lastRunAt) ?? 'earlier'}${nextRun ? ` · next ${nextRun}` : ''}.`
-        : `On. It has not run yet${nextRun ? ` — first run ${nextRun}` : ''}.`;
 
   // Two independent ways to be ready to run: a stored key against a configured
   // endpoint (BYOK), or a fully accepted subscription CLI. Either is enough --
@@ -1719,10 +1672,6 @@ function HostedAgentPanel({
         placeholder="Check which invoices are overdue and draft the follow-ups."
       />
     </label>
-  );
-
-  const scheduleOptions = Array.from(new Set([...SCHEDULE_CHOICES, Number(every) || 1440])).sort(
-    (a, b) => a - b
   );
 
   return (
@@ -2048,7 +1997,7 @@ function HostedAgentPanel({
       <details className="mgr-inputs" open={spendOpen}>
         <summary>What it may spend</summary>
         <div className="mgr-inputs-body">
-          <div className="byok-block" id="setup-spend">
+          <div className="byok-block">
             <div className="byok-block-head">
               <div>
                 <h4 aria-level={3}>What it may spend</h4>
@@ -2081,10 +2030,10 @@ function HostedAgentPanel({
                     onChange={(event) => setCapDollars(event.target.value)}
                   />
                   {/* Scoped to this one field: it only ever calls the budget save,
-              never the endpoint/key/CLI/schedule fields the panel's shared
-              Save button also writes -- so reaching this on the `/setup/spend`
-              deep link and pressing it can never submit something else that
-              happened to be dirty elsewhere on the page. */}
+              never the endpoint/key/CLI fields the panel's shared Save button
+              also writes -- so reaching this on the `/setup/spend` deep link
+              and pressing it can never submit something else that happened to
+              be dirty elsewhere on the page. */}
                   <button
                     className="secondary-button"
                     type="button"
@@ -2127,59 +2076,6 @@ function HostedAgentPanel({
         </div>
       </details>
 
-      {/* Absent from the response means this build has no schedule yet. Hide it
-        rather than show a control that writes to a route that is not there. */}
-      {hasSchedule && (
-        <details className="mgr-inputs">
-          <summary>
-            Work on a schedule
-            <span>{schedule?.enabled ? 'On' : 'Off'}</span>
-          </summary>
-          <div className="mgr-inputs-body">
-            <div className="byok-block">
-              <div className="byok-block-head">
-                <div>
-                  <h4 aria-level={3}>Work on a schedule</h4>
-                  <p>
-                    Give it a standing job and Trevra picks it up on its own, with your laptop
-                    closed. It still stops at every approval — nothing leaves your business without
-                    you.
-                  </p>
-                </div>
-                <label className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={schedule?.enabled ?? false}
-                    disabled={busy === 'schedule-switch' || !goal.trim() || dirtySchedule}
-                    onChange={(event) => void setScheduleEnabled(event.target.checked)}
-                  />
-                  <span />
-                </label>
-              </div>
-              <div className="byok-fields byok-fields-schedule">
-                {goalField('Standing job')}
-                <label>
-                  How often
-                  <select value={every} onChange={(event) => setEvery(event.target.value)}>
-                    {scheduleOptions.map((minutes) => (
-                      <option key={minutes} value={String(minutes)}>
-                        {formatEvery(minutes)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <p className="byok-meter-copy">
-                {scheduleLine}
-                {dirtySchedule
-                  ? ' The job on screen is not saved yet, so the switch is held until it is.'
-                  : ''}
-              </p>
-            </div>
-          </div>
-        </details>
-      )}
-
       {/* One button for the whole sitting. It writes only what changed, in the
         order the blocks are read, and names each part by what it is. */}
       <div className="panel-footer">
@@ -2203,15 +2099,11 @@ function HostedAgentPanel({
           <div>
             <h4 aria-level={3}>Run it once, now</h4>
             <p>
-              {hasSchedule
-                ? 'The same job, straight away, without waiting for the schedule.'
-                : 'Give it a job and watch it work. Every step lands in the run ledger while it runs.'}
+              Give it a job and watch it work. Every step lands in the run ledger while it runs.
             </p>
           </div>
         </div>
-        {!hasSchedule && (
-          <div className="byok-fields byok-fields-one">{goalField('What should it work on?')}</div>
-        )}
+        <div className="byok-fields byok-fields-one">{goalField('What should it work on?')}</div>
         <div className="panel-footer">
           <span>
             {runBlocker ??
