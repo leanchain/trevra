@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Bold, Italic, Underline, List, ListOrdered } from 'lucide-react';
 import {
   applyStyleToSelection,
   plainTextLength,
   renderPostBody,
   type PostBlock,
+  type PostRun,
   type PostStyle,
   type RunPosition
 } from '../shared/linkedin-post-format';
@@ -26,21 +27,36 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * A block/run/offset position from the browser's own Selection, resolved
- * against `data-block`/`data-run` attributes the composer stamps onto every
- * run span it renders -- the DOM is the source of the (block, run) pair; the
- * character offset within a run comes from the Range's own offset, since a
- * run renders as one text node.
+ * Resolve a DOM (node, offset) -- from window.getSelection()'s Range -- into
+ * a RunPosition, purely from tree structure (which block/run CHILD INDEX the
+ * node falls under), never from a stamped data-* attribute. An attribute
+ * would go stale the instant the browser's own contentEditable behavior
+ * inserts a new block div on Enter without our involvement; structural
+ * position never does, because it's recomputed fresh every time it's read.
  */
-function positionFromNode(node: Node, offset: number): RunPosition | null {
-  const el = (node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element))?.closest(
-    '[data-run]'
-  );
-  if (!el) return null;
-  const block = Number(el.getAttribute('data-block'));
-  const run = Number(el.getAttribute('data-run'));
-  if (Number.isNaN(block) || Number.isNaN(run)) return null;
-  return { block, run, offset };
+function resolvePosition(container: HTMLElement, node: Node, offset: number): RunPosition | null {
+  let blockEl: Element | null =
+    node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element);
+  while (blockEl && blockEl.parentElement !== container) blockEl = blockEl.parentElement;
+  if (!blockEl || blockEl.parentElement !== container) return null;
+  const block = Array.from(container.children).indexOf(blockEl);
+  if (block === -1) return null;
+
+  let runNode: Node = node;
+  while (runNode.parentNode && runNode.parentNode !== blockEl) runNode = runNode.parentNode;
+  const run =
+    runNode.parentNode === blockEl
+      ? Array.from(blockEl.childNodes).indexOf(runNode as ChildNode)
+      : 0;
+
+  // Offset from a Range is UTF-16 code units; convert to a CODE POINT offset,
+  // which is what applyStyleToSelection consumes (see linkedin-post-format.ts's
+  // own header on this exact class of bug -- astral bold/italic characters are
+  // surrogate pairs, and indexing by UTF-16 unit corrupts boundaries near them).
+  const textBefore =
+    node.nodeType === Node.TEXT_NODE ? (node.textContent ?? '').slice(0, offset) : '';
+  const codePointOffset = [...textBefore].length;
+  return { block, run: Math.max(run, 0), offset: codePointOffset };
 }
 
 function currentSelection(container: HTMLElement): { start: RunPosition; end: RunPosition } | null {
@@ -48,10 +64,105 @@ function currentSelection(container: HTMLElement): { start: RunPosition; end: Ru
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
   const range = sel.getRangeAt(0);
   if (!container.contains(range.commonAncestorContainer)) return null;
-  const start = positionFromNode(range.startContainer, range.startOffset);
-  const end = positionFromNode(range.endContainer, range.endOffset);
+  const start = resolvePosition(container, range.startContainer, range.startOffset);
+  const end = resolvePosition(container, range.endContainer, range.endOffset);
   if (!start || !end) return null;
   return { start, end };
+}
+
+/** DOM -> blocks. The typing path's source of truth. No data-* dependency. */
+function parseDomToBlocks(container: HTMLElement): PostBlock[] {
+  const blockEls = Array.from(container.children);
+  if (blockEls.length === 0) return [{ runs: [{ type: 'text', text: '' }] }];
+  return blockEls.map((blockEl) => {
+    const list = (blockEl as HTMLElement).dataset.list as 'bullet' | 'numbered' | undefined;
+    const runs: PostRun[] = [];
+    blockEl.childNodes.forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent ?? '';
+        if (text) runs.push({ type: 'text', text });
+        return;
+      }
+      if (!(node instanceof HTMLElement)) return;
+      if (node.tagName === 'BR') {
+        // A lone <br> is Chrome's own filler for an empty block, not something
+        // the user typed. Reading it as a 'break' run made a deliberately
+        // blank spacer line -- the most ordinary thing there is in a LinkedIn
+        // post -- render as TWO newlines and cost an extra character against
+        // the 3000 cap. A <br> with text beside it IS a user break (shift+Enter).
+        if (blockEl.childNodes.length === 1) return;
+        runs.push({ type: 'break' });
+        return;
+      }
+      if (node.dataset.mention) {
+        runs.push({
+          type: 'mention',
+          displayText: node.dataset.mentionDisplay ?? node.textContent ?? '',
+          entityKind: (node.dataset.mentionKind as 'person' | 'page') ?? 'person',
+          ...(node.dataset.mentionUrn ? { resolvedUrn: node.dataset.mentionUrn } : {})
+        });
+        return;
+      }
+      const text = node.textContent ?? '';
+      if (!text) return;
+      const bold = node.classList.contains('li-post-run--bold');
+      const italic = node.classList.contains('li-post-run--italic');
+      const underline = node.classList.contains('li-post-run--underline');
+      runs.push({
+        type: 'text',
+        text,
+        ...(bold ? { bold: true } : {}),
+        ...(italic ? { italic: true } : {}),
+        ...(underline ? { underline: true } : {})
+      });
+    });
+    if (runs.length === 0) runs.push({ type: 'text', text: '' });
+    return { runs, ...(list ? { list } : {}) };
+  });
+}
+
+/** blocks -> DOM. The toolbar-action path. Rebuilds the editor's children from scratch. */
+function renderBlocksIntoDom(container: HTMLElement, blocks: PostBlock[]): void {
+  container.innerHTML = '';
+  blocks.forEach((block) => {
+    const div = document.createElement('div');
+    div.className = block.list ? `li-post-line li-post-line--${block.list}` : 'li-post-line';
+    if (block.list) div.dataset.list = block.list;
+    block.runs.forEach((run) => {
+      if (run.type === 'break') {
+        div.appendChild(document.createElement('br'));
+        return;
+      }
+      if (run.type === 'mention') {
+        const span = document.createElement('span');
+        span.className = 'li-post-mention';
+        span.contentEditable = 'false';
+        span.dataset.mention = 'true';
+        span.dataset.mentionDisplay = run.displayText;
+        span.dataset.mentionKind = run.entityKind;
+        if (run.resolvedUrn) span.dataset.mentionUrn = run.resolvedUrn;
+        span.textContent = `@${run.displayText}`;
+        div.appendChild(span);
+        return;
+      }
+      if (run.bold || run.italic || run.underline) {
+        const span = document.createElement('span');
+        span.className = [
+          run.bold && 'li-post-run--bold',
+          run.italic && 'li-post-run--italic',
+          run.underline && 'li-post-run--underline'
+        ]
+          .filter(Boolean)
+          .join(' ');
+        span.textContent = run.text;
+        div.appendChild(span);
+      } else {
+        div.appendChild(document.createTextNode(run.text));
+      }
+    });
+    if (block.runs.length === 0) div.appendChild(document.createTextNode(''));
+    container.appendChild(div);
+  });
 }
 
 export function PostComposer({
@@ -67,17 +178,44 @@ export function PostComposer({
   const [busy, setBusy] = useState<'save' | 'schedule' | 'now' | null>(null);
   const [error, setError] = useState('');
   const editorRef = useRef<HTMLDivElement>(null);
+  // STATE, not a ref, and deliberately: a toolbar action must re-render even
+  // when its mutation returns the blocks array unchanged (applyStyleToSelection
+  // no-ops on a multi-block selection). With a ref, that bump would never be
+  // consumed by the effect below, and the NEXT keystroke would find the token
+  // still ahead of lastSyncedToken and rewrite the DOM mid-typing -- exactly
+  // the cursor-fighting bug this whole mechanism exists to remove.
+  const [domSyncToken, setDomSyncToken] = useState(0);
+  const lastSyncedToken = useRef(-1);
 
   const rendered = useMemo(() => renderPostBody(blocks), [blocks]);
   const length = useMemo(() => plainTextLength(blocks), [blocks]);
   const overLimit = length > MAX_CHARS;
 
-  const toggle = (style: PostStyle) => {
+  // Runs on mount (token 0 vs -1: always syncs once) and whenever a toolbar
+  // action bumps domSyncToken. Deliberately does NOT run on every `blocks`
+  // change from typing -- handleInput() below updates `blocks` without
+  // touching domSyncToken, so this effect no-ops and the DOM (which the
+  // browser already has correct, because typing was never controlled) is left
+  // completely alone. This is what fixes the cursor-fighting bug: the only
+  // code that ever rewrites the editor's DOM is a toolbar click, never a
+  // keystroke.
+  useLayoutEffect(() => {
     const el = editorRef.current;
     if (!el) return;
-    const selection = currentSelection(el);
-    if (!selection) return; // no-selection "arm for next typed text" is a Task-8-scale follow-up; M1 requires a selection
-    setBlocks((current) => applyStyleToSelection(current, selection, style));
+    if (domSyncToken === lastSyncedToken.current) return;
+    renderBlocksIntoDom(el, blocks);
+    lastSyncedToken.current = domSyncToken;
+  }, [blocks, domSyncToken]);
+
+  const handleInput = () => {
+    const el = editorRef.current;
+    if (!el) return;
+    setBlocks(parseDomToBlocks(el));
+  };
+
+  const applyAndSync = (mutate: (current: PostBlock[]) => PostBlock[]) => {
+    setBlocks((current) => mutate(current));
+    setDomSyncToken((token) => token + 1);
   };
 
   // Which paragraph a block-level toggle (Bullet/Numbered) applies to: the
@@ -94,31 +232,28 @@ export function PostComposer({
     return selection?.start.block ?? blocks.length - 1;
   };
 
-  const editRunText = (blockIndex: number, runIndex: number, text: string) => {
-    setBlocks((current) =>
-      current.map((block, bi) =>
-        bi !== blockIndex
-          ? block
-          : {
-              ...block,
-              runs: block.runs.map((run, ri) =>
-                ri !== runIndex || run.type !== 'text' ? run : { ...run, text }
-              )
-            }
-      )
-    );
+  const toggle = (style: PostStyle) => {
+    const el = editorRef.current;
+    if (!el) return;
+    const selection = currentSelection(el);
+    if (!selection) return; // no-selection "arm for next typed text" is a documented, deferred follow-up
+    applyAndSync((current) => applyStyleToSelection(current, selection, style));
   };
 
   const toggleListAt = (blockIndex: number, kind: 'bullet' | 'numbered') => {
-    setBlocks((current) =>
+    applyAndSync((current) =>
       current.map((block, bi) =>
         bi !== blockIndex ? block : { ...block, list: block.list === kind ? undefined : kind }
       )
     );
   };
 
+  // Routed through applyAndSync, not a bare setBlocks: the sync effect treats
+  // an unbumped token as "typing-driven, leave the DOM alone", so a plain
+  // setBlocks(EMPTY_BLOCKS) here would clear the state but leave the
+  // just-published text sitting in the editor.
   const reset = () => {
-    setBlocks(EMPTY_BLOCKS);
+    applyAndSync(() => EMPTY_BLOCKS);
     setScheduledAt('');
   };
 
@@ -186,51 +321,8 @@ export function PostComposer({
         className="li-post-editor"
         contentEditable
         suppressContentEditableWarning
-      >
-        {blocks.map((block, bi) => (
-          <div
-            key={bi}
-            data-block={bi}
-            className={block.list ? `li-post-line li-post-line--${block.list}` : 'li-post-line'}
-          >
-            {block.runs.map((run, ri) =>
-              run.type === 'text' ? (
-                <span
-                  key={ri}
-                  data-block={bi}
-                  data-run={ri}
-                  className={[
-                    run.bold && 'li-post-run--bold',
-                    run.italic && 'li-post-run--italic',
-                    run.underline && 'li-post-run--underline'
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  contentEditable
-                  suppressContentEditableWarning
-                  onInput={(event) =>
-                    editRunText(bi, ri, (event.target as HTMLElement).textContent ?? '')
-                  }
-                >
-                  {run.text}
-                </span>
-              ) : run.type === 'mention' ? (
-                <span
-                  key={ri}
-                  data-block={bi}
-                  data-run={ri}
-                  className="li-post-mention"
-                  contentEditable={false}
-                >
-                  @{run.displayText}
-                </span>
-              ) : (
-                <br key={ri} />
-              )
-            )}
-          </div>
-        ))}
-      </div>
+        onInput={handleInput}
+      />
 
       <div className={overLimit ? 'li-post-count li-post-count--over' : 'li-post-count'}>
         {length} / {MAX_CHARS}
@@ -281,25 +373,37 @@ const STATUS_LABELS: Record<LinkedInPost['status'], string> = {
 
 function PostRow({ post, onChanged }: { post: LinkedInPost; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
+  // A 409 (someone else already published it, the worker already claimed it)
+  // or a 5xx used to become an unhandled rejection and a row that silently
+  // did not change -- the user's own click looked like it did nothing.
+  const [error, setError] = useState('');
   const cancel = async () => {
     setBusy(true);
+    setError('');
     try {
       await cancelLinkedInPost(post.id);
       onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Something went wrong.');
     } finally {
       setBusy(false);
     }
   };
   const publishNow = async () => {
     setBusy(true);
+    setError('');
     try {
       await publishLinkedInPostNow(post.id);
       onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Something went wrong.');
     } finally {
       setBusy(false);
     }
   };
-  const preview = renderPostBody(post.blocks).slice(0, 140);
+  // Sliced by CODE POINT: a styled run is astral (surrogate pairs), and a
+  // UTF-16 slice can cut one in half and render a replacement character.
+  const preview = [...renderPostBody(post.blocks)].slice(0, 140).join('');
   return (
     <li className="li-post-row">
       <span className={`li-post-status li-post-status--${post.status}`}>
@@ -314,7 +418,11 @@ function PostRow({ post, onChanged }: { post: LinkedInPost; onChanged: () => voi
           {post.error.kind}
         </span>
       )}
-      {(post.status === 'draft' || post.status === 'scheduled') && (
+      {error && <span className="li-post-row-error">{error}</span>}
+      {(post.status === 'draft' ||
+        post.status === 'scheduled' ||
+        post.status === 'failed' ||
+        post.status === 'missed') && (
         <span className="li-post-row-actions">
           <button type="button" disabled={busy} onClick={publishNow}>
             Publish now
