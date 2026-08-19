@@ -92,7 +92,6 @@ import {
 } from './ui/route';
 import { SeatPauseButton, StopBar, useStopControls } from './ui/StopBar';
 import { scrollToId } from './ui/scrollToId';
-import { formatMoment } from './views/inspector';
 import { LedgerView } from './views/LedgerView';
 import { LoopCostView, LoopView } from './views/LoopView';
 import { initials, money, prettyProvider, usd } from './views/format';
@@ -1006,17 +1005,13 @@ function AuthScreen({
 function AgentCommandBox({
   label,
   command,
-  revealed,
   copied,
-  onCopy,
-  note
+  onCopy
 }: {
   label: string;
   command: string;
-  revealed: boolean;
   copied: boolean;
   onCopy: () => void;
-  note?: ReactNode;
 }) {
   return (
     <div className="agent-command">
@@ -1037,7 +1032,6 @@ function AgentCommandBox({
       <pre>
         <code>{command}</code>
       </pre>
-      {note}
     </div>
   );
 }
@@ -1156,7 +1150,6 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
       <AgentCommandBox
         label="Claude Code"
         command={claudeCommand}
-        revealed={Boolean(revealed)}
         copied={copiedTarget === 'claude'}
         onCopy={() => void copy('claude', claudeCommand)}
       />
@@ -1164,7 +1157,6 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
       <AgentCommandBox
         label="Codex"
         command={codexCommand}
-        revealed={Boolean(revealed)}
         copied={copiedTarget === 'codex'}
         onCopy={() => void copy('codex', codexCommand)}
       />
@@ -1263,18 +1255,12 @@ const andList = (parts: string[]) =>
  * the laptop agent, on Trevra's side, so it keeps working when the laptop is
  * shut. Nothing here can approve or send -- see app-spec §11.
  *
- * Two deliberate absences.
+ * One deliberate absence.
  *
  * There is no reveal, no "show key", no copy-key control. Plaintext leaves
  * exactly one internal function on the server, at the moment of a model call,
  * and no route returns it at any privilege -- so such a control could not be
  * wired to anything, and adding one is a server redesign, not a UI change.
- *
- * And the warning is the first thing inside the compute disclosure, before
- * either field, rather than a footnote under one. A hosted service holding
- * customer model keys is a real, concentrated liability; the design doc's §7
- * says the operator deserves to weigh that before pasting, which only means
- * anything if they read it first.
  *
  * ONE SAVE, NOT FOUR -- mostly. Setting this up used to cost four round-trips
  * and four toasts -- Save endpoint, Store key, Save cap, Save schedule -- for
@@ -1638,11 +1624,6 @@ function HostedAgentPanel({
       <details className="mgr-inputs" open={computeOpen}>
         <summary>Run it on Trevra’s compute</summary>
         <div className="mgr-inputs-body">
-          {/* First inside the disclosure, before either field below: a
-            hosted service holding customer model keys is a real,
-            concentrated liability, and anyone who opens this to paste a key
-            reads it before the fields that would take one. See the panel doc
-            comment above. */}
           <div>
             <h4 aria-level={3}>Endpoint &amp; key</h4>
             <div className="byok-block">
