@@ -96,14 +96,28 @@ to the app shell, which is what it was always arguing for.
 
 ### Setup sub-routes
 
-| Hash            | Contents                                                    | Moved from                                                                                          |
-| --------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `/setup/agent`  | `AgentAccessPanel` + `HostedAgentPanel`                     | `src/client/App.tsx:1012` and inside `IntegrationsView` (`:2235`)                                   |
-| `/setup/data`   | Connections, Nango connect, Scope Ledger import, CSV import | rest of `IntegrationsView` (`src/client/App.tsx:2235`)                                              |
-| `/setup/seat`   | LinkedIn seat, credentials, local worker                    | `SetupTab` (`src/client/LinkedInScreen.tsx:285`)                                                    |
-| `/setup/skills` | Shared skills, private skills, run-one-by-hand              | `ModulesView` (`src/client/App.tsx:2164`) + the playbook launcher lifted out of `WorkView`          |
-| `/setup/limits` | Automation rules, hard limits, never-contact list           | `AutopilotView` (`src/client/App.tsx:2478`) + `ExclusionsTab` (`src/client/LinkedInScreen.tsx:874`) |
-| `/setup/spend`  | Monthly cap editor and the spending switch                  | the `byok-block` at `src/client/App.tsx:1310-1340`                                                  |
+**Superseded by the shipped shape.** This plan proposed six peer screens under
+`/setup`. What shipped (`SETUP_TABS` / `SETUP_LEGACY_REDIRECTS`,
+`src/client/App.tsx`) is two, plus one unrelated full-width route, plus every
+hash below kept alive only as a redirect for old bookmarks:
+
+| Hash               | Screen         | Contents                                                                                                                                                           |
+| ------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/setup`           | **Access**     | `AgentAccessPanel` + `HostedAgentPanel`: agent tokens, run-once, and two disclosures collapsed by default — running it on Trevra's compute, and what it may spend. |
+| `/setup/workspace` | **Workspace**  | `ConnectionsView`, `LimitsView`, `LinkedInExclusions`, `TeamSettingsView`, and an owner-only export/erase block, collapsed, at the foot.                           |
+| `/setup/team/:id`  | — (full-width) | The accept-invitation panel. Not a tab of either screen above.                                                                                                     |
+
+| Legacy hash       | Redirects to                   |
+| ----------------- | ------------------------------ |
+| `/setup/agent`    | `/setup`                       |
+| `/setup/spend`    | `/setup`                       |
+| `/setup/data`     | `/setup/workspace#connections` |
+| `/setup/limits`   | `/setup/workspace#limits`      |
+| `/setup/team`     | `/setup/workspace#team`        |
+| `/setup/skills`   | `/setup/workspace`             |
+| `/setup/reddit`   | `/research`                    |
+| `/setup/seat`     | `/outreach`                    |
+| `/setup/research` | `/research`                    |
 
 ### Loop sub-route
 
@@ -195,11 +209,22 @@ variance is.
 right — this content now lives on Outreach → Settings
 (`src/client/LinkedInAccounts.tsx`):
 
-1. The honesty panel — _"Exactly N number on this screen is a HARD FACT. Every
-   other one is REPORTED."_ (`src/client/LinkedInSafety.tsx`, `.li-honesty`).
-2. Where this seat stands, with `PostureBadge` (`src/client/LinkedInSafety.tsx:PostureBadge`).
-3. The four `LiStat`s: invites left, warm-up week, acceptance rate, day-over-day clamp.
-4. Volume and its variance — `VolumeChart` with the band.
+1. Per-section confidence, not a single panel. A `ConfidenceTag`
+   (`src/client/LinkedInViz.tsx`) reading HARD FACT or REPORTED sits next to
+   the section it covers — e.g. "Invites nobody has answered"
+   (`src/client/LinkedInAccounts.tsx:2217`). The aggregate honesty sentence and
+   `.li-honesty` were cut with `LinkedInSafety.tsx:663-2574`.
+2. Where each account stands: a status dot and label per row —
+   `STATE_LABELS`/`STATE_TONES` (`src/client/LinkedInAccounts.tsx:443-459`):
+   Connected, Easing in, Needs sign-in, Not connected, Paused, Cooling down.
+   `PostureBadge` does not exist; nothing by that name is exported anywhere in
+   `src/client`.
+3. Per-account `LiStat` tiles, one per limit kind, under "Today on {account}"
+   (`src/client/LinkedInAccounts.tsx:1965`): used vs. ceiling, tone-coded
+   ok/warn/mute. Accounts are managed individually here, not as the four
+   seat-level stats this plan proposed.
+4. No chart. `VolumeChart` does not exist, and nothing on this screen draws
+   daily volume or its variance today.
 
 **What moves in.** Nothing. This screen sets the standard; it does not absorb.
 
@@ -315,7 +340,8 @@ Nothing joins them.
 **Controls stay in Setup.** `/loop/cost` is a read plus one switch: the spending
 toggle, because `src/client/App.tsx:1113-1116` already argues that _"an off switch
 that needs a second click to take effect is not an off switch."_ The cap editor and
-the Save button stay at `/setup/spend`.
+the Save button stay at `/setup` — `/setup/spend` is a redirect there now, not
+a peer screen (see the Setup sub-routes table, §2).
 
 **Blocked on backend.** Needs `GET /api/loop/cost?window=30` returning the three
 rows in one payload. No new table: `agent_model_calls.run_id → agent_runs.id`
@@ -350,8 +376,11 @@ every route. Three states:
 danger` on amber, reason required as of this change) · and one **Stop
   everything** that fires both.
 - **Stopped** — which actor is stopped, when, and the reason string, with a
-  per-actor resume. `PostureBadge` (`src/client/LinkedInSafety.tsx`) renders the
-  seat half; the agent half reuses the existing "Stop asked for" copy verbatim.
+  per-actor resume. There is no badge for the seat half: `SeatPauseButton`
+  (`src/client/ui/StopBar.tsx`) is the whole of it, a header button whose title
+  carries the pause reason (`SEAT_STOP_COPY.paused`) and whose label swaps to
+  **Resume outreach**. The agent half reuses the existing "Stop asked for"
+  copy verbatim.
 
 **Rules carried over, not invented.**
 
@@ -498,14 +527,14 @@ survives intact.
 
 **The outreach path, in order.**
 
-| #   | Step                          | Done when                                          | Lands on                                                                                                                                                                                         |
-| --- | ----------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | **Name your seat**            | `GET /api/linkedin/seat` returns a non-null `seat` | `/setup/seat`                                                                                                                                                                                    |
-| 2   | **Connect the seat**          | `auth.hasCredentials`, or worker `loggedIn`        | `/setup/seat` — `POST /api/linkedin/seat/login` (`src/server/app.ts:1274`)                                                                                                                       |
-| 3   | **Read what you are betting** | acknowledged once                                  | `/outreach` — the honesty panel (`src/client/LinkedInSafety.tsx`, `.li-honesty`) is the one thing an operator must read before risking their account, and today nothing puts it in front of them |
-| 4   | **Build one campaign**        | `GET /api/linkedin/campaigns` non-empty            | `/outreach/campaigns`                                                                                                                                                                            |
-| 5   | **Preview the plan**          | a `POST /api/linkedin/plan` has returned slots     | `/outreach/plan` — writes nothing (`src/client/LinkedInCampaigns.tsx:1035`)                                                                                                                      |
-| 6   | **Approve and send**          | first `linkedin_actions` row leaves `planned`      | `/outreach/queue`                                                                                                                                                                                |
+| #   | Step                          | Done when                                          | Lands on                                                                                                                                                                                                                                                                                                                |
+| --- | ----------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Name your seat**            | `GET /api/linkedin/seat` returns a non-null `seat` | `/setup/seat`                                                                                                                                                                                                                                                                                                           |
+| 2   | **Connect the seat**          | `auth.hasCredentials`, or worker `loggedIn`        | `/setup/seat` — `POST /api/linkedin/seat/login` (`src/server/app.ts:1274`)                                                                                                                                                                                                                                              |
+| 3   | **Read what you are betting** | acknowledged once                                  | `/outreach` — moot as written: there is no honesty panel to point at (`.li-honesty` and its summary sentence were cut with `LinkedInSafety.tsx:663-2574`; confidence now travels per-section via `ConfidenceTag`). `docs/app-spec.md` §8 already settled this the other way: "there is no fake 'acknowledged' checkbox" |
+| 4   | **Build one campaign**        | `GET /api/linkedin/campaigns` non-empty            | `/outreach/campaigns`                                                                                                                                                                                                                                                                                                   |
+| 5   | **Preview the plan**          | a `POST /api/linkedin/plan` has returned slots     | `/outreach/plan` — writes nothing (`src/client/LinkedInCampaigns.tsx:1035`)                                                                                                                                                                                                                                             |
+| 6   | **Approve and send**          | first `linkedin_actions` row leaves `planned`      | `/outreach/queue`                                                                                                                                                                                                                                                                                                       |
 
 **The money path** keeps today's four steps unchanged
 (`src/client/App.tsx:466-497`), including its correct ordering rationale: _"the
