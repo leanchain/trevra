@@ -1,11 +1,63 @@
 import { describe, expect, it } from 'vitest';
-import { autoMatchLeadFields, normalizeScrapedLead, parseLeadCsv, scrubLeadName, scrubNameField, splitAndScrubName } from './lead-import.js';
+import {
+  autoMatchLeadFields,
+  autoMatchLeadFieldsWithConfidence,
+  normalizeScrapedLead,
+  parseLeadCsv,
+  scrubLeadName,
+  scrubNameField,
+  splitAndScrubName
+} from './lead-import.js';
 
 describe('LinkedIn lead CSV import', () => {
   it('automatches common header spellings', () => {
-    expect(autoMatchLeadFields(['First Name', 'Surname', 'Company Name', 'Work Email', 'LinkedIn URL'])).toMatchObject({
-      firstName: 'First Name', lastName: 'Surname', company: 'Company Name', email: 'Work Email', profileUrl: 'LinkedIn URL'
+    expect(
+      autoMatchLeadFields(['First Name', 'Surname', 'Company Name', 'Work Email', 'LinkedIn URL'])
+    ).toMatchObject({
+      firstName: 'First Name',
+      lastName: 'Surname',
+      company: 'Company Name',
+      email: 'Work Email',
+      profileUrl: 'LinkedIn URL'
     });
+  });
+
+  it('tags an exact alias hit as exact confidence', () => {
+    const { mapping, confidence } = autoMatchLeadFieldsWithConfidence([
+      'First Name',
+      'Last Name',
+      'Company Name'
+    ]);
+    expect(mapping).toMatchObject({
+      firstName: 'First Name',
+      lastName: 'Last Name',
+      company: 'Company Name'
+    });
+    expect(confidence).toMatchObject({ firstName: 'exact', lastName: 'exact', company: 'exact' });
+  });
+
+  it('fuzzy-matches a header that contains a known alias but is not one itself', () => {
+    const { mapping, confidence } = autoMatchLeadFieldsWithConfidence(['Employer Name']);
+    expect(mapping.company).toBe('Employer Name');
+    expect(confidence.company).toBe('guessed');
+  });
+
+  it('fuzzy-matches a typo against its alias', () => {
+    const { mapping, confidence } = autoMatchLeadFieldsWithConfidence(['Buisness']);
+    expect(mapping.company).toBe('Buisness');
+    expect(confidence.company).toBe('guessed');
+  });
+
+  it('leaves an unrecognisable header unmapped rather than forcing a guess', () => {
+    const { mapping, confidence } = autoMatchLeadFieldsWithConfidence(['Favourite Colour']);
+    expect(mapping.company).toBeUndefined();
+    expect(confidence.company).toBeUndefined();
+  });
+
+  it('never lets two fields claim the same header, exact or guessed', () => {
+    const { mapping } = autoMatchLeadFieldsWithConfidence(['Company Name', 'Employer Name']);
+    const claimed = Object.values(mapping);
+    expect(new Set(claimed).size).toBe(claimed.length);
   });
 
   it('scrubs titles, degrees, punctuation and emoji as standalone tokens', () => {
@@ -88,7 +140,7 @@ describe('LinkedIn lead CSV import', () => {
     ]);
   });
 
-  it('scrubs a harvested card\'s dedicated halves rather than copying them through', () => {
+  it("scrubs a harvested card's dedicated halves rather than copying them through", () => {
     const lead = normalizeScrapedLead({
       profileUrl: 'https://www.linkedin.com/in/maya-chen/',
       firstName: 'Dr. Maya',
@@ -96,16 +148,30 @@ describe('LinkedIn lead CSV import', () => {
     });
     expect(lead).toMatchObject({ firstName: 'Maya', lastName: 'Chen' });
     // A one-token surname that IS a title token survives here too.
-    expect(normalizeScrapedLead({ profileUrl: 'https://www.linkedin.com/in/anh-do/', firstName: 'Anh', lastName: 'Do' }))
-      .toMatchObject({ firstName: 'Anh', lastName: 'Do' });
+    expect(
+      normalizeScrapedLead({
+        profileUrl: 'https://www.linkedin.com/in/anh-do/',
+        firstName: 'Anh',
+        lastName: 'Do'
+      })
+    ).toMatchObject({ firstName: 'Anh', lastName: 'Do' });
   });
 
   it('splits one display name into a scrubbed first and last, for the CSV and the scraper alike', () => {
-    expect(splitAndScrubName('Dr. Maya \u{1F642} Chen, MBA')).toEqual({ firstName: 'Maya', lastName: 'Chen' });
-    expect(splitAndScrubName("Prof. Anne-Marie O'Connor, PhD")).toEqual({ firstName: 'Anne-Marie', lastName: "O'Connor" });
+    expect(splitAndScrubName('Dr. Maya \u{1F642} Chen, MBA')).toEqual({
+      firstName: 'Maya',
+      lastName: 'Chen'
+    });
+    expect(splitAndScrubName("Prof. Anne-Marie O'Connor, PhD")).toEqual({
+      firstName: 'Anne-Marie',
+      lastName: "O'Connor"
+    });
     // A surname is whatever is left after the given name. Picking the LAST
     // token would rename half of Latin America and most of the Netherlands.
-    expect(splitAndScrubName('Maria del Carmen Rossi')).toEqual({ firstName: 'Maria', lastName: 'del Carmen Rossi' });
+    expect(splitAndScrubName('Maria del Carmen Rossi')).toEqual({
+      firstName: 'Maria',
+      lastName: 'del Carmen Rossi'
+    });
     expect(splitAndScrubName('Cher')).toEqual({ firstName: 'Cher', lastName: '' });
     // A JOINED name stays a gamble and this is the losing side of it: with one
     // string and no column headers, `Ma` is indistinguishable from the degree.
@@ -126,7 +192,11 @@ describe('LinkedIn lead CSV import', () => {
       postUrl: 'https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000000/',
       interactionKind: 'comment'
     });
-    expect(lead).toMatchObject({ firstName: 'Maya', lastName: 'Smith', profileUrl: 'https://www.linkedin.com/in/maya-smith/' });
+    expect(lead).toMatchObject({
+      firstName: 'Maya',
+      lastName: 'Smith',
+      profileUrl: 'https://www.linkedin.com/in/maya-smith/'
+    });
     // A post engager has no company field at all; rejecting those would mean
     // keyword discovery could never feed a campaign.
     expect(lead?.company).toBe('');
@@ -134,10 +204,14 @@ describe('LinkedIn lead CSV import', () => {
     expect(lead?.original).toMatchObject({ interactionKind: 'comment', headline: 'Founder' });
     // IDENTICAL TO THE CSV PATH'S KEY for the same person, which is the only
     // reason a harvested lead and an uploaded one collide at all.
-    const csv = parseLeadCsv('First Name,Last Name,Company,LinkedIn URL\nMaya,Smith,Acme,https://linkedin.com/in/maya-smith/');
+    const csv = parseLeadCsv(
+      'First Name,Last Name,Company,LinkedIn URL\nMaya,Smith,Acme,https://linkedin.com/in/maya-smith/'
+    );
     expect(lead?.dedupeKey).toBe(csv.accepted[0].dedupeKey);
 
-    expect(normalizeScrapedLead({ profileUrl: 'https://www.linkedin.com/in/x/', name: null })).toBeNull();
+    expect(
+      normalizeScrapedLead({ profileUrl: 'https://www.linkedin.com/in/x/', name: null })
+    ).toBeNull();
     expect(normalizeScrapedLead({ profileUrl: null, name: 'Maya Smith' })).toBeNull();
   });
 
@@ -150,7 +224,15 @@ describe('LinkedIn lead CSV import', () => {
     ].join('\n');
     const result = parseLeadCsv(csv);
     expect(result.accepted).toHaveLength(1);
-    expect(result.accepted[0]).toMatchObject({ firstName: 'Maya', lastName: 'Smith', company: 'Acme', email: 'maya@example.com' });
-    expect(result.rejected.map((row) => row.reason)).toEqual(['Duplicate lead in this CSV.', 'Missing required first name.']);
+    expect(result.accepted[0]).toMatchObject({
+      firstName: 'Maya',
+      lastName: 'Smith',
+      company: 'Acme',
+      email: 'maya@example.com'
+    });
+    expect(result.rejected.map((row) => row.reason)).toEqual([
+      'Duplicate lead in this CSV.',
+      'Missing required first name.'
+    ]);
   });
 });

@@ -2,7 +2,15 @@ import { createHash } from 'node:crypto';
 import { parse } from 'csv-parse/sync';
 import { profileUrlFor } from './driver.js';
 
-export const LEAD_FIELDS = ['firstName', 'lastName', 'company', 'email', 'phone', 'country', 'profileUrl'] as const;
+export const LEAD_FIELDS = [
+  'firstName',
+  'lastName',
+  'company',
+  'email',
+  'phone',
+  'country',
+  'profileUrl'
+] as const;
 export type LeadField = (typeof LEAD_FIELDS)[number];
 
 export interface LeadFieldMapping {
@@ -36,6 +44,8 @@ export interface RejectedLeadRow {
 export interface LeadCsvPreview {
   headers: string[];
   mapping: LeadFieldMapping;
+  /** Which of `mapping`'s fields came from an exact alias hit vs. a fuzzy guess, for the fields automatch chose. Absent for a field the caller's own override supplied. */
+  mappingConfidence: Partial<Record<LeadField, FieldMatchConfidence>>;
   accepted: NormalizedLeadInput[];
   rejected: RejectedLeadRow[];
 }
@@ -43,36 +53,179 @@ export interface LeadCsvPreview {
 const FIELD_ALIASES: Record<LeadField, readonly string[]> = {
   firstName: ['first', 'firstname', 'givenname', 'given', 'first_name', 'first name'],
   lastName: ['last', 'lastname', 'surname', 'familyname', 'family', 'last_name', 'last name'],
-  company: ['company', 'companyname', 'employer', 'organization', 'organisation', 'account'],
+  company: [
+    'company',
+    'companyname',
+    'employer',
+    'organization',
+    'organisation',
+    'account',
+    'business',
+    'businessname',
+    'business name'
+  ],
   email: ['email', 'emailaddress', 'mail', 'workemail', 'work_email'],
   phone: ['phone', 'phonenumber', 'mobile', 'mobilephone', 'telephone', 'tel'],
   country: ['country', 'countryname', 'locationcountry', 'nation'],
-  profileUrl: ['linkedin', 'linkedinurl', 'linkedinprofile', 'linkedinprofileurl', 'profileurl', 'profile_url', 'linkedin_url']
+  profileUrl: [
+    'linkedin',
+    'linkedinurl',
+    'linkedinprofile',
+    'linkedinprofileurl',
+    'profileurl',
+    'profile_url',
+    'linkedin_url'
+  ]
 };
 
 const SCRUB_TOKENS = new Set([
-  'mr', 'ms', 'mrs', 'miss', 'jr', 'sr', 'snr', 'jnr', 'prof', 'professor', 'dr', 'drs', 'doc', 'doctor',
-  'phd', 'ba', 'bfa', 'bs', 'ma', 'mba', 'mfa', 'jd', 'md', 'do', 'ceo', 'lion', 'lme', 'lmt', 'mim', 'msc',
-  'sip', 'rpm'
+  'mr',
+  'ms',
+  'mrs',
+  'miss',
+  'jr',
+  'sr',
+  'snr',
+  'jnr',
+  'prof',
+  'professor',
+  'dr',
+  'drs',
+  'doc',
+  'doctor',
+  'phd',
+  'ba',
+  'bfa',
+  'bs',
+  'ma',
+  'mba',
+  'mfa',
+  'jd',
+  'md',
+  'do',
+  'ceo',
+  'lion',
+  'lme',
+  'lmt',
+  'mim',
+  'msc',
+  'sip',
+  'rpm'
 ]);
 
 function headerKey(value: string): string {
-  return value.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return value
+    .replace(/^﻿/, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
 }
 
 function aliasesFor(field: LeadField): Set<string> {
   return new Set(FIELD_ALIASES[field].map(headerKey));
 }
 
-/** Deterministic first-match automapping. A user override always wins later. */
-export function autoMatchLeadFields(headers: readonly string[]): LeadFieldMapping {
-  const result: LeadFieldMapping = {};
+/** How a field ended up mapped: an exact alias hit, or a fuzzy guess worth flagging for review. */
+export type FieldMatchConfidence = 'exact' | 'guessed';
+
+/** Classic edit distance. Headers and aliases are both short (a handful of words at most), so the O(n*m) table is not a cost worth avoiding. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const curr = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr.push(Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost));
+    }
+    prev = curr;
+  }
+  return prev[b.length];
+}
+
+/**
+ * How alike a normalized header is to a normalized alias, from 0 to 1.
+ *
+ * CONTAINMENT IS SCORED SEPARATELY FROM EDIT DISTANCE, not folded into it.
+ * "businessname" containing "business" is a strong signal a plain distance
+ * ratio undersells (six characters differ from "company", nowhere near a typo),
+ * so containment gets its own floor, scaled by how much of the longer string
+ * the shorter one actually covers -- "e" is technically contained in "email"
+ * and must not pass on that alone.
+ */
+function headerSimilarity(header: string, alias: string): number {
+  if (!header || !alias) return 0;
+  if (header === alias) return 1;
+  if (header.includes(alias) || alias.includes(header)) {
+    const shorter = Math.min(header.length, alias.length);
+    const longer = Math.max(header.length, alias.length);
+    return 0.7 + 0.3 * (shorter / longer);
+  }
+  const distance = levenshtein(header, alias);
+  return 1 - distance / Math.max(header.length, alias.length);
+}
+
+/** Below this, a header is left unmapped rather than guessed at -- the same outcome as today for anything unrecognisable. */
+const FUZZY_MATCH_THRESHOLD = 0.72;
+
+/**
+ * Automapping, in two passes, with a confidence tag riding along.
+ *
+ * PASS ONE IS THE ORIGINAL EXACT-ALIAS MATCH, UNCHANGED, so every header that
+ * already worked keeps matching the same way. PASS TWO only looks at headers
+ * still unclaimed after pass one, and only accepts a guess that clears
+ * `FUZZY_MATCH_THRESHOLD` -- "Business Name" now reaches `company`, a typo'd
+ * "Buisness" still reaches it, and something with nothing in common with any
+ * alias stays unmapped, same as before this existed.
+ *
+ * A HEADER CLAIMED BY ONE FIELD IS REMOVED FROM THE POOL for every field after
+ * it, in both passes -- so two fields can never point at the same column, exact
+ * or guessed.
+ */
+export function autoMatchLeadFieldsWithConfidence(headers: readonly string[]): {
+  mapping: LeadFieldMapping;
+  confidence: Partial<Record<LeadField, FieldMatchConfidence>>;
+} {
+  const mapping: LeadFieldMapping = {};
+  const confidence: Partial<Record<LeadField, FieldMatchConfidence>> = {};
+  const claimed = new Set<string>();
+
   for (const field of LEAD_FIELDS) {
     const aliases = aliasesFor(field);
-    const match = headers.find((header) => aliases.has(headerKey(header)));
-    if (match) result[field] = match;
+    const match = headers.find((header) => !claimed.has(header) && aliases.has(headerKey(header)));
+    if (match) {
+      mapping[field] = match;
+      confidence[field] = 'exact';
+      claimed.add(match);
+    }
   }
-  return result;
+
+  for (const field of LEAD_FIELDS) {
+    if (mapping[field]) continue;
+    const aliasKeys = FIELD_ALIASES[field].map(headerKey);
+    let best: { header: string; score: number } | null = null;
+    for (const header of headers) {
+      if (claimed.has(header)) continue;
+      const key = headerKey(header);
+      if (!key) continue;
+      const score = Math.max(...aliasKeys.map((alias) => headerSimilarity(key, alias)));
+      if (score >= FUZZY_MATCH_THRESHOLD && (!best || score > best.score)) best = { header, score };
+    }
+    if (best) {
+      mapping[field] = best.header;
+      confidence[field] = 'guessed';
+      claimed.add(best.header);
+    }
+  }
+
+  return { mapping, confidence };
+}
+
+/** Deterministic first-match automapping. A user override always wins later. Kept as the plain-mapping entry point; see `autoMatchLeadFieldsWithConfidence` for the fuzzy pass and its confidence tags. */
+export function autoMatchLeadFields(headers: readonly string[]): LeadFieldMapping {
+  return autoMatchLeadFieldsWithConfidence(headers).mapping;
 }
 
 /**
@@ -227,7 +380,9 @@ function canonicalProfileUrl(value: unknown): string | null {
  * it the same way the CSV path does -- two writers computing "the same person"
  * two ways is how one human ends up in two campaigns.
  */
-export function leadDedupeKey(input: Pick<NormalizedLeadInput, 'firstName' | 'lastName' | 'company' | 'email' | 'profileUrl'>): string {
+export function leadDedupeKey(
+  input: Pick<NormalizedLeadInput, 'firstName' | 'lastName' | 'company' | 'email' | 'profileUrl'>
+): string {
   const identity = input.profileUrl
     ? `linkedin:${input.profileUrl.toLowerCase()}`
     : input.email
@@ -236,7 +391,10 @@ export function leadDedupeKey(input: Pick<NormalizedLeadInput, 'firstName' | 'la
   return createHash('sha256').update(identity).digest('hex');
 }
 
-export function normalizeLeadRow(row: Record<string, string>, mapping: LeadFieldMapping): NormalizedLeadInput {
+export function normalizeLeadRow(
+  row: Record<string, string>,
+  mapping: LeadFieldMapping
+): NormalizedLeadInput {
   const read = (field: LeadField): string => {
     const header = mapping[field];
     return header ? String(row[header] ?? '') : '';
@@ -246,7 +404,9 @@ export function normalizeLeadRow(row: Record<string, string>, mapping: LeadField
   const lastName = scrubNameField(read('lastName'));
   const company = read('company').normalize('NFKC').replace(/\s+/g, ' ').trim();
   if (!firstName || !lastName || !company) {
-    const missing = [!firstName && 'first name', !lastName && 'last name', !company && 'company'].filter(Boolean).join(', ');
+    const missing = [!firstName && 'first name', !lastName && 'last name', !company && 'company']
+      .filter(Boolean)
+      .join(', ');
     throw new Error(`Missing required ${missing}.`);
   }
   const email = normalizeEmail(read('email'));
@@ -298,9 +458,13 @@ export interface ScrapedLeadRecord {
 export function normalizeScrapedLead(input: ScrapedLeadRecord): NormalizedLeadInput | null {
   const profileUrl = canonicalProfileUrl(input.profileUrl);
   if (!profileUrl) return null;
-  const split = input.firstName || input.lastName
-    ? { firstName: scrubNameField(input.firstName ?? ''), lastName: scrubNameField(input.lastName ?? '') }
-    : splitAndScrubName(input.name ?? '');
+  const split =
+    input.firstName || input.lastName
+      ? {
+          firstName: scrubNameField(input.firstName ?? ''),
+          lastName: scrubNameField(input.lastName ?? '')
+        }
+      : splitAndScrubName(input.name ?? '');
   if (!split.firstName) return null;
   const company = (input.company ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
   const original: Record<string, string> = { profileUrl };
@@ -334,14 +498,18 @@ export function parseLeadCsv(csv: string, override: LeadFieldMapping = {}): Lead
   }) as Array<Record<string, string>>;
   const headers = records.length > 0 ? Object.keys(records[0]) : [];
   if (headers.length === 0) throw new Error('CSV needs a header row.');
-  const auto = autoMatchLeadFields(headers);
+  const { mapping: auto, confidence: mappingConfidence } =
+    autoMatchLeadFieldsWithConfidence(headers);
   const mapping: LeadFieldMapping = { ...auto, ...override };
   for (const required of ['firstName', 'lastName', 'company'] as const) {
-    if (!mapping[required]) throw new Error(`Could not map required field '${required}'. Choose a CSV column for it.`);
-    if (!headers.includes(mapping[required] as string)) throw new Error(`Mapped column '${mapping[required]}' does not exist in this CSV.`);
+    if (!mapping[required])
+      throw new Error(`Could not map required field '${required}'. Choose a CSV column for it.`);
+    if (!headers.includes(mapping[required] as string))
+      throw new Error(`Mapped column '${mapping[required]}' does not exist in this CSV.`);
   }
   for (const [field, header] of Object.entries(mapping)) {
-    if (header && !headers.includes(header)) throw new Error(`Mapped column '${header}' for ${field} does not exist in this CSV.`);
+    if (header && !headers.includes(header))
+      throw new Error(`Mapped column '${header}' for ${field} does not exist in this CSV.`);
   }
 
   const accepted: NormalizedLeadInput[] = [];
@@ -357,8 +525,12 @@ export function parseLeadCsv(csv: string, override: LeadFieldMapping = {}): Lead
       seen.add(lead.dedupeKey);
       accepted.push(lead);
     } catch (cause) {
-      rejected.push({ row: index + 2, reason: cause instanceof Error ? cause.message : String(cause), original: row });
+      rejected.push({
+        row: index + 2,
+        reason: cause instanceof Error ? cause.message : String(cause),
+        original: row
+      });
     }
   });
-  return { headers, mapping, accepted, rejected };
+  return { headers, mapping, mappingConfidence, accepted, rejected };
 }

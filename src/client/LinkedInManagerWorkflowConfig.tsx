@@ -517,10 +517,22 @@ const STARTERS: readonly Starter[] = [
 
 export function LinkedInManagerWorkflowConfig({
   onChanged,
-  setToast
+  setToast,
+  compact = false,
+  onCreated
 }: {
   onChanged: () => Promise<void>;
   setToast: (message: string) => void;
+  /**
+   * The inline "new from template" picker used on the campaign screen: pick a
+   * starter, it is created and saved immediately, no name field, no step
+   * editor, no library table. The full builder below is still where a
+   * starter gets customized -- this mode exists for the case where the
+   * starter as written is exactly what's wanted.
+   */
+  compact?: boolean;
+  /** Compact mode only: fires with the workflow a starter click just created. */
+  onCreated?: (workflow: LinkedInWorkflow) => void;
 }) {
   const [library, setLibrary] = useState<LinkedInWorkflow[]>([]);
   const [id, setId] = useState<string | null>(null);
@@ -559,8 +571,30 @@ export function LinkedInManagerWorkflowConfig({
 
   const refresh = async () => setLibrary(await getLinkedInManagerWorkflows());
   useEffect(() => {
+    if (compact) return;
     void refresh().catch(() => undefined);
-  }, []);
+  }, [compact]);
+
+  /** Compact mode's whole job: build a starter's steps, save it under its own label, hand it back. No shared mutable id-minting state needed -- this is one save, not an editing session. */
+  const createFromStarter = async (starter: Starter) => {
+    setBusy(true);
+    setError('');
+    try {
+      let nextId = 1;
+      const mint = () => `step-${nextId++}`;
+      const workflow = await createLinkedInManagerWorkflow({
+        name: starter.label,
+        steps: serializeSteps(starter.build(mint))
+      });
+      setToast(`Workflow “${workflow.name}” saved. This stored configuration and queued nothing.`);
+      onCreated?.(workflow);
+      await onChanged();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to create that workflow.'));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const problems = useMemo(
     () => steps.map((step, index) => stepProblems(step, index, steps)),
@@ -708,6 +742,40 @@ export function LinkedInManagerWorkflowConfig({
       setBusy(false);
     }
   };
+
+  if (compact) {
+    return (
+      <div className="li-wf-compact">
+        {error && <div className="error-banner">{error}</div>}
+        <div className="li-wf-starters">
+          {STARTERS.map((starter) => (
+            <button
+              className="li-wf-starter"
+              type="button"
+              key={starter.key}
+              disabled={busy}
+              onClick={() => void createFromStarter(starter)}
+            >
+              <strong>{starter.label}</strong>
+              <p>{starter.blurb}</p>
+              <span className="li-wf-starter-steps">
+                {starter
+                  .build(() => 'preview')
+                  .map((step, at) => (
+                    <span
+                      className={`li-chip li-kind-chip ${ACTION_META[step.action].chip}`}
+                      key={`${starter.key}-${at}`}
+                    >
+                      {ACTION_META[step.action].label}
+                    </span>
+                  ))}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <section className="page-panel">

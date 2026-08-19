@@ -8663,6 +8663,76 @@ button:disabled {
   margin-top: 2px;
 }
 
+/* Campaign creation: card pickers for leads + workflow, and the inline
+   upload / starter-template widgets they expand into. Reuses .li-wf-starter
+   (already a bordered, hoverable, left-aligned button) as the base card so
+   the campaign screen and the workflow builder's own starter grid look like
+   one system rather than two. */
+.mgr-fields-stack {
+  display: grid;
+  gap: 18px;
+}
+.mgr-picker h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: var(--t-text-sm);
+  font-weight: 700;
+}
+.mgr-pick-grid {
+  margin: 0 0 4px;
+}
+.li-wf-starter.is-selected {
+  border-color: var(--green);
+  background: var(--green-3);
+}
+.li-wf-starter-add {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-style: dashed;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: 700;
+  flex-direction: row;
+  display: flex;
+  gap: 6px;
+}
+.li-wf-starter-add.is-selected {
+  border-style: solid;
+}
+.mgr-picker > .lead-build,
+.mgr-picker > .li-wf-compact {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  padding: 12px;
+  background: var(--t-surface-2);
+}
+.mgr-picker > .lead-build > .page-panel {
+  box-shadow: none;
+  padding: 0;
+  background: transparent;
+}
+.mgr-details-toggle {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--t-text-xs);
+  cursor: pointer;
+}
+.lead-map-row.is-guessed {
+  border-color: var(--amber);
+}
+.lead-map-row.is-guessed .lead-map-note {
+  color: var(--amber);
+  font-weight: 700;
+}
+
 @media (max-width: 900px) {
   .mgr-split {
     grid-template-columns: minmax(0, 1fr);

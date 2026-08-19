@@ -19,6 +19,8 @@ import {
 } from './api';
 import { effectiveDailyCeiling } from '../server/linkedin/limits';
 import { useActiveSeatKey } from './LinkedInAccounts';
+import { LinkedInManagerLeadConfig } from './LinkedInManagerLeadConfig';
+import { LinkedInManagerWorkflowConfig } from './LinkedInManagerWorkflowConfig';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
 import type { LinkedInSeat } from '../server/linkedin/seats';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
@@ -54,6 +56,26 @@ const clock = (minute: number) =>
   `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 const stepHours = (step: WorkflowStep) =>
   step.delayBefore.unit === 'days' ? step.delayBefore.amount * 24 : step.delayBefore.amount;
+
+const ACTION_SHORT_LABEL: Record<WorkflowStep['action'], string> = {
+  profile_view: 'View',
+  connection_request: 'Invite',
+  message: 'Message',
+  manual_message: 'Manual note',
+  follow: 'Follow',
+  withdraw_pending: 'Withdraw'
+};
+
+/** A workflow's steps as a compact trail for the card picker: "View → Invite → wait 3d → Message". */
+function chipTrail(workflow: LinkedInWorkflow): string {
+  const parts: string[] = [];
+  for (const step of workflow.steps) {
+    const hours = stepHours(step);
+    if (hours > 0) parts.push(hours % 24 === 0 ? `wait ${hours / 24}d` : `wait ${hours}h`);
+    parts.push(ACTION_SHORT_LABEL[step.action]);
+  }
+  return parts.join(' → ');
+}
 
 /* ---------------------------------------------------------------------------
  * WHAT A CAMPAIGN IS ACTUALLY ALLOWED TO SEND.
@@ -208,25 +230,11 @@ export function takeStagedCampaignPrefill(): CampaignPrefill | null {
 export function LinkedInManagerCampaignConfig({
   onChanged,
   setToast,
-  onNeedLeads,
-  onNeedWorkflows,
   onStarted,
   prefill
 }: {
   onChanged: () => Promise<void>;
   setToast: (message: string) => void;
-  /**
-   * Where "Import leads" and "Build a workflow" go.
-   *
-   * REQUIRED, and making them required is the fix. They were optional with no
-   * fallback, so any mount that forgot one rendered a button that did nothing
-   * at all -- in exactly the state, no list or no workflow, where that button
-   * is the only way forward. A required prop turns a forgetful mount into a
-   * compile error instead of a dead end an operator has to guess their way out
-   * of.
-   */
-  onNeedLeads: () => void;
-  onNeedWorkflows: () => void;
   /** After an explicit Start succeeds, the builder can return to operations. */
   onStarted?: (campaign: ManagedCampaign) => void;
   /** Fills the form from a finished campaign, so "run this list again" is one click. */
@@ -238,9 +246,14 @@ export function LinkedInManagerCampaignConfig({
   const [lists, setLists] = useState<LinkedInLeadList[]>([]);
   const [workflows, setWorkflows] = useState<LinkedInWorkflow[]>([]);
   const [name, setName] = useState('');
+  /** Whether the operator has typed into the name field. Until then it auto-fills from the list + workflow choice; the first keystroke stops that. */
+  const [nameTouched, setNameTouched] = useState(false);
   const seatKey = activeSeatKey;
   const [listId, setListId] = useState('');
   const [workflowId, setWorkflowId] = useState('');
+  const [showListUploader, setShowListUploader] = useState(false);
+  const [showWorkflowStarters, setShowWorkflowStarters] = useState(false);
+  const [showSendingDetails, setShowSendingDetails] = useState(false);
   const [limits, setLimits] = useState<LinkedInLimitsReport | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -271,6 +284,7 @@ export function LinkedInManagerCampaignConfig({
   useEffect(() => {
     if (!prefill) return;
     setName(prefill.name);
+    setNameTouched(true);
     setWorkflowId(prefill.workflowId);
     setCreated(null);
     if (prefill.seatKey === activeSeatKey) {
@@ -311,6 +325,11 @@ export function LinkedInManagerCampaignConfig({
   const seat = seats.find((candidate) => candidate.seatKey === activeSeatKey) ?? null;
   const list = lists.find((candidate) => candidate.id === listId) ?? null;
   const workflow = workflows.find((candidate) => candidate.id === workflowId) ?? null;
+
+  useEffect(() => {
+    if (nameTouched || !list || !workflow) return;
+    setName(`${list.name} → ${workflow.name}`.slice(0, 120));
+  }, [list?.name, workflow?.name, nameTouched]);
 
   const fractions = rampFractions(limits);
   const dayOneFraction = fractions?.[0] ?? null;
@@ -360,6 +379,7 @@ export function LinkedInManagerCampaignConfig({
       });
       setCreated(result);
       setName('');
+      setNameTouched(false);
       await Promise.all([refreshOptions(), onChanged()]);
     } catch (err) {
       setError(errorMessage(err, 'Unable to create that campaign.'));
@@ -388,17 +408,25 @@ export function LinkedInManagerCampaignConfig({
     }
   };
 
-  const missing = seats.length === 0 || lists.length === 0 || workflows.length === 0;
+  const missing = seats.length === 0;
+
+  const createBlocker =
+    busy !== ''
+      ? ''
+      : !name.trim()
+        ? 'Name the campaign before creating it.'
+        : !listId
+          ? 'Choose or upload a lead list.'
+          : !workflowId
+            ? 'Choose or create a workflow.'
+            : '';
 
   return (
     <section className="page-panel">
       <div className="section-heading">
         <div>
           <h3 aria-level={2}>Create a campaign</h3>
-          <p>
-            Choose the lead list and workflow. The selected LinkedIn account in the header is the
-            sender.
-          </p>
+          <p>The selected LinkedIn account in the header is the sender.</p>
         </div>
       </div>
 
@@ -406,64 +434,113 @@ export function LinkedInManagerCampaignConfig({
 
       {missing ? (
         <div className="mgr-empty">
-          <h4 aria-level={3}>Two things first</h4>
-          <p>
-            A campaign is a lead list plus a workflow, sent from a LinkedIn account.{' '}
-            {seats.length === 0 && 'No account is set up. '}
-            {lists.length === 0 && 'No lead list exists yet. '}
-            {workflows.length === 0 && 'No workflow exists yet. '}
-          </p>
+          <h4 aria-level={3}>Add a LinkedIn account first</h4>
+          <p>A campaign sends from a real LinkedIn account, with its own hours and limits.</p>
           <div className="mgr-actions">
-            {seats.length === 0 && (
-              <a className="primary-button" href="/outreach">
-                Add a LinkedIn account
-              </a>
-            )}
-            {lists.length === 0 && (
-              <button className="secondary-button" type="button" onClick={onNeedLeads}>
-                <Users size={14} /> Import leads
-              </button>
-            )}
-            {workflows.length === 0 && (
-              <button className="secondary-button" type="button" onClick={onNeedWorkflows}>
-                <WorkflowIcon size={14} /> Build a workflow
-              </button>
-            )}
+            <a className="primary-button" href="/outreach">
+              Add a LinkedIn account
+            </a>
           </div>
         </div>
       ) : (
         <div className="mgr-split">
-          <div className="li-form-grid mgr-fields">
-            <label>
-              Campaign name
-              <input
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Q3 founder outreach"
-              />
-            </label>
-            <label>
-              Lead list
-              <select value={listId} onChange={(event) => setListId(event.target.value)}>
-                <option value="">Choose a list</option>
+          <div className="mgr-fields-stack">
+            <div className="li-form-grid mgr-fields">
+              <label>
+                Campaign name
+                <input
+                  value={name}
+                  onChange={(event) => {
+                    setName(event.target.value);
+                    setNameTouched(true);
+                  }}
+                  placeholder="Q3 founder outreach"
+                />
+              </label>
+            </div>
+
+            <div className="mgr-picker">
+              <h4 aria-level={3}>
+                <Users size={14} /> Leads
+              </h4>
+              <div className="li-wf-starters mgr-pick-grid">
                 {lists.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.name} — {plural(candidate.leadCount, 'lead')}
-                  </option>
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    className={`li-wf-starter${listId === candidate.id ? ' is-selected' : ''}`}
+                    aria-pressed={listId === candidate.id}
+                    onClick={() => {
+                      setListId(candidate.id);
+                      setShowListUploader(false);
+                    }}
+                  >
+                    <strong>{candidate.name}</strong>
+                    <p>{plural(candidate.leadCount, 'lead')}</p>
+                  </button>
                 ))}
-              </select>
-            </label>
-            <label>
-              Workflow
-              <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
-                <option value="">Choose a workflow</option>
+                <button
+                  type="button"
+                  className={`li-wf-starter li-wf-starter-add${showListUploader ? ' is-selected' : ''}`}
+                  onClick={() => setShowListUploader((value) => !value)}
+                >
+                  <Plus size={14} /> Upload a CSV
+                </button>
+              </div>
+              {showListUploader && (
+                <LinkedInManagerLeadConfig
+                  compact
+                  setToast={setToast}
+                  onChanged={refreshOptions}
+                  onImported={(uploaded) => {
+                    setListId(uploaded.id);
+                    setShowListUploader(false);
+                  }}
+                />
+              )}
+            </div>
+
+            <div className="mgr-picker">
+              <h4 aria-level={3}>
+                <WorkflowIcon size={14} /> Workflow
+              </h4>
+              <div className="li-wf-starters mgr-pick-grid">
                 {workflows.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.name} — {plural(candidate.steps.length, 'step')}
-                  </option>
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    className={`li-wf-starter${workflowId === candidate.id ? ' is-selected' : ''}`}
+                    aria-pressed={workflowId === candidate.id}
+                    onClick={() => {
+                      setWorkflowId(candidate.id);
+                      setShowWorkflowStarters(false);
+                    }}
+                  >
+                    <strong>{candidate.name}</strong>
+                    <p>{chipTrail(candidate) || plural(candidate.steps.length, 'step')}</p>
+                  </button>
                 ))}
-              </select>
-            </label>
+                <button
+                  type="button"
+                  className={`li-wf-starter li-wf-starter-add${showWorkflowStarters ? ' is-selected' : ''}`}
+                  onClick={() => setShowWorkflowStarters((value) => !value)}
+                >
+                  <Plus size={14} /> New from template
+                </button>
+              </div>
+              {showWorkflowStarters && (
+                <LinkedInManagerWorkflowConfig
+                  compact
+                  setToast={setToast}
+                  onChanged={refreshOptions}
+                  onCreated={(createdWorkflow) => {
+                    setWorkflowId(createdWorkflow.id);
+                    setShowWorkflowStarters(false);
+                  }}
+                />
+              )}
+            </div>
+
             <p className="li-hint">
               A lead can only be in one active campaign at a time. Anyone already in another one is
               left where they are.
@@ -490,21 +567,35 @@ export function LinkedInManagerCampaignConfig({
                 <p className="mgr-preview-note">
                   {seat.workingDays.length > 0
                     ? `Only on ${seat.workingDays.map((day) => WEEKDAYS[day]).join(', ')}, ${clock(seat.workStartMinute)}–${clock(seat.workEndMinute)} ${seat.timezone}.`
-                    : 'This account has no working hours set, so nothing can go out yet.'}{' '}
-                  {ceilings && fractions && dayOneFraction !== null ? (
-                    <>
-                      Day 1 is held to {Math.round(dayOneFraction * 100)}% of what this account may
-                      send — {plural(ceilings.invite.today, 'invite')} and{' '}
-                      {plural(ceilings.dm.today, 'message')} across the whole campaign — and reaches
-                      full speed on day {fractions.length}. Full speed is{' '}
-                      {plural(ceilings.invite.full, 'invite')} and{' '}
-                      {plural(ceilings.dm.full, 'message')} a day; the invite ceiling is{' '}
-                      {ceilingSourceNote(ceilings.invite)}.
-                    </>
-                  ) : (
-                    'Day 1 is deliberately slow, and the campaign steps up to full speed over its first few days.'
-                  )}
+                    : 'This account has no working hours set, so nothing can go out yet.'}
                 </p>
+                {ceilings && fractions && dayOneFraction !== null ? (
+                  <>
+                    <button
+                      type="button"
+                      className="li-link mgr-details-toggle"
+                      onClick={() => setShowSendingDetails((value) => !value)}
+                    >
+                      {showSendingDetails ? 'Hide sending details' : 'Show sending details'}
+                    </button>
+                    {showSendingDetails && (
+                      <p className="mgr-preview-note">
+                        Day 1 is held to {Math.round(dayOneFraction * 100)}% of what this account
+                        may send — {plural(ceilings.invite.today, 'invite')} and{' '}
+                        {plural(ceilings.dm.today, 'message')} across the whole campaign — and
+                        reaches full speed on day {fractions.length}. Full speed is{' '}
+                        {plural(ceilings.invite.full, 'invite')} and{' '}
+                        {plural(ceilings.dm.full, 'message')} a day; the invite ceiling is{' '}
+                        {ceilingSourceNote(ceilings.invite)}.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="mgr-preview-note">
+                    Day 1 is deliberately slow, and the campaign steps up to full speed over its
+                    first few days.
+                  </p>
+                )}
               </>
             ) : (
               <p className="empty-copy">
@@ -583,13 +674,15 @@ export function LinkedInManagerCampaignConfig({
 
       {!missing && (
         <div className="panel-footer">
-          <span>
-            Creating a campaign queues nothing. Start is the only control that lets work go out.
+          <span title={createBlocker || undefined}>
+            {createBlocker ||
+              'Creating a campaign queues nothing. Start is the only control that lets work go out.'}
           </span>
           <button
             className="primary-button"
             type="button"
-            disabled={busy !== '' || !name.trim() || !listId || !workflowId}
+            disabled={createBlocker !== ''}
+            title={createBlocker || undefined}
             onClick={() => void create()}
           >
             {busy === 'create' ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}{' '}

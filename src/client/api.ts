@@ -1952,6 +1952,13 @@ export interface LinkedInLeadCsvPreview {
       string
     >
   >;
+  /** Which mapped fields automatch guessed by similarity rather than an exact heading match. Absent entries were exact (or came from an explicit override). */
+  mappingConfidence?: Partial<
+    Record<
+      'firstName' | 'lastName' | 'company' | 'email' | 'phone' | 'country' | 'profileUrl',
+      'exact' | 'guessed'
+    >
+  >;
   accepted: Array<{
     firstName: string;
     lastName: string;

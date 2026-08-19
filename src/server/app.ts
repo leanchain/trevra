@@ -4396,6 +4396,7 @@ export function createApp(db: Db) {
         res.json({
           headers: preview.headers,
           mapping: preview.mapping,
+          mappingConfidence: preview.mappingConfidence,
           accepted: preview.accepted
             .slice(0, 100)
             .map(({ original: _original, dedupeKey: _dedupeKey, ...lead }) => lead),

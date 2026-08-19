@@ -186,10 +186,23 @@ interface ContactDraft {
 
 export function LinkedInManagerLeadConfig({
   onChanged,
-  setToast
+  setToast,
+  compact = false,
+  onImported
 }: {
   onChanged: () => Promise<void>;
   setToast: (message: string) => void;
+  /**
+   * The inline uploader used on the campaign screen: CSV -> a new list, full
+   * stop. No destination picker (nothing to add to yet is the common case,
+   * and picking an existing list already has its own card there), no "where
+   * lead lists come from" aside, and -- the actual bug this mode exists to
+   * kill -- no contacts browser, so nothing here calls `openList` and nothing
+   * here can 404 on some other list while this one is mid-import.
+   */
+  compact?: boolean;
+  /** Compact mode only: fires with the list a successful import just created. */
+  onImported?: (list: LinkedInLeadList) => void;
 }) {
   const [activeSeatKey] = useActiveSeatKey();
   const [lists, setLists] = useState<LinkedInLeadList[]>([]);
@@ -283,11 +296,18 @@ export function LinkedInManagerLeadConfig({
   );
 
   useEffect(() => {
+    // COMPACT MODE READS NOTHING ON MOUNT. The bug this shape exists to avoid:
+    // opening some unrelated existing list's contacts here is exactly what
+    // produced a "Lead list not found" banner over a CSV import that had
+    // nothing to do with that list. A compact uploader has no contacts panel
+    // to populate and no destination picker that needs the list of lists, so
+    // it makes no request at all until a file is actually dropped.
+    if (compact) return;
     void (async () => {
       const next = await loadLists();
       if (next.length > 0) await openList(next[0].id);
     })();
-  }, [loadLists, openList]);
+  }, [compact, loadLists, openList]);
 
   const headers = preview?.headers ?? sample?.headers ?? [];
 
@@ -355,6 +375,17 @@ export function LinkedInManagerLeadConfig({
       setAutoMapping({});
       setOverrides({});
       setSample(null);
+      // Compact mode has no destination picker, so the list name has to come
+      // from somewhere other than an operator typing it first -- the file's
+      // own name, same spirit as the campaign name default: filled in,
+      // editable, never blank.
+      if (compact && !newName.trim()) {
+        const guess = next.name
+          .replace(/\.csv$/i, '')
+          .replace(/[_-]+/g, ' ')
+          .trim();
+        setNewName(guess || 'Leads');
+      }
       try {
         setSample(await readCsvHead(next));
       } catch {
@@ -362,7 +393,7 @@ export function LinkedInManagerLeadConfig({
       }
       await runPreview(next, {}, true);
     },
-    [runPreview]
+    [runPreview, compact, newName]
   );
 
   const changeMapping = (field: LeadField, header: string) => {
@@ -453,7 +484,6 @@ export function LinkedInManagerLeadConfig({
         mappingToSend(overrides),
         activeSeatKey
       )) as ImportReport;
-      setReport({ listId: list.id, listName: list.name, counts });
       setToast(
         counts.inserted > 0
           ? `${plural(counts.inserted, 'lead')} added to “${list.name}”. Campaigns can enrol from it now.`
@@ -466,9 +496,17 @@ export function LinkedInManagerLeadConfig({
       setOverrides({});
       setAutoMapping({});
       setNewName('');
-      setDestination(list.id);
-      await loadLists();
-      await openList(list.id);
+      if (compact) {
+        // No report panel, no reopening a contacts browser this mode doesn't
+        // have -- the caller (the campaign screen) already knows what to do
+        // with the list it just got handed.
+        onImported?.(list);
+      } else {
+        setReport({ listId: list.id, listName: list.name, counts });
+        setDestination(list.id);
+        await loadLists();
+        await openList(list.id);
+      }
       await onChanged();
     } catch (err) {
       setError(errorMessage(err, 'Unable to import that CSV. Nothing was stored.'));
@@ -610,22 +648,24 @@ export function LinkedInManagerLeadConfig({
         {error && <div className="error-banner">{error}</div>}
 
         <div className="li-form-grid">
-          <label>
-            Add these leads to
-            <select
-              value={destination}
-              disabled={busy !== ''}
-              onChange={(event) => setDestination(event.target.value)}
-            >
-              <option value="new">A new list…</option>
-              {lists.map((list) => (
-                <option key={list.id} value={list.id}>
-                  {list.name} · {plural(list.leadCount, 'lead')}
-                </option>
-              ))}
-            </select>
-          </label>
-          {destination === 'new' && (
+          {!compact && (
+            <label>
+              Add these leads to
+              <select
+                value={destination}
+                disabled={busy !== ''}
+                onChange={(event) => setDestination(event.target.value)}
+              >
+                <option value="new">A new list…</option>
+                {lists.map((list) => (
+                  <option key={list.id} value={list.id}>
+                    {list.name} · {plural(list.leadCount, 'lead')}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {(compact || destination === 'new') && (
             <label>
               Name the new list
               <input
@@ -681,10 +721,18 @@ export function LinkedInManagerLeadConfig({
                 const chosen = chosenHeader(entry.field);
                 const auto = autoMapping[entry.field] ?? '';
                 const missing = entry.required && !chosen;
+                const guessed =
+                  chosen === auto && preview?.mappingConfidence?.[entry.field] === 'guessed';
                 return (
                   <label
                     key={entry.field}
-                    className={missing ? 'lead-map-row is-missing' : 'lead-map-row'}
+                    className={
+                      missing
+                        ? 'lead-map-row is-missing'
+                        : guessed
+                          ? 'lead-map-row is-guessed'
+                          : 'lead-map-row'
+                    }
                   >
                     <span className="lead-map-name">
                       {entry.label}
@@ -710,11 +758,13 @@ export function LinkedInManagerLeadConfig({
                     <span className="lead-map-note">
                       {chosen && auto && chosen !== auto
                         ? `Changed from “${auto}”`
-                        : chosen && chosen === auto
-                          ? 'Matched by its heading'
-                          : chosen
-                            ? 'Your choice'
-                            : 'No column matched'}
+                        : guessed
+                          ? 'Guessed from its heading — check this'
+                          : chosen && chosen === auto
+                            ? 'Matched by its heading'
+                            : chosen
+                              ? 'Your choice'
+                              : 'No column matched'}
                     </span>
                   </label>
                 );
@@ -861,224 +911,234 @@ export function LinkedInManagerLeadConfig({
           </div>
         )}
 
-        <div className="lead-kinds">
-          <h4>Where lead lists come from</h4>
-          <dl>
-            <div>
-              <dt>{SOURCE_LABELS.csv}</dt>
-              <dd>Built here, from a file you export from anywhere.</dd>
-            </div>
-            <div>
-              <dt>{SOURCE_LABELS.linkedin_search}</dt>
-              <dd>
-                Walked by the local browser worker on Lead sources, then added to a list from there.
-              </dd>
-            </div>
-            <div>
-              <dt>{SOURCE_LABELS.sales_navigator}</dt>
-              <dd>The same walk against a Sales Navigator people search.</dd>
-            </div>
-            <div>
-              <dt>{SOURCE_LABELS.post_keyword}</dt>
-              <dd>People who reacted to or commented on posts matching your keywords.</dd>
-            </div>
-          </dl>
-          <a className="li-link" href="/outreach/leads">
-            Open Lead sources <ArrowRight size={13} />
-          </a>
-        </div>
+        {!compact && (
+          <div className="lead-kinds">
+            <h4>Where lead lists come from</h4>
+            <dl>
+              <div>
+                <dt>{SOURCE_LABELS.csv}</dt>
+                <dd>Built here, from a file you export from anywhere.</dd>
+              </div>
+              <div>
+                <dt>{SOURCE_LABELS.linkedin_search}</dt>
+                <dd>
+                  Walked by the local browser worker on Lead sources, then added to a list from
+                  there.
+                </dd>
+              </div>
+              <div>
+                <dt>{SOURCE_LABELS.sales_navigator}</dt>
+                <dd>The same walk against a Sales Navigator people search.</dd>
+              </div>
+              <div>
+                <dt>{SOURCE_LABELS.post_keyword}</dt>
+                <dd>People who reacted to or commented on posts matching your keywords.</dd>
+              </div>
+            </dl>
+            <a className="li-link" href="/outreach/leads">
+              Open Lead sources <ArrowRight size={13} />
+            </a>
+          </div>
+        )}
       </section>
 
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>Leads in a list</h3>
-            <p>
-              Read a list, fix a row, drop somebody who left. Editing a lead here changes them
-              everywhere, including in campaigns they are already in.
-            </p>
-          </div>
-          <button
-            className="ghost-button"
-            type="button"
-            disabled={contactsLoading || listsLoading}
-            onClick={() =>
-              void (async () => {
-                await loadLists();
-                await openList(openListId);
-              })()
-            }
-          >
-            {contactsLoading || listsLoading ? (
-              <LoaderCircle className="spin" size={14} />
-            ) : (
-              <RefreshCw size={14} />
-            )}{' '}
-            Refresh
-          </button>
-        </div>
-
-        {listError && <div className="error-banner">{listError}</div>}
-
-        {!listsLoading && lists.length === 0 ? (
-          <div className="mgr-empty">
-            <h4 aria-level={3}>No lead list yet</h4>
-            <p>
-              Import a CSV above, or walk a LinkedIn search on Lead sources and add the people it
-              finds to a list. A campaign enrols from a list — until one has leads in it, there is
-              nobody to reach.
-            </p>
-            <div className="mgr-actions">
-              <a className="secondary-button" href="/outreach/leads">
-                Open Lead sources <ArrowRight size={14} />
-              </a>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="li-filter-row">
-              <label>
-                List
-                <select
-                  value={openListId}
-                  disabled={contactsLoading}
-                  onChange={(event) => void openList(event.target.value)}
-                >
-                  {lists.map((list) => (
-                    <option key={list.id} value={list.id}>
-                      {list.name} · {plural(list.leadCount, 'lead')}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Find someone
-                <input
-                  value={filter}
-                  placeholder="Name, company or email"
-                  onChange={(event) => {
-                    setFilter(event.target.value);
-                    setVisible(PAGE);
-                  }}
-                />
-              </label>
-              {openMeta && (
-                <span className="li-chip">From {SOURCE_LABELS[openMeta.sourceKind]}</span>
-              )}
-            </div>
-
-            {contactsLoading ? (
-              <p className="empty-copy">Reading this list…</p>
-            ) : contacts.length === 0 ? (
-              <p className="empty-copy">
-                Nothing in this list yet. Import a CSV above and it fills up.
+      {!compact && (
+        <section className="page-panel">
+          <div className="section-heading">
+            <div>
+              <h3 aria-level={2}>Leads in a list</h3>
+              <p>
+                Read a list, fix a row, drop somebody who left. Editing a lead here changes them
+                everywhere, including in campaigns they are already in.
               </p>
-            ) : (
-              <>
-                {/* The truncation notice is the server's count against the page
+            </div>
+            <button
+              className="ghost-button"
+              type="button"
+              disabled={contactsLoading || listsLoading}
+              onClick={() =>
+                void (async () => {
+                  await loadLists();
+                  await openList(openListId);
+                })()
+              }
+            >
+              {contactsLoading || listsLoading ? (
+                <LoaderCircle className="spin" size={14} />
+              ) : (
+                <RefreshCw size={14} />
+              )}{' '}
+              Refresh
+            </button>
+          </div>
+
+          {listError && <div className="error-banner">{listError}</div>}
+
+          {!listsLoading && lists.length === 0 ? (
+            <div className="mgr-empty">
+              <h4 aria-level={3}>No lead list yet</h4>
+              <p>
+                Import a CSV above, or walk a LinkedIn search on Lead sources and add the people it
+                finds to a list. A campaign enrols from a list — until one has leads in it, there is
+                nobody to reach.
+              </p>
+              <div className="mgr-actions">
+                <a className="secondary-button" href="/outreach/leads">
+                  Open Lead sources <ArrowRight size={14} />
+                </a>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="li-filter-row">
+                <label>
+                  List
+                  <select
+                    value={openListId}
+                    disabled={contactsLoading}
+                    onChange={(event) => void openList(event.target.value)}
+                  >
+                    {lists.map((list) => (
+                      <option key={list.id} value={list.id}>
+                        {list.name} · {plural(list.leadCount, 'lead')}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Find someone
+                  <input
+                    value={filter}
+                    placeholder="Name, company or email"
+                    onChange={(event) => {
+                      setFilter(event.target.value);
+                      setVisible(PAGE);
+                    }}
+                  />
+                </label>
+                {openMeta && (
+                  <span className="li-chip">From {SOURCE_LABELS[openMeta.sourceKind]}</span>
+                )}
+              </div>
+
+              {contactsLoading ? (
+                <p className="empty-copy">Reading this list…</p>
+              ) : contacts.length === 0 ? (
+                <p className="empty-copy">
+                  Nothing in this list yet. Import a CSV above and it fills up.
+                </p>
+              ) : (
+                <>
+                  {/* The truncation notice is the server's count against the page
                     it actually returned, so it appears exactly when a page was
                     short and says by how much. Contacts come back oldest first,
                     which is what makes "the first" the right word for them. */}
-                <p className="li-hint">
-                  {plural(filtered.length, 'lead')}
-                  {term ? ` of ${plural(contacts.length, 'lead')} read` : ''} in “
-                  {openMeta?.name ?? 'this list'}”.
-                  {contactTotal > contacts.length &&
-                    ` The first ${contacts.length.toLocaleString()} of ${plural(contactTotal, 'lead')} are shown — one read of a list returns no more than that, and Find someone searches the ones it returned.`}
-                </p>
-                {draft && (
-                  <div className="lead-editor" ref={editorRef}>
-                    <h4>
-                      Editing {contacts.find((contact) => contact.id === draft.id)?.firstName}{' '}
-                      {contacts.find((contact) => contact.id === draft.id)?.lastName}
-                    </h4>
-                    <div className="li-form-grid lead-edit-grid">
-                      <label>
-                        First name
-                        <input
-                          value={draft.firstName}
-                          onChange={(event) =>
-                            setDraft({ ...draft, firstName: event.target.value })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Last name
-                        <input
-                          value={draft.lastName}
-                          onChange={(event) => setDraft({ ...draft, lastName: event.target.value })}
-                        />
-                      </label>
-                      <label>
-                        Company
-                        <input
-                          value={draft.company}
-                          onChange={(event) => setDraft({ ...draft, company: event.target.value })}
-                        />
-                      </label>
-                      <label>
-                        Email
-                        <input
-                          value={draft.email}
-                          onChange={(event) => setDraft({ ...draft, email: event.target.value })}
-                        />
-                      </label>
-                      <label>
-                        Phone
-                        <input
-                          value={draft.phone}
-                          onChange={(event) => setDraft({ ...draft, phone: event.target.value })}
-                        />
-                      </label>
-                      <label>
-                        Country
-                        <input
-                          value={draft.country}
-                          onChange={(event) => setDraft({ ...draft, country: event.target.value })}
-                        />
-                      </label>
-                      <label className="li-span-2">
-                        LinkedIn profile URL
-                        <input
-                          value={draft.profileUrl}
-                          placeholder="https://www.linkedin.com/in/…"
-                          onChange={(event) =>
-                            setDraft({ ...draft, profileUrl: event.target.value })
-                          }
-                        />
-                      </label>
+                  <p className="li-hint">
+                    {plural(filtered.length, 'lead')}
+                    {term ? ` of ${plural(contacts.length, 'lead')} read` : ''} in “
+                    {openMeta?.name ?? 'this list'}”.
+                    {contactTotal > contacts.length &&
+                      ` The first ${contacts.length.toLocaleString()} of ${plural(contactTotal, 'lead')} are shown — one read of a list returns no more than that, and Find someone searches the ones it returned.`}
+                  </p>
+                  {draft && (
+                    <div className="lead-editor" ref={editorRef}>
+                      <h4>
+                        Editing {contacts.find((contact) => contact.id === draft.id)?.firstName}{' '}
+                        {contacts.find((contact) => contact.id === draft.id)?.lastName}
+                      </h4>
+                      <div className="li-form-grid lead-edit-grid">
+                        <label>
+                          First name
+                          <input
+                            value={draft.firstName}
+                            onChange={(event) =>
+                              setDraft({ ...draft, firstName: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Last name
+                          <input
+                            value={draft.lastName}
+                            onChange={(event) =>
+                              setDraft({ ...draft, lastName: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Company
+                          <input
+                            value={draft.company}
+                            onChange={(event) =>
+                              setDraft({ ...draft, company: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label>
+                          Email
+                          <input
+                            value={draft.email}
+                            onChange={(event) => setDraft({ ...draft, email: event.target.value })}
+                          />
+                        </label>
+                        <label>
+                          Phone
+                          <input
+                            value={draft.phone}
+                            onChange={(event) => setDraft({ ...draft, phone: event.target.value })}
+                          />
+                        </label>
+                        <label>
+                          Country
+                          <input
+                            value={draft.country}
+                            onChange={(event) =>
+                              setDraft({ ...draft, country: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label className="li-span-2">
+                          LinkedIn profile URL
+                          <input
+                            value={draft.profileUrl}
+                            placeholder="https://www.linkedin.com/in/…"
+                            onChange={(event) =>
+                              setDraft({ ...draft, profileUrl: event.target.value })
+                            }
+                          />
+                        </label>
+                      </div>
+                      <p className="li-hint">
+                        Names are cleaned on save the same way they are on import. First name, last
+                        name and company are required.
+                      </p>
+                      <div className="mgr-actions">
+                        <button
+                          className="primary-button"
+                          type="button"
+                          disabled={!draftValid || rowBusy !== ''}
+                          onClick={() => void saveContact()}
+                        >
+                          {rowBusy === draft.id ? (
+                            <LoaderCircle className="spin" size={14} />
+                          ) : (
+                            <Check size={14} />
+                          )}{' '}
+                          Save this lead
+                        </button>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={rowBusy !== ''}
+                          onClick={() => setDraft(null)}
+                        >
+                          <X size={14} /> Cancel
+                        </button>
+                      </div>
                     </div>
-                    <p className="li-hint">
-                      Names are cleaned on save the same way they are on import. First name, last
-                      name and company are required.
-                    </p>
-                    <div className="mgr-actions">
-                      <button
-                        className="primary-button"
-                        type="button"
-                        disabled={!draftValid || rowBusy !== ''}
-                        onClick={() => void saveContact()}
-                      >
-                        {rowBusy === draft.id ? (
-                          <LoaderCircle className="spin" size={14} />
-                        ) : (
-                          <Check size={14} />
-                        )}{' '}
-                        Save this lead
-                      </button>
-                      <button
-                        className="secondary-button"
-                        type="button"
-                        disabled={rowBusy !== ''}
-                        onClick={() => setDraft(null)}
-                      >
-                        <X size={14} /> Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
+                  )}
 
-                {/*
+                  {/*
                   THE CONSEQUENCES ARE READ BEFORE THE PRESS, NOT AFTER IT.
 
                   The second press used to be two words in a table cell and the
@@ -1087,151 +1147,155 @@ export function LinkedInManagerLeadConfig({
                   taken inside a sideways-scrolling table is a decision a phone
                   cannot reach, and this one is not reversible.
                 */}
-                {armedContact && (
-                  <div className="li-warn-block" ref={confirmRef}>
-                    <CircleAlert size={15} />
-                    <div>
-                      <strong>
-                        Remove {armedContact.firstName} {armedContact.lastName} for good?
-                      </strong>
-                      <p>
-                        This deletes the lead, not just their line in “
-                        {openMeta?.name ?? 'this list'}”. Their place in every campaign they are
-                        enrolled in goes with them, and so does any message a campaign was waiting
-                        on you to write for them — both hang off this record and are removed with
-                        it. What Trevra has already sent them stays in the ledger; nothing is
-                        unsent.
-                      </p>
-                      <div className="mgr-actions">
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          disabled={rowBusy !== ''}
-                          onClick={() => setArmed('')}
-                        >
-                          <X size={14} /> Keep them
-                        </button>
-                        <button
-                          className="li-mini-button li-mini-danger"
-                          type="button"
-                          disabled={rowBusy !== ''}
-                          onClick={() => void removeContact(armedContact)}
-                        >
-                          {rowBusy === armedContact.id ? (
-                            <LoaderCircle className="spin" size={14} />
-                          ) : (
-                            <Trash2 size={14} />
-                          )}{' '}
-                          Remove for good
-                        </button>
+                  {armedContact && (
+                    <div className="li-warn-block" ref={confirmRef}>
+                      <CircleAlert size={15} />
+                      <div>
+                        <strong>
+                          Remove {armedContact.firstName} {armedContact.lastName} for good?
+                        </strong>
+                        <p>
+                          This deletes the lead, not just their line in “
+                          {openMeta?.name ?? 'this list'}”. Their place in every campaign they are
+                          enrolled in goes with them, and so does any message a campaign was waiting
+                          on you to write for them — both hang off this record and are removed with
+                          it. What Trevra has already sent them stays in the ledger; nothing is
+                          unsent.
+                        </p>
+                        <div className="mgr-actions">
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={rowBusy !== ''}
+                            onClick={() => setArmed('')}
+                          >
+                            <X size={14} /> Keep them
+                          </button>
+                          <button
+                            className="li-mini-button li-mini-danger"
+                            type="button"
+                            disabled={rowBusy !== ''}
+                            onClick={() => void removeContact(armedContact)}
+                          >
+                            {rowBusy === armedContact.id ? (
+                              <LoaderCircle className="spin" size={14} />
+                            ) : (
+                              <Trash2 size={14} />
+                            )}{' '}
+                            Remove for good
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                <div className="li-table-scroll">
-                  <table className="li-table lead-contacts">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Company</th>
-                        <th>Email</th>
-                        <th>Phone</th>
-                        <th>Country</th>
-                        <th>LinkedIn</th>
-                        <th>
-                          <span className="mgr-sr">Actions</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {shown.map((contact) => {
-                        const editing = draft?.id === contact.id;
-                        return (
-                          <tr key={contact.id} className={editing ? 'lead-row-editing' : undefined}>
-                            <td>
-                              <strong>
-                                {contact.firstName} {contact.lastName}
-                              </strong>
-                            </td>
-                            <td>{contact.company || '—'}</td>
-                            <td>{contact.email || '—'}</td>
-                            <td>{contact.phone || '—'}</td>
-                            <td>{contact.country || '—'}</td>
-                            <td>
-                              {contact.profileUrl ? (
-                                <a
-                                  className="li-link"
-                                  href={contact.profileUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  Profile
-                                </a>
-                              ) : (
-                                '—'
-                              )}
-                            </td>
-                            <td>
-                              <div className="li-row-actions">
-                                {armed === contact.id ? (
-                                  <span className="li-hint">Confirm above</span>
+                  <div className="li-table-scroll">
+                    <table className="li-table lead-contacts">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Company</th>
+                          <th>Email</th>
+                          <th>Phone</th>
+                          <th>Country</th>
+                          <th>LinkedIn</th>
+                          <th>
+                            <span className="mgr-sr">Actions</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {shown.map((contact) => {
+                          const editing = draft?.id === contact.id;
+                          return (
+                            <tr
+                              key={contact.id}
+                              className={editing ? 'lead-row-editing' : undefined}
+                            >
+                              <td>
+                                <strong>
+                                  {contact.firstName} {contact.lastName}
+                                </strong>
+                              </td>
+                              <td>{contact.company || '—'}</td>
+                              <td>{contact.email || '—'}</td>
+                              <td>{contact.phone || '—'}</td>
+                              <td>{contact.country || '—'}</td>
+                              <td>
+                                {contact.profileUrl ? (
+                                  <a
+                                    className="li-link"
+                                    href={contact.profileUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Profile
+                                  </a>
                                 ) : (
-                                  <>
-                                    <button
-                                      className="li-mini-button"
-                                      type="button"
-                                      disabled={rowBusy !== '' || editing}
-                                      onClick={() => startEdit(contact)}
-                                    >
-                                      <Pencil size={12} /> Edit
-                                    </button>
-                                    <button
-                                      className="li-mini-button li-mini-danger"
-                                      type="button"
-                                      disabled={rowBusy !== ''}
-                                      onClick={() => {
-                                        setDraft(null);
-                                        setArmed(contact.id);
-                                        // The confirmation is above the table, so it is
-                                        // brought to the operator rather than left for
-                                        // them to scroll back and find.
-                                        requestAnimationFrame(() =>
-                                          confirmRef.current?.scrollIntoView({ block: 'nearest' })
-                                        );
-                                      }}
-                                    >
-                                      <Trash2 size={12} /> Remove
-                                    </button>
-                                  </>
+                                  '—'
                                 )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                {filtered.length > shown.length && (
-                  <div className="mgr-actions">
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => setVisible(visible + PAGE)}
-                    >
-                      Show {Math.min(PAGE, filtered.length - shown.length)} more
-                    </button>
+                              </td>
+                              <td>
+                                <div className="li-row-actions">
+                                  {armed === contact.id ? (
+                                    <span className="li-hint">Confirm above</span>
+                                  ) : (
+                                    <>
+                                      <button
+                                        className="li-mini-button"
+                                        type="button"
+                                        disabled={rowBusy !== '' || editing}
+                                        onClick={() => startEdit(contact)}
+                                      >
+                                        <Pencil size={12} /> Edit
+                                      </button>
+                                      <button
+                                        className="li-mini-button li-mini-danger"
+                                        type="button"
+                                        disabled={rowBusy !== ''}
+                                        onClick={() => {
+                                          setDraft(null);
+                                          setArmed(contact.id);
+                                          // The confirmation is above the table, so it is
+                                          // brought to the operator rather than left for
+                                          // them to scroll back and find.
+                                          requestAnimationFrame(() =>
+                                            confirmRef.current?.scrollIntoView({ block: 'nearest' })
+                                          );
+                                        }}
+                                      >
+                                        <Trash2 size={12} /> Remove
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
-                )}
-                {filtered.length === 0 && (
-                  <p className="empty-copy">Nobody in this list matches “{filter.trim()}”.</p>
-                )}
-              </>
-            )}
-          </>
-        )}
-      </section>
+                  {filtered.length > shown.length && (
+                    <div className="mgr-actions">
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => setVisible(visible + PAGE)}
+                      >
+                        Show {Math.min(PAGE, filtered.length - shown.length)} more
+                      </button>
+                    </div>
+                  )}
+                  {filtered.length === 0 && (
+                    <p className="empty-copy">Nobody in this list matches “{filter.trim()}”.</p>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </section>
+      )}
     </div>
   );
 }

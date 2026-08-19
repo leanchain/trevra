@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle2, ChevronLeft, ChevronRight, Circle, Users, Workflow as WorkflowIcon } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Users, Workflow as WorkflowIcon } from 'lucide-react';
 import {
   getLinkedInManagerLeadLists,
   getLinkedInManagerSeats,
   getLinkedInManagerWorkflows
 } from './api';
-import { LinkedInManagerCampaignConfig, takeStagedCampaignPrefill } from './LinkedInManagerCampaignConfig';
+import {
+  LinkedInManagerCampaignConfig,
+  takeStagedCampaignPrefill
+} from './LinkedInManagerCampaignConfig';
 import { LinkedInManagerLeadConfig } from './LinkedInManagerLeadConfig';
 import { LinkedInManagerWorkflowConfig } from './LinkedInManagerWorkflowConfig';
 import { errorMessage } from './LinkedInSafety';
@@ -21,14 +24,24 @@ const EMPTY: Readiness = { seats: 0, lists: 0, workflows: 0 };
 /**
  * `/outreach/manager/new` — construction only.
  *
- * The operating Campaigns screen used to contain campaign cards, analytics,
- * manual tasks, account limits, CSV import, workflow editing and the campaign
- * form in one long document. That is two different jobs. This route keeps the
- * build job together and progressive: account -> lead list -> workflow ->
- * campaign. Only the first missing prerequisite is opened as work; once all
- * three exist, the campaign form becomes the primary thing on the page.
+ * This used to gate lead-list and workflow creation behind a three-step
+ * checklist, one step visible at a time -- and the moment a step was done,
+ * its editor unmounted with no way back short of finishing every other step
+ * too. "I made a list, now I can't pick a different one" was a direct,
+ * repeated report, not a hypothetical: the campaign form now handles leads
+ * and workflows itself (a card picker plus inline upload / inline starter
+ * templates), so there is nothing left to gate here except the one real,
+ * rarely-repeated prerequisite -- a LinkedIn account exists at all.
+ *
+ * Full editing (the contacts table, the step-by-step workflow builder, the
+ * ceiling detail) still exists. It's the "Manage" links below, loaded only
+ * when clicked -- not auto-mounted, and in particular never auto-opening a
+ * list's contacts the way the old checklist step did.
  */
-export function OutreachManagerBuilder({ setToast, onNavigate }: {
+export function OutreachManagerBuilder({
+  setToast,
+  onNavigate
+}: {
   setToast: (message: string) => void;
   onNavigate: (path: string) => void;
 }) {
@@ -36,6 +49,7 @@ export function OutreachManagerBuilder({ setToast, onNavigate }: {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [prefill] = useState(() => takeStagedCampaignPrefill());
+  const [manageOpen, setManageOpen] = useState<'leads' | 'workflows' | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -48,107 +62,100 @@ export function OutreachManagerBuilder({ setToast, onNavigate }: {
       setReadiness({ seats: seats.length, lists: lists.length, workflows: workflows.length });
       setError('');
     } catch (err) {
-      setError(errorMessage(err, 'Unable to read the campaign building blocks. Nothing was changed.'));
+      setError(
+        errorMessage(err, 'Unable to read the campaign building blocks. Nothing was changed.')
+      );
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
-  const steps = [
-    {
-      done: readiness.seats > 0,
-      title: 'Choose a LinkedIn account',
-      detail: 'The real account this campaign sends from, with its own hours and limits.',
-      kind: 'account' as const
-    },
-    {
-      done: readiness.lists > 0,
-      title: 'Build a lead list',
-      detail: 'The people this campaign is allowed to contact.',
-      kind: 'leads' as const
-    },
-    {
-      done: readiness.workflows > 0,
-      title: 'Build a workflow',
-      detail: 'The actions and waits each person moves through.',
-      kind: 'workflow' as const
-    }
-  ];
-  const next = steps.find((step) => !step.done) ?? null;
-  const ready = next === null;
+  const hasAccount = readiness.seats > 0;
 
-  const openEditor = (id: string) => {
-    const element = document.getElementById(id);
-    if (element instanceof HTMLDetailsElement) element.open = true;
-    requestAnimationFrame(() => element?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-  };
-
-  return <div className="page-stack">
-    <div className="builder-back">
-      <button className="ghost-button" type="button" onClick={() => onNavigate('/outreach/manager')}>
-        <ChevronLeft size={14} /> Back to campaigns
-      </button>
-    </div>
-
-    {error && <div className="error-banner">{error}</div>}
-
-    {!loading && !ready && <section className="onboarding-card mgr-first-campaign">
-      <div className="onboarding-head">
-        <div>
-          <h2>Three building blocks, in this order</h2>
-          <p>Finish the first missing one and the next opens. Saving any of these sends nothing.</p>
-        </div>
-        <span className="status-pill">{steps.filter((step) => step.done).length} of 3 ready</span>
+  return (
+    <div className="page-stack">
+      <div className="builder-back">
+        <button
+          className="ghost-button"
+          type="button"
+          onClick={() => onNavigate('/outreach/manager')}
+        >
+          <ChevronLeft size={14} /> Back to campaigns
+        </button>
       </div>
-      <ol className="onboarding-steps">
-        {steps.map((step) => {
-          const isNext = next?.kind === step.kind;
-          return <li key={step.kind} className={`${step.done ? 'is-done' : ''}${isNext ? ' is-next' : ''}`.trim()}>
-            {step.done ? <CheckCircle2 size={19} /> : <Circle size={19} />}
-            <div><strong>{step.title}</strong><small>{step.detail}</small></div>
-            {isNext && step.kind === 'account' && <button className="primary-button" type="button" onClick={() => onNavigate('/outreach')}>
-              Add account <ChevronRight size={14} />
-            </button>}
-          </li>;
-        })}
-      </ol>
-    </section>}
 
-    {loading && <section className="page-panel"><p className="empty-copy">Reading your campaign building blocks…</p></section>}
+      {error && <div className="error-banner">{error}</div>}
 
-    {!loading && next?.kind === 'leads' && <div id="builder-leads"><LinkedInManagerLeadConfig onChanged={refresh} setToast={setToast} /></div>}
-    {!loading && next?.kind === 'workflow' && <div id="builder-workflows"><LinkedInManagerWorkflowConfig onChanged={refresh} setToast={setToast} /></div>}
+      {loading && (
+        <section className="page-panel">
+          <p className="empty-copy">Reading your campaign building blocks…</p>
+        </section>
+      )}
 
-    {!loading && ready && <>
-      <LinkedInManagerCampaignConfig
-        key={`${readiness.seats}:${readiness.lists}:${readiness.workflows}`}
-        onChanged={refresh}
-        setToast={setToast}
-        onNeedLeads={() => openEditor('builder-leads-library')}
-        onNeedWorkflows={() => openEditor('builder-workflows-library')}
-        onStarted={() => onNavigate('/outreach/manager')}
-        prefill={prefill}
-      />
-
-      <section className="page-panel builder-library-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>Need to change the building blocks?</h3>
-            <p>Your saved lead lists and workflows are reusable. Edit them here without mixing those forms into the daily campaign dashboard.</p>
+      {!loading && !hasAccount && (
+        <section className="onboarding-card mgr-first-campaign">
+          <div className="onboarding-head">
+            <div>
+              <h2>Add a LinkedIn account first</h2>
+              <p>A campaign sends from a real account, with its own hours and limits.</p>
+            </div>
           </div>
-        </div>
+          <button className="primary-button" type="button" onClick={() => onNavigate('/outreach')}>
+            Add account <ChevronRight size={14} />
+          </button>
+        </section>
+      )}
 
-        <details className="builder-library" id="builder-leads-library">
-          <summary><Users size={16} /> Lead lists <span>{readiness.lists} saved</span></summary>
-          <LinkedInManagerLeadConfig onChanged={refresh} setToast={setToast} />
-        </details>
-        <details className="builder-library" id="builder-workflows-library">
-          <summary><WorkflowIcon size={16} /> Workflows <span>{readiness.workflows} saved</span></summary>
-          <LinkedInManagerWorkflowConfig onChanged={refresh} setToast={setToast} />
-        </details>
-      </section>
-    </>}
-  </div>;
+      {!loading && hasAccount && (
+        <>
+          <LinkedInManagerCampaignConfig
+            onChanged={refresh}
+            setToast={setToast}
+            onStarted={() => onNavigate('/outreach/manager')}
+            prefill={prefill}
+          />
+
+          <section className="page-panel builder-library-panel">
+            <div className="section-heading">
+              <div>
+                <h3 aria-level={2}>Need more control?</h3>
+                <p>
+                  Edit the leads or steps in an existing list or workflow, or manage everything
+                  you've saved.
+                </p>
+              </div>
+            </div>
+            <div className="mgr-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setManageOpen((current) => (current === 'leads' ? null : 'leads'))}
+              >
+                <Users size={14} /> Manage lead lists ({readiness.lists})
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() =>
+                  setManageOpen((current) => (current === 'workflows' ? null : 'workflows'))
+                }
+              >
+                <WorkflowIcon size={14} /> Manage workflows ({readiness.workflows})
+              </button>
+            </div>
+            {manageOpen === 'leads' && (
+              <LinkedInManagerLeadConfig onChanged={refresh} setToast={setToast} />
+            )}
+            {manageOpen === 'workflows' && (
+              <LinkedInManagerWorkflowConfig onChanged={refresh} setToast={setToast} />
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  );
 }
