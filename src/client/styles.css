@@ -448,7 +448,6 @@ p {
 .li-danger-button,
 .google-auth-button,
 .auth-switch,
-.agent-target-switch button,
 .li-range,
 .li-mini-button,
 .li-step-tools button,
@@ -2436,8 +2435,7 @@ button:disabled {
   color: var(--muted);
   font-size: var(--t-text-xs);
 }
-.condition-groups,
-.condition-numbers {
+.condition-groups {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 13px;
@@ -2475,48 +2473,6 @@ button:disabled {
   width: 16px;
   height: 16px;
   accent-color: var(--t-green-fill);
-}
-.condition-numbers label {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-  align-content: start;
-}
-.condition-number {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.condition-number input {
-  flex: 1;
-  min-width: 0;
-  min-height: var(--t-tap);
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-sm);
-  padding: 9px 11px;
-  background: var(--t-field);
-  color: var(--ink);
-  font-size: var(--t-text-xs);
-}
-.condition-number small {
-  color: var(--muted);
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-}
-.policy-preview {
-  max-width: var(--t-measure);
-  margin: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--green);
-  border-radius: var(--t-r-sm);
-  background: var(--panel);
-  color: var(--green);
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-  line-height: 1.45;
 }
 .workspace-policy-list {
   display: grid;
@@ -2570,8 +2526,7 @@ button:disabled {
   .policy-editor {
     grid-template-columns: 1fr 1fr;
   }
-  .condition-groups,
-  .condition-numbers {
+  .condition-groups {
     grid-template-columns: 1fr;
   }
   .workspace-policy-list article {
@@ -2647,18 +2602,6 @@ button:disabled {
 .registry-stats strong {
   color: var(--ink);
   font-size: var(--t-text-sm);
-}
-.registry-trust {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--green);
-  font-size: var(--t-text-xs);
-}
-.registry-trust span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
 }
 .registry-grid .empty-state,
 .connection-grid .empty-state,
@@ -2918,31 +2861,6 @@ button:disabled {
 .agent-panel .section-heading p {
   max-width: var(--t-measure);
 }
-.agent-target-switch {
-  display: inline-flex;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-sm);
-  background: var(--t-surface-2);
-  margin-bottom: 14px;
-}
-.agent-target-switch button {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  border-radius: var(--t-r-xs);
-  min-height: 34px;
-  padding: 0 14px;
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-  cursor: pointer;
-}
-.agent-target-switch button.is-active {
-  background: var(--panel);
-  color: var(--green);
-  box-shadow: var(--t-shadow-sm);
-}
 .agent-create {
   margin-bottom: 14px;
 }
@@ -2978,16 +2896,6 @@ button:disabled {
   line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.agent-command-note {
-  max-width: var(--t-measure);
-  margin: 0;
-  padding: 11px 13px;
-  font-size: var(--t-text-xs);
-  line-height: 1.55;
-  color: var(--muted);
-  background: var(--panel);
-  border-top: 1px solid var(--line);
 }
 
 /* Run inspector. One timeline for a job, a run by Trevra's agent, or a single
@@ -3409,46 +3317,6 @@ button:disabled {
    "weigh this", and it is the widest block on the panel. */
 .byok-panel .section-heading p {
   max-width: var(--t-measure);
-}
-.byok-warning {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 11px;
-  align-items: start;
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--amber);
-  background: var(--panel);
-  color: var(--amber);
-  border-radius: var(--t-r-md);
-  padding: 14px 15px;
-  margin-bottom: 17px;
-}
-.byok-warning strong {
-  display: block;
-  font-size: var(--t-text-xs);
-  margin-bottom: 6px;
-}
-.byok-warning p {
-  margin: 0 0 8px;
-  color: var(--t-amber-ink);
-  font-size: var(--t-text-xs);
-  line-height: 1.6;
-  max-width: var(--t-measure);
-}
-.byok-warning p:last-child {
-  margin-bottom: 0;
-}
-.byok-warning-off {
-  border-color: var(--line);
-  background: var(--t-surface-2);
-  color: var(--muted);
-  margin-bottom: 0;
-}
-.byok-warning-off strong {
-  color: var(--ink);
-}
-.byok-warning-off p {
-  color: var(--muted);
 }
 .byok-error {
   margin-bottom: 15px;
@@ -6802,8 +6670,7 @@ button:disabled {
 .li-brief-fold > summary,
 .li-manual-fields > summary,
 .li-gate-checks > summary,
-.li-inline-check,
-.agent-target-switch button {
+.li-inline-check {
   min-height: var(--t-tap);
 }
 
@@ -7574,15 +7441,13 @@ button:disabled {
   color: var(--ink);
 }
 
-/* The five setup decisions people revisit stay visible; specialist surfaces
-   share one native select instead of stretching a rarely-used eight-item strip
-   across the page. The label owns the active underline, the select keeps the
+/* The Outreach destinations people revisit stay visible; specialist surfaces
+   share one native select instead of stretching a rarely-used strip across
+   the page. The label owns the active underline, the select keeps the
    platform's keyboard/touch behavior. */
-.setup-more-select,
 .outreach-more-select {
   padding-right: 7px;
 }
-.setup-more-select select,
 .outreach-more-select select {
   min-height: 28px;
   max-width: 9rem;
@@ -7594,13 +7459,11 @@ button:disabled {
   font-weight: inherit;
   cursor: pointer;
 }
-.setup-more-select select:focus-visible,
 .outreach-more-select select:focus-visible {
   outline: 2px solid var(--t-focus);
   outline-offset: 2px;
   border-radius: var(--t-r-xs);
 }
-.setup-more-select option,
 .outreach-more-select option {
   color: var(--ink);
   background: var(--panel);
@@ -7718,9 +7581,6 @@ button:disabled {
   .setup-nav > *,
   .outreach-nav > * {
     flex: none;
-  }
-  .setup-more-select select {
-    max-width: 7.5rem;
   }
   .builder-library > .page-panel,
   .mgr-inputs-body {

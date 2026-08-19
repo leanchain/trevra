@@ -107,17 +107,23 @@ hash below kept alive only as a redirect for old bookmarks:
 | `/setup/workspace` | **Workspace**  | `ConnectionsView`, `LimitsView`, `LinkedInExclusions`, `TeamSettingsView`, and an owner-only export/erase block, collapsed, at the foot.                           |
 | `/setup/team/:id`  | — (full-width) | The accept-invitation panel. Not a tab of either screen above.                                                                                                     |
 
-| Legacy hash       | Redirects to                   |
-| ----------------- | ------------------------------ |
-| `/setup/agent`    | `/setup`                       |
-| `/setup/spend`    | `/setup`                       |
-| `/setup/data`     | `/setup/workspace#connections` |
-| `/setup/limits`   | `/setup/workspace#limits`      |
-| `/setup/team`     | `/setup/workspace#team`        |
-| `/setup/skills`   | `/setup/workspace`             |
-| `/setup/reddit`   | `/research`                    |
-| `/setup/seat`     | `/outreach`                    |
-| `/setup/research` | `/research`                    |
+The route is always the plain path below, never a `#fragment` -- the router
+contract at the top of `src/client/ui/route.ts` is explicit that a route is a
+path and a hash is never a route. `/setup/data`, `/setup/limits` and
+`/setup/team` additionally scroll to a section on the landed screen via
+`scrollToId`, not a URL hash:
+
+| Legacy hash       | Redirects to       | Then scrolls to |
+| ----------------- | ------------------ | --------------- |
+| `/setup/agent`    | `/setup`           | --              |
+| `/setup/spend`    | `/setup`           | --              |
+| `/setup/data`     | `/setup/workspace` | `connections`   |
+| `/setup/limits`   | `/setup/workspace` | `limits`        |
+| `/setup/team`     | `/setup/workspace` | `team`          |
+| `/setup/skills`   | `/setup/workspace` | --              |
+| `/setup/reddit`   | `/research`        | --              |
+| `/setup/seat`     | `/outreach`        | --              |
+| `/setup/research` | `/research`        | --              |
 
 ### Loop sub-route
 
@@ -300,8 +306,9 @@ to take it with you.
 unchanged.
 
 **What moves out.** The playbook launcher — the `.playbook-launch-grid` and
-`SchemaForm` block inside `WorkView` — goes to `/setup/skills` under "Run one by
-hand." `docs/app-spec.md` §4 already ruled on this: _"The agent starts jobs. A
+`SchemaForm` block inside `WorkView` — was cut, not moved: the shipped shape
+has no `/setup/skills` screen to hold it (see §3.8's superseded note).
+`docs/app-spec.md` §4 already ruled on this: _"The agent starts jobs. A
 human doing it by hand is the exception, not the front door."_
 
 **Deleted.** The `.work-hero` at `src/client/App.tsx:2094-2096` — _"Put a job on
@@ -448,6 +455,12 @@ Recommended: hold. See §4 Wave B2 and open question 7.
 
 ### 3.8 `/setup/skills` — modules are mostly skills
 
+**Superseded by the shipped shape.** The shipped Setup has no `/setup/skills`
+screen (see the Setup sub-routes note in "Setup sub-routes" above): the
+playbook launcher and `ModulesView` this section designs an IA for were both
+cut, not moved. Kept below for the module-catalog analysis, which is still
+accurate; the routing and screen proposal is not.
+
 **What exists.** 20 entries in `public/catalog/modules.json`, every one
 `"sourceType": "builtin"`, `"runtime": "builtin"`, publisher `trevra`. Fields:
 `sideEffect` (`none` | `network-read` | `external-write`), `requiresApproval`,
@@ -571,9 +584,10 @@ Each item is releasable on its own.
 - **A4.** `LoopView` replacing `TodayView` (`src/client/App.tsx:539`): stage bar,
   block sentence, four new tiles. Every tile reads a route that already exists.
 - **A5.** `/ledger`: lift the run list + `RunInspector` (`:1927`) out of `WorkView`
-  (`:2010`); move the launcher to `/setup/skills`; delete `.work-hero` (`:2094`).
-- **A6.** `/setup/skills`: shared group only, with Inspect (wired to the unused
-  `GET /api/skill-runs`, `src/server/app.ts:484`) and the Revoke relabel.
+  (`:2010`); delete `.work-hero` (`:2094`). Shipped: the launcher was cut, not
+  moved to `/setup/skills` — see §3.8's superseded note.
+- **A6.** `/setup/skills`: not shipped — see §3.8's superseded note. Shared
+  group, Inspect and Revoke never got a screen.
 - **A7.** Onboarding branch + the seat-less `/outreach` empty state.
 
 Recommended order: A1 → A2 → A3 → A4 → A5 → A6 → A7. A4 reads better once A2 has

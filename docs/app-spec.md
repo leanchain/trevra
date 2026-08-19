@@ -95,19 +95,19 @@ is not in this table.
 
 ### What moves, and why
 
-| Was                         | Goes to                              | Reason                                                                                                                            |
-| --------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Today                       | **Loop**                             | It is not "what am I owed"; it is where the loop is stuck. Six stages, one block sentence, four queues.                           |
-| Approvals                   | **Money**                            | It is the paid end of the loop, grouped by loop stage rather than one flat list. The heading inside it is still _What needs you_. |
-| Activity                    | **Ledger** (renamed)                 | "Complete run ledger" is what the landing page sells and the app had no screen by that name.                                      |
-| Clients                     | **Money**                            | Client state is a read about the paid end, not a workspace of its own.                                                            |
-| Work (playbook launcher)    | **Setup → Skills → Run one by hand** | The agent starts jobs. A human doing it by hand is the exception, not the front door.                                             |
-| Modules                     | **Setup → Skills**                   | Reference material, plus the two verbs that were missing: Inspect, and Revoke access.                                             |
-| Autopilot                   | **Setup → Limits**                   | Set once, edited rarely.                                                                                                          |
-| Connections                 | **Setup → Connections**              | Same.                                                                                                                             |
-| LinkedIn tab strip (7 tabs) | **`/outreach/*` and `/setup/*`**     | Five are the engine; Setup and Exclusions are configured once and moved to Setup.                                                 |
-| Two kill switches           | **One `StopBar` in the shell**       | Two stop controls in two visual languages, neither admitting the other existed.                                                   |
-| Publisher / SBOM / Ed25519  | **Out of the app**                   | Developer tooling. Belongs in the CLI and docs, not a founder's nav.                                                              |
+| Was                         | Goes to                          | Reason                                                                                                                            |
+| --------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Today                       | **Loop**                         | It is not "what am I owed"; it is where the loop is stuck. Six stages, one block sentence, four queues.                           |
+| Approvals                   | **Money**                        | It is the paid end of the loop, grouped by loop stage rather than one flat list. The heading inside it is still _What needs you_. |
+| Activity                    | **Ledger** (renamed)             | "Complete run ledger" is what the landing page sells and the app had no screen by that name.                                      |
+| Clients                     | **Money**                        | Client state is a read about the paid end, not a workspace of its own.                                                            |
+| Work (playbook launcher)    | **Out of the app**               | The agent starts jobs. A human doing it by hand is the exception, not the front door.                                             |
+| Modules                     | **Out of the app**               | Reference material for a registry Setup no longer has a Skills screen to host.                                                    |
+| Autopilot                   | **Setup → Limits**               | Set once, edited rarely.                                                                                                          |
+| Connections                 | **Setup → Connections**          | Same.                                                                                                                             |
+| LinkedIn tab strip (7 tabs) | **`/outreach/*` and `/setup/*`** | Five are the engine; Setup and Exclusions are configured once and moved to Setup.                                                 |
+| Two kill switches           | **One `StopBar` in the shell**   | Two stop controls in two visual languages, neither admitting the other existed.                                                   |
+| Publisher / SBOM / Ed25519  | **Out of the app**               | Developer tooling. Belongs in the CLI and docs, not a founder's nav.                                                              |
 
 ---
 
