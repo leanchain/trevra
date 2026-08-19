@@ -670,6 +670,41 @@ describe('claimNextDuePost', () => {
     });
   });
 
+  it("skips excluded seats, so a different seat's due post is still claimable in the same pass", async () => {
+    await createPost(
+      db,
+      {
+        id: 'lipost_seat_a',
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-a',
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T08:00:00.000Z', // earlier -- would normally claim first
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    await createPost(
+      db,
+      {
+        id: 'lipost_seat_b',
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-b',
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T09:00:00.000Z',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    const claimed = await claimNextDuePost(db, WORKSPACE_ID, NOW, ['seat-a']);
+    expect(claimed?.id).toBe('lipost_seat_b');
+    // seat-a's post is untouched -- still scheduled, ready for a future tick.
+    expect(await getPost(db, WORKSPACE_ID, 'lipost_seat_a')).toMatchObject({
+      status: 'scheduled'
+    });
+  });
+
   it('never claims a post scheduled in the future', async () => {
     await createPost(
       db,
@@ -1047,11 +1082,21 @@ export async function cancelPost(
  * replicas ticking at once can never both pick the same row -- `FOR UPDATE
  * SKIP LOCKED` inside the subquery is Postgres's standard "claim one queued
  * row, race-free, no shared lease table needed" idiom.
+ *
+ * `excludeSeatKeys` is how ONE tick keeps a broken seat from starving every
+ * OTHER seat's due posts in the same workspace. Without it, a seat whose
+ * companion session cannot open would have its due post re-claimed first on
+ * every loop iteration (it is always the earliest `scheduled_at` again the
+ * moment it is released) and nothing from a different, perfectly healthy seat
+ * in the same workspace would ever be reached. `seat_key <> ALL(?)` with an
+ * empty array is vacuously true for every row in Postgres -- "exclude
+ * nothing" -- so the common single-seat case pays zero extra cost.
  */
 export async function claimNextDuePost(
   db: Db,
   workspaceId: string,
-  now: Date
+  now: Date,
+  excludeSeatKeys: readonly string[] = []
 ): Promise<LinkedInPost | undefined> {
   return db.transaction(async (tx) => {
     const row = await tx
@@ -1062,6 +1107,7 @@ export async function claimNextDuePost(
       WHERE id = (
         SELECT id FROM linkedin_posts
         WHERE workspace_id = ? AND status = 'scheduled' AND scheduled_at <= ?
+          AND seat_key <> ALL(?)
         ORDER BY scheduled_at ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
@@ -1069,7 +1115,7 @@ export async function claimNextDuePost(
       RETURNING ${POST_COLUMNS}
     `
       )
-      .get<PostRow>(now.toISOString(), workspaceId, now.toISOString());
+      .get<PostRow>(now.toISOString(), workspaceId, now.toISOString(), [...excludeSeatKeys]);
     return row ? toPost(row) : undefined;
   });
 }
@@ -2086,6 +2132,79 @@ describe('runLinkedInPostTick', () => {
     expect(result.published).toBe(0);
     expect(await getPost(db, WORKSPACE_ID, post.id)).toMatchObject({ status: 'scheduled' });
   });
+
+  it('does not stop at the first seat whose session fails to open -- a second seat in the same workspace is still attempted', async () => {
+    // Regression test for the fix: this loop used to `break` the whole
+    // workspace-scoped tick on the first session failure, silently starving
+    // every OTHER seat's due post too. Both seats fail here (session opening
+    // is disabled globally via `{ enabled: false }`, which is the only lever
+    // the existing openLinkedInSession test seam exposes -- it cannot be made
+    // to succeed for one seat and fail for another), so this proves the LOOP
+    // no longer aborts after the first failure (both posts get attempted and
+    // released, not just one) -- not that a healthy second seat succeeds. That
+    // half is covered by claimNextDuePost's own "skips excluded seats" test
+    // (Task 2) plus this task's existing single-seat "publishes a due post"
+    // test, together proving the exclusion mechanism and the success path
+    // independently.
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Second seat', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/second/' },
+      NOW,
+      'seat-b'
+    );
+    const postA = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'From the owner seat' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+    const postB = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-b',
+        blocks: [{ runs: [{ type: 'text', text: 'From the second seat' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+
+    // A `status: 'scheduled'` check alone cannot distinguish "both seats were
+    // attempted and released" from "the loop broke after the first and never
+    // touched the second" -- an untouched post is already 'scheduled'. `log`
+    // is called once per held seat, so counting ITS calls is what actually
+    // proves the loop kept going: 1 call is the old (broken) behavior, 2 is
+    // the fixed one.
+    const held: string[] = [];
+    const result = await runLinkedInPostTick(
+      db,
+      { enabled: false } as unknown as Parameters<typeof runLinkedInPostTick>[1],
+      { workspaceId: WORKSPACE_ID, now: NOW, log: (message: string) => held.push(message) }
+    );
+
+    expect(result.published).toBe(0);
+    expect(held).toHaveLength(2);
+    expect(held.some((m) => m.includes(postA.id))).toBe(true);
+    expect(held.some((m) => m.includes(postB.id))).toBe(true);
+    expect(await getPost(db, WORKSPACE_ID, postA.id)).toMatchObject({ status: 'scheduled' });
+    expect(await getPost(db, WORKSPACE_ID, postB.id)).toMatchObject({ status: 'scheduled' });
+  });
 });
 ```
 
@@ -2125,9 +2244,17 @@ export async function runLinkedInPostTick(
   const log = options.log ?? ((message: string) => console.log(message));
   let published = 0;
   let missed = 0;
+  // A seat whose session fails must not starve every OTHER seat's due post in
+  // the same workspace-scoped tick -- see claimNextDuePost's own doc comment.
+  // `runLinkedInSideTasks` solves the identical problem by ticking per seat;
+  // this function claims across a whole workspace, so it tracks failures
+  // in-loop instead. Once a seat is in this set, its remaining due posts are
+  // left `scheduled` for the next tick rather than reclaimed and failed again
+  // this same pass.
+  const failedSeats = new Set<string>();
 
   for (let i = 0; i < POSTS_PER_WORKSPACE_TICK; i += 1) {
-    const claimed = await claimNextDuePost(db, workspaceId, now);
+    const claimed = await claimNextDuePost(db, workspaceId, now, [...failedSeats]);
     if (!claimed) break;
 
     const scheduledAt = claimed.scheduledAt ? new Date(claimed.scheduledAt) : now;
@@ -2149,7 +2276,8 @@ export async function runLinkedInPostTick(
       log(
         `LinkedIn post ${claimed.id} held for ${workspaceId}/${claimed.seatKey}: ${session.blocked}`
       );
-      break; // nothing else will open a session for this workspace this tick either
+      failedSeats.add(claimed.seatKey);
+      continue; // a DIFFERENT seat in this workspace may still have a healthy session
     }
 
     const wrongAccount = options.accountConfirmed
@@ -2158,7 +2286,8 @@ export async function runLinkedInPostTick(
     if (wrongAccount) {
       await releasePostToScheduled(db, claimed.id, now);
       log(`LinkedIn post ${claimed.id} held: ${wrongAccount}`);
-      break;
+      failedSeats.add(claimed.seatKey);
+      continue;
     }
 
     const body = renderPostBody(claimed.blocks);
