@@ -21,19 +21,22 @@ skills as one repertoire: Source, Enrich, Score, Audit, Draft, Send, Reply,
 Ladder, Guard, Position, Publish, Measure, Close, Collect. Six stages a founder
 reads, mapped to that list and to the screen that owns each today.
 
-| # | Stage | The skills under it | Screen that owns it today |
-|---|---|---|---|
-| 1 | **Find** — who is worth talking to | Source, Enrich, Score | Partial. Paste box + `POST /api/linkedin/targets/import` (`src/server/app.ts:1855`), driven from `LinkedInCampaignsScreen` (`src/client/LinkedInCampaigns.tsx:260`). Real lead sourcing exists server-side (`src/server/linkedin/leads.ts:326` `listLeads`, `migrations/030_linkedin_lead_sources.sql`) with **no HTTP route and no screen**. |
-| 2 | **Reach** — what goes out, at what pace | Draft, Send, Guard | `LinkedInScreen` (`src/client/LinkedInScreen.tsx:110`), tabs `setup`/`safety`/`campaigns`/`plan`/`queue` (`:74`). The best-designed area in the codebase. |
-| 3 | **Answer** — who wrote back | Reply | **none.** `migrations/031_linkedin_inbox.sql` creates `linkedin_threads`; `src/server/linkedin/inbox.ts` and `driver-inbox.ts` exist. No route in `src/server/app.ts`, no function in `src/client/api.ts`. The migration header states the stake: *"a reply is the only outcome in the whole funnel a human has to respond to… Reply detection is what turns the ledger from a send log into a funnel."* |
-| 4 | **Deliver** — what was agreed and done | Ladder, Close | `ClientsView` (`src/client/App.tsx:2219`) and the Scope Ledger importer inside `IntegrationsView` (`src/client/App.tsx:2235`). |
-| 5 | **Bill** — delivered, not yet invoiced | Collect | `unbilled_milestone` → `'Ready to invoice'` (`src/client/App.tsx:148`); the tile at `src/client/App.tsx:588`. |
-| 6 | **Get paid** — and what didn't, and why | Collect | `overdue_invoice` → `'Payment collection'`, `stale_proposal` → `'Proposal follow-up'`, `scope_creep` → `'Scope protection'` (`src/client/App.tsx:146-149`); `revenueAtRisk` / `revenueCollected` (`src/shared/types.ts:54,56`). |
+| #   | Stage                                   | The skills under it   | Screen that owns it today                                                                                                                                                                                                                                                                                                                                                                                |
+| --- | --------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Find** — who is worth talking to      | Source, Enrich, Score | Partial. Paste box + `POST /api/linkedin/targets/import` (`src/server/app.ts:1855`), driven from `LinkedInCampaignsScreen` (`src/client/LinkedInCampaigns.tsx:260`). Real lead sourcing exists server-side (`src/server/linkedin/leads.ts:326` `listLeads`, `migrations/030_linkedin_lead_sources.sql`) with **no HTTP route and no screen**.                                                            |
+| 2   | **Reach** — what goes out, at what pace | Draft, Send, Guard    | `LinkedInScreen` (`src/client/LinkedInScreen.tsx:110`), tabs `setup`/`safety`/`campaigns`/`plan`/`queue` (`:74`). The best-designed area in the codebase.                                                                                                                                                                                                                                                |
+| 3   | **Answer** — who wrote back             | Reply                 | **none.** `migrations/031_linkedin_inbox.sql` creates `linkedin_threads`; `src/server/linkedin/inbox.ts` and `driver-inbox.ts` exist. No route in `src/server/app.ts`, no function in `src/client/api.ts`. The migration header states the stake: _"a reply is the only outcome in the whole funnel a human has to respond to… Reply detection is what turns the ledger from a send log into a funnel."_ |
+| 4   | **Deliver** — what was agreed and done  | Ladder, Close         | `ClientsView` (`src/client/App.tsx:2219`) and the Scope Ledger importer inside `IntegrationsView` (`src/client/App.tsx:2235`).                                                                                                                                                                                                                                                                           |
+| 5   | **Bill** — delivered, not yet invoiced  | Collect               | `unbilled_milestone` → `'Ready to invoice'` (`src/client/App.tsx:148`); the tile at `src/client/App.tsx:588`.                                                                                                                                                                                                                                                                                            |
+| 6   | **Get paid** — and what didn't, and why | Collect               | `overdue_invoice` → `'Payment collection'`, `stale_proposal` → `'Proposal follow-up'`, `scope_creep` → `'Scope protection'` (`src/client/App.tsx:146-149`); `revenueAtRisk` / `revenueCollected` (`src/shared/types.ts:54,56`).                                                                                                                                                                          |
 
 Cross-cutting, and each already half-built:
 
 - **Evidence** — the run ledger. `agent_runs` + `agent_run_steps` (`migrations/017_agent_runs.sql:26,52`), `playbook_runs`, `skill_runs`. Rendered only by `RunInspector` (`src/client/App.tsx:1927`), reachable only from inside Activity. The landing page sells it as a headline (`src/client/MarketingScreen.tsx:291` "Complete run ledger") and the app never names it.
-- **Guard** — the limits. `AutopilotView` (`src/client/App.tsx:2478`) for policy; `LinkedInSafetyScreen` (`src/client/LinkedInSafety.tsx:32`) for pacing. Two languages for one idea.
+- **Guard** — the limits. `AutopilotView` (`src/client/App.tsx:2478`) for policy,
+  now `LimitsView` at `/setup/workspace#limits`; Outreach → Settings
+  (`src/client/LinkedInAccounts.tsx`, née `LinkedInSafetyScreen`) for pacing.
+  Two languages for one idea.
 - **Cost** — `workspace_agent_budget` and `agent_model_calls` (`migrations/016_agent_budget.sql:10,28`), `usage_reported` (`migrations/020_agent_usage_reported.sql`). Surfaced only as a bar inside Setup (`src/client/App.tsx:1326-1329`).
 
 **The design failure to fix is not that stage 6 exists. It is that nothing on
@@ -52,13 +55,13 @@ are the routes that work implies.
 `src/client/App.tsx:278-281` renders four `NavButton`s: Approvals, Activity,
 LinkedIn, Setup. Replace with:
 
-| Label | Hash | The one question it answers |
-|---|---|---|
-| **Loop** | `/loop` | What is the loop doing, and where is it stuck? |
-| **Outreach** | `/outreach` | What goes out, at what pace, and is the seat safe? |
-| **Money** | `/money` | What was agreed, delivered, billed and paid — and what wasn't, and why? |
-| **Ledger** | `/ledger` | What did the agent actually do, with the evidence — and can I take it with me? |
-| **Setup** | `/setup` | What can reach my workspace, what may it spend, what may it do? |
+| Label        | Hash        | The one question it answers                                                    |
+| ------------ | ----------- | ------------------------------------------------------------------------------ |
+| **Loop**     | `/loop`     | What is the loop doing, and where is it stuck?                                 |
+| **Outreach** | `/outreach` | What goes out, at what pace, and is the seat safe?                             |
+| **Money**    | `/money`    | What was agreed, delivered, billed and paid — and what wasn't, and why?        |
+| **Ledger**   | `/ledger`   | What did the agent actually do, with the evidence — and can I take it with me? |
+| **Setup**    | `/setup`    | What can reach my workspace, what may it spend, what may it do?                |
 
 `Loop` is the default (`useState<View>('approvals')` at `src/client/App.tsx:166`
 becomes the `/loop` route). The `StopBar` (§3.6) is shell chrome on every route
@@ -74,38 +77,38 @@ table predates the LinkedIn engine and already lost the argument at
 'campaigns' | 'plan' | 'queue' | 'analytics' | 'exclusions'`. Seven becomes five,
 two move out.
 
-| Today's tab | Becomes | Why |
-|---|---|---|
-| `safety` (default, `:118`) | `/outreach` — renamed **Seat** | It is the operating dashboard, not a settings page. It is already the first thing an operator sees and should keep that position. |
-| `campaigns` | `/outreach/campaigns` | Unchanged. |
-| `plan` | `/outreach/plan` | Unchanged. Keeps its dry-run banner (`src/client/LinkedInCampaigns.tsx:1035`). |
-| `queue` | `/outreach/queue` | Unchanged. |
-| — | `/outreach/replies` | **New.** Blocked on backend — see §4, Wave C1. Do not ship as an empty tab. |
-| `analytics` | **deleted as a tab** | Absorbed three ways: the funnel (`FunnelBars`, `src/client/LinkedInAnalyticsScreen.tsx`) moves to `/loop`; the per-campaign table moves under `/outreach/campaigns`; the daily volume chart is already drawn on Seat (`src/client/LinkedInSafety.tsx`, "Volume and its variance"). |
-| `setup` | `/setup/seat` | Seat identity, credentials, worker status. Configured once. Its kill switch does **not** go with it — it goes to the shell (§3.6). |
-| `exclusions` | `/setup/limits` | A set-once list. Its own copy admits it: *"There is no removal button: removing an entry is a database operation"* (`src/client/LinkedInScreen.tsx:914`). That is not a screen an operator returns to. |
+| Today's tab                | Becomes                        | Why                                                                                                                                                                                                                                                                                |
+| -------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `safety` (default, `:118`) | `/outreach` — renamed **Seat** | It is the operating dashboard, not a settings page. It is already the first thing an operator sees and should keep that position.                                                                                                                                                  |
+| `campaigns`                | `/outreach/campaigns`          | Unchanged.                                                                                                                                                                                                                                                                         |
+| `plan`                     | `/outreach/plan`               | Unchanged. Keeps its dry-run banner (`src/client/LinkedInCampaigns.tsx:1035`).                                                                                                                                                                                                     |
+| `queue`                    | `/outreach/queue`              | Unchanged.                                                                                                                                                                                                                                                                         |
+| —                          | `/outreach/replies`            | **New.** Blocked on backend — see §4, Wave C1. Do not ship as an empty tab.                                                                                                                                                                                                        |
+| `analytics`                | **deleted as a tab**           | Absorbed three ways: the funnel (`FunnelBars`, `src/client/LinkedInAnalyticsScreen.tsx`) moves to `/loop`; the per-campaign table moves under `/outreach/campaigns`; the daily volume chart is already drawn on Seat (`src/client/LinkedInSafety.tsx`, "Volume and its variance"). |
+| `setup`                    | `/setup/seat`                  | Seat identity, credentials, worker status. Configured once. Its kill switch does **not** go with it — it goes to the shell (§3.6).                                                                                                                                                 |
+| `exclusions`               | `/setup/limits`                | A set-once list. Its own copy admits it: _"There is no removal button: removing an entry is a database operation"_ (`src/client/LinkedInScreen.tsx:914`). That is not a screen an operator returns to.                                                                             |
 
 Moving `setup` out of `LinkedInScreen` removes the reason its kill switch lived in
-the tab shell. The rationale at `src/client/LinkedInScreen.tsx:60-72` — *"THE KILL
+the tab shell. The rationale at `src/client/LinkedInScreen.tsx:60-72` — _"THE KILL
 SWITCH IS ALWAYS REACHABLE. It sits in the shell, above the tab strip, not inside
-Setup"* — is not abandoned. It is **promoted one level**, from the LinkedIn shell
+Setup"_ — is not abandoned. It is **promoted one level**, from the LinkedIn shell
 to the app shell, which is what it was always arguing for.
 
 ### Setup sub-routes
 
-| Hash | Contents | Moved from |
-|---|---|---|
-| `/setup/agent` | `AgentAccessPanel` + `HostedAgentPanel` | `src/client/App.tsx:1012` and inside `IntegrationsView` (`:2235`) |
-| `/setup/data` | Connections, Nango connect, Scope Ledger import, CSV import | rest of `IntegrationsView` (`src/client/App.tsx:2235`) |
-| `/setup/seat` | LinkedIn seat, credentials, local worker | `SetupTab` (`src/client/LinkedInScreen.tsx:285`) |
-| `/setup/skills` | Shared skills, private skills, run-one-by-hand | `ModulesView` (`src/client/App.tsx:2164`) + the playbook launcher lifted out of `WorkView` |
-| `/setup/limits` | Automation rules, hard limits, never-contact list | `AutopilotView` (`src/client/App.tsx:2478`) + `ExclusionsTab` (`src/client/LinkedInScreen.tsx:874`) |
-| `/setup/spend` | Monthly cap editor and the spending switch | the `byok-block` at `src/client/App.tsx:1310-1340` |
+| Hash            | Contents                                                    | Moved from                                                                                          |
+| --------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `/setup/agent`  | `AgentAccessPanel` + `HostedAgentPanel`                     | `src/client/App.tsx:1012` and inside `IntegrationsView` (`:2235`)                                   |
+| `/setup/data`   | Connections, Nango connect, Scope Ledger import, CSV import | rest of `IntegrationsView` (`src/client/App.tsx:2235`)                                              |
+| `/setup/seat`   | LinkedIn seat, credentials, local worker                    | `SetupTab` (`src/client/LinkedInScreen.tsx:285`)                                                    |
+| `/setup/skills` | Shared skills, private skills, run-one-by-hand              | `ModulesView` (`src/client/App.tsx:2164`) + the playbook launcher lifted out of `WorkView`          |
+| `/setup/limits` | Automation rules, hard limits, never-contact list           | `AutopilotView` (`src/client/App.tsx:2478`) + `ExclusionsTab` (`src/client/LinkedInScreen.tsx:874`) |
+| `/setup/spend`  | Monthly cap editor and the spending switch                  | the `byok-block` at `src/client/App.tsx:1310-1340`                                                  |
 
 ### Loop sub-route
 
-| Hash | Contents |
-|---|---|
+| Hash         | Contents                                        |
+| ------------ | ----------------------------------------------- |
 | `/loop/cost` | **What this cost, and what it produced.** §3.5. |
 
 ### Deep links to preserve
@@ -143,7 +146,7 @@ stage that is stuck. One primary per screen (`docs/app-spec.md` §7 rule 3).
 2. **The block sentence.** One line naming the stuck stage and the one action that
    clears it. "42 invites are planned and the seat is paused — resume it, or lower
    the ceiling." Falls back to the existing all-clear copy when nothing is stuck:
-   *"Nothing needs you right now."* (`src/client/App.tsx:568`), which is already
+   _"Nothing needs you right now."_ (`src/client/App.tsx:568`), which is already
    correct and stays word for word.
 3. **Four tiles** (below).
 4. **What needs you** — the existing `.recommendations-panel` and
@@ -159,12 +162,12 @@ queue with an owner. Replace, keeping the `Metric` component
 (`src/client/App.tsx:2617`) and `.metrics-grid-four` (`src/client/styles.css:68`)
 exactly as they are:
 
-| Tile | Value | Detail line | Source, all of which exist |
-|---|---|---|---|
-| **Going out this week** | planned + exported actions, next 7 days | "of *N* the seat may send" | `GET /api/linkedin/actions` (`src/server/app.ts:1424`) + `GET /api/linkedin/limits` (`:1399`) |
-| **Waiting on a reply** | sent, not yet answered | "*N* answered · *X*%" | `GET /api/linkedin/analytics` (`src/server/app.ts:1897`), `total.sent/accepted/replied` |
-| **Waiting on you** | `openRecommendations` + waiting approvals | `money(revenueAtRisk)` "is waiting on your decision" | `src/shared/types.ts:58`, `GET /api/playbook-runs` |
-| **Waiting to be paid** | `readyToInvoice + revenueAtRisk` | "*€X* billed and unpaid, *€Y* delivered and unbilled" | `src/shared/types.ts:54,57` |
+| Tile                    | Value                                     | Detail line                                           | Source, all of which exist                                                                    |
+| ----------------------- | ----------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **Going out this week** | planned + exported actions, next 7 days   | "of _N_ the seat may send"                            | `GET /api/linkedin/actions` (`src/server/app.ts:1424`) + `GET /api/linkedin/limits` (`:1399`) |
+| **Waiting on a reply**  | sent, not yet answered                    | "_N_ answered · _X_%"                                 | `GET /api/linkedin/analytics` (`src/server/app.ts:1897`), `total.sent/accepted/replied`       |
+| **Waiting on you**      | `openRecommendations` + waiting approvals | `money(revenueAtRisk)` "is waiting on your decision"  | `src/shared/types.ts:58`, `GET /api/playbook-runs`                                            |
+| **Waiting to be paid**  | `readyToInvoice + revenueAtRisk`          | "_€X_ billed and unpaid, _€Y_ delivered and unbilled" | `src/shared/types.ts:54,57`                                                                   |
 
 Every tile is a queue someone owns. `revenueCollected` (`src/shared/types.ts:56`)
 demotes to `/money` — it is a trophy, not a bottleneck. `connectedSources`
@@ -188,11 +191,12 @@ variance is.
 **Primary action.** None on the Seat screen — it is a read, like Activity
 (`docs/app-spec.md` §5). The primary action lives on `/outreach/campaigns`.
 
-**Above the fold.** Unchanged from `LinkedInSafetyScreen`
-(`src/client/LinkedInSafety.tsx:32`), which is already right:
+**Above the fold.** Unchanged from `LinkedInSafetyScreen`, which is already
+right — this content now lives on Outreach → Settings
+(`src/client/LinkedInAccounts.tsx`):
 
-1. The honesty panel — *"Exactly N number on this screen is a HARD FACT. Every
-   other one is REPORTED."* (`src/client/LinkedInSafety.tsx`, `.li-honesty`).
+1. The honesty panel — _"Exactly N number on this screen is a HARD FACT. Every
+   other one is REPORTED."_ (`src/client/LinkedInSafety.tsx`, `.li-honesty`).
 2. Where this seat stands, with `PostureBadge` (`src/client/LinkedInSafety.tsx:PostureBadge`).
 3. The four `LiStat`s: invites left, warm-up week, acceptance rate, day-over-day clamp.
 4. Volume and its variance — `VolumeChart` with the band.
@@ -209,7 +213,7 @@ next to the existing Search and Notifications (`src/client/App.tsx:291-293`).
 `inviteDay` is `undefined` and the screen renders four `—` tiles plus a warm-up
 ramp for `seat.warmupWeek` of a seat that does not exist. Replace: when
 `limits.seat.configured === false`, render one panel — the heading, the sentence
-already written for it (*"No seat is configured, so nothing can be paced."*), and
+already written for it (_"No seat is configured, so nothing can be paced."_), and
 a button to `/setup/seat`. Render nothing else. Delete the `—` fallbacks for that
 case.
 
@@ -229,7 +233,7 @@ exactly as written.
    **Delivered, not billed** (`unbilled_milestone`), **Billed, not paid**
    (`overdue_invoice`), **Not agreed** (`scope_creep`, `stale_proposal`).
 2. **Collected** — `money(revenueCollected)`, the one trophy number, with the copy
-   it already has: *"Paid after Trevra chased it"* (`src/client/App.tsx:590`).
+   it already has: _"Paid after Trevra chased it"_ (`src/client/App.tsx:590`).
 3. `ClientsView` (`src/client/App.tsx:2219`), moved here from Activity.
 
 **What moves in.** `ClientsView` from Activity (`src/client/App.tsx:2219`); the
@@ -258,9 +262,9 @@ to take it with you.
 2. **Take your ledger with you** — the export panel. §3.7 below.
 3. **One list, newest first** — the existing merged `ActivityRow` computation
    (`src/client/App.tsx`, inside `WorkView` at `:2010`), which already unifies
-   playbook runs and agent runs on the correct principle: *"A job Trevra ran and a
+   playbook runs and agent runs on the correct principle: _"A job Trevra ran and a
    run by Trevra's own agent are the same thing to the person reading it: work
-   that happened."* Keep that comment and that `useMemo`.
+   that happened."_ Keep that comment and that `useMemo`.
 4. **Filters** — status, actor, date. Reuse `.li-filter-row`
    (`src/client/LinkedInScreen.tsx:790`), the pattern the LinkedIn area already
    uses, rather than inventing a second filter language.
@@ -272,19 +276,19 @@ unchanged.
 
 **What moves out.** The playbook launcher — the `.playbook-launch-grid` and
 `SchemaForm` block inside `WorkView` — goes to `/setup/skills` under "Run one by
-hand." `docs/app-spec.md` §4 already ruled on this: *"The agent starts jobs. A
-human doing it by hand is the exception, not the front door."*
+hand." `docs/app-spec.md` §4 already ruled on this: _"The agent starts jobs. A
+human doing it by hand is the exception, not the front door."_
 
-**Deleted.** The `.work-hero` at `src/client/App.tsx:2094-2096` — *"Put a job on
-autopilot — and keep the final say"* is a marketing sentence on an internal
+**Deleted.** The `.work-hero` at `src/client/App.tsx:2094-2096` — _"Put a job on
+autopilot — and keep the final say"_ is a marketing sentence on an internal
 screen, and its `work-hero-count` duplicates the "Waiting on you" tile.
 
 ---
 
 ### 3.5 `/loop/cost` — the one combined spend surface
 
-The founder's only real question — *what did this cost me and what did it
-produce* — currently has no screen. Two half-surfaces exist:
+The founder's only real question — _what did this cost me and what did it
+produce_ — currently has no screen. Two half-surfaces exist:
 
 - **Agent spend:** `.byok-meter` at `src/client/App.tsx:1326-1329`, inside
   `HostedAgentPanel` (`:1012`), inside Setup. Data: `workspace_agent_budget`
@@ -302,15 +306,15 @@ Nothing joins them.
 / 90 days), reusing the `.li-range` selector at
 `src/client/LinkedInAnalyticsScreen.tsx` rather than a new control.
 
-| Row | Contents | Provenance treatment |
-|---|---|---|
-| **Spent** | `usd(spentCents)` of `usd(monthlyCapCents)` using the existing `usd()` helper (`src/client/App.tsx:141`) and the existing `.byok-meter` bar; broken out by model from `agent_model_calls` | **Each line carries a `ConfidenceTag`** (`src/client/LinkedInViz.tsx:ConfidenceTag`): `usage_reported = true` → `HARD FACT` (the provider measured it); `false` or `NULL` → `REPORTED` (Trevra estimated it). This is the single highest-value extension of the LinkedIn epistemics into the rest of the shell, and it costs one column that already exists. |
-| **Sent** | actions by kind from `analytics.total`; agent runs from `GET /api/agent-runs` (`src/server/app.ts:790`) | plain counts |
-| **Produced** | accepted, replied; then `readyToInvoice` and `revenueCollected` (`src/shared/types.ts:56-57`) | **Labelled not-attributed, in words on screen.** No join exists from a model call or a LinkedIn action to an invoice. Saying "this outreach produced this revenue" would be the exact class of unearned number `src/client/LinkedInSafety.tsx`'s honesty panel exists to forbid. Write: "These are the same period, not the same causal chain. Trevra does not claim one produced the other." |
+| Row          | Contents                                                                                                                                                                                  | Provenance treatment                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Spent**    | `usd(spentCents)` of `usd(monthlyCapCents)` using the existing `usd()` helper (`src/client/App.tsx:141`) and the existing `.byok-meter` bar; broken out by model from `agent_model_calls` | **Each line carries a `ConfidenceTag`** (`src/client/LinkedInViz.tsx:ConfidenceTag`): `usage_reported = true` → `HARD FACT` (the provider measured it); `false` or `NULL` → `REPORTED` (Trevra estimated it). This is the single highest-value extension of the LinkedIn epistemics into the rest of the shell, and it costs one column that already exists.                                  |
+| **Sent**     | actions by kind from `analytics.total`; agent runs from `GET /api/agent-runs` (`src/server/app.ts:790`)                                                                                   | plain counts                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Produced** | accepted, replied; then `readyToInvoice` and `revenueCollected` (`src/shared/types.ts:56-57`)                                                                                             | **Labelled not-attributed, in words on screen.** No join exists from a model call or a LinkedIn action to an invoice. Saying "this outreach produced this revenue" would be the exact class of unearned number `src/client/LinkedInSafety.tsx`'s honesty panel exists to forbid. Write: "These are the same period, not the same causal chain. Trevra does not claim one produced the other." |
 
 **Controls stay in Setup.** `/loop/cost` is a read plus one switch: the spending
-toggle, because `src/client/App.tsx:1113-1116` already argues that *"an off switch
-that needs a second click to take effect is not an off switch."* The cap editor and
+toggle, because `src/client/App.tsx:1113-1116` already argues that _"an off switch
+that needs a second click to take effect is not an off switch."_ The cap editor and
 the Save button stay at `/setup/spend`.
 
 **Blocked on backend.** Needs `GET /api/loop/cost?window=30` returning the three
@@ -323,27 +327,27 @@ already exists, and `linkedin_actions` already carries `campaign_id`. See Wave B
 
 **What exists today.**
 
-| | `AgentStopControl` | `KillSwitch` |
-|---|---|---|
-| Defined | `src/client/App.tsx:1892` | `src/client/LinkedInScreen.tsx:225` |
-| Rendered | inside `RunInspector` (`:1927`) and on each running agent card in the run list | once, in the LinkedIn shell above the tab strip (`src/client/LinkedInScreen.tsx:154`) |
-| Route | `POST /api/agent-runs/stop` (`src/server/app.ts:855`) | `POST /api/linkedin/seat/pause` (`:1173`), `/resume` (`:1180`) |
-| Semantics | **cooperative** — *"the run ends when it reaches the end of the step it is already in the middle of"* (`src/client/App.tsx:1892` doc) | **immediate** — *"Ceilings drop to zero, the worker halts within one tick"* (`src/client/LinkedInScreen.tsx:262`) |
-| Colour | amber, deliberately: *"nothing has gone wrong here, and a run still doing what it was asked to do must not be dressed as a failure"* (`src/client/styles.css:490-505`) | `.li-killswitch` / `.is-paused` (`src/client/styles.css:561-562`), red |
-| Reason | **none** | **mandatory** — *"Say why. This is the note you will read three weeks from now."* (`src/client/LinkedInScreen.tsx:238`) |
-| Mentions the other | no | no |
+|                    | `AgentStopControl`                                                                                                                                                     | `KillSwitch`                                                                                                            |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Defined            | `src/client/App.tsx:1892`                                                                                                                                              | `src/client/LinkedInScreen.tsx:225`                                                                                     |
+| Rendered           | inside `RunInspector` (`:1927`) and on each running agent card in the run list                                                                                         | once, in the LinkedIn shell above the tab strip (`src/client/LinkedInScreen.tsx:154`)                                   |
+| Route              | `POST /api/agent-runs/stop` (`src/server/app.ts:855`)                                                                                                                  | `POST /api/linkedin/seat/pause` (`:1173`), `/resume` (`:1180`)                                                          |
+| Semantics          | **cooperative** — _"the run ends when it reaches the end of the step it is already in the middle of"_ (`src/client/App.tsx:1892` doc)                                  | **immediate** — _"Ceilings drop to zero, the worker halts within one tick"_ (`src/client/LinkedInScreen.tsx:262`)       |
+| Colour             | amber, deliberately: _"nothing has gone wrong here, and a run still doing what it was asked to do must not be dressed as a failure"_ (`src/client/styles.css:490-505`) | `.li-killswitch` / `.is-paused` (`src/client/styles.css:561-562`), red                                                  |
+| Reason             | **none**                                                                                                                                                               | **mandatory** — _"Say why. This is the note you will read three weeks from now."_ (`src/client/LinkedInScreen.tsx:238`) |
+| Mentions the other | no                                                                                                                                                                     | no                                                                                                                      |
 
 **The replacement.** One `StopBar`, in the app shell, rendered between
 `<header className="topbar">` (`src/client/App.tsx:288`) and the view outlet, on
 every route. Three states:
 
 - **Idle** — one muted line in the topbar row: "Nothing is running." No button, no
-  colour. This also retires the current dead-end copy *"No seat is configured yet,
-  so there is nothing to pause."* (`src/client/LinkedInScreen.tsx:263`).
+  colour. This also retires the current dead-end copy _"No seat is configured yet,
+  so there is nothing to pause."_ (`src/client/LinkedInScreen.tsx:263`).
 - **Live** — names each live actor with its own control:
   `Outreach seat · sending` → **Pause everything** (`li-danger-button`, red,
   reason required) · `Agent · step 4 of 12` → **Ask it to stop** (`ghost-button
-  danger` on amber, reason required as of this change) · and one **Stop
+danger` on amber, reason required as of this change) · and one **Stop
   everything** that fires both.
 - **Stopped** — which actor is stopped, when, and the reason string, with a
   per-actor resume. `PostureBadge` (`src/client/LinkedInSafety.tsx`) renders the
@@ -408,7 +412,7 @@ end:
 
 **Do not ship a disabled button.** Until the routes land, either hold the panel
 entirely, or ship the honest subset — a client-side download of the runs currently
-loaded on screen, labelled "the *N* runs on this screen", never "your ledger."
+loaded on screen, labelled "the _N_ runs on this screen", never "your ledger."
 Recommended: hold. See §4 Wave B2 and open question 7.
 
 ---
@@ -441,8 +445,8 @@ does not exist. See Wave C2. Until it does, ship group 1 alone under one heading
 do not render an empty private group.
 
 Publishing stays out of the app — signing key, signed manifest, a build. The
-existing note is correct and stays: *"Publishing needs a signing key on your
-machine, so it lives in the terminal: `npm run module -- help`"*
+existing note is correct and stays: _"Publishing needs a signing key on your
+machine, so it lives in the terminal: `npm run module -- help`"_
 (`src/client/App.tsx:2215`), consistent with `docs/app-spec.md` §4 ("Publisher /
 SBOM / Ed25519 → Out of the app").
 
@@ -452,15 +456,16 @@ Unchanged.
 **Inspect** — new drawer, reusing the `RunInspector` section vocabulary
 (`RunSection` `src/client/App.tsx:1815`, `FactGrid` `:1819`) so the shell has one
 way of showing a contract:
+
 - what it takes in / gives back, from the published schemas, rendered by the
   existing `SchemaForm` renderer in read-only mode (`src/client/App.tsx:SchemaForm`)
   — no raw JSON, per `docs/app-spec.md` §7 rule 1;
 - what it can do, in the plain words the codebase already wrote for exactly these
-  three values at `src/client/App.tsx:2377-2381`: *"Sends or changes something
-  outside your business"* / *"Reads something from outside"* / *"Thinks only,
-  nothing leaves Trevra"*;
-- whether it needs approval — the existing string *"Needs your approval"* /
-  *"Runs on its own"* (`src/client/App.tsx:2208`);
+  three values at `src/client/App.tsx:2377-2381`: _"Sends or changes something
+  outside your business"_ / _"Reads something from outside"_ / _"Thinks only,
+  nothing leaves Trevra"_;
+- whether it needs approval — the existing string _"Needs your approval"_ /
+  _"Runs on its own"_ (`src/client/App.tsx:2208`);
 - its last 10 runs, from `GET /api/skill-runs?skillId=` (`src/server/app.ts:484`)
   — **this route exists and the client has never called it.**
 
@@ -481,30 +486,30 @@ and should not read the same.
 lands on the approvals screen; `useState<Tab>('safety')`
 (`src/client/LinkedInScreen.tsx:118`) lands the LinkedIn click on the Safety tab.
 Someone who signed up to send LinkedIn outreach therefore sees, in order: a hero
-saying *"Let's find the money you're owed"* (`src/client/App.tsx:557`), a checklist
+saying _"Let's find the money you're owed"_ (`src/client/App.tsx:557`), a checklist
 whose four steps are about email and accounting (`src/client/App.tsx:466-497`),
 and — one click later — four `—` tiles and a warm-up ramp for a seat that does not
 exist.
 
 **The mechanism to keep.** `OnboardingChecklist` (`src/client/App.tsx:457`) derives
-every step from real data, and the comment at `:449-455` explains why: *"There is
-no `onboarding_completed` flag to get out of sync with reality."* That rule
+every step from real data, and the comment at `:449-455` explains why: _"There is
+no `onboarding_completed` flag to get out of sync with reality."_ That rule
 survives intact.
 
 **The outreach path, in order.**
 
-| # | Step | Done when | Lands on |
-|---|---|---|---|
-| 1 | **Name your seat** | `GET /api/linkedin/seat` returns a non-null `seat` | `/setup/seat` |
-| 2 | **Connect the seat** | `auth.hasCredentials`, or worker `loggedIn` | `/setup/seat` — `POST /api/linkedin/seat/login` (`src/server/app.ts:1274`) |
-| 3 | **Read what you are betting** | acknowledged once | `/outreach` — the honesty panel (`src/client/LinkedInSafety.tsx`, `.li-honesty`) is the one thing an operator must read before risking their account, and today nothing puts it in front of them |
-| 4 | **Build one campaign** | `GET /api/linkedin/campaigns` non-empty | `/outreach/campaigns` |
-| 5 | **Preview the plan** | a `POST /api/linkedin/plan` has returned slots | `/outreach/plan` — writes nothing (`src/client/LinkedInCampaigns.tsx:1035`) |
-| 6 | **Approve and send** | first `linkedin_actions` row leaves `planned` | `/outreach/queue` |
+| #   | Step                          | Done when                                          | Lands on                                                                                                                                                                                         |
+| --- | ----------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | **Name your seat**            | `GET /api/linkedin/seat` returns a non-null `seat` | `/setup/seat`                                                                                                                                                                                    |
+| 2   | **Connect the seat**          | `auth.hasCredentials`, or worker `loggedIn`        | `/setup/seat` — `POST /api/linkedin/seat/login` (`src/server/app.ts:1274`)                                                                                                                       |
+| 3   | **Read what you are betting** | acknowledged once                                  | `/outreach` — the honesty panel (`src/client/LinkedInSafety.tsx`, `.li-honesty`) is the one thing an operator must read before risking their account, and today nothing puts it in front of them |
+| 4   | **Build one campaign**        | `GET /api/linkedin/campaigns` non-empty            | `/outreach/campaigns`                                                                                                                                                                            |
+| 5   | **Preview the plan**          | a `POST /api/linkedin/plan` has returned slots     | `/outreach/plan` — writes nothing (`src/client/LinkedInCampaigns.tsx:1035`)                                                                                                                      |
+| 6   | **Approve and send**          | first `linkedin_actions` row leaves `planned`      | `/outreach/queue`                                                                                                                                                                                |
 
 **The money path** keeps today's four steps unchanged
-(`src/client/App.tsx:466-497`), including its correct ordering rationale: *"the
-agent comes first because nothing else works until one can reach the workspace"*
+(`src/client/App.tsx:466-497`), including its correct ordering rationale: _"the
+agent comes first because nothing else works until one can reach the workspace"_
 (`:463-464`).
 
 **Which path shows.** Derived, never stored, per the existing rule: a seat exists →
@@ -533,7 +538,7 @@ Each item is releasable on its own.
   delete the `analytics` tab, distributing its three panels per §2.
 - **A3.** `StopBar`. Delete `KillSwitch` (`src/client/LinkedInScreen.tsx:225-283`)
   and both `AgentStopControl` (`src/client/App.tsx:1892`) render sites.
-  *Depends on A1 for the shell slot; the reason-on-agent-stop half is B0 below.*
+  _Depends on A1 for the shell slot; the reason-on-agent-stop half is B0 below._
 - **A4.** `LoopView` replacing `TodayView` (`src/client/App.tsx:539`): stage bar,
   block sentence, four new tiles. Every tile reads a route that already exists.
 - **A5.** `/ledger`: lift the run list + `RunInspector` (`:1927`) out of `WorkView`
@@ -557,7 +562,7 @@ freed the Outreach data; A3 needs A1's shell slot.
   nothing changed.
 - **B2.** `POST /api/ledger/exports` + `GET /api/ledger/exports/:id` + the
   `/ledger` panel. All three. A disabled Export button under a landing page that
-  promises *"Exportable ledger and evidence"* (`src/client/MarketingScreen.tsx:341`)
+  promises _"Exportable ledger and evidence"_ (`src/client/MarketingScreen.tsx:341`)
   is worse than no button.
 
 ### Wave C — blocked on backend that does not exist
@@ -568,17 +573,17 @@ freed the Outreach data; A3 needs A1's shell slot.
   and `src/client/api.ts` has no matching function. Needs `GET /api/linkedin/threads`,
   `GET /api/linkedin/threads/:id`, and a reply path that files an ordinary `dm` into
   `linkedin_actions` — the migration header forbids an outbox in so many words:
-  *"an outbox is exactly the shape a 'just send this one quickly' path grows out
-  of."* Until the routes land, `/outreach/replies` must not exist. The **Answer**
+  _"an outbox is exactly the shape a 'just send this one quickly' path grows out
+  of."_ Until the routes land, `/outreach/replies` must not exist. The **Answer**
   cell on the stage bar renders as "not connected yet," never as zero.
 - **C2. Private skills.** No `sourceType: 'workspace'`; `SkillManifest`
   (`src/server/skills/types.ts`) has no scope field; `public/catalog/modules.json`
   has no visibility field. Until one exists, ship the shared group alone.
 - **C3. Lead sourcing (the Find stage).** `src/server/linkedin/leads.ts:326` and
   `migrations/030_linkedin_lead_sources.sql` exist; no route. The migration header
-  also gates it: it *"refuses to run unless `leadSourcingEnabled()` says so — a
+  also gates it: it _"refuses to run unless `leadSourcingEnabled()` says so — a
   separate opt-in from the automation switch, off by default, and unconditionally
-  off on a hosted deployment."* So **Find** has no honest UI beyond the paste box
+  off on a hosted deployment."_ So **Find** has no honest UI beyond the paste box
   and CSV import on hosted. Draw the stage; do not draw it as available on a hosted
   workspace.
 - **C4. Cost attribution.** Nothing joins a model call or a LinkedIn action to an
@@ -590,54 +595,54 @@ freed the Outreach data; A3 needs A1's shell slot.
 ## 5. Open questions, each with a default so nothing blocks
 
 1. **Five nav items contradicts `docs/app-spec.md` §4 ("Three nav items. Not six").**
-   *Default:* ship five and amend §4's table in the same PR. The spec predates the
+   _Default:_ ship five and amend §4's table in the same PR. The spec predates the
    LinkedIn engine and already lost the argument at `src/client/App.tsx:280`; the
    three-job framing described an AR product, and the founder says this is one loop
    with two ends.
 
 2. **Does the nav item say "Money" or "Approvals"?**
-   *Default:* "Money" in the nav, and keep the string `viewTitle` already returns —
-   *"What needs you"* (`src/client/App.tsx:2670`) — as the heading of the approvals
+   _Default:_ "Money" in the nav, and keep the string `viewTitle` already returns —
+   _"What needs you"_ (`src/client/App.tsx:2670`) — as the heading of the approvals
    panel inside it. Both sentences are true and neither is redundant.
 
 3. **Should `RecommendationType` be renamed to loop vocabulary?**
-   *Default:* **no.** No enum change, no string change, no migration. `stale_proposal`
+   _Default:_ **no.** No enum change, no string change, no migration. `stale_proposal`
    / `scope_creep` / `unbilled_milestone` / `overdue_invoice`
    (`src/client/App.tsx:145-150`) are the paid end of the loop. Only their grouping
    on `/money` changes.
 
 4. **One stop button or three?**
-   *Default:* three — Agent, Seat, Everything. They have different semantics and the
+   _Default:_ three — Agent, Seat, Everything. They have different semantics and the
    codebase already argues both sides at `src/client/App.tsx:1892` (cooperative) and
    `src/client/LinkedInScreen.tsx:262` (immediate). Collapsing them into one button
    would make the UI claim a stop it cannot vouch for.
 
 5. **Is a reason field justified on an urgent agent-stop control?**
-   *Default:* yes, and pre-fill nothing.
-   `src/client/LinkedInScreen.tsx:238` — *"Say why. This is the note you will read
-   three weeks from now"* — is not LinkedIn-specific reasoning. Cost: one nullable
+   _Default:_ yes, and pre-fill nothing.
+   `src/client/LinkedInScreen.tsx:238` — _"Say why. This is the note you will read
+   three weeks from now"_ — is not LinkedIn-specific reasoning. Cost: one nullable
    `stop_reason TEXT` column (B0).
 
 6. **Ledger export format.**
-   *Default:* NDJSON per table + `manifest.json` with per-file sha256, zipped. Not
+   _Default:_ NDJSON per table + `manifest.json` with per-file sha256, zipped. Not
    CSV. The ledger is nested and flattening drops the evidence, which is the thing
    the landing page is claiming.
 
 7. **Does `src/client/MarketingScreen.tsx:341` stay while Wave B2 is in flight?**
    Not this plan's call — a sibling agent owns the marketing surface.
-   *Default:* leave the copy; B2 is two routes and one panel and should land in the
+   _Default:_ leave the copy; B2 is two routes and one panel and should land in the
    same cycle. If it slips a cycle, the honest interim is a per-screen download
-   labelled "the *N* runs on this screen," never "your ledger."
+   labelled "the _N_ runs on this screen," never "your ledger."
 
 8. **No `PRODUCT.md` exists.** `.claude/skills/impeccable/scripts/context.mjs`
    reports `NO_PRODUCT_MD` and `BUILD_INIT_REQUIRED`, and this plan was produced
    without the founder interview that step normally requires.
-   *Default:* treat `docs/app-spec.md` §1–§4, `docs/founder-skills.md` §2, and this
+   _Default:_ treat `docs/app-spec.md` §1–§4, `docs/founder-skills.md` §2, and this
    document as product truth for the implementation, and run `/impeccable init`
    before the next visual-world decision. No item in Wave A depends on the answer.
 
 9. **Does the stage bar show "Find" on hosted workspaces?**
-   *Default:* show the cell, render it as "Import a list" rather than a count, and
+   _Default:_ show the cell, render it as "Import a list" rather than a count, and
    link it to the CSV import at `POST /api/linkedin/targets/import`
    (`src/server/app.ts:1855`). Lead sourcing is unconditionally off on hosted
    (`migrations/030_linkedin_lead_sources.sql` header), and a stage cell reading `0`

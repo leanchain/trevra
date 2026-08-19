@@ -17,26 +17,26 @@ up, answer it from here.
 
 ## 2. Who does what
 
-| Actor | Job |
-|---|---|
-| **An agent** — the operator | All the work: research, scoring, drafting, preparing, running jobs. |
-| **Trevra** — the runtime | Types the work, records every run, enforces the limits, executes what was approved. |
-| **The human** — the approver | Three things only: connect an agent, connect the data, approve or reject. |
+| Actor                        | Job                                                                                 |
+| ---------------------------- | ----------------------------------------------------------------------------------- |
+| **An agent** — the operator  | All the work: research, scoring, drafting, preparing, running jobs.                 |
+| **Trevra** — the runtime     | Types the work, records every run, enforces the limits, executes what was approved. |
+| **The human** — the approver | Three things only: connect an agent, connect the data, approve or reject.           |
 
 **The human never does what the agent does better.** If a screen exists so a
 person can hand-do the agent's job, it is not a primary screen.
 
 ### Two ways to be the operator
 
-The operator is *an agent*. Which one is the operator's choice, not Trevra's.
+The operator is _an agent_. Which one is the operator's choice, not Trevra's.
 
-| | **Your agent** (BYO-agent) | **Trevra's agent** (BYOK) |
-|---|---|---|
-| Runs on | Your laptop — Claude Code, Codex | Trevra's worker |
-| Reaches Trevra via | MCP, with an agent token | In-process |
-| Model paid for by | Your Claude/Codex subscription | Your API key, held by Trevra |
-| Works when your laptop is closed | No | Yes |
-| Status | **Shipped** | **Shipped** — see [byok-and-hosted-agent.md](./byok-and-hosted-agent.md) |
+|                                  | **Your agent** (BYO-agent)       | **Trevra's agent** (BYOK)                                                |
+| -------------------------------- | -------------------------------- | ------------------------------------------------------------------------ |
+| Runs on                          | Your laptop — Claude Code, Codex | Trevra's worker                                                          |
+| Reaches Trevra via               | MCP, with an agent token         | In-process                                                               |
+| Model paid for by                | Your Claude/Codex subscription   | Your API key, held by Trevra                                             |
+| Works when your laptop is closed | No                               | Yes                                                                      |
+| Status                           | **Shipped**                      | **Shipped** — see [byok-and-hosted-agent.md](./byok-and-hosted-agent.md) |
 
 **Both get identical permissions.** A hosted agent is not more trusted for
 living closer to the database. It holds the same scopes an agent token holds:
@@ -73,41 +73,41 @@ pauses, replies where a workflow deliberately stops, or changes limits.
 > accounts-receivable product, it was written before the LinkedIn outreach
 > engine existed, and it had already lost the argument in the code: the shell
 > shipped a fourth item because the outreach seat is a thing an operator
-> *tends* rather than a thing they configure once. The founder's framing is
+> _tends_ rather than a thing they configure once. The founder's framing is
 > that Trevra is one GTM loop with two ends — how you get paid and how you
 > don't — and the outreach engine is the product, not an annex to the invoicing
 > screens. Three items could not express that; five can. The rule the old
 > number was protecting still stands and is restated below.
 
-| Screen | Hash | The one question it answers | Default? |
-|---|---|---|---|
-| **Loop** | `/loop` | What is the loop doing, and where is it stuck? | Yes |
-| **Outreach** | `/outreach` | What goes out, at what pace, and is the seat safe? | |
-| **Money** | `/money` | What was agreed, delivered, billed and paid — and what wasn't, and why? | |
-| **Ledger** | `/ledger` | What did the agent actually do, with the evidence — and can I take it with me? | |
-| **Setup** | `/setup` | What can reach my workspace, what may it spend, what may it do? | |
+| Screen       | Hash        | The one question it answers                                                    | Default? |
+| ------------ | ----------- | ------------------------------------------------------------------------------ | -------- |
+| **Loop**     | `/loop`     | What is the loop doing, and where is it stuck?                                 | Yes      |
+| **Outreach** | `/outreach` | What goes out, at what pace, and is the seat safe?                             |          |
+| **Money**    | `/money`    | What was agreed, delivered, billed and paid — and what wasn't, and why?        |          |
+| **Ledger**   | `/ledger`   | What did the agent actually do, with the evidence — and can I take it with me? |          |
+| **Setup**    | `/setup`    | What can reach my workspace, what may it spend, what may it do?                |          |
 
 **The rule the number was standing in for:** every item in the nav is a place a
-founder goes *repeatedly*, and nothing else gets in. Sub-routes are not nav
+founder goes _repeatedly_, and nothing else gets in. Sub-routes are not nav
 items. A control that must always be reachable is shell chrome, not a
 destination — which is why the stop control (`StopBar`) is on every route and
 is not in this table.
 
 ### What moves, and why
 
-| Was | Goes to | Reason |
-|---|---|---|
-| Today | **Loop** | It is not "what am I owed"; it is where the loop is stuck. Six stages, one block sentence, four queues. |
-| Approvals | **Money** | It is the paid end of the loop, grouped by loop stage rather than one flat list. The heading inside it is still *What needs you*. |
-| Activity | **Ledger** (renamed) | "Complete run ledger" is what the landing page sells and the app had no screen by that name. |
-| Clients | **Money** | Client state is a read about the paid end, not a workspace of its own. |
-| Work (playbook launcher) | **Setup → Skills → Run one by hand** | The agent starts jobs. A human doing it by hand is the exception, not the front door. |
-| Modules | **Setup → Skills** | Reference material, plus the two verbs that were missing: Inspect, and Revoke access. |
-| Autopilot | **Setup → Limits** | Set once, edited rarely. |
-| Connections | **Setup → Connections** | Same. |
-| LinkedIn tab strip (7 tabs) | **`/outreach/*` and `/setup/*`** | Five are the engine; Setup and Exclusions are configured once and moved to Setup. |
-| Two kill switches | **One `StopBar` in the shell** | Two stop controls in two visual languages, neither admitting the other existed. |
-| Publisher / SBOM / Ed25519 | **Out of the app** | Developer tooling. Belongs in the CLI and docs, not a founder's nav. |
+| Was                         | Goes to                              | Reason                                                                                                                            |
+| --------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Today                       | **Loop**                             | It is not "what am I owed"; it is where the loop is stuck. Six stages, one block sentence, four queues.                           |
+| Approvals                   | **Money**                            | It is the paid end of the loop, grouped by loop stage rather than one flat list. The heading inside it is still _What needs you_. |
+| Activity                    | **Ledger** (renamed)                 | "Complete run ledger" is what the landing page sells and the app had no screen by that name.                                      |
+| Clients                     | **Money**                            | Client state is a read about the paid end, not a workspace of its own.                                                            |
+| Work (playbook launcher)    | **Setup → Skills → Run one by hand** | The agent starts jobs. A human doing it by hand is the exception, not the front door.                                             |
+| Modules                     | **Setup → Skills**                   | Reference material, plus the two verbs that were missing: Inspect, and Revoke access.                                             |
+| Autopilot                   | **Setup → Limits**                   | Set once, edited rarely.                                                                                                          |
+| Connections                 | **Setup → Connections**              | Same.                                                                                                                             |
+| LinkedIn tab strip (7 tabs) | **`/outreach/*` and `/setup/*`**     | Five are the engine; Setup and Exclusions are configured once and moved to Setup.                                                 |
+| Two kill switches           | **One `StopBar` in the shell**       | Two stop controls in two visual languages, neither admitting the other existed.                                                   |
+| Publisher / SBOM / Ed25519  | **Out of the app**                   | Developer tooling. Belongs in the CLI and docs, not a founder's nav.                                                              |
 
 ---
 
@@ -117,6 +117,7 @@ Every screen states its purpose, its empty state, and its one primary action.
 An empty state that does not tell you what to do next is a bug.
 
 ### Loop (default)
+
 - **Purpose:** what is the loop doing, and where is it stuck. Not “what am I owed”.
 - **Primary action:** the one button in the block sentence, pointing at the single stuck stage.
 - **Empty, new workspace:** one selected, fully-verifiable first-outcome checklist; the user can switch between outreach and money without configuring both.
@@ -124,6 +125,7 @@ An empty state that does not tell you what to do next is a bug.
 - **Never:** draw a stage with no backend as a zero. It says “not connected yet”.
 
 ### Outreach
+
 - **Purpose:** run the seat — what may go out today, why that number, where the variance is.
 - **Primary action:** none on the seat screen; it is a read. The primary lives on Campaigns.
 - **Campaigns:** `/outreach/manager` is the operating surface; `/outreach/manager/new` is the construction journey. Do not put lead-list/workflow editors back into the daily operating page.
@@ -131,6 +133,7 @@ An empty state that does not tell you what to do next is a bug.
 - **Never:** drop a `HARD FACT` / `REPORTED` tag on the way to the screen.
 
 ### Money
+
 - **Purpose:** decide on prepared work at the paid end of the loop.
 - **Primary action:** Review → approve or reject.
 - **Empty, new workspace:** “Nothing here yet — connect a tool and your agent will start finding work.”
@@ -138,20 +141,32 @@ An empty state that does not tell you what to do next is a bug.
 - **Never:** claim work happened that did not.
 
 ### Ledger
+
 - **Purpose:** show what the agent did, with the evidence, and let it be taken away.
 - **Primary action:** Export.
 - **Empty:** “No runs yet” + where to start one.
 
 ### Setup
+
 - **Purpose:** what can reach the workspace, what may it spend, what may it do.
 - **Primary action:** connect the agent.
-- **Always visible:** Agent access → Connections → LinkedIn → Limits → Team. Safety limits stay visible even though they are changed rarely.
-- **More:** Research, Reddit and Skills remain direct routes but share one compact secondary selector.
-- **Spending:** `/setup/spend` remains a deep link into Agent access rather than a peer screen.
+- **Two screens.** `/setup` (**Access**) holds agent tokens and run-once, plus
+  two disclosures collapsed by default — running it on Trevra's compute, and
+  what it may spend — that open themselves when they already hold state.
+  `/setup/workspace` (**Workspace**) holds Connections, Limits, LinkedIn
+  exclusions and Team, plus an owner-only export/erase block, collapsed, at
+  the foot.
+- **Legacy subs redirect, not render.** `/setup/agent` and `/setup/spend` land
+  on Access; `/setup/data`, `/setup/limits`, `/setup/team` and `/setup/skills`
+  land on Workspace, the first three scrolled to their section; `/setup/reddit`
+  and `/setup/research` go to Research; `/setup/seat` goes to Outreach.
+  `/setup/team/:id` still renders the accept-invitation screen full-width, no
+  tabs — the one address under Setup that is not one of the two screens.
 - **One save per sitting:** a settings panel that asks for four separate saves is
   four round-trips and four toasts for one decision. Write only what changed,
   and name each part. The exceptions are the switches: an off switch that needs
   a second click to take effect is not an off switch.
+
 ## 8. First run, exactly
 
 ```
@@ -194,7 +209,7 @@ The standing LinkedIn risk note is not a step either: there is no fake
 "acknowledged" checkbox. The account screen continues to show the actual limits
 and their evidence.
 sign up
-   └▶ Loop, empty, with:
+└▶ Loop, empty, with:
 
       Let's get you set up                        0 of 9
 
@@ -212,6 +227,7 @@ sign up
       ○ Connect your email or accounting  [Connect]
       ○ Bring in your clients              [Import]
       ○ Review what your agent found
+
 ```
 
 Every step is **derived from real data** — a live seat, a live token, a live
@@ -283,3 +299,4 @@ The operator is an agent, so a workspace no agent can reach does nothing.
   verdict in plain words, the signed payload hash, timing, and the error.
 - One tool surface, three consumers — HTTP MCP, the stdio bridge, and the hosted
   loop all read `src/server/agent/tools.ts`. There is no second list to drift.
+```
