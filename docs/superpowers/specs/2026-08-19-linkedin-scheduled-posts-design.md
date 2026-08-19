@@ -62,6 +62,18 @@ A real LinkedIn mention is a resolved entity link + notification to that person/
 
 v1 supports **image attachments only**, up to LinkedIn's real per-post cap of 9. Documents and video are explicitly deferred (different upload/processing/preview flow in LinkedIn's UI, not a small delta on top of images) — see Explicitly out of scope.
 
+### Editor interaction — select text, click a button
+
+Standard rich-text mechanics, implemented directly against the `PostBlock[]` model (no editor library — the model is small enough that a library would add more surface than it saves):
+
+- The composer body is one contenteditable region rendering the blocks/runs; the browser's native `Selection`/`Range` gives a (block index, character offset) start/end on every selection change.
+- **With a selection**: clicking Bold/Italic/Underline/Bullet/Numbered splits the run(s) under the selection at the selection boundaries (a run partially covered by the selection becomes two or three runs — before/inside/after — only the inside one gets the style flipped), then re-merges any now-adjacent runs that ended up with identical style flags. Clicking again with the same selection toggles it back off. This mirrors exactly what any Bold button in Google Docs/Slack does; it's just operating on this app's own run array instead of a library's document model.
+- **Toolbar active-state**: each button reflects the style of the current selection/cursor position — highlighted (pressed) when the entire selection (or the run the cursor sits in, for a collapsed selection) already has that style, off when it doesn't, and indeterminate (no highlight) when a selection spans mixed styles — same convention as any word processor.
+- **No selection (cursor only), button clicked**: style is "armed" — text typed from that point on is inserted into a new run carrying the style, until the button is clicked again or the cursor moves out of that run. This is what lets you type `Some `, click Bold, type `bold word`, click Bold again, type ` more.` and get one bold run in the middle without ever selecting anything.
+- **Bullet/Numbered** apply at the block level (whole current line), not to a text run — clicking toggles `PostBlock.list` for the block(s) the selection spans; numbered blocks renumber automatically as blocks are added/removed/reordered.
+- **Mention** button (or typing `@`) starts the resolve-on-add flow described above at the cursor position; on a match it inserts a `mention` run there (rendered in the editor as a distinct chip, not editable character-by-character — deleting it removes the whole run in one keystroke, same as any mention chip elsewhere in this app's UI).
+- Every edit re-renders the live preview via the same `renderPostBody` call the driver uses at publish time — the toolbar never shows a WYSIWYG approximation that could disagree with what actually gets posted.
+
 ## Scheduling
 
 Two ways to place a post on the calendar, usable interchangeably per post:
@@ -132,7 +144,7 @@ linkedin_post_cadences (
 
 New `LinkedInPosts.tsx` tab alongside Campaigns/Leads/Accounts/Analytics/Safety in `LinkedInScreen.tsx`'s nav.
 
-- **Composer**: contenteditable body with a formatting toolbar (Bold/Italic/Underline/Bullet/Numbered/Mention/Emoji picker/Image attach), operating on the `PostBlock[]` model directly (selection → toggle style on the runs under it — the same shape any basic rich-text toolbar uses, just targeting this app's own small model instead of a library). Live preview pane styled like an actual LinkedIn post card (avatar/name placeholder, rendered body via `renderPostBody`, and LinkedIn's real ~3-line "…see more" truncation) so what you see is what ships. Character counter against LinkedIn's 3000 cap. Account (seat) picker. Schedule control: explicit date/time picker, or "add to queue" (cadence slot).
+- **Composer**: contenteditable body with a formatting toolbar (Bold/Italic/Underline/Bullet/Numbered/Mention/Emoji picker/Image attach) implementing the select → click-to-toggle / click-then-type mechanics detailed under "Editor interaction" above. Live preview pane styled like an actual LinkedIn post card (avatar/name placeholder, rendered body via `renderPostBody`, and LinkedIn's real ~3-line "…see more" truncation) so what you see is what ships. Character counter against LinkedIn's 3000 cap. Account (seat) picker. Schedule control: explicit date/time picker, or "add to queue" (cadence slot).
 - **Queue/calendar list**: upcoming posts ordered by effective time, drag-reorder for cadence-slot posts (explicit-dated posts shown but not draggable among them), status badges, edit/cancel/duplicate.
 - **Cadence settings**: per-seat slot editor (weekday + time chips), reusing the existing timezone display pattern from `LinkedInAccounts.tsx`.
 - **History**: posted items link out to `posted_url` when captured; failed/missed show the recorded reason; mention warnings shown inline on the specific post.
@@ -148,6 +160,7 @@ New `LinkedInPosts.tsx` tab alongside Campaigns/Leads/Accounts/Analytics/Safety 
 ## Testing
 
 - `linkedin-post-format.test.ts`: every style combination (bold/italic/underline, singly and composed) round-trips through known Unicode fixtures; non-A-Za-z0-9 characters pass through unstyled inside a styled run; surrogate-pair iteration doesn't corrupt multi-run bodies; list blocks number/bullet correctly across insert/delete/reorder; hashtag validation rejects internal spaces without mutating the run.
+- Composer selection/toolbar component test: toggling Bold on a selection that partially covers a run splits it correctly (before/inside/after) and re-merges adjacent same-style runs on toggle-off; toolbar active-state is pressed/off/indeterminate correctly for selection-inside-styled-run, selection-outside, and selection-spanning-mixed-styles; clicking a style with a collapsed cursor arms it for subsequently typed text and disarms on a second click; deleting a mention run removes it as one atomic unit, not character-by-character.
 - `driver-post.test.ts` (same fixture-driven style as `driver-engage.test.ts`): mention resolve-and-click, mention-not-found degrades to plain text without failing the action, media upload wait, link-in-comment strips body URL and posts the follow-up comment, each new failure kind triggers on its corresponding DOM state.
 - `jobs.test.ts` / worker-tick test: due post publishes once even with concurrent tick invocations (lease correctness); a post past the 6h grace window is marked `missed`, not published; a post is held (not failed) while the companion is offline and retried within the grace window.
 - API tests: reorder only touches `sequence_position` for cadence-queued posts; explicit `scheduled_at` and `sequence_position` are mutually exclusive on write; edit/cancel rejected once `publishing`/`posted`.
