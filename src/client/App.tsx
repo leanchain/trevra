@@ -713,21 +713,21 @@ function SetupView({
   // `/setup/team/:id` is the accept-invitation link from an email. It is a
   // full screen with no tabs: the reader has no workspace to configure yet.
   const invitationId = sub === 'team' ? route.id : null;
-  const [anchor, setAnchor] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<{ id: string; seq: number } | null>(null);
+  const anchorSeq = useRef(0);
 
   useEffect(() => {
     if (invitationId) return;
     const target = SETUP_LEGACY_REDIRECTS[sub];
     if (!target) return;
-    setAnchor(SETUP_LEGACY_ANCHORS[sub] ?? null);
+    const anchorId = SETUP_LEGACY_ANCHORS[sub];
+    if (anchorId) setAnchor({ id: anchorId, seq: ++anchorSeq.current });
     replaceNavigate(target);
   }, [sub, invitationId]);
 
   useEffect(() => {
     if (!anchor) return;
-    const stop = scrollToId(anchor);
-    setAnchor(null);
-    return stop;
+    return scrollToId(anchor.id);
   }, [anchor]);
 
   if (invitationId) {
