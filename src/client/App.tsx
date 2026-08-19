@@ -101,7 +101,6 @@ import { scrollToId } from './ui/scrollToId';
 import { formatMoment } from './views/inspector';
 import { LedgerView } from './views/LedgerView';
 import { LoopCostView, LoopView } from './views/LoopView';
-import { SkillsView } from './views/SkillsView';
 import { initials, money, prettyProvider, usd } from './views/format';
 
 /** Five primary product areas: loop, outreach, ledger, research, and setup. */
