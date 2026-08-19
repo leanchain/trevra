@@ -67,9 +67,13 @@ export async function loadThreadFeed(
 ```
 
 Ordering moves from `score DESC` (platform points) to relevance DESC, ties
-broken by `first_seen_at DESC`. The SQL keeps its own `ORDER BY score DESC` for
-a stable, indexed page; the final sort happens in `loadThreadFeed` over that
-page.
+broken by `first_seen_at DESC`. The SQL itself now pages by
+`ORDER BY COALESCE(thread_created_at, first_seen_at) DESC, first_seen_at DESC`
+-- recency, not the platform's own vote count -- so the page is "the newest N
+discovered threads," never biased by another platform's score before
+relevance gets a say; paging by `score DESC` would silently cut a highly
+relevant but low-vote thread before `loadThreadFeed`'s re-rank ever saw it.
+The final relevance sort still happens in `loadThreadFeed` over that page.
 
 **Guard without N+1.** `evaluateSafety` issues up to three DB reads per thread
 (`countPostsToday`, `lastPostInCommunity`, `communityVolume`). Fifty rows would

@@ -247,13 +247,20 @@ describe('recordSeenThreads', () => {
 });
 
 describe('listOutreachThreads', () => {
-  it('filters by platform and ranks by score, newest first on a tie', async () => {
+  it('filters by platform and pages by recency, not platform score', async () => {
     await recordSeenThreads(
       db,
       DEMO_WORKSPACE_ID,
       [
-        thread({ externalId: 'r1', platform: 'reddit', score: 5 }),
-        thread({ externalId: 'r2', platform: 'reddit', score: 9 }),
+        // r1 is older but out-scores r2 on the platform's own points -- the
+        // page must still put r2 first, on recency.
+        thread({
+          externalId: 'r1',
+          platform: 'reddit',
+          score: 9,
+          createdAt: new Date(NOW.getTime() - 3_600_000).toISOString()
+        }),
+        thread({ externalId: 'r2', platform: 'reddit', score: 5, createdAt: NOW.toISOString() }),
         thread({ externalId: 'l1', platform: 'linkedin', score: 3 })
       ],
       NOW
@@ -264,6 +271,40 @@ describe('listOutreachThreads', () => {
 
     const all = await listOutreachThreads(db, DEMO_WORKSPACE_ID);
     expect(all).toHaveLength(3);
+  });
+
+  it('pages by recency even when it inverts the platform score order', async () => {
+    // Score and recency point opposite ways for all three rows: the oldest
+    // thread has the highest platform score, the newest has the lowest. A
+    // page that still ordered by `score` would put the newest thread LAST,
+    // and a relevance re-rank downstream (loadThreadFeed) would never see it
+    // if it fell past the page limit.
+    await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [
+        thread({
+          externalId: 'oldest-high-score',
+          score: 100,
+          createdAt: new Date(NOW.getTime() - 2 * 86_400_000).toISOString()
+        }),
+        thread({
+          externalId: 'mid',
+          score: 50,
+          createdAt: new Date(NOW.getTime() - 86_400_000).toISOString()
+        }),
+        thread({ externalId: 'newest-low-score', score: 1, createdAt: NOW.toISOString() })
+      ],
+      NOW
+    );
+
+    const rows = await listOutreachThreads(db, DEMO_WORKSPACE_ID, {});
+
+    expect(rows.map((row) => row.external_id)).toEqual([
+      'newest-low-score',
+      'mid',
+      'oldest-high-score'
+    ]);
   });
 
   it('returns nothing for a workspace with no discovered threads', async () => {

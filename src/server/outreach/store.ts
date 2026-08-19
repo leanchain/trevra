@@ -368,8 +368,17 @@ export interface OutreachThreadRow {
 }
 
 /**
- * Discovered threads, best-scored first, tied breaking newest-first. The read
- * path `outreach_threads` never had -- see docs/superpowers/specs/2026-08-18-research-hub-design.md.
+ * Discovered threads, newest first. The read path `outreach_threads` never had
+ * -- see docs/superpowers/specs/2026-08-18-research-hub-design.md.
+ *
+ * Paged by recency, not by `score` -- `score` is the PLATFORM's own vote
+ * count, not this app's relevance judgement. `loadThreadFeed` re-ranks the
+ * page by relevance (feed.ts), but that re-rank only sees what made the page
+ * in the first place: paging by score would silently drop a highly relevant
+ * but low-vote thread past the limit before relevance ever got a say.
+ * Recency has no such bias -- it is the same ordering for every row
+ * regardless of what the discovering platform thought of it. `first_seen_at`
+ * breaks ties (and covers rows with no `thread_created_at`).
  */
 export async function listOutreachThreads(
   db: Db,
@@ -391,7 +400,7 @@ export async function listOutreachThreads(
            num_comments, thread_created_at, first_seen_at, metadata_json
     FROM outreach_threads
     WHERE ${clauses.join(' AND ')}
-    ORDER BY score DESC, first_seen_at DESC
+    ORDER BY COALESCE(thread_created_at, first_seen_at) DESC, first_seen_at DESC
     LIMIT ?
   `
     )
