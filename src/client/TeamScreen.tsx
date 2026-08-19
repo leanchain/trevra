@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Copy, LoaderCircle, Trash2, UserPlus } from 'lucide-react';
 import { ApiError, addTeamMember } from './api';
-import { authClient } from './auth-client';
+import { authClient, useIsWorkspaceOwner } from './auth-client';
 import { relativeTime } from './LinkedInScreen';
 import { reloadOutreach } from './LinkedInSafety';
 import { ConfirmDrawer } from './ui/dialog';
@@ -120,8 +120,7 @@ export function TeamSettingsView({
 
 function TeamMembersPanel({ setToast }: { setToast: (message: string) => void }) {
   const { data: activeOrg, isPending, refetch: refetchOrg } = authClient.useActiveOrganization();
-  const { data: activeMember } = authClient.useActiveMember();
-  const isOwner = activeMember?.role === 'owner';
+  const isOwner = useIsWorkspaceOwner();
   const { members } = useWorkspaceMembers();
 
   const [invitations, setInvitations] = useState<PendingInvitation[]>([]);
@@ -260,6 +259,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
                 <tr>
                   <th>Name</th>
                   <th>Email</th>
+                  <th>Role</th>
                   {isOwner && <th />}
                 </tr>
               </thead>
@@ -268,6 +268,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
                   <tr key={member.id}>
                     <td>{member.name}</td>
                     <td>{member.email}</td>
+                    <td>{member.role}</td>
                     {isOwner && (
                       <td>
                         {member.role !== 'owner' && (
@@ -541,6 +542,16 @@ function AcceptInvitationPanel({
 
         {!loading && !error && invitation && (
           <>
+            <dl className="field-list">
+              <div className="field-row">
+                <dt>Workspace</dt>
+                <dd>{invitation.organizationName ?? 'This workspace'}</dd>
+              </div>
+              <div className="field-row">
+                <dt>Role</dt>
+                <dd>{invitation.role}</dd>
+              </div>
+            </dl>
             <div className="panel-footer">
               <span>Nothing here is shared until you accept.</span>
               <span style={{ display: 'flex', gap: 10 }}>

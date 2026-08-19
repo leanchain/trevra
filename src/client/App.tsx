@@ -64,7 +64,7 @@ import {
   workspaceExportDownloadPath,
   type WorkspaceErasurePreview
 } from './api';
-import { authClient } from './auth-client';
+import { authClient, useIsWorkspaceOwner } from './auth-client';
 import { AccountsScreen } from './AccountsScreen';
 import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
 import { OutreachInbox } from './LinkedInInbox';
@@ -712,13 +712,9 @@ function SetupView({
   const invitationId = sub === 'team' ? route.id : null;
   const [anchor, setAnchor] = useState<{ id: string; seq: number } | null>(null);
   const anchorSeq = useRef(0);
-  // Same owner signal LimitsView uses: `isPending` gates on the org read
-  // finishing so a member never sees the export/erase block flash before
-  // disappearing, and `activeMember?.role === 'owner'` is the one place that
-  // decides who gets it.
-  const { isPending: orgPending } = authClient.useActiveOrganization();
-  const { data: activeMember } = authClient.useActiveMember();
-  const isOwner = !orgPending && activeMember?.role === 'owner';
+  // The shared owner signal (`useIsWorkspaceOwner`, auth-client.ts): a
+  // member never sees the export/erase block flash before disappearing.
+  const isOwner = useIsWorkspaceOwner();
 
   useEffect(() => {
     if (invitationId) return;
@@ -1728,16 +1724,10 @@ function HostedAgentPanel({
           </div>
 
           <div>
-            <h4 aria-level={3}>Your own Claude/Codex subscription</h4>
+            <h4 aria-level={3}>
+              <Terminal size={15} /> Your own Claude/Codex subscription
+            </h4>
             <div className="byok-block">
-              <div className="byok-block-head">
-                <div>
-                  <h4 aria-level={3}>
-                    <Terminal size={15} /> Or run it through your own Claude/Codex subscription
-                  </h4>
-                </div>
-              </div>
-
               <div className="byok-fields byok-fields-schedule">
                 <label>
                   Which subscription
@@ -1847,14 +1837,12 @@ function HostedAgentPanel({
         <div className="mgr-inputs-body">
           <div className="byok-block">
             <div className="byok-block-head">
-              <div>
-                <h4 aria-level={3}>What it may spend</h4>
-              </div>
               <label className="toggle">
                 <input
                   type="checkbox"
                   checked={budget.enabled}
                   disabled={busy === 'spend'}
+                  aria-label="What it may spend"
                   onChange={(event) => void setSpending(event.target.checked)}
                 />
                 <span />
@@ -2082,6 +2070,11 @@ function ConnectionsView({
       </section>
 
       <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Connect a tool</h3>
+          </div>
+        </div>
         <div className="integration-grid">
           {available.map((item) => (
             <article className="integration-card" key={item.key}>
@@ -2183,10 +2176,20 @@ const asNumber = (value: unknown): number | null =>
  * Emit exactly the object the server matches on, with empty keys omitted:
  * `{sideEffects: []}` matches nothing, so sending it would silently disarm the
  * rule the founder just wrote.
+ *
+ * `base` is the raw conditions of the policy being edited (omitted for a new
+ * one). The form only models `sideEffects`, but a policy authored before it
+ * shrank may carry maxAmount/minConfidence/maxRecipients/actorTypes/
+ * environments -- keys this form never shows and so must never delete.
+ * Those ride forward unchanged; only `sideEffects` is replaced by the form.
  */
-function buildConditions(draft: ConditionDraft): Record<string, unknown> {
-  const conditions: Record<string, unknown> = {};
+function buildConditions(
+  draft: ConditionDraft,
+  base: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const conditions: Record<string, unknown> = { ...base };
   if (draft.sideEffects.length > 0) conditions.sideEffects = draft.sideEffects;
+  else delete conditions.sideEffects;
   return conditions;
 }
 
@@ -2239,10 +2242,11 @@ function describePolicy(
  * there instead of a blank form. */
 function conditionDraftFromPolicy(conditions: Record<string, unknown>): ConditionDraft {
   // Ignores any other condition keys a saved policy may carry (actorTypes,
-  // environments, thresholds, ...) -- this draft no longer models them.
-  // describePolicy still renders those keys straight from the policy record,
-  // so the list keeps reading correctly; only editing and re-saving a policy
-  // drops them, since buildConditions never writes them back out.
+  // environments, thresholds, ...) -- this draft no longer models them, and
+  // does not need to: describePolicy renders those keys straight from the
+  // policy record, and buildConditions is handed the policy's raw conditions
+  // as its `base` on save, so those keys survive the round-trip untouched
+  // even though this draft never shows them.
   return { sideEffects: asStringList(conditions.sideEffects) };
 }
 
@@ -2284,13 +2288,9 @@ function ConditionChecklist({
 const POLICY_DEFAULTS = { actionPattern: 'skill:*', priority: 100 } as const;
 
 function LimitsView({ setToast }: { setToast: (message: string) => void }) {
-  // Same owner signal TeamScreen.tsx uses: `isPending` gates on the org read
-  // finishing so a member never sees New/Edit/Delete/the switch flash before
-  // disappearing, and `activeMember?.role === 'owner'` is the one place that
-  // decides who gets them.
-  const { isPending: orgPending } = authClient.useActiveOrganization();
-  const { data: activeMember } = authClient.useActiveMember();
-  const isOwner = !orgPending && activeMember?.role === 'owner';
+  // The shared owner signal (`useIsWorkspaceOwner`, auth-client.ts): a
+  // member never sees New/Edit/Delete/the switch flash before disappearing.
+  const isOwner = useIsWorkspaceOwner();
   const [busy, setBusy] = useState('');
   const [policies, setPolicies] = useState<WorkspacePolicy[]>([]);
   const [confirmDeletePolicy, setConfirmDeletePolicy] = useState<WorkspacePolicy | null>(null);
@@ -2364,7 +2364,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
       actionPattern: POLICY_DEFAULTS.actionPattern,
       effect: policyDraft.effect,
       priority: POLICY_DEFAULTS.priority,
-      conditions: buildConditions(conditionDraft)
+      conditions: buildConditions(conditionDraft, editingPolicy?.conditions)
     };
     setBusy(editingPolicy ? 'policy-edit' : 'policy-create');
     try {

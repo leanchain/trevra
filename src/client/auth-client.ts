@@ -20,3 +20,17 @@ export const authClient = createAuthClient({
   baseURL: window.location.origin,
   plugins: [organizationClient()]
 });
+
+/**
+ * The one owner signal every owner-only control in the app reads. `isPending`
+ * gates on the org read finishing so a member (or an owner whose read just
+ * has not resolved yet) never sees an owner-only control -- New/Edit/Delete
+ * limits, the export/erase block, who manages the team -- flash on before
+ * disappearing; `activeMember?.role === 'owner'` is the one place that
+ * decides who gets them once it has.
+ */
+export function useIsWorkspaceOwner(): boolean {
+  const { isPending } = authClient.useActiveOrganization();
+  const { data: activeMember } = authClient.useActiveMember();
+  return !isPending && activeMember?.role === 'owner';
+}
