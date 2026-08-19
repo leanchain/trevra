@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  ArrowLeft,
   Check,
   CircleAlert,
   ExternalLink,
@@ -57,9 +58,15 @@ const SORTS: RedditSort[] = ['hot', 'new', 'top', 'rising'];
  * subreddit. Deduplicated: the server walks these one at a time to stay under
  * the rate limit, so a name typed twice would cost a whole extra read.
  */
-const parseSubreddits = (raw: string) => Array.from(new Set(
-  raw.split(/[\s,]+/).map((name) => name.trim().replace(/^\/?r\//i, '')).filter(Boolean)
-));
+const parseSubreddits = (raw: string) =>
+  Array.from(
+    new Set(
+      raw
+        .split(/[\s,]+/)
+        .map((name) => name.trim().replace(/^\/?r\//i, ''))
+        .filter(Boolean)
+    )
+  );
 
 /**
  * A count Reddit did not render comes back as null, and it renders as a dash.
@@ -68,13 +75,15 @@ const parseSubreddits = (raw: string) => Array.from(new Set(
  * nothing; printing `0` would state a number nobody measured, and the operator
  * picking which thread to answer would be reading a fact we invented.
  */
-const countOf = (value: number | null) => value === null ? '—' : value.toLocaleString();
+const countOf = (value: number | null) => (value === null ? '—' : value.toLocaleString());
 
 /** `u/name`, whether or not the listing already prefixed it. */
-const authorHandle = (author: string | null) => author === null ? null : `u/${author.replace(/^u\//, '')}`;
+const authorHandle = (author: string | null) =>
+  author === null ? null : `u/${author.replace(/^u\//, '')}`;
 
 /** One sentence each, deduplicated. The server already scopes `blockers` to this auth mode. */
-const blockersOf = (worker: RedditWorkerStatus | null) => worker ? Array.from(new Set(worker.blockers)) : [];
+const blockersOf = (worker: RedditWorkerStatus | null) =>
+  worker ? Array.from(new Set(worker.blockers)) : [];
 
 export function RedditScreen({ setToast }: { setToast: (message: string) => void }) {
   const [account, setAccount] = useState<RedditAccountResponse | null>(null);
@@ -123,7 +132,9 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
     }
   }, []);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
 
   /**
    * One round of the login route, and the four things it can answer.
@@ -148,33 +159,59 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
       await reload();
       return;
     }
-    setNote({ tone: result.status === 'challenge' ? 'instruction' : 'error', message: result.message });
+    setNote({
+      tone: result.status === 'challenge' ? 'instruction' : 'error',
+      message: result.message
+    });
   };
 
   const attempt = async (run: () => Promise<void>) => {
     setSigningIn(true);
-    try { await run(); }
-    catch (err) { setNote({ tone: 'error', message: errorMessage(err, 'Unable to sign in to Reddit') }); }
-    finally { setSigningIn(false); }
+    try {
+      await run();
+    } catch (err) {
+      setNote({ tone: 'error', message: errorMessage(err, 'Unable to sign in to Reddit') });
+    } finally {
+      setSigningIn(false);
+    }
   };
 
-  const signIn = () => void attempt(async () => {
-    // `u/pankaj` and `pankaj` are the same account, and the operator has no way
-    // of knowing which form the login route wants. Only one of them is it.
-    const handle = username.trim().replace(/^\/?u\//i, '');
-    if (!handle || !password) {
-      setNote({ tone: 'error', message: 'Both the username and the password are needed to sign in.' });
-      return;
-    }
+  /**
+   * The only way out of the OTP stage that isn't a page reload.
+   *
+   * The username stays -- it's still state, nothing cleared it. The password
+   * does not come back: it was wiped from memory the moment it went on the
+   * wire, and that isn't something a Back button should undo. The stale code
+   * and whatever the last attempt said both go, because neither means
+   * anything once the operator is back to fixing what they typed.
+   */
+  const backToCredentials = () => {
+    setStage('credentials');
+    setOtp('');
     setNote(null);
-    try {
-      await saveRedditCredentials({ username: handle, password });
-    } finally {
-      // Out of component state the moment it is on the wire, whatever became of it.
-      setPassword('');
-    }
-    await runLogin();
-  });
+  };
+
+  const signIn = () =>
+    void attempt(async () => {
+      // `u/pankaj` and `pankaj` are the same account, and the operator has no way
+      // of knowing which form the login route wants. Only one of them is it.
+      const handle = username.trim().replace(/^\/?u\//i, '');
+      if (!handle || !password) {
+        setNote({
+          tone: 'error',
+          message: 'Both the username and the password are needed to sign in.'
+        });
+        return;
+      }
+      setNote(null);
+      try {
+        await saveRedditCredentials({ username: handle, password });
+      } finally {
+        // Out of component state the moment it is on the wire, whatever became of it.
+        setPassword('');
+      }
+      await runLogin();
+    });
 
   const disconnect = async () => {
     setDisconnecting(true);
@@ -184,11 +221,18 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
       setStage('credentials');
       setUsername('');
       setOtp('');
-      setToast('Credentials removed. Nothing on this machine can sign in until you add them again.');
+      setToast(
+        'Credentials removed. Nothing on this machine can sign in until you add them again.'
+      );
       await reload();
     } catch (err) {
-      setNote({ tone: 'error', message: errorMessage(err, 'Unable to remove the stored credentials') });
-    } finally { setDisconnecting(false); }
+      setNote({
+        tone: 'error',
+        message: errorMessage(err, 'Unable to remove the stored credentials')
+      });
+    } finally {
+      setDisconnecting(false);
+    }
   };
 
   const read = async () => {
@@ -201,16 +245,20 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
     setResearchError('');
     try {
       const count = Number(limit);
-      setResearch(await researchReddit({
-        subreddits: names,
-        sort,
-        // An unreadable box is not an instruction to read everything: fall back
-        // to the server's own default rather than sending NaN.
-        limit: Number.isFinite(count) && count > 0 ? Math.min(100, Math.round(count)) : undefined
-      }));
+      setResearch(
+        await researchReddit({
+          subreddits: names,
+          sort,
+          // An unreadable box is not an instruction to read everything: fall back
+          // to the server's own default rather than sending NaN.
+          limit: Number.isFinite(count) && count > 0 ? Math.min(100, Math.round(count)) : undefined
+        })
+      );
     } catch (err) {
       setResearchError(errorMessage(err, 'Unable to read those subreddits'));
-    } finally { setReading(false); }
+    } finally {
+      setReading(false);
+    }
   };
 
   const openComposer = (url: string) => {
@@ -239,201 +287,335 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
       setToast('Comment posted to Reddit.');
     } catch (err) {
       setReplyError(errorMessage(err, 'Reddit did not accept the comment'));
-    } finally { setPosting(false); }
+    } finally {
+      setPosting(false);
+    }
   };
 
-  return <div className="page-stack">
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>The Reddit account</h3>
-          <p>One handle per workspace. It is the name printed under everything this screen posts.</p>
-        </div>
-        <MessageSquare size={20} className="li-heading-icon" />
-      </div>
-
-      {loadError && <div className="error-banner">{loadError}</div>}
-
-      {/* Only when something is actually wrong, and one line per problem. */}
-      {blockers.length > 0 && <ul className="li-blockers">
-        {blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
-      </ul>}
-
-      {connected
-        ? <div className="li-signin-row">
-          <span className="li-signin-id"><MessageSquare size={15} /> {auth?.username ?? 'Reddit account'}</span>
-          <span>{auth?.sessionValidAt
-            ? `Session confirmed live ${relativeTime(auth.sessionValidAt)}`
-            : 'Session not confirmed yet — the sign-in has not completed.'}</span>
-          <div className="li-signin-actions">
-            {!auth?.sessionValidAt && <button
-              className="secondary-button"
-              disabled={signingIn}
-              onClick={() => void attempt(() => runLogin())}
-            >{signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />} Sign in</button>}
-            <button className="ghost-button danger" disabled={disconnecting} onClick={() => void disconnect()}>
-              {disconnecting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />} Disconnect
-            </button>
+  return (
+    <div className="page-stack">
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>The Reddit account</h3>
+            <p>
+              One handle per workspace. It is the name printed under everything this screen posts.
+            </p>
           </div>
+          <MessageSquare size={20} className="li-heading-icon" />
         </div>
-        : <>
-          {/* The reassurance comes first, because after the password is typed a
-              promise about it is not a promise, it is a receipt. */}
-          {stage === 'credentials' && <div className="li-dryrun" style={{ marginTop: 14 }}>
-            <ShieldCheck size={20} />
-            <div>
-              <strong>Before you type it — what happens to this password.</strong>
-              <p>
-                It is encrypted at rest. It is sent nowhere but Reddit. It is used for exactly one thing: opening a
-                browser session on this machine. You can remove it at any time, and nothing here can sign in again once
-                you have. No screen ever renders it back — the handle is the most Trevra will say, and that is public
-                anyway.
-              </p>
+
+        {loadError && <div className="error-banner">{loadError}</div>}
+
+        {/* Only when something is actually wrong, and one line per problem. */}
+        {blockers.length > 0 && (
+          <ul className="li-blockers">
+            {blockers.map((blocker) => (
+              <li key={blocker}>{blocker}</li>
+            ))}
+          </ul>
+        )}
+
+        {connected ? (
+          <div className="li-signin-row">
+            <span className="li-signin-id">
+              <MessageSquare size={15} /> {auth?.username ?? 'Reddit account'}
+            </span>
+            <span>
+              {auth?.sessionValidAt
+                ? `Session confirmed live ${relativeTime(auth.sessionValidAt)}`
+                : 'Session not confirmed yet — the sign-in has not completed.'}
+            </span>
+            <div className="li-signin-actions">
+              {!auth?.sessionValidAt && (
+                <button
+                  className="secondary-button"
+                  disabled={signingIn}
+                  onClick={() => void attempt(() => runLogin())}
+                >
+                  {signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />}{' '}
+                  Sign in
+                </button>
+              )}
+              <button
+                className="ghost-button danger"
+                disabled={disconnecting}
+                onClick={() => void disconnect()}
+              >
+                {disconnecting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />}{' '}
+                Disconnect
+              </button>
             </div>
-          </div>}
-
-          <div className="li-signin">
-            <strong>Connect Reddit</strong>
-            {stage === 'otp'
-              ? <form className="li-signin-fields li-signin-otp" onSubmit={(event) => { event.preventDefault(); void attempt(() => runLogin(otp.trim())); }}>
-                <label>Verification code<input
-                  value={otp}
-                  onChange={(event) => setOtp(event.target.value)}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  placeholder="123456"
-                  aria-label="Verification code"
-                /></label>
-                <button className="primary-button" type="submit" disabled={signingIn || otp.trim().length < 6}>
-                  {signingIn ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Verify
-                </button>
-              </form>
-              : <form className="li-signin-fields" onSubmit={(event) => { event.preventDefault(); signIn(); }}>
-                <label>Reddit username<input
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  autoComplete="username"
-                  placeholder="yourhandle"
-                /></label>
-                <label>Reddit password<input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
-                /></label>
-                <button className="primary-button" type="submit" disabled={signingIn}>
-                  {signingIn ? <LoaderCircle className="spin" size={15} /> : <LogIn size={15} />} Sign in to Reddit
-                </button>
-              </form>}
-            {stage === 'otp' && <p className="li-hint">Reddit sent a code to your email or authenticator. Enter it to finish signing in.</p>}
-            {note && <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>{note.message}</p>}
           </div>
-        </>}
+        ) : (
+          <>
+            {/* The reassurance comes first, because after the password is typed a
+              promise about it is not a promise, it is a receipt. */}
+            {stage === 'credentials' && (
+              <div className="li-dryrun" style={{ marginTop: 14 }}>
+                <ShieldCheck size={20} />
+                <div>
+                  <strong>Before you type it — what happens to this password.</strong>
+                  <p>
+                    It is encrypted at rest. It is sent nowhere but Reddit. It is used for exactly
+                    one thing: opening a browser session on this machine. You can remove it at any
+                    time, and nothing here can sign in again once you have. No screen ever renders
+                    it back — the handle is the most Trevra will say, and that is public anyway.
+                  </p>
+                </div>
+              </div>
+            )}
 
-      {connected && note && <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>{note.message}</p>}
-    </section>
+            <div className="li-signin">
+              <strong>Connect Reddit</strong>
+              {stage === 'otp' ? (
+                <form
+                  className="li-signin-fields li-signin-otp"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void attempt(() => runLogin(otp.trim()));
+                  }}
+                >
+                  <label>
+                    Verification code
+                    <input
+                      value={otp}
+                      onChange={(event) => setOtp(event.target.value)}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      placeholder="123456"
+                      aria-label="Verification code"
+                    />
+                  </label>
+                  <div className="li-signin-actions">
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={signingIn}
+                      onClick={backToCredentials}
+                    >
+                      <ArrowLeft size={14} /> Back
+                    </button>
+                    <button
+                      className="primary-button"
+                      type="submit"
+                      disabled={signingIn || otp.trim().length < 6}
+                    >
+                      {signingIn ? (
+                        <LoaderCircle className="spin" size={15} />
+                      ) : (
+                        <Check size={15} />
+                      )}{' '}
+                      Verify
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <form
+                  className="li-signin-fields"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    signIn();
+                  }}
+                >
+                  <label>
+                    Reddit username
+                    <input
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                      autoComplete="username"
+                      placeholder="yourhandle"
+                    />
+                  </label>
+                  <label>
+                    Reddit password
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      autoComplete="current-password"
+                    />
+                  </label>
+                  <button className="primary-button" type="submit" disabled={signingIn}>
+                    {signingIn ? <LoaderCircle className="spin" size={15} /> : <LogIn size={15} />}{' '}
+                    Sign in to Reddit
+                  </button>
+                </form>
+              )}
+              {stage === 'otp' && (
+                <p className="li-hint">
+                  Reddit sent a code to your email or authenticator. Enter it to finish signing in.
+                </p>
+              )}
+              {note && (
+                <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>
+                  {note.message}
+                </p>
+              )}
+            </div>
+          </>
+        )}
 
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>Read subreddits</h3>
-          <p>Read-only. This button opens listings through the signed-in session and posts nothing.</p>
+        {connected && note && (
+          <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>
+            {note.message}
+          </p>
+        )}
+      </section>
+
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Read subreddits</h3>
+            <p>
+              Read-only. This button opens listings through the signed-in session and posts nothing.
+            </p>
+          </div>
+          <Search size={20} className="li-heading-icon" />
         </div>
-        <Search size={20} className="li-heading-icon" />
-      </div>
 
-      {researchError && <div className="error-banner">{researchError}</div>}
+        {researchError && <div className="error-banner">{researchError}</div>}
 
-      <div className="li-filter-row">
-        <label>Subreddits<input
-          value={subreddits}
-          onChange={(event) => setSubreddits(event.target.value)}
-          placeholder="SaaS, Entrepreneur, selfhosted"
-        /></label>
-        <label>Sort<select value={sort} onChange={(event) => setSort(event.target.value as RedditSort)}>
-          {SORTS.map((option) => <option key={option} value={option}>{option}</option>)}
-        </select></label>
-        <label>Posts each<input
-          type="number"
-          min={1}
-          max={100}
-          value={limit}
-          onChange={(event) => setLimit(event.target.value)}
-        /></label>
-        <button className="primary-button" disabled={reading} onClick={() => void read()}>
-          {reading ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />} Read
-        </button>
-      </div>
-
-      <p className="li-hint">
-        Separate names with commas or spaces; a leading <code>r/</code> is fine. They are walked one at a time rather
-        than at once, because a burst of listing reads from one account is what gets an account rate-limited — several
-        names take a while on purpose.
-      </p>
-    </section>
-
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>Threads</h3>
-          <p>Replying here posts the comment immediately. There is no queue and nothing to approve afterwards.</p>
+        <div className="li-filter-row">
+          <label>
+            Subreddits
+            <input
+              value={subreddits}
+              onChange={(event) => setSubreddits(event.target.value)}
+              placeholder="SaaS, Entrepreneur, selfhosted"
+            />
+          </label>
+          <label>
+            Sort
+            <select value={sort} onChange={(event) => setSort(event.target.value as RedditSort)}>
+              {SORTS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Posts each
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={limit}
+              onChange={(event) => setLimit(event.target.value)}
+            />
+          </label>
+          <button className="primary-button" disabled={reading} onClick={() => void read()}>
+            {reading ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />} Read
+          </button>
         </div>
-        <Send size={20} className="li-heading-icon" />
-      </div>
 
-      {/* Named rather than dropped. A private, banned or misspelled subreddit is
+        <p className="li-hint">
+          Separate names with commas or spaces; a leading <code>r/</code> is fine. They are walked
+          one at a time rather than at once, because a burst of listing reads from one account is
+          what gets an account rate-limited — several names take a while on purpose.
+        </p>
+      </section>
+
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Threads</h3>
+            <p>
+              Replying here posts the comment immediately. There is no queue and nothing to approve
+              afterwards.
+            </p>
+          </div>
+          <Send size={20} className="li-heading-icon" />
+        </div>
+
+        {/* Named rather than dropped. A private, banned or misspelled subreddit is
           the operator's next action, and a silent absence from the list below
           reads as "nobody is posting there". */}
-      {research && research.refused.length > 0 && <div className="li-degraded">
-        <strong>Not read at all:</strong>
-        <ul>{research.refused.map((entry) => <li key={entry.subreddit}>r/{entry.subreddit} — {entry.reason}</li>)}</ul>
-        <p>Nothing was read from these, so nothing below came from them.</p>
-      </div>}
+        {research && research.refused.length > 0 && (
+          <div className="li-degraded">
+            <strong>Not read at all:</strong>
+            <ul>
+              {research.refused.map((entry) => (
+                <li key={entry.subreddit}>
+                  r/{entry.subreddit} — {entry.reason}
+                </li>
+              ))}
+            </ul>
+            <p>Nothing was read from these, so nothing below came from them.</p>
+          </div>
+        )}
 
-      {!research
-        ? <div className="empty-state">
-          <MessageSquare size={22} />
-          <h4 aria-level={3}>Nothing read yet</h4>
-          <p>Name a subreddit above and read it. What comes back is what the listing showed, unranked and unfiltered.</p>
-        </div>
-        : research.reads.length === 0
-          ? <p className="empty-copy">No subreddit could be read. Every name is accounted for above.</p>
-          : <div className="automation-list">
-            {research.reads.map((entry) => <article key={`${entry.subreddit}:${entry.sort}`} className="automation-card">
-              <div className="li-thread-top">
-                <strong className="li-thread-name">r/{entry.subreddit} · {entry.sort}</strong>
-                <span className="li-thread-time">{entry.threads.length} thread(s)</span>
-              </div>
+        {!research ? (
+          <div className="empty-state">
+            <MessageSquare size={22} />
+            <h4 aria-level={3}>Nothing read yet</h4>
+            <p>
+              Name a subreddit above and read it. What comes back is what the listing showed,
+              unranked and unfiltered.
+            </p>
+          </div>
+        ) : research.reads.length === 0 ? (
+          <p className="empty-copy">
+            No subreddit could be read. Every name is accounted for above.
+          </p>
+        ) : (
+          <div className="automation-list">
+            {research.reads.map((entry) => (
+              <article key={`${entry.subreddit}:${entry.sort}`} className="automation-card">
+                <div className="li-thread-top">
+                  <strong className="li-thread-name">
+                    r/{entry.subreddit} · {entry.sort}
+                  </strong>
+                  <span className="li-thread-time">{entry.threads.length} thread(s)</span>
+                </div>
 
-              {/* Verbatim, and never swallowed: a read that came back short is
+                {/* Verbatim, and never swallowed: a read that came back short is
                   not a subreddit that went quiet. */}
-              {entry.degraded.length > 0 && <div className="li-degraded">
-                <strong>Read, but not all of it came back:</strong>
-                <ul>{entry.degraded.map((line) => <li key={line}>{line}</li>)}</ul>
-                <p>Anything missing is held as unknown, never as zero.</p>
-              </div>}
+                {entry.degraded.length > 0 && (
+                  <div className="li-degraded">
+                    <strong>Read, but not all of it came back:</strong>
+                    <ul>
+                      {entry.degraded.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                    <p>Anything missing is held as unknown, never as zero.</p>
+                  </div>
+                )}
 
-              {entry.threads.length === 0
-                ? <p className="empty-copy">The listing rendered no posts.</p>
-                : <div className="proof-items">
-                  {entry.threads.map((thread) => <ThreadRow
-                    key={thread.id}
-                    thread={thread}
-                    open={composing === thread.url}
-                    body={replyBody}
-                    posting={posting}
-                    error={composing === thread.url ? replyError : null}
-                    onOpen={() => openComposer(thread.url)}
-                    onCancel={() => { setComposing(null); setReplyBody(''); setReplyError(null); }}
-                    onBody={setReplyBody}
-                    onPost={() => void postComment(thread.url)}
-                  />)}
-                </div>}
-            </article>)}
-          </div>}
-    </section>
-  </div>;
+                {entry.threads.length === 0 ? (
+                  <p className="empty-copy">The listing rendered no posts.</p>
+                ) : (
+                  <div className="proof-items">
+                    {entry.threads.map((thread) => (
+                      <ThreadRow
+                        key={thread.id}
+                        thread={thread}
+                        open={composing === thread.url}
+                        body={replyBody}
+                        posting={posting}
+                        error={composing === thread.url ? replyError : null}
+                        onOpen={() => openComposer(thread.url)}
+                        onCancel={() => {
+                          setComposing(null);
+                          setReplyBody('');
+                          setReplyError(null);
+                        }}
+                        onBody={setReplyBody}
+                        onPost={() => void postComment(thread.url)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
 }
 
 /**
@@ -443,7 +625,17 @@ export function RedditScreen({ setToast }: { setToast: (message: string) => void
  * it and what the last post attempt said all live one level up, so opening a
  * second composer cannot leave a half-written reply behind in the first.
  */
-function ThreadRow({ thread, open, body, posting, error, onOpen, onCancel, onBody, onPost }: {
+function ThreadRow({
+  thread,
+  open,
+  body,
+  posting,
+  error,
+  onOpen,
+  onCancel,
+  onBody,
+  onPost
+}: {
   thread: RedditThread;
   open: boolean;
   body: string;
@@ -456,58 +648,87 @@ function ThreadRow({ thread, open, body, posting, error, onOpen, onCancel, onBod
 }) {
   const author = authorHandle(thread.author);
 
-  return <div className="proof-item">
-    <div className="li-thread-top">
-      <a className="li-thread-name" href={thread.url} target="_blank" rel="noopener noreferrer">
-        {thread.title} <ExternalLink size={11} />
-      </a>
-      <span className="li-thread-time">{thread.createdAt ? relativeTime(thread.createdAt) : '—'}</span>
-    </div>
+  return (
+    <div className="proof-item">
+      <div className="li-thread-top">
+        <a className="li-thread-name" href={thread.url} target="_blank" rel="noopener noreferrer">
+          {thread.title} <ExternalLink size={11} />
+        </a>
+        <span className="li-thread-time">
+          {thread.createdAt ? relativeTime(thread.createdAt) : '—'}
+        </span>
+      </div>
 
-    <p className="li-thread-meta">
-      <span>{author ?? <span className="li-unknown">author unknown</span>}</span>
-      <span>· {countOf(thread.score)} points</span>
-      <span>· {countOf(thread.comments)} comments</span>
-    </p>
+      <p className="li-thread-meta">
+        <span>{author ?? <span className="li-unknown">author unknown</span>}</span>
+        <span>· {countOf(thread.score)} points</span>
+        <span>· {countOf(thread.comments)} comments</span>
+      </p>
 
-    {open
-      ? <div className="li-composer">
-        <label className="li-block-label">Your reply
-          <textarea
-            rows={4}
-            value={body}
-            onChange={(event) => onBody(event.target.value)}
-            placeholder="Write the comment. Trevra posts the words you approved and does not compose them."
-          />
-        </label>
+      {open ? (
+        <div className="li-composer">
+          <label className="li-block-label">
+            Your reply
+            <textarea
+              rows={4}
+              value={body}
+              onChange={(event) => onBody(event.target.value)}
+              placeholder="Write the comment. Trevra posts the words you approved and does not compose them."
+            />
+          </label>
 
-        {error && <>
-          <div className="error-banner">{error}</div>
-          {/* The copy has to say this, not just the code: an operator who presses
+          {error && (
+            <>
+              <div className="error-banner">{error}</div>
+              {/* The copy has to say this, not just the code: an operator who presses
               a Reply button again after an error is not retrying, they are
               posting a second comment. */}
-          <p className="li-hint">
-            <CircleAlert size={13} /> There is no retry, on purpose. The comment may already be live — Reddit can
-            accept a post and still fail to say so — and a duplicate cannot be un-posted. Open the thread and look
-            before you send this again.
-          </p>
-        </>}
+              <p className="li-hint">
+                <CircleAlert size={13} /> There is no retry, on purpose. The comment may already be
+                live — Reddit can accept a post and still fail to say so — and a duplicate cannot be
+                un-posted. Open the thread and look before you send this again.
+              </p>
+            </>
+          )}
 
-        <div className="panel-footer li-composer-foot">
-          <span>
-            <b>This posts the comment now.</b> No queue, no approval step, no safety gate between this button and
-            r/{thread.subreddit ?? 'the thread'} — the account signed in above is the one that will have said it.
-          </span>
-          <div className="li-signin-actions">
-            <button className="secondary-button" type="button" disabled={posting} onClick={onCancel}>Cancel</button>
-            <button className="primary-button" type="button" disabled={posting || !body.trim()} onClick={onPost}>
-              {posting ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />} Post comment
-            </button>
+          <div className="panel-footer li-composer-foot">
+            <span>
+              {!body.trim() ? (
+                'Type a reply above — an empty comment has nothing to post.'
+              ) : (
+                <>
+                  <b>This posts the comment now.</b> No queue, no approval step, no safety gate
+                  between this button and r/{thread.subreddit ?? 'the thread'} — the account signed
+                  in above is the one that will have said it.
+                </>
+              )}
+            </span>
+            <div className="li-signin-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={posting}
+                onClick={onCancel}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={posting || !body.trim()}
+                onClick={onPost}
+              >
+                {posting ? <LoaderCircle className="spin" size={15} /> : <Send size={15} />} Post
+                comment
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-      : <button className="secondary-button" type="button" onClick={onOpen}>
-        <Send size={13} /> Reply
-      </button>}
-  </div>;
+      ) : (
+        <button className="secondary-button" type="button" onClick={onOpen}>
+          <Send size={13} /> Reply
+        </button>
+      )}
+    </div>
+  );
 }
