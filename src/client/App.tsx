@@ -97,6 +97,7 @@ import {
 } from './ui/route';
 import { SeatPauseButton, StopBar, useStopControls } from './ui/StopBar';
 import { formatEvery } from './ui/duration';
+import { scrollToId } from './ui/scrollToId';
 import { formatMoment } from './views/inspector';
 import { LedgerView } from './views/LedgerView';
 import { LoopCostView, LoopView } from './views/LoopView';
@@ -662,42 +663,34 @@ const HIDDEN_LIVE_REGION: React.CSSProperties = {
   pointerEvents: 'none'
 };
 
-/* --------------------------------------------------------------------------
- * Setup, split into routes.
- *
- * It used to be one unbroken scroll of agent access, keys, spending,
- * connections, imports, autopilot, limits and modules, with a jump strip on
- * top. Changing a spend cap meant scrolling past all of it, and a jump is not
- * a URL: nobody could be sent a link to the limits.
- * -------------------------------------------------------------------------- */
-
 /**
- * `spend` is deliberately NOT in here.
- *
- * It was a tab that rendered the Agent access screen and then scroll-jumped
- * inside it, so the strip underlined a section you were not on and the title
- * named a screen that does not exist. The block's own reasoning is why it
- * cannot be split out: where your key goes, your key, and what it may spend
- * are one decision in one order, and a separate screen would ask an operator
- * to set a cap for a key nobody has asked them for yet.
- *
- * So `/setup/spend` survives as a DEEP LINK -- "Change the cap" on the cost
- * screen still points at it, and it still lands on the cap -- and stops
- * pretending to be a peer of the six screens that are real.
+ * Setup is two screens. Access is what may reach the workspace; Workspace is
+ * what the workspace itself holds. Everything else is a redirect kept for
+ * bookmarks -- a URL that used to name a tab now names a section anchor.
  */
-const SETUP_ROUTES: Array<{ sub: string; label: string; advanced?: true }> = [
-  { sub: 'agent', label: 'Agent access' },
-  { sub: 'data', label: 'Connections' },
-  // Safety controls stay visible. They are not expert configuration even when
-  // most people change them rarely.
-  { sub: 'limits', label: 'Limits' },
-  { sub: 'team', label: 'Team' },
-  { sub: 'reddit', label: 'Reddit', advanced: true },
-  { sub: 'skills', label: 'Skills', advanced: true }
-];
+const SETUP_TABS = [
+  { sub: '', label: 'Access', path: '/setup' },
+  { sub: 'workspace', label: 'Workspace', path: '/setup/workspace' }
+] as const;
 
-const SETUP_PRIMARY_ROUTES = SETUP_ROUTES.filter((entry) => !entry.advanced);
-const SETUP_ADVANCED_ROUTES = SETUP_ROUTES.filter((entry) => entry.advanced);
+const SETUP_LEGACY_REDIRECTS: Record<string, string> = {
+  agent: '/setup',
+  spend: '/setup',
+  data: '/setup/workspace',
+  limits: '/setup/workspace',
+  team: '/setup/workspace',
+  skills: '/setup/workspace',
+  reddit: '/research',
+  seat: '/outreach',
+  research: '/research'
+};
+
+/** Legacy sub -> the section it should land on inside Workspace. */
+const SETUP_LEGACY_ANCHORS: Record<string, string> = {
+  data: 'connections',
+  limits: 'limits',
+  team: 'team'
+};
 
 function SetupView({
   route,
@@ -716,87 +709,70 @@ function SetupView({
   setBusyId: (id: string | null) => void;
   onNavigate: (path: string) => void;
 }) {
-  // `/setup` on its own is agent access: nothing else in Trevra works until
-  // an agent can reach the workspace, so it is both the first tab and the
-  // default one. See docs/app-spec.md §9.
-  const sub = route.sub === '' ? 'agent' : route.sub;
-
-  // `/setup/spend` is a deep link into the Agent access screen, not a screen.
-  // The strip below underlines Agent access for it, because that is where the
-  // reader ends up.
-  const navSub = sub === 'spend' ? 'agent' : sub;
-
-  // LinkedIn configuration now has one home: Outreach → Settings. Keep the old
-  // Setup URL as a redirect so bookmarks do not strand anyone on a duplicate screen.
-  useEffect(() => {
-    if (sub === 'seat') onNavigate('/outreach');
-  }, [sub, onNavigate]);
+  const sub = route.sub;
+  // `/setup/team/:id` is the accept-invitation link from an email. It is a
+  // full screen with no tabs: the reader has no workspace to configure yet.
+  const invitationId = sub === 'team' ? route.id : null;
+  const [anchor, setAnchor] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.location.pathname === '/setup/research') {
-      replaceNavigate('/research');
-    }
-  }, []);
+    if (invitationId) return;
+    const target = SETUP_LEGACY_REDIRECTS[sub];
+    if (!target) return;
+    setAnchor(SETUP_LEGACY_ANCHORS[sub] ?? null);
+    replaceNavigate(target);
+  }, [sub, invitationId]);
 
   useEffect(() => {
-    if (sub !== 'spend') return;
-    // The block is inside a panel that renders nothing until its own read
-    // lands, so the element is not there on the first frame. Look for it for a
-    // couple of seconds and then stop -- a deployment without the hosted agent
-    // has no such block at all, and hunting forever would be a leak.
-    let tries = 0;
-    const timer = window.setInterval(() => {
-      const target = document.getElementById('setup-spend');
-      if (target) {
-        window.clearInterval(timer);
-        target.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
-        // The caret follows the eye, so the keyboard carries on from the jump
-        // rather than from the top of the page.
-        if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
-        target.focus({ preventScroll: true });
-        return;
-      }
-      if (++tries > 20) window.clearInterval(timer);
-    }, 100);
-    return () => window.clearInterval(timer);
-  }, [sub]);
+    if (!anchor) return;
+    const stop = scrollToId(anchor);
+    setAnchor(null);
+    return stop;
+  }, [anchor]);
+
+  if (invitationId) {
+    return (
+      <TeamSettingsView route={route} setToast={setToast} reload={reload} onNavigate={onNavigate} />
+    );
+  }
+
+  const onWorkspace = sub === 'workspace';
 
   return (
     <div className="page-stack">
       <nav className="setup-nav" aria-label="Setup sections">
-        {SETUP_PRIMARY_ROUTES.map((entry) => (
+        {SETUP_TABS.map((tab) => (
           <button
-            key={entry.sub}
+            key={tab.path}
             type="button"
-            className={navSub === entry.sub ? 'is-active' : undefined}
-            aria-current={navSub === entry.sub ? 'page' : undefined}
-            onClick={() => onNavigate(`/setup/${entry.sub}`)}
+            className={(tab.sub === 'workspace') === onWorkspace ? 'is-active' : undefined}
+            aria-current={(tab.sub === 'workspace') === onWorkspace ? 'page' : undefined}
+            onClick={() => onNavigate(tab.path)}
           >
-            {entry.label}
+            {tab.label}
           </button>
         ))}
-        <label
-          className={`setup-more-select${SETUP_ADVANCED_ROUTES.some((entry) => entry.sub === navSub) ? ' is-active' : ''}`}
-        >
-          <span className="sr-only">More setup sections</span>
-          <select
-            aria-label="More setup sections"
-            value={SETUP_ADVANCED_ROUTES.some((entry) => entry.sub === navSub) ? navSub : ''}
-            onChange={(event) => {
-              if (event.target.value) onNavigate(`/setup/${event.target.value}`);
-            }}
-          >
-            <option value="">More…</option>
-            {SETUP_ADVANCED_ROUTES.map((entry) => (
-              <option key={entry.sub} value={entry.sub}>
-                {entry.label}
-              </option>
-            ))}
-          </select>
-        </label>
       </nav>
 
-      {(sub === 'agent' || sub === 'spend') && (
+      {onWorkspace ? (
+        <>
+          <ConnectionsView
+            data={data}
+            reload={reload}
+            setToast={setToast}
+            busyId={busyId}
+            setBusyId={setBusyId}
+          />
+          <LimitsView setToast={setToast} />
+          <LinkedInExclusions setToast={setToast} />
+          <TeamSettingsView
+            route={route}
+            setToast={setToast}
+            reload={reload}
+            onNavigate={onNavigate}
+          />
+        </>
+      ) : (
         <>
           <AgentAccessPanel setToast={setToast} />
           <HostedAgentPanel
@@ -804,36 +780,6 @@ function SetupView({
             onInspectRun={(runId) => onNavigate(`/ledger/run/${runId}`)}
           />
         </>
-      )}
-
-      {sub === 'data' && (
-        <ConnectionsView
-          data={data}
-          reload={reload}
-          setToast={setToast}
-          busyId={busyId}
-          setBusyId={setBusyId}
-        />
-      )}
-
-      {sub === 'reddit' && <RedditScreen setToast={setToast} />}
-
-      {sub === 'skills' && <SkillsView setToast={setToast} onNavigate={onNavigate} />}
-
-      {sub === 'limits' && (
-        <>
-          <LimitsView setToast={setToast} />
-          <LinkedInExclusions setToast={setToast} />
-        </>
-      )}
-
-      {sub === 'team' && (
-        <TeamSettingsView
-          route={route}
-          setToast={setToast}
-          reload={reload}
-          onNavigate={onNavigate}
-        />
       )}
     </div>
   );
@@ -2386,7 +2332,7 @@ function ConnectionsView({
 
   return (
     <div className="page-stack">
-      <section className="page-panel" id="setup-connections">
+      <section className="page-panel" id="connections">
         <div className="section-heading">
           <div>
             <h3 aria-level={2}>Connected accounts</h3>
@@ -2809,7 +2755,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
 
   return (
     <div className="page-stack">
-      <section className="page-panel policy-panel" id="setup-limits">
+      <section className="page-panel policy-panel" id="limits">
         <div className="section-heading">
           <div>
             <h3 aria-level={2}>
@@ -3121,7 +3067,7 @@ function viewTitle(route: Route): string {
   }
   if (route.section === 'ledger') return 'Run ledger';
   if (route.section === 'research') return 'Research';
-  const sub = route.sub === 'spend' ? 'agent' : route.sub;
-  const setup = SETUP_ROUTES.find((entry) => entry.sub === sub);
-  return setup ? `Setup · ${setup.label}` : 'Setup';
+  if (route.section === 'setup')
+    return route.sub === 'workspace' ? 'Setup · Workspace' : 'Setup · Access';
+  return 'Setup';
 }

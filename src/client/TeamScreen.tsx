@@ -238,7 +238,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
 
   return (
     <div className="page-stack">
-      <section className="page-panel">
+      <section className="page-panel" id="team">
         <div className="section-heading">
           <div>
             <h3>Who is in this workspace</h3>
