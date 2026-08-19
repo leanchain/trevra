@@ -16,6 +16,7 @@ import {
   Settings2,
   ShieldCheck,
   Trash2,
+  Undo2,
   Unplug,
   Users
 } from 'lucide-react';
@@ -30,25 +31,32 @@ import {
   getLinkedInLimits,
   getLinkedInManagerSeats,
   getLinkedInSeat,
+  getLinkedInWithdrawalCandidates,
+  getLinkedInWithdrawals,
   getLinkedInWorkerStatus,
   loginLinkedInSeat,
   pauseLinkedInSeat,
+  queueLinkedInWithdrawals,
   resumeLinkedInSeat,
   revokeLinkedInCompanionDevice,
   saveLinkedInCredentials,
+  syncLinkedInPendingInvites,
   updateLinkedInManagerSeat,
   type LinkedInCompanionStatus,
   type LinkedInDetectedProfile,
   type LinkedInLimitsReport,
   type LinkedInSeat,
   type LinkedInSeatResponse,
+  type LinkedInWithdrawalCandidates,
   type LinkedInWorkerStatus,
-  type PacedKind
+  type PacedKind,
+  type WithdrawalRecord,
+  type WithdrawalStatus
 } from './api';
-import { errorMessage, useOutreachRefresh } from './LinkedInSafety';
-import { relativeTime } from './LinkedInScreen';
+import { errorMessage, reloadOutreach, useOutreachRefresh } from './LinkedInSafety';
+import { relativeTime, sourceNote } from './LinkedInScreen';
 import { MAINTENANCE_TASK_LABELS, formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
-import { LiStat } from './LinkedInViz';
+import { ConfidenceTag, LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 import { Hint } from './ui/hint';
 
@@ -94,6 +102,26 @@ const ACTIVE_ACCOUNT_EVENT = 'trevra:linkedin-active-account';
  * A form that only learns the rule from a 400 is a form that taught nothing.
  */
 export const ACCOUNT_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * A name, mechanically reduced to a legal short key.
+ *
+ * Not a suggestion box's slugify -- it produces exactly what
+ * `ACCOUNT_KEY_PATTERN` accepts, so the field it fills in never opens on a
+ * value it would itself reject. Accents fold to plain letters first, because
+ * "Priya" and "Priyá" naming the same person should not turn into two
+ * different keys by accident of a keyboard.
+ */
+function slugifyAccountKey(label: string): string {
+  return label
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+}
 
 function readActiveAccountKey(): string {
   try {
@@ -1964,6 +1992,8 @@ function AccountPanel({
         />
       </section>
 
+      <PendingInviteWithdrawalsSection setToast={setToast} />
+
       {confirmPause && (
         <ConfirmDrawer
           title={`Pause ${account.label}?`}
@@ -2021,6 +2051,433 @@ function AccountPanel({
   );
 }
 
+/* -------------------------------------------------------------------------
+ * Pending invites, and withdrawing the stale ones.
+ *
+ * Ported from the old `/setup/seat` screen (`LinkedInSeatSetup` in
+ * LinkedInScreen.tsx) when that route became a redirect to Outreach ->
+ * Settings: the capability had no reachable UI without a new home, and this
+ * is it -- a collapsed section on the account it acts on, opened on demand
+ * rather than fetched on every visit to this already-busy screen.
+ * ---------------------------------------------------------------------- */
+
+const WITHDRAWAL_STATUS_LABELS: Record<WithdrawalStatus, string> = {
+  queued: 'Queued',
+  withdrawn: 'Withdrawn',
+  stale: 'Gone from LinkedIn',
+  failed: 'Failed',
+  held: 'Held back by your limits'
+};
+
+/**
+ * The outstanding-invite backlog, and the two steps that clear it.
+ *
+ * WHY A BACKLOG IS A CEILING AT ALL. Every other count in this product is
+ * rolling, because every other ceiling is about RATE. "Pending" has no window:
+ * an invite sent in March is still occupying a slot in June, still consuming
+ * the weekly invite capacity on LinkedIn's side, and still a permanent zero in
+ * the acceptance numerator. Sending more does not return that capacity;
+ * withdrawing the stale ones does.
+ *
+ * THE TWO STEPS ARE NOT ONE STEP, and the whole panel is shaped to make that
+ * unmistakable. `Queue withdrawals` writes reversible database rows and its
+ * response ALWAYS says `withdrawn: 0` -- the local worker claims each row,
+ * re-runs the entire safety gate against it, and clicks at 30-120s gaps,
+ * because clearing a backlog in one burst is the same volume spike as sending
+ * one. A panel that reported "12 withdrawn" here would be read as broken the
+ * first moment somebody checked LinkedIn.
+ */
+function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) => void }) {
+  const [backlog, setBacklog] = useState<LinkedInWithdrawalCandidates | null>(null);
+  const [queue, setQueue] = useState<WithdrawalRecord[]>([]);
+  /**
+   * The operator's own staleness threshold, or null for the server's.
+   *
+   * `GET /api/linkedin/withdrawals/candidates` reports `staleAfterDays` -- the
+   * threshold it actually applied -- and this screen sat a hardcoded 21 next to
+   * it, so a deployment that calls an invite stale at 14 was queried at 21 with
+   * nothing on screen saying the two had parted. Null means the first read asks
+   * for whatever the server considers stale, and the field then shows that
+   * number. Typing in it is an override, and an override wins from then on.
+   */
+  const [olderThanDays, setOlderThanDays] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<'sync' | 'queue' | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState('');
+  /** A 409 from the sync route: something to do on this machine, in the server's words. */
+  const [blocked, setBlocked] = useState('');
+
+  /** What this server calls stale, once it has said so. Null before the first read. */
+  const staleAfterDays = backlog?.staleAfterDays ?? null;
+  /** The threshold actually in force: the operator's override, or the server's own. */
+  const days = olderThanDays ?? staleAfterDays;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [candidates, withdrawals] = await Promise.all([
+        getLinkedInWithdrawalCandidates(olderThanDays === null ? {} : { olderThanDays }),
+        getLinkedInWithdrawals({ limit: 50 })
+      ]);
+      setBacklog(candidates);
+      setQueue(withdrawals);
+      setError('');
+    } catch (err) {
+      setError(
+        errorMessage(
+          err,
+          'Unable to read your unanswered invites. Nothing was changed — try again.'
+        )
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [olderThanDays]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+  useOutreachRefresh(load);
+  const hasQueuedWithdrawals = queue.some((record) => record.status === 'queued');
+  useEffect(() => {
+    if (!hasQueuedWithdrawals) return;
+    const timer = window.setInterval(() => {
+      void load();
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [hasQueuedWithdrawals, load]);
+
+  const sync = async () => {
+    setBusy('sync');
+    setBlocked('');
+    setError('');
+    try {
+      const result = await syncLinkedInPendingInvites();
+      // A PARTIAL READ IS NOT A CLEAN ONE. `degraded` names what that page did
+      // not give up, and dropping it reported a half-read invitation list as a
+      // complete one -- which then makes every count below look authoritative.
+      setToast(
+        `${result.listed} invitation(s) still showing on LinkedIn · ${result.matched} that Trevra sent, ` +
+          `${result.unmatched} you sent yourself, ${result.disappeared} no longer shown.` +
+          `${result.truncated ? ' The list was longer than one pass reads.' : ''}` +
+          `${
+            result.degraded.length > 0
+              ? ` Partial reading — ${result.degraded.length} thing(s) could not be read: ${result.degraded.join(', ')}.`
+              : ''
+          }`
+      );
+      await load();
+    } catch (err) {
+      const message = errorMessage(err, 'Unable to re-read the sent-invitations list');
+      if (err instanceof ApiError && err.status === 409) setBlocked(message);
+      else setError(message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const enqueue = async () => {
+    setBusy('queue');
+    setError('');
+    try {
+      const result = await queueLinkedInWithdrawals(days === null ? {} : { olderThanDays: days });
+      setConfirming(false);
+      setToast(
+        `${result.queued} withdrawal(s) queued${result.duplicates > 0 ? `, ${result.duplicates} already queued` : ''}. ` +
+          `${result.withdrawn} have actually been withdrawn, and queueing never withdraws anything by itself. ` +
+          'They go one at a time, spaced out, inside your working hours.'
+      );
+      await reloadOutreach();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to queue those withdrawals'));
+      setConfirming(false);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const pending = backlog?.pendingInvites ?? 0;
+  const ceiling = backlog?.maxOutstandingInvites ?? 0;
+  const candidates = backlog?.candidates ?? [];
+  const over = ceiling > 0 && pending >= ceiling;
+  const share = ceiling > 0 ? Math.min(1, pending / ceiling) : 0;
+
+  return (
+    <section className="page-panel">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}>Invites nobody has answered</h3>
+          <p>
+            These do not expire out of the count. An invite that is neither accepted nor withdrawn
+            keeps using up your weekly invite capacity on LinkedIn’s side, and sending more does not
+            give any of it back.
+          </p>
+        </div>
+        <ConfidenceTag confidence="REPORTED" source={sourceNote('REPORTED')} compact />
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      {blocked && (
+        <div className="li-connect-blocked">
+          <strong>
+            <CircleAlert size={14} /> One thing has to happen on your machine first.
+          </strong>
+          <p className="li-blocked-message">{blocked}</p>
+          <p>Nothing was read and nothing was queued.</p>
+        </div>
+      )}
+
+      <div className="li-backlog">
+        <div className="li-backlog-head">
+          <strong className={over ? 'li-backlog-over' : ''}>{pending}</strong>
+          <span>
+            of {ceiling || '—'} unanswered invites{over ? ' — at or past the limit' : ''}
+          </span>
+        </div>
+        <div
+          className="li-backlog-meter"
+          role="img"
+          aria-label={
+            ceiling > 0
+              ? `${pending} unanswered invites against a reported limit of ${ceiling}.`
+              : `${pending} unanswered invites. No limit was reported for this account.`
+          }
+        >
+          <i
+            className={over ? 'li-backlog-fill li-backlog-fill-over' : 'li-backlog-fill'}
+            style={{ width: `${share * 100}%` }}
+          />
+        </div>
+        <p className="li-hint">
+          {over
+            ? 'Trevra will not send another invite past this line, and it is right not to — LinkedIn counts the unanswered ' +
+              'ones too. Withdrawing the oldest ones is the only thing that gives the capacity back.'
+            : 'Trevra stops sending invites once this reaches the limit. The limit itself is a practitioner estimate rather ' +
+              'than a published number — it comes from the same reporting that puts acceptance at 25–30% above 100 invites a week.'}
+        </p>
+      </div>
+
+      <div className="li-filter-row">
+        <label>
+          Pending longer than
+          <input
+            type="number"
+            min={0}
+            max={365}
+            value={days ?? ''}
+            onChange={(event) =>
+              setOlderThanDays(Math.max(0, Math.trunc(Number(event.target.value) || 0)))
+            }
+          />
+        </label>
+        <span className="li-filter-label">days</span>
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={busy !== null}
+          onClick={() => void sync()}
+        >
+          {busy === 'sync' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}{' '}
+          Sync from LinkedIn
+        </button>
+        {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the backlog" />}
+      </div>
+      <p className="panel-note">
+        Syncing opens LinkedIn’s own Sent invitations list in a browser on this machine and records
+        only what that page shows. Accepted, declined, expired and withdrawn all look identical
+        there, so an invite that has vanished from the list is recorded as vanished — Trevra will
+        not guess which of the four it was.
+      </p>
+
+      <h4 className="li-subhead" aria-level={3}>
+        Old enough to withdraw ({candidates.length})
+      </h4>
+      {candidates.length === 0 ? (
+        <p className="empty-copy">
+          Nothing has been waiting longer than {days ?? '—'} day(s). This is a shortlist, not a
+          decision — it shows what
+          <em> would</em> be queued, before anything is.
+        </p>
+      ) : (
+        <div className="li-table-scroll">
+          <table className="li-table">
+            <thead>
+              <tr>
+                <th>Person</th>
+                <th>Waiting</th>
+                <th>Campaign</th>
+              </tr>
+            </thead>
+            <tbody>
+              {candidates.map((candidate) => (
+                <tr key={candidate.actionId}>
+                  <td className="li-target">{candidate.targetRef}</td>
+                  <td className="li-num">
+                    {candidate.pendingDays} day{candidate.pendingDays === 1 ? '' : 's'}
+                  </td>
+                  <td>{candidate.campaignId ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="li-two-step">
+        <Undo2 size={20} />
+        <div>
+          <strong>Queueing is not withdrawing. Pressing the button withdraws nothing.</strong>
+          <p>
+            It puts one reversible line in the queue per invite. The worker on your machine then
+            takes them one at a time, re-runs every safety check against each, and clicks Withdraw
+            at random 30–120 second gaps inside your working hours — because clearing a backlog in
+            one burst looks exactly like a sending spree. The queue below is where you see what
+            actually happened.
+          </p>
+        </div>
+      </div>
+
+      <div className="panel-footer">
+        <span>
+          Withdrawing does not un-send an invite. Trevra goes on counting the original against every
+          rolling limit, so withdrawing and re-sending cannot buy you extra volume.
+        </span>
+        <button
+          className="primary-button"
+          type="button"
+          disabled={busy !== null || candidates.length === 0}
+          onClick={() => setConfirming(true)}
+        >
+          {busy === 'queue' ? <LoaderCircle className="spin" size={15} /> : <Undo2 size={15} />}{' '}
+          Queue {candidates.length} withdrawal(s)
+        </button>
+      </div>
+
+      {queue.length > 0 && (
+        <>
+          <h4 className="li-subhead" aria-level={3}>
+            The withdrawal queue
+          </h4>
+          <div className="li-table-scroll">
+            <table className="li-table">
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Status</th>
+                  <th>Waited</th>
+                  <th>Timing</th>
+                  <th>Finished</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue.map((record) => {
+                  const visit = formatVisitWindow(
+                    record.nextRunAt,
+                    record.nextRunWindowEndAt,
+                    record.nextRunTimezone
+                  );
+                  const wait = queueWaitCopy(record.waitingFor);
+                  return (
+                    <tr key={record.id}>
+                      <td className="li-target">{record.targetRef}</td>
+                      <td>
+                        <span className={`li-chip li-wd-${record.status}`}>
+                          {WITHDRAWAL_STATUS_LABELS[record.status] ?? record.status}
+                        </span>
+                        {record.detail && <small className="li-failure">{record.detail}</small>}
+                      </td>
+                      <td className="li-num">
+                        {record.pendingDays === null ? '—' : `${record.pendingDays}d`}
+                      </td>
+                      <td className="li-queue-timing">
+                        {record.status === 'queued' && record.claimedAt ? (
+                          <>
+                            <strong>Running now</strong>
+                            <small>Picked up {relativeTime(record.claimedAt)}</small>
+                          </>
+                        ) : record.status === 'queued' ? (
+                          <>
+                            <strong>
+                              {wait ??
+                                (visit
+                                  ? 'Expected in LinkedIn visit'
+                                  : 'Waiting for next eligible visit')}
+                            </strong>
+                            {visit && <small>{visit}</small>}
+                          </>
+                        ) : (
+                          <>
+                            <strong>Queued {relativeTime(record.queuedAt)}</strong>
+                          </>
+                        )}
+                      </td>
+                      <td>
+                        {record.finishedAt ? new Date(record.finishedAt).toLocaleString() : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {confirming && (
+        <ConfirmDrawer
+          title={`Queue ${candidates.length} withdrawal(s)?`}
+          busy={busy === 'queue'}
+          body={
+            <>
+              <p>
+                <b>This queues them. It withdraws nothing.</b> Trevra will report none withdrawn,
+                and that is correct — the work is filed for the browser on your machine to carry
+                out.
+              </p>
+              <p>
+                It takes one at a time, re-runs every safety check against it, and clicks Withdraw
+                at random 30–120 second gaps inside your working hours. Nothing happens at all while
+                this account is paused.
+              </p>
+              <p>
+                Each withdrawal is real on LinkedIn and cannot be taken back — you can invite the
+                person again, but this invite is gone. Trevra still counts the original invite
+                against every rolling limit.
+              </p>
+            </>
+          }
+          confirmLabel={`Queue ${candidates.length} withdrawal(s)`}
+          onConfirm={() => void enqueue()}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+    </section>
+  );
+}
+
+/**
+ * The same panel, collapsed behind a toggle on the account it acts on.
+ *
+ * Nothing above fetches until this is opened: `PendingInviteWithdrawals`
+ * mounts only once `open` is true, so an account you never expand never
+ * spends a request on its withdrawal backlog. `.li-manual-fields` rather than
+ * the manager screen's `.mgr-inputs` -- this page runs inside `.outreach-simple`,
+ * which hides `.mgr-inputs` outright (see styles.css), so that idiom would
+ * have shipped a toggle nobody could ever open.
+ */
+function PendingInviteWithdrawalsSection({ setToast }: { setToast: (message: string) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="li-manual-fields" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>
+        <Undo2 size={13} /> Withdraw stale pending invites
+      </summary>
+      {open && <PendingInviteWithdrawals setToast={setToast} />}
+    </details>
+  );
+}
 /* -------------------------------------------------------------------------
  * Every account at once, for the comparison the panel above cannot make.
  * ---------------------------------------------------------------------- */
@@ -2346,11 +2803,20 @@ function ProxyField({
   /** What is stored now, redacted by the server. Null for a new account or one with none. */
   proxy: LinkedInSeat['proxy'] | null;
 }) {
+  // Collapsed by default when nothing is set -- the common case -- and open by
+  // default when a proxy already routes this account, so the fact that it is
+  // configured is not hidden behind a click nobody knows to make.
+  const [open, setOpen] = useState(Boolean(proxy));
   return (
-    <>
-      <h4 className="li-subhead" aria-level={3}>
-        Outbound connection
-      </h4>
+    <details
+      className="li-manual-fields"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <Settings2 size={13} /> Outbound connection
+        {proxy && <span> — routed through {proxy.server}</span>}
+      </summary>
       <p className="li-hint">
         {proxy ? (
           <>
@@ -2402,7 +2868,7 @@ function ProxyField({
         and nothing goes out. It is never sent directly instead, because that is the one outcome you
         set a proxy to prevent.
       </p>
-    </>
+    </details>
   );
 }
 
@@ -2654,6 +3120,10 @@ function AddAccountForm({
   const ranges = safety?.operatorRanges ?? null;
   const [draft, setDraft] = useState<AccountDraft>(() => emptyDraft(BROWSER_TIMEZONE, ranges));
   const [key, setKey] = useState(existingKeys.length === 0 ? OWNER_ACCOUNT_KEY : '');
+  // The very first account keeps its fixed 'owner' key regardless of what it is
+  // named -- that key is a convention other reads lean on, not a name's slug --
+  // so it starts already 'touched' and the name never overwrites it.
+  const [keyTouched, setKeyTouched] = useState(existingKeys.length === 0);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState('');
   const [wall, setWall] = useState('');
@@ -2741,7 +3211,14 @@ function AddAccountForm({
           Name
           <input
             value={draft.label}
-            onChange={(event) => change({ label: event.target.value })}
+            onChange={(event) => {
+              const label = event.target.value;
+              change({ label });
+              // Smart default: the key is a mechanical slug of the name until the
+              // operator types into the key field directly, at which point their
+              // spelling wins for good.
+              if (!keyTouched) setKey(slugifyAccountKey(label));
+            }}
             placeholder="Priya (sales)"
             autoComplete="off"
           />
@@ -2753,7 +3230,10 @@ function AddAccountForm({
           Short key
           <input
             value={key}
-            onChange={(event) => setKey(event.target.value)}
+            onChange={(event) => {
+              setKeyTouched(true);
+              setKey(event.target.value);
+            }}
             placeholder="priya"
             autoComplete="off"
             spellCheck={false}
@@ -2761,8 +3241,8 @@ function AddAccountForm({
             title="Letters, numbers, dashes and underscores, starting with a letter or a number. No spaces, up to 64 characters."
           />
           <small className="li-acct-range">
-            Letters, numbers, dashes, underscores. Permanent — it is how exports and queues name
-            this account.
+            Filled in from the name above until you edit it. Letters, numbers, dashes, underscores.
+            Permanent — it is how exports and queues name this account.
           </small>
         </label>
         <TimezoneField
