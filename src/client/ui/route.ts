@@ -40,7 +40,22 @@ export const SECTIONS: readonly Section[] = ['loop', 'outreach', 'ledger', 'rese
 /** Which second segments each section answers to. */
 const SUB_ROUTES: Record<Section, readonly string[]> = {
   loop: ['', 'cost'],
-  outreach: ['', 'accounts', 'activity', 'campaigns', 'inbox', 'leads', 'manager', 'plan', 'posts'],
+  // Live: '', new, inbox, posts, settings. The rest are legacy addresses kept
+  // parseable so OutreachView can redirect them; parseRoute would otherwise
+  // flatten them to the section root and lose the anchor.
+  outreach: [
+    '',
+    'new',
+    'inbox',
+    'posts',
+    'settings',
+    'accounts',
+    'activity',
+    'campaigns',
+    'leads',
+    'manager',
+    'plan'
+  ],
   ledger: ['', 'run'],
   research: [''],
   setup: [
