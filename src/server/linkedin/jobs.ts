@@ -48,7 +48,8 @@ import {
   markPostFailed,
   markPostMissed,
   markPostPublished,
-  releasePostToScheduled
+  releasePostToScheduled,
+  sweepStalePublishing
 } from './posts.js';
 import { runManagedCampaigns, type RunnerResult } from './runner.js';
 import type { DayShapeFn } from './pacing.js';
@@ -1281,8 +1282,27 @@ async function leaveLinkedIn(page: LinkedInPage, log: (message: string) => void)
 
 /** Beyond this, a due post is stale enough that firing it late is worse than not firing it at all. */
 const POST_GRACE_MS = 6 * 3_600_000;
-/** Small and deliberate: posting is rare and slow (a full compose-and-type pass per post), unlike the invite/DM queue. */
-const POSTS_PER_WORKSPACE_TICK = 5;
+/**
+ * ONE ACTUAL PUBLISH per tick, deliberately. Typing a 3000-character post at
+ * human speed takes the driver 5-9 minutes, and this loop runs SERIALLY inside
+ * the same per-workspace tick as the paced invite/DM queue -- five posts back
+ * to back would hold that queue for the better part of half an hour. A
+ * workspace with several posts due at once drains them one tick at a time.
+ *
+ * It counts PUBLISH ATTEMPTS, not claims: a post marked 'missed' or a seat
+ * whose session will not open costs one UPDATE and no typing at all, so
+ * neither may consume the budget -- otherwise one dead seat's post would eat
+ * the whole tick and starve every other seat in the workspace, which is the
+ * exact bug `failedSeats`/`excludeSeatKeys` exists to prevent.
+ */
+const POSTS_PER_WORKSPACE_TICK = 1;
+
+/**
+ * The tick still has to end. Claims that spend no publish budget (missed,
+ * held) are cheap but not free, and without this a workspace holding hundreds
+ * of long-expired posts would sweep them all in one pass.
+ */
+const MAX_POST_CLAIMS_PER_TICK = 20;
 
 /**
  * Publish every LinkedIn post that has come due for one workspace, up to
@@ -1294,9 +1314,16 @@ const POSTS_PER_WORKSPACE_TICK = 5;
  * 'missed' rather than fired -- publishing hours later than scheduled is worse
  * than not publishing at all. A companion session that will not open, or that
  * turns out to be signed into the wrong account, HOLDS the post -- released
- * back to 'scheduled' for the next tick to retry -- and stops this workspace's
- * loop, since nothing else here will get a session open either. Only an actual
- * publish attempt that comes back `!ok` is terminal ('failed', never retried).
+ * back to 'scheduled' for the next tick to retry -- and records that seat in
+ * `failedSeats`, which `claimNextDuePost`'s `excludeSeatKeys` then keeps out
+ * of every remaining claim this tick. The loop CONTINUES rather than aborting:
+ * a different, healthy seat in the same workspace still has its due posts
+ * reached. Only an actual publish attempt that comes back `!ok` is terminal
+ * ('failed', never retried).
+ *
+ * Opens by sweeping posts left in 'publishing' by a worker that died between
+ * the claim and the outcome -- see `sweepStalePublishing` for why that state
+ * is otherwise unrecoverable.
  */
 export async function runLinkedInPostTick(
   db: Db,
@@ -1317,7 +1344,14 @@ export async function runLinkedInPostTick(
   // this same pass.
   const failedSeats = new Set<string>();
 
-  for (let i = 0; i < POSTS_PER_WORKSPACE_TICK; i += 1) {
+  await sweepStalePublishing(db, workspaceId, now);
+
+  let attempted = 0;
+  for (
+    let claims = 0;
+    claims < MAX_POST_CLAIMS_PER_TICK && attempted < POSTS_PER_WORKSPACE_TICK;
+    claims += 1
+  ) {
     const claimed = await claimNextDuePost(db, workspaceId, now, [...failedSeats]);
     if (!claimed) break;
 
@@ -1354,6 +1388,7 @@ export async function runLinkedInPostTick(
       continue;
     }
 
+    attempted += 1;
     const body = renderPostBody(claimed.blocks);
     const result = session.driver.publishPost
       ? await session.driver.publishPost(session.page, body)
