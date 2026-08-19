@@ -5,7 +5,6 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
-  CircleAlert,
   CircleHelp,
   Compass,
   Copy,
@@ -1038,16 +1037,6 @@ function AgentCommandBox({
       <pre>
         <code>{command}</code>
       </pre>
-      {revealed ? (
-        <p className="agent-command-note">
-          This is the only time the token is shown — Trevra stores it hashed. Lost it? Create
-          another.
-        </p>
-      ) : (
-        <p className="agent-command-note">
-          Create access above and the real token drops straight into this command.
-        </p>
-      )}
       {note}
     </div>
   );
@@ -1150,12 +1139,7 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
           <h3 aria-level={2}>
             <Terminal size={18} /> Connect Claude Code or Codex
           </h3>
-          <p>
-            Trevra is run by your coding agent. Paste one line and it can read your revenue brief,
-            run jobs, and prepare work — it can never approve or send anything.
-          </p>
         </div>
-        <span className="status-pill">{active.length} connected</span>
       </div>
 
       {!revealed && (
@@ -1175,16 +1159,6 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
         revealed={Boolean(revealed)}
         copied={copiedTarget === 'claude'}
         onCopy={() => void copy('claude', claudeCommand)}
-        note={
-          <p className="agent-command-note">
-            Run this from the project directory you want Trevra wired into.{' '}
-            <code>--scope project</code> writes the server to that project's <code>.mcp.json</code>{' '}
-            instead of your global config, so it only loads there — not in every Claude Code session
-            — and can be shared with teammates via version control. Prefer it truly local and
-            unshared? Drop <code>--scope project</code> to use the default <code>local</code> scope
-            instead.
-          </p>
-        }
       />
 
       <AgentCommandBox
@@ -1473,15 +1447,7 @@ function HostedAgentPanel({
         <h3 aria-level={2}>
           <Bot size={18} /> Or let Trevra run the agent, on your key
         </h3>
-        <p>
-          The same work, the same limits, on Trevra’s side instead of yours — so it keeps going with
-          your laptop closed. It reads, researches and prepares. Like the agent above, it can never
-          approve or send anything.
-        </p>
       </div>
-      <span className="status-pill">
-        {!available ? 'Switched off' : secret ? 'Key stored' : 'Not set up'}
-      </span>
     </div>
   );
 
@@ -1624,10 +1590,6 @@ function HostedAgentPanel({
   };
 
   const capReached = budget.spentCents >= budget.monthlyCapCents && budget.monthlyCapCents > 0;
-  const spendLine =
-    budget.spentCents > 0
-      ? `${usd(budget.spentCents)} of ${usd(budget.monthlyCapCents)} used this month.`
-      : `Nothing spent this month. The cap is ${usd(budget.monthlyCapCents)} a month.`;
 
   // Two independent ways to be ready to run: a stored key against a configured
   // endpoint (BYOK), or a fully accepted subscription CLI. Either is enough --
@@ -1681,39 +1643,9 @@ function HostedAgentPanel({
             concentrated liability, and anyone who opens this to paste a key
             reads it before the fields that would take one. See the panel doc
             comment above. */}
-          <div className="byok-warning">
-            <CircleAlert size={18} />
-            <div>
-              <strong>Read this before you paste a key.</strong>
-              <p>
-                Trevra encrypts your key and uses it on your behalf. Nobody gets it back out — not
-                you, not us, not through any screen, export or support ticket. But storing it here
-                moves a real risk onto Trevra: on the hosted service, one break-in exposes the
-                stored key of every workspace, including yours. You deserve to weigh that before
-                pasting.
-              </p>
-              <p>
-                You do not have to. Your own agent on your laptop does the same work and stores no
-                key at all — that stays the default, and it stays the safer one. If you do paste a
-                key, use one you can revoke at your provider in seconds, and set the monthly cap
-                below.
-              </p>
-            </div>
-          </div>
-
           <div>
             <h4 aria-level={3}>Endpoint &amp; key</h4>
             <div className="byok-block">
-              <div className="byok-block-head">
-                <div>
-                  <h4 aria-level={3}>Where your key goes</h4>
-                  <p>
-                    Any endpoint that speaks the OpenAI format works — OpenAI, Azure, Groq,
-                    OpenRouter, Together, or a server you run yourself. Trevra ships no default and
-                    does not guess: your key goes exactly where you name here, and nowhere else.
-                  </p>
-                </div>
-              </div>
               <div className="byok-fields">
                 <label>
                   Endpoint address
@@ -1736,25 +1668,9 @@ function HostedAgentPanel({
                   />
                 </label>
               </div>
-              <p className="byok-meter-copy">
-                {config
-                  ? `Saved ${formatMoment(config.updatedAt) ?? 'earlier'}.${dirtyConfig ? ' Edited since — Save at the bottom.' : ''}`
-                  : 'Nothing saved yet. Fill in the endpoint and the model, then save at the bottom.'}
-              </p>
             </div>
 
             <div className="byok-block">
-              <div className="byok-block-head">
-                <div>
-                  <h4 aria-level={3}>Your key</h4>
-                  <p>
-                    It goes in and never comes out. Trevra keeps it encrypted, applies it at the
-                    moment of a call, and shows you the last four characters so you can find this
-                    key at your provider. There is no screen anywhere that can display it back to
-                    you.
-                  </p>
-                </div>
-              </div>
               {secret && !replacingKey ? (
                 <div className="byok-key-stored">
                   <span className="byok-key-mask">
@@ -1799,11 +1715,6 @@ function HostedAgentPanel({
                       />
                     </label>
                   </div>
-                  <p className="byok-meter-copy">
-                    {secret
-                      ? `This replaces •••• ${secret.last4} here when you save. The old key keeps working at your provider until you revoke it there.`
-                      : 'Trevra stores it encrypted and keeps it out of every log, error and transcript.'}
-                  </p>
                   {secret && (
                     <div className="byok-key-actions">
                       <button
@@ -1830,26 +1741,6 @@ function HostedAgentPanel({
                   <h4 aria-level={3}>
                     <Terminal size={15} /> Or run it through your own Claude/Codex subscription
                   </h4>
-                  <p>
-                    Instead of a metered model key, Trevra can drive this workspace's own Claude
-                    Code or Codex subscription. Same limits, same run ledger, same rule that nothing
-                    sends itself — this only changes what pays for the tokens.
-                  </p>
-                </div>
-              </div>
-
-              <div className="byok-warning">
-                <CircleAlert size={18} />
-                <div>
-                  <strong>Read this before you accept it below.</strong>
-                  <p>
-                    This uses this workspace's own personal Claude or Codex subscription, not a
-                    metered API plan. Automated, server-side use of a personal subscription may
-                    itself violate that subscription's own consumer terms, independent of anything
-                    Trevra does — and the account could be suspended for it. That risk has nothing
-                    to do with Trevra and Trevra cannot mitigate it; it is the workspace's own to
-                    weigh, for its own subscription.
-                  </p>
                 </div>
               </div>
 
@@ -1875,12 +1766,6 @@ function HostedAgentPanel({
                   />
                 </label>
               </div>
-              <p className="byok-meter-copy">
-                {cliSetup.config
-                  ? `Saved: ${cliSetup.config.cli === 'codex' ? 'Codex' : 'Claude'}, ${cliSetup.config.model}.${dirtyCliConfig ? ' Edited since — Save at the bottom.' : ''}`
-                  : 'Choose a CLI and a model, then save at the bottom.'}
-              </p>
-
               <label className="byok-risk-check">
                 <input
                   type="checkbox"
@@ -1889,19 +1774,9 @@ function HostedAgentPanel({
                   onChange={(event) => void setCliRisk(event.target.checked)}
                 />
                 <span>
-                  I understand this uses this workspace's own Claude or Codex subscription, not a
-                  metered plan. Automated, server-side use like this may itself violate that
-                  subscription's own consumer terms, independent of anything Trevra does, and the
-                  account could be suspended for it. This workspace is accepting that risk for its
-                  own subscription.
+                  Using a personal subscription this way may breach your provider's terms.
                 </span>
               </label>
-              {!cliConfigSaved && (
-                <p className="byok-meter-copy">
-                  Save the subscription CLI and model above first — there is nothing to accept the
-                  risk of yet.
-                </p>
-              )}
 
               {cliSetup.riskAccepted && (
                 <>
@@ -1951,11 +1826,6 @@ function HostedAgentPanel({
                           />
                         </label>
                       </div>
-                      <p className="byok-meter-copy">
-                        {cliSetup.tokenStored
-                          ? 'This replaces the stored token here when you save. The old session keeps working at your provider until you sign it out there.'
-                          : 'Trevra stores it encrypted and keeps it out of every log, error and transcript. There is no screen anywhere that can display it back to you.'}
-                      </p>
                       {cliSetup.tokenStored && (
                         <div className="byok-key-actions">
                           <button
@@ -1985,10 +1855,6 @@ function HostedAgentPanel({
             <div className="byok-block-head">
               <div>
                 <h4 aria-level={3}>What it may spend</h4>
-                <p>
-                  Storing a key is not permission to spend it. Until you switch this on, Trevra will
-                  not make a single paid call — and it stops the moment you switch it back off.
-                </p>
               </div>
               <label className="toggle">
                 <input
@@ -2034,28 +1900,6 @@ function HostedAgentPanel({
                 </span>
               </label>
             </div>
-            <p className="byok-meter-copy">
-              {spendLine}
-              {!capValid
-                ? ' Enter a cap between $0 and $10,000 to save it.'
-                : dirtyCap
-                  ? ' The cap on screen is not saved yet.'
-                  : ' Matches what is stored.'}
-            </p>
-            {budget.spentCents > 0 && (
-              <div className="byok-meter">
-                <i
-                  style={{
-                    width: `${Math.min(100, Math.round((budget.spentCents / Math.max(budget.monthlyCapCents, 1)) * 100))}%`
-                  }}
-                />
-              </div>
-            )}
-            <p className="byok-meter-copy">
-              {budget.enabled
-                ? 'On. Trevra checks the cap before each call, so a long job cannot run past it.'
-                : 'Off. Nothing Trevra’s agent does can cost you money.'}
-            </p>
           </div>
         </div>
       </details>
@@ -2063,11 +1907,6 @@ function HostedAgentPanel({
       {/* One button for the whole sitting. It writes only what changed, in the
         order the blocks are read, and names each part by what it is. */}
       <div className="panel-footer">
-        <span>
-          {dirty
-            ? `Not saved yet: ${andList(pendingLabels)}.`
-            : 'Everything on this panel matches what is stored.'}
-        </span>
         <button
           className="primary-button"
           disabled={!dirty || busy === 'save'}
@@ -2082,17 +1921,10 @@ function HostedAgentPanel({
         <div className="byok-block-head">
           <div>
             <h4 aria-level={3}>Run it once, now</h4>
-            <p>
-              Give it a job and watch it work. Every step lands in the run ledger while it runs.
-            </p>
           </div>
         </div>
         <div className="byok-fields byok-fields-one">{goalField('What should it work on?')}</div>
         <div className="panel-footer">
-          <span>
-            {runBlocker ??
-              'It stops at the first thing that needs your decision, and waits for you in the Ledger.'}
-          </span>
           <button
             className="secondary-button"
             disabled={Boolean(runBlocker) || busy === 'run'}
@@ -2208,7 +2040,6 @@ function ConnectionsView({
         <div className="section-heading">
           <div>
             <h3 aria-level={2}>Connected accounts</h3>
-            <p>Connect the tools Trevra needs for your workflows.</p>
           </div>
         </div>
         <div className="connection-grid">
@@ -2237,25 +2068,10 @@ function ConnectionsView({
               </div>
             </article>
           ))}
-          {data.connections.length === 0 && (
-            <div className="empty-state">
-              <Link2 size={28} />
-              <h4 aria-level={3}>No tools connected</h4>
-              <p>Pick one below and sign in on the provider’s own screen.</p>
-            </div>
-          )}
         </div>
       </section>
 
       <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>Connect a tool</h3>
-            <p>
-              You sign in on the provider’s own screen. Trevra never sees or stores your password.
-            </p>
-          </div>
-        </div>
         <div className="integration-grid">
           {available.map((item) => (
             <article className="integration-card" key={item.key}>
@@ -2590,10 +2406,8 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
             <h3 aria-level={2}>
               <ShieldCheck size={18} /> Hard limits
             </h3>
-            <p>Rules Trevra can never break, whatever else it is told to do.</p>
           </div>
           <div className="mgr-actions">
-            <span className="status-pill">{policies.length} set</span>
             {!formOpen && (
               <button className="secondary-button" type="button" onClick={openNewPolicyForm}>
                 <ShieldCheck size={14} /> New policy
@@ -2631,9 +2445,6 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
             </div>
             <fieldset className="policy-conditions">
               <legend>When does it apply?</legend>
-              <p className="condition-hint">
-                Leave a group untouched and it applies to all of them.
-              </p>
               <div className="condition-groups">
                 <ConditionChecklist
                   legend="What is being done"
@@ -2642,18 +2453,8 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                   onToggle={(value) => toggleCondition('sideEffects', value)}
                 />
               </div>
-              <p className="policy-preview">
-                {describePolicy(policyDraft.effect, buildConditions(conditionDraft))}
-              </p>
             </fieldset>
             <div className="panel-footer">
-              <span>
-                {draftIncomplete
-                  ? 'Name it to save.'
-                  : editingPolicy
-                    ? 'Saving replaces the old version of this limit with what is on screen.'
-                    : 'Takes effect the moment you add it.'}
-              </span>
               <div className="mgr-actions">
                 <button
                   className="ghost-button"
@@ -2683,9 +2484,6 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                 <strong>{policy.name}</strong>
                 <code>{policy.actionPattern}</code>
               </div>
-              <span className={`policy-effect effect-${policy.effect}`}>
-                {policy.effect.replace('_', ' ')}
-              </span>
               <p className="policy-summary">{describePolicy(policy.effect, policy.conditions)}</p>
               <div className="mgr-actions">
                 <button
@@ -2710,7 +2508,6 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
               </div>
             </article>
           ))}
-          {policies.length === 0 && <p className="empty-copy">No limits of your own yet.</p>}
         </div>
       </section>
 

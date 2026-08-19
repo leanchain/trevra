@@ -242,10 +242,6 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
         <div className="section-heading">
           <div>
             <h3>Who is in this workspace</h3>
-            <p>
-              Full access, the same as you, with one exception: only the owner can replace or delete
-              the stored LinkedIn credentials.
-            </p>
           </div>
         </div>
 
@@ -258,7 +254,6 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
                 <tr>
                   <th>Name</th>
                   <th>Email</th>
-                  <th>Role</th>
                   {isOwner && <th />}
                 </tr>
               </thead>
@@ -267,11 +262,6 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
                   <tr key={member.id}>
                     <td>{member.name}</td>
                     <td>{member.email}</td>
-                    <td>
-                      <span className="li-chip">
-                        {member.role === 'owner' ? 'Owner' : 'Member'}
-                      </span>
-                    </td>
                     {isOwner && (
                       <td>
                         {member.role !== 'owner' && (
@@ -303,10 +293,6 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
           <div className="section-heading">
             <div>
               <h3>Add a teammate</h3>
-              <p>
-                Files an invitation. They join this workspace only once they accept it -- whether or
-                not they already use Trevra.
-              </p>
             </div>
           </div>
 
@@ -332,9 +318,6 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
               teammate
             </button>
           </div>
-          {!addBusy && !email.trim() && (
-            <p className="li-hint">Type an email above to enable this.</p>
-          )}
         </section>
       )}
 
@@ -343,10 +326,6 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
           <div className="section-heading">
             <div>
               <h3>Pending invitations</h3>
-              <p>
-                Invitations are emailed automatically when SMTP is configured. The link remains
-                available as a fallback.
-              </p>
             </div>
           </div>
 
@@ -362,7 +341,6 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
                 <thead>
                   <tr>
                     <th>Email</th>
-                    <th>Role</th>
                     <th />
                   </tr>
                 </thead>
@@ -370,11 +348,6 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
                   {invitations.map((invitation) => (
                     <tr key={invitation.id}>
                       <td>{invitation.email}</td>
-                      <td>
-                        <span className="li-chip">
-                          {invitation.role === 'owner' ? 'Owner' : 'Member'}
-                        </span>
-                      </td>
                       <td>
                         <div className="li-row-actions">
                           <button
@@ -548,13 +521,6 @@ function AcceptInvitationPanel({
 
         {!loading && !error && invitation && (
           <>
-            <p>
-              You have been invited to{' '}
-              <strong>{invitation.organizationName ?? 'a Trevra workspace'}</strong> as{' '}
-              {invitation.role === 'owner' ? 'an owner' : 'a member'}. Accepting adds it alongside
-              any workspace you already have -- you keep your own and can switch back to it any
-              time.
-            </p>
             <div className="panel-footer">
               <span>Nothing here is shared until you accept.</span>
               <span style={{ display: 'flex', gap: 10 }}>
