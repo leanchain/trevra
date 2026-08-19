@@ -2451,6 +2451,20 @@ export function PostComposer({
     setBlocks((current) => applyStyleToSelection(current, selection, style));
   };
 
+  // Which paragraph a block-level toggle (Bullet/Numbered) applies to: the
+  // block the cursor/selection is actually in, not always the last one --
+  // that was this function's own bug in an earlier draft (a hardcoded
+  // `blocks.length - 1` at both call sites below, caught in review): a click
+  // while editing an earlier paragraph in a multi-paragraph post must affect
+  // THAT paragraph, not silently bullet whichever one happens to be last.
+  // Falls back to the last block only when there is genuinely no selection
+  // (e.g. the editor never received focus yet).
+  const currentBlockIndex = (): number => {
+    const el = editorRef.current;
+    const selection = el ? currentSelection(el) : null;
+    return selection?.start.block ?? blocks.length - 1;
+  };
+
   const editRunText = (blockIndex: number, runIndex: number, text: string) => {
     setBlocks((current) =>
       current.map((block, bi) =>
@@ -2524,14 +2538,14 @@ export function PostComposer({
         </button>
         <button
           type="button"
-          onClick={() => toggleListAt(blocks.length - 1, 'bullet')}
+          onClick={() => toggleListAt(currentBlockIndex(), 'bullet')}
           aria-label="Bulleted list"
         >
           <List size={16} />
         </button>
         <button
           type="button"
-          onClick={() => toggleListAt(blocks.length - 1, 'numbered')}
+          onClick={() => toggleListAt(currentBlockIndex(), 'numbered')}
           aria-label="Numbered list"
         >
           <ListOrdered size={16} />
