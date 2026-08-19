@@ -2985,3 +2985,61 @@ describe('account (seat) scoping', () => {
     expect(mine.actions.map((action) => action.targetRef)).toEqual(['in/a-partner']);
   });
 });
+
+describe('LinkedIn posts', () => {
+  const BLOCKS = [{ runs: [{ type: 'text', text: 'Hello world' }] }];
+
+  it('creates a draft, lists it, edits it, then cancels it', async () => {
+    const token = await seedSession(WORKSPACE_A, 'A');
+    await seat(WORKSPACE_A);
+    const created = await as(token).post('/api/linkedin/posts').send({ blocks: BLOCKS });
+    expect(created.status).toBe(200);
+    expect(created.body.post.status).toBe('draft');
+
+    const listed = await as(token).get('/api/linkedin/posts');
+    expect(listed.body.posts.map((p: { id: string }) => p.id)).toContain(created.body.post.id);
+
+    const edited = await as(token)
+      .patch(`/api/linkedin/posts/${created.body.post.id}`)
+      .send({ blocks: [{ runs: [{ type: 'text', text: 'Edited' }] }] });
+    expect(edited.body.post.blocks[0].runs[0].text).toBe('Edited');
+
+    const canceled = await as(token).delete(`/api/linkedin/posts/${created.body.post.id}`);
+    expect(canceled.body.post.status).toBe('canceled');
+  });
+
+  it('refuses to schedule with no scheduledAt, and refuses a post over 3000 characters', async () => {
+    const token = await seedSession(WORKSPACE_A, 'A');
+    await seat(WORKSPACE_A);
+    const noTime = await as(token)
+      .post('/api/linkedin/posts')
+      .send({ blocks: BLOCKS, status: 'scheduled' });
+    expect(noTime.status).toBe(400);
+
+    const tooLong = await as(token)
+      .post('/api/linkedin/posts')
+      .send({ blocks: [{ runs: [{ type: 'text', text: 'x'.repeat(3001) }] }] });
+    expect(tooLong.status).toBe(400);
+  });
+
+  it('publish-now sets scheduledAt to now and status to scheduled -- never synchronously posted', async () => {
+    const token = await seedSession(WORKSPACE_A, 'A');
+    await seat(WORKSPACE_A);
+    const created = await as(token).post('/api/linkedin/posts').send({ blocks: BLOCKS });
+    const published = await as(token).post(
+      `/api/linkedin/posts/${created.body.post.id}/publish-now`
+    );
+    expect(published.body.post.status).toBe('scheduled');
+    expect(published.body.post.scheduledAt).toBeTruthy();
+  });
+
+  it('scopes posts to the calling workspace', async () => {
+    const tokenA = await seedSession(WORKSPACE_A, 'A');
+    const tokenB = await seedSession(WORKSPACE_B, 'B');
+    await seat(WORKSPACE_A);
+    await seat(WORKSPACE_B);
+    const created = await as(tokenA).post('/api/linkedin/posts').send({ blocks: BLOCKS });
+    const fromB = await as(tokenB).get(`/api/linkedin/posts/${created.body.post.id}`);
+    expect(fromB.status).toBe(404);
+  });
+});

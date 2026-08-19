@@ -270,6 +270,16 @@ import {
   type CampaignStatus
 } from './linkedin/campaigns.js';
 import {
+  cancelPost,
+  createPost,
+  getPost,
+  LinkedInPostsApiError,
+  listPosts,
+  updatePost,
+  type LinkedInPostStatus
+} from './linkedin/posts.js';
+import { plainTextLength } from '../shared/linkedin-post-format.js';
+import {
   INVITE_NOTE_MAX_CHARS,
   MAX_SEQUENCE_STEPS,
   SUPPORTED_MERGE_FIELDS,
@@ -3935,6 +3945,87 @@ export function createApp(db: Db) {
     })
   );
 
+  app.get(
+    '/api/linkedin/posts',
+    linkedinRoute(async (req, res) => {
+      const filters = linkedinPostListSchema.parse(req.query);
+      res.json({ posts: await listPosts(db, req.auth!.workspaceId, filters) });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/posts',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinPostCreateSchema.parse(req.body ?? {});
+      const post = await createPost(
+        db,
+        {
+          id: id('lipost'),
+          workspaceId: req.auth!.workspaceId,
+          ...(input.seatKey ? { seatKey: input.seatKey } : {}),
+          blocks: input.blocks,
+          status: input.status,
+          ...(input.scheduledAt ? { scheduledAt: input.scheduledAt } : {}),
+          createdBy: req.auth!.userId
+        },
+        new Date()
+      );
+      res.json({ post });
+    })
+  );
+
+  app.get(
+    '/api/linkedin/posts/:id',
+    linkedinRoute(async (req, res) => {
+      const post = await getPost(db, req.auth!.workspaceId, String(req.params.id));
+      if (!post) throw new LinkedInPostsApiError('No such post.', 404);
+      res.json({ post });
+    })
+  );
+
+  app.patch(
+    '/api/linkedin/posts/:id',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinPostUpdateSchema.parse(req.body ?? {});
+      const post = await updatePost(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        input,
+        new Date()
+      );
+      res.json({ post });
+    })
+  );
+
+  app.delete(
+    '/api/linkedin/posts/:id',
+    linkedinRoute(async (req, res) => {
+      const post = await cancelPost(db, req.auth!.workspaceId, String(req.params.id), new Date());
+      res.json({ post });
+    })
+  );
+
+  /**
+   * NOT a synchronous publish -- app.ts never opens a browser (see Global
+   * Constraints). This sets scheduledAt to now, so the next worker tick (up to
+   * AUTOMATION_INTERVAL_MS away, 60s by default) picks it up the same way an
+   * explicitly-timed post is picked up.
+   */
+  app.post(
+    '/api/linkedin/posts/:id/publish-now',
+    linkedinRoute(async (req, res) => {
+      const post = await updatePost(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        { status: 'scheduled', scheduledAt: new Date().toISOString() },
+        new Date()
+      );
+      res.json({ post });
+    })
+  );
+
   /**
    * Read a target CSV.
    *
@@ -6351,7 +6442,7 @@ function linkedinRoute(handler: (req: AuthedRequest, res: Response) => Promise<u
     try {
       await handler(req, res);
     } catch (error) {
-      if (error instanceof LinkedInApiError) {
+      if (error instanceof LinkedInApiError || error instanceof LinkedInPostsApiError) {
         res.status(error.status).json({ error: error.message });
         return;
       }
@@ -7347,6 +7438,63 @@ const linkedinCampaignSchema = z
 /** Which account's campaigns to list. Absent means every one in the workspace -- see the route. */
 const linkedinCampaignListSchema = z.object({
   seatKey: linkedinSeatKeySchema.optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+});
+
+const postRunSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('text'),
+    text: z.string().min(1),
+    bold: z.boolean().optional(),
+    italic: z.boolean().optional(),
+    underline: z.boolean().optional()
+  }),
+  z.object({
+    type: z.literal('mention'),
+    displayText: z.string().min(1).max(200),
+    entityKind: z.enum(['person', 'page']),
+    resolvedUrn: z.string().optional()
+  }),
+  z.object({ type: z.literal('break') })
+]);
+const postBlockSchema = z.object({
+  runs: z.array(postRunSchema).min(1),
+  list: z.enum(['bullet', 'numbered']).optional()
+});
+const LINKEDIN_POST_MAX_CHARS = 3000;
+const postBlocksSchema = z
+  .array(postBlockSchema)
+  .min(1)
+  .max(200)
+  .refine((blocks) => plainTextLength(blocks) <= LINKEDIN_POST_MAX_CHARS, {
+    message: `A LinkedIn post is capped at ${LINKEDIN_POST_MAX_CHARS} characters.`
+  });
+const linkedinPostCreateSchema = z
+  .object({
+    seatKey: linkedinSeatKeySchema.optional(),
+    blocks: postBlocksSchema,
+    status: z.enum(['draft', 'scheduled']).default('draft'),
+    scheduledAt: z.string().datetime({ offset: true }).optional()
+  })
+  .refine((v) => v.status !== 'scheduled' || Boolean(v.scheduledAt), {
+    message: 'scheduledAt is required to schedule a post',
+    path: ['scheduledAt']
+  });
+const linkedinPostUpdateSchema = z
+  .object({
+    blocks: postBlocksSchema.optional(),
+    status: z.enum(['draft', 'scheduled']).optional(),
+    scheduledAt: z.string().datetime({ offset: true }).nullable().optional()
+  })
+  .refine((v) => v.status !== 'scheduled' || v.scheduledAt !== undefined, {
+    message: 'scheduledAt is required to schedule a post',
+    path: ['scheduledAt']
+  });
+const linkedinPostListSchema = z.object({
+  seatKey: linkedinSeatKeySchema.optional(),
+  status: z
+    .enum(['draft', 'scheduled', 'publishing', 'posted', 'failed', 'missed', 'canceled'])
+    .optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100)
 });
 
