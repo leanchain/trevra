@@ -445,6 +445,29 @@ function unknownMergeFields(template: string, fields: readonly string[]): string
   return [...found];
 }
 
+/** Fold a field name for comparison across casing and separators -- `first_name`, `FIRST-NAME` and `firstName` all fold to `firstname`. */
+const foldMergeField = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * The supported field an unrecognized one probably meant, or null.
+ *
+ * Matched on the FOLDED name only, so `FirstName`, `first_name` and
+ * `FIRST-NAME` all resolve to the field named `firstName`. Nothing here is a
+ * general typo-corrector -- it catches exactly the casing and separator
+ * mistakes a field name invites, which is the failure this file actually
+ * sees, without guessing at a field the operator did not mean.
+ */
+function suggestMergeField(field: string, fields: readonly string[]): string | null {
+  const folded = foldMergeField(field);
+  return fields.find((candidate) => foldMergeField(candidate) === folded) ?? null;
+}
+
+/** `{{field}}`, with a same-field suggestion appended when casing or a separator was the only thing wrong. */
+function describeRejectedField(field: string, fields: readonly string[]): string {
+  const suggestion = suggestMergeField(field, fields);
+  return `{{${field}}}${suggestion ? ` (did you mean {{${suggestion}}}?)` : ''}`;
+}
+
 /**
  * A new card's id: the lowest `step-N` this list is not already using.
  *
@@ -834,6 +857,8 @@ export function OutreachCampaigns({
   const [steps, setSteps] = useState<EditableSequenceStep[]>([]);
   const [brief, setBrief] = useState<CampaignBrief>(EMPTY_BRIEF);
   const [briefOpen, setBriefOpen] = useState(false);
+  /** The by-campaign breakdown fetches its own analytics on mount, so it stays unrendered until asked for. */
+  const [breakdownOpen, setBreakdownOpen] = useState(false);
   const [degraded, setDegraded] = useState<string[]>([]);
   /** null means the picker has never been opened; [] means it opened and there was nothing. */
   const [templates, setTemplates] = useState<LinkedInSequenceTemplate[] | null>(null);
@@ -949,7 +974,10 @@ export function OutreachCampaigns({
     setDetail(null);
     setBoundId(null);
     setName('');
-    setDomain('');
+    // DOMAIN IS LEFT ALONE. It is never sent with a campaign -- it only steers
+    // `Draft with AI` -- so clearing it here just made every new campaign in a
+    // session retype the same domain. The last one typed is a sensible default
+    // for the next one; it stays fully editable.
     setTargets('');
     setContacts([]);
     setSteps([]);
@@ -1314,7 +1342,9 @@ export function OutreachCampaigns({
     }
     if (rejectedFields.length > 0) {
       setError(
-        `Remove the merge fields Trevra does not accept: ${rejectedFields.map((field) => `{{${field}}}`).join(', ')}.`
+        `Remove the merge fields Trevra does not accept: ${rejectedFields
+          .map((field) => describeRejectedField(field, mergeFields))
+          .join(', ')}.`
       );
       return;
     }
@@ -1417,7 +1447,9 @@ export function OutreachCampaigns({
     }
     if (rejectedFields.length > 0) {
       setError(
-        `Remove the merge fields Trevra does not accept: ${rejectedFields.map((field) => `{{${field}}}`).join(', ')}.`
+        `Remove the merge fields Trevra does not accept: ${rejectedFields
+          .map((field) => describeRejectedField(field, mergeFields))
+          .join(', ')}.`
       );
       return;
     }
@@ -1593,11 +1625,18 @@ export function OutreachCampaigns({
           <div>
             <h3 aria-level={2}>Sequences you have built here</h3>
           </div>
-          {boundId && (
-            <button className="ghost-button" onClick={startNew}>
-              <Plus size={14} /> New campaign
-            </button>
-          )}
+          <div className="li-detail-actions">
+            {campaigns.length > 0 && (
+              <button className="ghost-button" onClick={() => setBreakdownOpen((open) => !open)}>
+                <ScanSearch size={14} /> {breakdownOpen ? 'Hide' : 'Show'} performance
+              </button>
+            )}
+            {boundId && (
+              <button className="ghost-button" onClick={startNew}>
+                <Plus size={14} /> New campaign
+              </button>
+            )}
+          </div>
         </div>
         {campaigns.length === 0 ? (
           <p className="empty-copy">
@@ -1626,9 +1665,11 @@ export function OutreachCampaigns({
 
       {/* How the campaigns above did, absorbed from the Analytics tab. It is the
         question you ask with the list already in front of you, and it used to
-        be two clicks and a different window away. Held back on an empty
-        workspace: one “nothing yet” panel is honest, two is a wall. */}
-      {campaigns.length > 0 && <LinkedInCampaignBreakdown />}
+        be two clicks and a different window away. Held back behind the toggle
+        above: the breakdown runs its own analytics fetch on mount, and an
+        empty workspace or a screen nobody asked for performance on has no
+        reason to pay for it. */}
+      {breakdownOpen && campaigns.length > 0 && <LinkedInCampaignBreakdown />}
       {detail && (
         <section className="page-panel">
           <div className="section-heading">
@@ -2183,6 +2224,7 @@ export function OutreachCampaigns({
                 <input
                   aria-required="true"
                   value={brief.role}
+                  disabled={Boolean(boundId)}
                   onChange={(event) => setBrief({ ...brief, role: event.target.value })}
                   placeholder="Head of RevOps"
                 />
@@ -2192,6 +2234,7 @@ export function OutreachCampaigns({
                 <input
                   aria-required="true"
                   value={brief.segment}
+                  disabled={Boolean(boundId)}
                   onChange={(event) => setBrief({ ...brief, segment: event.target.value })}
                   placeholder="Series A B2B SaaS"
                 />
@@ -2201,6 +2244,7 @@ export function OutreachCampaigns({
                 <input
                   aria-required="true"
                   value={brief.pain}
+                  disabled={Boolean(boundId)}
                   onChange={(event) => setBrief({ ...brief, pain: event.target.value })}
                   placeholder="Pipeline reviews take a day a week and still miss slippage"
                 />
@@ -2213,6 +2257,7 @@ export function OutreachCampaigns({
                 <input
                   aria-required="true"
                   value={brief.offerName}
+                  disabled={Boolean(boundId)}
                   onChange={(event) => setBrief({ ...brief, offerName: event.target.value })}
                 />
               </label>
@@ -2220,6 +2265,7 @@ export function OutreachCampaigns({
                 Offer URL
                 <input
                   value={brief.url}
+                  disabled={Boolean(boundId)}
                   onChange={(event) => setBrief({ ...brief, url: event.target.value })}
                   placeholder="https://…"
                 />
@@ -2229,6 +2275,7 @@ export function OutreachCampaigns({
                 <input
                   aria-required="true"
                   value={brief.summary}
+                  disabled={Boolean(boundId)}
                   onChange={(event) => setBrief({ ...brief, summary: event.target.value })}
                 />
               </label>
@@ -2237,6 +2284,7 @@ export function OutreachCampaigns({
                 <input
                   aria-required="true"
                   value={brief.mechanism}
+                  disabled={Boolean(boundId)}
                   onChange={(event) => setBrief({ ...brief, mechanism: event.target.value })}
                 />
               </label>
@@ -2245,6 +2293,7 @@ export function OutreachCampaigns({
                 <textarea
                   rows={3}
                   value={brief.proof}
+                  disabled={Boolean(boundId)}
                   onChange={(event) => setBrief({ ...brief, proof: event.target.value })}
                   placeholder={'Cycle time: 41 days to 22\nSeats: 300'}
                 />
@@ -2873,7 +2922,7 @@ function SequenceStepCard({
           )}
           {rejected.length > 0 && (
             <small className="li-merge-warn">
-              {rejected.map((field) => `{{${field}}}`).join(', ')}{' '}
+              {rejected.map((field) => describeRejectedField(field, mergeFields)).join(', ')}{' '}
               {rejected.length === 1 ? 'is not a merge field' : 'are not merge fields'} Trevra
               accepts. Replace or remove them before saving.
             </small>
