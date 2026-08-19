@@ -105,13 +105,28 @@ export function renderPostBody(blocks: PostBlock[]): string {
   return lines.join('\n');
 }
 
-/** Length LinkedIn's 3000-char cap is measured against: one unit per code point, pre-styling (styling never changes the count). */
+/**
+ * Length LinkedIn's 3000-char cap is measured against: one unit per code
+ * point, pre-styling (styling never changes the count).
+ *
+ * Counts EXACTLY what `renderPostBody` emits -- list prefixes and in-block
+ * breaks included. Leaving them out was a real miscount: a heavily bulleted
+ * post passed both the composer's counter and the server's zod check while
+ * the string actually handed to LinkedIn was longer and rejected there, which
+ * is the one place the user cannot see why.
+ */
 export function plainTextLength(blocks: PostBlock[]): number {
   let total = blocks.length > 0 ? blocks.length - 1 : 0; // the joining newlines
+  let numberedRun = 0;
   for (const b of blocks) {
+    // The same running counter renderPostBody keeps, so '10. ' counts as four.
+    numberedRun = b.list === 'numbered' ? numberedRun + 1 : 0;
+    if (b.list === 'bullet') total += [...LIST_MARKERS.bullet()].length;
+    else if (b.list === 'numbered') total += [...LIST_MARKERS.numbered(numberedRun)].length;
     for (const run of b.runs) {
       if (run.type === 'text') total += [...run.text].length;
       else if (run.type === 'mention') total += [...run.displayText].length;
+      else total += 1; // a 'break' run renders as a newline
     }
   }
   return total;

@@ -185,4 +185,41 @@ describe('plainTextLength', () => {
     ];
     expect(plainTextLength(blocks)).toBe(6); // 'Hi' + 'Jane', pre-styling -- same code-point count as rendered
   });
+
+  /**
+   * THE INVARIANT, not a hand-counted number: what the cap is measured against
+   * has to be what actually reaches LinkedIn. List prefixes ('• ', '1. ') and
+   * in-block breaks were both uncounted, so a heavily bulleted post could pass
+   * the composer's counter and the server's zod check and still be rejected by
+   * LinkedIn for length -- the one place the user never sees a reason.
+   */
+  it('matches renderPostBody measured in code points, list prefixes and breaks included', () => {
+    const blocks: PostBlock[] = [
+      block({ type: 'text', text: 'Three things I learned:' }),
+      { runs: [{ type: 'text', text: 'Ship small', bold: true }], list: 'bullet' },
+      { runs: [{ type: 'text', text: 'Ship often' }], list: 'bullet' },
+      { runs: [{ type: 'text', text: 'First' }], list: 'numbered' },
+      {
+        runs: [
+          { type: 'text', text: 'Second' },
+          { type: 'break' },
+          { type: 'text', text: 'still second' }
+        ],
+        list: 'numbered'
+      },
+      block(
+        { type: 'text', text: 'Thanks ' },
+        { type: 'mention', displayText: 'Jane', entityKind: 'person' }
+      )
+    ];
+    expect(plainTextLength(blocks)).toBe([...renderPostBody(blocks)].length);
+  });
+
+  it('counts a two-digit numbered marker as its own four characters', () => {
+    const blocks: PostBlock[] = Array.from({ length: 10 }, (_, index) => ({
+      runs: [{ type: 'text' as const, text: `item ${index}` }],
+      list: 'numbered' as const
+    }));
+    expect(plainTextLength(blocks)).toBe([...renderPostBody(blocks)].length);
+  });
 });
