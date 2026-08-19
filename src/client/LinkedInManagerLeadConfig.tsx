@@ -612,6 +612,59 @@ export function LinkedInManagerLeadConfig({
     draft.lastName.trim() !== '' &&
     draft.company.trim() !== '';
 
+  /**
+   * The mapping row, built once and rendered either always-open (a required
+   * field is still unmapped, so there is nothing to progressively disclose --
+   * the operator has to look at it) or behind a closed `<details>` (fuzzy
+   * automatch already resolved everything, so the grid is the exception now,
+   * not the default view of a successful drop).
+   */
+  const mappingRows = FIELDS.map((entry) => {
+    const chosen = chosenHeader(entry.field);
+    const auto = autoMapping[entry.field] ?? '';
+    const missing = entry.required && !chosen;
+    const guessed = chosen === auto && preview?.mappingConfidence?.[entry.field] === 'guessed';
+    return (
+      <label
+        key={entry.field}
+        className={
+          missing ? 'lead-map-row is-missing' : guessed ? 'lead-map-row is-guessed' : 'lead-map-row'
+        }
+      >
+        <span className="lead-map-name">
+          {entry.label}
+          {entry.required && <em>Required</em>}
+        </span>
+        <select
+          value={chosen}
+          disabled={busy !== ''}
+          onChange={(event) => changeMapping(entry.field, event.target.value)}
+        >
+          {!chosen && (
+            <option value="">{entry.required ? 'Choose a column…' : 'Not imported'}</option>
+          )}
+          {!entry.required && !auto && chosen && <option value="">Not imported</option>}
+          {headers.map((header) => (
+            <option key={header} value={header}>
+              {header || '(unnamed column)'}
+            </option>
+          ))}
+        </select>
+        <span className="lead-map-note">
+          {chosen && auto && chosen !== auto
+            ? `Changed from “${auto}”`
+            : guessed
+              ? 'Guessed from its heading — check this'
+              : chosen && chosen === auto
+                ? 'Matched by its heading'
+                : chosen
+                  ? 'Your choice'
+                  : 'No column matched'}
+        </span>
+      </label>
+    );
+  });
+
   return (
     <div className="lead-build">
       <section
@@ -708,70 +761,33 @@ export function LinkedInManagerLeadConfig({
           </label>
         </div>
 
-        {file && headers.length > 0 && (
-          <div className="lead-section">
-            <h4>Which column is which</h4>
-            <p className="li-hint">
-              Matched from your headings. Change any of them and the rows below are read again.
-              First name, last name and company have to point at a column — a lead without them is
-              not a lead a campaign can write to.
-            </p>
-            <div className="li-form-grid lead-map-grid">
-              {FIELDS.map((entry) => {
-                const chosen = chosenHeader(entry.field);
-                const auto = autoMapping[entry.field] ?? '';
-                const missing = entry.required && !chosen;
-                const guessed =
-                  chosen === auto && preview?.mappingConfidence?.[entry.field] === 'guessed';
-                return (
-                  <label
-                    key={entry.field}
-                    className={
-                      missing
-                        ? 'lead-map-row is-missing'
-                        : guessed
-                          ? 'lead-map-row is-guessed'
-                          : 'lead-map-row'
-                    }
-                  >
-                    <span className="lead-map-name">
-                      {entry.label}
-                      {entry.required && <em>Required</em>}
-                    </span>
-                    <select
-                      value={chosen}
-                      disabled={busy !== ''}
-                      onChange={(event) => changeMapping(entry.field, event.target.value)}
-                    >
-                      {!chosen && (
-                        <option value="">
-                          {entry.required ? 'Choose a column…' : 'Not imported'}
-                        </option>
-                      )}
-                      {!entry.required && !auto && chosen && <option value="">Not imported</option>}
-                      {headers.map((header) => (
-                        <option key={header} value={header}>
-                          {header || '(unnamed column)'}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="lead-map-note">
-                      {chosen && auto && chosen !== auto
-                        ? `Changed from “${auto}”`
-                        : guessed
-                          ? 'Guessed from its heading — check this'
-                          : chosen && chosen === auto
-                            ? 'Matched by its heading'
-                            : chosen
-                              ? 'Your choice'
-                              : 'No column matched'}
-                    </span>
-                  </label>
-                );
-              })}
+        {file &&
+          headers.length > 0 &&
+          (missingRequired.length > 0 ? (
+            <div className="lead-section">
+              <h4>Which column is which</h4>
+              <p className="li-hint">
+                Matched from your headings. Change any of them and the rows below are read again.
+                First name, last name and company have to point at a column — a lead without them is
+                not a lead a campaign can write to.
+              </p>
+              <div className="li-form-grid lead-map-grid">{mappingRows}</div>
             </div>
-          </div>
-        )}
+          ) : (
+            // PROGRESSIVE DISCLOSURE: automatch already resolved every required
+            // field, so the grid that used to be the loudest thing on a
+            // successful drop is closed by default -- still one click away to
+            // review or correct a guess, never a permanent fixture.
+            <details className="lead-section">
+              <summary>
+                Which column is which{' '}
+                <span className="li-hint">
+                  — every required field matched automatically. Open to review or change it.
+                </span>
+              </summary>
+              <div className="li-form-grid lead-map-grid">{mappingRows}</div>
+            </details>
+          ))}
 
         {file && missingRequired.length > 0 && (
           <div className="li-warn-block">
@@ -852,7 +868,7 @@ export function LinkedInManagerLeadConfig({
         )}
 
         <div className="panel-footer">
-          <span>
+          <span title={blocker || undefined}>
             {blocker ||
               (preview
                 ? `${plural(preview.acceptedCount, 'lead')} ready for ${destination === 'new' ? (newName.trim() ? `“${newName.trim()}”` : 'a new list') : `“${destinationList?.name ?? 'this list'}”`}.`
@@ -862,6 +878,7 @@ export function LinkedInManagerLeadConfig({
             className="primary-button"
             type="button"
             disabled={!canImport}
+            title={blocker || undefined}
             onClick={() => void runImport()}
           >
             {busy === 'import' ? <LoaderCircle className="spin" size={14} /> : <Upload size={14} />}

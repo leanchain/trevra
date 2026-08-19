@@ -48,6 +48,16 @@ describe('LinkedIn lead CSV import', () => {
     expect(confidence.company).toBe('guessed');
   });
 
+  it.each([
+    ['Business Name', 'company'],
+    ['Cell #', 'phone'],
+    ['LI Profile', 'profileUrl']
+  ] as const)('fuzzy-matches synonym header %j to %s as guessed', (header, field) => {
+    const { mapping, confidence } = autoMatchLeadFieldsWithConfidence([header]);
+    expect(mapping[field]).toBe(header);
+    expect(confidence[field]).toBe('guessed');
+  });
+
   it('leaves an unrecognisable header unmapped rather than forcing a guess', () => {
     const { mapping, confidence } = autoMatchLeadFieldsWithConfidence(['Favourite Colour']);
     expect(mapping.company).toBeUndefined();

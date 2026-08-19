@@ -53,6 +53,11 @@ export interface LeadCsvPreview {
 const FIELD_ALIASES: Record<LeadField, readonly string[]> = {
   firstName: ['first', 'firstname', 'givenname', 'given', 'first_name', 'first name'],
   lastName: ['last', 'lastname', 'surname', 'familyname', 'family', 'last_name', 'last name'],
+  // NOTE: 'business' is a real synonym kept as an exact alias, deliberately
+  // NOT also listing 'businessname'/'business name' -- those are close enough
+  // to 'business' that the fuzzy pass below already reaches them (tagged
+  // 'guessed'), which is the point of that pass: it should cover the near
+  // misses, not the exact-alias table.
   company: [
     'company',
     'companyname',
@@ -60,12 +65,13 @@ const FIELD_ALIASES: Record<LeadField, readonly string[]> = {
     'organization',
     'organisation',
     'account',
-    'business',
-    'businessname',
-    'business name'
+    'business'
   ],
   email: ['email', 'emailaddress', 'mail', 'workemail', 'work_email'],
-  phone: ['phone', 'phonenumber', 'mobile', 'mobilephone', 'telephone', 'tel'],
+  // 'cell phone' is a real synonym one edge short of a plain 'Cell #' or
+  // 'Cell' header -- close enough for the fuzzy pass to reach, not close
+  // enough (after headerKey normalizes both) to collide with it exactly.
+  phone: ['phone', 'phonenumber', 'mobile', 'mobilephone', 'telephone', 'tel', 'cell phone'],
   country: ['country', 'countryname', 'locationcountry', 'nation'],
   profileUrl: [
     'linkedin',
@@ -74,7 +80,10 @@ const FIELD_ALIASES: Record<LeadField, readonly string[]> = {
     'linkedinprofileurl',
     'profileurl',
     'profile_url',
-    'linkedin_url'
+    'linkedin_url',
+    // Same idea as 'cell phone' above: close enough to a bare 'LI Profile'
+    // header for the fuzzy pass, not identical to it.
+    'li profile url'
   ]
 };
 
