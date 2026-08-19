@@ -76,6 +76,7 @@ import {
 import { OutreachActivity } from './LinkedInActivity';
 import { OutreachManagerBuilder } from './LinkedInManagerBuilder';
 import { OutreachManagerRead } from './LinkedInManagerRead';
+import { LinkedInPosts } from './LinkedInPosts';
 import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions } from './LinkedInScreen';
 import { TeamSettingsView } from './TeamScreen';
@@ -128,6 +129,7 @@ const OUTREACH_MORE_ROUTES: Array<{ sub: string; label: string }> = [
   { sub: 'leads', label: 'Find people' },
   { sub: 'activity', label: 'Activity' },
   { sub: 'plan', label: 'Plan preview' },
+  { sub: 'posts', label: 'Scheduled posts' },
   { sub: 'campaigns', label: 'Approve & export' }
 ];
 const OUTREACH_PINNED_TABS_STORAGE_KEY = 'trevra.outreach.pinned-tabs';
@@ -540,6 +542,7 @@ export function App() {
                 <OutreachManagerRead setToast={setToast} onNavigate={go} />
               ))}
             {route.sub === 'plan' && <OutreachPlan setToast={setToast} />}
+            {route.sub === 'posts' && <LinkedInPosts setToast={setToast} />}
           </div>
         )}
 
@@ -3117,6 +3120,7 @@ function viewTitle(route: Route): string {
     if (route.sub === 'leads') return 'Find people';
     if (route.sub === 'manager') return route.id === 'new' ? 'New campaign' : 'Campaigns';
     if (route.sub === 'plan') return 'Plan preview';
+    if (route.sub === 'posts') return 'Scheduled posts';
     return 'Settings';
   }
   if (route.section === 'ledger') return 'Run ledger';

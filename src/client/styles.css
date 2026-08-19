@@ -9834,3 +9834,114 @@ button:disabled {
 .outreach-simple .panel-footer > span {
   display: none;
 }
+
+/* Post composer: formatting toolbar + contenteditable body + live preview.
+   Bold/italic/underline classes style the editor to LOOK like the Unicode
+   the run will actually render as -- the stored/published form is plain
+   Unicode glyphs, not CSS, but the editor should still look styled while
+   typing. */
+.li-post-composer {
+  display: grid;
+  gap: 12px;
+  max-width: var(--t-measure);
+}
+.li-post-toolbar {
+  display: flex;
+  gap: 6px;
+}
+.li-post-toolbar button {
+  width: var(--t-tap);
+  height: var(--t-tap);
+  border-radius: var(--t-r-sm);
+  border: 1px solid var(--line);
+  background: var(--t-surface);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  color: var(--ink);
+}
+.li-post-toolbar button:hover {
+  background: var(--t-field);
+}
+.li-post-editor {
+  min-height: 160px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-field);
+  padding: 13px 14px;
+  font-size: var(--t-text-xs);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.li-post-editor:focus-within {
+  border-color: var(--t-amber-line);
+}
+.li-post-line {
+  min-height: 1.55em;
+}
+.li-post-line--bullet,
+.li-post-line--numbered {
+  padding-left: 1.4em;
+  position: relative;
+}
+.li-post-run--bold {
+  font-weight: 700;
+}
+.li-post-run--italic {
+  font-style: italic;
+}
+.li-post-run--underline {
+  text-decoration: underline;
+}
+.li-post-mention {
+  color: var(--t-amber-ink);
+  background: var(--t-amber-bg);
+  border-radius: var(--t-r-sm);
+  padding: 0 3px;
+}
+.li-post-count {
+  font-size: var(--t-text-xs);
+  color: var(--muted);
+  text-align: right;
+}
+.li-post-count--over {
+  color: var(--red);
+}
+.li-post-preview {
+  border-top: 1px solid var(--t-line-soft);
+  padding-top: 12px;
+}
+.li-post-preview-card {
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  padding: 13px 14px;
+  background: var(--t-surface);
+}
+.li-post-preview-card pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: var(--t-text-xs);
+  line-height: 1.55;
+  color: var(--ink);
+}
+.li-post-error {
+  color: var(--red);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--red);
+  padding: 10px 12px;
+  border-radius: var(--t-r-sm);
+  font-size: var(--t-text-xs);
+  margin: 0;
+}
+.li-post-actions {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.li-post-actions button {
+  white-space: nowrap;
+}
