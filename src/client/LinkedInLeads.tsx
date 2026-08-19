@@ -215,19 +215,24 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
   const [capDraft, setCapDraft] = useState('');
   const [savingCap, setSavingCap] = useState(false);
   const [importing, setImporting] = useState(false);
+  /**
+   * Is the daily-limit panel open, and is its own read in flight.
+   *
+   * Most operators never touch this setting, so `getLinkedInLeadAllowance` no
+   * longer rides along with every load of this screen -- it fires the first
+   * time the panel is opened (see the effect below), the same "collapsed,
+   * fetched on demand" idiom as Campaign inputs on the manager read screen.
+   */
+  const [allowanceOpen, setAllowanceOpen] = useState(false);
+  const [allowanceLoading, setAllowanceLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [result, nextAllowance] = await Promise.all([
-        getLinkedInLeadSources(200, activeSeatKey),
-        getLinkedInLeadAllowance(activeSeatKey)
-      ]);
+      const result = await getLinkedInLeadSources(200, activeSeatKey);
       setSources(result.sources);
       setEnabled(result.enabled);
       setOffReason(result.offReason);
-      setAllowance(nextAllowance);
-      setCapDraft(String(nextAllowance.limit));
       setError('');
     } catch (err) {
       setError(
@@ -238,14 +243,39 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
     }
   }, [activeSeatKey]);
 
+  const loadAllowance = useCallback(async () => {
+    setAllowanceLoading(true);
+    try {
+      const next = await getLinkedInLeadAllowance(activeSeatKey);
+      setAllowance(next);
+      setCapDraft(String(next.limit));
+      setError('');
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to read the daily lead limit.'));
+    } finally {
+      setAllowanceLoading(false);
+    }
+  }, [activeSeatKey]);
+
   useEffect(() => {
     setOpenSource(null);
     setLeads([]);
     setPicked(new Set());
     setSavedList(null);
+    setAllowance(null);
+    setCapDraft('');
     void load();
   }, [load]);
   useOutreachRefresh(load);
+
+  // Fires on the panel's first open, and again if the seat changes while it
+  // stays open -- `loadAllowance` is a fresh function identity either way.
+  // While the panel is closed this effect does nothing, so switching seats
+  // with it closed costs no read at all.
+  useEffect(() => {
+    if (!allowanceOpen) return;
+    void loadAllowance();
+  }, [allowanceOpen, loadAllowance]);
 
   // Pending/running sources are live queue rows. Refresh them quietly so an
   // ETA that was missed while the laptop slept advances on its own after wake,
@@ -621,87 +651,133 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
 
           {/* The ceiling on collection itself, which is a different question from
             how deep any one walk goes: six walks in a morning each stopping at
-            100 is 600 people nobody set out to collect. */}
-          <section className="page-panel">
-            <div className="section-heading">
-              <div>
-                <h3 aria-level={2}>How many new leads a day</h3>
-                <p>
-                  Counted over a rolling 24 hours across every source. A walk that would pass this
-                  limit stops early and says so instead of collecting anyway.
-                </p>
-              </div>
-              <Gauge size={20} className="li-heading-icon" />
-            </div>
-            <div className="li-form-grid">
-              <label>
-                Daily limit
-                <input
-                  type="number"
-                  min={0}
-                  max={1000}
-                  value={capDraft}
-                  // Off with everything else on this screen. A ceiling on
-                  // collection is only a ceiling on something that can run, and
-                  // an editable one where no walk is permitted implies a walk is.
-                  disabled={!enabled}
-                  onChange={(event) => setCapDraft(event.target.value)}
-                />
-                <small className="li-hint">0–1000. Set 0 to collect nobody at all.</small>
-              </label>
-              {/* NOT ZERO WHEN IT IS UNKNOWN. A failed read of the allowance used
-                to print "Still allowed 0", which reads as a hard block that
-                does not exist and sends an operator looking for a limit to
-                raise. A number nobody read is not a number this screen has. */}
-              <div className="li-lead-cap-stats">
-                <div className="li-stat">
-                  <p>Collected today</p>
-                  <strong>
-                    {allowance ? allowance.used : <span className="li-unknown">—</span>}
-                  </strong>
-                  <span>Rolling 24 hours</span>
+            100 is 600 people nobody set out to collect.
+
+            COLLAPSED BY DEFAULT, AND THE READ WAITS FOR THE OPEN. This used to
+            render fully expanded with `getLinkedInLeadAllowance` fetched on
+            every load of the screen, whether or not the operator ever touches
+            a daily cap -- most don't. It is now a `<details>` behind a
+            summary, reusing the manager read screen's "Campaign inputs" box
+            styling, and the fetch (see `loadAllowance` above) only fires the
+            first time it opens. */}
+          <details
+            className="mgr-inputs"
+            open={allowanceOpen}
+            onToggle={(event) => setAllowanceOpen(event.currentTarget.open)}
+          >
+            <summary>
+              <Gauge size={14} /> Daily lead limit
+            </summary>
+            <div className="mgr-inputs-body">
+              <section className="page-panel">
+                <div className="section-heading">
+                  <div>
+                    <h3 aria-level={2}>How many new leads a day</h3>
+                    <p>
+                      Counted over a rolling 24 hours across every source. A walk that would pass
+                      this limit stops early and says so instead of collecting anyway.
+                    </p>
+                  </div>
+                  <Gauge size={20} className="li-heading-icon" />
                 </div>
-                <div className="li-stat li-stat-ok">
-                  <p>Still allowed</p>
-                  <strong>
-                    {allowance ? allowance.remaining : <span className="li-unknown">—</span>}
-                  </strong>
-                  <span>Before this daily cap</span>
-                </div>
-              </div>
+                {allowanceLoading && !allowance ? (
+                  <p className="empty-copy">Reading today’s count…</p>
+                ) : (
+                  <>
+                    <div className="li-form-grid">
+                      <label>
+                        Daily limit
+                        <input
+                          type="number"
+                          min={0}
+                          max={1000}
+                          value={capDraft}
+                          // Off with everything else on this screen. A ceiling on
+                          // collection is only a ceiling on something that can run, and
+                          // an editable one where no walk is permitted implies a walk is.
+                          disabled={!enabled}
+                          onChange={(event) => setCapDraft(event.target.value)}
+                        />
+                        <small className="li-hint">0–1000. Set 0 to collect nobody at all.</small>
+                      </label>
+                      {/* NOT ZERO WHEN IT IS UNKNOWN. A failed read of the allowance used
+                        to print "Still allowed 0", which reads as a hard block that
+                        does not exist and sends an operator looking for a limit to
+                        raise. A number nobody read is not a number this screen has. */}
+                      <div className="li-lead-cap-stats">
+                        <div className="li-stat">
+                          <p>Collected today</p>
+                          <strong>
+                            {allowance ? allowance.used : <span className="li-unknown">—</span>}
+                          </strong>
+                          <span>Rolling 24 hours</span>
+                        </div>
+                        <div className="li-stat li-stat-ok">
+                          <p>Still allowed</p>
+                          <strong>
+                            {allowance ? (
+                              allowance.remaining
+                            ) : (
+                              <span className="li-unknown">—</span>
+                            )}
+                          </strong>
+                          <span>Before this daily cap</span>
+                        </div>
+                      </div>
+                    </div>
+                    {!allowance && !allowanceLoading && (
+                      <p className="li-hint">
+                        Today’s count could not be read, so neither number is shown. The limit
+                        itself is unchanged and is still applied by the walk — Refresh below reads
+                        it again.
+                      </p>
+                    )}
+                    <div className="panel-footer">
+                      {/* DISABLED CONTROLS EXPLAIN THEMSELVES. Each reason the Save button
+                        below can be greyed out is named here, in order -- the same idiom
+                        as the workflow builder's Save footer -- instead of a button that
+                        just sits there. */}
+                      <span>
+                        {!enabled
+                          ? 'Lead sourcing is switched off for this deployment, so the limit can’t be changed.'
+                          : savingCap
+                            ? 'Saving…'
+                            : capDraft.trim() === ''
+                              ? 'Type a number to set a new daily limit.'
+                              : allowance !== null && capDraft === String(allowance.limit)
+                                ? 'This is already the daily limit — change the number to save a different one.'
+                                : 'Changing this affects the next walk. It never deletes anybody already collected.'}
+                      </span>
+                      {/* The old test compared the draft against `allowance?.limit ?? ''`,
+                        so a failed read made it `'' === ''` and the button could never
+                        be pressed again without a reload -- the one state in which the
+                        operator most wants to set a number. Empty is the only draft
+                        there is nothing to save from; a known limit still guards
+                        against saving what is already stored. */}
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={
+                          !enabled ||
+                          savingCap ||
+                          capDraft.trim() === '' ||
+                          (allowance !== null && capDraft === String(allowance.limit))
+                        }
+                        onClick={() => void saveCap()}
+                      >
+                        {savingCap ? (
+                          <LoaderCircle className="spin" size={14} />
+                        ) : (
+                          <Gauge size={14} />
+                        )}{' '}
+                        Save limit
+                      </button>
+                    </div>
+                  </>
+                )}
+              </section>
             </div>
-            {!allowance && !loading && (
-              <p className="li-hint">
-                Today’s count could not be read, so neither number is shown. The limit itself is
-                unchanged and is still applied by the walk — Refresh below reads it again.
-              </p>
-            )}
-            <div className="panel-footer">
-              <span>
-                Changing this affects the next walk. It never deletes anybody already collected.
-              </span>
-              {/* The old test compared the draft against `allowance?.limit ?? ''`,
-                so a failed read made it `'' === ''` and the button could never
-                be pressed again without a reload -- the one state in which the
-                operator most wants to set a number. Empty is the only draft
-                there is nothing to save from; a known limit still guards
-                against saving what is already stored. */}
-              <button
-                className="secondary-button"
-                type="button"
-                disabled={
-                  !enabled ||
-                  savingCap ||
-                  capDraft.trim() === '' ||
-                  (allowance !== null && capDraft === String(allowance.limit))
-                }
-                onClick={() => void saveCap()}
-              >
-                {savingCap ? <LoaderCircle className="spin" size={14} /> : <Gauge size={14} />} Save
-                limit
-              </button>
-            </div>
-          </section>
+          </details>
 
           <section className="page-panel">
             <div className="section-heading">
