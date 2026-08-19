@@ -1591,6 +1591,18 @@ describe('publishPost', () => {
     expect(clicked).toEqual([]);
   });
 
+  it('reports unknown, not compose_unavailable, when the compose box does not appear after a successful Start-post click', async () => {
+    // The click already happened -- this is ambiguity AFTER an action, not
+    // drift before one, so it must classify the same way sendDm's identical
+    // branch does (compose box missing after the Message click): unknown.
+    const { page, clicked } = fakePage({
+      counts: { [POST_SELECTORS.startPostButton]: 1, [POST_SELECTORS.postComposeBox]: 0 }
+    });
+    const result = await publishPost(page, 'Hello world');
+    expectFailure(result, 'unknown');
+    expect(clicked).toEqual([POST_SELECTORS.startPostButton]);
+  });
+
   it('types the body and clicks Post when everything is present', async () => {
     const { page, clicked, typed } = fakePage({
       counts: {
@@ -1743,8 +1755,14 @@ export async function publishPost(page: LinkedInPage, body: string): Promise<Lin
 
     const compose = page.locator(POST_SELECTORS.postComposeBox);
     if ((await compose.count()) === 0) {
+      // A CLICK ALREADY HAPPENED ('Start a post' succeeded) -- per this file's
+      // own documented rule (driver.ts's header: "anything ambiguous after a
+      // click is `unknown`, not drift"), this is `unknown`, matching sendDm's
+      // identical branch (compose box missing after the Message click), not
+      // `compose_unavailable` -- that kind is reserved for the pre-click empty-
+      // body refusal above, where nothing was clicked at all.
       return fail(
-        'compose_unavailable',
+        'unknown',
         `${POST_SELECTORS.postComposeBox} did not match after opening the composer; a draft may be open. Check it by hand.`
       );
     }
