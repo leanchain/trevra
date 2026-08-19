@@ -1,145 +1,121 @@
-# Outreach Simplification — Design
+# Outreach simplification — design
 
 **Date:** 2026-08-20
-**Scope:** the whole `/outreach` section — routes, nav, screens, and the server-side legacy campaign system behind one of them.
-**Precedent:** `docs/superpowers/specs/2026-08-19-setup-simplification-design.md`. Same treatment, same rules.
-**Supporting analysis:** `.superpowers/notes/legacy-campaigns-blast-radius.md` (exact symbols, line ranges, importers). Implementers must read it before touching the server.
+**Scope:** the `/outreach` section — routes, nav, screens, and the legacy LinkedIn campaign subsystem behind it.
+**Precedent:** `docs/superpowers/specs/2026-08-19-setup-simplification-design.md`. Same treatment, same rules: labels over prose, nothing inert, fewer screens to scan.
 
 ## Goals
 
-1. Four screens, no optional-tab machinery.
-2. Nothing inert: no route, table, endpoint, or MCP tool that nothing reaches.
-3. Less to maintain: one campaign system, not two.
-4. Labels only — no explanatory prose added anywhere. (Carried over from the Setup work.)
+1. Four screens, no tab machinery.
+2. One campaign system, not two.
+3. Nothing on the section that the operator cannot act on.
+4. Less to maintain: no file over ~1,500 lines in this section.
 
-## Screens
+## Current state
 
-| Tab         | Path                 | Component                              |
-| ----------- | -------------------- | -------------------------------------- |
-| Campaigns   | `/outreach`          | `OutreachManagerRead`                  |
-| — (builder) | `/outreach/new`      | `OutreachManagerBuilder`               |
-| Messages    | `/outreach/inbox`    | `OutreachInbox`                        |
-| Posts       | `/outreach/posts`    | `LinkedInPosts`                        |
-| Settings    | `/outreach/settings` | `LinkedInAccounts` (split — see below) |
+Nine routes behind three primary tabs plus a `⋯ More` `<select>` that pins extra tabs into the strip and persists them in `localStorage` (`trevra.outreach.pinned-tabs`, `src/client/App.tsx:120-145, 453-527`). Two complete LinkedIn campaign systems ship side by side: legacy (`src/server/linkedin/campaigns.ts`, `export.ts`, `queue.ts`, eleven `/api/linkedin/campaigns*` routes, `src/client/LinkedInCampaigns.tsx`) and managed (`src/server/linkedin/managed-campaigns.ts`, `src/client/LinkedInManagerRead.tsx` + builder + three config files).
 
-`SUB_ROUTES.outreach` becomes `['', 'new', 'inbox', 'posts', 'settings']`. The sidebar entry points at `/outreach`.
+## Target shape
+
+| Tab         | Path                 | Component                             |
+| ----------- | -------------------- | ------------------------------------- |
+| Campaigns   | `/outreach`          | `OutreachManagerRead`                 |
+| — (builder) | `/outreach/new`      | `OutreachManagerBuilder`              |
+| Messages    | `/outreach/inbox`    | `OutreachInbox`                       |
+| Posts       | `/outreach/posts`    | `LinkedInPosts`                       |
+| Settings    | `/outreach/settings` | `LinkedInAccounts` (split, see below) |
+
+`SUB_ROUTES.outreach` becomes `['', 'new', 'inbox', 'posts', 'settings']`. The sidebar nav item points at `/outreach`.
 
 ### Redirects
 
-Every legacy sub-route resolves rather than 404s. Anchors are scroll positions only — the router never reads the fragment (`src/client/ui/route.ts` contract).
+| From                                             | To                                                          |
+| ------------------------------------------------ | ----------------------------------------------------------- |
+| `/outreach/manager`                              | `/outreach`                                                 |
+| `/outreach/manager/new`                          | `/outreach/new`                                             |
+| `/outreach/manager/:id`                          | `/outreach` (no managed-campaign detail route exists today) |
+| `/outreach/campaigns`, `/outreach/campaigns/:id` | `/outreach`                                                 |
+| `/outreach/plan`                                 | `/outreach`                                                 |
+| `/outreach/activity`                             | `/outreach`                                                 |
+| `/outreach/queue`                                | `/outreach` (existing redirect, retargeted)                 |
+| `/outreach/accounts`                             | `/outreach#accounts`                                        |
+| `/outreach/leads`                                | `/outreach#leads`                                           |
+| `/leads` (shell path)                            | `/outreach#accounts`                                        |
 
-| From                                             | To                                     |
-| ------------------------------------------------ | -------------------------------------- |
-| `/outreach/manager`                              | `/outreach`                            |
-| `/outreach/manager/new`                          | `/outreach/new`                        |
-| `/outreach/manager/:id`                          | `/outreach/:id`                        |
-| `/outreach/campaigns`, `/outreach/campaigns/:id` | `/outreach`                            |
-| `/outreach/plan`                                 | `/outreach`                            |
-| `/outreach/activity`                             | `/outreach`                            |
-| `/outreach/queue`                                | `/outreach` (already redirected today) |
-| `/outreach/leads`                                | `/outreach#leads`                      |
-| `/outreach/accounts`                             | `/outreach#accounts`                   |
-| `/leads` (shell path)                            | `/outreach#accounts`                   |
+Anchors reuse the Setup mechanism verbatim: a `{ id, seq }` state and the shared `scrollToId` helper in `src/client/ui/scrollToId.ts`. A repeat navigation to the same anchor re-fires because `seq` changes.
 
-Reuse the Setup implementation exactly: an `OUTREACH_LEGACY_REDIRECTS` map, an `OUTREACH_LEGACY_ANCHORS` map, `{ id, seq }` anchor state, and the shared `src/client/ui/scrollToId.ts` helper.
+### Folds
 
-## Nav
+The Campaigns screen gains two collapsed `<details className="mgr-inputs">` blocks below the campaign list, in this order:
 
-Delete the optional-tab mechanism entirely: `OUTREACH_MORE_ROUTES`, `OUTREACH_PINNED_TABS_STORAGE_KEY`, `readPinnedOutreachTabs`, the `pinnedOutreachTabs` state and its two effects, the pinned-tab and `⋯ More` markup, and the `.outreach-more-select` / `.outreach-pinned-*` CSS. `OUTREACH_ROUTES` becomes the four tabs above.
+- `id="leads"` — **Find people**, rendering `OutreachLeads` (`src/client/LinkedInLeads.tsx`).
+- `id="accounts"` — **Target accounts**, rendering `AccountsScreen` (`src/client/AccountsScreen.tsx`).
 
-## Folds
+Both components keep their current props and behaviour. `LinkedInLeads.tsx:460`'s `navigate('/outreach/campaigns')` becomes `navigate('/outreach/new')`. `LinkedInManagerLeadConfig.tsx:955,1003`'s two `/outreach/leads` links become in-page `#leads` anchors.
 
-The Campaigns screen gains two collapsed disclosures below the campaign list, using the established `<details className="mgr-inputs">` + `<summary>` + `.mgr-inputs-body` pattern:
+## Deletions
 
-- `id="leads"` — **Find people**: renders `OutreachLeads` (`src/client/LinkedInLeads.tsx`) unchanged.
-- `id="accounts"` — **Target accounts**: renders `AccountsScreen` (`src/client/AccountsScreen.tsx`) unchanged.
+### Client
 
-Both are closed on mount, so neither fetches until opened. `LinkedInManagerLeadConfig.tsx:955` and `:1003` link to `/outreach#leads` instead of `/outreach/leads`. `LinkedInLeads.tsx:460` navigates to `/outreach` instead of the deleted `/outreach/campaigns`.
+- `src/client/LinkedInCampaigns.tsx` (3,325 lines) — `OutreachCampaigns` and `OutreachPlan` both go.
+- `src/client/LinkedInActivity.tsx` (187 lines) — `/ledger` is the run surface.
+- The pinned-tab machinery in `App.tsx`: `OUTREACH_MORE_ROUTES`, `OUTREACH_PINNED_TABS_STORAGE_KEY`, `readPinnedOutreachTabs`, `pinnedOutreachTabs` state, both effects, the `⋯ More` `<select>`, and the pinned-tab markup.
+- Dead exports: 40 in `src/client/api.ts`, 4 in `src/client/LinkedInSafety.tsx` (`ACTION_STATUS_LABELS`, `humanizeRule`, `SeatLimitsRead`, `SeatStop`), `ACCOUNT_KEY_PATTERN` in `LinkedInAccounts.tsx`. Each is deleted only after confirming zero importers.
+- `src/client/ui/HelpPanel.tsx` entries for `/outreach/accounts`, `/outreach/leads`, `/outreach/campaigns`, `/outreach/plan`.
+- `LinkedInAnalyticsScreen.tsx:215`'s link to `/outreach/campaigns` → `/outreach`.
+- The CSS for `.outreach-more-select`, `.outreach-pinned-tab`, `.outreach-pinned-open`, `.outreach-pinned-close`, and any rule left with no matching class.
 
-## Deletions — client
+### Server — extract first, then delete
 
-| What                                   | Where                                                                                                                                                  | Lines |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----- |
-| Legacy campaign builder + plan preview | `src/client/LinkedInCampaigns.tsx` (whole file: `OutreachCampaigns`, `OutreachPlan`)                                                                   | 3,325 |
-| Activity screen                        | `src/client/LinkedInActivity.tsx` (whole file)                                                                                                         | 187   |
-| Pinned-tab / More machinery            | `src/client/App.tsx`                                                                                                                                   | ~120  |
-| Dead API surface                       | `src/client/api.ts` — the 40 exports with no importer, listed in the notes file                                                                        | ~400  |
-| Dead helpers                           | `src/client/LinkedInSafety.tsx` — `ACTION_STATUS_LABELS`, `humanizeRule`, `SeatLimitsRead`, `SeatStop`; `LinkedInAccounts.tsx` — `ACCOUNT_KEY_PATTERN` | ~80   |
-| Stale links                            | `src/client/ui/HelpPanel.tsx` (accounts/leads/campaigns/plan entries), `LinkedInAnalyticsScreen.tsx:215`                                               | ~20   |
-| Dead CSS                               | `src/client/styles.css` — every selector orphaned by the above                                                                                         | ~150  |
+`src/server/linkedin/campaigns.ts` is two modules fused. The shared half moves to a new `src/server/linkedin/actions.ts` with no behaviour change:
 
-`LinkedInCampaigns.tsx` is deleted, not trimmed. Any symbol still imported from it by a surviving file (verify before deleting) moves to the importer or to `LinkedInSafety.tsx`.
+`LinkedInApiError`, `CampaignStatus`, `LinkedInActionView`, `listActions`, `getAction`, `skipAction`, `ingestOutcome`, `recordDetectedAcceptance`, `writeActionStatus`, `linkedinAnalytics`.
 
-## Deletions — server
+These are load-bearing for the managed system: `LinkedInApiError` is the error type `linkedinRoute()` catches (`app.ts:6489`) and every `/api/linkedin/manager/*` route throws; `CampaignStatus` is re-used as `ManagedCampaignStatus` (`managed-campaigns.ts:24`); `linkedinAnalytics` feeds `loop-cost.ts` and `LinkedInAnalyticsScreen.tsx` over legacy _and_ managed rows; the Messages tab runs on `listActions`/`getAction`/`skipAction` through `inbox.ts`, which the worker imports.
 
-The legacy campaign system goes. `src/server/linkedin/campaigns.ts` is two modules in one file; the shared half is extracted first, then the legacy half is deleted with its dependents.
+Only then delete:
 
-**Extract (must happen before any deletion):**
+- Legacy-only exports of `campaigns.ts`: `createCampaign`, `listCampaigns`, `getCampaign`, `stopCampaign`, `getCampaignBrief`, `countDeliveredActions`, `attachCampaignRun`, `newCampaignId`, and the export-record family.
+- `src/server/linkedin/export.ts` (729 lines), `src/server/linkedin/queue.ts` (440 lines), and whatever remains of `campaigns.ts` after the extraction.
+- The eleven `/api/linkedin/campaigns*` routes (`app.ts:3355-3978`).
+- The `gtm.linkedin-outreach` playbook (`src/server/playbooks/registry.ts:448`) and its MCP exposure.
+- A new migration dropping `linkedin_exports` (created by migration 025). `linkedin_campaigns` and `linkedin_actions` are shared with the managed system and the worker — they stay.
 
-- `src/server/linkedin/errors.ts` (new) — `LinkedInApiError`. Imported by `app.ts` (`linkedinRoute()` at ~L6489, plus 16 throws in `/api/linkedin/manager/*`), `inbox.ts`, `lead-lists.ts`.
-- `src/server/linkedin/action-ledger.ts` (new) — `listActions`, `getAction`, `skipAction`, `writeActionStatus`, `ingestOutcome`, `recordDetectedAcceptance`, `LinkedInActionView`, `CampaignStatus`, `WORKER_ONLY_STATUSES`/`isWorkerOnlyStatus`, `linkedinAnalytics`. Same import set `campaigns.ts` has today (`db`, `actions.js`, `seats.js`, `pacing.js`), so no new cycles.
-- `managed-campaigns.ts:24` keeps aliasing `CampaignStatus` — it now imports it from `action-ledger.ts`.
-
-**Then delete:**
-
-| What                                  | Where                                                                                                                                                                  | Lines  |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| Legacy campaign CRUD + export records | `src/server/linkedin/campaigns.ts` (whole file, post-extraction)                                                                                                       | ~800   |
-| CSV export                            | `src/server/linkedin/export.ts`                                                                                                                                        | 729    |
-| Legacy approval queue                 | `src/server/linkedin/queue.ts`                                                                                                                                         | 440    |
-| 11 `/api/linkedin/campaigns*` routes  | `src/server/app.ts` ~L3355–3978                                                                                                                                        | ~620   |
-| MCP playbook                          | `gtm.linkedin-outreach` (`src/server/playbooks/registry.ts:449`), `LINKEDIN_PLAYBOOK_ID` (`app.ts:6478`) and its call sites (`app.ts:3492`, `:3600`, `:7469`, `:7623`) | ~80    |
-| Their tests                           | `campaigns.test.ts`, `queue.test.ts`, `export*.test.ts`, legacy cases in `app.test.ts`                                                                                 | ~1,500 |
-
-Outreach becomes UI-only: no MCP entry point starts a campaign. That is the accepted consequence of deleting the playbook.
-
-**Migration:** a new `src/server/migrations/084_drop_linkedin_exports.sql` drops `linkedin_exports` (created by 025). It is the only table the legacy system owns outright. `linkedin_campaigns` and `linkedin_actions` are **shared** with the managed system and the worker — neither is touched, no columns are dropped.
+The CSV export path has no managed equivalent and is not replaced. That is the accepted cost of the decision.
 
 ## Settings split
 
-`src/client/LinkedInAccounts.tsx` (3,373 lines) splits by responsibility. No behaviour changes in this step beyond default visibility.
+`src/client/LinkedInAccounts.tsx` is 3,373 lines and the section's largest file. It splits by responsibility, no behaviour change:
 
-| File                                         | Holds                                                                                                                                                                                                                                                   |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/client/LinkedInActiveAccount.tsx` (new) | The active-seat store: `setActiveSeatKey`, `useActiveSeatKey`, `ActiveLinkedInAccountName`, `slugifyAccountKey`, and the subscribe/snapshot internals. Imported by 8 files — this split is what stops those files pulling in the whole settings screen. |
-| `src/client/LinkedInCompanion.tsx` (new)     | `LinkedInCompanionAttention`, `CompanionPanel`, `WorkerNotice`.                                                                                                                                                                                         |
-| `src/client/LinkedInAccountForm.tsx` (new)   | `AddAccountForm`, `EditAccountForm`, `TimezoneField`, `TimezoneOptions`, `ProxyField`, `ScheduleFields`, `BandOverrideField`, `draftToPatch`.                                                                                                           |
-| `src/client/LinkedInAccounts.tsx` (remains)  | The screen, `AccountPanel`, `AccountsTable`, `PendingInviteWithdrawals(Section)`, `Wall`, `accountState`, `stateSentence`.                                                                                                                              |
+| File                        | Contents                                                                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LinkedInActiveAccount.tsx` | active-seat store, `setActiveSeatKey`, `useActiveSeatKey`, `ActiveLinkedInAccountName`, `slugifyAccountKey` — the module eight other files import |
+| `LinkedInCompanion.tsx`     | `LinkedInCompanionAttention`, `CompanionPanel`, `WorkerNotice`                                                                                    |
+| `LinkedInAccountForm.tsx`   | `AddAccountForm`, `EditAccountForm`, `TimezoneField`, `TimezoneOptions`, `ProxyField`, `ScheduleFields`, `BandOverrideField`, `draftToPatch`      |
+| `LinkedInAccounts.tsx`      | the screen, `AccountPanel`, `AccountsTable`, `PendingInviteWithdrawals(+Section)`, `Wall`, `accountState`, `stateSentence`                        |
 
-Re-export nothing for compatibility — update every importer.
-
-**Collapse (audit finding #1, `docs/superpowers/specs/2026-08-19-app-wide-simplicity-audit.md`):** `AccountPanel` renders collapsed by default rather than fully expanded; `ProxyField` and `ScheduleFields` stay inside their existing disclosures. A panel opens on mount only when its account is in a state that needs attention (`accountState` is not the healthy state).
-
-## Docs
-
-Update to the four-screen Outreach and remove references to deleted routes/screens: `docs/app-spec.md`, `docs/first-run.md`, `docs/lead-spine.md`, `docs/product-journeys-and-autonomous-work.md`, `docs/gtm-shell-shape.md`. Any doc naming `/outreach/campaigns`, `/outreach/plan`, `/outreach/activity`, `/outreach/leads`, `/outreach/accounts`, or the `gtm.linkedin-outreach` playbook is stale by definition.
+Always-open panels inside the screen collapse behind `<details>` per the audit's finding #1 (`docs/superpowers/specs/2026-08-19-app-wide-simplicity-audit.md`): the daily-limit configuration and `ProxyField` open only when they hold a non-default value.
 
 ## Out of scope
 
-- The Messages (inbox) screen's internals — routes and file stay as they are.
-- Scheduled posts beyond its new tab position; Milestone 1 work continues untouched.
-- `linkedin_campaigns` / `linkedin_actions` schema.
-- Loop, Ledger, Research, Setup.
+Messages (`OutreachInbox`), Posts (`LinkedInPosts`, mid-build), the managed campaign builder's three config screens, and every server route outside `/api/linkedin/campaigns*`.
 
 ## Milestones
 
-1. **Routes and nav** — `SUB_ROUTES`, redirects, anchors, four tabs, pinned-tab machinery deleted, `route.test.ts` covers every legacy path.
-2. **Server extraction** — `errors.ts` + `action-ledger.ts` created, every importer repointed, suite green. No deletions yet.
-3. **Legacy deletion** — legacy `campaigns.ts`, `export.ts`, `queue.ts`, the 11 routes, the playbook, their tests, the drop migration.
-4. **Folds** — Find people and Target accounts as closed disclosures on Campaigns; `LinkedInCampaigns.tsx` and `LinkedInActivity.tsx` deleted.
-5. **Settings split + collapse** — four files, default-collapsed panels.
-6. **Sweep** — dead `api.ts` / `LinkedInSafety.tsx` exports, dead CSS, HelpPanel, docs.
-
-Each milestone ends green and is independently revertable. Milestone 2 must land before 3.
+1. **Routes and nav** — `SUB_ROUTES`, redirects, anchors, four tabs, pinned-tab machinery deleted. Route tests updated.
+2. **Extract the action ledger** — `src/server/linkedin/actions.ts`, all importers repointed. Green suite before anything is deleted.
+3. **Delete the legacy system** — routes, files, playbook, drop migration, client screen, `LinkedInActivity`.
+4. **Folds** — the two `<details>` on Campaigns, the three cross-links repointed.
+5. **Settings split + collapse.**
+6. **Sweep** — dead exports, dead CSS, HelpPanel, `docs/app-spec.md`, `docs/first-run.md`, `docs/lead-spine.md`, `docs/product-journeys-and-autonomous-work.md`.
 
 ## Verification
 
-- `npm run typecheck` clean after every milestone.
-- `npx vitest run src/client` green after every client milestone; `npm test` (DB-backed, testcontainers) green after milestones 2 and 3.
-- `npm run build` succeeds.
-- Manual: each of the four tabs loads; every redirect in the table above lands on the right screen, with `#leads` / `#accounts` scrolling to and opening nothing that was not asked for; a managed campaign can still be created, run, and read.
-- `grep` proves zero references to deleted symbols, routes, and paths.
+- `npm run typecheck` clean.
+- `npx vitest run src/client` and `src/server/app.test.ts` green; route tests cover every redirect in the table above.
+- `npm test` (testcontainers Postgres) green on a host that can run it.
+- Manual: every legacy URL in the redirect table lands on its target, and both anchors scroll and focus.
 
 ## Expected size
 
-≈ 9,000 lines removed, ≈ 900 relocated, against ~400 added (redirect tables, disclosures, split file headers).
+≈ −9,000 lines net, against ~800 relocated by the extraction.
