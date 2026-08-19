@@ -234,6 +234,34 @@ describe('claimNextDuePost', () => {
     const reclaimed = await claimNextDuePost(db, WORKSPACE_ID, NOW);
     expect(reclaimed?.id).toBe('lipost_release');
   });
+
+  it('never lets two racing callers both claim the same due post', async () => {
+    await createPost(
+      db,
+      {
+        id: 'lipost_race',
+        workspaceId: WORKSPACE_ID,
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T08:00:00.000Z',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    // Two callers racing on the ONE due post -- FOR UPDATE SKIP LOCKED must let
+    // exactly one of them claim it, never both (a worker tick double-posting)
+    // and never neither (a post silently never claimed).
+    const [first, second] = await Promise.all([
+      claimNextDuePost(db, WORKSPACE_ID, NOW),
+      claimNextDuePost(db, WORKSPACE_ID, NOW)
+    ]);
+    const winners = [first, second].filter((result) => result !== undefined);
+    const losers = [first, second].filter((result) => result === undefined);
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect(winners[0]?.id).toBe('lipost_race');
+    expect(winners[0]?.status).toBe('publishing');
+  });
 });
 
 describe('markPostFailed / markPostMissed', () => {
