@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CircleAlert, ShieldCheck, TrendingUp } from 'lucide-react';
 import {
   ApiError,
   getLinkedInLimits,
@@ -614,47 +613,4 @@ export function useSeatStop(): SeatStop {
     clearFailure: () => setFailure(''),
     reload
   };
-}
-/* =========================================================================
- * The account's own configuration, read per account.
- *
- * Everything below mirrors ONE named server function each, and says which.
- * These are clocks and calendars, not limits: no ceiling is invented here.
- * ====================================================================== */
-
-/** What an account is doing, in the operator's words rather than the column's. */
-const STATUS_LABELS: Record<string, string> = {
-  warmup: 'Warming up',
-  steady: 'Running',
-  cooldown: 'Slowed down',
-  paused: 'Paused'
-};
-
-export function PostureBadge({
-  posture,
-  reason
-}: {
-  posture: string | null;
-  reason?: string | null;
-}) {
-  if (!posture)
-    return (
-      <span className="li-posture li-posture-none">
-        <CircleAlert size={13} /> No account
-      </span>
-    );
-  const icon =
-    posture === 'paused' || posture === 'cooldown' ? (
-      <CircleAlert size={13} />
-    ) : posture === 'steady' ? (
-      <ShieldCheck size={13} />
-    ) : (
-      <TrendingUp size={13} />
-    );
-  return (
-    <span className={`li-posture li-posture-${posture}`} title={reason ?? undefined}>
-      {icon} {STATUS_LABELS[posture] ?? posture}
-      {posture === 'paused' && reason ? `: ${reason}` : ''}
-    </span>
-  );
 }

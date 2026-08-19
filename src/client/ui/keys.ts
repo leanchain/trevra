@@ -15,15 +15,7 @@ import { useEffect, useRef, type RefObject } from 'react';
  *    not on it does not exist.
  * -------------------------------------------------------------------------- */
 
-/**
- * With the caret outside every list, the first list on the page is the one
- * `j` starts in.
- *
- * Peers are the lists that ACTUALLY BOUND THE KEY, marked as they arm. Matching
- * on the container's class name instead handed the key to whichever list came
- * first in the DOM even when that list was too short to bind it, which is how
- * `j` came to do nothing at all on a screen holding three lists.
- */
+/** Is the caret somewhere a letter means a letter? */
 export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
@@ -66,14 +58,3 @@ export function useShortcuts({ onJump, onSheet, suspended }: ShortcutHandlers): 
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [suspended]);
 }
-
-/**
- * `j` and `k` down and up a list.
- *
- * They move real focus onto the row rather than painting a private highlight,
- * so the caret a screen reader follows and the caret the eye follows are the
- * same one, and Tab carries on from wherever j left off.
- *
- * ONE LIST ACTS PER KEYPRESS. If several lists are mounted, whichever already
- * holds the caret owns the key; if none does, the first one in the document does.
- */
