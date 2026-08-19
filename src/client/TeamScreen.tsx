@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Copy, LoaderCircle, Trash2, UserPlus } from 'lucide-react';
 import { ApiError, addTeamMember } from './api';
 import { authClient } from './auth-client';
+import { relativeTime } from './LinkedInScreen';
 import { reloadOutreach } from './LinkedInSafety';
 import { ConfirmDrawer } from './ui/dialog';
 import type { Route } from './ui/route';
@@ -85,6 +86,7 @@ interface PendingInvitation {
   email: string;
   role: string;
   status: string;
+  expiresAt: string;
 }
 
 export function TeamSettingsView({
@@ -133,7 +135,9 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
       setInvitationsError(result.error.message ?? 'Unable to read pending invitations.');
     } else {
       setInvitations(
-        ((result.data ?? []) as PendingInvitation[]).filter((entry) => entry.status === 'pending')
+        ((result.data ?? []) as unknown as PendingInvitation[]).filter(
+          (entry) => entry.status === 'pending'
+        )
       );
       setInvitationsError('');
     }
@@ -145,6 +149,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
   }, [loadInvitations]);
 
   const [email, setEmail] = useState('');
+  const [role, setRole] = useState<'owner' | 'member'>('member');
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState('');
 
@@ -158,7 +163,7 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
       // Trevra account or not. When transactional SMTP is configured, Better
       // Auth emails the same invitation id automatically; the pending list
       // keeps a copy-link fallback for delivery failures or manual sharing.
-      await addTeamMember({ email: trimmed });
+      await addTeamMember({ email: trimmed, role });
       setEmail('');
       setToast(
         `Invitation created for ${trimmed}. Trevra will email it automatically when SMTP is configured.`
@@ -308,6 +313,16 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
                 placeholder="teammate@example.com"
               />
             </label>
+            <label>
+              Role
+              <select
+                value={role}
+                onChange={(event) => setRole(event.target.value as 'owner' | 'member')}
+              >
+                <option value="member">Member</option>
+                <option value="owner">Owner</option>
+              </select>
+            </label>
             <button
               className="primary-button"
               type="button"
@@ -341,6 +356,8 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
                 <thead>
                   <tr>
                     <th>Email</th>
+                    <th>Role</th>
+                    <th>Expires</th>
                     <th />
                   </tr>
                 </thead>
@@ -348,6 +365,8 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
                   {invitations.map((invitation) => (
                     <tr key={invitation.id}>
                       <td>{invitation.email}</td>
+                      <td>{invitation.role === 'owner' ? 'Owner' : 'Member'}</td>
+                      <td>{relativeTime(invitation.expiresAt)}</td>
                       <td>
                         <div className="li-row-actions">
                           <button
