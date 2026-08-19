@@ -21,7 +21,12 @@ const env = {
   TREVRA_SECRETS_KEY: Buffer.alloc(32, 23).toString('base64'),
   COOKIE_SECURE: 'false',
   ALLOW_DEMO_AUTH: 'true',
-  ALLOW_SIMULATED_EXECUTION: 'true'
+  ALLOW_SIMULATED_EXECUTION: 'true',
+  // vitest.config.ts now runs up to 4 workers in parallel (vitest.setup.worker-db.ts
+  // gives each its own database), each opening an app pool (this) and a
+  // better-auth pool (AUTH_DATABASE_POOL_MAX, defaults to 5) -- capped so
+  // 4 workers can never approach Postgres's default max_connections (100).
+  DATABASE_POOL_MAX: process.env.DATABASE_POOL_MAX ?? '5'
 };
 
 try {
@@ -29,11 +34,15 @@ try {
     // Anything after the script name is passed straight to vitest, so a single
     // file or directory can be run against the same ephemeral Postgres:
     //   npx tsx scripts/test-with-postgres.ts src/server/secrets
-    const child = spawn(process.execPath, ['./node_modules/vitest/vitest.mjs', 'run', ...process.argv.slice(2)], {
-      cwd: process.cwd(),
-      env,
-      stdio: 'inherit'
-    });
+    const child = spawn(
+      process.execPath,
+      ['./node_modules/vitest/vitest.mjs', 'run', ...process.argv.slice(2)],
+      {
+        cwd: process.cwd(),
+        env,
+        stdio: 'inherit'
+      }
+    );
     child.on('exit', (code) => resolve(code ?? 1));
     child.on('error', () => resolve(1));
   });
