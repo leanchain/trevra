@@ -21,7 +21,11 @@ import {
   workerShard
 } from '../server/linkedin/local-worker.js';
 import { notifyDisconnectedCompanionDevices } from '../server/linkedin/companion.js';
-import { runLinkedInCampaignTick, runLinkedInSideTasks } from '../server/linkedin/jobs.js';
+import {
+  runLinkedInCampaignTick,
+  runLinkedInPostTick,
+  runLinkedInSideTasks
+} from '../server/linkedin/jobs.js';
 import { hostedExecutionMode, hostedSeatFilter } from '../server/linkedin/hosted-execution.js';
 import { runDueResearchSources } from '../server/research/service.js';
 
@@ -242,6 +246,7 @@ async function linkedinCycle(): Promise<void> {
       // with work nothing may execute is a backlog with no reader.
       if (allowSeat && !(await allowSeat({ workspaceId }))) continue;
       await runLinkedInCampaignTick(db, workspaceId);
+      await runLinkedInPostTick(db, runtime.linkedinLocalWorker, { workspaceId });
     }
   } catch (error) {
     console.error('LinkedIn local worker cycle failed', error);

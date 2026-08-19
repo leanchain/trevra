@@ -52,6 +52,7 @@
 // The sibling selector tables. Type-only in the other direction, so this pair
 // of cycles resolves before either module body needs a binding from the other.
 import { endorseSkills, followProfile, likeRecentPost } from './driver-engage.js';
+import { publishPost } from './driver-post.js';
 import {
   listConversations,
   readThread,
@@ -61,9 +62,15 @@ import {
 } from './driver-inbox.js';
 import { hoverClick, readPage, settle, typeLike } from './human.js';
 
-/** The six outcomes a routine may report. Ordered as in plan 4.5. */
+/** The seven outcomes a routine may report. Ordered as in plan 4.5. */
 export type LinkedInFailureKind =
-  'not_found' | 'already_connected' | 'limit_wall' | 'challenge' | 'selector_drift' | 'unknown';
+  | 'not_found'
+  | 'already_connected'
+  | 'limit_wall'
+  | 'challenge'
+  | 'selector_drift'
+  | 'unknown'
+  | 'compose_unavailable';
 
 export interface LinkedInDriverResult {
   ok: boolean;
@@ -257,6 +264,8 @@ export interface LinkedInDriver {
     target: string,
     options?: { seed?: string }
   ): Promise<LinkedInDriverResult>;
+  /** Publish a rendered post to the feed. Optional -- see `driver-post.ts`, which owns its own selector table. */
+  publishPost?(page: LinkedInPage, body: string): Promise<LinkedInDriverResult>;
   readSeat(
     page: LinkedInPage,
     options?: { skipConnections?: boolean }
@@ -1641,6 +1650,7 @@ export const playwrightDriver: LinkedInDriver = {
   followProfile,
   likeRecentPost,
   endorseSkills,
+  publishPost,
   readSeat,
   isLoggedIn,
   sessionRecoveryReason,

@@ -1,4 +1,5 @@
 import { id, type Db } from '../db.js';
+import { renderPostBody } from '../../shared/linkedin-post-format.js';
 import { ownerSeat, type SeatRef } from './actions.js';
 import {
   isSeatRead,
@@ -42,6 +43,14 @@ import {
   warmUpSession,
   type LinkedInLocalWorkerConfig
 } from './local-worker.js';
+import {
+  claimNextDuePost,
+  markPostFailed,
+  markPostMissed,
+  markPostPublished,
+  releasePostToScheduled,
+  sweepStalePublishing
+} from './posts.js';
 import { runManagedCampaigns, type RunnerResult } from './runner.js';
 import type { DayShapeFn } from './pacing.js';
 import { encodeBackgroundRunDetail, recordSeatEvent, seatRestingUntil } from './seat-events.js';
@@ -1276,6 +1285,141 @@ async function leaveLinkedIn(page: LinkedInPage, log: (message: string) => void)
       `LinkedIn tab could not be closed after the visit (${cause instanceof Error ? cause.message : String(cause)}). Nothing was read or sent because of it.`
     );
   }
+}
+
+/** Beyond this, a due post is stale enough that firing it late is worse than not firing it at all. */
+const POST_GRACE_MS = 6 * 3_600_000;
+/**
+ * ONE ACTUAL PUBLISH per tick, deliberately. Typing a 3000-character post at
+ * human speed takes the driver 5-9 minutes, and this loop runs SERIALLY inside
+ * the same per-workspace tick as the paced invite/DM queue -- five posts back
+ * to back would hold that queue for the better part of half an hour. A
+ * workspace with several posts due at once drains them one tick at a time.
+ *
+ * It counts PUBLISH ATTEMPTS, not claims: a post marked 'missed' or a seat
+ * whose session will not open costs one UPDATE and no typing at all, so
+ * neither may consume the budget -- otherwise one dead seat's post would eat
+ * the whole tick and starve every other seat in the workspace, which is the
+ * exact bug `failedSeats`/`excludeSeatKeys` exists to prevent.
+ */
+const POSTS_PER_WORKSPACE_TICK = 1;
+
+/**
+ * The tick still has to end. Claims that spend no publish budget (missed,
+ * held) are cheap but not free, and without this a workspace holding hundreds
+ * of long-expired posts would sweep them all in one pass.
+ */
+const MAX_POST_CLAIMS_PER_TICK = 20;
+
+/**
+ * Publish every LinkedIn post that has come due for one workspace, up to
+ * `POSTS_PER_WORKSPACE_TICK` per tick.
+ *
+ * Claims posts one at a time via `claimNextDuePost` -- see that function for
+ * why (`FOR UPDATE SKIP LOCKED`, so two worker replicas ticking at once never
+ * both grab the same row). A post more than `POST_GRACE_MS` late is marked
+ * 'missed' rather than fired -- publishing hours later than scheduled is worse
+ * than not publishing at all. A companion session that will not open, or that
+ * turns out to be signed into the wrong account, HOLDS the post -- released
+ * back to 'scheduled' for the next tick to retry -- and records that seat in
+ * `failedSeats`, which `claimNextDuePost`'s `excludeSeatKeys` then keeps out
+ * of every remaining claim this tick. The loop CONTINUES rather than aborting:
+ * a different, healthy seat in the same workspace still has its due posts
+ * reached. Only an actual publish attempt that comes back `!ok` is terminal
+ * ('failed', never retried).
+ *
+ * Opens by sweeping posts left in 'publishing' by a worker that died between
+ * the claim and the outcome -- see `sweepStalePublishing` for why that state
+ * is otherwise unrecoverable.
+ */
+export async function runLinkedInPostTick(
+  db: Db,
+  config: LinkedInLocalWorkerConfig,
+  options: LinkedInJobOptions
+): Promise<{ published: number; missed: number }> {
+  const { workspaceId } = options;
+  const now = options.now ?? new Date();
+  const log = options.log ?? ((message: string) => console.log(message));
+  let published = 0;
+  let missed = 0;
+  // A seat whose session fails must not starve every OTHER seat's due post in
+  // the same workspace-scoped tick -- see claimNextDuePost's own doc comment.
+  // `runLinkedInSideTasks` solves the identical problem by ticking per seat;
+  // this function claims across a whole workspace, so it tracks failures
+  // in-loop instead. Once a seat is in this set, its remaining due posts are
+  // left `scheduled` for the next tick rather than reclaimed and failed again
+  // this same pass.
+  const failedSeats = new Set<string>();
+
+  await sweepStalePublishing(db, workspaceId, now);
+
+  let attempted = 0;
+  for (
+    let claims = 0;
+    claims < MAX_POST_CLAIMS_PER_TICK && attempted < POSTS_PER_WORKSPACE_TICK;
+    claims += 1
+  ) {
+    const claimed = await claimNextDuePost(db, workspaceId, now, [...failedSeats]);
+    if (!claimed) break;
+
+    const scheduledAt = claimed.scheduledAt ? new Date(claimed.scheduledAt) : now;
+    if (now.getTime() - scheduledAt.getTime() > POST_GRACE_MS) {
+      await markPostMissed(db, claimed.id, now);
+      missed += 1;
+      continue;
+    }
+
+    const session = await openLinkedInSession(db, config, {
+      workspaceId,
+      seatKey: claimed.seatKey,
+      now,
+      ...(options.page ? { page: options.page } : {}),
+      ...(options.driver ? { driver: options.driver } : {})
+    });
+    if (!session.ok) {
+      await releasePostToScheduled(db, claimed.id, now);
+      log(
+        `LinkedIn post ${claimed.id} held for ${workspaceId}/${claimed.seatKey}: ${session.blocked}`
+      );
+      failedSeats.add(claimed.seatKey);
+      continue; // a DIFFERENT seat in this workspace may still have a healthy session
+    }
+
+    const wrongAccount = options.accountConfirmed
+      ? null
+      : await confirmSeatAccount(db, session, workspaceId, claimed.seatKey);
+    if (wrongAccount) {
+      await releasePostToScheduled(db, claimed.id, now);
+      log(`LinkedIn post ${claimed.id} held: ${wrongAccount}`);
+      failedSeats.add(claimed.seatKey);
+      continue;
+    }
+
+    attempted += 1;
+    const body = renderPostBody(claimed.blocks);
+    const result = session.driver.publishPost
+      ? await session.driver.publishPost(session.page, body)
+      : {
+          ok: false as const,
+          failureKind: 'compose_unavailable' as const,
+          detail: 'This driver has no publishPost capability.'
+        };
+
+    if (result.ok) {
+      await markPostPublished(db, claimed.id, { postedUrl: result.externalRef ?? null }, now);
+      published += 1;
+    } else {
+      await markPostFailed(
+        db,
+        claimed.id,
+        { kind: result.failureKind ?? 'unknown', detail: result.detail ?? '' },
+        now
+      );
+      log(`LinkedIn post ${claimed.id} failed (${result.failureKind}): ${result.detail}`);
+    }
+  }
+
+  return { published, missed };
 }
 
 /**

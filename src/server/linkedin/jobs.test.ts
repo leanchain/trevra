@@ -1,10 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { id, openDatabase, type Db } from '../db.js';
 import { recordAction, type SeatRef } from './actions.js';
-import type { LinkedInDriver, LinkedInDriverResult, LinkedInPage, LinkedInSeatRead } from './driver.js';
+import type {
+  LinkedInDriver,
+  LinkedInDriverResult,
+  LinkedInPage,
+  LinkedInSeatRead
+} from './driver.js';
 import type { LinkedInInboxDriver } from './driver-inbox.js';
-import { runLinkedInSideTasks, runLinkedInWithdrawals, syncLinkedInInbox, syncLinkedInThread } from './jobs.js';
+import {
+  runLinkedInPostTick,
+  runLinkedInSideTasks,
+  runLinkedInWithdrawals,
+  syncLinkedInInbox,
+  syncLinkedInThread
+} from './jobs.js';
 import { syncThreads } from './inbox.js';
+import { createPost, getPost } from './posts.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
 import { parseBackgroundRunDetail, setSeatRestingUntil } from './seat-events.js';
 import { upsertSeat } from './seats.js';
@@ -49,8 +61,15 @@ const OFF = { enabled: false } as const;
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-  await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(WORKSPACE_ID, 'LinkedIn jobs test', NOW.toISOString());
-  await upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC' }, new Date('2026-01-01T09:00:00.000Z'));
+  await db
+    .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+    .run(WORKSPACE_ID, 'LinkedIn jobs test', NOW.toISOString());
+  await upsertSeat(
+    db,
+    WORKSPACE_ID,
+    { label: 'Test seat', timezone: 'UTC' },
+    new Date('2026-01-01T09:00:00.000Z')
+  );
 });
 
 afterEach(async () => {
@@ -62,7 +81,13 @@ afterEach(async () => {
 async function pendingInvite(handle: string, daysAgo: number): Promise<string> {
   const { id } = await recordAction(
     db,
-    { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: `https://www.linkedin.com/in/${handle}/`, status: 'sent', source: 'export' },
+    {
+      workspaceId: WORKSPACE_ID,
+      kind: 'invite',
+      targetRef: `https://www.linkedin.com/in/${handle}/`,
+      status: 'sent',
+      source: 'export'
+    },
     new Date(NOW.getTime() - daysAgo * 86_400_000)
   );
   return id;
@@ -76,49 +101,105 @@ async function pendingInvite(handle: string, daysAgo: number): Promise<string> {
  * only thing under test is the JOIN the sweep makes: action -> member ->
  * campaign -> workflow -> the step's configured number.
  */
-async function managedInvite(handle: string, daysAgo: number, afterDays: number | null): Promise<string> {
+async function managedInvite(
+  handle: string,
+  daysAgo: number,
+  afterDays: number | null
+): Promise<string> {
   const suffix = handle;
   const steps = [
-    { id: 'step-1', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: null } },
+    {
+      id: 'step-1',
+      action: 'connection_request',
+      delayBefore: { amount: 0, unit: 'hours' },
+      config: { message: null }
+    },
     ...(afterDays === null
       ? []
-      : [{ id: 'step-2', action: 'withdraw_pending', delayBefore: { amount: 0, unit: 'hours' }, config: { afterDays } }])
+      : [
+          {
+            id: 'step-2',
+            action: 'withdraw_pending',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { afterDays }
+          }
+        ])
   ];
   const iso = NOW.toISOString();
-  await db.prepare('INSERT INTO linkedin_lead_lists (id,workspace_id,name,created_at,updated_at) VALUES (?,?,?,?,?)')
+  await db
+    .prepare(
+      'INSERT INTO linkedin_lead_lists (id,workspace_id,name,created_at,updated_at) VALUES (?,?,?,?,?)'
+    )
     .run(`lilist_${suffix}`, WORKSPACE_ID, `List ${suffix}`, iso, iso);
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO linkedin_lead_contacts (id,workspace_id,list_id,first_name,last_name,company,profile_url,dedupe_key,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)
-  `).run(`lilc_${suffix}`, WORKSPACE_ID, `lilist_${suffix}`, 'Lead', suffix, 'Acme', `https://www.linkedin.com/in/${handle}/`, suffix, iso, iso);
-  await db.prepare('INSERT INTO linkedin_workflows (id,workspace_id,name,steps_json,version,created_at,updated_at) VALUES (?,?,?,?::jsonb,1,?,?)')
+  `
+    )
+    .run(
+      `lilc_${suffix}`,
+      WORKSPACE_ID,
+      `lilist_${suffix}`,
+      'Lead',
+      suffix,
+      'Acme',
+      `https://www.linkedin.com/in/${handle}/`,
+      suffix,
+      iso,
+      iso
+    );
+  await db
+    .prepare(
+      'INSERT INTO linkedin_workflows (id,workspace_id,name,steps_json,version,created_at,updated_at) VALUES (?,?,?,?::jsonb,1,?,?)'
+    )
     .run(`liwf_${suffix}`, WORKSPACE_ID, `Workflow ${suffix}`, JSON.stringify(steps), iso, iso);
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,lead_list_id,workflow_id,started_at,created_at,updated_at)
     VALUES (?,?,?,'running',?::jsonb,'owner',?,?,?,?,?)
-  `).run(
-    `licmp_${suffix}`, WORKSPACE_ID, `Campaign ${suffix}`, JSON.stringify({ manager: true, steps }),
-    `lilist_${suffix}`, `liwf_${suffix}`, iso, iso, iso
-  );
-  await db.prepare(`
+  `
+    )
+    .run(
+      `licmp_${suffix}`,
+      WORKSPACE_ID,
+      `Campaign ${suffix}`,
+      JSON.stringify({ manager: true, steps }),
+      `lilist_${suffix}`,
+      `liwf_${suffix}`,
+      iso,
+      iso,
+      iso
+    );
+  await db
+    .prepare(
+      `
     INSERT INTO linkedin_campaign_members (id,workspace_id,campaign_id,contact_id,status,step_index,created_at,updated_at)
     VALUES (?,?,?,?,'active',1,?,?)
-  `).run(`limem_${suffix}`, WORKSPACE_ID, `licmp_${suffix}`, `lilc_${suffix}`, iso, iso);
+  `
+    )
+    .run(`limem_${suffix}`, WORKSPACE_ID, `licmp_${suffix}`, `lilc_${suffix}`, iso, iso);
 
   const actionId = await pendingInvite(handle, daysAgo);
-  await db.prepare('UPDATE linkedin_actions SET campaign_id=?, campaign_member_id=?, workflow_step_id=? WHERE id=?')
+  await db
+    .prepare(
+      'UPDATE linkedin_actions SET campaign_id=?, campaign_member_id=?, workflow_step_id=? WHERE id=?'
+    )
     .run(`licmp_${suffix}`, `limem_${suffix}`, 'step-1', actionId);
   return actionId;
 }
 
 async function queuedWithdrawals(): Promise<string[]> {
-  const rows = await db.prepare('SELECT action_id FROM linkedin_withdrawals WHERE workspace_id=? ORDER BY action_id')
+  const rows = await db
+    .prepare('SELECT action_id FROM linkedin_withdrawals WHERE workspace_id=? ORDER BY action_id')
     .all<{ action_id: string }>(WORKSPACE_ID);
   return rows.map((row) => row.action_id);
 }
 
 describe('the unattended withdrawal sweep', () => {
-  it('WAITS THE WORKFLOW\'S 30 DAYS instead of the account default 21', async () => {
+  it("WAITS THE WORKFLOW'S 30 DAYS instead of the account default 21", async () => {
     const managed = await managedInvite('managed', 25, 30);
     const loose = await pendingInvite('loose', 25);
 
@@ -173,7 +254,11 @@ describe('the unattended withdrawal sweep', () => {
     await managedInvite('managed', 40, 7);
     await pendingInvite('loose', 40);
 
-    const result = await runLinkedInWithdrawals(db, OFF, { workspaceId: WORKSPACE_ID, now: NOW, limit: 1 });
+    const result = await runLinkedInWithdrawals(db, OFF, {
+      workspaceId: WORKSPACE_ID,
+      now: NOW,
+      limit: 1
+    });
 
     expect(result.candidates).toBe(1);
     expect(await queuedWithdrawals()).toHaveLength(1);
@@ -232,14 +317,16 @@ describe('the seat a single-thread refresh reads', () => {
       {
         workspaceId: WORKSPACE_ID,
         seatKey: 'sales',
-        threads: [{
-          threadUrn: '2-sales==',
-          profileUrl: 'https://www.linkedin.com/in/sales-lead/',
-          name: 'Sales Lead',
-          lastMessageAt: NOW.toISOString(),
-          snippet: 'hello',
-          unread: false
-        }]
+        threads: [
+          {
+            threadUrn: '2-sales==',
+            profileUrl: 'https://www.linkedin.com/in/sales-lead/',
+            name: 'Sales Lead',
+            lastMessageAt: NOW.toISOString(),
+            snippet: 'hello',
+            unread: false
+          }
+        ]
       },
       NOW
     );
@@ -248,12 +335,19 @@ describe('the seat a single-thread refresh reads', () => {
     // at the session it cannot open. `blocked` being non-null is therefore the
     // proof that the conversation WAS found: an unknown thread returns early
     // with `blocked: null` and never asks for a browser.
-    const found = await syncLinkedInThread(db, OFF, '2-sales==', { workspaceId: WORKSPACE_ID, seatKey: 'sales', now: NOW });
+    const found = await syncLinkedInThread(db, OFF, '2-sales==', {
+      workspaceId: WORKSPACE_ID,
+      seatKey: 'sales',
+      now: NOW
+    });
     expect(found.blocked).not.toBeNull();
 
     // And the owner seat still does not see it, which is the other half of the
     // same rule: from that seat's point of view the conversation does not exist.
-    const owner = await syncLinkedInThread(db, OFF, '2-sales==', { workspaceId: WORKSPACE_ID, now: NOW });
+    const owner = await syncLinkedInThread(db, OFF, '2-sales==', {
+      workspaceId: WORKSPACE_ID,
+      now: NOW
+    });
     expect(owner.blocked).toBeNull();
   });
 });
@@ -286,7 +380,9 @@ describe('the account a sync is allowed to read', () => {
     const calls: string[] = [];
     const readOptions: Array<{ skipConnections?: boolean } | undefined> = [];
     const trap = () => {
-      throw new Error('a sync must not act on LinkedIn while it is confirming whose account this is');
+      throw new Error(
+        'a sync must not act on LinkedIn while it is confirming whose account this is'
+      );
     };
     return {
       calls,
@@ -333,7 +429,8 @@ describe('the account a sync is allowed to read', () => {
   } as unknown as LinkedInInboxDriver;
 
   async function storedThreads(): Promise<number> {
-    const row = await db.prepare('SELECT COUNT(*)::int AS count FROM linkedin_threads WHERE workspace_id=?')
+    const row = await db
+      .prepare('SELECT COUNT(*)::int AS count FROM linkedin_threads WHERE workspace_id=?')
       .get<{ count: number }>(WORKSPACE_ID);
     return row?.count ?? 0;
   }
@@ -344,26 +441,37 @@ describe('the account a sync is allowed to read', () => {
       {
         workspaceId: WORKSPACE_ID,
         seatKey: 'owner',
-        threads: [{
-          threadUrn: '2-somebody-else==',
-          profileUrl: 'https://www.linkedin.com/in/stranger/',
-          name: 'Stranger',
-          lastMessageAt: NOW.toISOString(),
-          snippet: 'read from the account that is no longer signed in',
-          unread: false
-        }]
+        threads: [
+          {
+            threadUrn: '2-somebody-else==',
+            profileUrl: 'https://www.linkedin.com/in/stranger/',
+            name: 'Stranger',
+            lastMessageAt: NOW.toISOString(),
+            snippet: 'read from the account that is no longer signed in',
+            unread: false
+          }
+        ]
       },
       NOW
     );
   }
 
   it('READS NOTHING and clears the cache when the browser is signed in as somebody else', async () => {
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/seat-owner/' }, NOW);
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/seat-owner/' },
+      NOW
+    );
     await cacheOneThread();
     expect(await storedThreads()).toBe(1);
 
     const { driver, calls } = identityDriver();
-    const result = await syncLinkedInInbox(db, { enabled: true }, { workspaceId: WORKSPACE_ID, now: NOW, page, driver, inboxDriver });
+    const result = await syncLinkedInInbox(
+      db,
+      { enabled: true },
+      { workspaceId: WORKSPACE_ID, now: NOW, page, driver, inboxDriver }
+    );
 
     expect(calls).toEqual(['readSeat']);
     expect(result.threads).toBe(0);
@@ -378,26 +486,44 @@ describe('the account a sync is allowed to read', () => {
     // `beforeEach` leaves the seat with no profile URL: this is the state the
     // real workspace synced in, and the state that filed a stranger's inbox.
     const { driver } = identityDriver();
-    const result = await syncLinkedInInbox(db, { enabled: true }, { workspaceId: WORKSPACE_ID, now: NOW, page, driver, inboxDriver });
+    const result = await syncLinkedInInbox(
+      db,
+      { enabled: true },
+      { workspaceId: WORKSPACE_ID, now: NOW, page, driver, inboxDriver }
+    );
 
     expect(result.threads).toBe(0);
     expect(result.blocked).toContain('never confirmed');
   });
 
   it('walks the rail when the signed-in account IS the seat', async () => {
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' }, NOW);
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
     await cacheOneThread();
 
     const { driver } = identityDriver();
     const walked = {
       listConversations: async () => ({ ok: true as const, threads: [], degraded: [] }),
-      readThread: async () => ({ ok: true as const, threadUrn: '2-x==', messages: [], degraded: [] }),
+      readThread: async () => ({
+        ok: true as const,
+        threadUrn: '2-x==',
+        messages: [],
+        degraded: []
+      }),
       sendReply: async () => {
         throw new Error('nothing is ever sent from a sync');
       }
     } as unknown as LinkedInInboxDriver;
 
-    const result = await syncLinkedInInbox(db, { enabled: true }, { workspaceId: WORKSPACE_ID, now: NOW, page, driver, inboxDriver: walked });
+    const result = await syncLinkedInInbox(
+      db,
+      { enabled: true },
+      { workspaceId: WORKSPACE_ID, now: NOW, page, driver, inboxDriver: walked }
+    );
 
     expect(result.blocked).toBeNull();
     // Nothing was cleared: this seat's own cache survives its own sync.
@@ -452,8 +578,14 @@ describe('how often the side-task tick touches LinkedIn', () => {
    * SCHEDULE is asserted in `side-tasks.test.ts`, and what is under test here
    * is what the tick does with it.
    */
-  const VISIT_STARTS = visitsForDay(`${WORKSPACE_ID}:owner`, { year: 2026, month: 8, day: 4 }, { startMinute: 480, endMinute: 1080 })
-    .map((visit) => new Date(Date.UTC(2026, 7, 4, Math.floor(visit.startMinute / 60), visit.startMinute % 60)));
+  const VISIT_STARTS = visitsForDay(
+    `${WORKSPACE_ID}:owner`,
+    { year: 2026, month: 8, day: 4 },
+    { startMinute: 480, endMinute: 1080 }
+  ).map(
+    (visit) =>
+      new Date(Date.UTC(2026, 7, 4, Math.floor(visit.startMinute / 60), visit.startMinute % 60))
+  );
   const VISIT_AT = VISIT_STARTS[0] as Date;
 
   /** Every real driver starts with a navigation, so this fails all five of them fast. */
@@ -473,14 +605,27 @@ describe('how often the side-task tick touches LinkedIn', () => {
   beforeEach(() => resetSideTaskRuns());
 
   async function connectedSeat(): Promise<void> {
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC', profileUrl: CONNECTED }, NOW);
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: CONNECTED },
+      NOW
+    );
   }
 
   function tick(now: Date, driver: LinkedInDriver, companionBrowser = false, database: Db = db) {
     return runLinkedInSideTasks(
       database,
       { enabled: true, companionBrowser } as unknown as Parameters<typeof runLinkedInSideTasks>[1],
-      { workspaceId: WORKSPACE_ID, seatKey: 'owner', now, page, driver, dayShape: FLAT_DAY_SHAPE, log: () => {} }
+      {
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'owner',
+        now,
+        page,
+        driver,
+        dayShape: FLAT_DAY_SHAPE,
+        log: () => {}
+      }
     );
   }
 
@@ -495,7 +640,9 @@ describe('how often the side-task tick touches LinkedIn', () => {
         if (property === 'prepare') {
           return (sql: string) => {
             if (sql.includes('linkedin_side_task_runs')) {
-              const fail = async () => { throw new Error('cadence table unavailable'); };
+              const fail = async () => {
+                throw new Error('cadence table unavailable');
+              };
               return { get: fail, all: fail, run: fail };
             }
             return realPrepare(sql);
@@ -509,7 +656,12 @@ describe('how often the side-task tick touches LinkedIn', () => {
     const first = await tick(VISIT_AT, tickDriver().driver, false, unavailable);
     expect(first.ran).toHaveLength(MAX_TASKS_PER_VISIT);
 
-    const second = await tick(new Date(VISIT_AT.getTime() + 60_000), tickDriver().driver, false, unavailable);
+    const second = await tick(
+      new Date(VISIT_AT.getTime() + 60_000),
+      tickDriver().driver,
+      false,
+      unavailable
+    );
     expect(second.ran).toEqual([]);
     expect(second.skipped).toContain('already happened');
   });
@@ -520,11 +672,15 @@ describe('how often the side-task tick touches LinkedIn', () => {
     const first = await tick(VISIT_AT, tickDriver().driver);
     expect(first.skipped).toBeNull();
     expect(first.ran).toHaveLength(MAX_TASKS_PER_VISIT);
-    const event = await db.prepare(`
+    const event = await db
+      .prepare(
+        `
       SELECT detail FROM linkedin_seat_events
       WHERE workspace_id=? AND seat_key='owner' AND kind='background_run'
       ORDER BY occurred_at DESC LIMIT 1
-    `).get<{ detail: string | null }>(WORKSPACE_ID);
+    `
+      )
+      .get<{ detail: string | null }>(WORKSPACE_ID);
     const detail = parseBackgroundRunDetail(event?.detail ?? null);
     expect(detail?.tasks).toEqual(first.ran);
     expect(detail?.status).toBe('completed');
@@ -550,7 +706,9 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
     const first = await tick(returnedAt, tickDriver().driver, true);
     expect(first.ran).toHaveLength(MAX_CATCHUP_TASKS_PER_VISIT);
-    expect(new Set(first.ran)).toEqual(new Set(['inbox', 'pending_invites', 'acceptance', 'withdrawals', 'lead_sources']));
+    expect(new Set(first.ran)).toEqual(
+      new Set(['inbox', 'pending_invites', 'acceptance', 'withdrawals', 'lead_sources'])
+    );
 
     const runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
     expect(runs.get(AVAILABILITY_CATCHUP_MARKER)?.getTime()).toBe(returnedAt.getTime());
@@ -568,15 +726,27 @@ describe('how often the side-task tick touches LinkedIn', () => {
     // more than a person would, and the list still drains.
     const done = new Set<string>();
     for (const day of [4, 5, 6]) {
-      const visits = visitsForDay(`${WORKSPACE_ID}:owner`, { year: 2026, month: 8, day }, { startMinute: 480, endMinute: 1080 });
+      const visits = visitsForDay(
+        `${WORKSPACE_ID}:owner`,
+        { year: 2026, month: 8, day },
+        { startMinute: 480, endMinute: 1080 }
+      );
       for (const visit of visits) {
-        const at = new Date(Date.UTC(2026, 7, day, Math.floor(visit.startMinute / 60), visit.startMinute % 60));
+        const at = new Date(
+          Date.UTC(2026, 7, day, Math.floor(visit.startMinute / 60), visit.startMinute % 60)
+        );
         const result = await tick(at, tickDriver().driver);
         for (const task of result.ran) done.add(task);
       }
     }
 
-    expect([...done].sort()).toEqual(['acceptance', 'inbox', 'lead_sources', 'pending_invites', 'withdrawals']);
+    expect([...done].sort()).toEqual([
+      'acceptance',
+      'inbox',
+      'lead_sources',
+      'pending_invites',
+      'withdrawals'
+    ]);
   });
 
   it('confirms whose account this is ONCE for the visit, not once per job', async () => {
@@ -600,7 +770,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
     for (const options of readOptions) expect(options).toEqual({ skipConnections: true });
   });
 
-  it('loads no profile for a visit that reads nobody else\'s data', async () => {
+  it("loads no profile for a visit that reads nobody else's data", async () => {
     await connectedSeat();
     // Everything is freshly run except the pending-invite sync, which reads
     // this account's OWN sent list and has never needed to know who is signed
@@ -608,7 +778,13 @@ describe('how often the side-task tick touches LinkedIn', () => {
     for (const task of ['inbox', 'acceptance', 'withdrawals', 'lead_sources'] as const) {
       await markSideTaskRun(db, WORKSPACE_ID, 'owner', task, VISIT_AT);
     }
-    await markSideTaskRun(db, WORKSPACE_ID, 'owner', 'pending_invites', new Date(VISIT_AT.getTime() - 8 * 3_600_000));
+    await markSideTaskRun(
+      db,
+      WORKSPACE_ID,
+      'owner',
+      'pending_invites',
+      new Date(VISIT_AT.getTime() - 8 * 3_600_000)
+    );
     const { driver, calls } = tickDriver();
 
     const result = await tick(VISIT_AT, driver);
@@ -630,7 +806,12 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
   it('opens no browser while the seat is between sittings', async () => {
     await connectedSeat();
-    await setSeatRestingUntil(db, WORKSPACE_ID, 'owner', new Date(VISIT_AT.getTime() + 30 * 60_000));
+    await setSeatRestingUntil(
+      db,
+      WORKSPACE_ID,
+      'owner',
+      new Date(VISIT_AT.getTime() + 30 * 60_000)
+    );
     const { driver, calls } = tickDriver();
 
     const result = await tick(VISIT_AT, driver);
@@ -648,5 +829,281 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
     expect(calls).toEqual([]);
     expect(result.ran).toEqual([]);
+  });
+});
+
+describe('runLinkedInPostTick', () => {
+  const page: LinkedInPage = {
+    goto: async () => null,
+    url: () => 'https://www.linkedin.com/feed/',
+    locator: () => {
+      throw new Error('the fake driver below never touches the page directly');
+    },
+    waitForTimeout: async () => {}
+  };
+
+  function driverThatReturns(
+    result: LinkedInDriverResult,
+    seatRead = {
+      ok: true as const,
+      profileUrl: 'https://www.linkedin.com/in/connected/',
+      name: 'Connected',
+      connectionsCount: 10,
+      degraded: []
+    }
+  ) {
+    return {
+      readSeat: async () => seatRead,
+      isLoggedIn: async () => true,
+      publishPost: async () => result,
+      sendInvite: async () => {
+        throw new Error('unused');
+      },
+      sendDm: async () => {
+        throw new Error('unused');
+      },
+      sendReply: async () => {
+        throw new Error('unused');
+      },
+      viewProfile: async () => {
+        throw new Error('unused');
+      },
+      followProfile: async () => {
+        throw new Error('unused');
+      },
+      likeRecentPost: async () => {
+        throw new Error('unused');
+      },
+      endorseSkills: async () => {
+        throw new Error('unused');
+      },
+      loginWithCredentials: async () => {
+        throw new Error('unused');
+      }
+    } as unknown as LinkedInDriver;
+  }
+
+  const CONFIG = { enabled: true } as unknown as Parameters<typeof runLinkedInPostTick>[1];
+
+  it('publishes a due post and marks it posted with the returned URL', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    const post = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'Hi' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+
+    const result = await runLinkedInPostTick(db, CONFIG, {
+      workspaceId: WORKSPACE_ID,
+      now: NOW,
+      page,
+      driver: driverThatReturns({
+        ok: true,
+        failureKind: null,
+        externalRef: 'https://www.linkedin.com/feed/update/urn:li:activity:123/'
+      }),
+      accountConfirmed: true
+    });
+
+    expect(result.published).toBe(1);
+    expect(await getPost(db, WORKSPACE_ID, post.id)).toMatchObject({
+      status: 'posted',
+      postedUrl: 'https://www.linkedin.com/feed/update/urn:li:activity:123/'
+    });
+  });
+
+  it('marks a post failed, not retried, when the driver reports a failure', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    const post = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'Hi' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+
+    await runLinkedInPostTick(db, CONFIG, {
+      workspaceId: WORKSPACE_ID,
+      now: NOW,
+      page,
+      driver: driverThatReturns({ ok: false, failureKind: 'selector_drift', detail: 'gone' }),
+      accountConfirmed: true
+    });
+
+    const after = await getPost(db, WORKSPACE_ID, post.id);
+    expect(after).toMatchObject({
+      status: 'failed',
+      error: { kind: 'selector_drift', detail: 'gone' }
+    });
+
+    // A second tick must not touch it again -- 'failed' is terminal, not re-queued.
+    const second = await runLinkedInPostTick(db, CONFIG, {
+      workspaceId: WORKSPACE_ID,
+      now: NOW,
+      page,
+      driver: driverThatReturns({ ok: true, failureKind: null }),
+      accountConfirmed: true
+    });
+    expect(second.published).toBe(0);
+  });
+
+  it('marks a post missed, not published, once it is more than 6 hours late', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    const staleScheduledAt = new Date(NOW.getTime() - 7 * 3_600_000).toISOString();
+    const post = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'Hi' }] }],
+        status: 'scheduled',
+        scheduledAt: staleScheduledAt,
+        createdBy: null
+      },
+      NOW
+    );
+
+    const result = await runLinkedInPostTick(db, CONFIG, {
+      workspaceId: WORKSPACE_ID,
+      now: NOW,
+      page,
+      driver: driverThatReturns({ ok: true, failureKind: null }),
+      accountConfirmed: true
+    });
+
+    expect(result.missed).toBe(1);
+    expect(result.published).toBe(0);
+    expect(await getPost(db, WORKSPACE_ID, post.id)).toMatchObject({ status: 'missed' });
+  });
+
+  it('holds (releases back to scheduled) rather than fails when the companion session cannot open', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    const post = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'Hi' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+
+    // { enabled: false } makes openLinkedInSession report `ok: false` before any page/driver is touched.
+    const result = await runLinkedInPostTick(
+      db,
+      { enabled: false } as unknown as Parameters<typeof runLinkedInPostTick>[1],
+      { workspaceId: WORKSPACE_ID, now: NOW }
+    );
+
+    expect(result.published).toBe(0);
+    expect(await getPost(db, WORKSPACE_ID, post.id)).toMatchObject({ status: 'scheduled' });
+  });
+
+  it('does not stop at the first seat whose session fails to open -- a second seat in the same workspace is still attempted', async () => {
+    // Regression test for the fix: this loop used to `break` the whole
+    // workspace-scoped tick on the first session failure, silently starving
+    // every OTHER seat's due post too. Both seats fail here (session opening
+    // is disabled globally via `{ enabled: false }`, which is the only lever
+    // the existing openLinkedInSession test seam exposes -- it cannot be made
+    // to succeed for one seat and fail for another), so this proves the LOOP
+    // no longer aborts after the first failure (both posts get attempted and
+    // released, not just one) -- not that a healthy second seat succeeds. That
+    // half is covered by claimNextDuePost's own "skips excluded seats" test
+    // (Task 2) plus this task's existing single-seat "publishes a due post"
+    // test, together proving the exclusion mechanism and the success path
+    // independently.
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Second seat', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/second/' },
+      NOW,
+      'seat-b'
+    );
+    const postA = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'From the owner seat' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+    const postB = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-b',
+        blocks: [{ runs: [{ type: 'text', text: 'From the second seat' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+
+    // A `status: 'scheduled'` check alone cannot distinguish "both seats were
+    // attempted and released" from "the loop broke after the first and never
+    // touched the second" -- an untouched post is already 'scheduled'. `log`
+    // is called once per held seat, so counting ITS calls is what actually
+    // proves the loop kept going: 1 call is the old (broken) behavior, 2 is
+    // the fixed one.
+    const held: string[] = [];
+    const result = await runLinkedInPostTick(
+      db,
+      { enabled: false } as unknown as Parameters<typeof runLinkedInPostTick>[1],
+      { workspaceId: WORKSPACE_ID, now: NOW, log: (message: string) => held.push(message) }
+    );
+
+    expect(result.published).toBe(0);
+    expect(held).toHaveLength(2);
+    expect(held.some((m) => m.includes(postA.id))).toBe(true);
+    expect(held.some((m) => m.includes(postB.id))).toBe(true);
+    expect(await getPost(db, WORKSPACE_ID, postA.id)).toMatchObject({ status: 'scheduled' });
+    expect(await getPost(db, WORKSPACE_ID, postB.id)).toMatchObject({ status: 'scheduled' });
   });
 });

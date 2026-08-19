@@ -40,7 +40,7 @@ export const SECTIONS: readonly Section[] = ['loop', 'outreach', 'ledger', 'rese
 /** Which second segments each section answers to. */
 const SUB_ROUTES: Record<Section, readonly string[]> = {
   loop: ['', 'cost'],
-  outreach: ['', 'accounts', 'activity', 'campaigns', 'inbox', 'leads', 'manager', 'plan'],
+  outreach: ['', 'accounts', 'activity', 'campaigns', 'inbox', 'leads', 'manager', 'plan', 'posts'],
   ledger: ['', 'run'],
   research: [''],
   setup: [

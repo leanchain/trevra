@@ -33,6 +33,15 @@ describe('parseRoute', () => {
       id: null,
       path: '/outreach/accounts'
     });
+    // App.tsx renders this screen and lists it under "More", but THIS
+    // whitelist is the gate: while 'posts' was missing from it, the page was
+    // silently redirected to /outreach and nothing about it was reachable.
+    expect(parseRoute('/outreach/posts')).toMatchObject({
+      section: 'outreach',
+      sub: 'posts',
+      id: null,
+      path: '/outreach/posts'
+    });
     expect(parseRoute('/research')).toMatchObject({
       section: 'research',
       sub: '',

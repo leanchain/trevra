@@ -164,13 +164,25 @@ describe('applyStyleToSelection', () => {
         { type: 'text', text: ' more.', bold: true }
       )
     ];
+    // Selection spans the WHOLE block (run 0 offset 0 through run 2 offset 6,
+    // the full length of ' more.') -- not just the middle run. A selection
+    // limited to the middle run has no correct implementation that produces a
+    // single merged run: toggling only the selected text off necessarily
+    // leaves it different from its still-bold neighbors, so nothing merges.
+    // This selection is what actually exercises "toggle off, then re-merge":
+    // every run in the selection goes to bold:falsy and mergeAdjacent collapses
+    // the three identically-unstyled pieces into one.
     const next = applyStyleToSelection(
       blocks,
-      { start: { block: 0, run: 1, offset: 0 }, end: { block: 0, run: 1, offset: 9 } },
+      { start: { block: 0, run: 0, offset: 0 }, end: { block: 0, run: 2, offset: 6 } },
       'bold'
     );
     expect(next[0].runs).toHaveLength(1);
-    expect(next[0].runs[0]).toMatchObject({ text: 'Some bold word more.', bold: false });
+    expect(next[0].runs[0].text).toBe('Some bold word more.');
+    // `withStyle` clears a style with `on || undefined`, not literal `false` --
+    // both are falsy and every consumer in this module normalizes via
+    // `Boolean(...)`/`?? false`, so assert falsy rather than the exact literal.
+    expect(next[0].runs[0].bold).toBeFalsy();
   });
 });
 
@@ -658,6 +670,41 @@ describe('claimNextDuePost', () => {
     });
   });
 
+  it("skips excluded seats, so a different seat's due post is still claimable in the same pass", async () => {
+    await createPost(
+      db,
+      {
+        id: 'lipost_seat_a',
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-a',
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T08:00:00.000Z', // earlier -- would normally claim first
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    await createPost(
+      db,
+      {
+        id: 'lipost_seat_b',
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-b',
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T09:00:00.000Z',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    const claimed = await claimNextDuePost(db, WORKSPACE_ID, NOW, ['seat-a']);
+    expect(claimed?.id).toBe('lipost_seat_b');
+    // seat-a's post is untouched -- still scheduled, ready for a future tick.
+    expect(await getPost(db, WORKSPACE_ID, 'lipost_seat_a')).toMatchObject({
+      status: 'scheduled'
+    });
+  });
+
   it('never claims a post scheduled in the future', async () => {
     await createPost(
       db,
@@ -838,9 +885,20 @@ interface PostRow {
   updated_at: string;
 }
 
+// TIMESTAMPTZ columns are formatted here rather than left to the driver's raw
+// text output ('2026-08-20 09:00:00+00', not JS-comparable) -- the same
+// TO_CHAR(... AT TIME ZONE 'UTC', ...) idiom every other store module in this
+// codebase uses for the same reason (seats.ts's SEAT_COLUMNS, runner.ts's own
+// UTC_ISO constant, outreach/store.ts, etc).
+const UTC_ISO = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;
+
 const POST_COLUMNS = `
-  id, workspace_id, seat_key, status, blocks_json, scheduled_at,
-  published_at, posted_url, error_json, created_by, created_at, updated_at
+  id, workspace_id, seat_key, status, blocks_json,
+  TO_CHAR(scheduled_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS scheduled_at,
+  TO_CHAR(published_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS published_at,
+  posted_url, error_json, created_by,
+  TO_CHAR(created_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS created_at,
+  TO_CHAR(updated_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS updated_at
 `;
 
 function parseJson(value: unknown): unknown {
@@ -1024,11 +1082,21 @@ export async function cancelPost(
  * replicas ticking at once can never both pick the same row -- `FOR UPDATE
  * SKIP LOCKED` inside the subquery is Postgres's standard "claim one queued
  * row, race-free, no shared lease table needed" idiom.
+ *
+ * `excludeSeatKeys` is how ONE tick keeps a broken seat from starving every
+ * OTHER seat's due posts in the same workspace. Without it, a seat whose
+ * companion session cannot open would have its due post re-claimed first on
+ * every loop iteration (it is always the earliest `scheduled_at` again the
+ * moment it is released) and nothing from a different, perfectly healthy seat
+ * in the same workspace would ever be reached. `seat_key <> ALL(?)` with an
+ * empty array is vacuously true for every row in Postgres -- "exclude
+ * nothing" -- so the common single-seat case pays zero extra cost.
  */
 export async function claimNextDuePost(
   db: Db,
   workspaceId: string,
-  now: Date
+  now: Date,
+  excludeSeatKeys: readonly string[] = []
 ): Promise<LinkedInPost | undefined> {
   return db.transaction(async (tx) => {
     const row = await tx
@@ -1039,6 +1107,7 @@ export async function claimNextDuePost(
       WHERE id = (
         SELECT id FROM linkedin_posts
         WHERE workspace_id = ? AND status = 'scheduled' AND scheduled_at <= ?
+          AND seat_key <> ALL(?)
         ORDER BY scheduled_at ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
@@ -1046,7 +1115,7 @@ export async function claimNextDuePost(
       RETURNING ${POST_COLUMNS}
     `
       )
-      .get<PostRow>(now.toISOString(), workspaceId, now.toISOString());
+      .get<PostRow>(now.toISOString(), workspaceId, now.toISOString(), [...excludeSeatKeys]);
     return row ? toPost(row) : undefined;
   });
 }
@@ -1568,6 +1637,18 @@ describe('publishPost', () => {
     expect(clicked).toEqual([]);
   });
 
+  it('reports unknown, not compose_unavailable, when the compose box does not appear after a successful Start-post click', async () => {
+    // The click already happened -- this is ambiguity AFTER an action, not
+    // drift before one, so it must classify the same way sendDm's identical
+    // branch does (compose box missing after the Message click): unknown.
+    const { page, clicked } = fakePage({
+      counts: { [POST_SELECTORS.startPostButton]: 1, [POST_SELECTORS.postComposeBox]: 0 }
+    });
+    const result = await publishPost(page, 'Hello world');
+    expectFailure(result, 'unknown');
+    expect(clicked).toEqual([POST_SELECTORS.startPostButton]);
+  });
+
   it('types the body and clicks Post when everything is present', async () => {
     const { page, clicked, typed } = fakePage({
       counts: {
@@ -1720,8 +1801,14 @@ export async function publishPost(page: LinkedInPage, body: string): Promise<Lin
 
     const compose = page.locator(POST_SELECTORS.postComposeBox);
     if ((await compose.count()) === 0) {
+      // A CLICK ALREADY HAPPENED ('Start a post' succeeded) -- per this file's
+      // own documented rule (driver.ts's header: "anything ambiguous after a
+      // click is `unknown`, not drift"), this is `unknown`, matching sendDm's
+      // identical branch (compose box missing after the Message click), not
+      // `compose_unavailable` -- that kind is reserved for the pre-click empty-
+      // body refusal above, where nothing was clicked at all.
       return fail(
-        'compose_unavailable',
+        'unknown',
         `${POST_SELECTORS.postComposeBox} did not match after opening the composer; a draft may be open. Check it by hand.`
       );
     }
@@ -2045,6 +2132,79 @@ describe('runLinkedInPostTick', () => {
     expect(result.published).toBe(0);
     expect(await getPost(db, WORKSPACE_ID, post.id)).toMatchObject({ status: 'scheduled' });
   });
+
+  it('does not stop at the first seat whose session fails to open -- a second seat in the same workspace is still attempted', async () => {
+    // Regression test for the fix: this loop used to `break` the whole
+    // workspace-scoped tick on the first session failure, silently starving
+    // every OTHER seat's due post too. Both seats fail here (session opening
+    // is disabled globally via `{ enabled: false }`, which is the only lever
+    // the existing openLinkedInSession test seam exposes -- it cannot be made
+    // to succeed for one seat and fail for another), so this proves the LOOP
+    // no longer aborts after the first failure (both posts get attempted and
+    // released, not just one) -- not that a healthy second seat succeeds. That
+    // half is covered by claimNextDuePost's own "skips excluded seats" test
+    // (Task 2) plus this task's existing single-seat "publishes a due post"
+    // test, together proving the exclusion mechanism and the success path
+    // independently.
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Second seat', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/second/' },
+      NOW,
+      'seat-b'
+    );
+    const postA = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'From the owner seat' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+    const postB = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-b',
+        blocks: [{ runs: [{ type: 'text', text: 'From the second seat' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+
+    // A `status: 'scheduled'` check alone cannot distinguish "both seats were
+    // attempted and released" from "the loop broke after the first and never
+    // touched the second" -- an untouched post is already 'scheduled'. `log`
+    // is called once per held seat, so counting ITS calls is what actually
+    // proves the loop kept going: 1 call is the old (broken) behavior, 2 is
+    // the fixed one.
+    const held: string[] = [];
+    const result = await runLinkedInPostTick(
+      db,
+      { enabled: false } as unknown as Parameters<typeof runLinkedInPostTick>[1],
+      { workspaceId: WORKSPACE_ID, now: NOW, log: (message: string) => held.push(message) }
+    );
+
+    expect(result.published).toBe(0);
+    expect(held).toHaveLength(2);
+    expect(held.some((m) => m.includes(postA.id))).toBe(true);
+    expect(held.some((m) => m.includes(postB.id))).toBe(true);
+    expect(await getPost(db, WORKSPACE_ID, postA.id)).toMatchObject({ status: 'scheduled' });
+    expect(await getPost(db, WORKSPACE_ID, postB.id)).toMatchObject({ status: 'scheduled' });
+  });
 });
 ```
 
@@ -2084,9 +2244,17 @@ export async function runLinkedInPostTick(
   const log = options.log ?? ((message: string) => console.log(message));
   let published = 0;
   let missed = 0;
+  // A seat whose session fails must not starve every OTHER seat's due post in
+  // the same workspace-scoped tick -- see claimNextDuePost's own doc comment.
+  // `runLinkedInSideTasks` solves the identical problem by ticking per seat;
+  // this function claims across a whole workspace, so it tracks failures
+  // in-loop instead. Once a seat is in this set, its remaining due posts are
+  // left `scheduled` for the next tick rather than reclaimed and failed again
+  // this same pass.
+  const failedSeats = new Set<string>();
 
   for (let i = 0; i < POSTS_PER_WORKSPACE_TICK; i += 1) {
-    const claimed = await claimNextDuePost(db, workspaceId, now);
+    const claimed = await claimNextDuePost(db, workspaceId, now, [...failedSeats]);
     if (!claimed) break;
 
     const scheduledAt = claimed.scheduledAt ? new Date(claimed.scheduledAt) : now;
@@ -2108,7 +2276,8 @@ export async function runLinkedInPostTick(
       log(
         `LinkedIn post ${claimed.id} held for ${workspaceId}/${claimed.seatKey}: ${session.blocked}`
       );
-      break; // nothing else will open a session for this workspace this tick either
+      failedSeats.add(claimed.seatKey);
+      continue; // a DIFFERENT seat in this workspace may still have a healthy session
     }
 
     const wrongAccount = options.accountConfirmed
@@ -2117,7 +2286,8 @@ export async function runLinkedInPostTick(
     if (wrongAccount) {
       await releasePostToScheduled(db, claimed.id, now);
       log(`LinkedIn post ${claimed.id} held: ${wrongAccount}`);
-      break;
+      failedSeats.add(claimed.seatKey);
+      continue;
     }
 
     const body = renderPostBody(claimed.blocks);
@@ -2281,6 +2451,20 @@ export function PostComposer({
     setBlocks((current) => applyStyleToSelection(current, selection, style));
   };
 
+  // Which paragraph a block-level toggle (Bullet/Numbered) applies to: the
+  // block the cursor/selection is actually in, not always the last one --
+  // that was this function's own bug in an earlier draft (a hardcoded
+  // `blocks.length - 1` at both call sites below, caught in review): a click
+  // while editing an earlier paragraph in a multi-paragraph post must affect
+  // THAT paragraph, not silently bullet whichever one happens to be last.
+  // Falls back to the last block only when there is genuinely no selection
+  // (e.g. the editor never received focus yet).
+  const currentBlockIndex = (): number => {
+    const el = editorRef.current;
+    const selection = el ? currentSelection(el) : null;
+    return selection?.start.block ?? blocks.length - 1;
+  };
+
   const editRunText = (blockIndex: number, runIndex: number, text: string) => {
     setBlocks((current) =>
       current.map((block, bi) =>
@@ -2354,14 +2538,14 @@ export function PostComposer({
         </button>
         <button
           type="button"
-          onClick={() => toggleListAt(blocks.length - 1, 'bullet')}
+          onClick={() => toggleListAt(currentBlockIndex(), 'bullet')}
           aria-label="Bulleted list"
         >
           <List size={16} />
         </button>
         <button
           type="button"
-          onClick={() => toggleListAt(blocks.length - 1, 'numbered')}
+          onClick={() => toggleListAt(currentBlockIndex(), 'numbered')}
           aria-label="Numbered list"
         >
           <ListOrdered size={16} />
@@ -2646,3 +2830,15 @@ git commit -m "linkedin: scheduled-posts queue list (browse, cancel, publish now
   3. **Click-then-type arming** (spec: clicking a style button with no selection should style subsequently typed text, not require a selection to exist first). Task 7's `toggle` function explicitly no-ops when there is no selection (`if (!selection) return;`), so today the toolbar only works when text is already selected — the "select text and click the button" flow works; the "click first, then type" flow does not yet.
 
   All three are additive UI-only changes on top of `applyStyleToSelection`/`renderPostBody`, which are already correct and fully tested (Task 1) — none require touching the data model, API, or driver again, so they're a cheap, low-risk fast-follow rather than a blocker to shipping Milestone 1's core loop (write, format by selecting text, schedule, auto-publish).
+
+### Final whole-branch review outcome (post-Task-8)
+
+A final review found the composer's editor had never actually been run (no React component tests in this codebase) and was genuinely broken: typing updated the visible DOM but never React's `blocks` state, so every Save/Publish sent an empty post. Confirmed live in a real browser, then fixed by rewriting the editor as uncontrolled DOM (React only rewrites the editor's children after an explicit toolbar action, never on a keystroke; typed content is read FROM the DOM into state on `input`). That rewrite also fixed the previously-known UTF-16-vs-code-point selection offset bug as a side effect (both live in the same `resolvePosition` function now). A full findings list (a stuck-`publishing`-forever recovery gap, a worker-queue throughput risk, `failed`/`missed` posts being permanent dead ends, missing seat validation on create, swallowed client-side errors, and formatting/validation polish) was fixed and re-reviewed clean in the same pass — see commits `9964696`..`b8698bc`.
+
+**Still explicitly deferred after the final review** (in addition to the three Task 7 items above):
+
+- **`posted_url` / activity-URL capture.** `publishPost` never sets `externalRef`, so `posted_url` stays `NULL` after every real publish and the queue's "View on LinkedIn" link can never appear. Implementing the scrape needs its own selectors against `driver-post.ts`'s already-unverified-against-live-DOM composer surface — not a quick addition to this milestone.
+- **A seat-timezone label on the schedule picker.** The `datetime-local` input resolves in the browser's own timezone, not the seat's stored one (`linkedin_seats.timezone`), and nothing in the composer says which timezone the picker means. Needs a seat-details fetch wired into the composer; `LinkedInAccounts.tsx` has the display pattern to copy.
+- **Native browser bold/italic shortcuts (Ctrl+B/Ctrl+I) are silently stripped.** Chrome's built-in shortcut inserts `<b>`/`<i>` tags; `parseDomToBlocks` only recognizes the app's own `li-post-run--*` classes, so the next toolbar-driven DOM rebuild silently drops the native formatting. Low severity (the toolbar buttons are the documented way to format) but worth a fix if reported.
+- **No regression test for either of the two bugs found live during the fix wave** (a lone filler `<br>` in an empty block double-counting as a newline; the resulting empty-text run's interaction with the create-post validation). Both are fixed and manually verified; neither has an automated test guarding against a future regression.
+- **`.li-post-line { min-height: 1.55em }` in `styles.css` is load-bearing for editor correctness, not just visual spacing** — removing it lets a click on an empty block land at the container level instead of inside the block div, which `parseDomToBlocks` doesn't handle (it only walks `container.children`, not stray direct text nodes). Undocumented at the CSS rule itself; worth a comment so a future styling pass doesn't remove it by accident.
