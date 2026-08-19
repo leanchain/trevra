@@ -41,6 +41,35 @@ const PLATFORM_FILTERS = [
 
 const EMPTY_OFFER: OutreachOffer = { name: '', url: '', summary: '', mechanism: '', claims: [] };
 
+// Mirrors threadReplyPlaybook's zod schema (registry.ts) so an offer that
+// would 400 on submit is caught here instead of round-tripping to the server.
+const OFFER_NAME_MAX = 80;
+const OFFER_TEXT_MAX = 300;
+
+function isValidOfferUrl(value: string): boolean {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function offerIsSubmittable(offer: OutreachOffer): boolean {
+  const name = offer.name.trim();
+  const summary = offer.summary.trim();
+  const mechanism = offer.mechanism.trim();
+  return (
+    name !== '' &&
+    name.length <= OFFER_NAME_MAX &&
+    isValidOfferUrl(offer.url) &&
+    summary !== '' &&
+    summary.length <= OFFER_TEXT_MAX &&
+    mechanism !== '' &&
+    mechanism.length <= OFFER_TEXT_MAX
+  );
+}
+
 interface ResearchBriefOutput {
   domain: string | null;
   topFinding: string;
@@ -88,12 +117,7 @@ function DraftDialog({
   };
   useDialog(dialog, close);
 
-  const canSubmit =
-    !starting &&
-    offer.name.trim() !== '' &&
-    offer.url.trim() !== '' &&
-    offer.summary.trim() !== '' &&
-    offer.mechanism.trim() !== '';
+  const canSubmit = !starting && offerIsSubmittable(offer);
 
   return createPortal(
     <div className="drawer-backdrop" role="presentation" onClick={close}>
@@ -246,6 +270,9 @@ export function ResearchView({
 
   useEffect(() => {
     if (!drafting) return;
+    // Cleared before the prefill resolves (and if it never does) so a new
+    // thread's dialog never opens holding the previous thread's edits.
+    setOffer(EMPTY_OFFER);
     let cancelled = false;
     getOutreachOfferDefaults()
       .then((loaded) => {
@@ -282,6 +309,7 @@ export function ResearchView({
         product: offer
       });
       setDrafting(null);
+      setOffer(EMPTY_OFFER);
       setToast(`Draft prepared for approval (run ${run.id}).`);
     } catch (error) {
       setDialogError(error instanceof Error ? error.message : 'Could not start the draft.');
