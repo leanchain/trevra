@@ -105,7 +105,13 @@ export function memoisedCounters(inner: SafetyCounters): SafetyCounters {
   ): Promise<T> => {
     const hit = cache.get(key);
     if (hit) return hit;
-    const pending = load();
+    // Concurrent callers for the same key still share this one in-flight lookup.
+    // A rejection evicts itself so the next caller retries instead of being
+    // permanently poisoned by one transient DB error for the rest of the request.
+    const pending = load().catch((error: unknown) => {
+      if (cache.get(key) === pending) cache.delete(key);
+      throw error;
+    });
     cache.set(key, pending);
     return pending;
   };

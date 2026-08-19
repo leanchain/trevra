@@ -590,4 +590,27 @@ describe('injectable counters', () => {
 
     expect(calls).toBe(2);
   });
+
+  it('evicts a rejected lookup so the next caller retries instead of being poisoned', async () => {
+    let calls = 0;
+    const inner = {
+      async postsToday() {
+        calls += 1;
+        if (calls === 1) throw new Error('transient DB error');
+        return 3;
+      },
+      async lastPostInCommunity() {
+        return null;
+      },
+      async communityVolume() {
+        return { posted: 0, discovered: 0 };
+      }
+    };
+    const counters = memoisedCounters(inner);
+
+    await expect(counters.postsToday('reddit', NOW)).rejects.toThrow('transient DB error');
+    await expect(counters.postsToday('reddit', NOW)).resolves.toBe(3);
+
+    expect(calls).toBe(2);
+  });
 });
