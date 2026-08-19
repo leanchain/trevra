@@ -74,7 +74,7 @@ import { OutreachActivity } from './LinkedInActivity';
 import { OutreachManagerBuilder } from './LinkedInManagerBuilder';
 import { OutreachManagerRead } from './LinkedInManagerRead';
 import { reloadOutreach } from './LinkedInSafety';
-import { LinkedInExclusions } from './LinkedInScreen';
+import { LinkedInExclusions, relativeTime } from './LinkedInScreen';
 import { TeamSettingsView } from './TeamScreen';
 import { ResearchView } from './views/ResearchView';
 import { trackEvent, trackPageView } from './analytics';
@@ -1994,10 +1994,10 @@ function ConnectionsView({
     (item) => item.mode !== 'import'
   );
 
-  const connect = async (item: AvailableIntegration) => {
-    setBusyId(item.key);
+  const openConnect = async (key: string) => {
+    setBusyId(key);
     try {
-      const session = await createConnectSession([item.key]);
+      const session = await createConnectSession([key]);
       const { default: Nango } = await import('@nangohq/frontend');
       const nango = new Nango({ connectSessionToken: session.token, host: session.browser_host });
       nango.openConnectUI({
@@ -2034,8 +2034,24 @@ function ConnectionsView({
                 <span className={`connection-status ${connection.status}`}>
                   {connection.isDemo ? 'Demo' : connection.status.replace('_', ' ')}
                 </span>
+                {connection.lastSyncedAt && <p>Synced {relativeTime(connection.lastSyncedAt)}</p>}
+                {connection.lastError && <p>{connection.lastError}</p>}
               </div>
               <div className="connection-actions">
+                {(connection.status === 'needs_reauth' || connection.status === 'error') && (
+                  <button
+                    className="secondary-button"
+                    disabled={busyId === connection.providerConfigKey}
+                    onClick={() => void openConnect(connection.providerConfigKey)}
+                  >
+                    {busyId === connection.providerConfigKey ? (
+                      <LoaderCircle className="spin" size={16} />
+                    ) : (
+                      <Link2 size={16} />
+                    )}
+                    Reconnect
+                  </button>
+                )}
                 {!connection.isDemo && (
                   <button
                     className="icon-button danger"
@@ -2065,7 +2081,7 @@ function ConnectionsView({
               <button
                 className="secondary-button"
                 disabled={item.connected || busyId === item.key}
-                onClick={() => void connect(item)}
+                onClick={() => void openConnect(item.key)}
               >
                 {busyId === item.key ? (
                   <LoaderCircle className="spin" size={16} />
