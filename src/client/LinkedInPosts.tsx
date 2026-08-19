@@ -70,6 +70,15 @@ function currentSelection(container: HTMLElement): { start: RunPosition; end: Ru
   return { start, end };
 }
 
+/** Like currentSelection, but also resolves a plain collapsed cursor (no drag-selected text) — used only by block-level toggles (Bullet/Numbered), which apply to whichever paragraph the cursor is in even with nothing selected. Bold/Italic/Underline's `toggle()` deliberately keeps requiring a real selection via `currentSelection` and must not use this. */
+function currentCaretBlock(container: HTMLElement): number | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  if (!container.contains(range.commonAncestorContainer)) return null;
+  return resolvePosition(container, range.startContainer, range.startOffset)?.block ?? null;
+}
+
 /** DOM -> blocks. The typing path's source of truth. No data-* dependency. */
 function parseDomToBlocks(container: HTMLElement): PostBlock[] {
   const blockEls = Array.from(container.children);
@@ -228,8 +237,10 @@ export function PostComposer({
   // (e.g. the editor never received focus yet).
   const currentBlockIndex = (): number => {
     const el = editorRef.current;
-    const selection = el ? currentSelection(el) : null;
-    return selection?.start.block ?? blocks.length - 1;
+    if (!el) return blocks.length - 1;
+    const selection = currentSelection(el);
+    if (selection) return selection.start.block;
+    return currentCaretBlock(el) ?? blocks.length - 1;
   };
 
   const toggle = (style: PostStyle) => {
