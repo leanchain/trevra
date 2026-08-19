@@ -56,7 +56,7 @@ import {
   listWorkspaceSkills,
   SkillApiError
 } from './skill-api.js';
-import { listOutreachThreads } from './outreach/store.js';
+import { loadThreadFeed } from './outreach/feed.js';
 import { handleMcpHttpRequest, rejectMcpNonPost } from './mcp-http.js';
 import {
   decidePlaybookApproval,
@@ -1012,7 +1012,7 @@ export function createApp(db: Db) {
   app.get('/api/outreach/threads', async (req: AuthedRequest, res, next) => {
     try {
       const filters = outreachThreadFiltersSchema.parse(req.query);
-      res.json({ threads: await listOutreachThreads(db, req.auth!.workspaceId, filters) });
+      res.json({ threads: await loadThreadFeed(db, req.auth!.workspaceId, filters, new Date()) });
     } catch (error) {
       next(error);
     }

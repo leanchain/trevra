@@ -297,28 +297,43 @@ export async function getSkillRun(id: string): Promise<SkillRun> {
   return result.run;
 }
 
-/** One row `gtm.scout-threads`/`gtm.score-threads` discovered, across every platform. */
+/** One row `gtm.scout-threads` discovered, plus what /research needs to judge it. */
 export interface OutreachThreadRow {
   id: string;
   platform: string;
   external_id: string;
   url: string;
   title: string;
+  content: string;
   author: string | null;
   community: string | null;
   score: number;
   num_comments: number;
   thread_created_at: string | null;
   first_seen_at: string;
+  metadata_json: Record<string, unknown>;
+}
+
+export interface FeedThread {
+  row: OutreachThreadRow;
+  relevance: {
+    score: number;
+    components: Array<{ label: string; points: number }>;
+    highValueMatches: string[];
+    negativeMatches: string[];
+  };
+  topics: string[];
+  angle: 'technical_deepdive' | 'cost_comparison' | 'alternative_suggestion' | 'minimal_mention';
+  guard: { allowed: boolean; reason: string | null; failedChecks: string[] };
 }
 
 export async function getOutreachThreads(
   filters: { platform?: string; limit?: number } = {}
-): Promise<OutreachThreadRow[]> {
+): Promise<FeedThread[]> {
   const query = new URLSearchParams();
   if (filters.platform) query.set('platform', filters.platform);
   if (filters.limit) query.set('limit', String(filters.limit));
-  const result = await request<{ threads?: OutreachThreadRow[] }>(
+  const result = await request<{ threads?: FeedThread[] }>(
     `/api/outreach/threads${query.size ? `?${query}` : ''}`
   );
   return result.threads ?? [];

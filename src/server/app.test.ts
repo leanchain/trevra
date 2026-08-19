@@ -1800,9 +1800,44 @@ describe('GET /api/outreach/threads', () => {
 
     const all = await agent.get('/api/outreach/threads').expect(200);
     expect(all.body.threads).toHaveLength(1);
-    expect(all.body.threads[0].platform).toBe('linkedin');
+    expect(all.body.threads[0].row.platform).toBe('linkedin');
 
     const filtered = await agent.get('/api/outreach/threads?platform=reddit').expect(200);
     expect(filtered.body.threads).toEqual([]);
+  });
+
+  it('returns relevance, topics and a guard verdict with every discovered thread', async () => {
+    const agent = await agentWithSession();
+
+    const { recordSeenThreads } = await import('./outreach/store.js');
+    await recordSeenThreads(
+      db!,
+      DEMO_WORKSPACE_ID,
+      [
+        {
+          platform: 'hackernews',
+          externalId: 'feed-1',
+          url: 'https://news.ycombinator.com/item?id=feed-1',
+          title: 'Ask HN: token cost of coding agents',
+          content: 'our api cost tripled',
+          author: 'someone',
+          community: null,
+          score: 5,
+          numComments: 2,
+          createdAt: '2026-08-18T00:00:00.000Z',
+          metadata: {}
+        }
+      ],
+      new Date('2026-08-19T00:00:00.000Z')
+    );
+
+    const response = await agent.get('/api/outreach/threads').expect(200);
+
+    expect(response.body.threads).toHaveLength(1);
+    const [entry] = response.body.threads;
+    expect(entry.row.external_id).toBe('feed-1');
+    expect(entry.relevance.score).toBeGreaterThan(0);
+    expect(entry.topics).toContain('token_cost');
+    expect(entry.guard).toMatchObject({ allowed: expect.any(Boolean) });
   });
 });

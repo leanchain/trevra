@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CircleAlert, LoaderCircle, MessageSquare, Newspaper } from 'lucide-react';
 import type { ConnectionSummary, SkillRun } from '../../shared/types';
-import { getOutreachThreads, getSkillRuns, type OutreachThreadRow } from '../api';
+import { getOutreachThreads, getSkillRuns, type FeedThread } from '../api';
 import { ResearchScreen } from '../ResearchScreen';
 import { EvidenceList } from './inspector';
 
@@ -54,7 +54,7 @@ export function ResearchView({
   setToast: (message: string) => void;
 }) {
   const [platform, setPlatform] = useState('all');
-  const [threads, setThreads] = useState<OutreachThreadRow[]>([]);
+  const [threads, setThreads] = useState<FeedThread[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
   const [threadsError, setThreadsError] = useState(false);
   const [briefs, setBriefs] = useState<SkillRun[]>([]);
@@ -148,23 +148,23 @@ export function ResearchView({
         <div className="client-table">
           {threadsLoaded &&
             !threadsError &&
-            threads.map((thread) => (
-              <article className="client-card-large" key={thread.id}>
+            threads.map(({ row }) => (
+              <article className="client-card-large" key={row.id}>
                 <span className="client-avatar large">
-                  {(PLATFORM_LABELS[thread.platform] ?? thread.platform).slice(0, 1)}
+                  {(PLATFORM_LABELS[row.platform] ?? row.platform).slice(0, 1)}
                 </span>
                 <div>
                   <h3>
-                    <a href={thread.url} target="_blank" rel="noreferrer">
-                      {thread.title}
+                    <a href={row.url} target="_blank" rel="noreferrer">
+                      {row.title}
                     </a>
                   </h3>
                   <p>
-                    {thread.community ? `${thread.community} · ` : ''}
-                    {thread.author ? `by ${thread.author} · ` : ''}score {thread.score}
+                    {row.community ? `${row.community} · ` : ''}
+                    {row.author ? `by ${row.author} · ` : ''}score {row.score}
                   </p>
                   <span className="client-status">
-                    {PLATFORM_LABELS[thread.platform] ?? thread.platform}
+                    {PLATFORM_LABELS[row.platform] ?? row.platform}
                   </span>
                 </div>
               </article>
