@@ -1,6 +1,11 @@
 import { id, type Db } from '../db.js';
 import { ownerSeat, type SeatRef } from './actions.js';
-import { isSeatRead, type LinkedInDegreeDriver, type LinkedInDriver, type LinkedInPage } from './driver.js';
+import {
+  isSeatRead,
+  type LinkedInDegreeDriver,
+  type LinkedInDriver,
+  type LinkedInPage
+} from './driver.js';
 // `readThread` names two different things in this subsystem: the browser
 // routine that opens a conversation in Chrome, and the database read that
 // returns the one Trevra has stored. Both are the right word in their own file,
@@ -13,7 +18,11 @@ import {
   readThread as readThreadFromLinkedIn,
   type LinkedInInboxDriver
 } from './driver-inbox.js';
-import { playwrightScrapeDriver, type LinkedInScrapeDriver, type LinkedInScrapePage } from './driver-scrape.js';
+import {
+  playwrightScrapeDriver,
+  type LinkedInScrapeDriver,
+  type LinkedInScrapePage
+} from './driver-scrape.js';
 import {
   isPendingInviteList,
   playwrightWithdrawDriver,
@@ -21,7 +30,12 @@ import {
   type LinkedInWithdrawDriver
 } from './driver-withdraw.js';
 import { clearInboxForSeat, syncThreadMessages, syncThreads, threadByUrn } from './inbox.js';
-import { leadSourcingConfig, leadSourcingEnabled, runPendingLeadSources, type LeadSourceRunResult } from './leads.js';
+import {
+  leadSourcingConfig,
+  leadSourcingEnabled,
+  runPendingLeadSources,
+  type LeadSourceRunResult
+} from './leads.js';
 import {
   openLinkedInSession,
   stopLinkedInBatches,
@@ -142,7 +156,7 @@ async function confirmSeatAccount(
   const seat = await getSeat(db, workspaceId, seatKey);
   const confirmed = seat?.profileUrl ?? null;
   if (!confirmed) {
-    return 'This workspace has never confirmed which LinkedIn account this seat is, so nothing was read -- an unconfirmed seat is exactly how one account\'s conversations end up stored as another\'s. Connect the account first; detecting it is what records who it is.';
+    return "This workspace has never confirmed which LinkedIn account this seat is, so nothing was read -- an unconfirmed seat is exactly how one account's conversations end up stored as another's. Connect the account first; detecting it is what records who it is.";
   }
 
   const read = await session.driver.readSeat(session.page, { skipConnections: true });
@@ -154,10 +168,10 @@ async function confirmSeatAccount(
 
   const cleared = await clearInboxForSeat(db, workspaceId, seatKey);
   return (
-    `This browser is signed in as ${read.profileUrl}, and this seat is ${confirmed}. Nothing was read. `
-    + `${cleared} stored conversation${cleared === 1 ? '' : 's'} belonging to the account that is no longer signed in `
-    + `${cleared === 1 ? 'was' : 'were'} cleared, because they are not this seat's to show. `
-    + `Sign this browser back into ${confirmed}, or re-connect the seat to keep the account that is signed in now.`
+    `This browser is signed in as ${read.profileUrl}, and this seat is ${confirmed}. Nothing was read. ` +
+    `${cleared} stored conversation${cleared === 1 ? '' : 's'} belonging to the account that is no longer signed in ` +
+    `${cleared === 1 ? 'was' : 'were'} cleared, because they are not this seat's to show. ` +
+    `Sign this browser back into ${confirmed}, or re-connect the seat to keep the account that is signed in now.`
   );
 }
 
@@ -219,14 +233,22 @@ export interface InboxSyncResult {
  * navigation per conversation, and a thread whose URL was resolved last week
  * does not need it again.
  *
- * BOUNDED. `maxThreads` caps the run whatever the inbox holds, and the driver
- * caps it again at 50. A full inbox walk at the driver's own seeded 2-7s gaps
- * is minutes of real time, so this is deliberately not "read everything".
+ * BOUNDED BY A WINDOW, not by a count. The driver reads the conversations that
+ * moved inside `sinceDays` (30 by default) and the messages inside it, so a
+ * quiet inbox is a short run and a busy one is a long one. `maxThreads` and
+ * `maxMessages` are still honoured when a caller passes them, and the driver
+ * still ceilings those at 50 and 200. Every navigation waits out the driver's
+ * seeded 2-7s gap, so a month of a busy inbox is minutes of real time.
  */
 export async function syncLinkedInInbox(
   db: Db,
   config: LinkedInLocalWorkerConfig,
-  options: LinkedInJobOptions & { maxThreads?: number; maxMessages?: number; inboxDriver?: LinkedInInboxDriver }
+  options: LinkedInJobOptions & {
+    maxThreads?: number;
+    maxMessages?: number;
+    sinceDays?: number;
+    inboxDriver?: LinkedInInboxDriver;
+  }
 ): Promise<InboxSyncResult> {
   const now = options.now ?? new Date();
   const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
@@ -256,6 +278,7 @@ export async function syncLinkedInInbox(
 
   const listing = await inbox.listConversations(session.page, {
     ...(options.maxThreads === undefined ? {} : { maxThreads: options.maxThreads }),
+    ...(options.sinceDays === undefined ? {} : { sinceDays: options.sinceDays }),
     seed,
     now: () => now,
     // One query per conversation, and it is the cheap one: the alternative is
@@ -263,10 +286,17 @@ export async function syncLinkedInInbox(
     needsProfileUrl: () => true
   });
   if (!isThreadListing(listing)) {
-    return { ...empty, blocked: `${listing.failureKind ?? 'unknown'}: ${listing.detail ?? 'The inbox walk stopped early and said nothing about why.'}` };
+    return {
+      ...empty,
+      blocked: `${listing.failureKind ?? 'unknown'}: ${listing.detail ?? 'The inbox walk stopped early and said nothing about why.'}`
+    };
   }
 
-  const synced = await syncThreads(db, { workspaceId: options.workspaceId, seatKey, threads: listing.threads }, now);
+  const synced = await syncThreads(
+    db,
+    { workspaceId: options.workspaceId, seatKey, threads: listing.threads },
+    now
+  );
   const result: InboxSyncResult = {
     ...empty,
     threads: synced.threads.length,
@@ -279,6 +309,7 @@ export async function syncLinkedInInbox(
   for (const thread of synced.threads) {
     const transcript = await readThreadFromLinkedIn(session.page, thread.threadUrn, {
       ...(options.maxMessages === undefined ? {} : { maxMessages: options.maxMessages }),
+      ...(options.sinceDays === undefined ? {} : { sinceDays: options.sinceDays }),
       seed: `${seed}:${thread.threadUrn}`,
       now: () => now
     });
@@ -296,7 +327,12 @@ export async function syncLinkedInInbox(
 
     const stored = await syncThreadMessages(
       db,
-      { workspaceId: options.workspaceId, seatKey, threadUrn: thread.threadUrn, messages: transcript.messages },
+      {
+        workspaceId: options.workspaceId,
+        seatKey,
+        threadUrn: thread.threadUrn,
+        messages: transcript.messages
+      },
       now
     );
     result.messages += stored.inserted;
@@ -312,8 +348,14 @@ export async function syncLinkedInThread(
   db: Db,
   config: LinkedInLocalWorkerConfig,
   threadUrn: string,
-  options: LinkedInJobOptions & { maxMessages?: number }
-): Promise<{ blocked: string | null; inserted: number; inbound: number; linkage: string | null; degraded: string[] }> {
+  options: LinkedInJobOptions & { maxMessages?: number; sinceDays?: number }
+): Promise<{
+  blocked: string | null;
+  inserted: number;
+  inbound: number;
+  linkage: string | null;
+  degraded: string[];
+}> {
   const now = options.now ?? new Date();
   const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
 
@@ -334,16 +376,19 @@ export async function syncLinkedInThread(
   if (!known) return { blocked: null, inserted: 0, inbound: 0, linkage: null, degraded: [] };
 
   const session = await openLinkedInSession(db, config, options);
-  if (!session.ok) return { blocked: session.blocked, inserted: 0, inbound: 0, linkage: null, degraded: [] };
+  if (!session.ok)
+    return { blocked: session.blocked, inserted: 0, inbound: 0, linkage: null, degraded: [] };
 
   // Same check as the full walk: a refresh is a read of one conversation, and
   // a conversation read from the wrong account is the same defect one thread
   // at a time.
   const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
-  if (wrongAccount) return { blocked: wrongAccount, inserted: 0, inbound: 0, linkage: null, degraded: [] };
+  if (wrongAccount)
+    return { blocked: wrongAccount, inserted: 0, inbound: 0, linkage: null, degraded: [] };
 
   const transcript = await readThreadFromLinkedIn(session.page, threadUrn, {
     ...(options.maxMessages === undefined ? {} : { maxMessages: options.maxMessages }),
+    ...(options.sinceDays === undefined ? {} : { sinceDays: options.sinceDays }),
     seed: `thread:${threadUrn}`,
     now: () => now
   });
@@ -422,11 +467,14 @@ export async function syncLinkedInPendingInvites(
   if (!session.ok) return { ...empty, blocked: session.blocked };
 
   const withdrawDriver = options.withdrawDriver ?? playwrightWithdrawDriver;
-  const listed = await withdrawDriver.listPendingInvites(session.page as unknown as LinkedInListPage, {
-    ...(options.maxInvites === undefined ? {} : { maxInvites: options.maxInvites }),
-    seed: `pending:${options.workspaceId}`,
-    now
-  });
+  const listed = await withdrawDriver.listPendingInvites(
+    session.page as unknown as LinkedInListPage,
+    {
+      ...(options.maxInvites === undefined ? {} : { maxInvites: options.maxInvites }),
+      seed: `pending:${options.workspaceId}`,
+      now
+    }
+  );
   if (!isPendingInviteList(listed)) {
     return {
       ...empty,
@@ -485,12 +533,14 @@ export async function detectLinkedInAcceptances(
   };
 
   const session = await openLinkedInSession(db, config, options);
-  if (!session.ok) return { ...empty, halted: true, haltReason: session.blocked, blockedReason: session.blocked };
+  if (!session.ok)
+    return { ...empty, halted: true, haltReason: session.blocked, blockedReason: session.blocked };
 
   const wrongAccount = options.accountConfirmed
     ? null
     : await confirmSeatAccount(db, session, options.workspaceId, seatKey);
-  if (wrongAccount) return { ...empty, halted: true, haltReason: wrongAccount, blockedReason: wrongAccount };
+  if (wrongAccount)
+    return { ...empty, halted: true, haltReason: wrongAccount, blockedReason: wrongAccount };
 
   const outcome = await detectAcceptedInvites(db, seat, {
     page: session.page,
@@ -575,8 +625,13 @@ const MANAGED_STALENESS_SCAN_LIMIT = DEFAULT_CANDIDATE_LIMIT * 20;
  * invites still sweeps correctly; it simply learns about the oldest 2,000 of
  * them per pass.
  */
-async function managedInviteStaleness(db: Db, seat: SeatRef): Promise<Array<{ actionId: string; afterDays: number }>> {
-  const rows = await db.prepare(`
+async function managedInviteStaleness(
+  db: Db,
+  seat: SeatRef
+): Promise<Array<{ actionId: string; afterDays: number }>> {
+  const rows = await db
+    .prepare(
+      `
     WITH workflow_staleness AS (
       SELECT w.id AS workflow_id, (
         SELECT (step->'config'->>'afterDays')::int
@@ -598,12 +653,14 @@ async function managedInviteStaleness(db: Db, seat: SeatRef): Promise<Array<{ ac
       AND s.after_days IS NOT NULL AND s.after_days > 0
     ORDER BY COALESCE(a.pending_since, a.recorded_at) ASC NULLS LAST, a.id ASC
     LIMIT ?
-  `).all<{ action_id: string; after_days: number | null }>(
-    seat.workspaceId,
-    seat.workspaceId,
-    seat.seatKey,
-    MANAGED_STALENESS_SCAN_LIMIT
-  );
+  `
+    )
+    .all<{ action_id: string; after_days: number | null }>(
+      seat.workspaceId,
+      seat.workspaceId,
+      seat.seatKey,
+      MANAGED_STALENESS_SCAN_LIMIT
+    );
 
   const out: Array<{ actionId: string; afterDays: number }> = [];
   for (const row of rows) {
@@ -729,7 +786,11 @@ export async function runLinkedInWithdrawals(
 
   // The sweep already ran and its numbers are real whether or not a browser
   // opens: those rows are queued, and the next pass drains them.
-  const sweepCounts = { candidates: swept.candidates.length, queued: swept.queued, duplicates: swept.duplicates };
+  const sweepCounts = {
+    candidates: swept.candidates.length,
+    queued: swept.queued,
+    duplicates: swept.duplicates
+  };
 
   const session = await openLinkedInSession(db, config, options);
   if (!session.ok) {
@@ -790,7 +851,11 @@ export async function runLinkedInWithdrawals(
 export async function runLinkedInLeadSources(
   db: Db,
   config: LinkedInLocalWorkerConfig,
-  options: LinkedInJobOptions & { maxSources?: number; scraper?: LinkedInScrapeDriver; env?: NodeJS.ProcessEnv }
+  options: LinkedInJobOptions & {
+    maxSources?: number;
+    scraper?: LinkedInScrapeDriver;
+    env?: NodeJS.ProcessEnv;
+  }
 ): Promise<{ blocked: string | null; results: LeadSourceRunResult[] }> {
   const leadConfig = leadSourcingConfig(options.env ?? process.env);
   if (!leadSourcingEnabled(leadConfig)) return { blocked: null, results: [] };
@@ -931,7 +996,11 @@ export async function runLinkedInSideTasks(
   // the machine slept through.
   const runs = await sideTaskRuns(db, options.workspaceId, seatKey);
   const returnedAt = config.companionBrowser ? availabilityCatchUpPending(runs) : null;
-  const verdict = visitAt(seat, now, options.dayShape === undefined ? {} : { dayShape: options.dayShape });
+  const verdict = visitAt(
+    seat,
+    now,
+    options.dayShape === undefined ? {} : { dayShape: options.dayShape }
+  );
   const normalVisit = Boolean(verdict.visit && verdict.startedAt);
   const catchUp = Boolean(returnedAt);
   if (!normalVisit && !catchUp) return { ...result, skipped: verdict.reason };
@@ -943,7 +1012,10 @@ export async function runLinkedInSideTasks(
   // consumed later, so nothing is lost and the browser is not reopened early.
   const resting = await seatRestingUntil(db, options.workspaceId, seatKey);
   if (resting && resting.getTime() > now.getTime()) {
-    return { ...result, skipped: `This seat is between sittings until ${resting.toISOString()}, so nothing was read.` };
+    return {
+      ...result,
+      skipped: `This seat is between sittings until ${resting.toISOString()}, so nothing was read.`
+    };
   }
 
   // ONE PASS PER NORMAL VISIT, plus at most ONE availability-return catch-up.
@@ -951,16 +1023,25 @@ export async function runLinkedInSideTasks(
   // be selected because every completed task has its own cadence stamp.
   const lastVisit = runs.get(VISIT_MARKER);
   if (normalVisit && !catchUp && lastVisit && lastVisit.getTime() === startedAt.getTime()) {
-    return { ...result, skipped: 'This visit has already happened; the tab is open and nothing new is being loaded.' };
+    return {
+      ...result,
+      skipped: 'This visit has already happened; the tab is open and nothing new is being loaded.'
+    };
   }
 
   // Normal visits may do three stale maintenance jobs. A return after real
   // absence may do all five categories ONCE so an occasionally-online laptop
   // can get current without manufacturing the missed visits as a burst.
-  const due = new Set(dueSideTasks(seat, runs, now, { limit: catchUp ? MAX_CATCHUP_TASKS_PER_VISIT : undefined }));
+  const due = new Set(
+    dueSideTasks(seat, runs, now, { limit: catchUp ? MAX_CATCHUP_TASKS_PER_VISIT : undefined })
+  );
   if (due.size === 0) {
-    if (catchUp) await markSideTaskRun(db, options.workspaceId, seatKey, AVAILABILITY_CATCHUP_MARKER, now);
-    return { ...result, skipped: 'LinkedIn is open, but nothing has gone stale since the last visit.' };
+    if (catchUp)
+      await markSideTaskRun(db, options.workspaceId, seatKey, AVAILABILITY_CATCHUP_MARKER, now);
+    return {
+      ...result,
+      skipped: 'LinkedIn is open, but nothing has gone stale since the last visit.'
+    };
   }
 
   // STAMPED BEFORE THE BROWSER OPENS, so a visit that dies half way through --
@@ -970,7 +1051,8 @@ export async function runLinkedInSideTasks(
   if (normalVisit && (!lastVisit || lastVisit.getTime() !== startedAt.getTime())) {
     await markSideTaskRun(db, options.workspaceId, seatKey, VISIT_MARKER, startedAt);
   }
-  if (catchUp) await markSideTaskRun(db, options.workspaceId, seatKey, AVAILABILITY_CATCHUP_MARKER, now);
+  if (catchUp)
+    await markSideTaskRun(db, options.workspaceId, seatKey, AVAILABILITY_CATCHUP_MARKER, now);
 
   // ONE SESSION AND AT MOST ONE IDENTITY CHECK FOR THE WHOLE PASS, rather than
   // one per job. Each job called `openLinkedInSession` itself and two of them
@@ -978,21 +1060,29 @@ export async function runLinkedInSideTasks(
   // session five times and loaded `/in/me/` twice -- to answer, seconds apart,
   // in the same browser, a question with one answer. The page is threaded
   // down; a job handed a page opens no browser of its own.
-  const session = await openLinkedInSession(db, config, { ...options, timezone: seat.timezone, now });
+  const session = await openLinkedInSession(db, config, {
+    ...options,
+    timezone: seat.timezone,
+    now
+  });
   if (!session.ok) {
-    await recordSeatEvent(db, {
-      workspaceId: options.workspaceId,
-      seatKey,
-      kind: 'background_run',
-      detail: encodeBackgroundRunDetail({
-        startedAt: startedAt.toISOString(),
-        finishedAt: now.toISOString(),
-        tasks: [...due],
-        status: 'blocked',
-        failedTasks: [],
-        reason: session.blocked
-      })
-    }, now);
+    await recordSeatEvent(
+      db,
+      {
+        workspaceId: options.workspaceId,
+        seatKey,
+        kind: 'background_run',
+        detail: encodeBackgroundRunDetail({
+          startedAt: startedAt.toISOString(),
+          finishedAt: now.toISOString(),
+          tasks: [...due],
+          status: 'blocked',
+          failedTasks: [],
+          reason: session.blocked
+        })
+      },
+      now
+    );
     return { ...result, skipped: session.blocked };
   }
 
@@ -1001,7 +1091,11 @@ export async function runLinkedInSideTasks(
   // the sending sittings use, so a read visit and a send visit begin the same
   // way; it also wanders to notifications or My Network about half the time.
   // Decoration, never correctness: a page that cannot navigate drops it.
-  await warmUpSession(session.page, `${options.workspaceId}:${seatKey}:${catchUp ? 'return' : `visit${visitIndex}`}:${now.toISOString().slice(0, 10)}`, log);
+  await warmUpSession(
+    session.page,
+    `${options.workspaceId}:${seatKey}:${catchUp ? 'return' : `visit${visitIndex}`}:${now.toISOString().slice(0, 10)}`,
+    log
+  );
 
   // AND NOT AT ALL WHEN NOTHING IN THIS PASS NEEDS IT. Only the inbox walk and
   // acceptance detection file data whose meaning depends on who is signed in;
@@ -1013,24 +1107,32 @@ export async function runLinkedInSideTasks(
   if (needsIdentity) {
     const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
     if (wrongAccount) {
-      await recordSeatEvent(db, {
-        workspaceId: options.workspaceId,
-        seatKey,
-        kind: 'background_run',
-        detail: encodeBackgroundRunDetail({
-          startedAt: startedAt.toISOString(),
-          finishedAt: now.toISOString(),
-          tasks: [...due],
-          status: 'blocked',
-          failedTasks: [],
-          reason: wrongAccount
-        })
-      }, now);
+      await recordSeatEvent(
+        db,
+        {
+          workspaceId: options.workspaceId,
+          seatKey,
+          kind: 'background_run',
+          detail: encodeBackgroundRunDetail({
+            startedAt: startedAt.toISOString(),
+            finishedAt: now.toISOString(),
+            tasks: [...due],
+            status: 'blocked',
+            failedTasks: [],
+            reason: wrongAccount
+          })
+        },
+        now
+      );
       return { ...result, skipped: wrongAccount };
     }
   }
 
-  const shared: LinkedInJobOptions & { maxThreads?: number; maxWithdrawals?: number; maxSources?: number } = {
+  const shared: LinkedInJobOptions & {
+    maxThreads?: number;
+    maxWithdrawals?: number;
+    maxSources?: number;
+  } = {
     ...options,
     seatKey,
     now,
@@ -1091,7 +1193,9 @@ export async function runLinkedInSideTasks(
       await run();
     } catch (cause) {
       failedTasks.push(task);
-      log(`LinkedIn ${name} failed for ${options.workspaceId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      log(
+        `LinkedIn ${name} failed for ${options.workspaceId}: ${cause instanceof Error ? cause.message : String(cause)}`
+      );
     }
     // STAMPED WHATEVER HAPPENED, including a failure. A job that could not read
     // the inbox does not get to retry sixty seconds later: whatever stopped it
@@ -1117,25 +1221,34 @@ export async function runLinkedInSideTasks(
   // not a `closeLinkedInBrowser`.
   await leaveLinkedIn(session.page, log);
 
-  await recordSeatEvent(db, {
-    workspaceId: options.workspaceId,
-    seatKey,
-    kind: 'background_run',
-    detail: encodeBackgroundRunDetail({
-      startedAt: startedAt.toISOString(),
-      finishedAt: new Date().toISOString(),
-      tasks: result.ran,
-      status: failedTasks.length > 0 ? 'partial' : 'completed',
-      failedTasks,
-      reason: failedTasks.length > 0 ? `${failedTasks.length} background task(s) failed; later visits continue normally.` : null
-    })
-  }, new Date());
+  await recordSeatEvent(
+    db,
+    {
+      workspaceId: options.workspaceId,
+      seatKey,
+      kind: 'background_run',
+      detail: encodeBackgroundRunDetail({
+        startedAt: startedAt.toISOString(),
+        finishedAt: new Date().toISOString(),
+        tasks: result.ran,
+        status: failedTasks.length > 0 ? 'partial' : 'completed',
+        failedTasks,
+        reason:
+          failedTasks.length > 0
+            ? `${failedTasks.length} background task(s) failed; later visits continue normally.`
+            : null
+      })
+    },
+    new Date()
+  );
 
   // ONE LINE PER VISIT THAT DID SOMETHING, and none for the ticks that did not.
   // An operator asking "is it alive" needs a heartbeat; at 1,440 ticks a day a
   // line per tick is not a heartbeat, it is the log.
   if (result.ran.length > 0) {
-    log(`LinkedIn ${catchUp ? 'availability catch-up' : `visit ${visitIndex + 1}`} for ${options.workspaceId}/${seatKey}: ${result.ran.join(', ')}.`);
+    log(
+      `LinkedIn ${catchUp ? 'availability catch-up' : `visit ${visitIndex + 1}`} for ${options.workspaceId}/${seatKey}: ${result.ran.join(', ')}.`
+    );
   }
 
   return result;
@@ -1150,13 +1263,18 @@ export async function runLinkedInSideTasks(
  */
 async function leaveLinkedIn(page: LinkedInPage, log: (message: string) => void): Promise<void> {
   const target = page as unknown as {
-    goto?: (url: string, options?: { waitUntil?: 'domcontentloaded'; timeout?: number }) => Promise<unknown>;
+    goto?: (
+      url: string,
+      options?: { waitUntil?: 'domcontentloaded'; timeout?: number }
+    ) => Promise<unknown>;
   };
   if (typeof target.goto !== 'function') return;
   try {
     await target.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 15_000 });
   } catch (cause) {
-    log(`LinkedIn tab could not be closed after the visit (${cause instanceof Error ? cause.message : String(cause)}). Nothing was read or sent because of it.`);
+    log(
+      `LinkedIn tab could not be closed after the visit (${cause instanceof Error ? cause.message : String(cause)}). Nothing was read or sent because of it.`
+    );
   }
 }
 
@@ -1189,7 +1307,9 @@ export async function runLinkedInCampaignTick(
   try {
     return await runManagedCampaigns(db, workspaceId, options.now ?? new Date());
   } catch (cause) {
-    log(`LinkedIn campaign tick failed for ${workspaceId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    log(
+      `LinkedIn campaign tick failed for ${workspaceId}: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
     return null;
   }
 }

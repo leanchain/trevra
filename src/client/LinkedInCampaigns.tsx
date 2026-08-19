@@ -1878,7 +1878,7 @@ export function OutreachCampaigns({
             <input
               value={domain}
               onChange={(event) => setDomain(event.target.value)}
-              placeholder="trevra.com"
+              placeholder="usetrevra.com"
             />
           </label>
         </div>

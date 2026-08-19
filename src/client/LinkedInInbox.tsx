@@ -42,7 +42,7 @@ import type { ManagedCampaign, ManualTaskView } from '../server/linkedin/managed
 import { useActiveSeatKey } from './LinkedInAccounts';
 import { errorMessage, reloadOutreach, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
-import { queueWaitCopy } from './LinkedInTiming';
+import { DELAY_CHOICES, plannedForFrom, queueWaitCopy, type ScheduleMode } from './LinkedInTiming';
 import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag } from './LinkedInViz';
 
@@ -419,6 +419,14 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
   // The composer. One draft, because only one of the two panes is ever open.
   const [body, setBody] = useState('');
   const [queueing, setQueueing] = useState(false);
+  /**
+   * WHEN the reply being written is for. One control serves both composers,
+   * because there is only ever one draft open on this screen.
+   */
+  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>('now');
+  const [delayMinutes, setDelayMinutes] = useState(DELAY_CHOICES[1].minutes);
+  /** A `datetime-local` value: local wall-clock, no zone, exactly as typed. */
+  const [sendAt, setSendAt] = useState('');
   const [completing, setCompleting] = useState(false);
   /** The safety check's own sentence, verbatim. Not an error: a decision with a reason. */
   const [refusal, setRefusal] = useState('');
@@ -711,6 +719,13 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
    */
   const queueReply = async (threadUrn: string) => {
     if (!body.trim()) return;
+    // Recomputed against the clock AT THE PRESS, so "in 3 hours" is three hours
+    // from now and not from whenever the option was chosen.
+    const slot = plannedForFrom(scheduleMode, delayMinutes, sendAt, new Date());
+    if (slot.problem) {
+      setError(slot.problem);
+      return;
+    }
     setQueueing(true);
     setRefusal('');
     setError('');
@@ -719,11 +734,16 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       const result = await replyToLinkedInThread(
         threadUrn,
         body,
-        undefined,
+        slot.at ? slot.at.toISOString() : undefined,
         seatForThread(threadUrn)
       );
       setQueued({ plannedFor: result.plannedFor, verdict: result.verdict });
       setBody('');
+      // The words are gone, so the time they were for goes with them: a stale
+      // absolute instant silently reused on the next reply is the bug this
+      // reset exists to prevent.
+      setScheduleMode('now');
+      setSendAt('');
       setToast(
         'Message queued. Nothing has been sent yet — this screen shows when it is typed into LinkedIn.'
       );
@@ -922,6 +942,93 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     );
   };
 
+  /**
+   * WHEN, beside WHAT.
+   *
+   * The route has taken a `plannedFor` since it was written and this screen
+   * never sent one, so every reply an operator wrote was for the next slot
+   * whether that was what they meant or not. The three shapes are the three
+   * things people actually say: send it when you can, send it after a wait,
+   * send it at a time I am picking.
+   *
+   * Recomputed every render so the sentence under it stays true; the value
+   * that is actually queued is recomputed again at the press.
+   */
+  const schedule = plannedForFrom(scheduleMode, delayMinutes, sendAt, new Date());
+  const scheduleRow = (
+    <fieldset className="li-schedule">
+      <legend>When it should go out</legend>
+      <div className="li-schedule-modes">
+        <label>
+          <input
+            type="radio"
+            name="li-schedule"
+            checked={scheduleMode === 'now'}
+            onChange={() => setScheduleMode('now')}
+          />
+          At the next slot Trevra can take
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="li-schedule"
+            checked={scheduleMode === 'in'}
+            onChange={() => setScheduleMode('in')}
+          />
+          After a wait of
+          <select
+            value={delayMinutes}
+            aria-label="How long to wait before this is sent"
+            onChange={(event) => {
+              setDelayMinutes(Number(event.target.value));
+              setScheduleMode('in');
+            }}
+          >
+            {DELAY_CHOICES.map((choice) => (
+              <option key={choice.minutes} value={choice.minutes}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="li-schedule"
+            checked={scheduleMode === 'at'}
+            onChange={() => setScheduleMode('at')}
+          />
+          At
+          <input
+            type="datetime-local"
+            value={sendAt}
+            aria-label="The date and time this should be sent"
+            onChange={(event) => {
+              setSendAt(event.target.value);
+              setScheduleMode('at');
+            }}
+          />
+        </label>
+      </div>
+      <p className="li-hint">
+        {schedule.problem ? (
+          schedule.problem
+        ) : schedule.at ? (
+          <>
+            Trevra runs every safety check again at {schedule.at.toLocaleString()} and types it in
+            then. A slot outside this account’s working hours is refused when you press Queue, in
+            the server’s own words — it is never quietly sent at some other time.
+          </>
+        ) : (
+          <>
+            Trevra takes the next slot its pacing and this account’s working hours allow. Nothing
+            leaves when you press Queue either way.
+          </>
+        )}
+      </p>
+    </fieldset>
+  );
+
   const filtered =
     filters.unread || filters.hasReply || Boolean(filters.campaignId) || Boolean(search.trim());
   const messages = conversation?.messages ?? [];
@@ -994,32 +1101,19 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
         </div>
       )}
 
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>Inbox</h3>
-            <p>
-              Everything people have written to you, and every message a campaign is waiting on you
-              to write. Reading here never touches LinkedIn; Sync opens it in a real browser on this
-              machine, at paced gaps, and Trevra does the same walk on its own schedule.
-            </p>
-          </div>
-          <button
-            className="secondary-button"
-            type="button"
-            disabled={syncing !== null}
-            onClick={() => void syncRail()}
-          >
-            {syncing === 'rail' ? (
-              <LoaderCircle className="spin" size={14} />
-            ) : (
-              <RefreshCw size={14} />
-            )}{' '}
-            Sync the inbox
-          </button>
-        </div>
+      {/* ONE ROW, because everything in it is a control.
 
-        <div className="li-filter-row">
+          The title, a paragraph explaining the screen and the Sync button used
+          to be a section heading, with the filters a second block under it --
+          roughly two hundred pixels of standing copy above an inbox, every
+          time, on a screen whose whole job is to show conversations. The
+          sentence it carried is not lost: it is under the panes, next to the
+          other standing fact about queued replies. */}
+      <section className="page-panel li-inbox-bar">
+        <h3 aria-level={2}>
+          <Inbox size={16} /> Inbox
+        </h3>
+        <div className="li-inbox-filters" role="group" aria-label="Narrow the inbox">
           <button
             type="button"
             className={`li-range ${filters.unread ? 'is-active' : ''}`}
@@ -1036,26 +1130,39 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
           >
             Has a reply
           </button>
-          <label>
-            Campaign
-            <select
-              value={filters.campaignId}
-              onChange={(event) =>
-                setFilters((current) => ({ ...current, campaignId: event.target.value }))
-              }
-            >
-              <option value="">Any campaign</option>
-              {campaigns.map((campaign) => (
-                <option key={campaign.id} value={campaign.id}>
-                  {campaign.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <select
+            aria-label="Campaign"
+            value={filters.campaignId}
+            onChange={(event) =>
+              setFilters((current) => ({ ...current, campaignId: event.target.value }))
+            }
+          >
+            <option value="">Any campaign</option>
+            {campaigns.map((campaign) => (
+              <option key={campaign.id} value={campaign.id}>
+                {campaign.name}
+              </option>
+            ))}
+          </select>
           {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the inbox" />}
         </div>
+        <button
+          className="secondary-button li-inbox-sync"
+          type="button"
+          disabled={syncing !== null}
+          onClick={() => void syncRail()}
+        >
+          {syncing === 'rail' ? (
+            <LoaderCircle className="spin" size={14} />
+          ) : (
+            <RefreshCw size={14} />
+          )}{' '}
+          Sync the inbox
+        </button>
+      </section>
 
-        {degraded.length > 0 && (
+      {degraded.length > 0 && (
+        <section className="page-panel">
           <div className="li-degraded">
             <strong>Walked, but not all of it came back:</strong>
             <ul>
@@ -1065,8 +1172,8 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
             </ul>
             <p>Anything missing is simply not stored. Nothing here is guessed at.</p>
           </div>
-        )}
-      </section>
+        </section>
+      )}
 
       <div className="li-inbox">
         <section className="page-panel li-thread-pane">
@@ -1294,6 +1401,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                     placeholder="Write the message you want to send."
                   />
                 </label>
+                {scheduleRow}
                 <p className="li-hint">
                   {openTask.suggestedBody?.trim()
                     ? 'This draft came from the campaign step. Change as much of it as you like — nothing goes anywhere until you queue it.'
@@ -1414,7 +1522,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                       <button
                         className="primary-button"
                         type="button"
-                        disabled={queueing || !body.trim()}
+                        disabled={queueing || !body.trim() || Boolean(schedule.problem)}
                         onClick={() => void queueReply(taskThread.threadUrn)}
                       >
                         {queueing ? (
@@ -1562,6 +1670,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                     placeholder="Write the reply. Trevra sends approved bytes and does not compose them."
                   />
                 </label>
+                {scheduleRow}
 
                 {/* Verbatim, and headed neutrally for the same reason as the
                     task composer: "held back to keep the account safe" is the
@@ -1650,7 +1759,12 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                   <button
                     className="primary-button"
                     type="button"
-                    disabled={queueing || !body.trim() || !conversation.thread.profileUrl}
+                    disabled={
+                      queueing ||
+                      !body.trim() ||
+                      !conversation.thread.profileUrl ||
+                      Boolean(schedule.problem)
+                    }
                     onClick={() => void queueReply(conversation.thread.threadUrn)}
                   >
                     {queueing ? (
@@ -1668,8 +1782,11 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       </div>
 
       <p className="panel-note">
-        <MessageSquare size={13} /> Queued replies count against this account’s daily message limit
-        exactly like any other message Trevra sends.
+        <MessageSquare size={13} /> Reading here never touches LinkedIn. Sync opens it in a real
+        browser on this machine at paced gaps — every conversation that moved in the last 30 days,
+        and the messages inside that window — and Trevra does the same walk on its own schedule.
+        Queued replies count against this account’s daily message limit exactly like any other
+        message Trevra sends.
       </p>
     </div>
   );

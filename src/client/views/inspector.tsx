@@ -612,6 +612,40 @@ export function inspectorFromSkillRun(run: SkillRun): InspectorRun {
 }
 
 /**
+ * The column names of a list that is REALLY A TABLE, or null.
+ *
+ * Two conditions, and both are strict on purpose. Every entry must be a plain
+ * object with the SAME keys in the same order -- a ragged list rendered as a
+ * table would silently drop whatever the first row happened not to carry. And
+ * every cell must be a scalar, because a nested object inside a cell is how a
+ * table becomes less readable than the labelled pairs it replaced.
+ *
+ * One row stays a labelled list: a header above a single line is a heavier way
+ * to say the same thing.
+ */
+function uniformColumns(value: unknown[]): string[] | null {
+  if (value.length < 2) return null;
+  const scalar = (entry: unknown) =>
+    entry === null ||
+    entry === undefined ||
+    typeof entry === 'string' ||
+    typeof entry === 'number' ||
+    typeof entry === 'boolean';
+  let columns: string[] | null = null;
+  for (const entry of value) {
+    if (!isPlainObject(entry)) return null;
+    const keys = Object.keys(entry);
+    if (keys.length === 0 || keys.length > 6) return null;
+    if (!keys.every((key) => scalar(entry[key]))) return null;
+    if (columns === null) columns = keys;
+    else if (columns.length !== keys.length || columns.some((key, index) => key !== keys[index])) {
+      return null;
+    }
+  }
+  return columns;
+}
+
+/**
  * Records rendered as labelled fields rather than dumped as JSON.
  *
  * The keys a run carries are the only labels there are, so `humanizeKey` does
@@ -640,6 +674,41 @@ function FieldValue({ value, depth }: { value: unknown; depth: number }) {
   if (Array.isArray(value)) {
     if (value.length === 0) return <span className="field-muted">None</span>;
     if (depth >= 3) return <pre className="field-long">{JSON.stringify(value, null, 2)}</pre>;
+    // A LIST OF THE SAME RECORD IS A TABLE, and drawing it as one is the
+    // difference between reading seven safety checks and scrolling past
+    // twenty-one label/value pairs that repeat "Check", "Detail", "Passed".
+    const columns = uniformColumns(value);
+    if (columns) {
+      return (
+        <div className="field-table-scroll">
+          <table className="field-table">
+            <thead>
+              <tr>
+                {columns.map((column) => (
+                  <th key={column} scope="col">
+                    {humanizeKey(column)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {value.map((entry, index) => (
+                <tr key={index}>
+                  {columns.map((column) => (
+                    <td key={column}>
+                      <FieldValue
+                        value={(entry as Record<string, unknown>)[column]}
+                        depth={depth + 1}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
     const flat = value.every((entry) => !isPlainObject(entry) && !Array.isArray(entry));
     return flat ? (
       <ul className="field-bullets">

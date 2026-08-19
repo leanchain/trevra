@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LinkedInLocator, LinkedInPage } from './driver.js';
 import {
-  DEFAULT_MAX_THREADS,
+  DEFAULT_SINCE_DAYS,
   INBOX_SELECTORS,
   MESSAGING_URL,
   READ_GAP_SECONDS,
@@ -147,7 +147,8 @@ function selectorParts(selector: string): string[] {
 function indexAndSuffix(part: string): { index: number | null; rawSuffix: string } {
   for (const pattern of [/:nth-match\(.*,\s*(\d+)\)/, /li:nth-child\((\d+)\)/]) {
     const found = pattern.exec(part);
-    if (found) return { index: Number(found[1]), rawSuffix: part.slice(found.index + found[0].length) };
+    if (found)
+      return { index: Number(found[1]), rawSuffix: part.slice(found.index + found[0].length) };
   }
   return { index: null, rawSuffix: '' };
 }
@@ -225,11 +226,19 @@ class FakePage implements LinkedInPage {
     const none = { count: 0, text: null };
     const wall = this.wallShowing(part);
     if (wall > 0) return { count: wall, text: 'LinkedIn says stop' };
-    if (part.includes('form.challenge') || part.includes('temporarily restricted') || part.includes('This page doesn')) return none;
-    if (part.includes('input[name="pin"]') || part.includes('reached the weekly invitation limit')) return none;
+    if (
+      part.includes('form.challenge') ||
+      part.includes('temporarily restricted') ||
+      part.includes('This page doesn')
+    )
+      return none;
+    if (part.includes('input[name="pin"]') || part.includes('reached the weekly invitation limit'))
+      return none;
 
     if (part.includes('msg-form__contenteditable')) {
-      return this.openThread() && this.state.composer !== 'missing' ? { count: 1, text: null } : none;
+      return this.openThread() && this.state.composer !== 'missing'
+        ? { count: 1, text: null }
+        : none;
     }
     if (part.includes('msg-form__send-button')) {
       return this.openThread() && this.state.composer === 'ok' ? { count: 1, text: null } : none;
@@ -238,7 +247,9 @@ class FakePage implements LinkedInPage {
 
     if (part.includes('msg-thread__link-to-profile')) {
       const open = this.openThread();
-      return open && open.profileUrl !== null ? { count: 1, text: open.headerName ?? open.name } : none;
+      return open && open.profileUrl !== null
+        ? { count: 1, text: open.headerName ?? open.name }
+        : none;
     }
     if (part.includes('msg-entity-lockup') || part.includes('msg-title-bar')) return none;
 
@@ -272,7 +283,8 @@ class FakePage implements LinkedInPage {
       if (suffix.includes('notification-badge') || suffix.includes('unread-count')) {
         return row.unread ? { count: 1, text: '1' } : none;
       }
-      if (suffix.includes('msg-conversation-listitem__link')) return row.noLink ? none : { count: 1, text: row.name };
+      if (suffix.includes('msg-conversation-listitem__link'))
+        return row.noLink ? none : { count: 1, text: row.name };
       return none;
     }
 
@@ -340,7 +352,10 @@ class FakePage implements LinkedInPage {
 }
 
 class FakeLocator implements LinkedInLocator {
-  constructor(private readonly page: FakePage, private readonly selector: string) {}
+  constructor(
+    private readonly page: FakePage,
+    private readonly selector: string
+  ) {}
 
   first(): LinkedInLocator {
     return this;
@@ -350,8 +365,19 @@ class FakeLocator implements LinkedInLocator {
     return this.page.resolve(this.selector).count;
   }
 
+  /**
+   * A BROWSER'S `textContent`, including the part that caused the defect: a
+   * `<br>` is not a text node, so the line breaks in a message body are simply
+   * not there. The fixture models that rather than being kind about it.
+   */
   async textContent(): Promise<string | null> {
-    return this.page.resolve(this.selector).text;
+    const text = this.page.resolve(this.selector).text;
+    return text === null ? null : text.replace(/\n/g, '');
+  }
+
+  /** The RENDERED text, breaks and all -- what `bodyTextOf` asks for first. */
+  async innerText(): Promise<string> {
+    return this.page.resolve(this.selector).text ?? '';
   }
 
   async click(): Promise<void> {
@@ -427,7 +453,8 @@ describe('listConversations', () => {
     const { sleep } = recorder();
 
     const listing = await listConversations(page, { sleep, now: clock, seed: 'run-1' });
-    if (!isThreadListing(listing)) throw new Error(`expected a listing, got ${listing.failureKind}`);
+    if (!isThreadListing(listing))
+      throw new Error(`expected a listing, got ${listing.failureKind}`);
 
     expect(listing.threads).toEqual([
       {
@@ -450,7 +477,7 @@ describe('listConversations', () => {
     expect(listing.degraded).toEqual([]);
   });
 
-  it('stores the person\'s NAME, not the lockup LinkedIn reads out around it', async () => {
+  it("stores the person's NAME, not the lockup LinkedIn reads out around it", async () => {
     // `textContent` collapses the presence text and the headline into the name,
     // which is how an inbox came to list "Daryna Radiichuk Status is offline
     // CEO at G-MOS.com | Product & Growth Leader | ..." as somebody's name.
@@ -464,7 +491,10 @@ describe('listConversations', () => {
       ]
     });
 
-    const listing = await listConversations(new FakePage(state), { sleep: recorder().sleep, now: clock });
+    const listing = await listConversations(new FakePage(state), {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (!isThreadListing(listing)) throw new Error('expected a listing');
     expect(listing.threads.map((entry) => entry.name)).toEqual(['Maya Chen', 'Jonas Keller']);
     // The rail and the header still agree, so neither row is dropped as a
@@ -472,19 +502,26 @@ describe('listConversations', () => {
     expect(listing.degraded).toEqual([]);
   });
 
-  it('keeps one row\'s unread badge out of another row', async () => {
+  it("keeps one row's unread badge out of another row", async () => {
     // The selector for the badge is a LIST, so an unscoped `${row} .a, .b` would
     // match the second alternative anywhere on the page and report every
     // conversation as unread.
     const state = world({ threads: [thread(0, { unread: false }), thread(1, { unread: true })] });
-    const listing = await listConversations(new FakePage(state), { sleep: recorder().sleep, now: clock });
+    const listing = await listConversations(new FakePage(state), {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (!isThreadListing(listing)) throw new Error('expected a listing');
     expect(listing.threads.map((entry) => entry.unread)).toEqual([false, true]);
   });
 
   it('caps the walk and says how much it did not read', async () => {
     const state = world({ threads: [thread(0), thread(1), thread(2), thread(3)] });
-    const listing = await listConversations(new FakePage(state), { maxThreads: 2, sleep: recorder().sleep, now: clock });
+    const listing = await listConversations(new FakePage(state), {
+      maxThreads: 2,
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (!isThreadListing(listing)) throw new Error('expected a listing');
     expect(listing.threads).toHaveLength(2);
     expect(listing.degraded[0]).toContain('walked the newest 2');
@@ -496,9 +533,21 @@ describe('listConversations', () => {
     const second = recorder();
     const other = recorder();
 
-    await listConversations(new FakePage(build()), { sleep: first.sleep, seed: 'batch-a', now: clock });
-    await listConversations(new FakePage(build()), { sleep: second.sleep, seed: 'batch-a', now: clock });
-    await listConversations(new FakePage(build()), { sleep: other.sleep, seed: 'batch-b', now: clock });
+    await listConversations(new FakePage(build()), {
+      sleep: first.sleep,
+      seed: 'batch-a',
+      now: clock
+    });
+    await listConversations(new FakePage(build()), {
+      sleep: second.sleep,
+      seed: 'batch-a',
+      now: clock
+    });
+    await listConversations(new FakePage(build()), {
+      sleep: other.sleep,
+      seed: 'batch-b',
+      now: clock
+    });
 
     // Two conversations: /messaging/ (unpaced, it is the first), then open+hop
     // for each, then one return to the rail before the second row.
@@ -531,7 +580,10 @@ describe('listConversations', () => {
 
   it('STOPS the walk at a limit wall instead of clicking through it', async () => {
     const state = world({ threads: [thread(0), thread(1)], wall: 'limit', wallAt: 'thread' });
-    const result = await listConversations(new FakePage(state), { sleep: recorder().sleep, now: clock });
+    const result = await listConversations(new FakePage(state), {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (isThreadListing(result)) throw new Error('a limit wall must not come back as a listing');
     expect(result.failureKind).toBe('limit_wall');
     expect(result.ok).toBe(false);
@@ -539,21 +591,30 @@ describe('listConversations', () => {
 
   it('reports a challenge from the messaging page itself', async () => {
     const state = world({ threads: [thread(0)], wall: 'challenge' });
-    const result = await listConversations(new FakePage(state), { sleep: recorder().sleep, now: clock });
+    const result = await listConversations(new FakePage(state), {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (isThreadListing(result)) throw new Error('a challenge must not come back as a listing');
     expect(result.failureKind).toBe('challenge');
     expect(result.detail).toContain('A human has to clear it');
   });
 
   it('tells an empty inbox apart from a drifted selector', async () => {
-    const empty = await listConversations(new FakePage(world({ rail: 'empty', threads: [thread(0)] })), {
-      sleep: recorder().sleep,
-      now: clock
-    });
+    const empty = await listConversations(
+      new FakePage(world({ rail: 'empty', threads: [thread(0)] })),
+      {
+        sleep: recorder().sleep,
+        now: clock
+      }
+    );
     if (!isThreadListing(empty)) throw new Error('an empty inbox is a successful read');
     expect(empty.threads).toEqual([]);
 
-    const drifted = await listConversations(new FakePage(world({ rail: 'missing' })), { sleep: recorder().sleep, now: clock });
+    const drifted = await listConversations(new FakePage(world({ rail: 'missing' })), {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (isThreadListing(drifted)) throw new Error('a missing rail is drift, not an empty inbox');
     expect(drifted.failureKind).toBe('selector_drift');
     expect(drifted.detail).toContain('Nothing was read');
@@ -563,7 +624,10 @@ describe('listConversations', () => {
     // The rail re-orders the moment a message arrives. Filing one person's
     // reply under another person's name is worse than reading nine of ten.
     const state = world({ threads: [thread(0, { headerName: 'Someone Else' }), thread(1)] });
-    const listing = await listConversations(new FakePage(state), { sleep: recorder().sleep, now: clock });
+    const listing = await listConversations(new FakePage(state), {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (!isThreadListing(listing)) throw new Error('expected a listing');
     expect(listing.threads.map((entry) => entry.threadUrn)).toEqual(['2-thread1==']);
     expect(listing.degraded[0]).toContain('re-ordered mid-walk');
@@ -571,17 +635,77 @@ describe('listConversations', () => {
 
   it('records a profile hop that lands somewhere that is not a profile, and keeps the conversation', async () => {
     const state = world({ threads: [thread(0, { profileUrl: null })] });
-    const listing = await listConversations(new FakePage(state), { sleep: recorder().sleep, now: clock });
+    const listing = await listConversations(new FakePage(state), {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (!isThreadListing(listing)) throw new Error('expected a listing');
     expect(listing.threads[0].profileUrl).toBeNull();
     expect(listing.threads[0].threadUrn).toBe('2-thread0==');
     expect(listing.degraded[0]).toContain('cannot be matched to a campaign target');
   });
 
-  it('defaults to a bounded walk', () => {
-    expect(DEFAULT_MAX_THREADS).toBeLessThanOrEqual(25);
+  it('defaults to a thirty-day window rather than a count', () => {
+    expect(DEFAULT_SINCE_DAYS).toBe(30);
     expect(readGapSeconds('a')).not.toBe(readGapSeconds('b'));
     expect(readGapSeconds('a')).toBe(readGapSeconds('a'));
+  });
+
+  it('walks EVERY conversation inside the window, with no count of its own', async () => {
+    // The old default stopped at ten and said nothing an operator would read as
+    // "there are more": twelve live conversations showed as ten.
+    const state = world({ threads: Array.from({ length: 12 }, (_unused, index) => thread(index)) });
+    const listing = await listConversations(new FakePage(state), {
+      sleep: recorder().sleep,
+      now: clock
+    });
+    if (!isThreadListing(listing)) throw new Error('expected a listing');
+    expect(listing.threads).toHaveLength(12);
+    expect(listing.degraded).toEqual([]);
+  });
+
+  it('does not open a conversation whose last message is older than the window, and says how many', async () => {
+    const state = world({
+      threads: [
+        thread(0, { stamp: '10:42 AM' }),
+        thread(1, { stamp: 'Jul 20' }),
+        // Outside thirty days of 2026-08-04, so it is never clicked.
+        thread(2, { stamp: 'Jun 1' }),
+        thread(3, { stamp: 'Mar 2' })
+      ]
+    });
+    const listing = await listConversations(new FakePage(state), {
+      sleep: recorder().sleep,
+      now: clock
+    });
+    if (!isThreadListing(listing)) throw new Error('expected a listing');
+    expect(listing.threads.map((entry) => entry.threadUrn)).toEqual(['2-thread0==', '2-thread1==']);
+    expect(listing.degraded[0]).toContain('2 of them last moved more than 30 days ago');
+  });
+
+  it('keeps a row whose timestamp cannot be read rather than calling it old', async () => {
+    const state = world({ threads: [thread(0, { stamp: 'whenever' })] });
+    const listing = await listConversations(new FakePage(state), {
+      sleep: recorder().sleep,
+      now: clock
+    });
+    if (!isThreadListing(listing)) throw new Error('expected a listing');
+    expect(listing.threads.map((entry) => entry.threadUrn)).toEqual(['2-thread0==']);
+    expect(listing.threads[0].lastMessageAt).toBeNull();
+  });
+
+  it('honours an explicit sinceDays', async () => {
+    const state = world({
+      threads: [thread(0, { stamp: '10:42 AM' }), thread(1, { stamp: 'Jul 20' })]
+    });
+    const listing = await listConversations(new FakePage(state), {
+      sinceDays: 7,
+      sleep: recorder().sleep,
+      now: clock
+    });
+    if (!isThreadListing(listing)) throw new Error('expected a listing');
+    expect(listing.threads.map((entry) => entry.threadUrn)).toEqual(['2-thread0==']);
+    expect(listing.degraded[0]).toContain('more than 7 days ago');
   });
 });
 
@@ -599,8 +723,12 @@ describe('readThread', () => {
       ]
     });
 
-    const transcript = await readThread(new FakePage(state), '2-thread0==', { sleep: recorder().sleep, now: clock });
-    if (!isThreadTranscript(transcript)) throw new Error(`expected a transcript, got ${transcript.failureKind}`);
+    const transcript = await readThread(new FakePage(state), '2-thread0==', {
+      sleep: recorder().sleep,
+      now: clock
+    });
+    if (!isThreadTranscript(transcript))
+      throw new Error(`expected a transcript, got ${transcript.failureKind}`);
     expect(transcript.messages).toEqual([
       { at: '2026-08-03T00:00:00.000Z', direction: 'out', body: 'Hi Maya, saw your talk.' },
       // Inherits the group timestamp above it: LinkedIn renders one per group.
@@ -616,17 +744,96 @@ describe('readThread', () => {
     }));
     const state = world({ threads: [thread(0, { messages })] });
 
-    const transcript = await readThread(new FakePage(state), '2-thread0==', { maxMessages: 2, sleep: recorder().sleep, now: clock });
+    const transcript = await readThread(new FakePage(state), '2-thread0==', {
+      maxMessages: 2,
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (!isThreadTranscript(transcript)) throw new Error('expected a transcript');
     expect(transcript.messages.map((entry) => entry.body)).toEqual(['message 4', 'message 5']);
     expect(transcript.degraded[0]).toContain('newest 2');
   });
 
+  it('reads every message inside the window, with no count of its own', async () => {
+    const messages: FakeMessage[] = Array.from({ length: 60 }, (_unused, index) => ({
+      direction: index % 2 === 0 ? 'out' : 'in',
+      body: `message ${index}`,
+      stamp: '10:42 AM'
+    }));
+    const transcript = await readThread(
+      new FakePage(world({ threads: [thread(0, { messages })] })),
+      '2-thread0==',
+      {
+        sleep: recorder().sleep,
+        now: clock
+      }
+    );
+    if (!isThreadTranscript(transcript)) throw new Error('expected a transcript');
+    expect(transcript.messages).toHaveLength(60);
+    expect(transcript.degraded).toEqual([]);
+  });
+
+  it('leaves messages older than the window unread, and says how many', async () => {
+    const state = world({
+      threads: [
+        thread(0, {
+          messages: [
+            { direction: 'out', body: 'first contact', stamp: 'Mar 2' },
+            { direction: 'in', body: 'still in march' },
+            { direction: 'in', body: 'a reply this week', stamp: '10:42 AM' }
+          ]
+        })
+      ]
+    });
+    const transcript = await readThread(new FakePage(state), '2-thread0==', {
+      sleep: recorder().sleep,
+      now: clock
+    });
+    if (!isThreadTranscript(transcript)) throw new Error('expected a transcript');
+    expect(transcript.messages.map((entry) => entry.body)).toEqual(['a reply this week']);
+    expect(transcript.degraded[0]).toContain('2 message(s)');
+    expect(transcript.degraded[0]).toContain('more than 30 days ago');
+  });
+
+  it('keeps the line breaks somebody actually typed', async () => {
+    // `textContent` drops a `<br>` entirely, which is how a three-paragraph
+    // message came back -- and was shown to the operator -- as one run-on line.
+    const state = world({
+      threads: [
+        thread(0, {
+          messages: [
+            {
+              direction: 'in',
+              body: 'Hi there,  \n\nTwo things:\n- one\n- two\n\n\nBest',
+              stamp: '10:42 AM'
+            }
+          ]
+        })
+      ]
+    });
+    const transcript = await readThread(new FakePage(state), '2-thread0==', {
+      sleep: recorder().sleep,
+      now: clock
+    });
+    if (!isThreadTranscript(transcript)) throw new Error('expected a transcript');
+    expect(transcript.messages[0].body).toBe('Hi there,\n\nTwo things:\n- one\n- two\n\nBest');
+  });
+
   it('skips an item with no readable body rather than filing a blank bubble', async () => {
     const state = world({
-      threads: [thread(0, { messages: [{ direction: 'in', body: '', bodyless: true }, { direction: 'in', body: 'real' }] })]
+      threads: [
+        thread(0, {
+          messages: [
+            { direction: 'in', body: '', bodyless: true },
+            { direction: 'in', body: 'real' }
+          ]
+        })
+      ]
     });
-    const transcript = await readThread(new FakePage(state), '2-thread0==', { sleep: recorder().sleep, now: clock });
+    const transcript = await readThread(new FakePage(state), '2-thread0==', {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (!isThreadTranscript(transcript)) throw new Error('expected a transcript');
     expect(transcript.messages.map((entry) => entry.body)).toEqual(['real']);
   });
@@ -634,7 +841,10 @@ describe('readThread', () => {
   it('refuses an id that is not a conversation id, without navigating', async () => {
     const page = new FakePage(world({ threads: [thread(0)] }));
     const before = page.url();
-    const result = await readThread(page, 'https://evil.example/', { sleep: recorder().sleep, now: clock });
+    const result = await readThread(page, 'https://evil.example/', {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (isThreadTranscript(result)) throw new Error('expected a refusal');
     expect(result.failureKind).toBe('not_found');
     expect(page.url()).toBe(before);
@@ -657,7 +867,10 @@ describe('readThread', () => {
       ]
     });
 
-    const transcript = await readThread(new FakePage(state), '2-thread0==', { sleep: recorder().sleep, now: clock });
+    const transcript = await readThread(new FakePage(state), '2-thread0==', {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (!isThreadTranscript(transcript)) throw new Error('expected a transcript');
     expect(transcript.messages.map((entry) => entry.direction)).toEqual(['out', 'in']);
     expect(transcript.degraded).toEqual([]);
@@ -666,10 +879,20 @@ describe('readThread', () => {
   it('SAYS SO when no bubble can be found, instead of filing everything as ours', async () => {
     const state = world({
       bubbles: 'missing',
-      threads: [thread(0, { messages: [{ direction: 'out', body: 'mine' }, { direction: 'in', body: 'theirs' }] })]
+      threads: [
+        thread(0, {
+          messages: [
+            { direction: 'out', body: 'mine' },
+            { direction: 'in', body: 'theirs' }
+          ]
+        })
+      ]
     });
 
-    const transcript = await readThread(new FakePage(state), '2-thread0==', { sleep: recorder().sleep, now: clock });
+    const transcript = await readThread(new FakePage(state), '2-thread0==', {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (!isThreadTranscript(transcript)) throw new Error('expected a transcript');
     // Still outbound -- there is nothing left to read direction off -- but the
     // run no longer claims that silently.
@@ -679,7 +902,10 @@ describe('readThread', () => {
 
   it('reports drift when the message list is gone', async () => {
     const state = world({ threads: [thread(0)], messageList: 'missing' });
-    const result = await readThread(new FakePage(state), '2-thread0==', { sleep: recorder().sleep, now: clock });
+    const result = await readThread(new FakePage(state), '2-thread0==', {
+      sleep: recorder().sleep,
+      now: clock
+    });
     if (isThreadTranscript(result)) throw new Error('expected a refusal');
     expect(result.failureKind).toBe('selector_drift');
   });

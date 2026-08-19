@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
-import { LINKEDIN_CHECK_NAMES, evaluateLinkedInSafety, linkedinGuardSkill, type LinkedInCheckName, type LinkedInSafetyVerdict } from './guard.js';
+import {
+  LINKEDIN_CHECK_NAMES,
+  evaluateLinkedInSafety,
+  linkedinGuardSkill,
+  type LinkedInCheckName,
+  type LinkedInSafetyVerdict
+} from './guard.js';
 import { MAX_OUTSTANDING_INVITES } from './limits.js';
 import { FLAT_DAY_SHAPE, type DayShapeFn } from './pacing.js';
 import { upsertSeat } from './seats.js';
@@ -19,7 +25,9 @@ const WORKSPACE_ID = 'ws_linkedin_guard_test';
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db
-    .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE_ID, 'LinkedIn Guard Test', NOW.toISOString());
   await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=?').run(WORKSPACE_ID);
@@ -40,11 +48,20 @@ afterEach(async () => {
  */
 function seat(activatedOn: string | null, posture?: 'warmup' | 'steady' | 'paused' | 'cooldown') {
   const activatedAt = activatedOn ? new Date(`${activatedOn}T09:00:00.000Z`) : NOW;
-  return upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC', posture }, activatedAt);
+  return upsertSeat(
+    db,
+    WORKSPACE_ID,
+    { label: 'Test seat', timezone: 'UTC', posture },
+    activatedAt
+  );
 }
 
 let actionSeq = 0;
-async function log(kind: LinkedInActionKind, status: LinkedInActionStatus, hoursAgo: number): Promise<void> {
+async function log(
+  kind: LinkedInActionKind,
+  status: LinkedInActionStatus,
+  hoursAgo: number
+): Promise<void> {
   actionSeq += 1;
   await recordAction(
     db,
@@ -65,7 +82,13 @@ function guard(
 ): Promise<LinkedInSafetyVerdict> {
   return evaluateLinkedInSafety(
     db,
-    { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/fresh', plannedFor: SLOT, ...overrides },
+    {
+      workspaceId: WORKSPACE_ID,
+      kind: 'invite',
+      targetRef: 'https://www.linkedin.com/in/fresh',
+      plannedFor: SLOT,
+      ...overrides
+    },
     NOW,
     options
   );
@@ -85,7 +108,12 @@ describe('the every-check contract', () => {
     await log('invite', 'sent', 1);
     const verdict = await evaluateLinkedInSafety(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'logged-1', plannedFor: '2026-08-08T23:00:00.000Z' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'logged-1',
+        plannedFor: '2026-08-08T23:00:00.000Z'
+      },
       NOW
     );
     expect(verdict.checks).toHaveLength(LINKEDIN_CHECK_NAMES.length);
@@ -118,7 +146,9 @@ describe('seat state', () => {
 
   it('blocks a paused seat and repeats the reason it was paused for', async () => {
     await seat('2026-01-01', 'paused');
-    await db.prepare('UPDATE linkedin_seats SET paused_reason=? WHERE workspace_id=?').run('LinkedIn asked for a re-login', WORKSPACE_ID);
+    await db
+      .prepare('UPDATE linkedin_seats SET paused_reason=? WHERE workspace_id=?')
+      .run('LinkedIn asked for a re-login', WORKSPACE_ID);
     const verdict = await guard();
     expect(check(verdict, 'seat-paused').passed).toBe(false);
     expect(check(verdict, 'seat-paused').detail).toContain('re-login');
@@ -139,8 +169,8 @@ describe('volume ceilings', () => {
     expect(check(views, 'warmup-ceiling').passed).toBe(true);
     expect(check(views, 'warmup-ceiling').detail).toContain('Passive activity is not ramped');
 
-    // ...and the band is still a ceiling: 15/day in the warm-up band.
-    for (let index = 0; index < 15; index += 1) await log('profile_view', 'sent', 1);
+    // ...and the band is still a ceiling: 30/day in the warm-up band.
+    for (let index = 0; index < 30; index += 1) await log('profile_view', 'sent', 1);
     const capped = await guard({ kind: 'profile_view' });
     expect(check(capped, 'warmup-ceiling').passed).toBe(false);
     expect(check(capped, 'rolling-24h').passed).toBe(false);
@@ -162,22 +192,35 @@ describe('volume ceilings', () => {
     for (let index = 0; index < 2; index += 1) await log('invite', 'accepted', 30);
     for (let index = 0; index < 8; index += 1) await log('invite', 'declined', 30);
 
-    const manual = await guard({ manual: true, plannedFor: '2026-08-08T23:00:00.000Z' }, { dayShape: FLAT_DAY_SHAPE });
+    const manual = await guard(
+      { manual: true, plannedFor: '2026-08-08T23:00:00.000Z' },
+      { dayShape: FLAT_DAY_SHAPE }
+    );
     expect(manual.allowed).toBe(true);
-    for (const name of ['rolling-24h', 'day-over-day-delta', 'acceptance-rate', 'business-hours', 'weekend'] as const) {
+    for (const name of [
+      'rolling-24h',
+      'day-over-day-delta',
+      'acceptance-rate',
+      'business-hours',
+      'weekend'
+    ] as const) {
       expect(check(manual, name).passed).toBe(true);
     }
     expect(check(manual, 'rolling-24h').detail).toContain('explicitly bypassed Trevra pacing');
 
     // Replay protection is not pacing. A manual action cannot turn a duplicate
     // into a new action merely by asking for it interactively.
-    await recordAction(db, {
-      workspaceId: WORKSPACE_ID,
-      kind: 'invite',
-      targetRef: 'https://www.linkedin.com/in/fresh',
-      status: 'sent',
-      source: 'manual'
-    }, NOW);
+    await recordAction(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/fresh',
+        status: 'sent',
+        source: 'manual'
+      },
+      NOW
+    );
     const duplicate = await guard({ manual: true });
     expect(duplicate.allowed).toBe(false);
     expect(check(duplicate, 'duplicate-target').passed).toBe(false);
@@ -202,7 +245,7 @@ describe('volume ceilings', () => {
     expect(check(views, 'rolling-7d').detail).toContain('No 7-day ceiling is published');
   });
 
-  it('counts exported actions, because from LinkedIn\'s side they are about to be real', async () => {
+  it("counts exported actions, because from LinkedIn's side they are about to be real", async () => {
     await seat('2026-01-01');
     for (let index = 0; index < 18; index += 1) await log('invite', 'exported', 1);
     const verdict = await guard();
@@ -260,14 +303,19 @@ describe('acceptance rate', () => {
 });
 
 describe('timing', () => {
-  it('blocks a slot outside the seat\'s business hours', async () => {
+  it("blocks a slot outside the seat's business hours", async () => {
     await seat('2026-01-01');
     const verdict = await guard({ plannedFor: '2026-08-06T22:00:00.000Z' });
     expect(check(verdict, 'business-hours').passed).toBe(false);
   });
 
-  it('reads business hours in the SEAT\'s timezone, not the server\'s', async () => {
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'Asia/Tokyo' }, new Date('2026-01-01T09:00:00.000Z'));
+  it("reads business hours in the SEAT's timezone, not the server's", async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'Asia/Tokyo' },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
     // 10:00 UTC is 19:00 in Tokyo, past the window.
     const verdict = await guard({ plannedFor: SLOT });
     expect(check(verdict, 'business-hours').passed).toBe(false);
@@ -288,7 +336,13 @@ describe('timing', () => {
     await upsertSeat(
       db,
       WORKSPACE_ID,
-      { label: 'Weekend seat', timezone: 'UTC', workingDays: [3, 6], workStartMinute: 600, workEndMinute: 840 },
+      {
+        label: 'Weekend seat',
+        timezone: 'UTC',
+        workingDays: [3, 6],
+        workStartMinute: 600,
+        workEndMinute: 840
+      },
       new Date('2026-01-01T09:00:00.000Z')
     );
     const verdict = await guard({ plannedFor: '2026-08-08T11:00:00.000Z' });
@@ -302,7 +356,13 @@ describe('timing', () => {
     await upsertSeat(
       db,
       WORKSPACE_ID,
-      { label: 'Weekend seat', timezone: 'UTC', workingDays: [3, 6], workStartMinute: 600, workEndMinute: 840 },
+      {
+        label: 'Weekend seat',
+        timezone: 'UTC',
+        workingDays: [3, 6],
+        workStartMinute: 600,
+        workEndMinute: 840
+      },
       new Date('2026-01-01T09:00:00.000Z')
     );
     // Thursday: a weekday, and not one of this seat's working days.
@@ -331,7 +391,7 @@ describe('timing', () => {
 });
 
 describe('InMail quota and duplicates', () => {
-  it('enforces LinkedIn\'s published 50-a-month InMail quota, even for a manual action', async () => {
+  it("enforces LinkedIn's published 50-a-month InMail quota, even for a manual action", async () => {
     await seat('2026-01-01');
     for (let index = 0; index < 50; index += 1) await log('inmail', 'sent', 2 + index * 12);
     const verdict = await guard({ kind: 'inmail', manual: true });
@@ -350,7 +410,13 @@ describe('InMail quota and duplicates', () => {
     await seat('2026-01-01');
     await recordAction(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/known', status: 'sent', source: 'export' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/known',
+        status: 'sent',
+        source: 'export'
+      },
       NOW
     );
     const verdict = await guard({ targetRef: 'https://www.linkedin.com/in/known' });
@@ -364,7 +430,13 @@ describe('InMail quota and duplicates', () => {
     await seat('2026-01-01');
     const claimed = await recordAction(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/claimed', status: 'planned', source: 'export' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/claimed',
+        status: 'planned',
+        source: 'export'
+      },
       NOW
     );
 
@@ -373,7 +445,12 @@ describe('InMail quota and duplicates', () => {
 
     const aware = await evaluateLinkedInSafety(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/claimed', plannedFor: SLOT },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/claimed',
+        plannedFor: SLOT
+      },
       NOW,
       { excludeActionId: claimed.id }
     );
@@ -390,13 +467,24 @@ describe('InMail quota and duplicates', () => {
     await seat('2026-01-01');
     await recordAction(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/other', status: 'sent', source: 'export' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/other',
+        status: 'sent',
+        source: 'export'
+      },
       NOW
     );
 
     const verdict = await evaluateLinkedInSafety(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/other', plannedFor: SLOT },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/other',
+        plannedFor: SLOT
+      },
       NOW,
       { excludeActionId: 'lact_not_the_one_in_the_ledger' }
     );
@@ -408,13 +496,24 @@ describe('InMail quota and duplicates', () => {
     await seat('2026-01-01');
     const claimed = await recordAction(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/late', status: 'planned', source: 'export' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/late',
+        status: 'planned',
+        source: 'export'
+      },
       NOW
     );
     // An excluded duplicate does not excuse a slot at 23:00 on a Saturday.
     const verdict = await evaluateLinkedInSafety(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/late', plannedFor: '2026-08-08T23:00:00.000Z' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/late',
+        plannedFor: '2026-08-08T23:00:00.000Z'
+      },
       NOW,
       { excludeActionId: claimed.id }
     );
@@ -433,14 +532,22 @@ describe('InMail quota and duplicates', () => {
     for (let index = 0; index < MAX_OUTSTANDING_INVITES; index += 1) {
       await recordAction(
         db,
-        { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: `stale-${index}`, status: 'sent', source: 'export' },
+        {
+          workspaceId: WORKSPACE_ID,
+          kind: 'invite',
+          targetRef: `stale-${index}`,
+          status: 'sent',
+          source: 'export'
+        },
         new Date(NOW.getTime() - 200 * 86_400_000)
       );
     }
 
     const verdict = await guard({ kind: 'invite', targetRef: 'https://www.linkedin.com/in/new' });
     expect(check(verdict, 'pending-invite-backlog').passed).toBe(false);
-    expect(check(verdict, 'pending-invite-backlog').detail).toContain(`of ${MAX_OUTSTANDING_INVITES}`);
+    expect(check(verdict, 'pending-invite-backlog').detail).toContain(
+      `of ${MAX_OUTSTANDING_INVITES}`
+    );
     // The rolling windows see none of them, which is exactly why the backlog
     // needed its own check rather than a wider window.
     expect(check(verdict, 'rolling-24h').passed).toBe(true);
@@ -453,7 +560,13 @@ describe('InMail quota and duplicates', () => {
     for (let index = 0; index < MAX_OUTSTANDING_INVITES; index += 1) {
       await recordAction(
         db,
-        { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: `stale-${index}`, status: 'sent', source: 'export' },
+        {
+          workspaceId: WORKSPACE_ID,
+          kind: 'invite',
+          targetRef: `stale-${index}`,
+          status: 'sent',
+          source: 'export'
+        },
         new Date(NOW.getTime() - 200 * 86_400_000)
       );
     }
@@ -467,7 +580,13 @@ describe('InMail quota and duplicates', () => {
     await seat('2026-01-01');
     await recordAction(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/known', status: 'accepted', source: 'export' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/known',
+        status: 'accepted',
+        source: 'export'
+      },
       NOW
     );
     const verdict = await guard({ kind: 'dm', targetRef: 'https://www.linkedin.com/in/known' });
@@ -487,7 +606,10 @@ describe('InMail quota and duplicates', () => {
 describe('campaign warm-up', () => {
   let campaignSeq = 0;
 
-  async function campaignRow(startedAt: string | null, options: { workflow?: boolean } = {}): Promise<string> {
+  async function campaignRow(
+    startedAt: string | null,
+    options: { workflow?: boolean } = {}
+  ): Promise<string> {
     const workflowId = 'liwf_guard_test';
     const withWorkflow = options.workflow !== false;
     if (withWorkflow) {
@@ -495,16 +617,33 @@ describe('campaign warm-up', () => {
         .prepare(
           'INSERT INTO linkedin_workflows (id,workspace_id,name,steps_json,created_at,updated_at) VALUES (?,?,?,?::jsonb,?,?) ON CONFLICT (id) DO NOTHING'
         )
-        .run(workflowId, WORKSPACE_ID, 'Guard test workflow', '[]', NOW.toISOString(), NOW.toISOString());
+        .run(
+          workflowId,
+          WORKSPACE_ID,
+          'Guard test workflow',
+          '[]',
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
     }
     campaignSeq += 1;
     const campaignId = `licmp_guard_${campaignSeq}`;
     await db
-      .prepare(`
+      .prepare(
+        `
         INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,workflow_id,started_at,created_at,updated_at)
         VALUES (?,?,?,'running','{}'::jsonb,'owner',?,?::timestamptz,?,?)
-      `)
-      .run(campaignId, WORKSPACE_ID, `Guard campaign ${campaignSeq}`, withWorkflow ? workflowId : null, startedAt, NOW.toISOString(), NOW.toISOString());
+      `
+      )
+      .run(
+        campaignId,
+        WORKSPACE_ID,
+        `Guard campaign ${campaignSeq}`,
+        withWorkflow ? workflowId : null,
+        startedAt,
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
     return campaignId;
   }
 
@@ -513,7 +652,14 @@ describe('campaign warm-up', () => {
       actionSeq += 1;
       await recordAction(
         db,
-        { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: `campaign-${actionSeq}`, campaignId, status: 'sent', source: 'campaign' },
+        {
+          workspaceId: WORKSPACE_ID,
+          kind: 'invite',
+          targetRef: `campaign-${actionSeq}`,
+          campaignId,
+          status: 'sent',
+          source: 'campaign'
+        },
         new Date(NOW.getTime() - 3_600_000)
       );
     }
@@ -577,7 +723,7 @@ describe('campaign warm-up', () => {
     expect(check(verdict, 'campaign-warmup').detail).toContain('No campaign was named');
   });
 
-  it('counts only this campaign\'s own actions', async () => {
+  it("counts only this campaign's own actions", async () => {
     await seatWithInviteLimit(10);
     const first = await campaignRow(NOW.toISOString());
     const second = await campaignRow(NOW.toISOString());
@@ -626,7 +772,7 @@ describe('the operator pool and the per-kind band are independent', () => {
     expect(check(await guard({ kind: 'reply' }), 'rolling-24h').passed).toBe(true);
   });
 
-  it('still enforces the per-kind band against that kind\'s own count', async () => {
+  it("still enforces the per-kind band against that kind's own count", async () => {
     await seatWithMessageLimit(25);
     // Three InMails is the whole steady band for InMails, whatever the pool says.
     for (let index = 0; index < 3; index += 1) await log('inmail', 'sent', 1);
@@ -653,7 +799,9 @@ describe('the operator pool and the per-kind band are independent', () => {
     const verdict = await guard({ kind: 'dm' });
     // 4 < the 12/day steady dm band, so the operator's number is what binds and
     // the sentence says which is which.
-    expect(check(verdict, 'rolling-24h').detail).toContain("the stricter of Trevra's 12/day safety band and the operator setting 4/day");
+    expect(check(verdict, 'rolling-24h').detail).toContain(
+      "the stricter of Trevra's 12/day safety band and the operator setting 4/day"
+    );
     expect(check(verdict, 'warmup-ceiling').detail).toContain('4/day');
   });
 });
@@ -689,7 +837,7 @@ describe('duplicate-target is scoped the way the ledger is scoped', () => {
       NOW
     );
     expect(check(next, 'duplicate-target').passed).toBe(true);
-    expect(check(next, 'duplicate-target').detail).toContain("limem_1:step-4");
+    expect(check(next, 'duplicate-target').detail).toContain('limem_1:step-4');
 
     // And a genuine repeat of the SAME step for the SAME member is still the
     // thing the replay guard exists to prevent.
@@ -714,7 +862,13 @@ describe('duplicate-target is scoped the way the ledger is scoped', () => {
     // this is what stops a replayed export inviting one stranger twice.
     await recordAction(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/exported/', status: 'exported', source: 'export' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/exported/',
+        status: 'exported',
+        source: 'export'
+      },
       new Date(NOW.getTime() - 3_600_000)
     );
     const verdict = await guard({ targetRef: 'https://www.linkedin.com/in/exported/' });
@@ -735,7 +889,9 @@ describe('the warm-up ceiling override', () => {
     const overridden = await guard({ kind: 'reply', overrideWarmupCeiling: true });
     expect(check(overridden, 'warmup-ceiling').passed).toBe(true);
     expect(check(overridden, 'warmup-ceiling').detail).toContain('overrode the warm-up ceiling');
-    expect(check(overridden, 'warmup-ceiling').detail).toContain('relaxes this ceiling and nothing else');
+    expect(check(overridden, 'warmup-ceiling').detail).toContain(
+      'relaxes this ceiling and nothing else'
+    );
   });
 
   it('leaves every other check able to refuse', async () => {
@@ -786,7 +942,9 @@ describe('a reply to somebody who wrote first', () => {
     const answered = await guard({ kind: 'reply', replyToInbound: true });
     expect(check(answered, 'warmup-ceiling').passed).toBe(true);
     expect(check(answered, 'warmup-ceiling').detail).toContain('wrote to this account first');
-    expect(check(answered, 'warmup-ceiling').detail).toContain('relaxes this ceiling and nothing else');
+    expect(check(answered, 'warmup-ceiling').detail).toContain(
+      'relaxes this ceiling and nothing else'
+    );
     expect(answered.allowed).toBe(true);
   });
 
@@ -818,7 +976,9 @@ describe('a reply to somebody who wrote first', () => {
       NOW
     );
     expect(check(nightly, 'business-hours').passed).toBe(true);
-    expect(check(nightly, 'business-hours').detail).toContain('a person uses LinkedIn when they are at it');
+    expect(check(nightly, 'business-hours').detail).toContain(
+      'a person uses LinkedIn when they are at it'
+    );
     expect(nightly.allowed).toBe(true);
 
     // 2026-08-08 is a Saturday, which this seat has not configured.
@@ -909,7 +1069,9 @@ describe('an action a person asked for', () => {
     for (const kind of ['invite', 'dm', 'reply', 'profile_view'] as const) {
       const nightly = await guard({ kind, plannedFor: NIGHT, manual: true });
       expect(check(nightly, 'business-hours').passed).toBe(true);
-      expect(check(nightly, 'business-hours').detail).toContain('a person asked for at the moment they asked for it');
+      expect(check(nightly, 'business-hours').detail).toContain(
+        'a person asked for at the moment they asked for it'
+      );
 
       const saturday = await guard({ kind, plannedFor: SATURDAY, manual: true });
       expect(check(saturday, 'weekend').passed).toBe(true);
@@ -921,8 +1083,12 @@ describe('an action a person asked for', () => {
     // The same instants, with nobody at the keyboard. Nothing about the
     // scheduled side of this product changed.
     await seat('2026-06-01');
-    expect(check(await guard({ kind: 'invite', plannedFor: NIGHT }), 'business-hours').passed).toBe(false);
-    expect(check(await guard({ kind: 'invite', plannedFor: SATURDAY }), 'weekend').passed).toBe(false);
+    expect(check(await guard({ kind: 'invite', plannedFor: NIGHT }), 'business-hours').passed).toBe(
+      false
+    );
+    expect(check(await guard({ kind: 'invite', plannedFor: SATURDAY }), 'weekend').passed).toBe(
+      false
+    );
   });
 
   it('bypasses Trevra pacing for a manual action, not just the clock', async () => {
@@ -945,7 +1111,12 @@ describe('an action a person asked for', () => {
     await seat('2026-08-04');
     const manualReply = await guard({ kind: 'reply', plannedFor: NIGHT, manual: true });
     expect(check(manualReply, 'warmup-ceiling').passed).toBe(true);
-    const answered = await guard({ kind: 'reply', plannedFor: NIGHT, manual: true, replyToInbound: true });
+    const answered = await guard({
+      kind: 'reply',
+      plannedFor: NIGHT,
+      manual: true,
+      replyToInbound: true
+    });
     expect(check(answered, 'warmup-ceiling').passed).toBe(true);
   });
 
@@ -1007,41 +1178,87 @@ describe('the guard skill and the seat it is asked about', () => {
     // The owner seat is established; the sales seat was activated today and is
     // in warm-up week 1. Evaluating one against the other's ramp is the
     // wrong-account action the resolution exists to prevent.
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, new Date('2026-01-05T09:00:00.000Z'));
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC' },
+      new Date('2026-01-05T09:00:00.000Z')
+    );
     await upsertSeat(db, WORKSPACE_ID, { label: 'Sales (SDR)', timezone: 'UTC' }, NOW, 'sales');
 
     const owner = await evaluateLinkedInSafety(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'https://www.linkedin.com/in/maya/', plannedFor: SLOT },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/maya/',
+        plannedFor: SLOT
+      },
       NOW
     );
     const sales = await evaluateLinkedInSafety(
       db,
-      { workspaceId: WORKSPACE_ID, seatKey: 'sales', kind: 'invite', targetRef: 'https://www.linkedin.com/in/maya/', plannedFor: SLOT },
+      {
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'sales',
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/maya/',
+        plannedFor: SLOT
+      },
       NOW
     );
 
-    expect(owner.checks.find((entry) => entry.check === 'seat-configured')?.detail).toContain("'Owner'");
-    expect(sales.checks.find((entry) => entry.check === 'seat-configured')?.detail).toContain("'Sales (SDR)'");
-    expect(sales.checks.find((entry) => entry.check === 'warmup-ceiling')?.detail).toContain('Warm-up week 1 permits no invites');
+    expect(owner.checks.find((entry) => entry.check === 'seat-configured')?.detail).toContain(
+      "'Owner'"
+    );
+    expect(sales.checks.find((entry) => entry.check === 'seat-configured')?.detail).toContain(
+      "'Sales (SDR)'"
+    );
+    expect(sales.checks.find((entry) => entry.check === 'warmup-ceiling')?.detail).toContain(
+      'Warm-up week 1 permits no invites'
+    );
     expect(sales.checks.find((entry) => entry.check === 'warmup-ceiling')?.passed).toBe(false);
     expect(owner.checks.find((entry) => entry.check === 'warmup-ceiling')?.passed).toBe(true);
   });
 
-  it('counts each seat\'s own ledger, so one account\'s volume never charges another\'s', async () => {
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, new Date('2026-01-05T09:00:00.000Z'));
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales (SDR)', timezone: 'UTC' }, new Date('2026-01-05T09:00:00.000Z'), 'sales');
+  it("counts each seat's own ledger, so one account's volume never charges another's", async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC' },
+      new Date('2026-01-05T09:00:00.000Z')
+    );
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Sales (SDR)', timezone: 'UTC' },
+      new Date('2026-01-05T09:00:00.000Z'),
+      'sales'
+    );
     for (let index = 0; index < 5; index += 1) {
       await recordAction(
         db,
-        { workspaceId: WORKSPACE_ID, seatKey: 'owner', kind: 'invite', targetRef: `https://www.linkedin.com/in/owner-${index}/`, status: 'sent', source: 'export' },
+        {
+          workspaceId: WORKSPACE_ID,
+          seatKey: 'owner',
+          kind: 'invite',
+          targetRef: `https://www.linkedin.com/in/owner-${index}/`,
+          status: 'sent',
+          source: 'export'
+        },
         NOW
       );
     }
 
     const sales = await evaluateLinkedInSafety(
       db,
-      { workspaceId: WORKSPACE_ID, seatKey: 'sales', kind: 'invite', targetRef: 'https://www.linkedin.com/in/maya/', plannedFor: SLOT },
+      {
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'sales',
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/maya/',
+        plannedFor: SLOT
+      },
       NOW
     );
     expect(sales.checks.find((entry) => entry.check === 'rolling-24h')?.detail).toMatch(/^0 of /);
@@ -1061,7 +1278,14 @@ describe('the day shape binds at the gate, not only in the plan', () => {
     await seat('2026-01-01');
     const verdict = await guard(
       {},
-      { dayShape: (_seed, _day, window) => ({ startMinute: window.startMinute, endMinute: window.endMinute, resting: true, draw: 1 }) }
+      {
+        dayShape: (_seed, _day, window) => ({
+          startMinute: window.startMinute,
+          endMinute: window.endMinute,
+          resting: true,
+          draw: 1
+        })
+      }
     );
     expect(check(verdict, 'business-hours').passed).toBe(false);
     expect(check(verdict, 'business-hours').detail).toContain('not working that day');
@@ -1079,18 +1303,32 @@ describe('the day shape binds at the gate, not only in the plan', () => {
 
     const drawn = await guard(
       {},
-      { dayShape: (_seed, _day, window) => ({ startMinute: window.startMinute, endMinute: window.endMinute, resting: false, draw: 0.8 }) }
+      {
+        dayShape: (_seed, _day, window) => ({
+          startMinute: window.startMinute,
+          endMinute: window.endMinute,
+          resting: false,
+          draw: 0.8
+        })
+      }
     );
     expect(check(drawn, 'rolling-24h').passed).toBe(false);
     expect(check(drawn, 'rolling-24h').detail).toContain('of 14');
   });
 
-  it('refuses an instant inside the configured window but outside the day\'s own hours', async () => {
+  it("refuses an instant inside the configured window but outside the day's own hours", async () => {
     await seat('2026-01-01');
     // The slot is 10:00. A day that started at 11:00 has not started yet.
     const verdict = await guard(
       {},
-      { dayShape: (_seed, _day, window) => ({ startMinute: 11 * 60, endMinute: window.endMinute, resting: false, draw: 1 }) }
+      {
+        dayShape: (_seed, _day, window) => ({
+          startMinute: 11 * 60,
+          endMinute: window.endMinute,
+          resting: false,
+          draw: 1
+        })
+      }
     );
     expect(check(verdict, 'business-hours').passed).toBe(false);
     expect(check(verdict, 'business-hours').detail).toContain('today between 11:00');

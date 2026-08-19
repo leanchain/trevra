@@ -142,7 +142,8 @@ export const INBOX_SELECTORS = {
    * class on the row is the thing LinkedIn keeps renaming while the clickable
    * child has kept its name through every reskin so far.
    */
-  conversationRow: 'ul.msg-conversations-container__conversations-list > li:has(.msg-conversation-listitem__link)',
+  conversationRow:
+    'ul.msg-conversations-container__conversations-list > li:has(.msg-conversation-listitem__link)',
   /**
    * The clickable row. Clicking it is what puts the thread URN in the URL.
    *
@@ -155,14 +156,16 @@ export const INBOX_SELECTORS = {
   rowLink: '.msg-conversation-listitem__link',
   rowName: '.msg-conversation-listitem__participant-names',
   rowSnippet: '.msg-conversation-card__message-snippet',
-  rowTimestamp: 'time.msg-conversation-listitem__time-stamp, .msg-conversation-listitem__time-stamp',
+  rowTimestamp:
+    'time.msg-conversation-listitem__time-stamp, .msg-conversation-listitem__time-stamp',
   rowUnreadBadge: '.notification-badge--show, .msg-conversation-card__unread-count',
   /**
    * The participant's name in the open thread, which is also a link to their
    * profile. Read for the name and CLICKED for the profile URL -- the rail
    * publishes no href this driver can read.
    */
-  threadProfileLink: 'a.msg-thread__link-to-profile, .msg-entity-lockup a[href*="/in/"], .msg-title-bar a[href*="/in/"]',
+  threadProfileLink:
+    'a.msg-thread__link-to-profile, .msg-entity-lockup a[href*="/in/"], .msg-title-bar a[href*="/in/"]',
   messageList: 'ul.msg-s-message-list-content',
   /**
    * THE MESSAGE BUBBLE INSIDE ONE `<li>`. Read only to tell "this item is a
@@ -273,6 +276,45 @@ async function textOf(page: LinkedInPage, selector: string): Promise<string | nu
 }
 
 /**
+ * The first match's text WITH ITS LINE BREAKS, for the one read where the
+ * breaks are part of what somebody wrote.
+ *
+ * `textOf` collapses every run of whitespace to a single space, which is right
+ * for a name, a timestamp and a rail snippet and WRONG for a message: a
+ * two-paragraph note came back as one line, was stored as one line, and was
+ * shown to the operator as one line, so the transcript did not say what the
+ * person said. Line breaks are kept; trailing spaces on a line, and runs of
+ * more than one blank line, are not -- those are LinkedIn's markup, not
+ * anybody's paragraph.
+ *
+ * Falls back to `textOf` when the page object cannot do `innerText`, which is
+ * every fake that does not care about this and the pre-Playwright shape of the
+ * interface.
+ */
+async function bodyTextOf(page: LinkedInPage, selector: string): Promise<string | null> {
+  try {
+    const locator = page.locator(selector);
+    if ((await locator.count()) === 0) return null;
+    const first = locator.first();
+    if (typeof first.innerText === 'function') {
+      const rendered = await first.innerText({ timeout: CLICK_TIMEOUT_MS });
+      const text = (rendered ?? '')
+        .replace(/\r\n?/g, '\n')
+        .split('\n')
+        .map((line) => line.replace(/[^\S\n]+/g, ' ').trim())
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      return text || null;
+    }
+  } catch {
+    // A read that threw says nothing about the one below it, which uses a
+    // different Playwright call and has always been the fallback shape.
+  }
+  return textOf(page, selector);
+}
+
+/**
  * The three "stop now" reads, done BEFORE anything is clicked, in the same
  * order and for the same reason `detectWall` uses in driver.ts: a challenge
  * outranks a limit wall outranks a missing page, because a checkpoint can also
@@ -316,16 +358,25 @@ function wallDetail(wall: LinkedInFailureKind, where: string): string {
  * person read their own inbox", and giving a guess a research tag would launder
  * it into a fact. They sit deliberately slower than a human clicking quickly
  * and far faster than the action gap, which is the range the honest answer
- * lives in. What actually bounds the risk is that the walk is CAPPED
- * (DEFAULT_MAX_THREADS) -- a bound is a guarantee, a delay is a hope.
+ * lives in. What bounds the walk is the READ WINDOW (DEFAULT_SINCE_DAYS): a
+ * run opens what actually moved inside it and stops, so a sync costs what
+ * happened rather than what the inbox holds.
  */
 export const READ_GAP_SECONDS = { min: 2, max: 7 };
 
-/** The conversations one run will walk, and the ceiling an option may raise it to. */
-export const DEFAULT_MAX_THREADS = 10;
+/**
+ * How far back one run reads, in days, and the ONLY bound a default run has.
+ *
+ * COUNTS ARE OPT-IN NOW. The defaults used to be 10 conversations and 40
+ * messages, which made every sync a sample: an operator with twelve live
+ * conversations saw ten of them, and a reply forty-one messages down a long
+ * thread was never read at all. A window is the bound a person actually means
+ * -- "what has happened lately" -- and a caller that still wants a hard count
+ * passes one.
+ */
+export const DEFAULT_SINCE_DAYS = 30;
+/** Ceilings for an EXPLICIT count. Not defaults: an omitted count is no count. */
 const MAX_THREADS_CEILING = 50;
-/** The messages one run will read from a single conversation, newest first. */
-export const DEFAULT_MAX_MESSAGES = 40;
 const MAX_MESSAGES_CEILING = 200;
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
@@ -364,10 +415,24 @@ export function readGapSeconds(seed: string): number {
 }
 
 export interface InboxWalkOptions {
-  /** Conversations to walk. Capped at 50 however high this is set. */
+  /**
+   * Conversations to walk, as a hard cap on top of the window. Capped at 50
+   * however high this is set. OMITTED MEANS NO COUNT: every conversation the
+   * rail shows as active inside `sinceDays` is walked.
+   */
   maxThreads?: number;
-  /** Messages to read from one conversation, taken from the NEWEST end. Capped at 200. */
+  /**
+   * Messages to read from one conversation, taken from the NEWEST end. Capped
+   * at 200. OMITTED MEANS NO COUNT: every message inside `sinceDays` is read.
+   */
   maxMessages?: number;
+  /**
+   * How many days back this run reads. Defaults to `DEFAULT_SINCE_DAYS` (30).
+   *
+   * Applies to BOTH passes -- a conversation whose last message is older than
+   * the window is never opened, and a message older than it is never filed.
+   */
+  sinceDays?: number;
   /**
    * The jitter seed. Callers pass something per-run (a batch id) so two runs do
    * not share a delay pattern.
@@ -399,11 +464,37 @@ interface Walk {
 }
 
 function walkOf(options: InboxWalkOptions): Walk {
-  return { seed: options.seed ?? 'linkedin-inbox', sleep: options.sleep ?? defaultSleep, navigations: 0 };
+  return {
+    seed: options.seed ?? 'linkedin-inbox',
+    sleep: options.sleep ?? defaultSleep,
+    navigations: 0
+  };
 }
 
 function bounded(value: number, ceiling: number): number {
   return Math.max(1, Math.min(Math.trunc(value), ceiling));
+}
+
+/** The instant a run reads back to, and the window it was asked for. */
+interface ReadWindow {
+  /** Epoch ms. Anything stamped before this is not read. */
+  since: number;
+  /** The window in days, so a degraded line can say which number it obeyed. */
+  days: number;
+}
+
+/**
+ * How far back this run reads.
+ *
+ * DAY-GRANULAR AND DELIBERATELY GENEROUS. Rendered timestamps resolve to a UTC
+ * DAY (`parseInboxTimestamp`) against a browser whose timezone this process
+ * does not know, so the cutoff is the START of the day `days` days ago rather
+ * than an instant `days * 24h` back. Erring on the early side reads one extra
+ * conversation; erring on the late side drops a reply somebody sent.
+ */
+function windowOf(options: InboxWalkOptions, now: Date): ReadWindow {
+  const days = Math.max(1, Math.trunc(options.sinceDays ?? DEFAULT_SINCE_DAYS));
+  return { since: startOfUtcDay(now) - days * 86_400_000, days };
 }
 
 /**
@@ -419,7 +510,11 @@ async function pace(walk: Walk, step: string): Promise<void> {
 }
 
 /** Navigate and read the walls. Returns the failure to report, or null. */
-async function openUrl(page: LinkedInPage, walk: Walk, url: string): Promise<LinkedInDriverResult | null> {
+async function openUrl(
+  page: LinkedInPage,
+  walk: Walk,
+  url: string
+): Promise<LinkedInDriverResult | null> {
   await pace(walk, url);
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
@@ -429,7 +524,10 @@ async function openUrl(page: LinkedInPage, walk: Walk, url: string): Promise<Lin
     await readPage(page, `${url}#read`);
   } catch (cause) {
     // Navigation failed, so nothing was read and nothing was clicked.
-    return fail('selector_drift', `Could not open ${url}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    return fail(
+      'selector_drift',
+      `Could not open ${url}: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
   }
   const wall = await detectWall(page);
   return wall ? fail(wall, wallDetail(wall, url)) : null;
@@ -514,7 +612,9 @@ export function parseInboxTimestamp(text: string | null, now: Date): string | nu
   // No year rendered means "this one", unless that would be in the future --
   // LinkedIn drops the year for dates inside the last twelve months.
   const thisYear = Date.UTC(now.getUTCFullYear(), month, parts.day);
-  return isoAt(thisYear > now.getTime() ? Date.UTC(now.getUTCFullYear() - 1, month, parts.day) : thisYear);
+  return isoAt(
+    thisYear > now.getTime() ? Date.UTC(now.getUTCFullYear() - 1, month, parts.day) : thisYear
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -560,11 +660,15 @@ export interface LinkedInThreadTranscript {
 }
 
 /** Narrow a listing answer. A read carries no `failureKind`; a failure always does. */
-export function isThreadListing(value: LinkedInThreadListing | LinkedInDriverResult): value is LinkedInThreadListing {
+export function isThreadListing(
+  value: LinkedInThreadListing | LinkedInDriverResult
+): value is LinkedInThreadListing {
   return !('failureKind' in value);
 }
 
-export function isThreadTranscript(value: LinkedInThreadTranscript | LinkedInDriverResult): value is LinkedInThreadTranscript {
+export function isThreadTranscript(
+  value: LinkedInThreadTranscript | LinkedInDriverResult
+): value is LinkedInThreadTranscript {
   return !('failureKind' in value);
 }
 
@@ -631,9 +735,12 @@ export async function listConversations(
   options: InboxWalkOptions = {}
 ): Promise<LinkedInThreadListing | LinkedInDriverResult> {
   const walk = walkOf(options);
-  const maxThreads = bounded(options.maxThreads ?? DEFAULT_MAX_THREADS, MAX_THREADS_CEILING);
+  const maxThreads =
+    options.maxThreads === undefined ? null : bounded(options.maxThreads, MAX_THREADS_CEILING);
   const needsProfileUrl = options.needsProfileUrl ?? (() => true);
   const now = options.now ?? (() => new Date());
+  const at = now();
+  const readWindow = windowOf(options, at);
   const degraded: string[] = [];
 
   const opened = await openUrl(page, walk, MESSAGING_URL);
@@ -647,16 +754,18 @@ export async function listConversations(
     if (await present(page, INBOX_SELECTORS.conversationList)) {
       return { ok: true, threads: [], degraded };
     }
-    return fail('selector_drift', `${INBOX_SELECTORS.conversationList} did not match on ${MESSAGING_URL}. Nothing was read.`);
+    return fail(
+      'selector_drift',
+      `${INBOX_SELECTORS.conversationList} did not match on ${MESSAGING_URL}. Nothing was read.`
+    );
   }
 
-  const walked = Math.min(total, maxThreads);
-  if (total > walked) {
-    degraded.push(`${total} conversations are on screen and this run walked the newest ${walked}. Raise maxThreads to read further back.`);
-  }
-
+  // EVERY RENDERED ROW IS READ HERE, and it costs nothing that matters: pass
+  // one is text only, with no navigation and therefore no gap to wait out. The
+  // window decides which of them is worth OPENING, and it cannot decide that
+  // before it has seen when each one last moved.
   const rows: RailRow[] = [];
-  for (let index = 0; index < walked; index += 1) {
+  for (let index = 0; index < total; index += 1) {
     rows.push({
       name: displayName(await textOf(page, rowSelector(index, INBOX_SELECTORS.rowName))),
       snippet: (await textOf(page, rowSelector(index, INBOX_SELECTORS.rowSnippet))) ?? '',
@@ -665,11 +774,41 @@ export async function listConversations(
     });
   }
 
+  /**
+   * The rows inside the window, WITH THEIR ON-SCREEN INDEX, because every
+   * selector below is positional and a filtered list renumbered would open the
+   * wrong conversation.
+   *
+   * A row whose stamp does not parse is KEPT. `parseInboxTimestamp` returns
+   * null rather than guessing, and "we could not read when this last moved" is
+   * not the same fact as "it last moved before the window".
+   */
+  const inWindow = rows
+    .map((row, index) => ({ row, index, lastMessageAt: parseInboxTimestamp(row.stamp, at) }))
+    .filter(
+      (entry) => entry.lastMessageAt === null || Date.parse(entry.lastMessageAt) >= readWindow.since
+    );
+  const selected = maxThreads === null ? inWindow : inWindow.slice(0, maxThreads);
+
+  // NOT REPORTED WHEN NOTHING FELL OUTSIDE. A window that excluded nobody is
+  // the ordinary case, and a "walked, but not all of it came back" panel that
+  // says something on every single sync teaches an operator to stop reading it.
+  if (inWindow.length < total) {
+    degraded.push(
+      `${total} conversations are on screen and ${total - inWindow.length} of them last moved more than ${readWindow.days} days ago, so this run did not open them. Raise sinceDays to read further back.`
+    );
+  }
+  if (selected.length < inWindow.length) {
+    degraded.push(
+      `${total} conversations are on screen and this run walked the newest ${selected.length}. Raise maxThreads to read further back.`
+    );
+  }
+
   const threads: LinkedInThreadSummary[] = [];
   let onRail = true;
 
-  for (let index = 0; index < walked; index += 1) {
-    const row = rows[index];
+  for (const entry of selected) {
+    const { row, index } = entry;
 
     if (!onRail) {
       const back = await openUrl(page, walk, MESSAGING_URL);
@@ -679,19 +818,28 @@ export async function listConversations(
 
     const link = rowSelector(index, INBOX_SELECTORS.rowLink);
     if (!(await present(page, link))) {
-      degraded.push(`Conversation ${index + 1} has no ${INBOX_SELECTORS.rowLink} to open, so its id could not be read. Nothing was clicked.`);
+      degraded.push(
+        `Conversation ${index + 1} has no ${INBOX_SELECTORS.rowLink} to open, so its id could not be read. Nothing was clicked.`
+      );
       continue;
     }
 
     await pace(walk, `thread:${index}`);
     try {
-      await hoverClick(page, page.locator(link).first(), `${MESSAGING_URL}#thread:${index}`, CLICK_TIMEOUT_MS);
+      await hoverClick(
+        page,
+        page.locator(link).first(),
+        `${MESSAGING_URL}#thread:${index}`,
+        CLICK_TIMEOUT_MS
+      );
       await settle(page, `${MESSAGING_URL}#thread-open:${index}`);
     } catch (cause) {
       // Opening a conversation sends nothing, so an interrupted click is
       // reported and skipped rather than held: there is no ambiguity to settle.
       onRail = false;
-      degraded.push(`Conversation ${index + 1} could not be opened: ${cause instanceof Error ? cause.message : String(cause)}`);
+      degraded.push(
+        `Conversation ${index + 1} could not be opened: ${cause instanceof Error ? cause.message : String(cause)}`
+      );
       continue;
     }
 
@@ -702,7 +850,9 @@ export async function listConversations(
 
     const threadUrn = threadUrnFrom(page.url());
     if (!threadUrn) {
-      degraded.push(`Opening conversation ${index + 1} landed on '${page.url()}', which carries no conversation id, so it was skipped.`);
+      degraded.push(
+        `Opening conversation ${index + 1} landed on '${page.url()}', which carries no conversation id, so it was skipped.`
+      );
       continue;
     }
 
@@ -717,7 +867,9 @@ export async function listConversations(
     let profileUrl: string | null = null;
     if (needsProfileUrl(threadUrn)) {
       if (!(await present(page, INBOX_SELECTORS.threadProfileLink))) {
-        degraded.push(`Conversation ${index + 1} shows no link to the participant's profile, so it cannot be matched to a campaign target yet.`);
+        degraded.push(
+          `Conversation ${index + 1} shows no link to the participant's profile, so it cannot be matched to a campaign target yet.`
+        );
       } else {
         await pace(walk, `profile:${index}`);
         try {
@@ -730,14 +882,22 @@ export async function listConversations(
           onRail = false;
           await settle(page, `${MESSAGING_URL}#profile-open:${index}`);
           const profileWall = await detectWall(page);
-          if (profileWall) return fail(profileWall, wallDetail(profileWall, `the profile behind conversation ${index + 1}`));
+          if (profileWall)
+            return fail(
+              profileWall,
+              wallDetail(profileWall, `the profile behind conversation ${index + 1}`)
+            );
           profileUrl = normalisedProfileUrl(page.url());
           if (!profileUrl) {
-            degraded.push(`The profile link in conversation ${index + 1} landed on '${page.url()}', which is not a LinkedIn profile URL, so no campaign target was recorded.`);
+            degraded.push(
+              `The profile link in conversation ${index + 1} landed on '${page.url()}', which is not a LinkedIn profile URL, so no campaign target was recorded.`
+            );
           }
         } catch (cause) {
           onRail = false;
-          degraded.push(`The profile behind conversation ${index + 1} could not be opened: ${cause instanceof Error ? cause.message : String(cause)}`);
+          degraded.push(
+            `The profile behind conversation ${index + 1} could not be opened: ${cause instanceof Error ? cause.message : String(cause)}`
+          );
         }
       }
     }
@@ -746,7 +906,7 @@ export async function listConversations(
       threadUrn,
       profileUrl,
       name: headerName ?? row.name,
-      lastMessageAt: parseInboxTimestamp(row.stamp, now()),
+      lastMessageAt: entry.lastMessageAt,
       snippet: row.snippet,
       unread: row.unread
     });
@@ -780,12 +940,18 @@ export async function readThread(
 ): Promise<LinkedInThreadTranscript | LinkedInDriverResult> {
   const url = threadUrlFor(threadUrn);
   if (!url) {
-    return fail('not_found', `'${threadUrn}' is not a LinkedIn conversation id, so there is nothing to open. Conversation ids are never guessed.`);
+    return fail(
+      'not_found',
+      `'${threadUrn}' is not a LinkedIn conversation id, so there is nothing to open. Conversation ids are never guessed.`
+    );
   }
 
   const walk = walkOf(options);
-  const maxMessages = bounded(options.maxMessages ?? DEFAULT_MAX_MESSAGES, MAX_MESSAGES_CEILING);
+  const maxMessages =
+    options.maxMessages === undefined ? null : bounded(options.maxMessages, MAX_MESSAGES_CEILING);
   const now = options.now ?? (() => new Date());
+  const at = now();
+  const readWindow = windowOf(options, at);
   const degraded: string[] = [];
 
   const opened = await openUrl(page, walk, url);
@@ -793,13 +959,19 @@ export async function readThread(
 
   const total = await countOf(page, `${INBOX_SELECTORS.messageList} > li`);
   if (total === 0) {
-    if (await present(page, INBOX_SELECTORS.messageList)) return { ok: true, threadUrn, messages: [], degraded };
-    return fail('selector_drift', `${INBOX_SELECTORS.messageList} did not match on ${url}. Nothing was read.`);
+    if (await present(page, INBOX_SELECTORS.messageList))
+      return { ok: true, threadUrn, messages: [], degraded };
+    return fail(
+      'selector_drift',
+      `${INBOX_SELECTORS.messageList} did not match on ${url}. Nothing was read.`
+    );
   }
 
-  const start = Math.max(0, total - maxMessages);
+  const start = maxMessages === null ? 0 : Math.max(0, total - maxMessages);
   if (start > 0) {
-    degraded.push(`This conversation holds ${total} messages and the newest ${total - start} were read. Raise maxMessages to read further back.`);
+    degraded.push(
+      `This conversation holds ${total} messages and the newest ${total - start} were read. Raise maxMessages to read further back.`
+    );
   }
 
   const messages: LinkedInInboxMessage[] = [];
@@ -815,12 +987,14 @@ export async function readThread(
    * either, and this run says so instead of quietly filing everything as ours.
    */
   let sawBubble = false;
+  /** Messages read past, because their group timestamp is older than the window. */
+  let older = 0;
 
   for (let index = start; index < total; index += 1) {
     const own = await textOf(page, messageSelector(index, INBOX_SELECTORS.messageTimestamp));
     if (own) stamp = own;
 
-    const body = await textOf(page, messageSelector(index, INBOX_SELECTORS.messageBody));
+    const body = await bodyTextOf(page, messageSelector(index, INBOX_SELECTORS.messageBody));
     if (body === null) {
       // A separator, a system notice, or drift. Either way there is no message
       // text to file, and inventing an empty one would put a blank bubble in a
@@ -828,14 +1002,35 @@ export async function readThread(
       continue;
     }
 
-    if (!sawBubble) sawBubble = await present(page, messageMarkerSelector(index, INBOX_SELECTORS.messageItem));
-    const inbound = await present(page, messageMarkerSelector(index, INBOX_SELECTORS.messageInboundMarker));
-    messages.push({ at: parseInboxTimestamp(stamp, now()), direction: inbound ? 'in' : 'out', body });
+    const sentAt = parseInboxTimestamp(stamp, at);
+    // OUTSIDE THE WINDOW IS NOT FILED. A message whose stamp does not parse --
+    // including every message above the transcript's first group header -- is
+    // KEPT, for the same reason the rail keeps an unreadable row: null means
+    // "nobody could read when this was sent", never "it is old".
+    if (sentAt !== null && Date.parse(sentAt) < readWindow.since) {
+      older += 1;
+      continue;
+    }
+
+    if (!sawBubble)
+      sawBubble = await present(page, messageMarkerSelector(index, INBOX_SELECTORS.messageItem));
+    const inbound = await present(
+      page,
+      messageMarkerSelector(index, INBOX_SELECTORS.messageInboundMarker)
+    );
+    messages.push({ at: sentAt, direction: inbound ? 'in' : 'out', body });
   }
 
-  if (messages.length === 0) {
-    degraded.push(`${total} message items are on screen at ${url} and none of them carries ${INBOX_SELECTORS.messageBody}, so nothing could be read.`);
-  } else if (!sawBubble) {
+  if (older > 0) {
+    degraded.push(
+      `${older} message(s) in this conversation were sent more than ${readWindow.days} days ago and were not read. Raise sinceDays to read further back.`
+    );
+  }
+  if (messages.length === 0 && older === 0) {
+    degraded.push(
+      `${total} message items are on screen at ${url} and none of them carries ${INBOX_SELECTORS.messageBody}, so nothing could be read.`
+    );
+  } else if (messages.length > 0 && !sawBubble) {
     degraded.push(
       `No message at ${url} carries ${INBOX_SELECTORS.messageItem}, so nothing they wrote could be told apart from something you sent and every message was filed as outbound. Direction in this conversation is not trustworthy until that selector is repaired.`
     );
@@ -860,13 +1055,23 @@ export async function readThread(
  * the first `fill` is post-write and reports `unknown` on ambiguity, because a
  * message that may have left cannot be un-sent.
  */
-export async function sendReply(page: LinkedInPage, threadUrn: string, body: string): Promise<LinkedInDriverResult> {
+export async function sendReply(
+  page: LinkedInPage,
+  threadUrn: string,
+  body: string
+): Promise<LinkedInDriverResult> {
   if (!body.trim()) {
-    return fail('selector_drift', 'Refusing to open a message composer with no approved body to put in it.');
+    return fail(
+      'selector_drift',
+      'Refusing to open a message composer with no approved body to put in it.'
+    );
   }
   const url = threadUrlFor(threadUrn);
   if (!url) {
-    return fail('not_found', `'${threadUrn}' is not a LinkedIn conversation id, so there is nothing to reply to.`);
+    return fail(
+      'not_found',
+      `'${threadUrn}' is not a LinkedIn conversation id, so there is nothing to reply to.`
+    );
   }
 
   const walk = walkOf({});
@@ -875,17 +1080,28 @@ export async function sendReply(page: LinkedInPage, threadUrn: string, body: str
 
   const compose = page.locator(SELECTORS.messageComposeBox);
   if ((await countOf(page, SELECTORS.messageComposeBox)) === 0) {
-    return fail('selector_drift', `${SELECTORS.messageComposeBox} did not match on ${url}. Nothing was typed.`);
+    return fail(
+      'selector_drift',
+      `${SELECTORS.messageComposeBox} did not match on ${url}. Nothing was typed.`
+    );
   }
   // BOTH CONTROLS ARE READ BEFORE EITHER IS USED, so a missing send button is
   // "nothing was typed" rather than "an unsent draft is sitting in a thread".
   if ((await countOf(page, SELECTORS.messageSendButton)) === 0) {
-    return fail('selector_drift', `${SELECTORS.messageSendButton} did not match on ${url}. Nothing was typed.`);
+    return fail(
+      'selector_drift',
+      `${SELECTORS.messageSendButton} did not match on ${url}. Nothing was typed.`
+    );
   }
 
   try {
     await typeLike(page, compose.first(), body, `${url}#reply`, CLICK_TIMEOUT_MS);
-    await hoverClick(page, page.locator(SELECTORS.messageSendButton).first(), `${url}#reply-send`, CLICK_TIMEOUT_MS);
+    await hoverClick(
+      page,
+      page.locator(SELECTORS.messageSendButton).first(),
+      `${url}#reply-send`,
+      CLICK_TIMEOUT_MS
+    );
     await settle(page, `${url}#after-reply`);
   } catch (cause) {
     return fail(
@@ -896,15 +1112,25 @@ export async function sendReply(page: LinkedInPage, threadUrn: string, body: str
 
   const afterSend = await detectWall(page);
   if (afterSend) {
-    return fail(afterSend, `LinkedIn answered the reply in ${url} with a ${afterSend === 'challenge' ? 'challenge' : 'limit wall'}.`);
+    return fail(
+      afterSend,
+      `LinkedIn answered the reply in ${url} with a ${afterSend === 'challenge' ? 'challenge' : 'limit wall'}.`
+    );
   }
   return { ok: true, externalRef: url, failureKind: null };
 }
 
 /** What an inbox sync needs; the fake in the tests implements exactly this. */
 export interface LinkedInInboxDriver {
-  listConversations(page: LinkedInPage, options?: InboxWalkOptions): Promise<LinkedInThreadListing | LinkedInDriverResult>;
-  readThread(page: LinkedInPage, threadUrn: string, options?: InboxWalkOptions): Promise<LinkedInThreadTranscript | LinkedInDriverResult>;
+  listConversations(
+    page: LinkedInPage,
+    options?: InboxWalkOptions
+  ): Promise<LinkedInThreadListing | LinkedInDriverResult>;
+  readThread(
+    page: LinkedInPage,
+    threadUrn: string,
+    options?: InboxWalkOptions
+  ): Promise<LinkedInThreadTranscript | LinkedInDriverResult>;
   sendReply(page: LinkedInPage, threadUrn: string, body: string): Promise<LinkedInDriverResult>;
 }
 

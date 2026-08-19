@@ -145,13 +145,22 @@ export type BandName = 'warmup' | 'steady';
  * out loud. (`reply` is the exception that proves it: its weekly figure is not
  * a fourth guess, it is `dm`'s REPORTED number, unchanged.)
  */
-export const LINKEDIN_LIMITS: Readonly<Record<PacedKind, Readonly<Record<BandName, LinkedInBand>>>> = {
-  invite: { warmup: { perDay: 5, perWeek: 20 }, steady: { perDay: 18, perWeek: 90 } },
-  dm: { warmup: { perDay: 2, perWeek: 10 }, steady: { perDay: 12, perWeek: 60 } },
+// WARM-UP `perDay` for invite, dm, profile_view and follow is an OPERATOR
+// OVERRIDE of the researched figures below, not a fourth guess of our own --
+// requested and confirmed explicitly, above what 1.4 reports, because the
+// operator accepted the higher ban risk that implies. `perWeek` on invite/dm
+// is UNCHANGED, so the rolling 7-day ceiling (20 and 10) now binds well
+// before 7 days of the new daily figure would: raise it too if the daily
+// increase should actually be reachable rather than merely on paper.
+export const LINKEDIN_LIMITS: Readonly<
+  Record<PacedKind, Readonly<Record<BandName, LinkedInBand>>>
+> = {
+  invite: { warmup: { perDay: 10, perWeek: 20 }, steady: { perDay: 18, perWeek: 90 } },
+  dm: { warmup: { perDay: 4, perWeek: 10 }, steady: { perDay: 12, perWeek: 60 } },
   reply: { warmup: { perDay: 2, perWeek: 10 }, steady: { perDay: 12, perWeek: 60 } },
   inmail: { warmup: { perDay: 1, perMonth: 50 }, steady: { perDay: 3, perMonth: 50 } },
-  profile_view: { warmup: { perDay: 15 }, steady: { perDay: 45 } },
-  follow: { warmup: { perDay: 8 }, steady: { perDay: 20 } },
+  profile_view: { warmup: { perDay: 30 }, steady: { perDay: 45 } },
+  follow: { warmup: { perDay: 16 }, steady: { perDay: 20 } },
   like: { warmup: { perDay: 10 }, steady: { perDay: 30 } },
   endorse: { warmup: { perDay: 3 }, steady: { perDay: 8 } }
 };
@@ -410,7 +419,11 @@ export function seatOperatorLimit(seat: LinkedInSeat | undefined, kind: PacedKin
  * `operatorLimit === null` with the override on is not an override of anything:
  * there is no operator number to prefer, so the band stands.
  */
-export function effectiveDailyCeiling(bandPerDay: number, operatorLimit: number | null, overrideBands: boolean): number {
+export function effectiveDailyCeiling(
+  bandPerDay: number,
+  operatorLimit: number | null,
+  overrideBands: boolean
+): number {
   if (overrideBands && operatorLimit !== null) return operatorLimit;
   return operatorLimit === null ? bandPerDay : Math.min(bandPerDay, operatorLimit);
 }

@@ -190,17 +190,13 @@ export function LedgerView({
         </div>
       </details>
 
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>Every run</h3>
-            <p>Newest first. Open a run to see steps, inputs, outputs, and evidence.</p>
-          </div>
-          <button className="secondary-button" onClick={() => void reload()}>
-            <RefreshCw size={15} /> Refresh
-          </button>
-        </div>
-
+      {/* ONE ROW FOR ALL OF IT. The title, the sentence under it and three
+          filter groups each on a line of their own pushed the first run about
+          two hundred pixels down the page, on the screen whose entire content
+          is that list. The groups keep their labels and their own
+          `role="group"`, so what a screen reader hears is unchanged. */}
+      <section className="page-panel ledger-bar">
+        <h3 aria-level={2}>Every run</h3>
         <div className="li-filter-row" role="group" aria-label="Which runs to show">
           <span className="li-filter-label">Status</span>
           {STATUS_FILTERS.map((entry) => (
@@ -243,7 +239,12 @@ export function LedgerView({
             </button>
           ))}
         </div>
+        <button className="secondary-button ledger-refresh" onClick={() => void reload()}>
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </section>
 
+      <section className="page-panel">
         <div className="playbook-run-list">
           {shown.map((row) => {
             if (row.kind === 'agent') {

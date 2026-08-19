@@ -52,17 +52,18 @@
 // The sibling selector tables. Type-only in the other direction, so this pair
 // of cycles resolves before either module body needs a binding from the other.
 import { endorseSkills, followProfile, likeRecentPost } from './driver-engage.js';
-import { listConversations, readThread, sendReply, type LinkedInThreadListing, type LinkedInThreadTranscript } from './driver-inbox.js';
+import {
+  listConversations,
+  readThread,
+  sendReply,
+  type LinkedInThreadListing,
+  type LinkedInThreadTranscript
+} from './driver-inbox.js';
 import { hoverClick, readPage, settle, typeLike } from './human.js';
 
 /** The six outcomes a routine may report. Ordered as in plan 4.5. */
 export type LinkedInFailureKind =
-  | 'not_found'
-  | 'already_connected'
-  | 'limit_wall'
-  | 'challenge'
-  | 'selector_drift'
-  | 'unknown';
+  'not_found' | 'already_connected' | 'limit_wall' | 'challenge' | 'selector_drift' | 'unknown';
 
 export interface LinkedInDriverResult {
   ok: boolean;
@@ -109,10 +110,23 @@ export interface LinkedInLocator {
   hover?(options?: { timeout?: number }): Promise<void>;
   pressSequentially?(text: string, options?: { delay?: number; timeout?: number }): Promise<void>;
   textContent(options?: { timeout?: number }): Promise<string | null>;
+  /**
+   * OPTIONAL, for the one read where LAYOUT IS CONTENT: a message body.
+   *
+   * `textContent` concatenates text nodes, and a `<br>` is not a text node --
+   * so a message somebody wrote as three paragraphs came back as one run-on
+   * line and was stored, and shown, that way. `innerText` is the RENDERED
+   * text, line breaks included. Absent means the read falls back to
+   * `textContent`: the words are still right, they are simply flat.
+   */
+  innerText?(options?: { timeout?: number }): Promise<string>;
 }
 
 export interface LinkedInPage {
-  goto(url: string, options?: { waitUntil?: 'domcontentloaded' | 'load'; timeout?: number }): Promise<unknown>;
+  goto(
+    url: string,
+    options?: { waitUntil?: 'domcontentloaded' | 'load'; timeout?: number }
+  ): Promise<unknown>;
   url(): string;
   locator(selector: string): LinkedInLocator;
   waitForTimeout(ms: number): Promise<void>;
@@ -170,7 +184,8 @@ export interface LinkedInSeatRead {
  * as a failure is how a two-factor account becomes "this product does not
  * work with 2FA".
  */
-export type LinkedInLoginResult = { ok: true } | LinkedInDriverResult | { ok: false; needsOtp: true };
+export type LinkedInLoginResult =
+  { ok: true } | LinkedInDriverResult | { ok: false; needsOtp: true };
 
 /** Narrow a login answer to "ask the operator for the code and call again". */
 export function isOtpRequired(value: LinkedInLoginResult): value is { ok: false; needsOtp: true } {
@@ -223,14 +238,29 @@ export interface LinkedInDriver {
    */
   listConversations?(
     page: LinkedInPage,
-    options?: { maxThreads?: number; needsProfileUrl?: (threadUrn: string) => boolean; now?: () => Date }
+    options?: {
+      maxThreads?: number;
+      needsProfileUrl?: (threadUrn: string) => boolean;
+      now?: () => Date;
+    }
   ): Promise<LinkedInThreadListing | LinkedInDriverResult>;
   viewProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
   followProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
   /** `seed` is the batch-scoped seed for the deterministic in-action click jitter. */
-  likeRecentPost(page: LinkedInPage, target: string, options?: { seed?: string }): Promise<LinkedInDriverResult>;
-  endorseSkills(page: LinkedInPage, target: string, options?: { seed?: string }): Promise<LinkedInDriverResult>;
-  readSeat(page: LinkedInPage, options?: { skipConnections?: boolean }): Promise<LinkedInSeatRead | LinkedInDriverResult>;
+  likeRecentPost(
+    page: LinkedInPage,
+    target: string,
+    options?: { seed?: string }
+  ): Promise<LinkedInDriverResult>;
+  endorseSkills(
+    page: LinkedInPage,
+    target: string,
+    options?: { seed?: string }
+  ): Promise<LinkedInDriverResult>;
+  readSeat(
+    page: LinkedInPage,
+    options?: { skipConnections?: boolean }
+  ): Promise<LinkedInSeatRead | LinkedInDriverResult>;
   /** Is this profile already signed in? Asked BEFORE any sign-in is attempted. */
   isLoggedIn(page: LinkedInPage): Promise<boolean>;
   /**
@@ -294,7 +324,8 @@ export const SELECTORS = {
    * all three. A miss here is reported as an UNREAD degree, never as "not
    * connected" -- see {@link readProfileDegree}.
    */
-  degreeBadge: 'span.dist-value, span.distance-badge, span[class*="distance-badge"], .pv-top-card__distance-badge',
+  degreeBadge:
+    'span.dist-value, span.distance-badge, span[class*="distance-badge"], .pv-top-card__distance-badge',
   /** Present on 1st-degree profiles; also the DM entry point. */
   messageButton: 'button[aria-label^="Message"]',
   messageComposeBox: 'div.msg-form__contenteditable[contenteditable="true"]',
@@ -305,7 +336,8 @@ export const SELECTORS = {
   /** A restriction notice, which is a limit wall wearing different words. */
   restrictionNotice: 'text=/temporarily restricted|unusual activity|account has been restricted/i',
   /** Captcha, PIN entry, or any other "prove you are a human" interstitial. */
-  challengeForm: 'form.challenge, input[name="pin"], #captcha-internal, iframe[title*="challenge" i]',
+  challengeForm:
+    'form.challenge, input[name="pin"], #captcha-internal, iframe[title*="challenge" i]',
   profileUnavailable: 'text=/This page doesn.t exist|Profile unavailable|page not found/i',
   /**
    * The display name on a profile page.
@@ -343,7 +375,8 @@ export const SELECTORS = {
   // so a single `\s` here reaches the regex as a literal 's' and the selector
   // silently matches nothing. Measured against the live page -- the doubled
   // form finds `1 Kontakt`, the single form finds zero elements.
-  connectionsCountAny: 'main :text-matches("^\\\\s*[0-9][0-9.,\\\\u00a0\\\\u202f ]*\\\\s+\\\\S+\\\\s*$")',
+  connectionsCountAny:
+    'main :text-matches("^\\\\s*[0-9][0-9.,\\\\u00a0\\\\u202f ]*\\\\s+\\\\S+\\\\s*$")',
 
   /* --- The sign-in form (see `loginWithCredentials`) ------------------- */
 
@@ -360,7 +393,8 @@ export const SELECTORS = {
    * submits an empty form.
    */
   loginEmailField: 'input#username, input[name="session_key"], input[type="email"]:visible',
-  loginPasswordField: 'input#password, input[name="session_password"], input[type="password"]:visible',
+  loginPasswordField:
+    'input#password, input[name="session_password"], input[type="password"]:visible',
   /**
    * OPTIONAL, unlike the two fields above.
    *
@@ -371,18 +405,21 @@ export const SELECTORS = {
    * matches nothing, `loginWithCredentials` presses Enter in the password
    * field, which is what a person at that page does anyway.
    */
-  loginSubmitButton: 'button[data-litms-control-urn="login-submit"], form.login__form button[type="submit"], form button[type="submit"]',
+  loginSubmitButton:
+    'button[data-litms-control-urn="login-submit"], form.login__form button[type="submit"], form button[type="submit"]',
   /** "That's not the right password", "Couldn't find a LinkedIn account". */
   loginError:
-    '#error-for-username, #error-for-password, div[error-for], .form__label--error, '
-    + 'text=/that.s not the right password|Couldn.t find a LinkedIn account|we don.t recognize/i',
+    '#error-for-username, #error-for-password, div[error-for], .form__label--error, ' +
+    'text=/that.s not the right password|Couldn.t find a LinkedIn account|we don.t recognize/i',
   /**
    * The verification-code box. ITS PRESENCE IS THE WHOLE 2FA/CAPTCHA
    * DISTINCTION: both land on /checkpoint/, and only one of them can be
    * finished by an operator typing six digits into a field we already have.
    */
-  otpField: 'input[name="pin"], input#input__phone_verification_pin, input[autocomplete="one-time-code"]',
-  otpSubmitButton: 'button#two-step-submit-button, button#email-pin-submit-button, form button[type="submit"]',
+  otpField:
+    'input[name="pin"], input#input__phone_verification_pin, input[autocomplete="one-time-code"]',
+  otpSubmitButton:
+    'button#two-step-submit-button, button#email-pin-submit-button, form button[type="submit"]',
   /**
    * The signed-in chrome. On every authenticated page, on no signed-out one.
    *
@@ -402,8 +439,8 @@ export const SELECTORS = {
    * is a destination no signed-out page offers.
    */
   globalNav:
-    'header.global-nav, nav.global-nav, .global-nav__me, img.global-nav__me-photo, '
-    + '#primaryNavLinksComponentRef, header a[href*="/mynetwork/"], nav a[href*="/mynetwork/"]'
+    'header.global-nav, nav.global-nav, .global-nav__me, img.global-nav__me-photo, ' +
+    '#primaryNavLinksComponentRef, header a[href*="/mynetwork/"], nav a[href*="/mynetwork/"]'
 } as const;
 
 /** Where a checkpoint lands. URL-level, so it is caught before any selector is read. */
@@ -536,7 +573,10 @@ async function detectWall(page: LinkedInPage): Promise<LinkedInFailureKind | nul
 }
 
 /** Navigate and read the walls. Returns the failure to report, or the URL. */
-async function openProfile(page: LinkedInPage, target: string): Promise<{ url: string } | LinkedInDriverResult> {
+async function openProfile(
+  page: LinkedInPage,
+  target: string
+): Promise<{ url: string } | LinkedInDriverResult> {
   const url = profileUrlFor(target);
   if (!url) {
     return fail(
@@ -558,7 +598,10 @@ async function openProfile(page: LinkedInPage, target: string): Promise<{ url: s
   } catch (cause) {
     // Navigation failed, so no action was taken. Definite, and reported as
     // drift rather than `unknown`: nothing was clicked.
-    return fail('selector_drift', `Could not open ${url}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    return fail(
+      'selector_drift',
+      `Could not open ${url}: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
   }
   const wall = await detectWall(page);
   if (wall) {
@@ -586,13 +629,20 @@ function isResult(value: { url: string } | LinkedInDriverResult): value is Linke
  * truncating would send bytes no human approved -- so length is the sequence
  * generator's problem and a rejected note surfaces as an ordinary failure.
  */
-export async function sendInvite(page: LinkedInPage, target: string, note?: string): Promise<LinkedInDriverResult> {
+export async function sendInvite(
+  page: LinkedInPage,
+  target: string,
+  note?: string
+): Promise<LinkedInDriverResult> {
   const opened = await openProfile(page, target);
   if (isResult(opened)) return opened;
   const { url } = opened;
 
   if (await present(page, SELECTORS.pendingInvite)) {
-    return fail('already_connected', `An invite to ${url} is already pending; a second one is not a thing to send.`);
+    return fail(
+      'already_connected',
+      `An invite to ${url} is already pending; a second one is not a thing to send.`
+    );
   }
 
   // Connect is either on the action bar or behind "More". Both are read before
@@ -602,19 +652,31 @@ export async function sendInvite(page: LinkedInPage, target: string, note?: stri
     const more = page.locator(SELECTORS.moreActionsButton);
     if ((await more.count()) === 0) {
       if (await present(page, SELECTORS.messageButton)) {
-        return fail('already_connected', `${url} offers no Connect control and does offer Message, which is what a 1st-degree profile looks like.`);
+        return fail(
+          'already_connected',
+          `${url} offers no Connect control and does offer Message, which is what a 1st-degree profile looks like.`
+        );
       }
-      return fail('selector_drift', `Neither ${SELECTORS.connectButton} nor ${SELECTORS.moreActionsButton} matched on ${url}. Nothing was clicked.`);
+      return fail(
+        'selector_drift',
+        `Neither ${SELECTORS.connectButton} nor ${SELECTORS.moreActionsButton} matched on ${url}. Nothing was clicked.`
+      );
     }
     try {
       await hoverClick(page, more.first(), `${url}#more`, CLICK_TIMEOUT_MS);
       await settle(page, `${url}#more-open`);
     } catch (cause) {
-      return fail('selector_drift', `Opening the More menu on ${url} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      return fail(
+        'selector_drift',
+        `Opening the More menu on ${url} failed: ${cause instanceof Error ? cause.message : String(cause)}`
+      );
     }
     connect = page.locator(SELECTORS.connectInMoreMenu);
     if ((await connect.count()) === 0) {
-      return fail('selector_drift', `The More menu on ${url} contains no ${SELECTORS.connectInMoreMenu}. Nothing was clicked.`);
+      return fail(
+        'selector_drift',
+        `The More menu on ${url} contains no ${SELECTORS.connectInMoreMenu}. Nothing was clicked.`
+      );
     }
   }
 
@@ -644,23 +706,39 @@ export async function sendInvite(page: LinkedInPage, target: string, note?: stri
         // The modal is open and the note cannot be typed. Sending it without
         // the note would deliver something nobody approved, so this stops --
         // `unknown` because the modal is open and its state is ours to settle.
-        return fail('unknown', `The invite modal for ${url} is open but ${SELECTORS.noteTextarea} did not match, so the approved note could not be typed. Settle this invite by hand.`);
+        return fail(
+          'unknown',
+          `The invite modal for ${url} is open but ${SELECTORS.noteTextarea} did not match, so the approved note could not be typed. Settle this invite by hand.`
+        );
       }
       // Typed, not pasted -- and byte for byte either way. See `typeLike`.
       await typeLike(page, textarea.first(), note, `${url}#note`, CLICK_TIMEOUT_MS);
       const send = page.locator(SELECTORS.sendInviteButton);
-      if ((await send.count()) === 0) return fail('unknown', `No send control matched in the open invite modal for ${url}. Settle it by hand.`);
+      if ((await send.count()) === 0)
+        return fail(
+          'unknown',
+          `No send control matched in the open invite modal for ${url}. Settle it by hand.`
+        );
       await hoverClick(page, send.first(), `${url}#send-note`, CLICK_TIMEOUT_MS);
     } else {
       const withoutNote = page.locator(SELECTORS.sendWithoutNoteButton);
-      const send = (await withoutNote.count()) > 0 ? withoutNote : page.locator(SELECTORS.sendInviteButton);
+      const send =
+        (await withoutNote.count()) > 0 ? withoutNote : page.locator(SELECTORS.sendInviteButton);
       if ((await send.count()) === 0) {
         // Some profiles send on the first click with no modal at all. If no
         // modal is on screen either, that is what happened.
         if (!(await present(page, SELECTORS.inviteModal))) {
-          return { ok: true, externalRef: url, failureKind: null, detail: 'Invite sent without a modal step.' };
+          return {
+            ok: true,
+            externalRef: url,
+            failureKind: null,
+            detail: 'Invite sent without a modal step.'
+          };
         }
-        return fail('unknown', `An invite modal is open for ${url} with no send control matched. Settle it by hand.`);
+        return fail(
+          'unknown',
+          `An invite modal is open for ${url} with no send control matched. Settle it by hand.`
+        );
       }
       await hoverClick(page, send.first(), `${url}#send`, CLICK_TIMEOUT_MS);
     }
@@ -668,21 +746,37 @@ export async function sendInvite(page: LinkedInPage, target: string, note?: stri
     await settle(page, `${url}#after-send`);
     const afterSend = await detectWall(page);
     if (afterSend) {
-      return fail(afterSend, `LinkedIn answered the send for ${url} with a ${afterSend === 'challenge' ? 'challenge' : 'limit wall'}.`);
+      return fail(
+        afterSend,
+        `LinkedIn answered the send for ${url} with a ${afterSend === 'challenge' ? 'challenge' : 'limit wall'}.`
+      );
     }
     if (await present(page, SELECTORS.inviteModal)) {
-      return fail('unknown', `The invite modal for ${url} is still open after the send click; whether the invite left is unknown.`);
+      return fail(
+        'unknown',
+        `The invite modal for ${url} is still open after the send click; whether the invite left is unknown.`
+      );
     }
     return { ok: true, externalRef: url, failureKind: null };
   } catch (cause) {
-    return fail('unknown', `The invite to ${url} was interrupted after the Connect click: ${cause instanceof Error ? cause.message : String(cause)}. Whether it left is unknown.`);
+    return fail(
+      'unknown',
+      `The invite to ${url} was interrupted after the Connect click: ${cause instanceof Error ? cause.message : String(cause)}. Whether it left is unknown.`
+    );
   }
 }
 
 /** Send a direct message. 1st-degree only, which the Message control is the proof of. */
-export async function sendDm(page: LinkedInPage, target: string, body: string): Promise<LinkedInDriverResult> {
+export async function sendDm(
+  page: LinkedInPage,
+  target: string,
+  body: string
+): Promise<LinkedInDriverResult> {
   if (!body.trim()) {
-    return fail('selector_drift', 'Refusing to open a message composer with no approved body to put in it.');
+    return fail(
+      'selector_drift',
+      'Refusing to open a message composer with no approved body to put in it.'
+    );
   }
   const opened = await openProfile(page, target);
   if (isResult(opened)) return opened;
@@ -690,7 +784,10 @@ export async function sendDm(page: LinkedInPage, target: string, body: string): 
 
   const message = page.locator(SELECTORS.messageButton);
   if ((await message.count()) === 0) {
-    return fail('selector_drift', `${SELECTORS.messageButton} did not match on ${url}. Nothing was clicked.`);
+    return fail(
+      'selector_drift',
+      `${SELECTORS.messageButton} did not match on ${url}. Nothing was clicked.`
+    );
   }
 
   try {
@@ -698,26 +795,43 @@ export async function sendDm(page: LinkedInPage, target: string, body: string): 
     await settle(page, `${url}#composer`);
 
     const wall = await detectWall(page);
-    if (wall) return fail(wall, `LinkedIn answered the Message click on ${url} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}.`);
+    if (wall)
+      return fail(
+        wall,
+        `LinkedIn answered the Message click on ${url} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}.`
+      );
 
     const compose = page.locator(SELECTORS.messageComposeBox);
     if ((await compose.count()) === 0) {
-      return fail('unknown', `The composer for ${url} did not appear as ${SELECTORS.messageComposeBox}; a draft may be open. Check it by hand.`);
+      return fail(
+        'unknown',
+        `The composer for ${url} did not appear as ${SELECTORS.messageComposeBox}; a draft may be open. Check it by hand.`
+      );
     }
     await typeLike(page, compose.first(), body, `${url}#dm`, CLICK_TIMEOUT_MS);
 
     const send = page.locator(SELECTORS.messageSendButton);
     if ((await send.count()) === 0) {
-      return fail('unknown', `The composer for ${url} holds the approved body but no send control matched. Send or discard it by hand.`);
+      return fail(
+        'unknown',
+        `The composer for ${url} holds the approved body but no send control matched. Send or discard it by hand.`
+      );
     }
     await hoverClick(page, send.first(), `${url}#dm-send`, CLICK_TIMEOUT_MS);
     await settle(page, `${url}#after-dm`);
 
     const afterSend = await detectWall(page);
-    if (afterSend) return fail(afterSend, `LinkedIn answered the message send for ${url} with a ${afterSend === 'challenge' ? 'challenge' : 'limit wall'}.`);
+    if (afterSend)
+      return fail(
+        afterSend,
+        `LinkedIn answered the message send for ${url} with a ${afterSend === 'challenge' ? 'challenge' : 'limit wall'}.`
+      );
     return { ok: true, externalRef: url, failureKind: null };
   } catch (cause) {
-    return fail('unknown', `The message to ${url} was interrupted after the composer opened: ${cause instanceof Error ? cause.message : String(cause)}. Whether it left is unknown.`);
+    return fail(
+      'unknown',
+      `The message to ${url} was interrupted after the composer opened: ${cause instanceof Error ? cause.message : String(cause)}. Whether it left is unknown.`
+    );
   }
 }
 
@@ -726,7 +840,10 @@ export async function sendDm(page: LinkedInPage, target: string, body: string): 
  * view server-side the moment the page loads, so there is nothing to click and
  * no post-click ambiguity to report.
  */
-export async function viewProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult> {
+export async function viewProfile(
+  page: LinkedInPage,
+  target: string
+): Promise<LinkedInDriverResult> {
   const opened = await openProfile(page, target);
   if (isResult(opened)) return opened;
   return { ok: true, externalRef: opened.url, failureKind: null };
@@ -764,7 +881,9 @@ export interface LinkedInDegreeRead {
 }
 
 /** Narrow a degree read. A read carries no `failureKind`; a failure always does. */
-export function isDegreeRead(value: LinkedInDegreeRead | LinkedInDriverResult): value is LinkedInDegreeRead {
+export function isDegreeRead(
+  value: LinkedInDegreeRead | LinkedInDriverResult
+): value is LinkedInDegreeRead {
   return !('failureKind' in value);
 }
 
@@ -852,7 +971,10 @@ export async function readProfileDegree(
  * the worker to grow a method none of them calls.
  */
 export interface LinkedInDegreeDriver {
-  readProfileDegree(page: LinkedInPage, target: string): Promise<LinkedInDegreeRead | LinkedInDriverResult>;
+  readProfileDegree(
+    page: LinkedInPage,
+    target: string
+  ): Promise<LinkedInDegreeRead | LinkedInDriverResult>;
 }
 
 export const playwrightDegreeDriver: LinkedInDegreeDriver = { readProfileDegree };
@@ -886,7 +1008,9 @@ function onLinkedIn(url: string): boolean {
 const CONNECTIONS_URL = 'https://www.linkedin.com/mynetwork/invite-connect/connections/';
 
 /** Narrow a `readSeat` answer. A read carries no `failureKind`; a failure always does. */
-export function isSeatRead(value: LinkedInSeatRead | LinkedInDriverResult): value is LinkedInSeatRead {
+export function isSeatRead(
+  value: LinkedInSeatRead | LinkedInDriverResult
+): value is LinkedInSeatRead {
   return !('failureKind' in value);
 }
 
@@ -941,8 +1065,8 @@ const MAX_CONNECTIONS = 30_000;
  */
 export function parseConnectionsCount(text: string): number | null {
   const match =
-    /([0-9][0-9.,   ]*)\s*connections?/i.exec(text)
-    ?? /^\s*([0-9][0-9.,   ]*)\s+\S+\s*$/.exec(text);
+    /([0-9][0-9.,   ]*)\s*connections?/i.exec(text) ??
+    /^\s*([0-9][0-9.,   ]*)\s+\S+\s*$/.exec(text);
   if (!match) return null;
   const digits = match[1].replace(/[^0-9]/g, '');
   if (!digits) return null;
@@ -964,7 +1088,11 @@ export function parseConnectionsCount(text: string): number | null {
  * Bounded and small: this is one extra sentence's worth of patience, not a
  * retry loop, and a genuinely absent element still comes back null.
  */
-async function readFirstText(page: LinkedInPage, selectors: readonly string[], attempts = 4): Promise<string | null> {
+async function readFirstText(
+  page: LinkedInPage,
+  selectors: readonly string[],
+  attempts = 4
+): Promise<string | null> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     for (const selector of selectors) {
       const text = await readText(page, selector);
@@ -1043,7 +1171,10 @@ export async function readSeat(
     await page.goto(ME_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     await settle(page, `${ME_URL}#seat`);
   } catch (cause) {
-    return fail('selector_drift', `Could not open ${ME_URL}: ${cause instanceof Error ? cause.message : String(cause)}. Nothing was read.`);
+    return fail(
+      'selector_drift',
+      `Could not open ${ME_URL}: ${cause instanceof Error ? cause.message : String(cause)}. Nothing was read.`
+    );
   }
 
   const wall = await detectWall(page);
@@ -1070,9 +1201,12 @@ export async function readSeat(
     );
   }
 
-  const name = (await readFirstText(page, [SELECTORS.profileHeading], 2)) ?? (await readNameFromTitle(page));
+  const name =
+    (await readFirstText(page, [SELECTORS.profileHeading], 2)) ?? (await readNameFromTitle(page));
   if (name === null) {
-    degraded.push(`The profile page at ${profileUrl} has no readable heading and no name in its title, so the display name could not be read.`);
+    degraded.push(
+      `The profile page at ${profileUrl} has no readable heading and no name in its title, so the display name could not be read.`
+    );
   }
 
   // A SECOND PAGE LOAD FOR ONE NUMBER, AND ONLY WHEN THE NUMBER IS MISSING.
@@ -1113,7 +1247,10 @@ export async function readSeat(
     return { ok: true, profileUrl, name, connectionsCount: null, degraded };
   }
 
-  const header = await readFirstText(page, [SELECTORS.connectionsCount, SELECTORS.connectionsCountAny]);
+  const header = await readFirstText(page, [
+    SELECTORS.connectionsCount,
+    SELECTORS.connectionsCountAny
+  ]);
   const connectionsCount = header === null ? null : parseConnectionsCount(header);
   if (connectionsCount === null) {
     degraded.push(
@@ -1230,7 +1367,9 @@ export async function isLoggedIn(page: LinkedInPage): Promise<boolean> {
  * visible browser, and neither is something the headless worker should push
  * through on its own.
  */
-export async function sessionRecoveryReason(page: LinkedInPage): Promise<'challenge' | 'signed_out'> {
+export async function sessionRecoveryReason(
+  page: LinkedInPage
+): Promise<'challenge' | 'signed_out'> {
   return (await detectWall(page)) === 'challenge' ? 'challenge' : 'signed_out';
 }
 
@@ -1288,7 +1427,10 @@ export async function loginWithCredentials(
     await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     await settle(page, `${LOGIN_URL}#form`);
   } catch (cause) {
-    return fail('selector_drift', `Could not open the LinkedIn sign-in page: ${cause instanceof Error ? cause.message : String(cause)}. Nothing was typed.`);
+    return fail(
+      'selector_drift',
+      `Could not open the LinkedIn sign-in page: ${cause instanceof Error ? cause.message : String(cause)}. Nothing was typed.`
+    );
   }
 
   // A device LinkedIn already recognises answers /login with "We're logging
@@ -1301,11 +1443,11 @@ export async function loginWithCredentials(
   const deadline = Date.now() + LOGIN_REDIRECT_TIMEOUT_MS;
   let email = page.locator(SELECTORS.loginEmailField);
   while (
-    (await email.count()) === 0
-    && !(await present(page, SELECTORS.globalNav))
-    && !CHECKPOINT_PATH.test(page.url())
-    && !(await present(page, SELECTORS.otpField))
-    && Date.now() < deadline
+    (await email.count()) === 0 &&
+    !(await present(page, SELECTORS.globalNav)) &&
+    !CHECKPOINT_PATH.test(page.url()) &&
+    !(await present(page, SELECTORS.otpField)) &&
+    Date.now() < deadline
   ) {
     await page.waitForTimeout(LOGIN_REDIRECT_POLL_MS);
     email = page.locator(SELECTORS.loginEmailField);
@@ -1317,8 +1459,12 @@ export async function loginWithCredentials(
     if (await present(page, SELECTORS.globalNav)) return { ok: true };
     // Otherwise LinkedIn skipped the form and went straight to a checkpoint,
     // which `readLoginStanding` is exactly the reader for.
-    if (CHECKPOINT_PATH.test(page.url()) || (await present(page, SELECTORS.otpField))) return readLoginStanding(page, otp);
-    return fail('selector_drift', `The sign-in page shows no ${SELECTORS.loginEmailField}. Nothing was typed.`);
+    if (CHECKPOINT_PATH.test(page.url()) || (await present(page, SELECTORS.otpField)))
+      return readLoginStanding(page, otp);
+    return fail(
+      'selector_drift',
+      `The sign-in page shows no ${SELECTORS.loginEmailField}. Nothing was typed.`
+    );
   }
 
   // BOTH CONTROLS ARE READ BEFORE EITHER IS FILLED, so a miss on the second is
@@ -1326,7 +1472,10 @@ export async function loginWithCredentials(
   // in a form we then abandoned".
   const password = page.locator(SELECTORS.loginPasswordField);
   if ((await password.count()) === 0) {
-    return fail('selector_drift', `The sign-in page shows no ${SELECTORS.loginPasswordField}. Nothing was typed.`);
+    return fail(
+      'selector_drift',
+      `The sign-in page shows no ${SELECTORS.loginPasswordField}. Nothing was typed.`
+    );
   }
   // A MISSING SUBMIT BUTTON IS NOT A FAILURE HERE (see the selector's note):
   // the password field's Enter key submits the same form, and refusing the
@@ -1336,7 +1485,10 @@ export async function loginWithCredentials(
   const submitByClick = (await submit.count()) > 0;
   const passwordField = password.first();
   if (!submitByClick && typeof passwordField.press !== 'function') {
-    return fail('selector_drift', `The sign-in page shows no ${SELECTORS.loginSubmitButton}, and this page cannot press a key. Nothing was typed.`);
+    return fail(
+      'selector_drift',
+      `The sign-in page shows no ${SELECTORS.loginSubmitButton}, and this page cannot press a key. Nothing was typed.`
+    );
   }
 
   try {
@@ -1353,13 +1505,17 @@ export async function loginWithCredentials(
     // never contains what was typed -- `fill` does not echo its argument.
     await passwordField.fill(credentials.password, { timeout: CLICK_TIMEOUT_MS });
     await settle(page, `${LOGIN_URL}#before-submit`, 0.5);
-    if (submitByClick) await hoverClick(page, submit.first(), `${LOGIN_URL}#submit`, CLICK_TIMEOUT_MS);
+    if (submitByClick)
+      await hoverClick(page, submit.first(), `${LOGIN_URL}#submit`, CLICK_TIMEOUT_MS);
     else await passwordField.press!('Enter', { timeout: CLICK_TIMEOUT_MS });
     // Twice the usual settle: this navigation is a full page load plus a
     // redirect, and reading the standing early reads the page we just left.
     await settle(page, `${LOGIN_URL}#after-submit`, 2);
   } catch (cause) {
-    return fail('unknown', `The sign-in was interrupted after submit: ${cause instanceof Error ? cause.message : String(cause)}. Whether the session opened is unknown.`);
+    return fail(
+      'unknown',
+      `The sign-in was interrupted after submit: ${cause instanceof Error ? cause.message : String(cause)}. Whether the session opened is unknown.`
+    );
   }
 
   return readLoginStanding(page, otp);
@@ -1397,23 +1553,35 @@ async function readLoginStanding(page: LinkedInPage, otp: string): Promise<Linke
   if (await present(page, SELECTORS.loginError)) {
     // Definite and un-retryable with the same input, which is what 'not_found'
     // already means in this vocabulary. The message names neither value.
-    return fail('not_found', 'LinkedIn did not accept that email address and password. Save the right ones and sign in again.');
+    return fail(
+      'not_found',
+      'LinkedIn did not accept that email address and password. Save the right ones and sign in again.'
+    );
   }
 
   if (await isLoggedIn(page)) return { ok: true };
 
-  return fail('unknown', `The sign-in at ${page.url()} neither succeeded nor reported an error, so whether a session opened is unknown.`);
+  return fail(
+    'unknown',
+    `The sign-in at ${page.url()} neither succeeded nor reported an error, so whether a session opened is unknown.`
+  );
 }
 
 /** Type a verification code and read what happened. Never called without one. */
 async function submitOtp(page: LinkedInPage, otp: string): Promise<LinkedInLoginResult> {
   const field = page.locator(SELECTORS.otpField);
   if ((await field.count()) === 0) {
-    return fail('selector_drift', `No verification-code box matched ${SELECTORS.otpField}, so the code was not typed.`);
+    return fail(
+      'selector_drift',
+      `No verification-code box matched ${SELECTORS.otpField}, so the code was not typed.`
+    );
   }
   const submit = page.locator(SELECTORS.otpSubmitButton);
   if ((await submit.count()) === 0) {
-    return fail('selector_drift', `The verification-code box has no submit control matching ${SELECTORS.otpSubmitButton}, so the code was not sent.`);
+    return fail(
+      'selector_drift',
+      `The verification-code box has no submit control matching ${SELECTORS.otpSubmitButton}, so the code was not sent.`
+    );
   }
 
   try {
@@ -1424,7 +1592,10 @@ async function submitOtp(page: LinkedInPage, otp: string): Promise<LinkedInLogin
     await hoverClick(page, submit.first(), `${LOGIN_URL}#otp-submit`, CLICK_TIMEOUT_MS);
     await settle(page, `${LOGIN_URL}#after-otp`, 2);
   } catch (cause) {
-    return fail('unknown', `The verification code was interrupted after submit: ${cause instanceof Error ? cause.message : String(cause)}. Whether the session opened is unknown.`);
+    return fail(
+      'unknown',
+      `The verification code was interrupted after submit: ${cause instanceof Error ? cause.message : String(cause)}. Whether the session opened is unknown.`
+    );
   }
 
   // Still a code box: wrong or expired. Asking for another code is the whole
@@ -1443,7 +1614,10 @@ async function submitOtp(page: LinkedInPage, otp: string): Promise<LinkedInLogin
   }
 
   if (await isLoggedIn(page)) return { ok: true };
-  return fail('unknown', `The verification code at ${page.url()} neither succeeded nor reported an error, so whether a session opened is unknown.`);
+  return fail(
+    'unknown',
+    `The verification code at ${page.url()} neither succeeded nor reported an error, so whether a session opened is unknown.`
+  );
 }
 
 /**

@@ -4853,6 +4853,7 @@ export function createApp(db: Db) {
         now: new Date(),
         ...(input.maxThreads === undefined ? {} : { maxThreads: input.maxThreads }),
         ...(input.maxMessages === undefined ? {} : { maxMessages: input.maxMessages }),
+        ...(input.sinceDays === undefined ? {} : { sinceDays: input.sinceDays }),
         log: () => {}
       });
       // 409, not 500: a process with no display is not a fault, it is something
@@ -4879,6 +4880,7 @@ export function createApp(db: Db) {
         seatKey: input.seatKey,
         now: new Date(),
         ...(input.maxMessages === undefined ? {} : { maxMessages: input.maxMessages }),
+        ...(input.sinceDays === undefined ? {} : { sinceDays: input.sinceDays }),
         log: () => {}
       });
       if (result.blocked) throw new LinkedInApiError(result.blocked, 409);
@@ -7532,16 +7534,18 @@ const linkedinInboxFiltersSchema = z.object({
 /**
  * How much of the inbox to walk.
  *
- * BOUNDED AT THE REQUEST, and low. The driver caps a walk at 50 conversations
- * and 200 messages whatever this says, and every navigation waits out a seeded
- * 2-7s gap -- so a maximal walk is minutes of real time inside one HTTP
- * request. The defaults are the driver's own (10 conversations, 40 messages),
- * which is a refresh rather than a re-read of the whole inbox.
+ * A WINDOW, NOT A COUNT. The default is the driver's own 30 days: every
+ * conversation that moved inside it, and every message inside it. `maxThreads`
+ * and `maxMessages` remain available as hard caps for a caller that wants a
+ * short run, and the driver ceilings them at 50 and 200 whatever this says.
+ * Every navigation waits out a seeded 2-7s gap, so a busy month is minutes of
+ * real time inside one HTTP request.
  */
 const linkedinInboxSyncSchema = z
   .object({
     maxThreads: z.number().int().min(1).max(50).optional(),
     maxMessages: z.number().int().min(1).max(200).optional(),
+    sinceDays: z.number().int().min(1).max(365).optional(),
     // WHOSE INBOX. Every function behind these routes takes a seat and defaults
     // it to the owner, so a sync or a refresh requested for a SECONDARY account
     // walked the owner's conversations instead -- the same silent default

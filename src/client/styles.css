@@ -2207,9 +2207,35 @@ button:disabled {
 .playbook-input .secondary-button {
   justify-self: end;
 }
+/* ONE ROW PER RUN, EACH THE FULL WIDTH. The list is read down, so a run stays
+   one entry on one line of the page; what changed is that nothing inside it is
+   capped to a reading measure any more (see `.playbook-run .run-note`). */
 .playbook-run-list {
   display: grid;
   gap: 13px;
+}
+
+/* The ledger's whole header: name, three filter groups, one action. */
+.ledger-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  padding: 12px 16px;
+}
+.ledger-bar h3 {
+  margin: 0;
+  font-size: var(--t-text-md);
+}
+/* The filter rows keep their shared styling and lose only the block spacing
+   that made sense when each one owned a line. */
+.ledger-bar .li-filter-row {
+  margin-bottom: 0;
+  align-items: center;
+  gap: 8px;
+}
+.ledger-refresh {
+  margin-left: auto;
 }
 /* min-width: 0, or the step track's 650px min-content scrolls a 390px viewport
    sideways instead of scrolling the track that already has its own scrollbar. */
@@ -3030,6 +3056,11 @@ button:disabled {
   font-size: var(--t-text-xs);
   line-height: 1.55;
 }
+/* Inside a run card the measure is already set by the card, and capping the
+   summary again at 68ch left a column of empty card beside every sentence. */
+.playbook-run .run-note {
+  max-width: none;
+}
 .run-facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -3181,16 +3212,27 @@ button:disabled {
   font-weight: 700;
   overflow-wrap: anywhere;
 }
+/* NO READING MEASURE HERE, and the reason is what it did to nested records.
+
+   A 68ch cap on the value column is fine for one sentence at the top level. Two
+   levels down -- a list of safety checks, each an object of its own -- every
+   nesting took its label column out of an already-capped 500px, and the value
+   ended up about twenty pixels wide: "blacklisted-community" rendered one
+   character per line beside a metre of empty card. The container decides the
+   width now; long prose keeps its own block (`.field-long`). */
 .field-row > dd {
   margin: 0;
-  max-width: var(--t-measure);
   font-size: var(--t-text-xs);
   line-height: 1.55;
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* Deeper in, the label column gives way first: it is a repeated key like
+   "Detail", not a heading, and it must never squeeze the value it labels. */
+.field-list.is-nested .field-row {
+  grid-template-columns: minmax(80px, 140px) minmax(0, 1fr);
+}
 .field-bare {
-  max-width: var(--t-measure);
   font-size: var(--t-text-xs);
   line-height: 1.55;
   overflow-wrap: anywhere;
@@ -3213,6 +3255,43 @@ button:disabled {
   font-size: var(--t-text-xs);
   line-height: 1.55;
 }
+/* A list of identical records, drawn as the table it is. Scrolls inside its own
+   box: a long "Detail" column must widen the table, never the page. */
+.field-table-scroll {
+  overflow-x: auto;
+}
+.field-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-text-xs);
+  line-height: 1.5;
+}
+.field-table th {
+  text-align: left;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--t-track-caps);
+  padding: 0 12px 6px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.field-table td {
+  vertical-align: top;
+  padding: 7px 12px 7px 0;
+  border-bottom: 1px solid var(--t-line-soft);
+  overflow-wrap: anywhere;
+}
+.field-table tr:last-child td {
+  border-bottom: 0;
+}
+/* The first column is the name of the thing; the rest is what it says. */
+.field-table td:first-child {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .field-bullets,
 .field-entries {
   margin: 0;
@@ -5907,16 +5986,69 @@ button:disabled {
    A list beside a conversation. Both panes are .page-panel, both scroll on
    their own, and neither introduces a colour: inbound and outbound are told
    apart by side, surface and a word, never by hue alone. */
+
+/* The whole header: a name, what narrows the list, and the one action. One
+   row, shallow padding, and the height it saves goes to the conversations. */
+.li-inbox-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 12px 16px;
+}
+.li-inbox-bar h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--t-text-md);
+}
+.li-inbox-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.li-inbox-filters select {
+  min-height: var(--t-tap);
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-pill);
+  background: var(--t-field);
+  padding: 0 10px;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+}
+/* Pushed to the far end: it is the only control here that touches LinkedIn,
+   and it should not sit in the middle of the ones that only narrow a list. */
+.li-inbox-sync {
+  margin-left: auto;
+}
 .li-inbox {
   display: grid;
-  grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+  /* The list grows with the window instead of sitting at one laptop width: a
+     name, a snippet and "5 messages · replied" is three lines in 300px and one
+     and a half in 420px, and on a wide screen the room is there. Capped, because
+     past that it stops being a list and starts competing with the conversation. */
+  grid-template-columns: minmax(0, clamp(300px, 24vw, 440px)) minmax(0, 1fr);
   gap: 18px;
-  align-items: start;
+  /* Both panes take the row's full height rather than each shrinking to its
+     own content: a short conversation beside a long list left the right-hand
+     pane floating half-way up the screen. */
+  align-items: stretch;
+  /* HOW TALL THE TWO PANES ARE, and it is the VIEWPORT that decides.
+
+     It was a flat 720px, which is a laptop's inbox on every screen: on a tall
+     monitor the list stopped two-thirds of the way down, with nothing under it
+     and the page not scrolling. The subtraction is the chrome above these
+     panes -- app header, the Inbox panel and its filters -- and the clamp keeps
+     it honest at both ends: never shorter than a readable list, never taller
+     than a line of text can be tracked across. */
+  --li-pane-h: clamp(420px, calc(100vh - 210px), 1200px);
 }
 .li-thread-pane {
   display: flex;
   flex-direction: column;
-  max-height: 720px;
+  max-height: var(--li-pane-h);
   overflow-y: auto;
 }
 
@@ -6085,7 +6217,7 @@ button:disabled {
 .li-convo {
   display: flex;
   flex-direction: column;
-  max-height: 720px;
+  max-height: var(--li-pane-h, 720px);
 }
 .li-convo-head {
   align-items: start;
@@ -8477,6 +8609,13 @@ button:disabled {
   margin: 0;
   color: var(--ink);
   font-size: var(--t-text-xs);
+}
+.mgr-step-name {
+  display: block;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-variant-numeric: normal;
+  white-space: normal;
 }
 .mgr-tl-current .mgr-tl-when {
   color: var(--green);

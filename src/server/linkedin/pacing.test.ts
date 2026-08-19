@@ -3,7 +3,16 @@ import { openDatabase, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
 import { evaluateLinkedInSafety } from './guard.js';
 import { ACTION_GAP_SECONDS, BUSINESS_HOURS } from './limits.js';
-import { FLAT_DAY_SHAPE, VISITS_PER_DAY, addLocalDays, dayShapeFor, planPacing, resolveSkillSeatKey, visitsForDay, type PacingPlan } from './pacing.js';
+import {
+  FLAT_DAY_SHAPE,
+  VISITS_PER_DAY,
+  addLocalDays,
+  dayShapeFor,
+  planPacing,
+  resolveSkillSeatKey,
+  visitsForDay,
+  type PacingPlan
+} from './pacing.js';
 import { upsertSeat } from './seats.js';
 
 // Real ephemeral Postgres, per the repo's test harness: the smoothing IS the
@@ -16,14 +25,24 @@ let db: Db;
 const NOW = new Date('2026-08-06T09:00:00.000Z');
 
 // 08-06 Thu, 08-07 Fri, 08-08 Sat, 08-09 Sun, 08-10 Mon, 08-11 Tue, 08-12 Wed.
-const WEEK = ['2026-08-06', '2026-08-07', '2026-08-08', '2026-08-09', '2026-08-10', '2026-08-11', '2026-08-12'];
+const WEEK = [
+  '2026-08-06',
+  '2026-08-07',
+  '2026-08-08',
+  '2026-08-09',
+  '2026-08-10',
+  '2026-08-11',
+  '2026-08-12'
+];
 
 const WORKSPACE_ID = 'ws_linkedin_pacing_test';
 
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db
-    .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE_ID, 'LinkedIn Pacing Test', NOW.toISOString());
   await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
@@ -46,7 +65,11 @@ function seat(activatedOn: string | null) {
 }
 
 let actionSeq = 0;
-async function log(kind: LinkedInActionKind, status: LinkedInActionStatus, hoursAgo: number): Promise<void> {
+async function log(
+  kind: LinkedInActionKind,
+  status: LinkedInActionStatus,
+  hoursAgo: number
+): Promise<void> {
   actionSeq += 1;
   await recordAction(
     db,
@@ -71,7 +94,11 @@ function targets(count: number): string[] {
 describe('warm-up ramp', () => {
   it('schedules nothing in week 1, which is what "passive only" means', async () => {
     await seat('2026-08-04');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 },
+      NOW
+    );
     expect(plan.slots).toHaveLength(0);
     expect(plan.ceilingsApplied).toContain('warmup-multiplier');
     expect(plan.reasons.join(' ')).toContain('warm-up week 1');
@@ -79,24 +106,39 @@ describe('warm-up ramp', () => {
 
   it('lifts the ceiling week by week: 0.4 of the band in week 2, 0.7 in week 3', async () => {
     await seat('2026-07-27');
-    const week2 = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 5 }, NOW, { dayShape: FLAT_DAY_SHAPE });
-    // Warm-up band is 5/day; x0.4 = 2. The ramp still starts at 1 because the
+    const week2 = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 5 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
+    // Warm-up band is 10/day; x0.4 = 4. The ramp still starts at 1 because the
     // ledger is empty and no day may be a jump from the one before it.
-    expect(perDay(week2)).toEqual([1, 2, 0, 0, 2, 0, 0]);
+    expect(perDay(week2)).toEqual([1, 2, 0, 0, 3, 0, 0]);
 
     // A NEW seat, not the same one moved. The ramp clock is write-once, so
     // there is no edit that could walk this seat from week 2 into week 3 --
     // which is exactly the property `account_opened_on` did not have.
     await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
     await seat('2026-07-20');
-    const week3 = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 6 }, NOW, { dayShape: FLAT_DAY_SHAPE });
-    // 5/day x0.7 = 3.
-    expect(perDay(week3)).toEqual([1, 2, 0, 0, 3, 3, 0]);
+    const week3 = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 6 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
+    // 10/day x0.7 = 7.
+    expect(perDay(week3)).toEqual([1, 2, 0, 0, 3, 4, 0]);
   });
 
   it('uses the steady band once the account is past the ramp', async () => {
     await seat('2026-01-01');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 7 }, NOW, { dayShape: FLAT_DAY_SHAPE });
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 7 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
     expect(perDay(plan)).toEqual([1, 2, 0, 0, 3, 4, 5]);
     expect(plan.reasons.join(' ')).toContain('18 invite/day');
   });
@@ -108,10 +150,19 @@ describe('warm-up ramp', () => {
     // signature it exists to prevent.
     await seat('2026-08-04');
 
-    const invites = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 }, NOW);
+    const invites = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 },
+      NOW
+    );
     expect(invites.slots).toHaveLength(0);
 
-    const views = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'profile_view', targets: targets(20), horizonDays: 7 }, NOW, { dayShape: FLAT_DAY_SHAPE });
+    const views = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'profile_view', targets: targets(20), horizonDays: 7 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
     expect(views.slots.length).toBeGreaterThan(0);
     // Full warm-up band (15/day), un-multiplied -- but every OTHER ceiling
     // still binds, so it is the variance clamp that shapes the week.
@@ -123,8 +174,17 @@ describe('warm-up ramp', () => {
   });
 
   it('still stops passive activity dead when the seat is paused', async () => {
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC', posture: 'paused' }, NOW);
-    const views = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'profile_view', targets: targets(20), horizonDays: 7 }, NOW);
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', posture: 'paused' },
+      NOW
+    );
+    const views = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'profile_view', targets: targets(20), horizonDays: 7 },
+      NOW
+    );
     expect(views.slots).toHaveLength(0);
     expect(views.ceilingsApplied).toContain('seat-paused');
   });
@@ -134,7 +194,11 @@ describe('warm-up ramp', () => {
     // has been automating it for zero days, which is the fact plan 1.3 cares
     // about and the only one we can actually verify.
     await seat(null);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 },
+      NOW
+    );
     expect(plan.slots).toHaveLength(0);
     expect(plan.reasons.join(' ')).toContain('warm-up week 1');
   });
@@ -143,8 +207,14 @@ describe('warm-up ramp', () => {
     // Fail closed: a row this schema never wrote is paced as brand new rather
     // than as trusted.
     await seat('2026-01-01');
-    await db.prepare('UPDATE linkedin_seats SET activated_at=NULL WHERE workspace_id=?').run(WORKSPACE_ID);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 }, NOW);
+    await db
+      .prepare('UPDATE linkedin_seats SET activated_at=NULL WHERE workspace_id=?')
+      .run(WORKSPACE_ID);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 },
+      NOW
+    );
     expect(plan.slots).toHaveLength(0);
     expect(plan.reasons.join(' ')).toContain('no activation timestamp');
   });
@@ -152,8 +222,22 @@ describe('warm-up ramp', () => {
   it('ignores a declared account age entirely', async () => {
     // An account opened in 2011 whose automation starts today is a week-1
     // risk. `account_opened_on` is informational and nothing paces off it.
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC', accountOpenedOn: '2011-05-01', connectionsCount: 9000 }, NOW);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 }, NOW);
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      {
+        label: 'Test seat',
+        timezone: 'UTC',
+        accountOpenedOn: '2011-05-01',
+        connectionsCount: 9000
+      },
+      NOW
+    );
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 },
+      NOW
+    );
     expect(plan.slots).toHaveLength(0);
     expect(plan.reasons.join(' ')).toContain('warm-up week 1');
   });
@@ -168,19 +252,26 @@ describe('warm-up ramp', () => {
  * execution time. A refused slot is not a blocked action with a reason; it is
  * an action that silently never happens.
  */
-describe('the operator\'s configured daily limit', () => {
+describe("the operator's configured daily limit", () => {
   it('binds when it is stricter than the band, and names the number', async () => {
     await seat('2026-01-01');
     await upsertSeat(db, WORKSPACE_ID, { dailyInviteLimit: 5 }, NOW);
     // Real volume yesterday, so the day-over-day ramp is not what binds.
     for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW, { dayShape: FLAT_DAY_SHAPE });
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
     // The steady band is 18/day and the smoothing clamp would allow 24. Five
     // is what the operator asked for and five is what the gate will pass.
     expect(perDay(plan)[0]).toBe(5);
     expect(plan.ceilingsApplied).toContain('operator-daily-limit');
-    expect(plan.reasons.join(' ')).toContain('Your own ceiling for this account is 5 invite(s)/day');
+    expect(plan.reasons.join(' ')).toContain(
+      'Your own ceiling for this account is 5 invite(s)/day'
+    );
   });
 
   it('keeps the safety band binding when the operator asks for more, and says so', async () => {
@@ -189,18 +280,28 @@ describe('the operator\'s configured daily limit', () => {
     await upsertSeat(db, WORKSPACE_ID, { dailyInviteLimit: 30 }, NOW);
     for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 1 }, NOW, { dayShape: FLAT_DAY_SHAPE });
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 1 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
     expect(perDay(plan)[0]).toBe(18);
     expect(plan.ceilingsApplied).toContain('safety-band');
     expect(plan.reasons.join(' ')).toContain('You have set 30 invite(s)/day');
   });
 
-  it('lets the operator\'s number win once the band override is on', async () => {
+  it("lets the operator's number win once the band override is on", async () => {
     await seat('2026-01-01');
     await upsertSeat(db, WORKSPACE_ID, { dailyInviteLimit: 30, safetyBandOverride: true }, NOW);
     for (let index = 0; index < 30; index += 1) await log('invite', 'sent', 30);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(60), horizonDays: 1 }, NOW, { dayShape: FLAT_DAY_SHAPE });
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(60), horizonDays: 1 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
     expect(perDay(plan)[0]).toBe(30);
     expect(plan.ceilingsApplied).toContain('operator-daily-limit');
     expect(plan.reasons.join(' ')).toContain('use your own daily limits');
@@ -210,8 +311,17 @@ describe('the operator\'s configured daily limit', () => {
     // The override lifts the BAND cap and nothing else. A week-1 seat with the
     // flag on still sends zero invites, because the warm-up multiplier is a
     // separate rule and it is the one that says "week 1 is passive only".
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC', dailyInviteLimit: 75, safetyBandOverride: true }, new Date('2026-08-04T09:00:00.000Z'));
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 }, NOW);
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', dailyInviteLimit: 75, safetyBandOverride: true },
+      new Date('2026-08-04T09:00:00.000Z')
+    );
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 },
+      NOW
+    );
     expect(plan.slots).toHaveLength(0);
     expect(plan.ceilingsApplied).toContain('warmup-multiplier');
   });
@@ -223,7 +333,12 @@ describe('variance smoothing', () => {
     // for 20 invites does not get 20 invites on Thursday, whatever the band
     // ceiling says.
     await seat('2026-01-01');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 }, NOW, { dayShape: FLAT_DAY_SHAPE });
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
 
     const days = perDay(plan);
     expect(Math.max(...days)).toBe(5);
@@ -237,14 +352,22 @@ describe('variance smoothing', () => {
     await seat('2026-01-01');
     // 10 invites yesterday (Wednesday, a business day).
     for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 30);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 1 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 1 },
+      NOW
+    );
     // 10 x 1.35 = 13.5 -> 13.
     expect(perDay(plan)[0]).toBe(13);
   });
 
   it('does not let a weekend zero reset the ramp on Monday', async () => {
     await seat('2026-01-01');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 5 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 5 },
+      NOW
+    );
     const days = perDay(plan);
     // Friday 2 -> Saturday 0 -> Sunday 0 -> Monday 3, not Monday 1.
     expect(days[1]).toBe(2);
@@ -261,7 +384,12 @@ describe('determinism', () => {
     // and fails closed on drift, so a plan that re-randomised itself would
     // invalidate its own approval every time it was recomputed.
     await seat('2026-01-01');
-    const input = { workspaceId: WORKSPACE_ID, kind: 'invite' as const, targets: targets(20), horizonDays: 7 };
+    const input = {
+      workspaceId: WORKSPACE_ID,
+      kind: 'invite' as const,
+      targets: targets(20),
+      horizonDays: 7
+    };
     const first = await planPacing(db, input, NOW);
     const second = await planPacing(db, input, NOW);
     expect(second).toEqual(first);
@@ -271,13 +399,24 @@ describe('determinism', () => {
 
   it('moves the slots when the targets change, so the plan is not a constant', async () => {
     await seat('2026-01-01');
-    const first = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 }, NOW);
-    const second = await planPacing(
+    const first = await planPacing(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20).map((target) => `${target}-b`), horizonDays: 7 },
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 },
       NOW
     );
-    expect(second.slots.map((slot) => slot.plannedFor)).not.toEqual(first.slots.map((slot) => slot.plannedFor));
+    const second = await planPacing(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targets: targets(20).map((target) => `${target}-b`),
+        horizonDays: 7
+      },
+      NOW
+    );
+    expect(second.slots.map((slot) => slot.plannedFor)).not.toEqual(
+      first.slots.map((slot) => slot.plannedFor)
+    );
   });
 });
 
@@ -290,7 +429,11 @@ describe('acceptance-rate throttle', () => {
 
   it('halves volume below the 30% floor and names the reason', async () => {
     await seatWithOutcomes(2, 8);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 },
+      NOW
+    );
     // Smoothing allows 13; the throttle halves it.
     expect(perDay(plan)[0]).toBe(6);
     expect(plan.ceilingsApplied).toContain('acceptance-rate');
@@ -299,7 +442,11 @@ describe('acceptance-rate throttle', () => {
 
   it('leaves a healthy seat alone', async () => {
     await seatWithOutcomes(8, 2);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 },
+      NOW
+    );
     expect(perDay(plan)[0]).toBe(13);
     expect(plan.ceilingsApplied).not.toContain('acceptance-rate');
   });
@@ -308,7 +455,11 @@ describe('acceptance-rate throttle', () => {
     // No invite has been decided, so there is no rate. Throttling here would
     // halve every new seat forever for evidence that cannot exist yet.
     await seat('2026-01-01');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 },
+      NOW
+    );
     expect(plan.ceilingsApplied).not.toContain('acceptance-rate');
   });
 });
@@ -317,9 +468,14 @@ describe('InMail monthly quota', () => {
   it('stops at the published 50-a-month quota, not at the daily band', async () => {
     await seat('2026-01-01');
     // 48 InMails spread over the last 24 days: two per rolling day.
-    for (let index = 0; index < 48; index += 1) await log('inmail', 'sent', 2 + Math.floor(index / 2) * 24);
+    for (let index = 0; index < 48; index += 1)
+      await log('inmail', 'sent', 2 + Math.floor(index / 2) * 24);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'inmail', targets: targets(10), horizonDays: 3 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'inmail', targets: targets(10), horizonDays: 3 },
+      NOW
+    );
     // The daily band would allow 3 + 3 + 3 over these days and the ramp would
     // allow 3 + 3 + 0; the quota leaves room for exactly 2.
     expect(plan.slots).toHaveLength(2);
@@ -330,9 +486,14 @@ describe('InMail monthly quota', () => {
 
   it('lets capacity return as old InMails age out of the rolling window', async () => {
     await seat('2026-01-01');
-    for (let index = 0; index < 48; index += 1) await log('inmail', 'sent', 2 + Math.floor(index / 2) * 24);
+    for (let index = 0; index < 48; index += 1)
+      await log('inmail', 'sent', 2 + Math.floor(index / 2) * 24);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'inmail', targets: targets(10), horizonDays: 14 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'inmail', targets: targets(10), horizonDays: 14 },
+      NOW
+    );
     // A ROLLING 30-day window, not a calendar month: the quota does not
     // unblock all at once on the 1st, it unblocks as the oldest InMails fall
     // out. Over a fortnight that is more headroom than three days, and still
@@ -343,10 +504,14 @@ describe('InMail monthly quota', () => {
 });
 
 describe('slot placement', () => {
-  it('keeps every slot inside the seat\'s business hours, spread rather than bursted', async () => {
+  it("keeps every slot inside the seat's business hours, spread rather than bursted", async () => {
     await seat('2026-01-01');
     for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 30);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(13), horizonDays: 1 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(13), horizonDays: 1 },
+      NOW
+    );
     expect(plan.slots).toHaveLength(13);
 
     const times = plan.slots.map((slot) => new Date(slot.plannedFor));
@@ -367,7 +532,12 @@ describe('slot placement', () => {
     await seat('2026-01-01');
     const plan = await planPacing(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: ['https://in/a', 'https://in/a', ' '], horizonDays: 7 },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targets: ['https://in/a', 'https://in/a', ' '],
+        horizonDays: 7
+      },
       NOW
     );
     expect(plan.slots).toHaveLength(1);
@@ -377,14 +547,27 @@ describe('slot placement', () => {
 
 describe('seat state', () => {
   it('plans nothing, and explains itself, when there is no seat', async () => {
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 7 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 7 },
+      NOW
+    );
     expect(plan.slots).toHaveLength(0);
     expect(plan.reasons.join(' ')).toContain('No LinkedIn seat is configured');
   });
 
   it('plans nothing while the seat is paused', async () => {
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC', posture: 'paused' }, new Date('2026-01-01T09:00:00.000Z'));
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 7 }, NOW);
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', posture: 'paused' },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 7 },
+      NOW
+    );
     expect(plan.slots).toHaveLength(0);
     expect(plan.ceilingsApplied).toContain('seat-paused');
   });
@@ -399,7 +582,11 @@ describe('seat state', () => {
     // them used to return nothing here.
     for (let index = 0; index < 70; index += 1) await log('invite', 'sent', 24 * 90);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(60), horizonDays: 1 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(60), horizonDays: 1 },
+      NOW
+    );
 
     // Steady band is 90/week. 18 went out this week and 70 are still
     // outstanding from before it, so the first day may carry 2 -- not the 18
@@ -409,24 +596,38 @@ describe('seat state', () => {
     expect(plan.reasons.join(' ')).toContain('70 invite(s) sent more than 7 days ago');
   });
 
-  it('does not charge this week\'s invites twice', async () => {
+  it("does not charge this week's invites twice", async () => {
     await seat('2026-01-01');
     // Inside the rolling 7-day window, so `sumOfLast(timeline, 6)` already
     // charges them. Counting them again as "outstanding" would take a seat that
     // used half its weekly budget straight to zero.
     for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 30);
 
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 },
+      NOW
+    );
     expect(plan.slots.length).toBeGreaterThan(0);
     expect(plan.ceilingsApplied).not.toContain('pending-invite-backlog');
   });
 
   it('falls back to the conservative band in cooldown', async () => {
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC', posture: 'cooldown' }, new Date('2026-01-01T09:00:00.000Z'));
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', posture: 'cooldown' },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
     for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 30);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 }, NOW, { dayShape: FLAT_DAY_SHAPE });
-    // Warm-up band is 5/day, so smoothing's 13 does not apply.
-    expect(perDay(plan)[0]).toBe(5);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(30), horizonDays: 1 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
+    // Warm-up band is 10/day, so smoothing's 13 does not apply.
+    expect(perDay(plan)[0]).toBe(10);
     expect(plan.ceilingsApplied).toContain('cooldown-band');
   });
 });
@@ -454,7 +655,12 @@ describe('spreading inside a short business-hours window', () => {
     // Eighteen invites are allowed today; the window has room for only a few
     // of them at ACTION_GAP_SECONDS.max spacing.
     const lateNow = new Date('2026-08-06T17:55:00.000Z');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(18), horizonDays: 3 }, lateNow, { dayShape: FLAT_DAY_SHAPE });
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(18), horizonDays: 3 },
+      lateNow,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
 
     const today = plan.slots.filter((slot) => slot.plannedFor.startsWith('2026-08-06'));
     // NOTHING TODAY, and that is the visit model doing its job. The last visit
@@ -481,25 +687,40 @@ describe('spreading inside a short business-hours window', () => {
     expect(plan.slots.length).toBeGreaterThan(0);
   });
 
-  it('puts every slot inside one of the day\'s visits, not spread across the whole window', async () => {
+  it("puts every slot inside one of the day's visits, not spread across the whole window", async () => {
     await seat('2026-01-01');
     for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
 
     // Monday 06:00 UTC, before the window opens, so no visit is behind us.
     const early = new Date('2026-08-03T06:00:00.000Z');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(18), horizonDays: 1 }, early, { dayShape: FLAT_DAY_SHAPE });
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(18), horizonDays: 1 },
+      early,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
     expect(plan.slots.length).toBeGreaterThan(0);
 
-    const visits = visitsForDay(`${WORKSPACE_ID}:owner`, { year: 2026, month: 8, day: 3 }, { startMinute: 480, endMinute: 1080 }, {
-      actions: plan.slots.length,
-      earliestMinute: 360
-    });
+    const visits = visitsForDay(
+      `${WORKSPACE_ID}:owner`,
+      { year: 2026, month: 8, day: 3 },
+      { startMinute: 480, endMinute: 1080 },
+      {
+        actions: plan.slots.length,
+        earliestMinute: 360
+      }
+    );
 
     for (const slot of plan.slots) {
       const at = new Date(slot.plannedFor);
       const minuteOfDay = at.getUTCHours() * 60 + at.getUTCMinutes();
-      const inside = visits.some((visit) => minuteOfDay >= visit.startMinute && minuteOfDay <= visit.endMinute);
-      expect(inside, `${slot.plannedFor} (minute ${minuteOfDay}) is outside every visit ${JSON.stringify(visits)}`).toBe(true);
+      const inside = visits.some(
+        (visit) => minuteOfDay >= visit.startMinute && minuteOfDay <= visit.endMinute
+      );
+      expect(
+        inside,
+        `${slot.plannedFor} (minute ${minuteOfDay}) is outside every visit ${JSON.stringify(visits)}`
+      ).toBe(true);
     }
 
     // And the sends are clustered, not evenly smeared: a handful of bursts
@@ -508,7 +729,9 @@ describe('spreading inside a short business-hours window', () => {
       plan.slots.map((slot) => {
         const at = new Date(slot.plannedFor);
         const minuteOfDay = at.getUTCHours() * 60 + at.getUTCMinutes();
-        return visits.findIndex((visit) => minuteOfDay >= visit.startMinute && minuteOfDay <= visit.endMinute);
+        return visits.findIndex(
+          (visit) => minuteOfDay >= visit.startMinute && minuteOfDay <= visit.endMinute
+        );
       })
     );
     expect(occupied.size).toBeLessThanOrEqual(VISITS_PER_DAY.max);
@@ -524,19 +747,29 @@ describe('spreading inside a short business-hours window', () => {
  * Thursdays therefore got slots the gate refused -- and a refused slot is not
  * a blocked action with a reason, it is an action that silently never happens.
  */
-describe('the seat\'s configured working window', () => {
+describe("the seat's configured working window", () => {
   function configuredSeat(days: number[], startMinute: number, endMinute: number) {
     return upsertSeat(
       db,
       WORKSPACE_ID,
-      { label: 'Test seat', timezone: 'UTC', workingDays: days, workStartMinute: startMinute, workEndMinute: endMinute },
+      {
+        label: 'Test seat',
+        timezone: 'UTC',
+        workingDays: days,
+        workStartMinute: startMinute,
+        workEndMinute: endMinute
+      },
       new Date('2026-01-01T09:00:00.000Z')
     );
   }
 
   it('places every slot inside a 10:00-14:00 Tuesday/Thursday window', async () => {
     await configuredSeat([2, 4], 600, 840);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(12), horizonDays: 21 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(12), horizonDays: 21 },
+      NOW
+    );
 
     expect(plan.slots.length).toBeGreaterThan(0);
     for (const slot of plan.slots) {
@@ -556,18 +789,28 @@ describe('the seat\'s configured working window', () => {
     // WEEKEND_FACTOR is volume shaping for a weekend nobody configured. It
     // does not get to veto a day somebody configured on purpose.
     await configuredSeat([6], 600, 840);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 14 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 14 },
+      NOW
+    );
 
     expect(plan.slots.length).toBeGreaterThan(0);
     for (const slot of plan.slots) expect(new Date(slot.plannedFor).getUTCDay()).toBe(6);
     // Both Saturdays inside the horizon, ramped 1 then 2 rather than started
     // at the band ceiling.
-    expect(new Set(plan.slots.map((slot) => slot.plannedFor.slice(0, 10)))).toEqual(new Set(['2026-08-08', '2026-08-15']));
+    expect(new Set(plan.slots.map((slot) => slot.plannedFor.slice(0, 10)))).toEqual(
+      new Set(['2026-08-08', '2026-08-15'])
+    );
   });
 
   it('plans nothing when the operator has ticked no days at all', async () => {
     await configuredSeat([], 600, 840);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 14 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(5), horizonDays: 14 },
+      NOW
+    );
     expect(plan.slots).toHaveLength(0);
     expect(plan.ceilingsApplied).toContain('working-days');
     expect(plan.reasons.join(' ')).toContain('no working days configured');
@@ -585,27 +828,49 @@ describe('the planner and the gate agree', () => {
     await upsertSeat(
       db,
       WORKSPACE_ID,
-      { label: 'Test seat', timezone: 'UTC', workingDays: [2, 4, 6], workStartMinute: 600, workEndMinute: 840 },
+      {
+        label: 'Test seat',
+        timezone: 'UTC',
+        workingDays: [2, 4, 6],
+        workStartMinute: 600,
+        workEndMinute: 840
+      },
       new Date('2026-01-01T09:00:00.000Z')
     );
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(6), horizonDays: 14 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(6), horizonDays: 14 },
+      NOW
+    );
     expect(plan.slots.length).toBeGreaterThan(2);
     expect(plan.slots.some((slot) => new Date(slot.plannedFor).getUTCDay() === 6)).toBe(true);
 
     for (const slot of plan.slots) {
       const verdict = await evaluateLinkedInSafety(
         db,
-        { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: slot.targetRef, plannedFor: slot.plannedFor },
+        {
+          workspaceId: WORKSPACE_ID,
+          kind: 'invite',
+          targetRef: slot.targetRef,
+          plannedFor: slot.plannedFor
+        },
         NOW
       );
-      const timing = verdict.checks.filter((entry) => entry.check === 'business-hours' || entry.check === 'weekend');
+      const timing = verdict.checks.filter(
+        (entry) => entry.check === 'business-hours' || entry.check === 'weekend'
+      );
       expect(timing.map((entry) => entry.passed)).toEqual([true, true]);
     }
 
     // ...and the first slot clears the whole gate, not just the timing pair.
     const first = await evaluateLinkedInSafety(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: plan.slots[0].targetRef, plannedFor: plan.slots[0].plannedFor },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: plan.slots[0].targetRef,
+        plannedFor: plan.slots[0].plannedFor
+      },
       NOW
     );
     expect(first.reason).toBeNull();
@@ -614,15 +879,26 @@ describe('the planner and the gate agree', () => {
 
   it('agrees on the default Monday-to-Friday window too', async () => {
     await seat('2026-01-01');
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(4), horizonDays: 7 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(4), horizonDays: 7 },
+      NOW
+    );
     expect(plan.slots.length).toBeGreaterThan(0);
     for (const slot of plan.slots) {
       const verdict = await evaluateLinkedInSafety(
         db,
-        { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: slot.targetRef, plannedFor: slot.plannedFor },
+        {
+          workspaceId: WORKSPACE_ID,
+          kind: 'invite',
+          targetRef: slot.targetRef,
+          plannedFor: slot.plannedFor
+        },
         NOW
       );
-      const timing = verdict.checks.filter((entry) => entry.check === 'business-hours' || entry.check === 'weekend');
+      const timing = verdict.checks.filter(
+        (entry) => entry.check === 'business-hours' || entry.check === 'weekend'
+      );
       expect(timing.map((entry) => entry.passed)).toEqual([true, true]);
     }
   });
@@ -647,7 +923,7 @@ describe('resolving the seat a skill call meant', () => {
     expect(await resolveSkillSeatKey(db, WORKSPACE_ID, 'sales')).toBe('sales');
   });
 
-  it('uses the workspace\'s only seat when it has exactly one, whatever it is called', async () => {
+  it("uses the workspace's only seat when it has exactly one, whatever it is called", async () => {
     // A single-account workspace has no ambiguity to resolve, and this is what
     // keeps every existing single-seat caller working -- including one whose
     // only account is not the owner key.
@@ -659,7 +935,9 @@ describe('resolving the seat a skill call meant', () => {
     await upsertSeat(db, WORKSPACE_ID, { label: 'Owner', timezone: 'UTC' }, NOW);
     await upsertSeat(db, WORKSPACE_ID, { label: 'Sales', timezone: 'UTC' }, NOW, 'sales');
     await expect(resolveSkillSeatKey(db, WORKSPACE_ID, undefined)).rejects.toThrow(/owner, sales/);
-    await expect(resolveSkillSeatKey(db, WORKSPACE_ID, '  ')).rejects.toThrow(/'seatKey' is required/);
+    await expect(resolveSkillSeatKey(db, WORKSPACE_ID, '  ')).rejects.toThrow(
+      /'seatKey' is required/
+    );
   });
 
   it('falls back to the owner key when the workspace has no seat at all', async () => {
@@ -679,7 +957,11 @@ describe('resolving the seat a skill call meant', () => {
  * three are seeded, so they are assertable rather than merely hoped for.
  */
 describe('day shaping', () => {
-  const WINDOW = { days: [1, 2, 3, 4, 5], startMinute: BUSINESS_HOURS.start * 60, endMinute: BUSINESS_HOURS.end * 60 };
+  const WINDOW = {
+    days: [1, 2, 3, 4, 5],
+    startMinute: BUSINESS_HOURS.start * 60,
+    endMinute: BUSINESS_HOURS.end * 60
+  };
 
   it('is deterministic, and never places a day outside the configured window', () => {
     const first = dayShapeFor('ws:owner', { year: 2026, month: 8, day: 17 }, WINDOW);
@@ -704,10 +986,14 @@ describe('day shaping', () => {
     expect(other).not.toEqual(shapes[0]);
   });
 
-  it('keeps every planned slot inside the operator\'s configured hours', async () => {
+  it("keeps every planned slot inside the operator's configured hours", async () => {
     await seat('2026-01-01');
     for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
-    const plan = await planPacing(db, { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(120), horizonDays: 21 }, NOW);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(120), horizonDays: 21 },
+      NOW
+    );
     expect(plan.slots.length).toBeGreaterThan(0);
     for (const slot of plan.slots) {
       const at = new Date(slot.plannedFor);

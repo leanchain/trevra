@@ -592,9 +592,18 @@ function CampaignMembers({
                         <MemberState status={member.status} />
                       </td>
                       <td className="li-num">
-                        {steps.length > 0
-                          ? `${Math.min(member.stepIndex + 1, steps.length)} of ${steps.length}`
-                          : member.stepIndex + 1}
+                        {steps.length > 0 ? (
+                          <>
+                            {Math.min(member.stepIndex + 1, steps.length)} of {steps.length}
+                            {steps[member.stepIndex] && (
+                              <span className="mgr-step-name">
+                                {ACTION_LABEL[steps[member.stepIndex].action]}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          member.stepIndex + 1
+                        )}
                       </td>
                       <td>
                         {LIVE_STATUSES.includes(member.status)
