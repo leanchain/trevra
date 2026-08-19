@@ -1078,6 +1078,17 @@ button:disabled {
 .client-card-value strong {
   font-size: var(--t-text-sm);
 }
+.client-card-large.is-blocked {
+  opacity: 0.55;
+}
+.client-why {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.client-blocked {
+  color: var(--danger, #b42318);
+}
 .client-next strong {
   font-size: var(--t-text-xs);
   line-height: 1.35;

@@ -1,9 +1,19 @@
-import { useEffect, useState } from 'react';
-import { CircleAlert, LoaderCircle, MessageSquare, Newspaper } from 'lucide-react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { CircleAlert, LoaderCircle, MessageSquare, Newspaper, X } from 'lucide-react';
 import type { ConnectionSummary, SkillRun } from '../../shared/types';
-import { getOutreachThreads, getSkillRuns, type FeedThread } from '../api';
+import {
+  getOutreachOfferDefaults,
+  getOutreachThreads,
+  getSkillRuns,
+  startPlaybook,
+  type FeedThread,
+  type OutreachOffer
+} from '../api';
 import { ResearchScreen } from '../ResearchScreen';
 import { EvidenceList } from './inspector';
+import { factsLine, platformLabel, whyChips } from './researchFormat';
+import { useDialog } from '../ui/dialog';
 
 /*
  * `/research` -- one feed over three sources that never shared a screen:
@@ -15,18 +25,21 @@ import { EvidenceList } from './inspector';
  * See docs/superpowers/specs/2026-08-18-research-hub-design.md.
  */
 
-const PLATFORM_LABELS: Record<string, string> = {
-  all: 'All',
-  linkedin: 'LinkedIn',
-  reddit: 'Reddit',
-  hackernews: 'Hacker News',
-  github: 'GitHub',
-  devto: 'Dev.to',
-  lobsters: 'Lobsters',
-  mastodon: 'Mastodon',
-  stackoverflow: 'Stack Overflow'
-};
-const PLATFORM_FILTERS = Object.keys(PLATFORM_LABELS);
+// Filter keys only -- display names come from researchFormat's platformLabel,
+// so the platform-name -> label mapping is never declared twice.
+const PLATFORM_FILTERS = [
+  'all',
+  'linkedin',
+  'reddit',
+  'hackernews',
+  'github',
+  'devto',
+  'lobsters',
+  'mastodon',
+  'stackoverflow'
+];
+
+const EMPTY_OFFER: OutreachOffer = { name: '', url: '', summary: '', mechanism: '', claims: [] };
 
 interface ResearchBriefOutput {
   domain: string | null;
@@ -46,6 +59,129 @@ function asResearchBrief(output: unknown): ResearchBriefOutput | null {
   };
 }
 
+/*
+ * The draft dialog stops at approval -- it starts `gtm.thread-reply` and
+ * hands the run to the founder's queue. Nothing here sends or posts
+ * anything; every label says draft, prepare, or approval instead.
+ */
+function DraftDialog({
+  entry,
+  offer,
+  setOffer,
+  starting,
+  dialogError,
+  onCancel,
+  onSubmit
+}: {
+  entry: FeedThread;
+  offer: OutreachOffer;
+  setOffer: (offer: OutreachOffer) => void;
+  starting: boolean;
+  dialogError: string | null;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  const dialog = useRef<HTMLElement>(null);
+  const titleId = useId();
+  const close = () => {
+    if (!starting) onCancel();
+  };
+  useDialog(dialog, close);
+
+  const canSubmit =
+    !starting &&
+    offer.name.trim() !== '' &&
+    offer.url.trim() !== '' &&
+    offer.summary.trim() !== '' &&
+    offer.mechanism.trim() !== '';
+
+  return createPortal(
+    <div className="drawer-backdrop" role="presentation" onClick={close}>
+      <section
+        ref={dialog}
+        className="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <span className="drawer-kicker">Draft reply</span>
+            <h3 id={titleId}>{entry.row.title}</h3>
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Close without drafting anything"
+            disabled={starting}
+            onClick={close}
+          >
+            <X size={20} />
+          </button>
+        </header>
+        <div className="drawer-body">
+          <label>
+            Product name
+            <input
+              type="text"
+              value={offer.name}
+              onChange={(event) => setOffer({ ...offer, name: event.target.value })}
+            />
+          </label>
+          <label>
+            Product URL
+            <input
+              type="text"
+              value={offer.url}
+              onChange={(event) => setOffer({ ...offer, url: event.target.value })}
+            />
+          </label>
+          <label>
+            Summary
+            <textarea
+              rows={2}
+              value={offer.summary}
+              onChange={(event) => setOffer({ ...offer, summary: event.target.value })}
+            />
+          </label>
+          <label>
+            Mechanism
+            <textarea
+              rows={2}
+              value={offer.mechanism}
+              onChange={(event) => setOffer({ ...offer, mechanism: event.target.value })}
+            />
+          </label>
+          {offer.claims.length > 0 && (
+            <div>
+              <span className="li-filter-label">Claims</span>
+              <p className="client-why">
+                {offer.claims.map((claim) => (
+                  <span className="client-status" key={claim.label}>
+                    {claim.label}: {claim.value}
+                  </span>
+                ))}
+              </p>
+            </div>
+          )}
+          {dialogError && <div className="error-banner">{dialogError}</div>}
+        </div>
+        <footer>
+          <button type="button" className="secondary-button" disabled={starting} onClick={close}>
+            Cancel
+          </button>
+          <button type="button" className="primary-button" disabled={!canSubmit} onClick={onSubmit}>
+            {starting && <LoaderCircle className="spin" size={16} />}
+            Prepare draft
+          </button>
+        </footer>
+      </section>
+    </div>,
+    document.body
+  );
+}
+
 export function ResearchView({
   connections,
   setToast
@@ -60,6 +196,13 @@ export function ResearchView({
   const [briefs, setBriefs] = useState<SkillRun[]>([]);
   const [briefsLoaded, setBriefsLoaded] = useState(false);
   const [briefsError, setBriefsError] = useState(false);
+
+  const now = useMemo(() => new Date(), []);
+
+  const [drafting, setDrafting] = useState<FeedThread | null>(null);
+  const [offer, setOffer] = useState<OutreachOffer>(EMPTY_OFFER);
+  const [starting, setStarting] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,6 +244,58 @@ export function ResearchView({
     };
   }, []);
 
+  useEffect(() => {
+    if (!drafting) return;
+    let cancelled = false;
+    getOutreachOfferDefaults()
+      .then((loaded) => {
+        if (!cancelled) setOffer(loaded);
+      })
+      .catch(() => {
+        /* An absent brief is not an error; the dialog stays editable and empty. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [drafting]);
+
+  async function startDraft(entry: FeedThread): Promise<void> {
+    setStarting(true);
+    setDialogError(null);
+    try {
+      const run = await startPlaybook('gtm.thread-reply', {
+        thread: {
+          platform: entry.row.platform,
+          externalId: entry.row.external_id,
+          url: entry.row.url,
+          title: entry.row.title,
+          content: entry.row.content,
+          author: entry.row.author,
+          community: entry.row.community,
+          score: entry.row.score,
+          numComments: entry.row.num_comments,
+          createdAt: entry.row.thread_created_at,
+          metadata: entry.row.metadata_json
+        },
+        angle: entry.angle,
+        relevanceScore: entry.relevance.score,
+        product: offer
+      });
+      setDrafting(null);
+      setToast(`Draft prepared for approval (run ${run.id}).`);
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : 'Could not start the draft.');
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  function closeDraftDialog(): void {
+    if (starting) return;
+    setDrafting(null);
+    setDialogError(null);
+  }
+
   const renderableBriefs = briefs
     .map((run) => ({ run, brief: asResearchBrief(run.output) }))
     .filter(
@@ -132,7 +327,7 @@ export function ResearchView({
               aria-pressed={platform === key}
               onClick={() => setPlatform(key)}
             >
-              {PLATFORM_LABELS[key]}
+              {key === 'all' ? 'All' : platformLabel(key)}
             </button>
           ))}
         </div>
@@ -148,24 +343,41 @@ export function ResearchView({
         <div className="client-table">
           {threadsLoaded &&
             !threadsError &&
-            threads.map(({ row }) => (
-              <article className="client-card-large" key={row.id}>
-                <span className="client-avatar large">
-                  {(PLATFORM_LABELS[row.platform] ?? row.platform).slice(0, 1)}
-                </span>
+            threads.map((entry) => (
+              <article
+                className={`client-card-large ${entry.guard.allowed ? '' : 'is-blocked'}`}
+                key={entry.row.id}
+              >
+                <span className="client-avatar large">{entry.relevance.score.toFixed(1)}</span>
                 <div>
                   <h3>
-                    <a href={row.url} target="_blank" rel="noreferrer">
-                      {row.title}
+                    <a href={entry.row.url} target="_blank" rel="noreferrer">
+                      {entry.row.title}
                     </a>
                   </h3>
-                  <p>
-                    {row.community ? `${row.community} · ` : ''}
-                    {row.author ? `by ${row.author} · ` : ''}score {row.score}
+                  <p>{factsLine(entry, now)}</p>
+                  <p className="client-why">
+                    {whyChips(entry).map((chip) => (
+                      <span className="client-status" key={chip}>
+                        {chip}
+                      </span>
+                    ))}
                   </p>
-                  <span className="client-status">
-                    {PLATFORM_LABELS[row.platform] ?? row.platform}
-                  </span>
+                  <p>
+                    angle: {entry.angle}
+                    {entry.topics.length > 0 ? ` · topics: ${entry.topics.join(', ')}` : ''}
+                  </p>
+                  {!entry.guard.allowed && (
+                    <p className="client-blocked">Blocked: {entry.guard.reason}</p>
+                  )}
+                  <button
+                    type="button"
+                    className="li-range"
+                    disabled={!entry.guard.allowed}
+                    onClick={() => setDrafting(entry)}
+                  >
+                    Draft reply
+                  </button>
                 </div>
               </article>
             ))}
@@ -243,6 +455,20 @@ export function ResearchView({
       )}
 
       {showRedditCorpus && <ResearchScreen connections={connections} setToast={setToast} />}
+
+      {drafting && (
+        <DraftDialog
+          entry={drafting}
+          offer={offer}
+          setOffer={setOffer}
+          starting={starting}
+          dialogError={dialogError}
+          onCancel={closeDraftDialog}
+          onSubmit={() => {
+            void startDraft(drafting);
+          }}
+        />
+      )}
     </div>
   );
 }
