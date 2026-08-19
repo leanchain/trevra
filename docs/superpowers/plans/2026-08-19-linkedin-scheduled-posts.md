@@ -164,13 +164,25 @@ describe('applyStyleToSelection', () => {
         { type: 'text', text: ' more.', bold: true }
       )
     ];
+    // Selection spans the WHOLE block (run 0 offset 0 through run 2 offset 6,
+    // the full length of ' more.') -- not just the middle run. A selection
+    // limited to the middle run has no correct implementation that produces a
+    // single merged run: toggling only the selected text off necessarily
+    // leaves it different from its still-bold neighbors, so nothing merges.
+    // This selection is what actually exercises "toggle off, then re-merge":
+    // every run in the selection goes to bold:falsy and mergeAdjacent collapses
+    // the three identically-unstyled pieces into one.
     const next = applyStyleToSelection(
       blocks,
-      { start: { block: 0, run: 1, offset: 0 }, end: { block: 0, run: 1, offset: 9 } },
+      { start: { block: 0, run: 0, offset: 0 }, end: { block: 0, run: 2, offset: 6 } },
       'bold'
     );
     expect(next[0].runs).toHaveLength(1);
-    expect(next[0].runs[0]).toMatchObject({ text: 'Some bold word more.', bold: false });
+    expect(next[0].runs[0].text).toBe('Some bold word more.');
+    // `withStyle` clears a style with `on || undefined`, not literal `false` --
+    // both are falsy and every consumer in this module normalizes via
+    // `Boolean(...)`/`?? false`, so assert falsy rather than the exact literal.
+    expect(next[0].runs[0].bold).toBeFalsy();
   });
 });
 
