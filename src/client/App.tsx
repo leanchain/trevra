@@ -15,6 +15,7 @@ import {
   Link2,
   LoaderCircle,
   LogOut,
+  Pencil,
   Play,
   RefreshCw,
   Repeat,
@@ -1343,16 +1344,24 @@ const andList = (parts: string[]) =>
  * concentrated liability; the design doc's §7 says the operator deserves to
  * weigh that before pasting, which only means anything if they read it first.
  *
- * ONE SAVE, NOT FOUR. Setting this up used to cost four round-trips and four
- * toasts -- Save endpoint, Store key, Save cap, Save schedule -- for what is
- * one sitting. The three blocks keep their order, their headings and their
+ * ONE SAVE, NOT FOUR -- mostly. Setting this up used to cost four round-trips
+ * and four toasts -- Save endpoint, Store key, Save cap, Save schedule -- for
+ * what is one sitting. The blocks keep their order, their headings and their
  * argument, because that order IS the decision: where your key goes, then your
- * key, then what it may spend. What changed is that the button moved to the
- * bottom and writes only the parts that changed.
+ * key, then what it may spend. The endpoint, the key, the subscription CLI and
+ * the schedule share one bottom button that writes only the parts that
+ * changed.
  *
- * Two writes stay on their own, and both for the same stated reason: an off
- * switch that needs a second click to take effect is not an off switch. The
- * spending toggle and the schedule toggle fire immediately.
+ * The cap is the one field that opted back out of that shared button. It has
+ * its own scoped save right next to the amount, because `/setup/spend` is a
+ * deep link that lands an operator here to touch only the cap, and a shared
+ * button that also flushes whatever else happens to be dirty in the endpoint,
+ * key, CLI or schedule fields is exactly the accident that button exists to
+ * prevent.
+ *
+ * Two more writes stay on their own, and both for the same stated reason: an
+ * off switch that needs a second click to take effect is not an off switch.
+ * The spending toggle and the schedule toggle fire immediately.
  */
 function HostedAgentPanel({
   setToast,
@@ -1593,13 +1602,14 @@ function HostedAgentPanel({
   const cliConfigSaved = Boolean(cliSetup.config) && !dirtyCliConfig;
   const dirtyCliToken = cliSetup.riskAccepted && cliToken.trim().length > 0;
 
-  const dirty =
-    dirtyConfig || dirtyKey || dirtyCap || dirtySchedule || dirtyCliConfig || dirtyCliToken;
+  // The cap is deliberately not part of this: it has its own save button
+  // right next to the amount field, so it can never be swept in with
+  // whatever else on this panel happens to be dirty.
+  const dirty = dirtyConfig || dirtyKey || dirtySchedule || dirtyCliConfig || dirtyCliToken;
 
   const pendingLabels = [
     dirtyConfig ? 'the endpoint' : null,
     dirtyKey ? (secret ? 'the replacement key' : 'your key') : null,
-    dirtyCap ? 'the cap' : null,
     dirtySchedule ? 'the standing job' : null,
     dirtyCliConfig ? 'the subscription CLI' : null,
     dirtyCliToken
@@ -1619,10 +1629,6 @@ function HostedAgentPanel({
    * went through is the worst version of this message.
    */
   const saveAll = async () => {
-    if (!capValid) {
-      setProblem('Set a monthly cap between $0 and $10,000. Nothing else was saved.');
-      return;
-    }
     if (dirtyConfig && (!baseUrl.trim() || !model.trim())) {
       setProblem('The endpoint needs both an address and a model name. Nothing was saved.');
       return;
@@ -1653,12 +1659,6 @@ function HostedAgentPanel({
         setApiKey('');
         setReplacingKey(false);
         done.push('your key');
-      }
-      if (dirtyCap) {
-        const next = await saveAgentBudget({ monthlyCapCents: capCents });
-        setSetup((current) => current && { ...current, budget: next });
-        setCapDollars(String(Math.round(next.monthlyCapCents / 100)));
-        done.push(`a cap of ${usd(next.monthlyCapCents)} a month`);
       }
       if (dirtySchedule) {
         const next = await saveAgentSchedule({ goal: goal.trim(), intervalMinutes: Number(every) });
@@ -1695,6 +1695,30 @@ function HostedAgentPanel({
     }
   };
 
+  // Its own write, not part of Save: the cap sits in the same panel as the
+  // endpoint, the key, the subscription CLI and the schedule, but changing it
+  // must never also submit whatever else on the panel happens to be dirty --
+  // especially on the `/setup/spend` deep link, which lands here to touch
+  // only the cap. Its own button, right next to the amount, calls only this.
+  const saveCap = async () => {
+    if (!capValid) {
+      setProblem('Set a monthly cap between $0 and $10,000.');
+      return;
+    }
+    setBusy('cap-save');
+    setProblem('');
+    try {
+      const next = await saveAgentBudget({ monthlyCapCents: capCents });
+      setSetup((current) => current && { ...current, budget: next });
+      setCapDollars(String(Math.round(next.monthlyCapCents / 100)));
+      setToast(`Cap saved: ${usd(next.monthlyCapCents)} a month.`);
+    } catch (error) {
+      setProblem(agentSetupMessage(error, 'Could not save the cap'));
+    } finally {
+      setBusy('');
+    }
+  };
+
   const capReached = budget.spentCents >= budget.monthlyCapCents && budget.monthlyCapCents > 0;
   const spendLine =
     budget.spentCents > 0
@@ -1721,17 +1745,19 @@ function HostedAgentPanel({
   // The budget check applies whichever path runs it: a subscription CLI costs
   // no marginal dollars, but Trevra still charges it a notional amount and
   // still checks the cap, so a run through it is still gated by spending.
-  const runBlocker = dirty
-    ? `Save ${andList(pendingLabels)} first — a run uses what is stored, not what is typed.`
-    : !byokReady && !cliReady
-      ? 'Add the endpoint and model, or set up your subscription CLI below, first.'
-      : !budget.enabled
-        ? 'Switch spending on first — a run costs money at your provider.'
-        : capReached
-          ? `This month’s ${usd(budget.monthlyCapCents)} is used up. Raise the cap to run again.`
-          : !goal.trim()
-            ? 'Write what it should work on first.'
-            : null;
+  const runBlocker = dirtyCap
+    ? 'Save the cap first — a run uses what is stored, not what is typed.'
+    : dirty
+      ? `Save ${andList(pendingLabels)} first — a run uses what is stored, not what is typed.`
+      : !byokReady && !cliReady
+        ? 'Add the endpoint and model, or set up your subscription CLI below, first.'
+        : !budget.enabled
+          ? 'Switch spending on first — a run costs money at your provider.'
+          : capReached
+            ? `This month’s ${usd(budget.monthlyCapCents)} is used up. Raise the cap to run again.`
+            : !goal.trim()
+              ? 'Write what it should work on first.'
+              : null;
 
   const goalField = (label: string) => (
     <label>
@@ -1755,6 +1781,11 @@ function HostedAgentPanel({
 
       {problem && <div className="error-banner byok-error">{problem}</div>}
 
+      {/* Deliberately not inside the collapsed section below: a hosted
+        service holding customer model keys is a real, concentrated
+        liability, and the operator deserves to weigh that before pasting --
+        which only means anything if they read it first, not after opening a
+        toggle. See the panel doc comment above. */}
       <div className="byok-warning">
         <CircleAlert size={18} />
         <div>
@@ -1773,238 +1804,96 @@ function HostedAgentPanel({
         </div>
       </div>
 
-      <div className="byok-block">
-        <div className="byok-block-head">
-          <div>
-            <h4 aria-level={3}>Where your key goes</h4>
-            <p>
-              Any endpoint that speaks the OpenAI format works — OpenAI, Azure, Groq, OpenRouter,
-              Together, or a server you run yourself. Trevra ships no default and does not guess:
-              your key goes exactly where you name here, and nowhere else.
-            </p>
-          </div>
-        </div>
-        <div className="byok-fields">
-          <label>
-            Endpoint address
-            <input
-              value={baseUrl}
-              onChange={(event) => setBaseUrl(event.target.value)}
-              placeholder="https://api.openai.com/v1"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <label>
-            Model
-            <input
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              placeholder="the model name your provider uses"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          <label>
-            Call it something (optional)
-            <input
-              value={providerLabel}
-              onChange={(event) => setProviderLabel(event.target.value)}
-              placeholder="Work account"
-              maxLength={120}
-            />
-          </label>
-        </div>
-        <p className="byok-meter-copy">
-          {config
-            ? `Saved ${formatMoment(config.updatedAt) ?? 'earlier'}.${dirtyConfig ? ' Edited since — Save at the bottom.' : ''}`
-            : 'Nothing saved yet. Fill in the endpoint and the model, then save at the bottom.'}
-        </p>
-      </div>
-
-      <div className="byok-block">
-        <div className="byok-block-head">
-          <div>
-            <h4 aria-level={3}>Your key</h4>
-            <p>
-              It goes in and never comes out. Trevra keeps it encrypted, applies it at the moment of
-              a call, and shows you the last four characters so you can find this key at your
-              provider. There is no screen anywhere that can display it back to you.
-            </p>
-          </div>
-        </div>
-        {secret && !replacingKey ? (
-          <div className="byok-key-stored">
-            <span className="byok-key-mask">
-              <KeyRound size={16} /> •••• {secret.last4}
-            </span>
-            <span>
-              {secret.label ? `${secret.label} · ` : ''}Added{' '}
-              {new Date(secret.createdAt).toLocaleDateString()}
-            </span>
-            <div className="byok-key-actions">
-              <button className="secondary-button" onClick={() => setReplacingKey(true)}>
-                Replace
-              </button>
-              {/* Removal is destructive and irreversible, so it is its own act with
-              its own confirmation. It is not folded into Save. */}
-              <button
-                className="ghost-button danger"
-                disabled={busy === 'key-remove'}
-                onClick={() => setConfirmRemoveKey(true)}
-              >
-                {busy === 'key-remove' ? (
-                  <LoaderCircle className="spin" size={15} />
-                ) : (
-                  <Trash2 size={15} />
-                )}{' '}
-                Remove
-              </button>
+      <details className="mgr-inputs">
+        <summary>
+          Endpoint &amp; key
+          <span>
+            {config ? 'Endpoint saved' : 'No endpoint yet'}
+            {secret ? ' · key stored' : ' · no key yet'}
+          </span>
+        </summary>
+        <div className="mgr-inputs-body">
+          <div className="byok-block">
+            <div className="byok-block-head">
+              <div>
+                <h4 aria-level={3}>Where your key goes</h4>
+                <p>
+                  Any endpoint that speaks the OpenAI format works — OpenAI, Azure, Groq,
+                  OpenRouter, Together, or a server you run yourself. Trevra ships no default and
+                  does not guess: your key goes exactly where you name here, and nowhere else.
+                </p>
+              </div>
             </div>
-          </div>
-        ) : (
-          <>
-            <div className="byok-fields byok-fields-one">
+            <div className="byok-fields">
               <label>
-                {secret ? 'New key' : 'Paste your key'}
+                Endpoint address
                 <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  placeholder="Paste it here"
+                  value={baseUrl}
+                  onChange={(event) => setBaseUrl(event.target.value)}
+                  placeholder="https://api.openai.com/v1"
                   autoComplete="off"
                   spellCheck={false}
                 />
               </label>
+              <label>
+                Model
+                <input
+                  value={model}
+                  onChange={(event) => setModel(event.target.value)}
+                  placeholder="the model name your provider uses"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                Call it something (optional)
+                <input
+                  value={providerLabel}
+                  onChange={(event) => setProviderLabel(event.target.value)}
+                  placeholder="Work account"
+                  maxLength={120}
+                />
+              </label>
             </div>
             <p className="byok-meter-copy">
-              {secret
-                ? `This replaces •••• ${secret.last4} here when you save. The old key keeps working at your provider until you revoke it there.`
-                : 'Trevra stores it encrypted and keeps it out of every log, error and transcript.'}
+              {config
+                ? `Saved ${formatMoment(config.updatedAt) ?? 'earlier'}.${dirtyConfig ? ' Edited since — Save at the bottom.' : ''}`
+                : 'Nothing saved yet. Fill in the endpoint and the model, then save at the bottom.'}
             </p>
-            {secret && (
-              <div className="byok-key-actions">
-                <button
-                  className="ghost-button"
-                  onClick={() => {
-                    setReplacingKey(false);
-                    setApiKey('');
-                  }}
-                >
-                  Cancel the replacement
-                </button>
+          </div>
+
+          <div className="byok-block">
+            <div className="byok-block-head">
+              <div>
+                <h4 aria-level={3}>Your key</h4>
+                <p>
+                  It goes in and never comes out. Trevra keeps it encrypted, applies it at the
+                  moment of a call, and shows you the last four characters so you can find this key
+                  at your provider. There is no screen anywhere that can display it back to you.
+                </p>
               </div>
-            )}
-          </>
-        )}
-      </div>
-
-      <div className="byok-block">
-        <div className="byok-block-head">
-          <div>
-            <h4 aria-level={3}>
-              <Terminal size={15} /> Or run it through your own Claude/Codex subscription
-            </h4>
-            <p>
-              Instead of a metered model key, Trevra can drive this workspace's own Claude Code or
-              Codex subscription. Same limits, same run ledger, same rule that nothing sends itself
-              — this only changes what pays for the tokens.
-            </p>
-          </div>
-          <span className="status-pill">
-            {cliSetup.tokenStored
-              ? `${cliSetup.config?.cli === 'codex' ? 'Codex' : 'Claude'} subscription connected`
-              : cliSetup.riskAccepted
-                ? 'Risk accepted'
-                : cliConfigSaved
-                  ? 'Needs risk acceptance'
-                  : 'Not set up'}
-          </span>
-        </div>
-
-        <div className="byok-warning">
-          <CircleAlert size={18} />
-          <div>
-            <strong>Read this before you accept it below.</strong>
-            <p>
-              This uses this workspace's own personal Claude or Codex subscription, not a metered
-              API plan. Automated, server-side use of a personal subscription may itself violate
-              that subscription's own consumer terms, independent of anything Trevra does — and the
-              account could be suspended for it. That risk has nothing to do with Trevra and Trevra
-              cannot mitigate it; it is the workspace's own to weigh, for its own subscription.
-            </p>
-          </div>
-        </div>
-
-        <div className="byok-fields byok-fields-schedule">
-          <label>
-            Which subscription
-            <select
-              value={cliKind}
-              onChange={(event) => setCliKind(event.target.value as 'claude' | 'codex')}
-            >
-              <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-            </select>
-          </label>
-          <label>
-            Model
-            <input
-              value={cliModel}
-              onChange={(event) => setCliModel(event.target.value)}
-              placeholder="the model name your subscription CLI uses"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-        </div>
-        <p className="byok-meter-copy">
-          {cliSetup.config
-            ? `Saved: ${cliSetup.config.cli === 'codex' ? 'Codex' : 'Claude'}, ${cliSetup.config.model}.${dirtyCliConfig ? ' Edited since — Save at the bottom.' : ''}`
-            : 'Choose a CLI and a model, then save at the bottom.'}
-        </p>
-
-        <label className="byok-risk-check">
-          <input
-            type="checkbox"
-            checked={cliSetup.riskAccepted}
-            disabled={busy === 'cli-risk' || !cliConfigSaved}
-            onChange={(event) => void setCliRisk(event.target.checked)}
-          />
-          <span>
-            I understand this uses this workspace's own Claude or Codex subscription, not a metered
-            plan. Automated, server-side use like this may itself violate that subscription's own
-            consumer terms, independent of anything Trevra does, and the account could be suspended
-            for it. This workspace is accepting that risk for its own subscription.
-          </span>
-        </label>
-        {!cliConfigSaved && (
-          <p className="byok-meter-copy">
-            Save the subscription CLI and model above first — there is nothing to accept the risk of
-            yet.
-          </p>
-        )}
-
-        {cliSetup.riskAccepted && (
-          <>
-            {cliSetup.tokenStored && !replacingCliToken ? (
+            </div>
+            {secret && !replacingKey ? (
               <div className="byok-key-stored">
                 <span className="byok-key-mask">
-                  <KeyRound size={16} /> Subscription token stored
+                  <KeyRound size={16} /> •••• {secret.last4}
                 </span>
-                <span />
+                <span>
+                  {secret.label ? `${secret.label} · ` : ''}Added{' '}
+                  {new Date(secret.createdAt).toLocaleDateString()}
+                </span>
                 <div className="byok-key-actions">
-                  <button className="secondary-button" onClick={() => setReplacingCliToken(true)}>
+                  <button className="secondary-button" onClick={() => setReplacingKey(true)}>
                     Replace
                   </button>
                   {/* Removal is destructive and irreversible, so it is its own act with
-                its own confirmation, same as the model key above. Not folded into Save. */}
+                  its own confirmation. It is not folded into Save. */}
                   <button
                     className="ghost-button danger"
-                    disabled={busy === 'cli-token-remove'}
-                    onClick={() => setConfirmRemoveCliToken(true)}
+                    disabled={busy === 'key-remove'}
+                    onClick={() => setConfirmRemoveKey(true)}
                   >
-                    {busy === 'cli-token-remove' ? (
+                    {busy === 'key-remove' ? (
                       <LoaderCircle className="spin" size={15} />
                     ) : (
                       <Trash2 size={15} />
@@ -2017,13 +1906,11 @@ function HostedAgentPanel({
               <>
                 <div className="byok-fields byok-fields-one">
                   <label>
-                    {cliSetup.tokenStored
-                      ? 'New subscription token'
-                      : 'Paste your subscription token'}
+                    {secret ? 'New key' : 'Paste your key'}
                     <input
                       type="password"
-                      value={cliToken}
-                      onChange={(event) => setCliToken(event.target.value)}
+                      value={apiKey}
+                      onChange={(event) => setApiKey(event.target.value)}
                       placeholder="Paste it here"
                       autoComplete="off"
                       spellCheck={false}
@@ -2031,17 +1918,17 @@ function HostedAgentPanel({
                   </label>
                 </div>
                 <p className="byok-meter-copy">
-                  {cliSetup.tokenStored
-                    ? 'This replaces the stored token here when you save. The old session keeps working at your provider until you sign it out there.'
-                    : 'Trevra stores it encrypted and keeps it out of every log, error and transcript. There is no screen anywhere that can display it back to you.'}
+                  {secret
+                    ? `This replaces •••• ${secret.last4} here when you save. The old key keeps working at your provider until you revoke it there.`
+                    : 'Trevra stores it encrypted and keeps it out of every log, error and transcript.'}
                 </p>
-                {cliSetup.tokenStored && (
+                {secret && (
                   <div className="byok-key-actions">
                     <button
                       className="ghost-button"
                       onClick={() => {
-                        setReplacingCliToken(false);
-                        setCliToken('');
+                        setReplacingKey(false);
+                        setApiKey('');
                       }}
                     >
                       Cancel the replacement
@@ -2050,9 +1937,176 @@ function HostedAgentPanel({
                 )}
               </>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </div>
+      </details>
+
+      <details className="mgr-inputs">
+        <summary>
+          Your own Claude/Codex subscription
+          <span>
+            {cliSetup.tokenStored
+              ? `${cliSetup.config?.cli === 'codex' ? 'Codex' : 'Claude'} connected`
+              : cliSetup.riskAccepted
+                ? 'Risk accepted'
+                : cliConfigSaved
+                  ? 'Needs risk acceptance'
+                  : 'Not set up'}
+          </span>
+        </summary>
+        <div className="mgr-inputs-body">
+          <div className="byok-block">
+            <div className="byok-block-head">
+              <div>
+                <h4 aria-level={3}>
+                  <Terminal size={15} /> Or run it through your own Claude/Codex subscription
+                </h4>
+                <p>
+                  Instead of a metered model key, Trevra can drive this workspace's own Claude Code
+                  or Codex subscription. Same limits, same run ledger, same rule that nothing sends
+                  itself — this only changes what pays for the tokens.
+                </p>
+              </div>
+            </div>
+
+            <div className="byok-warning">
+              <CircleAlert size={18} />
+              <div>
+                <strong>Read this before you accept it below.</strong>
+                <p>
+                  This uses this workspace's own personal Claude or Codex subscription, not a
+                  metered API plan. Automated, server-side use of a personal subscription may itself
+                  violate that subscription's own consumer terms, independent of anything Trevra
+                  does — and the account could be suspended for it. That risk has nothing to do with
+                  Trevra and Trevra cannot mitigate it; it is the workspace's own to weigh, for its
+                  own subscription.
+                </p>
+              </div>
+            </div>
+
+            <div className="byok-fields byok-fields-schedule">
+              <label>
+                Which subscription
+                <select
+                  value={cliKind}
+                  onChange={(event) => setCliKind(event.target.value as 'claude' | 'codex')}
+                >
+                  <option value="claude">Claude</option>
+                  <option value="codex">Codex</option>
+                </select>
+              </label>
+              <label>
+                Model
+                <input
+                  value={cliModel}
+                  onChange={(event) => setCliModel(event.target.value)}
+                  placeholder="the model name your subscription CLI uses"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+            </div>
+            <p className="byok-meter-copy">
+              {cliSetup.config
+                ? `Saved: ${cliSetup.config.cli === 'codex' ? 'Codex' : 'Claude'}, ${cliSetup.config.model}.${dirtyCliConfig ? ' Edited since — Save at the bottom.' : ''}`
+                : 'Choose a CLI and a model, then save at the bottom.'}
+            </p>
+
+            <label className="byok-risk-check">
+              <input
+                type="checkbox"
+                checked={cliSetup.riskAccepted}
+                disabled={busy === 'cli-risk' || !cliConfigSaved}
+                onChange={(event) => void setCliRisk(event.target.checked)}
+              />
+              <span>
+                I understand this uses this workspace's own Claude or Codex subscription, not a
+                metered plan. Automated, server-side use like this may itself violate that
+                subscription's own consumer terms, independent of anything Trevra does, and the
+                account could be suspended for it. This workspace is accepting that risk for its own
+                subscription.
+              </span>
+            </label>
+            {!cliConfigSaved && (
+              <p className="byok-meter-copy">
+                Save the subscription CLI and model above first — there is nothing to accept the
+                risk of yet.
+              </p>
+            )}
+
+            {cliSetup.riskAccepted && (
+              <>
+                {cliSetup.tokenStored && !replacingCliToken ? (
+                  <div className="byok-key-stored">
+                    <span className="byok-key-mask">
+                      <KeyRound size={16} /> Subscription token stored
+                    </span>
+                    <span />
+                    <div className="byok-key-actions">
+                      <button
+                        className="secondary-button"
+                        onClick={() => setReplacingCliToken(true)}
+                      >
+                        Replace
+                      </button>
+                      {/* Removal is destructive and irreversible, so it is its own act with
+                    its own confirmation, same as the model key above. Not folded into Save. */}
+                      <button
+                        className="ghost-button danger"
+                        disabled={busy === 'cli-token-remove'}
+                        onClick={() => setConfirmRemoveCliToken(true)}
+                      >
+                        {busy === 'cli-token-remove' ? (
+                          <LoaderCircle className="spin" size={15} />
+                        ) : (
+                          <Trash2 size={15} />
+                        )}{' '}
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="byok-fields byok-fields-one">
+                      <label>
+                        {cliSetup.tokenStored
+                          ? 'New subscription token'
+                          : 'Paste your subscription token'}
+                        <input
+                          type="password"
+                          value={cliToken}
+                          onChange={(event) => setCliToken(event.target.value)}
+                          placeholder="Paste it here"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </label>
+                    </div>
+                    <p className="byok-meter-copy">
+                      {cliSetup.tokenStored
+                        ? 'This replaces the stored token here when you save. The old session keeps working at your provider until you sign it out there.'
+                        : 'Trevra stores it encrypted and keeps it out of every log, error and transcript. There is no screen anywhere that can display it back to you.'}
+                    </p>
+                    {cliSetup.tokenStored && (
+                      <div className="byok-key-actions">
+                        <button
+                          className="ghost-button"
+                          onClick={() => {
+                            setReplacingCliToken(false);
+                            setCliToken('');
+                          }}
+                        >
+                          Cancel the replacement
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </details>
 
       <div className="byok-block" id="setup-spend">
         <div className="byok-block-head">
@@ -2086,12 +2140,34 @@ function HostedAgentPanel({
                 value={capDollars}
                 onChange={(event) => setCapDollars(event.target.value)}
               />
+              {/* Scoped to this one field: it only ever calls the budget save,
+              never the endpoint/key/CLI/schedule fields the panel's shared
+              Save button also writes -- so reaching this on the `/setup/spend`
+              deep link and pressing it can never submit something else that
+              happened to be dirty elsewhere on the page. */}
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={!capValid || !dirtyCap || busy === 'cap-save'}
+                onClick={() => void saveCap()}
+              >
+                {busy === 'cap-save' ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <Check size={14} />
+                )}{' '}
+                Save cap
+              </button>
             </span>
           </label>
         </div>
         <p className="byok-meter-copy">
           {spendLine}
-          {dirtyCap ? ' The cap on screen is not saved yet.' : ''}
+          {!capValid
+            ? ' Enter a cap between $0 and $10,000 to save it.'
+            : dirtyCap
+              ? ' The cap on screen is not saved yet.'
+              : ' Matches what is stored.'}
         </p>
         {budget.spentCents > 0 && (
           <div className="byok-meter">
@@ -2112,45 +2188,54 @@ function HostedAgentPanel({
       {/* Absent from the response means this build has no schedule yet. Hide it
         rather than show a control that writes to a route that is not there. */}
       {hasSchedule && (
-        <div className="byok-block">
-          <div className="byok-block-head">
-            <div>
-              <h4 aria-level={3}>Work on a schedule</h4>
-              <p>
-                Give it a standing job and Trevra picks it up on its own, with your laptop closed.
-                It still stops at every approval — nothing leaves your business without you.
+        <details className="mgr-inputs">
+          <summary>
+            Work on a schedule
+            <span>{schedule?.enabled ? 'On' : 'Off'}</span>
+          </summary>
+          <div className="mgr-inputs-body">
+            <div className="byok-block">
+              <div className="byok-block-head">
+                <div>
+                  <h4 aria-level={3}>Work on a schedule</h4>
+                  <p>
+                    Give it a standing job and Trevra picks it up on its own, with your laptop
+                    closed. It still stops at every approval — nothing leaves your business without
+                    you.
+                  </p>
+                </div>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={schedule?.enabled ?? false}
+                    disabled={busy === 'schedule-switch' || !goal.trim() || dirtySchedule}
+                    onChange={(event) => void setScheduleEnabled(event.target.checked)}
+                  />
+                  <span />
+                </label>
+              </div>
+              <div className="byok-fields byok-fields-schedule">
+                {goalField('Standing job')}
+                <label>
+                  How often
+                  <select value={every} onChange={(event) => setEvery(event.target.value)}>
+                    {scheduleOptions.map((minutes) => (
+                      <option key={minutes} value={String(minutes)}>
+                        {formatEvery(minutes)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <p className="byok-meter-copy">
+                {scheduleLine}
+                {dirtySchedule
+                  ? ' The job on screen is not saved yet, so the switch is held until it is.'
+                  : ''}
               </p>
             </div>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={schedule?.enabled ?? false}
-                disabled={busy === 'schedule-switch' || !goal.trim() || dirtySchedule}
-                onChange={(event) => void setScheduleEnabled(event.target.checked)}
-              />
-              <span />
-            </label>
           </div>
-          <div className="byok-fields byok-fields-schedule">
-            {goalField('Standing job')}
-            <label>
-              How often
-              <select value={every} onChange={(event) => setEvery(event.target.value)}>
-                {scheduleOptions.map((minutes) => (
-                  <option key={minutes} value={String(minutes)}>
-                    {formatEvery(minutes)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <p className="byok-meter-copy">
-            {scheduleLine}
-            {dirtySchedule
-              ? ' The job on screen is not saved yet, so the switch is held until it is.'
-              : ''}
-          </p>
-        </div>
+        </details>
       )}
 
       {/* One button for the whole sitting. It writes only what changed, in the
@@ -2546,6 +2631,23 @@ function describePolicy(
   return clauses.length === 0 ? `${verb}, every time.` : `${verb} when ${clauses.join(', and ')}.`;
 }
 
+/** The inverse of buildConditions: pre-fills the draft form from a saved
+ * policy's stored conditions, so editing one starts from what is already
+ * there instead of a blank form. */
+function conditionDraftFromPolicy(conditions: Record<string, unknown>): ConditionDraft {
+  const maxAmount = asNumber(conditions.maxAmount);
+  const minConfidence = asNumber(conditions.minConfidence);
+  const maxRecipients = asNumber(conditions.maxRecipients);
+  return {
+    sideEffects: asStringList(conditions.sideEffects),
+    actorTypes: asStringList(conditions.actorTypes),
+    environments: asStringList(conditions.environments),
+    maxAmount: maxAmount === null ? '' : String(maxAmount),
+    minConfidence: minConfidence === null ? '' : String(Math.round(minConfidence * 100)),
+    maxRecipients: maxRecipients === null ? '' : String(maxRecipients)
+  };
+}
+
 function ConditionChecklist({
   legend,
   choices,
@@ -2578,6 +2680,11 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   const [busy, setBusy] = useState('');
   const [policies, setPolicies] = useState<WorkspacePolicy[]>([]);
   const [confirmDeletePolicy, setConfirmDeletePolicy] = useState<WorkspacePolicy | null>(null);
+  // The form renders on demand, not on every visit -- most workspaces read
+  // this list far more often than they write to it. `editingPolicy` is null
+  // for a new policy and set for one being edited in place.
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingPolicy, setEditingPolicy] = useState<WorkspacePolicy | null>(null);
   const [policyDraft, setPolicyDraft] = useState({
     name: 'Ask me before anything leaves my business',
     actionPattern: 'skill:*',
@@ -2603,21 +2710,78 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
       .catch(() => undefined);
   }, []);
 
-  const addPolicy = async () => {
+  const resetDraft = () => {
+    setPolicyDraft({
+      name: 'Ask me before anything leaves my business',
+      actionPattern: 'skill:*',
+      effect: 'require_approval',
+      priority: 100
+    });
+    setConditionDraft({ ...EMPTY_CONDITIONS, sideEffects: ['external-write'] });
+  };
+
+  const openNewPolicyForm = () => {
+    setEditingPolicy(null);
+    resetDraft();
+    setFormOpen(true);
+  };
+
+  // Pre-fills the same form a new policy uses, so editing one is "change what
+  // is wrong, then save" instead of deleting it and retyping every field.
+  const openEditPolicyForm = (policy: WorkspacePolicy) => {
+    setEditingPolicy(policy);
+    setPolicyDraft({
+      name: policy.name,
+      actionPattern: policy.actionPattern,
+      effect: policy.effect,
+      priority: policy.priority
+    });
+    setConditionDraft(conditionDraftFromPolicy(policy.conditions));
+    setFormOpen(true);
+  };
+
+  const closeForm = () => {
+    setFormOpen(false);
+    setEditingPolicy(null);
+  };
+
+  const savePolicy = async () => {
     if (!policyDraft.name.trim() || !policyDraft.actionPattern.trim()) return;
-    setBusy('policy-create');
+    const payload = {
+      name: policyDraft.name.trim(),
+      actionPattern: policyDraft.actionPattern.trim(),
+      effect: policyDraft.effect,
+      priority: policyDraft.priority,
+      conditions: buildConditions(conditionDraft),
+      enabled: true
+    };
+    setBusy(editingPolicy ? 'policy-edit' : 'policy-create');
     try {
-      setPolicies(
-        await createPolicy({
-          name: policyDraft.name.trim(),
-          actionPattern: policyDraft.actionPattern.trim(),
-          effect: policyDraft.effect,
-          priority: policyDraft.priority,
-          conditions: buildConditions(conditionDraft),
-          enabled: true
-        })
-      );
-      setToast('Limit saved');
+      if (editingPolicy) {
+        const editingId = editingPolicy.id;
+        // There is no PATCH route for a policy (src/server/app.ts has only
+        // POST and DELETE), so an edit creates the new version first and only
+        // deletes the old one once that succeeds -- in that order, so a
+        // failed create leaves the original limit in place instead of a
+        // delete losing it outright.
+        const created = await createPolicy(payload);
+        try {
+          await deletePolicy(editingId);
+          setPolicies(created.filter((policy) => policy.id !== editingId));
+          setToast('Limit updated.');
+        } catch (err) {
+          setPolicies(created);
+          setToast(
+            `Saved the new version, but could not remove the old “${editingPolicy.name}”: ${
+              err instanceof Error ? err.message : 'unknown error'
+            }. Delete it by hand below.`
+          );
+        }
+      } else {
+        setPolicies(await createPolicy(payload));
+        setToast('Limit saved');
+      }
+      closeForm();
     } catch (err) {
       setToast(err instanceof Error ? err.message : 'Unable to save this limit');
     } finally {
@@ -2630,6 +2794,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
     try {
       await deletePolicy(policyId);
       setPolicies(await getPolicies());
+      if (editingPolicy?.id === policyId) closeForm();
       setToast('Limit deleted.');
     } catch (err) {
       setToast(err instanceof Error ? err.message : 'Could not delete that limit.');
@@ -2638,6 +2803,9 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
       setConfirmDeletePolicy(null);
     }
   };
+
+  const saving = busy === 'policy-create' || busy === 'policy-edit';
+  const draftIncomplete = !policyDraft.name.trim() || !policyDraft.actionPattern.trim();
 
   return (
     <div className="page-stack">
@@ -2649,146 +2817,173 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
             </h3>
             <p>Rules Trevra can never break, whatever else it is told to do.</p>
           </div>
-          <span className="status-pill">{policies.length} set</span>
-        </div>
-        <div className="policy-editor">
-          <label>
-            Name it
-            <input
-              value={policyDraft.name}
-              onChange={(event) => setPolicyDraft({ ...policyDraft, name: event.target.value })}
-            />
-          </label>
-          <label>
-            What it covers
-            <input
-              value={policyDraft.actionPattern}
-              onChange={(event) =>
-                setPolicyDraft({ ...policyDraft, actionPattern: event.target.value })
-              }
-              placeholder="skill:*"
-            />
-            <small>* stands for everything</small>
-          </label>
-          <label>
-            What happens
-            <select
-              value={policyDraft.effect}
-              onChange={(event) =>
-                setPolicyDraft({
-                  ...policyDraft,
-                  effect: event.target.value as WorkspacePolicy['effect']
-                })
-              }
-            >
-              <option value="allow">Let it run</option>
-              <option value="require_approval">Ask me first</option>
-              <option value="deny">Block it</option>
-            </select>
-          </label>
-          <label>
-            Priority
-            <input
-              type="number"
-              value={policyDraft.priority}
-              onChange={(event) =>
-                setPolicyDraft({ ...policyDraft, priority: Number(event.target.value) })
-              }
-            />
-            <small>higher wins a tie</small>
-          </label>
-        </div>
-        <fieldset className="policy-conditions">
-          <legend>When does it apply?</legend>
-          <p className="condition-hint">Leave a group untouched and it applies to all of them.</p>
-          <div className="condition-groups">
-            <ConditionChecklist
-              legend="What is being done"
-              choices={SIDE_EFFECT_CHOICES}
-              selected={conditionDraft.sideEffects}
-              onToggle={(value) => toggleCondition('sideEffects', value)}
-            />
-            <ConditionChecklist
-              legend="Who is doing it"
-              choices={ACTOR_CHOICES}
-              selected={conditionDraft.actorTypes}
-              onToggle={(value) => toggleCondition('actorTypes', value)}
-            />
-            <ConditionChecklist
-              legend="Where it runs"
-              choices={ENVIRONMENT_CHOICES}
-              selected={conditionDraft.environments}
-              onToggle={(value) => toggleCondition('environments', value)}
-            />
+          <div className="mgr-actions">
+            <span className="status-pill">{policies.length} set</span>
+            {!formOpen && (
+              <button className="secondary-button" type="button" onClick={openNewPolicyForm}>
+                <ShieldCheck size={14} /> New policy
+              </button>
+            )}
           </div>
-          <div className="condition-numbers">
-            <label>
-              Only when the amount is at most
-              <span className="condition-number">
-                <input
-                  type="number"
-                  min="0"
-                  step="100"
-                  placeholder="any amount"
-                  value={conditionDraft.maxAmount}
-                  onChange={(event) =>
-                    setConditionDraft({ ...conditionDraft, maxAmount: event.target.value })
-                  }
-                />
-                <small>EUR</small>
-              </span>
-            </label>
-            <label>
-              Only when Trevra is at least this sure
-              <span className="condition-number">
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  placeholder="any confidence"
-                  value={conditionDraft.minConfidence}
-                  onChange={(event) =>
-                    setConditionDraft({ ...conditionDraft, minConfidence: event.target.value })
-                  }
-                />
-                <small>%</small>
-              </span>
-            </label>
-            <label>
-              Only when it reaches at most
-              <span className="condition-number">
-                <input
-                  type="number"
-                  min="1"
-                  placeholder="any number"
-                  value={conditionDraft.maxRecipients}
-                  onChange={(event) =>
-                    setConditionDraft({ ...conditionDraft, maxRecipients: event.target.value })
-                  }
-                />
-                <small>people</small>
-              </span>
-            </label>
-          </div>
-          <p className="policy-preview">
-            {describePolicy(policyDraft.effect, buildConditions(conditionDraft))}
-          </p>
-        </fieldset>
-        <div className="panel-footer">
-          <span>Takes effect the moment you add it.</span>
-          <button
-            className="secondary-button"
-            disabled={busy === 'policy-create'}
-            onClick={() => void addPolicy()}
-          >
-            {busy === 'policy-create' ? (
-              <LoaderCircle className="spin" size={16} />
-            ) : (
-              <ShieldCheck size={16} />
-            )}{' '}
-            Add limit
-          </button>
         </div>
+
+        {formOpen && (
+          <>
+            <div className="policy-editor">
+              <label>
+                Name it
+                <input
+                  value={policyDraft.name}
+                  onChange={(event) => setPolicyDraft({ ...policyDraft, name: event.target.value })}
+                />
+              </label>
+              <label>
+                What it covers
+                <input
+                  value={policyDraft.actionPattern}
+                  onChange={(event) =>
+                    setPolicyDraft({ ...policyDraft, actionPattern: event.target.value })
+                  }
+                  placeholder="skill:*"
+                />
+                <small>* stands for everything</small>
+              </label>
+              <label>
+                What happens
+                <select
+                  value={policyDraft.effect}
+                  onChange={(event) =>
+                    setPolicyDraft({
+                      ...policyDraft,
+                      effect: event.target.value as WorkspacePolicy['effect']
+                    })
+                  }
+                >
+                  <option value="allow">Let it run</option>
+                  <option value="require_approval">Ask me first</option>
+                  <option value="deny">Block it</option>
+                </select>
+              </label>
+              <label>
+                Priority
+                <input
+                  type="number"
+                  value={policyDraft.priority}
+                  onChange={(event) =>
+                    setPolicyDraft({ ...policyDraft, priority: Number(event.target.value) })
+                  }
+                />
+                <small>higher wins a tie</small>
+              </label>
+            </div>
+            <fieldset className="policy-conditions">
+              <legend>When does it apply?</legend>
+              <p className="condition-hint">
+                Leave a group untouched and it applies to all of them.
+              </p>
+              <div className="condition-groups">
+                <ConditionChecklist
+                  legend="What is being done"
+                  choices={SIDE_EFFECT_CHOICES}
+                  selected={conditionDraft.sideEffects}
+                  onToggle={(value) => toggleCondition('sideEffects', value)}
+                />
+                <ConditionChecklist
+                  legend="Who is doing it"
+                  choices={ACTOR_CHOICES}
+                  selected={conditionDraft.actorTypes}
+                  onToggle={(value) => toggleCondition('actorTypes', value)}
+                />
+                <ConditionChecklist
+                  legend="Where it runs"
+                  choices={ENVIRONMENT_CHOICES}
+                  selected={conditionDraft.environments}
+                  onToggle={(value) => toggleCondition('environments', value)}
+                />
+              </div>
+              <div className="condition-numbers">
+                <label>
+                  Only when the amount is at most
+                  <span className="condition-number">
+                    <input
+                      type="number"
+                      min="0"
+                      step="100"
+                      placeholder="any amount"
+                      value={conditionDraft.maxAmount}
+                      onChange={(event) =>
+                        setConditionDraft({ ...conditionDraft, maxAmount: event.target.value })
+                      }
+                    />
+                    <small>EUR</small>
+                  </span>
+                </label>
+                <label>
+                  Only when Trevra is at least this sure
+                  <span className="condition-number">
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      placeholder="any confidence"
+                      value={conditionDraft.minConfidence}
+                      onChange={(event) =>
+                        setConditionDraft({ ...conditionDraft, minConfidence: event.target.value })
+                      }
+                    />
+                    <small>%</small>
+                  </span>
+                </label>
+                <label>
+                  Only when it reaches at most
+                  <span className="condition-number">
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="any number"
+                      value={conditionDraft.maxRecipients}
+                      onChange={(event) =>
+                        setConditionDraft({ ...conditionDraft, maxRecipients: event.target.value })
+                      }
+                    />
+                    <small>people</small>
+                  </span>
+                </label>
+              </div>
+              <p className="policy-preview">
+                {describePolicy(policyDraft.effect, buildConditions(conditionDraft))}
+              </p>
+            </fieldset>
+            <div className="panel-footer">
+              <span>
+                {draftIncomplete
+                  ? 'Name it and say what it covers to save.'
+                  : editingPolicy
+                    ? 'Saving replaces the old version of this limit with what is on screen.'
+                    : 'Takes effect the moment you add it.'}
+              </span>
+              <div className="mgr-actions">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  disabled={saving}
+                  onClick={closeForm}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={saving || draftIncomplete}
+                  onClick={() => void savePolicy()}
+                >
+                  {saving ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{' '}
+                  {editingPolicy ? 'Save changes' : 'Add limit'}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+
         <div className="workspace-policy-list">
           {policies.map((policy) => (
             <article key={policy.id}>
@@ -2800,18 +2995,27 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                 {policy.effect.replace('_', ' ')}
               </span>
               <p className="policy-summary">{describePolicy(policy.effect, policy.conditions)}</p>
-              <button
-                className="ghost-button danger"
-                disabled={busy === policy.id}
-                onClick={() => setConfirmDeletePolicy(policy)}
-              >
-                {busy === policy.id ? (
-                  <LoaderCircle className="spin" size={15} />
-                ) : (
-                  <Trash2 size={15} />
-                )}{' '}
-                Delete
-              </button>
+              <div className="mgr-actions">
+                <button
+                  className="ghost-button"
+                  disabled={busy === policy.id}
+                  onClick={() => openEditPolicyForm(policy)}
+                >
+                  <Pencil size={15} /> Edit
+                </button>
+                <button
+                  className="ghost-button danger"
+                  disabled={busy === policy.id}
+                  onClick={() => setConfirmDeletePolicy(policy)}
+                >
+                  {busy === policy.id ? (
+                    <LoaderCircle className="spin" size={15} />
+                  ) : (
+                    <Trash2 size={15} />
+                  )}{' '}
+                  Delete
+                </button>
+              </div>
             </article>
           ))}
           {policies.length === 0 && <p className="empty-copy">No limits of your own yet.</p>}
@@ -2840,7 +3044,6 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
     </div>
   );
 }
-
 function WorkspaceSwitcher({
   activeWorkspaceId,
   onSwitched
