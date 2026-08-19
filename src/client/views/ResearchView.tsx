@@ -73,6 +73,7 @@ export function ResearchView({
       })
       .catch(() => {
         if (cancelled) return;
+        setThreads([]);
         setThreadsError(true);
         setThreadsLoaded(true);
       });
@@ -145,27 +146,29 @@ export function ResearchView({
           </div>
         </div>
         <div className="client-table">
-          {threads.map((thread) => (
-            <article className="client-card-large" key={thread.id}>
-              <span className="client-avatar large">
-                {(PLATFORM_LABELS[thread.platform] ?? thread.platform).slice(0, 1)}
-              </span>
-              <div>
-                <h3>
-                  <a href={thread.url} target="_blank" rel="noreferrer">
-                    {thread.title}
-                  </a>
-                </h3>
-                <p>
-                  {thread.community ? `${thread.community} · ` : ''}
-                  {thread.author ? `by ${thread.author} · ` : ''}score {thread.score}
-                </p>
-                <span className="client-status">
-                  {PLATFORM_LABELS[thread.platform] ?? thread.platform}
+          {threadsLoaded &&
+            !threadsError &&
+            threads.map((thread) => (
+              <article className="client-card-large" key={thread.id}>
+                <span className="client-avatar large">
+                  {(PLATFORM_LABELS[thread.platform] ?? thread.platform).slice(0, 1)}
                 </span>
-              </div>
-            </article>
-          ))}
+                <div>
+                  <h3>
+                    <a href={thread.url} target="_blank" rel="noreferrer">
+                      {thread.title}
+                    </a>
+                  </h3>
+                  <p>
+                    {thread.community ? `${thread.community} · ` : ''}
+                    {thread.author ? `by ${thread.author} · ` : ''}score {thread.score}
+                  </p>
+                  <span className="client-status">
+                    {PLATFORM_LABELS[thread.platform] ?? thread.platform}
+                  </span>
+                </div>
+              </article>
+            ))}
           {!threadsLoaded && (
             <div className="empty-state">
               <LoaderCircle className="spin" size={26} />
