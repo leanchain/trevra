@@ -187,28 +187,13 @@ function applyStyleToBlock(
   const alreadyOn = selectedRuns.length > 0 && selectedRuns.every((r) => styleOf(r, style));
   const targetOn = !alreadyOn;
 
-  // Check if ALL text runs in the block are uniformly styled. If so, AND if the
-  // selection is uniformly already styled (alreadyOn=true), apply the toggle to all
-  // runs instead of just the selection. This ensures toggling off a uniformly-styled
-  // block produces uniformly-unstyled text that merges into one run.
-  const allTextRuns = block.runs.filter(
-    (r): r is Extract<PostRun, { type: 'text' }> => r.type === 'text'
-  );
-  const blockUniformlyStyled =
-    allTextRuns.length > 0 &&
-    allTextRuns.every((r) => styleOf(r, style) === styleOf(allTextRuns[0], style));
-  const applyToEntireBlock = blockUniformlyStyled && alreadyOn;
-
   const finalRuns: PostRun[] = [];
   block.runs.forEach((run, index) => {
     if (run.type !== 'text') {
       finalRuns.push(run);
       return;
     }
-    if (applyToEntireBlock) {
-      // Toggle the entire run
-      finalRuns.push(withStyle(run, style, targetOn));
-    } else if (index >= startRun && index <= endRun) {
+    if (index >= startRun && index <= endRun) {
       // Split the run and toggle only the selected part
       const from = index === startRun ? startOffset : 0;
       const to = index === endRun ? endOffset : [...run.text].length;

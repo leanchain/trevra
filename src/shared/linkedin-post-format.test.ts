@@ -141,14 +141,37 @@ describe('applyStyleToSelection', () => {
         { type: 'text', text: ' more.', bold: true }
       )
     ];
+    // Selection spans the WHOLE block (run 0 offset 0 through run 2 offset 6,
+    // the full length of ' more.') -- not just the middle run. A selection
+    // limited to the middle run has no correct implementation that produces a
+    // single merged run: toggling only the selected text off necessarily
+    // leaves it different from its still-bold neighbors, so nothing merges.
+    // This selection is what actually exercises "toggle off, then re-merge":
+    // every run in the selection goes to bold:falsy and mergeAdjacent collapses
+    // the three identically-unstyled pieces into one.
     const next = applyStyleToSelection(
       blocks,
-      { start: { block: 0, run: 1, offset: 0 }, end: { block: 0, run: 1, offset: 9 } },
+      { start: { block: 0, run: 0, offset: 0 }, end: { block: 0, run: 2, offset: 6 } },
       'bold'
     );
     expect(next[0].runs).toHaveLength(1);
     expect(next[0].runs[0]).toMatchObject({ text: 'Some bold word more.' });
     expect(Boolean(next[0].runs[0].type === 'text' && next[0].runs[0].bold)).toBe(false);
+  });
+
+  it('regression: does not corrupt unselected text when toggling', () => {
+    // Bug: a single run "Hello World" (bold), selecting only "World" (offset 6-11),
+    // and toggling bold off should NOT affect "Hello " -- only "World" loses bold.
+    const blocks: PostBlock[] = [block({ type: 'text', text: 'Hello World', bold: true })];
+    const next = applyStyleToSelection(
+      blocks,
+      { start: { block: 0, run: 0, offset: 6 }, end: { block: 0, run: 0, offset: 11 } },
+      'bold'
+    );
+    expect(next[0].runs).toHaveLength(2);
+    expect(next[0].runs[0]).toMatchObject({ text: 'Hello ', bold: true });
+    expect(next[0].runs[1]).toMatchObject({ text: 'World' });
+    expect(Boolean(next[0].runs[1].type === 'text' && next[0].runs[1].bold)).toBe(false);
   });
 });
 
