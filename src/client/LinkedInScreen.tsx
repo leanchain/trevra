@@ -94,13 +94,6 @@ const LIMIT_REASON: Record<string, string> = {
 export const limitReason = (boundBy: string) =>
   LIMIT_REASON[boundBy] ?? boundBy.replaceAll('-', ' ');
 
-/** Where a queued action came from. The stored values are `campaign`, `export` and `manual`. */
-const ACTION_SOURCE_LABELS: Record<string, string> = {
-  campaign: 'A campaign',
-  export: 'An export file',
-  manual: 'Added by hand'
-};
-
 /* -------------------------------------------------------------------------
  * `/setup/limits` -- the never-contact list.
  * ---------------------------------------------------------------------- */

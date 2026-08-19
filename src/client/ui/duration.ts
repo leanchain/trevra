@@ -34,23 +34,3 @@ export function formatEvery(minutes: number): string {
   }
   return `Every ${minutes} minutes`;
 }
-
-/**
- * How long ago: "2 hours ago". For the timestamps an operator reads as a
- * duration -- how stale a signed-in session is -- where an absolute clock time
- * answers a question nobody asked.
- */
-export function relativeTime(iso: string): string {
-  const seconds = Math.round((Date.parse(iso) - Date.now()) / 1000);
-  if (!Number.isFinite(seconds)) return iso;
-  const format = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-  const steps: Array<[Intl.RelativeTimeFormatUnit, number]> = [
-    ['second', 60], ['minute', 60], ['hour', 24], ['day', 7], ['week', 4.35], ['month', 12]
-  ];
-  let value = seconds;
-  for (const [unit, size] of steps) {
-    if (Math.abs(value) < size) return format.format(Math.round(value), unit);
-    value /= size;
-  }
-  return format.format(Math.round(value), 'year');
-}

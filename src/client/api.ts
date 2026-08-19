@@ -784,9 +784,7 @@ export async function fetchLoopCost(windowDays: number): Promise<LoopCost> {
  *
  * NOTHING HERE SENDS ANYTHING, and the client half of that invariant is worth
  * stating where the fetches live: there is no `send` call below because there
- * is no route to call. `recordLinkedInOutcome` is the one function that moves
- * an action to sent/accepted/replied, and it is a REPORT of something that
- * already happened in the operator's own tool.
+ * is no route to call.
  * ================================================================== */
 
 /** Re-exported so the screens read one vocabulary and never reach into src/server themselves. */
@@ -1552,27 +1550,6 @@ export async function editLinkedInActionBody(
       body: JSON.stringify({ body })
     }
   );
-  return result.action;
-}
-
-/**
- * Report what already happened in the operator's own tool.
- *
- * `occurredAt` is not decoration: every rolling window reads it, so an outcome
- * reported on Friday for a send that happened on Tuesday must charge Tuesday.
- */
-export async function recordLinkedInOutcome(input: {
-  actionId?: string;
-  kind?: LinkedInActionKind;
-  targetRef?: string;
-  seatKey?: string;
-  outcome: 'sent' | 'accepted' | 'replied' | 'declined';
-  occurredAt?: string;
-}): Promise<LinkedInActionView> {
-  const result = await request<{ action: LinkedInActionView }>('/api/linkedin/actions/outcome', {
-    method: 'POST',
-    body: JSON.stringify(input)
-  });
   return result.action;
 }
 
