@@ -2336,16 +2336,20 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
       actionPattern: POLICY_DEFAULTS.actionPattern,
       effect: policyDraft.effect,
       priority: POLICY_DEFAULTS.priority,
-      conditions: buildConditions(conditionDraft),
-      enabled: true
+      conditions: buildConditions(conditionDraft)
     };
     setBusy(editingPolicy ? 'policy-edit' : 'policy-create');
     try {
       if (editingPolicy) {
-        setPolicies(await updatePolicy(editingPolicy.id, payload));
+        // The form has no enabled/disabled control -- that lives on the row's
+        // own toggle -- so an edit must carry the policy's current `enabled`
+        // forward rather than force it back on.
+        setPolicies(
+          await updatePolicy(editingPolicy.id, { ...payload, enabled: editingPolicy.enabled })
+        );
         setToast('Limit updated.');
       } else {
-        setPolicies(await createPolicy(payload));
+        setPolicies(await createPolicy({ ...payload, enabled: true }));
         setToast('Limit saved');
       }
       closeForm();
