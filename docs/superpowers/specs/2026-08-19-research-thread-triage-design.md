@@ -30,7 +30,15 @@ founder picked.
 
 ## 1. Read path
 
-`listOutreachThreads` selects `content` and `metadata_json` in addition to
+`outreach_threads` stores `content_hash`, never the content itself: the table was
+built to detect edits and to be the self-promotion ratio's denominator, not to
+be re-read. Relevance, topics and the drafted reply all read the body, so a
+migration adds `content TEXT NOT NULL DEFAULT ''`, written on insert and on
+conflict beside `title`. Rows discovered before the migration carry `''` until
+the next scout re-reads them, which is the same path an edited thread already
+takes.
+
+`listOutreachThreads` then selects `content` and `metadata_json` in addition to
 today's columns -- `scoreThread`, `extractTopics` and `suggestAngle` all read
 them, and without them relevance would be computed against a title alone.
 
@@ -156,5 +164,7 @@ no campaigns gets `{}` and a 200, not a 404.
   counters implementation is used when supplied.
 - Playbook test: `gtm.thread-reply` stops at `waiting_approval` with the payload
   hash covering the drafted body, and fails at `guard` for a blocked thread.
-- `ResearchView` tests: relevance, why chips, blocked dimming, dialog prefill
-  from a campaign brief, and dialog with no campaign present.
+- The client has no DOM test environment (vitest runs `node`, no jsdom), so the
+  card's derived strings -- age label, why chips, points-vs-score labelling --
+  live in `src/client/views/researchFormat.ts` and are unit-tested there.
+  `ResearchView` itself is verified by typecheck and by driving the running app.
