@@ -1057,12 +1057,27 @@ button:disabled {
 }
 .client-status {
   display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border-radius: var(--t-r-pill);
   padding: 3px 8px;
   background: var(--t-surface-2);
   color: var(--muted);
   font-size: var(--t-text-chip);
   text-transform: capitalize;
+}
+.claim-remove {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.claim-remove:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 .status-active {
   color: var(--green);

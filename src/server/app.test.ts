@@ -1840,6 +1840,72 @@ describe('GET /api/outreach/threads', () => {
     expect(entry.topics).toContain('token_cost');
     expect(entry.guard).toMatchObject({ allowed: expect.any(Boolean) });
   });
+
+  /**
+   * `agentWithSession` always resolves to the demo workspace, so with only
+   * one workspace in the database a dropped `WHERE workspace_id=?` is
+   * invisible -- the unscoped query still happens to return the right row.
+   * Two real, distinct workspaces (via `signUpAgent`) is what actually
+   * exercises the scoping.
+   */
+  it("never returns another workspace's threads", async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    const first = await signUpAgent(app, 'threads-a');
+    const firstAuth = await sessionAuth(first.agent);
+    const second = await signUpAgent(app, 'threads-b');
+    const secondAuth = await sessionAuth(second.agent);
+
+    const { recordSeenThreads } = await import('./outreach/store.js');
+    await recordSeenThreads(
+      db!,
+      firstAuth.workspaceId,
+      [
+        {
+          platform: 'linkedin',
+          externalId: 'ws-a-1',
+          url: 'https://linkedin.test/post/a',
+          title: 'Workspace A thread',
+          content: 'body',
+          author: 'someone',
+          community: null,
+          score: 7,
+          numComments: 2,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          metadata: {}
+        }
+      ],
+      new Date('2026-08-01T00:00:00.000Z')
+    );
+    await recordSeenThreads(
+      db!,
+      secondAuth.workspaceId,
+      [
+        {
+          platform: 'linkedin',
+          externalId: 'ws-b-1',
+          url: 'https://linkedin.test/post/b',
+          title: 'Workspace B thread',
+          content: 'body',
+          author: 'someone',
+          community: null,
+          score: 7,
+          numComments: 2,
+          createdAt: '2026-08-01T00:00:00.000Z',
+          metadata: {}
+        }
+      ],
+      new Date('2026-08-01T00:00:00.000Z')
+    );
+
+    const firstThreads = await first.agent.get('/api/outreach/threads').expect(200);
+    expect(firstThreads.body.threads).toHaveLength(1);
+    expect(firstThreads.body.threads[0].row.external_id).toBe('ws-a-1');
+
+    const secondThreads = await second.agent.get('/api/outreach/threads').expect(200);
+    expect(secondThreads.body.threads).toHaveLength(1);
+    expect(secondThreads.body.threads[0].row.external_id).toBe('ws-b-1');
+  });
 });
 
 describe('GET /api/outreach/offer-defaults', () => {
@@ -1883,5 +1949,59 @@ describe('GET /api/outreach/offer-defaults', () => {
       mechanism: 'Composite signals plus a hard approval gate.',
       claims: [{ label: 'Execution', value: 'Nothing sends without approval' }]
     });
+  });
+
+  /**
+   * Same gap as the threads test above: one workspace in the database
+   * means a dropped `WHERE workspace_id=?` still happens to pick the right
+   * (only) row. Two real workspaces makes an unscoped `ORDER BY created_at
+   * DESC LIMIT 1` observably wrong.
+   */
+  it("never returns another workspace's offer defaults", async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    const first = await signUpAgent(app, 'offer-a');
+    const second = await signUpAgent(app, 'offer-b');
+    const secondAuth = await sessionAuth(second.agent);
+
+    await db!
+      .prepare(
+        `INSERT INTO linkedin_campaigns (id, workspace_id, name, status, seat_key, sequence_json, brief_json, created_at, updated_at)
+         VALUES (?,?,?,?,?,?::jsonb,?::jsonb,?,?)`
+      )
+      .run(
+        'camp_offer_ws_b',
+        secondAuth.workspaceId,
+        'Workspace B offer',
+        'draft',
+        'owner',
+        JSON.stringify([]),
+        JSON.stringify({
+          icp: { role: 'founder', segment: 'seed saas', pain: 'cost' },
+          offer: {
+            name: 'Workspace B only',
+            summary: 'Only workspace B should ever see this.',
+            mechanism: 'Leakage would mean a missing workspace_id filter.',
+            proof: [{ label: 'Scope', value: 'Workspace B' }],
+            url: 'https://example.test/ws-b'
+          }
+        }),
+        // Deliberately the newest row in the table -- an unscoped
+        // `ORDER BY created_at DESC LIMIT 1` would hand it to ANY caller.
+        '2026-08-19T00:00:00.000Z',
+        '2026-08-19T00:00:00.000Z'
+      );
+
+    const firstOffer = await first.agent.get('/api/outreach/offer-defaults').expect(200);
+    expect(firstOffer.body.offer).toEqual({
+      name: '',
+      url: '',
+      summary: '',
+      mechanism: '',
+      claims: []
+    });
+
+    const secondOffer = await second.agent.get('/api/outreach/offer-defaults').expect(200);
+    expect(secondOffer.body.offer.name).toBe('Workspace B only');
   });
 });

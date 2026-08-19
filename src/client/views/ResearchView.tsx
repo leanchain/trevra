@@ -45,6 +45,9 @@ const EMPTY_OFFER: OutreachOffer = { name: '', url: '', summary: '', mechanism: 
 // would 400 on submit is caught here instead of round-tripping to the server.
 const OFFER_NAME_MAX = 80;
 const OFFER_TEXT_MAX = 300;
+// Same schema: claims caps at 8 entries, each label/value capped at 80 --
+// the same limit as OFFER_NAME_MAX, reused rather than re-declared.
+const OFFER_CLAIMS_MAX = 8;
 
 function isValidOfferUrl(value: string): boolean {
   try {
@@ -66,7 +69,18 @@ function offerIsSubmittable(offer: OutreachOffer): boolean {
     summary !== '' &&
     summary.length <= OFFER_TEXT_MAX &&
     mechanism !== '' &&
-    mechanism.length <= OFFER_TEXT_MAX
+    mechanism.length <= OFFER_TEXT_MAX &&
+    // A prefilled brief can carry more or longer proof entries than the
+    // playbook accepts (e.g. 9 claims) -- without this the button enables
+    // and submit 400s with no on-screen way to see why.
+    offer.claims.length <= OFFER_CLAIMS_MAX &&
+    offer.claims.every(
+      (claim) =>
+        claim.label.trim() !== '' &&
+        claim.label.length <= OFFER_NAME_MAX &&
+        claim.value.trim() !== '' &&
+        claim.value.length <= OFFER_NAME_MAX
+    )
   );
 }
 
@@ -180,13 +194,31 @@ function DraftDialog({
           {offer.claims.length > 0 && (
             <div>
               <span className="li-filter-label">Claims</span>
-              <p className="client-why">
-                {offer.claims.map((claim) => (
-                  <span className="client-status" key={claim.label}>
+              {/* Read-only rendering let an over-cap or over-length brief (e.g. 9
+                  proof entries) prefill with no way to get back under the
+                  playbook's caps -- removal is the minimum edit that always
+                  gets an offer back to submittable. */}
+              <div className="client-why">
+                {offer.claims.map((claim, index) => (
+                  <span className="client-status" key={`${claim.label}-${index}`}>
                     {claim.label}: {claim.value}
+                    <button
+                      type="button"
+                      className="claim-remove"
+                      aria-label={`Remove claim ${claim.label}`}
+                      disabled={starting}
+                      onClick={() =>
+                        setOffer({
+                          ...offer,
+                          claims: offer.claims.filter((_, at) => at !== index)
+                        })
+                      }
+                    >
+                      <X size={12} />
+                    </button>
                   </span>
                 ))}
-              </p>
+              </div>
             </div>
           )}
           {dialogError && <div className="error-banner">{dialogError}</div>}
@@ -310,7 +342,15 @@ export function ResearchView({
       });
       setDrafting(null);
       setOffer(EMPTY_OFFER);
-      setToast(`Draft prepared for approval (run ${run.id}).`);
+      // A 201 only means the run was accepted -- the guard step can still fail
+      // synchronously (e.g. a blocked thread's daily cap or cooldown), landing
+      // the run at `failed` instead of `waiting_approval`. That is an answer,
+      // not a fault: report it as blocked rather than as success (spec §4).
+      if (run.status === 'waiting_approval') {
+        setToast(`Draft prepared for approval (run ${run.id}).`);
+      } else {
+        setToast(`Blocked: ${run.error ?? 'The run did not reach approval.'}`);
+      }
     } catch (error) {
       setDialogError(error instanceof Error ? error.message : 'Could not start the draft.');
     } finally {
