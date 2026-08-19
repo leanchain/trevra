@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.js';
 import { loadThreadFeed } from './feed.js';
 import { recordPost, recordSeenThreads } from './store.js';
@@ -14,6 +14,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await db?.close();
+  vi.unstubAllEnvs();
 });
 
 function thread(overrides: Partial<OutreachThread> = {}): OutreachThread {
@@ -98,23 +99,21 @@ describe('loadThreadFeed', () => {
 
     // reddit's own account-age/karma minimums (config.ts) would otherwise be
     // the first failing check for an undeclared account, masking the cooldown
-    // this test is actually about. Declare a profile that clears both, same as
-    // safety.test.ts's GOOD_ACCOUNT, so cooldown is what fails.
-    const previousProfiles = process.env.OUTREACH_ACCOUNT_PROFILES_JSON;
-    process.env.OUTREACH_ACCOUNT_PROFILES_JSON = JSON.stringify({
-      reddit: { accountAgeDays: 400, karma: 1200 }
-    });
-    try {
-      const feed = await loadThreadFeed(db, DEMO_WORKSPACE_ID, { platform: 'reddit' }, NOW);
+    // this test is actually about. Stub a profile that clears both, same as
+    // safety.test.ts's GOOD_ACCOUNT, so cooldown is what fails. vi.stubEnv +
+    // the afterEach's unstubAllEnvs keeps this from leaking into other files
+    // sharing the worker, unlike a raw process.env mutation.
+    vi.stubEnv(
+      'OUTREACH_ACCOUNT_PROFILES_JSON',
+      JSON.stringify({ reddit: { accountAgeDays: 400, karma: 1200 } })
+    );
 
-      expect(feed).toHaveLength(1);
-      expect(feed[0].guard.allowed).toBe(false);
-      expect(feed[0].guard.failedChecks).toContain('community-cooldown');
-      expect(feed[0].guard.reason).toMatch(/cooldown/);
-    } finally {
-      if (previousProfiles === undefined) delete process.env.OUTREACH_ACCOUNT_PROFILES_JSON;
-      else process.env.OUTREACH_ACCOUNT_PROFILES_JSON = previousProfiles;
-    }
+    const feed = await loadThreadFeed(db, DEMO_WORKSPACE_ID, { platform: 'reddit' }, NOW);
+
+    expect(feed).toHaveLength(1);
+    expect(feed[0].guard.allowed).toBe(false);
+    expect(feed[0].guard.failedChecks).toContain('community-cooldown');
+    expect(feed[0].guard.reason).toMatch(/cooldown/);
   });
 
   it('never reports permission when the gate itself could not be evaluated', async () => {
