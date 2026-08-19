@@ -100,7 +100,11 @@ New failure kinds added to the existing `LinkedInFailureKind` union: `compose_un
 
 ## Worker integration
 
+**Correction from the first draft of this spec:** `src/server/app.ts` (the API process) never imports `driver.ts` or anything downstream of it — confirmed by grep, zero hits. Only `local-worker.ts`/`jobs.ts`, running inside `src/worker/index.ts`, ever opens a Playwright session (`driver.ts`'s own header explains why: Playwright is an optional 400MB dependency the API/marketing build must stay able to compile without). **This means there is no synchronous "publish now" path** — an API route can never call `publishPost` directly, the same way it can never call `sendDm` directly today. "Publish now" is therefore not a separate bypass milestone; it's the explicit-scheduling path with `scheduled_at = now()`, picked up on the next tick like anything else (worker tick interval is `AUTOMATION_INTERVAL_MS`, default 60s — the composer's "Publish now" button sets `scheduled_at` and shows the post as `scheduled`/`publishing` rather than pretending it happened synchronously).
+
 `src/worker/index.ts`'s existing `linkedinCycle` gains a sibling tick, `runLinkedInPostTick` (new function in `src/server/linkedin/jobs.ts`, same file/pattern as `runLinkedInCampaignTick`): per workspace, find seats with a `linkedin_posts` row `status = 'scheduled'` and `scheduled_at <= now`, oldest first, capped per tick like the existing `CAMPAIGN_WORKSPACES_PER_TICK`/`SIDE_TASK_SEATS_PER_TICK` constants. Uses the same DB-lease pattern as `runner.ts`'s `RUNNER_LEASE_NAMESPACE` so multiple worker replicas never double-publish the same post.
+
+This folds what looked like two separable milestones ("manual publish" and "scheduling") into one: the worker tick is load-bearing infrastructure for even the simplest "write a post, publish it" case, not an enhancement layered on top later. Revised build order: **(1) compose + data model + renderer + driver + worker tick, covering both explicit-time scheduling and publish-now as the same code path; (2) cadence queue; (3) mentions + media.**
 
 ## Safety
 
@@ -135,7 +139,7 @@ linkedin_post_cadences (
 
 - `GET/POST /linkedin/posts` — list (filterable by seat/status), create (draft or scheduled).
 - `PATCH/DELETE /linkedin/posts/:id` — edit (only while `draft`/`scheduled`), cancel.
-- `POST /linkedin/posts/:id/publish-now` — manual immediate publish (milestone 1, bypasses scheduling entirely).
+- `POST /linkedin/posts/:id/publish-now` — convenience wrapper that sets `scheduled_at = now()` on a draft (still goes out through the worker tick above, typically within a minute — not a synchronous bypass; see Worker integration).
 - `POST /linkedin/posts/reorder` — batch `sequence_position` update for the cadence queue.
 - `GET/PUT /linkedin/post-cadences/:seatKey` — cadence slot template.
 - `POST /linkedin/mentions/resolve` — compose-time resolve-on-add (drives the companion browser's typeahead, returns candidates).
