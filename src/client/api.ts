@@ -48,6 +48,8 @@ import type {
   LoopCostSpent
 } from '../server/loop-cost';
 import type { LinkedInActionKind, LinkedInActionStatus } from '../server/linkedin/actions';
+import type { LinkedInPost, LinkedInPostStatus } from '../server/linkedin/posts';
+import type { PostBlock } from '../shared/linkedin-post-format';
 import type { BranchOn, StepCondition } from '../server/linkedin/branching';
 import type { LinkedInSafetyCheck, LinkedInSafetyVerdict } from '../server/linkedin/guard';
 import type {
@@ -1828,6 +1830,66 @@ export async function stopLinkedInCampaign(
   id: string
 ): Promise<{ campaign: LinkedInCampaign; releasedActions: number }> {
   return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+}
+
+export async function listLinkedInPosts(
+  filters: { seatKey?: string; status?: LinkedInPostStatus; limit?: number } = {}
+): Promise<LinkedInPost[]> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '') query.set(key, String(value));
+  }
+  const result = await request<{ posts: LinkedInPost[] }>(
+    `/api/linkedin/posts${query.size ? `?${query}` : ''}`
+  );
+  return result.posts;
+}
+
+export async function createLinkedInPost(input: {
+  seatKey?: string;
+  blocks: PostBlock[];
+  status?: 'draft' | 'scheduled';
+  scheduledAt?: string;
+}): Promise<LinkedInPost> {
+  const result = await request<{ post: LinkedInPost }>('/api/linkedin/posts', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+  return result.post;
+}
+
+export async function updateLinkedInPost(
+  postId: string,
+  patch: { blocks?: PostBlock[]; status?: 'draft' | 'scheduled'; scheduledAt?: string | null }
+): Promise<LinkedInPost> {
+  const result = await request<{ post: LinkedInPost }>(
+    `/api/linkedin/posts/${encodeURIComponent(postId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(patch)
+    }
+  );
+  return result.post;
+}
+
+export async function cancelLinkedInPost(postId: string): Promise<LinkedInPost> {
+  const result = await request<{ post: LinkedInPost }>(
+    `/api/linkedin/posts/${encodeURIComponent(postId)}`,
+    {
+      method: 'DELETE'
+    }
+  );
+  return result.post;
+}
+
+export async function publishLinkedInPostNow(postId: string): Promise<LinkedInPost> {
+  const result = await request<{ post: LinkedInPost }>(
+    `/api/linkedin/posts/${encodeURIComponent(postId)}/publish-now`,
+    {
+      method: 'POST'
+    }
+  );
+  return result.post;
 }
 
 export function linkedInExportDownloadPath(campaignId: string, exportId: string): string {
