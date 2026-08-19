@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Bot,
@@ -17,7 +17,6 @@ import {
   LogOut,
   Pencil,
   Play,
-  RefreshCw,
   Repeat,
   Settings2,
   ShieldCheck,
@@ -59,8 +58,7 @@ import {
   saveAgentModelConfig,
   setAgentCliRiskAccepted,
   startAgentRun,
-  startDemoSession,
-  syncIntegration
+  startDemoSession
 } from './api';
 import { authClient } from './auth-client';
 import { AccountsScreen } from './AccountsScreen';
@@ -1002,6 +1000,59 @@ function AuthScreen({
     </main>
   );
 }
+
+/** One CLI's connect command: its own label, its own Copy button, its own
+ * reveal-state note. Both Claude Code and Codex render one of these, always
+ * together -- no toggle decides which one a founder sees. */
+function AgentCommandBox({
+  label,
+  command,
+  revealed,
+  copied,
+  onCopy,
+  note
+}: {
+  label: string;
+  command: string;
+  revealed: boolean;
+  copied: boolean;
+  onCopy: () => void;
+  note?: ReactNode;
+}) {
+  return (
+    <div className="agent-command">
+      <div className="agent-command-head">
+        <span>{label}</span>
+        <button className="secondary-button" onClick={onCopy}>
+          {copied ? (
+            <>
+              <Check size={15} /> Copied
+            </>
+          ) : (
+            <>
+              <Copy size={15} /> Copy
+            </>
+          )}
+        </button>
+      </div>
+      <pre>
+        <code>{command}</code>
+      </pre>
+      {revealed ? (
+        <p className="agent-command-note">
+          This is the only time the token is shown — Trevra stores it hashed. Lost it? Create
+          another.
+        </p>
+      ) : (
+        <p className="agent-command-note">
+          Create access above and the real token drops straight into this command.
+        </p>
+      )}
+      {note}
+    </div>
+  );
+}
+
 /**
  * Connect Claude Code or Codex in one click.
  *
@@ -1018,9 +1069,8 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
   const [tokens, setTokens] = useState<AgentTokenSummary[]>([]);
   const [revealed, setRevealed] = useState('');
   const [apiBaseUrl, setApiBaseUrl] = useState('');
-  const [target, setTarget] = useState<'claude' | 'codex'>('claude');
   const [busy, setBusy] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [copiedTarget, setCopiedTarget] = useState<'claude' | 'codex' | ''>('');
   const [confirmRevoke, setConfirmRevoke] = useState<AgentTokenSummary | null>(null);
 
   const reload = async () => setTokens(await getAgentTokens());
@@ -1038,9 +1088,10 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
     setBusy('create');
     try {
       // Auto-named. Asking a founder to invent a token name before they can
-      // connect anything was a question with no useful answer.
+      // connect anything was a question with no useful answer. One stable
+      // name either way: the same token backs both commands below.
       const created = await createAgentToken({
-        name: `${target === 'claude' ? 'Claude Code' : 'Codex'} · ${new Date().toLocaleDateString()}`
+        name: `Agent access · ${new Date().toLocaleDateString()}`
       });
       setRevealed(created.token);
       await reload();
@@ -1071,12 +1122,10 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
 
   const mcpUrl = `${apiBaseUrl || window.location.origin}/api/agent/mcp`;
   const secret = revealed || '<your-token>';
-  const command =
-    target === 'claude'
-      ? `claude mcp add trevra --scope project --transport http ${mcpUrl} --header "Authorization: Bearer ${secret}"`
-      : `export TREVRA_AGENT_TOKEN=${secret}\ncodex mcp add trevra --url ${mcpUrl} --bearer-token-env-var TREVRA_AGENT_TOKEN`;
+  const claudeCommand = `claude mcp add trevra --scope project --transport http ${mcpUrl} --header "Authorization: Bearer ${secret}"`;
+  const codexCommand = `export TREVRA_AGENT_TOKEN=${secret}\ncodex mcp add trevra --url ${mcpUrl} --bearer-token-env-var TREVRA_AGENT_TOKEN`;
 
-  const copy = async () => {
+  const copy = async (which: 'claude' | 'codex', command: string) => {
     if (!revealed) {
       setToast('Click "Create access" first to generate your command');
       return;
@@ -1084,8 +1133,8 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
     try {
       await navigator.clipboard.writeText(command);
       setToast('Command copied — paste it in your terminal');
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
+      setCopiedTarget(which);
+      window.setTimeout(() => setCopiedTarget(''), 2000);
     } catch {
       setToast('Could not copy. Select the command and copy it manually.');
     }
@@ -1109,21 +1158,6 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
         <span className="status-pill">{active.length} connected</span>
       </div>
 
-      <div className="agent-target-switch">
-        <button
-          className={target === 'claude' ? 'is-active' : undefined}
-          onClick={() => setTarget('claude')}
-        >
-          Claude Code
-        </button>
-        <button
-          className={target === 'codex' ? 'is-active' : undefined}
-          onClick={() => setTarget('codex')}
-        >
-          Codex
-        </button>
-      </div>
-
       {!revealed && (
         <button
           className="primary-button agent-create"
@@ -1131,41 +1165,17 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
           disabled={busy === 'create'}
         >
           {busy === 'create' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
-          Create access for {target === 'claude' ? 'Claude Code' : 'Codex'}
+          Create access
         </button>
       )}
 
-      <div className="agent-command">
-        <div className="agent-command-head">
-          <span>
-            {revealed ? 'Paste this in your terminal' : 'Your command will look like this'}
-          </span>
-          <button className="secondary-button" onClick={() => void copy()}>
-            {copied ? (
-              <>
-                <Check size={15} /> Copied
-              </>
-            ) : (
-              <>
-                <Copy size={15} /> Copy
-              </>
-            )}
-          </button>
-        </div>
-        <pre>
-          <code>{command}</code>
-        </pre>
-        {revealed ? (
-          <p className="agent-command-note">
-            This is the only time the token is shown — Trevra stores it hashed. Lost it? Create
-            another.
-          </p>
-        ) : (
-          <p className="agent-command-note">
-            Create access above and the real token drops straight into this command.
-          </p>
-        )}
-        {target === 'claude' && (
+      <AgentCommandBox
+        label="Claude Code"
+        command={claudeCommand}
+        revealed={Boolean(revealed)}
+        copied={copiedTarget === 'claude'}
+        onCopy={() => void copy('claude', claudeCommand)}
+        note={
           <p className="agent-command-note">
             Run this from the project directory you want Trevra wired into.{' '}
             <code>--scope project</code> writes the server to that project's <code>.mcp.json</code>{' '}
@@ -1174,8 +1184,16 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
             unshared? Drop <code>--scope project</code> to use the default <code>local</code> scope
             instead.
           </p>
-        )}
-      </div>
+        }
+      />
+
+      <AgentCommandBox
+        label="Codex"
+        command={codexCommand}
+        revealed={Boolean(revealed)}
+        copied={copiedTarget === 'codex'}
+        onCopy={() => void copy('codex', codexCommand)}
+      />
 
       {active.length > 0 && (
         <div className="agent-token-list">
@@ -1314,7 +1332,6 @@ function HostedAgentPanel({
   const [problem, setProblem] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
-  const [providerLabel, setProviderLabel] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [replacingKey, setReplacingKey] = useState(false);
   const [capDollars, setCapDollars] = useState('20');
@@ -1335,7 +1352,6 @@ function HostedAgentPanel({
         setSetup(next);
         setBaseUrl(next.config?.baseUrl ?? '');
         setModel(next.config?.model ?? '');
-        setProviderLabel(next.config?.label ?? next.secret?.label ?? '');
         setCapDollars(String(Math.round(next.budget.monthlyCapCents / 100)));
         if (next.cli.config) {
           setCliKind(next.cli.config.cli);
@@ -1469,29 +1485,10 @@ function HostedAgentPanel({
     </div>
   );
 
-  // No key field at all when the deployment cannot encrypt one. Offering a
-  // paste box that is guaranteed to fail is worse than saying so.
-  if (!available)
-    return (
-      <section className="page-panel agent-panel byok-panel">
-        {heading}
-        <div className="byok-warning byok-warning-off">
-          <CircleAlert size={18} />
-          <div>
-            <strong>This is switched off on this server.</strong>
-            <p>
-              There is nowhere here to encrypt a model key, so there is nothing to set up and
-              nothing to paste. Your own agent above is unaffected and does the same work while you
-              are at the keyboard.
-            </p>
-            <p>
-              Running Trevra yourself? Whoever administers this server can switch it on, and this
-              section fills in.
-            </p>
-          </div>
-        </div>
-      </section>
-    );
+  // Nothing at all when the deployment cannot encrypt a key: there is
+  // nowhere to put one, so there is nothing here to set up or paste.
+  // AgentAccessPanel above is unaffected and still renders.
+  if (!available) return null;
 
   const capCents = Math.round(Number(capDollars) * 100);
   const capValid =
@@ -1501,9 +1498,7 @@ function HostedAgentPanel({
   // also what the single Save writes -- it never sends a call for a block
   // nobody touched.
   const dirtyConfig = config
-    ? baseUrl.trim() !== config.baseUrl ||
-      model.trim() !== config.model ||
-      (providerLabel.trim() || '') !== (config.label ?? '')
+    ? baseUrl.trim() !== config.baseUrl || model.trim() !== config.model
     : Boolean(baseUrl.trim() || model.trim());
   const dirtyKey = apiKey.trim().length > 0;
   const dirtyCap = capValid && capCents !== budget.monthlyCapCents;
@@ -1560,16 +1555,14 @@ function HostedAgentPanel({
       if (dirtyConfig) {
         const next = await saveAgentModelConfig({
           baseUrl: baseUrl.trim(),
-          model: model.trim(),
-          label: providerLabel.trim() || undefined
+          model: model.trim()
         });
         setSetup((current) => current && { ...current, config: next });
         done.push('the endpoint');
       }
       if (dirtyKey) {
         const next = await saveAgentKey({
-          apiKey: apiKey.trim(),
-          label: providerLabel.trim() || undefined
+          apiKey: apiKey.trim()
         });
         setSetup((current) => current && { ...current, secret: next });
         setApiKey('');
@@ -1740,15 +1733,6 @@ function HostedAgentPanel({
                     placeholder="the model name your provider uses"
                     autoComplete="off"
                     spellCheck={false}
-                  />
-                </label>
-                <label>
-                  Call it something (optional)
-                  <input
-                    value={providerLabel}
-                    onChange={(event) => setProviderLabel(event.target.value)}
-                    placeholder="Work account"
-                    maxLength={120}
                   />
                 </label>
               </div>
@@ -2239,27 +2223,6 @@ function ConnectionsView({
                 </span>
               </div>
               <div className="connection-actions">
-                {!connection.isDemo && (
-                  <button
-                    className="icon-button"
-                    aria-label={`Sync ${prettyProvider(connection.provider)} now`}
-                    title="Sync now"
-                    disabled={busyId === connection.id}
-                    onClick={() => {
-                      setBusyId(connection.id);
-                      void syncIntegration(connection.id)
-                        .then(() => setToast('Sync requested'))
-                        .catch((err) => setToast(err.message))
-                        .finally(() => setBusyId(null));
-                    }}
-                  >
-                    {busyId === connection.id ? (
-                      <LoaderCircle className="spin" size={17} />
-                    ) : (
-                      <RefreshCw size={17} />
-                    )}
-                  </button>
-                )}
                 {!connection.isDemo && (
                   <button
                     className="icon-button danger"
