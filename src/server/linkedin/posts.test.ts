@@ -200,6 +200,41 @@ describe('claimNextDuePost', () => {
     });
   });
 
+  it("skips excluded seats, so a different seat's due post is still claimable in the same pass", async () => {
+    await createPost(
+      db,
+      {
+        id: 'lipost_seat_a',
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-a',
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T08:00:00.000Z', // earlier -- would normally claim first
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    await createPost(
+      db,
+      {
+        id: 'lipost_seat_b',
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-b',
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T09:00:00.000Z',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    const claimed = await claimNextDuePost(db, WORKSPACE_ID, NOW, ['seat-a']);
+    expect(claimed?.id).toBe('lipost_seat_b');
+    // seat-a's post is untouched -- still scheduled, ready for a future tick.
+    expect(await getPost(db, WORKSPACE_ID, 'lipost_seat_a')).toMatchObject({
+      status: 'scheduled'
+    });
+  });
+
   it('never claims a post scheduled in the future', async () => {
     await createPost(
       db,

@@ -1033,4 +1033,77 @@ describe('runLinkedInPostTick', () => {
     expect(result.published).toBe(0);
     expect(await getPost(db, WORKSPACE_ID, post.id)).toMatchObject({ status: 'scheduled' });
   });
+
+  it('does not stop at the first seat whose session fails to open -- a second seat in the same workspace is still attempted', async () => {
+    // Regression test for the fix: this loop used to `break` the whole
+    // workspace-scoped tick on the first session failure, silently starving
+    // every OTHER seat's due post too. Both seats fail here (session opening
+    // is disabled globally via `{ enabled: false }`, which is the only lever
+    // the existing openLinkedInSession test seam exposes -- it cannot be made
+    // to succeed for one seat and fail for another), so this proves the LOOP
+    // no longer aborts after the first failure (both posts get attempted and
+    // released, not just one) -- not that a healthy second seat succeeds. That
+    // half is covered by claimNextDuePost's own "skips excluded seats" test
+    // (Task 2) plus this task's existing single-seat "publishes a due post"
+    // test, together proving the exclusion mechanism and the success path
+    // independently.
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Second seat', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/second/' },
+      NOW,
+      'seat-b'
+    );
+    const postA = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'From the owner seat' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+    const postB = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'seat-b',
+        blocks: [{ runs: [{ type: 'text', text: 'From the second seat' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+
+    // A `status: 'scheduled'` check alone cannot distinguish "both seats were
+    // attempted and released" from "the loop broke after the first and never
+    // touched the second" -- an untouched post is already 'scheduled'. `log`
+    // is called once per held seat, so counting ITS calls is what actually
+    // proves the loop kept going: 1 call is the old (broken) behavior, 2 is
+    // the fixed one.
+    const held: string[] = [];
+    const result = await runLinkedInPostTick(
+      db,
+      { enabled: false } as unknown as Parameters<typeof runLinkedInPostTick>[1],
+      { workspaceId: WORKSPACE_ID, now: NOW, log: (message: string) => held.push(message) }
+    );
+
+    expect(result.published).toBe(0);
+    expect(held).toHaveLength(2);
+    expect(held.some((m) => m.includes(postA.id))).toBe(true);
+    expect(held.some((m) => m.includes(postB.id))).toBe(true);
+    expect(await getPost(db, WORKSPACE_ID, postA.id)).toMatchObject({ status: 'scheduled' });
+    expect(await getPost(db, WORKSPACE_ID, postB.id)).toMatchObject({ status: 'scheduled' });
+  });
 });

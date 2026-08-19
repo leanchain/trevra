@@ -1308,9 +1308,17 @@ export async function runLinkedInPostTick(
   const log = options.log ?? ((message: string) => console.log(message));
   let published = 0;
   let missed = 0;
+  // A seat whose session fails must not starve every OTHER seat's due post in
+  // the same workspace-scoped tick -- see claimNextDuePost's own doc comment.
+  // `runLinkedInSideTasks` solves the identical problem by ticking per seat;
+  // this function claims across a whole workspace, so it tracks failures
+  // in-loop instead. Once a seat is in this set, its remaining due posts are
+  // left `scheduled` for the next tick rather than reclaimed and failed again
+  // this same pass.
+  const failedSeats = new Set<string>();
 
   for (let i = 0; i < POSTS_PER_WORKSPACE_TICK; i += 1) {
-    const claimed = await claimNextDuePost(db, workspaceId, now);
+    const claimed = await claimNextDuePost(db, workspaceId, now, [...failedSeats]);
     if (!claimed) break;
 
     const scheduledAt = claimed.scheduledAt ? new Date(claimed.scheduledAt) : now;
@@ -1332,7 +1340,8 @@ export async function runLinkedInPostTick(
       log(
         `LinkedIn post ${claimed.id} held for ${workspaceId}/${claimed.seatKey}: ${session.blocked}`
       );
-      break; // nothing else will open a session for this workspace this tick either
+      failedSeats.add(claimed.seatKey);
+      continue; // a DIFFERENT seat in this workspace may still have a healthy session
     }
 
     const wrongAccount = options.accountConfirmed
@@ -1341,7 +1350,8 @@ export async function runLinkedInPostTick(
     if (wrongAccount) {
       await releasePostToScheduled(db, claimed.id, now);
       log(`LinkedIn post ${claimed.id} held: ${wrongAccount}`);
-      break;
+      failedSeats.add(claimed.seatKey);
+      continue;
     }
 
     const body = renderPostBody(claimed.blocks);

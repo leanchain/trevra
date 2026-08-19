@@ -242,11 +242,21 @@ export async function cancelPost(
  * replicas ticking at once can never both pick the same row -- `FOR UPDATE
  * SKIP LOCKED` inside the subquery is Postgres's standard "claim one queued
  * row, race-free, no shared lease table needed" idiom.
+ *
+ * `excludeSeatKeys` is how ONE tick keeps a broken seat from starving every
+ * OTHER seat's due posts in the same workspace. Without it, a seat whose
+ * companion session cannot open would have its due post re-claimed first on
+ * every loop iteration (it is always the earliest `scheduled_at` again the
+ * moment it is released) and nothing from a different, perfectly healthy seat
+ * in the same workspace would ever be reached. `seat_key <> ALL(?)` with an
+ * empty array is vacuously true for every row in Postgres -- "exclude
+ * nothing" -- so the common single-seat case pays zero extra cost.
  */
 export async function claimNextDuePost(
   db: Db,
   workspaceId: string,
-  now: Date
+  now: Date,
+  excludeSeatKeys: readonly string[] = []
 ): Promise<LinkedInPost | undefined> {
   return db.transaction(async (tx) => {
     const row = await tx
@@ -257,6 +267,7 @@ export async function claimNextDuePost(
       WHERE id = (
         SELECT id FROM linkedin_posts
         WHERE workspace_id = ? AND status = 'scheduled' AND scheduled_at <= ?
+          AND seat_key <> ALL(?)
         ORDER BY scheduled_at ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
@@ -264,7 +275,7 @@ export async function claimNextDuePost(
       RETURNING ${POST_COLUMNS}
     `
       )
-      .get<PostRow>(now.toISOString(), workspaceId, now.toISOString());
+      .get<PostRow>(now.toISOString(), workspaceId, now.toISOString(), [...excludeSeatKeys]);
     return row ? toPost(row) : undefined;
   });
 }
