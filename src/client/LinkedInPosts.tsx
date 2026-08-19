@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bold, Italic, Underline, List, ListOrdered } from 'lucide-react';
 import {
   applyStyleToSelection,
@@ -8,7 +8,14 @@ import {
   type PostStyle,
   type RunPosition
 } from '../shared/linkedin-post-format';
-import { createLinkedInPost, publishLinkedInPostNow, type ApiError } from './api';
+import {
+  cancelLinkedInPost,
+  createLinkedInPost,
+  listLinkedInPosts,
+  publishLinkedInPostNow,
+  type ApiError,
+  type LinkedInPost
+} from './api';
 import { useActiveSeatKey } from './LinkedInAccounts';
 
 const MAX_CHARS = 3000;
@@ -258,6 +265,105 @@ export function PostComposer({
           Publish now
         </button>
       </div>
+    </div>
+  );
+}
+
+const STATUS_LABELS: Record<LinkedInPost['status'], string> = {
+  draft: 'Draft',
+  scheduled: 'Scheduled',
+  publishing: 'Publishing…',
+  posted: 'Posted',
+  failed: 'Failed',
+  missed: 'Missed',
+  canceled: 'Canceled'
+};
+
+function PostRow({ post, onChanged }: { post: LinkedInPost; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const cancel = async () => {
+    setBusy(true);
+    try {
+      await cancelLinkedInPost(post.id);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const publishNow = async () => {
+    setBusy(true);
+    try {
+      await publishLinkedInPostNow(post.id);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const preview = renderPostBody(post.blocks).slice(0, 140);
+  return (
+    <li className="li-post-row">
+      <span className={`li-post-status li-post-status--${post.status}`}>
+        {STATUS_LABELS[post.status]}
+      </span>
+      <span className="li-post-row-preview">{preview}</span>
+      <span className="li-post-row-when">
+        {post.scheduledAt ? new Date(post.scheduledAt).toLocaleString() : '—'}
+      </span>
+      {(post.status === 'failed' || post.status === 'missed') && post.error && (
+        <span className="li-post-row-error" title={post.error.detail}>
+          {post.error.kind}
+        </span>
+      )}
+      {(post.status === 'draft' || post.status === 'scheduled') && (
+        <span className="li-post-row-actions">
+          <button type="button" disabled={busy} onClick={publishNow}>
+            Publish now
+          </button>
+          <button type="button" disabled={busy} onClick={cancel}>
+            Cancel
+          </button>
+        </span>
+      )}
+      {post.status === 'posted' && post.postedUrl && (
+        <a className="li-post-row-link" href={post.postedUrl} target="_blank" rel="noreferrer">
+          View on LinkedIn
+        </a>
+      )}
+    </li>
+  );
+}
+
+export function LinkedInPosts({ setToast }: { setToast: (message: string) => void }) {
+  const [posts, setPosts] = useState<LinkedInPost[] | null>(null);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      setPosts(await listLinkedInPosts());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not load posts.');
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div className="li-posts-screen">
+      <PostComposer setToast={setToast} onCreated={load} />
+      {error && <p className="li-post-error">{error}</p>}
+      {posts === null ? (
+        <p>Loading…</p>
+      ) : posts.length === 0 ? (
+        <p className="li-post-empty">No posts yet — write one above.</p>
+      ) : (
+        <ul className="li-post-list">
+          {posts.map((post) => (
+            <PostRow key={post.id} post={post} onChanged={load} />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

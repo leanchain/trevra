@@ -795,6 +795,8 @@ export type {
   LinkedInLeadSource,
   LinkedInMessageRecord,
   LinkedInOffer,
+  LinkedInPost,
+  LinkedInPostStatus,
   LinkedInSafetyCheck,
   LinkedInSafetyVerdict,
   LinkedInSeat,

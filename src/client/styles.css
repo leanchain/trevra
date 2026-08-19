@@ -9945,3 +9945,107 @@ button:disabled {
 .li-post-actions button {
   white-space: nowrap;
 }
+
+/* Queue/history list, below the composer. `.li-post-status` is the same chip
+   shape as `.li-chip` (inline-flex, small radius, bold chip text) kept as its
+   own class because the JSX never also sets `.li-chip` -- but its colors
+   reuse the exact vocabulary `.li-status-*`/`.li-campaign-*` already spend:
+   muted for a state nothing is doing anything about (draft not yet
+   committed, canceled stopped by a person -- same read as `.li-status-
+   withdrawn`), blue for queued (scheduled, mirrors `.li-status-planned`),
+   amber for "in progress or stalled, needs a look" (publishing, and missed --
+   the grace window lapsed and the user has to reschedule or discard, the same
+   "stopped, waiting on you" amber `.li-status-held` uses), green for success,
+   red for a real failure. */
+.li-posts-screen {
+  display: grid;
+  gap: 28px;
+}
+.li-post-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--t-line-soft);
+}
+.li-post-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.li-post-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--t-r-sm);
+  padding: 3px 9px;
+  font-size: var(--t-text-chip);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.li-post-status--draft,
+.li-post-status--canceled {
+  background: var(--t-surface-2);
+  color: var(--muted);
+}
+.li-post-status--scheduled {
+  background: var(--blue-bg);
+  color: var(--blue);
+}
+.li-post-status--publishing,
+.li-post-status--missed {
+  background: var(--amber-bg);
+  color: var(--amber);
+}
+.li-post-status--posted {
+  background: var(--green-3);
+  color: var(--green);
+}
+.li-post-status--failed {
+  background: var(--red-bg);
+  color: var(--red);
+}
+.li-post-row-preview {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-text-xs);
+}
+.li-post-row-when {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  white-space: nowrap;
+}
+.li-post-row-error {
+  color: var(--red);
+  font-size: var(--t-text-chip);
+  font-weight: 700;
+  cursor: help;
+}
+.li-post-row-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.li-post-row-actions button {
+  white-space: nowrap;
+}
+.li-post-row-link {
+  margin-left: auto;
+  color: var(--green);
+  font-size: var(--t-text-xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.li-post-row-link:hover {
+  text-decoration: underline;
+}
+.li-post-empty {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  padding: 20px 4px 4px;
+  margin: 0;
+}
