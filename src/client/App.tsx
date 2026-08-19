@@ -1285,10 +1285,11 @@ const andList = (parts: string[]) =>
  * and no route returns it at any privilege -- so such a control could not be
  * wired to anything, and adding one is a server redesign, not a UI change.
  *
- * And the warning is the first thing in the panel rather than a footnote under
- * the field. A hosted service holding customer model keys is a real,
- * concentrated liability; the design doc's §7 says the operator deserves to
- * weigh that before pasting, which only means anything if they read it first.
+ * And the warning is the first thing inside the compute disclosure, before
+ * either field, rather than a footnote under one. A hosted service holding
+ * customer model keys is a real, concentrated liability; the design doc's §7
+ * says the operator deserves to weigh that before pasting, which only means
+ * anything if they read it first.
  *
  * ONE SAVE, NOT FOUR -- mostly. Setting this up used to cost four round-trips
  * and four toasts -- Save endpoint, Store key, Save cap, Save schedule -- for
@@ -1474,6 +1475,11 @@ function HostedAgentPanel({
   const { available, config, secret, budget } = setup;
   const schedule = setup.schedule;
   const hasSchedule = schedule !== undefined;
+
+  // A configured workspace never hides its own configuration: open what is
+  // already set, keep the rest shut.
+  const computeOpen = Boolean(secret) || Boolean(setup.cli?.tokenStored);
+  const spendOpen = Boolean(budget?.enabled);
 
   const heading = (
     <div className="section-heading">
@@ -1727,409 +1733,401 @@ function HostedAgentPanel({
 
       {problem && <div className="error-banner byok-error">{problem}</div>}
 
-      {/* Deliberately not inside the collapsed section below: a hosted
-        service holding customer model keys is a real, concentrated
-        liability, and the operator deserves to weigh that before pasting --
-        which only means anything if they read it first, not after opening a
-        toggle. See the panel doc comment above. */}
-      <div className="byok-warning">
-        <CircleAlert size={18} />
-        <div>
-          <strong>Read this before you paste a key.</strong>
-          <p>
-            Trevra encrypts your key and uses it on your behalf. Nobody gets it back out — not you,
-            not us, not through any screen, export or support ticket. But storing it here moves a
-            real risk onto Trevra: on the hosted service, one break-in exposes the stored key of
-            every workspace, including yours. You deserve to weigh that before pasting.
-          </p>
-          <p>
-            You do not have to. Your own agent on your laptop does the same work and stores no key
-            at all — that stays the default, and it stays the safer one. If you do paste a key, use
-            one you can revoke at your provider in seconds, and set the monthly cap below.
-          </p>
-        </div>
-      </div>
-
-      <details className="mgr-inputs">
-        <summary>
-          Endpoint &amp; key
-          <span>
-            {config ? 'Endpoint saved' : 'No endpoint yet'}
-            {secret ? ' · key stored' : ' · no key yet'}
-          </span>
-        </summary>
+      <details className="mgr-inputs" open={computeOpen}>
+        <summary>Run it on Trevra’s compute</summary>
         <div className="mgr-inputs-body">
-          <div className="byok-block">
-            <div className="byok-block-head">
-              <div>
-                <h4 aria-level={3}>Where your key goes</h4>
-                <p>
-                  Any endpoint that speaks the OpenAI format works — OpenAI, Azure, Groq,
-                  OpenRouter, Together, or a server you run yourself. Trevra ships no default and
-                  does not guess: your key goes exactly where you name here, and nowhere else.
-                </p>
-              </div>
+          {/* First inside the disclosure, before either field below: a
+            hosted service holding customer model keys is a real,
+            concentrated liability, and anyone who opens this to paste a key
+            reads it before the fields that would take one. See the panel doc
+            comment above. */}
+          <div className="byok-warning">
+            <CircleAlert size={18} />
+            <div>
+              <strong>Read this before you paste a key.</strong>
+              <p>
+                Trevra encrypts your key and uses it on your behalf. Nobody gets it back out — not
+                you, not us, not through any screen, export or support ticket. But storing it here
+                moves a real risk onto Trevra: on the hosted service, one break-in exposes the
+                stored key of every workspace, including yours. You deserve to weigh that before
+                pasting.
+              </p>
+              <p>
+                You do not have to. Your own agent on your laptop does the same work and stores no
+                key at all — that stays the default, and it stays the safer one. If you do paste a
+                key, use one you can revoke at your provider in seconds, and set the monthly cap
+                below.
+              </p>
             </div>
-            <div className="byok-fields">
-              <label>
-                Endpoint address
-                <input
-                  value={baseUrl}
-                  onChange={(event) => setBaseUrl(event.target.value)}
-                  placeholder="https://api.openai.com/v1"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              <label>
-                Model
-                <input
-                  value={model}
-                  onChange={(event) => setModel(event.target.value)}
-                  placeholder="the model name your provider uses"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              <label>
-                Call it something (optional)
-                <input
-                  value={providerLabel}
-                  onChange={(event) => setProviderLabel(event.target.value)}
-                  placeholder="Work account"
-                  maxLength={120}
-                />
-              </label>
-            </div>
-            <p className="byok-meter-copy">
-              {config
-                ? `Saved ${formatMoment(config.updatedAt) ?? 'earlier'}.${dirtyConfig ? ' Edited since — Save at the bottom.' : ''}`
-                : 'Nothing saved yet. Fill in the endpoint and the model, then save at the bottom.'}
-            </p>
           </div>
 
-          <div className="byok-block">
-            <div className="byok-block-head">
-              <div>
-                <h4 aria-level={3}>Your key</h4>
-                <p>
-                  It goes in and never comes out. Trevra keeps it encrypted, applies it at the
-                  moment of a call, and shows you the last four characters so you can find this key
-                  at your provider. There is no screen anywhere that can display it back to you.
-                </p>
+          <div>
+            <h4 aria-level={3}>Endpoint &amp; key</h4>
+            <div className="byok-block">
+              <div className="byok-block-head">
+                <div>
+                  <h4 aria-level={3}>Where your key goes</h4>
+                  <p>
+                    Any endpoint that speaks the OpenAI format works — OpenAI, Azure, Groq,
+                    OpenRouter, Together, or a server you run yourself. Trevra ships no default and
+                    does not guess: your key goes exactly where you name here, and nowhere else.
+                  </p>
+                </div>
               </div>
+              <div className="byok-fields">
+                <label>
+                  Endpoint address
+                  <input
+                    value={baseUrl}
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                    placeholder="https://api.openai.com/v1"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label>
+                  Model
+                  <input
+                    value={model}
+                    onChange={(event) => setModel(event.target.value)}
+                    placeholder="the model name your provider uses"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label>
+                  Call it something (optional)
+                  <input
+                    value={providerLabel}
+                    onChange={(event) => setProviderLabel(event.target.value)}
+                    placeholder="Work account"
+                    maxLength={120}
+                  />
+                </label>
+              </div>
+              <p className="byok-meter-copy">
+                {config
+                  ? `Saved ${formatMoment(config.updatedAt) ?? 'earlier'}.${dirtyConfig ? ' Edited since — Save at the bottom.' : ''}`
+                  : 'Nothing saved yet. Fill in the endpoint and the model, then save at the bottom.'}
+              </p>
             </div>
-            {secret && !replacingKey ? (
-              <div className="byok-key-stored">
-                <span className="byok-key-mask">
-                  <KeyRound size={16} /> •••• {secret.last4}
-                </span>
-                <span>
-                  {secret.label ? `${secret.label} · ` : ''}Added{' '}
-                  {new Date(secret.createdAt).toLocaleDateString()}
-                </span>
-                <div className="byok-key-actions">
-                  <button className="secondary-button" onClick={() => setReplacingKey(true)}>
-                    Replace
-                  </button>
-                  {/* Removal is destructive and irreversible, so it is its own act with
-                  its own confirmation. It is not folded into Save. */}
-                  <button
-                    className="ghost-button danger"
-                    disabled={busy === 'key-remove'}
-                    onClick={() => setConfirmRemoveKey(true)}
-                  >
-                    {busy === 'key-remove' ? (
-                      <LoaderCircle className="spin" size={15} />
-                    ) : (
-                      <Trash2 size={15} />
-                    )}{' '}
-                    Remove
-                  </button>
+
+            <div className="byok-block">
+              <div className="byok-block-head">
+                <div>
+                  <h4 aria-level={3}>Your key</h4>
+                  <p>
+                    It goes in and never comes out. Trevra keeps it encrypted, applies it at the
+                    moment of a call, and shows you the last four characters so you can find this
+                    key at your provider. There is no screen anywhere that can display it back to
+                    you.
+                  </p>
                 </div>
               </div>
-            ) : (
-              <>
-                <div className="byok-fields byok-fields-one">
-                  <label>
-                    {secret ? 'New key' : 'Paste your key'}
-                    <input
-                      type="password"
-                      value={apiKey}
-                      onChange={(event) => setApiKey(event.target.value)}
-                      placeholder="Paste it here"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </label>
-                </div>
-                <p className="byok-meter-copy">
-                  {secret
-                    ? `This replaces •••• ${secret.last4} here when you save. The old key keeps working at your provider until you revoke it there.`
-                    : 'Trevra stores it encrypted and keeps it out of every log, error and transcript.'}
-                </p>
-                {secret && (
+              {secret && !replacingKey ? (
+                <div className="byok-key-stored">
+                  <span className="byok-key-mask">
+                    <KeyRound size={16} /> •••• {secret.last4}
+                  </span>
+                  <span>
+                    {secret.label ? `${secret.label} · ` : ''}Added{' '}
+                    {new Date(secret.createdAt).toLocaleDateString()}
+                  </span>
                   <div className="byok-key-actions">
+                    <button className="secondary-button" onClick={() => setReplacingKey(true)}>
+                      Replace
+                    </button>
+                    {/* Removal is destructive and irreversible, so it is its own act with
+                  its own confirmation. It is not folded into Save. */}
                     <button
-                      className="ghost-button"
-                      onClick={() => {
-                        setReplacingKey(false);
-                        setApiKey('');
-                      }}
+                      className="ghost-button danger"
+                      disabled={busy === 'key-remove'}
+                      onClick={() => setConfirmRemoveKey(true)}
                     >
-                      Cancel the replacement
+                      {busy === 'key-remove' ? (
+                        <LoaderCircle className="spin" size={15} />
+                      ) : (
+                        <Trash2 size={15} />
+                      )}{' '}
+                      Remove
                     </button>
                   </div>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-      </details>
-
-      <details className="mgr-inputs">
-        <summary>
-          Your own Claude/Codex subscription
-          <span>
-            {cliSetup.tokenStored
-              ? `${cliSetup.config?.cli === 'codex' ? 'Codex' : 'Claude'} connected`
-              : cliSetup.riskAccepted
-                ? 'Risk accepted'
-                : cliConfigSaved
-                  ? 'Needs risk acceptance'
-                  : 'Not set up'}
-          </span>
-        </summary>
-        <div className="mgr-inputs-body">
-          <div className="byok-block">
-            <div className="byok-block-head">
-              <div>
-                <h4 aria-level={3}>
-                  <Terminal size={15} /> Or run it through your own Claude/Codex subscription
-                </h4>
-                <p>
-                  Instead of a metered model key, Trevra can drive this workspace's own Claude Code
-                  or Codex subscription. Same limits, same run ledger, same rule that nothing sends
-                  itself — this only changes what pays for the tokens.
-                </p>
-              </div>
-            </div>
-
-            <div className="byok-warning">
-              <CircleAlert size={18} />
-              <div>
-                <strong>Read this before you accept it below.</strong>
-                <p>
-                  This uses this workspace's own personal Claude or Codex subscription, not a
-                  metered API plan. Automated, server-side use of a personal subscription may itself
-                  violate that subscription's own consumer terms, independent of anything Trevra
-                  does — and the account could be suspended for it. That risk has nothing to do with
-                  Trevra and Trevra cannot mitigate it; it is the workspace's own to weigh, for its
-                  own subscription.
-                </p>
-              </div>
-            </div>
-
-            <div className="byok-fields byok-fields-schedule">
-              <label>
-                Which subscription
-                <select
-                  value={cliKind}
-                  onChange={(event) => setCliKind(event.target.value as 'claude' | 'codex')}
-                >
-                  <option value="claude">Claude</option>
-                  <option value="codex">Codex</option>
-                </select>
-              </label>
-              <label>
-                Model
-                <input
-                  value={cliModel}
-                  onChange={(event) => setCliModel(event.target.value)}
-                  placeholder="the model name your subscription CLI uses"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-            </div>
-            <p className="byok-meter-copy">
-              {cliSetup.config
-                ? `Saved: ${cliSetup.config.cli === 'codex' ? 'Codex' : 'Claude'}, ${cliSetup.config.model}.${dirtyCliConfig ? ' Edited since — Save at the bottom.' : ''}`
-                : 'Choose a CLI and a model, then save at the bottom.'}
-            </p>
-
-            <label className="byok-risk-check">
-              <input
-                type="checkbox"
-                checked={cliSetup.riskAccepted}
-                disabled={busy === 'cli-risk' || !cliConfigSaved}
-                onChange={(event) => void setCliRisk(event.target.checked)}
-              />
-              <span>
-                I understand this uses this workspace's own Claude or Codex subscription, not a
-                metered plan. Automated, server-side use like this may itself violate that
-                subscription's own consumer terms, independent of anything Trevra does, and the
-                account could be suspended for it. This workspace is accepting that risk for its own
-                subscription.
-              </span>
-            </label>
-            {!cliConfigSaved && (
-              <p className="byok-meter-copy">
-                Save the subscription CLI and model above first — there is nothing to accept the
-                risk of yet.
-              </p>
-            )}
-
-            {cliSetup.riskAccepted && (
-              <>
-                {cliSetup.tokenStored && !replacingCliToken ? (
-                  <div className="byok-key-stored">
-                    <span className="byok-key-mask">
-                      <KeyRound size={16} /> Subscription token stored
-                    </span>
-                    <span />
+                </div>
+              ) : (
+                <>
+                  <div className="byok-fields byok-fields-one">
+                    <label>
+                      {secret ? 'New key' : 'Paste your key'}
+                      <input
+                        type="password"
+                        value={apiKey}
+                        onChange={(event) => setApiKey(event.target.value)}
+                        placeholder="Paste it here"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                    </label>
+                  </div>
+                  <p className="byok-meter-copy">
+                    {secret
+                      ? `This replaces •••• ${secret.last4} here when you save. The old key keeps working at your provider until you revoke it there.`
+                      : 'Trevra stores it encrypted and keeps it out of every log, error and transcript.'}
+                  </p>
+                  {secret && (
                     <div className="byok-key-actions">
                       <button
-                        className="secondary-button"
-                        onClick={() => setReplacingCliToken(true)}
+                        className="ghost-button"
+                        onClick={() => {
+                          setReplacingKey(false);
+                          setApiKey('');
+                        }}
                       >
-                        Replace
-                      </button>
-                      {/* Removal is destructive and irreversible, so it is its own act with
-                    its own confirmation, same as the model key above. Not folded into Save. */}
-                      <button
-                        className="ghost-button danger"
-                        disabled={busy === 'cli-token-remove'}
-                        onClick={() => setConfirmRemoveCliToken(true)}
-                      >
-                        {busy === 'cli-token-remove' ? (
-                          <LoaderCircle className="spin" size={15} />
-                        ) : (
-                          <Trash2 size={15} />
-                        )}{' '}
-                        Remove
+                        Cancel the replacement
                       </button>
                     </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="byok-fields byok-fields-one">
-                      <label>
-                        {cliSetup.tokenStored
-                          ? 'New subscription token'
-                          : 'Paste your subscription token'}
-                        <input
-                          type="password"
-                          value={cliToken}
-                          onChange={(event) => setCliToken(event.target.value)}
-                          placeholder="Paste it here"
-                          autoComplete="off"
-                          spellCheck={false}
-                        />
-                      </label>
-                    </div>
-                    <p className="byok-meter-copy">
-                      {cliSetup.tokenStored
-                        ? 'This replaces the stored token here when you save. The old session keeps working at your provider until you sign it out there.'
-                        : 'Trevra stores it encrypted and keeps it out of every log, error and transcript. There is no screen anywhere that can display it back to you.'}
-                    </p>
-                    {cliSetup.tokenStored && (
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <h4 aria-level={3}>Your own Claude/Codex subscription</h4>
+            <div className="byok-block">
+              <div className="byok-block-head">
+                <div>
+                  <h4 aria-level={3}>
+                    <Terminal size={15} /> Or run it through your own Claude/Codex subscription
+                  </h4>
+                  <p>
+                    Instead of a metered model key, Trevra can drive this workspace's own Claude
+                    Code or Codex subscription. Same limits, same run ledger, same rule that nothing
+                    sends itself — this only changes what pays for the tokens.
+                  </p>
+                </div>
+              </div>
+
+              <div className="byok-warning">
+                <CircleAlert size={18} />
+                <div>
+                  <strong>Read this before you accept it below.</strong>
+                  <p>
+                    This uses this workspace's own personal Claude or Codex subscription, not a
+                    metered API plan. Automated, server-side use of a personal subscription may
+                    itself violate that subscription's own consumer terms, independent of anything
+                    Trevra does — and the account could be suspended for it. That risk has nothing
+                    to do with Trevra and Trevra cannot mitigate it; it is the workspace's own to
+                    weigh, for its own subscription.
+                  </p>
+                </div>
+              </div>
+
+              <div className="byok-fields byok-fields-schedule">
+                <label>
+                  Which subscription
+                  <select
+                    value={cliKind}
+                    onChange={(event) => setCliKind(event.target.value as 'claude' | 'codex')}
+                  >
+                    <option value="claude">Claude</option>
+                    <option value="codex">Codex</option>
+                  </select>
+                </label>
+                <label>
+                  Model
+                  <input
+                    value={cliModel}
+                    onChange={(event) => setCliModel(event.target.value)}
+                    placeholder="the model name your subscription CLI uses"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+              </div>
+              <p className="byok-meter-copy">
+                {cliSetup.config
+                  ? `Saved: ${cliSetup.config.cli === 'codex' ? 'Codex' : 'Claude'}, ${cliSetup.config.model}.${dirtyCliConfig ? ' Edited since — Save at the bottom.' : ''}`
+                  : 'Choose a CLI and a model, then save at the bottom.'}
+              </p>
+
+              <label className="byok-risk-check">
+                <input
+                  type="checkbox"
+                  checked={cliSetup.riskAccepted}
+                  disabled={busy === 'cli-risk' || !cliConfigSaved}
+                  onChange={(event) => void setCliRisk(event.target.checked)}
+                />
+                <span>
+                  I understand this uses this workspace's own Claude or Codex subscription, not a
+                  metered plan. Automated, server-side use like this may itself violate that
+                  subscription's own consumer terms, independent of anything Trevra does, and the
+                  account could be suspended for it. This workspace is accepting that risk for its
+                  own subscription.
+                </span>
+              </label>
+              {!cliConfigSaved && (
+                <p className="byok-meter-copy">
+                  Save the subscription CLI and model above first — there is nothing to accept the
+                  risk of yet.
+                </p>
+              )}
+
+              {cliSetup.riskAccepted && (
+                <>
+                  {cliSetup.tokenStored && !replacingCliToken ? (
+                    <div className="byok-key-stored">
+                      <span className="byok-key-mask">
+                        <KeyRound size={16} /> Subscription token stored
+                      </span>
+                      <span />
                       <div className="byok-key-actions">
                         <button
-                          className="ghost-button"
-                          onClick={() => {
-                            setReplacingCliToken(false);
-                            setCliToken('');
-                          }}
+                          className="secondary-button"
+                          onClick={() => setReplacingCliToken(true)}
                         >
-                          Cancel the replacement
+                          Replace
+                        </button>
+                        {/* Removal is destructive and irreversible, so it is its own act with
+                    its own confirmation, same as the model key above. Not folded into Save. */}
+                        <button
+                          className="ghost-button danger"
+                          disabled={busy === 'cli-token-remove'}
+                          onClick={() => setConfirmRemoveCliToken(true)}
+                        >
+                          {busy === 'cli-token-remove' ? (
+                            <LoaderCircle className="spin" size={15} />
+                          ) : (
+                            <Trash2 size={15} />
+                          )}{' '}
+                          Remove
                         </button>
                       </div>
-                    )}
-                  </>
-                )}
-              </>
-            )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="byok-fields byok-fields-one">
+                        <label>
+                          {cliSetup.tokenStored
+                            ? 'New subscription token'
+                            : 'Paste your subscription token'}
+                          <input
+                            type="password"
+                            value={cliToken}
+                            onChange={(event) => setCliToken(event.target.value)}
+                            placeholder="Paste it here"
+                            autoComplete="off"
+                            spellCheck={false}
+                          />
+                        </label>
+                      </div>
+                      <p className="byok-meter-copy">
+                        {cliSetup.tokenStored
+                          ? 'This replaces the stored token here when you save. The old session keeps working at your provider until you sign it out there.'
+                          : 'Trevra stores it encrypted and keeps it out of every log, error and transcript. There is no screen anywhere that can display it back to you.'}
+                      </p>
+                      {cliSetup.tokenStored && (
+                        <div className="byok-key-actions">
+                          <button
+                            className="ghost-button"
+                            onClick={() => {
+                              setReplacingCliToken(false);
+                              setCliToken('');
+                            }}
+                          >
+                            Cancel the replacement
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </div>
       </details>
 
-      <div className="byok-block" id="setup-spend">
-        <div className="byok-block-head">
-          <div>
-            <h4 aria-level={3}>What it may spend</h4>
-            <p>
-              Storing a key is not permission to spend it. Until you switch this on, Trevra will not
-              make a single paid call — and it stops the moment you switch it back off.
-            </p>
-          </div>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={budget.enabled}
-              disabled={busy === 'spend'}
-              onChange={(event) => void setSpending(event.target.checked)}
-            />
-            <span />
-          </label>
-        </div>
-        <div className="byok-fields byok-fields-one">
-          <label>
-            Most it may spend a month
-            <span className="byok-amount">
-              <small>$</small>
-              <input
-                type="number"
-                min="0"
-                max="10000"
-                step="1"
-                value={capDollars}
-                onChange={(event) => setCapDollars(event.target.value)}
-              />
-              {/* Scoped to this one field: it only ever calls the budget save,
+      <details className="mgr-inputs" open={spendOpen}>
+        <summary>What it may spend</summary>
+        <div className="mgr-inputs-body">
+          <div className="byok-block" id="setup-spend">
+            <div className="byok-block-head">
+              <div>
+                <h4 aria-level={3}>What it may spend</h4>
+                <p>
+                  Storing a key is not permission to spend it. Until you switch this on, Trevra will
+                  not make a single paid call — and it stops the moment you switch it back off.
+                </p>
+              </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={budget.enabled}
+                  disabled={busy === 'spend'}
+                  onChange={(event) => void setSpending(event.target.checked)}
+                />
+                <span />
+              </label>
+            </div>
+            <div className="byok-fields byok-fields-one">
+              <label>
+                Most it may spend a month
+                <span className="byok-amount">
+                  <small>$</small>
+                  <input
+                    type="number"
+                    min="0"
+                    max="10000"
+                    step="1"
+                    value={capDollars}
+                    onChange={(event) => setCapDollars(event.target.value)}
+                  />
+                  {/* Scoped to this one field: it only ever calls the budget save,
               never the endpoint/key/CLI/schedule fields the panel's shared
               Save button also writes -- so reaching this on the `/setup/spend`
               deep link and pressing it can never submit something else that
               happened to be dirty elsewhere on the page. */}
-              <button
-                className="secondary-button"
-                type="button"
-                disabled={!capValid || !dirtyCap || busy === 'cap-save'}
-                onClick={() => void saveCap()}
-              >
-                {busy === 'cap-save' ? (
-                  <LoaderCircle className="spin" size={14} />
-                ) : (
-                  <Check size={14} />
-                )}{' '}
-                Save cap
-              </button>
-            </span>
-          </label>
-        </div>
-        <p className="byok-meter-copy">
-          {spendLine}
-          {!capValid
-            ? ' Enter a cap between $0 and $10,000 to save it.'
-            : dirtyCap
-              ? ' The cap on screen is not saved yet.'
-              : ' Matches what is stored.'}
-        </p>
-        {budget.spentCents > 0 && (
-          <div className="byok-meter">
-            <i
-              style={{
-                width: `${Math.min(100, Math.round((budget.spentCents / Math.max(budget.monthlyCapCents, 1)) * 100))}%`
-              }}
-            />
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!capValid || !dirtyCap || busy === 'cap-save'}
+                    onClick={() => void saveCap()}
+                  >
+                    {busy === 'cap-save' ? (
+                      <LoaderCircle className="spin" size={14} />
+                    ) : (
+                      <Check size={14} />
+                    )}{' '}
+                    Save cap
+                  </button>
+                </span>
+              </label>
+            </div>
+            <p className="byok-meter-copy">
+              {spendLine}
+              {!capValid
+                ? ' Enter a cap between $0 and $10,000 to save it.'
+                : dirtyCap
+                  ? ' The cap on screen is not saved yet.'
+                  : ' Matches what is stored.'}
+            </p>
+            {budget.spentCents > 0 && (
+              <div className="byok-meter">
+                <i
+                  style={{
+                    width: `${Math.min(100, Math.round((budget.spentCents / Math.max(budget.monthlyCapCents, 1)) * 100))}%`
+                  }}
+                />
+              </div>
+            )}
+            <p className="byok-meter-copy">
+              {budget.enabled
+                ? 'On. Trevra checks the cap before each call, so a long job cannot run past it.'
+                : 'Off. Nothing Trevra’s agent does can cost you money.'}
+            </p>
           </div>
-        )}
-        <p className="byok-meter-copy">
-          {budget.enabled
-            ? 'On. Trevra checks the cap before each call, so a long job cannot run past it.'
-            : 'Off. Nothing Trevra’s agent does can cost you money.'}
-        </p>
-      </div>
+        </div>
+      </details>
 
       {/* Absent from the response means this build has no schedule yet. Hide it
         rather than show a control that writes to a route that is not there. */}
