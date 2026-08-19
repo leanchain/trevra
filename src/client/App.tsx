@@ -39,16 +39,18 @@ import {
   createConnectSession,
   ApiError,
   deleteAgentCliToken,
-  disconnectIntegration,
   deleteAgentKey,
   deletePolicy,
+  disconnectIntegration,
   endDemoSession,
   ensureSession,
+  eraseWorkspace,
   getAgentSetup,
   getAgentTokens,
   getDashboard,
   getPolicies,
   getPublicConfig,
+  previewWorkspaceErasure,
   revokeAgentToken,
   saveAgentBudget,
   saveAgentCliConfig,
@@ -58,7 +60,9 @@ import {
   setAgentCliRiskAccepted,
   startAgentRun,
   startDemoSession,
-  updatePolicy
+  updatePolicy,
+  workspaceExportDownloadPath,
+  type WorkspaceErasurePreview
 } from './api';
 import { authClient } from './auth-client';
 import { AccountsScreen } from './AccountsScreen';
@@ -708,6 +712,13 @@ function SetupView({
   const invitationId = sub === 'team' ? route.id : null;
   const [anchor, setAnchor] = useState<{ id: string; seq: number } | null>(null);
   const anchorSeq = useRef(0);
+  // Same owner signal LimitsView uses: `isPending` gates on the org read
+  // finishing so a member never sees the export/erase block flash before
+  // disappearing, and `activeMember?.role === 'owner'` is the one place that
+  // decides who gets it.
+  const { isPending: orgPending } = authClient.useActiveOrganization();
+  const { data: activeMember } = authClient.useActiveMember();
+  const isOwner = !orgPending && activeMember?.role === 'owner';
 
   useEffect(() => {
     if (invitationId) return;
@@ -764,6 +775,7 @@ function SetupView({
             reload={reload}
             onNavigate={onNavigate}
           />
+          {isOwner && <WorkspaceDataBlock setToast={setToast} />}
         </>
       ) : (
         <>
@@ -2548,6 +2560,114 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
     </div>
   );
 }
+
+/**
+ * The export the privacy policy promises, and the erasure it promises after
+ * it. Both routes have existed and been tested since the workspace shipped;
+ * neither had a way in.
+ */
+function WorkspaceDataBlock({ setToast }: { setToast: (message: string) => void }) {
+  const [preview, setPreview] = useState<WorkspaceErasurePreview | null>(null);
+  const [confirmErase, setConfirmErase] = useState(false);
+  const [typed, setTyped] = useState('');
+  const [eraseError, setEraseError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const closeDrawer = () => {
+    setConfirmErase(false);
+    setTyped('');
+    setEraseError(null);
+  };
+
+  // `ConfirmDrawer` has no `disabled` prop -- the gate lives here instead of
+  // on the button. A click that does not satisfy it never reaches the DELETE;
+  // it only ever surfaces why, through the drawer's own `error` banner.
+  const confirmErasure = async () => {
+    if (!preview) return;
+    if (!preview.erasable || preview.inFlight.length > 0) {
+      setEraseError('Stop what is listed above first.');
+      return;
+    }
+    if (typed !== preview.confirmationPhrase) {
+      setEraseError(`Type ${preview.confirmationPhrase} to confirm.`);
+      return;
+    }
+    setBusy(true);
+    setEraseError(null);
+    try {
+      await eraseWorkspace(typed);
+      // The server clears the session on success -- a full page load, not a
+      // refetch, since there is nothing left here to refetch into.
+      window.location.assign('/login');
+    } catch (error) {
+      setEraseError(agentSetupMessage(error, 'Could not erase this workspace.'));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <details className="mgr-inputs" id="workspace-data">
+      <summary>Export or erase this workspace</summary>
+      <div className="mgr-inputs-body">
+        <a className="ghost-button" href={workspaceExportDownloadPath()} download>
+          Export everything
+        </a>
+        <button
+          type="button"
+          className="ghost-button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const next = await previewWorkspaceErasure();
+              setPreview(next);
+              setEraseError(null);
+              setTyped('');
+              setConfirmErase(true);
+            } catch (error) {
+              setToast(agentSetupMessage(error, 'Could not read what erasure would remove.'));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Erase this workspace
+        </button>
+
+        {confirmErase && preview && (
+          <ConfirmDrawer
+            title="Erase this workspace"
+            tone="danger"
+            body={
+              <>
+                <p>
+                  {preview.totalRows} rows across {preview.inventory.length} tables. Not reversible.
+                </p>
+                {preview.inFlight.length > 0 && (
+                  <ul>
+                    {preview.inFlight.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
+                <label>
+                  Type {preview.confirmationPhrase}
+                  <input value={typed} onChange={(event) => setTyped(event.target.value)} />
+                </label>
+              </>
+            }
+            confirmLabel="Erase"
+            busy={busy}
+            error={eraseError}
+            onCancel={closeDrawer}
+            onConfirm={() => void confirmErasure()}
+          />
+        )}
+      </div>
+    </details>
+  );
+}
+
 function WorkspaceSwitcher({
   activeWorkspaceId,
   onSwitched
