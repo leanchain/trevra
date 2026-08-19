@@ -57,7 +57,8 @@ import {
   saveAgentModelConfig,
   setAgentCliRiskAccepted,
   startAgentRun,
-  startDemoSession
+  startDemoSession,
+  updatePolicy
 } from './api';
 import { authClient } from './auth-client';
 import { AccountsScreen } from './AccountsScreen';
@@ -2255,6 +2256,13 @@ function ConditionChecklist({
 const POLICY_DEFAULTS = { actionPattern: 'skill:*', priority: 100 } as const;
 
 function LimitsView({ setToast }: { setToast: (message: string) => void }) {
+  // Same owner signal TeamScreen.tsx uses: `isPending` gates on the org read
+  // finishing so a member never sees New/Edit/Delete/the switch flash before
+  // disappearing, and `activeMember?.role === 'owner'` is the one place that
+  // decides who gets them.
+  const { isPending: orgPending } = authClient.useActiveOrganization();
+  const { data: activeMember } = authClient.useActiveMember();
+  const isOwner = !orgPending && activeMember?.role === 'owner';
   const [busy, setBusy] = useState('');
   const [policies, setPolicies] = useState<WorkspacePolicy[]>([]);
   const [confirmDeletePolicy, setConfirmDeletePolicy] = useState<WorkspacePolicy | null>(null);
@@ -2319,6 +2327,10 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
 
   const savePolicy = async () => {
     if (!policyDraft.name.trim()) return;
+    // `POLICY_DEFAULTS` still rides along on every write: the form only
+    // exposes name, effect and side-effects now, but the PATCH body must not
+    // blank actionPattern/priority just because this form stopped showing
+    // them.
     const payload = {
       name: policyDraft.name.trim(),
       actionPattern: POLICY_DEFAULTS.actionPattern,
@@ -2330,25 +2342,8 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
     setBusy(editingPolicy ? 'policy-edit' : 'policy-create');
     try {
       if (editingPolicy) {
-        const editingId = editingPolicy.id;
-        // There is no PATCH route for a policy (src/server/app.ts has only
-        // POST and DELETE), so an edit creates the new version first and only
-        // deletes the old one once that succeeds -- in that order, so a
-        // failed create leaves the original limit in place instead of a
-        // delete losing it outright.
-        const created = await createPolicy(payload);
-        try {
-          await deletePolicy(editingId);
-          setPolicies(created.filter((policy) => policy.id !== editingId));
-          setToast('Limit updated.');
-        } catch (err) {
-          setPolicies(created);
-          setToast(
-            `Saved the new version, but could not remove the old “${editingPolicy.name}”: ${
-              err instanceof Error ? err.message : 'unknown error'
-            }. Delete it by hand below.`
-          );
-        }
+        setPolicies(await updatePolicy(editingPolicy.id, payload));
+        setToast('Limit updated.');
       } else {
         setPolicies(await createPolicy(payload));
         setToast('Limit saved');
@@ -2389,7 +2384,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
             </h3>
           </div>
           <div className="mgr-actions">
-            {!formOpen && (
+            {isOwner && !formOpen && (
               <button className="secondary-button" type="button" onClick={openNewPolicyForm}>
                 <ShieldCheck size={14} /> New policy
               </button>
@@ -2466,27 +2461,46 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                 <code>{policy.actionPattern}</code>
               </div>
               <p className="policy-summary">{describePolicy(policy.effect, policy.conditions)}</p>
-              <div className="mgr-actions">
-                <button
-                  className="ghost-button"
-                  disabled={busy === policy.id}
-                  onClick={() => openEditPolicyForm(policy)}
-                >
-                  <Pencil size={15} /> Edit
-                </button>
-                <button
-                  className="ghost-button danger"
-                  disabled={busy === policy.id}
-                  onClick={() => setConfirmDeletePolicy(policy)}
-                >
-                  {busy === policy.id ? (
-                    <LoaderCircle className="spin" size={15} />
-                  ) : (
-                    <Trash2 size={15} />
-                  )}{' '}
-                  Delete
-                </button>
-              </div>
+              {isOwner && (
+                <div className="mgr-actions">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={busy === `policy-toggle-${policy.id}`}
+                    onClick={async () => {
+                      setBusy(`policy-toggle-${policy.id}`);
+                      try {
+                        setPolicies(await updatePolicy(policy.id, { enabled: !policy.enabled }));
+                      } catch (error) {
+                        setToast(agentSetupMessage(error, 'Could not change that limit.'));
+                      } finally {
+                        setBusy('');
+                      }
+                    }}
+                  >
+                    {policy.enabled ? 'On' : 'Off'}
+                  </button>
+                  <button
+                    className="ghost-button"
+                    disabled={busy === policy.id}
+                    onClick={() => openEditPolicyForm(policy)}
+                  >
+                    <Pencil size={15} /> Edit
+                  </button>
+                  <button
+                    className="ghost-button danger"
+                    disabled={busy === policy.id}
+                    onClick={() => setConfirmDeletePolicy(policy)}
+                  >
+                    {busy === policy.id ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <Trash2 size={15} />
+                    )}{' '}
+                    Delete
+                  </button>
+                </div>
+              )}
             </article>
           ))}
         </div>

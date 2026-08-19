@@ -551,6 +551,24 @@ export async function deletePolicy(id: string): Promise<void> {
   await request(`/api/policies/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export async function updatePolicy(
+  id: string,
+  input: Partial<{
+    name: string;
+    priority: number;
+    actionPattern: string;
+    effect: WorkspacePolicy['effect'];
+    conditions: Record<string, unknown>;
+    enabled: boolean;
+  }>
+): Promise<WorkspacePolicy[]> {
+  const result = await request<{ policies: WorkspacePolicy[] }>(
+    `/api/policies/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: JSON.stringify(input) }
+  );
+  return result.policies;
+}
+
 export interface PublicConfig {
   googleAuthEnabled: boolean;
   emailPasswordAuthEnabled: boolean;
