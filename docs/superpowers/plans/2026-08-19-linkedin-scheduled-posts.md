@@ -850,9 +850,20 @@ interface PostRow {
   updated_at: string;
 }
 
+// TIMESTAMPTZ columns are formatted here rather than left to the driver's raw
+// text output ('2026-08-20 09:00:00+00', not JS-comparable) -- the same
+// TO_CHAR(... AT TIME ZONE 'UTC', ...) idiom every other store module in this
+// codebase uses for the same reason (seats.ts's SEAT_COLUMNS, runner.ts's own
+// UTC_ISO constant, outreach/store.ts, etc).
+const UTC_ISO = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;
+
 const POST_COLUMNS = `
-  id, workspace_id, seat_key, status, blocks_json, scheduled_at,
-  published_at, posted_url, error_json, created_by, created_at, updated_at
+  id, workspace_id, seat_key, status, blocks_json,
+  TO_CHAR(scheduled_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS scheduled_at,
+  TO_CHAR(published_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS published_at,
+  posted_url, error_json, created_by,
+  TO_CHAR(created_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS created_at,
+  TO_CHAR(updated_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS updated_at
 `;
 
 function parseJson(value: unknown): unknown {
