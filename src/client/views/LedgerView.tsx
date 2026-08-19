@@ -42,9 +42,8 @@ import {
  * under a marketing sentence about autopilot, behind a playbook launcher that
  * `docs/app-spec.md` §4 had already ruled was not the front door.
  *
- * The launcher moved to `/setup/skills` under "Run one by hand". The hero
- * went. What is left is the list, its inspector, and the control that earns
- * the export claim.
+ * The launcher is gone. The hero went too. What is left is the list, its
+ * inspector, and the control that earns the export claim.
  * -------------------------------------------------------------------------- */
 
 type ActivityRow =

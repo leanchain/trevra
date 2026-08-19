@@ -1279,10 +1279,9 @@ const andList = (parts: string[]) =>
  * share one bottom button that writes only the parts that changed.
  *
  * The cap is the one field that opted back out of that shared button. It has
- * its own scoped save right next to the amount, because `/setup/spend` is a
- * deep link that lands an operator here to touch only the cap, and a shared
- * button that also flushes whatever else happens to be dirty in the endpoint,
- * key or CLI fields is exactly the accident that button exists to prevent.
+ * its own scoped save right next to the amount, so touching only the cap can
+ * never also flush whatever else happens to be dirty in the endpoint, key or
+ * CLI fields -- exactly the accident that button exists to prevent.
  *
  * One more write stays on its own, for the same stated reason: an off switch
  * that needs a second click to take effect is not an off switch. The
@@ -1562,9 +1561,8 @@ function HostedAgentPanel({
 
   // Its own write, not part of Save: the cap sits in the same panel as the
   // endpoint, the key and the subscription CLI, but changing it must never
-  // also submit whatever else on the panel happens to be dirty -- especially
-  // on the `/setup/spend` deep link, which lands here to touch only the cap.
-  // Its own button, right next to the amount, calls only this.
+  // also submit whatever else on the panel happens to be dirty. Its own
+  // button, right next to the amount, calls only this.
   const saveCap = async () => {
     if (!capValid) {
       setProblem('Set a monthly cap between $0 and $10,000.');
@@ -1863,9 +1861,8 @@ function HostedAgentPanel({
                   />
                   {/* Scoped to this one field: it only ever calls the budget save,
               never the endpoint/key/CLI fields the panel's shared Save button
-              also writes -- so reaching this on the `/setup/spend` deep link
-              and pressing it can never submit something else that happened to
-              be dirty elsewhere on the page. */}
+              also writes -- so pressing it can never submit something else
+              that happened to be dirty elsewhere on the page. */}
                   <button
                     className="secondary-button"
                     type="button"

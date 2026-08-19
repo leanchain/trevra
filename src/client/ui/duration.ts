@@ -18,19 +18,3 @@ export function formatDuration(ms: number | null): string | null {
   if (minutes < 60) return `${minutes}m ${String(whole % 60).padStart(2, '0')}s`;
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
-
-/** How often something repeats, said the way a person says it. */
-export function formatEvery(minutes: number): string {
-  const ladder: Array<[size: number, one: string, many: (count: number) => string]> = [
-    [10080, 'Once a week', (count) => `Every ${count} weeks`],
-    [1440, 'Once a day', (count) => `Every ${count} days`],
-    [60, 'Every hour', (count) => `Every ${count} hours`]
-  ];
-  for (const [size, one, many] of ladder) {
-    if (minutes > 0 && minutes % size === 0) {
-      const count = minutes / size;
-      return count === 1 ? one : many(count);
-    }
-  }
-  return `Every ${minutes} minutes`;
-}

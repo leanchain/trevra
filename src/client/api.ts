@@ -6,20 +6,16 @@ import type {
   AgentModelConfig,
   AgentRun,
   AgentRunSummary,
-  AgentSchedule,
   AgentScope,
   AgentSetup,
   AgentTokenSummary,
   AvailableIntegration,
   ConnectionSummary,
   DashboardPayload,
-  PlaybookManifest,
   PlaybookRun,
   PlaybookRunStatus,
   SkillRun,
-  WorkspacePolicy,
-  PublicRegistryModule,
-  InstalledCommunityModule
+  WorkspacePolicy
 } from '../shared/types';
 /**
  * LinkedIn (docs/linkedin-outreach-plan.md sections 5 and 6).
@@ -210,17 +206,8 @@ export async function createConnectSession(
   return result.session;
 }
 
-export async function syncIntegration(id: string): Promise<void> {
-  await request(`/api/integrations/${id}/sync`, { method: 'POST' });
-}
-
 export async function disconnectIntegration(id: string): Promise<void> {
   await request(`/api/integrations/${id}`, { method: 'DELETE' });
-}
-
-export async function getPlaybooks(): Promise<PlaybookManifest[]> {
-  const result = await request<{ playbooks: PlaybookManifest[] }>('/api/playbooks');
-  return result.playbooks;
 }
 
 export async function startPlaybook(
@@ -445,18 +432,6 @@ export async function saveAgentBudget(input: {
   return result.budget;
 }
 
-export async function saveAgentSchedule(input: {
-  enabled?: boolean;
-  goal?: string;
-  intervalMinutes?: number;
-}): Promise<AgentSchedule> {
-  const result = await request<{ schedule: AgentSchedule }>('/api/agent-setup/schedule', {
-    method: 'PUT',
-    body: JSON.stringify(input)
-  });
-  return result.schedule;
-}
-
 /**
  * The third way to run the hosted agent: a workspace's own Claude/Codex
  * subscription (docs/cli-agent-and-hosted.md). Mirrors the BYOK functions
@@ -593,35 +568,6 @@ export async function createAgentToken(input: {
 
 export async function revokeAgentToken(id: string): Promise<void> {
   await request(`/api/agent-tokens/${id}`, { method: 'DELETE' });
-}
-
-export async function getPublicRegistryModules(): Promise<PublicRegistryModule[]> {
-  const result = await request<{ modules: PublicRegistryModule[] }>('/api/public/modules');
-  return result.modules;
-}
-
-export async function getInstalledRegistryModules(): Promise<InstalledCommunityModule[]> {
-  const result = await request<{ modules: InstalledCommunityModule[] }>(
-    '/api/registry/installations'
-  );
-  return result.modules;
-}
-
-export async function installRegistryModule(
-  moduleId: string,
-  version: string,
-  config: Record<string, unknown> = {}
-): Promise<void> {
-  await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, {
-    method: 'POST',
-    body: JSON.stringify({ version, config })
-  });
-}
-
-export async function uninstallRegistryModule(moduleId: string): Promise<void> {
-  await request(`/api/registry/modules/${encodeURIComponent(moduleId)}/install`, {
-    method: 'DELETE'
-  });
 }
 
 /* =====================================================================
