@@ -3957,11 +3957,22 @@ export function createApp(db: Db) {
     '/api/linkedin/posts',
     linkedinRoute(async (req, res) => {
       const input = linkedinPostCreateSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      // WHOSE ACCOUNT, checked before the row is written -- the same guard the
+      // campaigns route carries, for the same reason: an unknown seat key
+      // otherwise files a post under a seat that does not exist, and the first
+      // symptom is a post no screen lists and no worker tick ever claims.
+      if (input.seatKey && !(await getSeat(db, workspaceId, input.seatKey))) {
+        throw new LinkedInPostsApiError(
+          'That LinkedIn account is not configured for this workspace',
+          404
+        );
+      }
       const post = await createPost(
         db,
         {
           id: id('lipost'),
-          workspaceId: req.auth!.workspaceId,
+          workspaceId,
           ...(input.seatKey ? { seatKey: input.seatKey } : {}),
           blocks: input.blocks,
           status: input.status,
@@ -7444,7 +7455,12 @@ const linkedinCampaignListSchema = z.object({
 const postRunSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('text'),
-    text: z.string().min(1),
+    // EMPTY IS LEGAL. An empty text run is what a blank line BETWEEN two
+    // paragraphs is -- the single most ordinary shape a LinkedIn post has --
+    // and `.min(1)` here rejected every post containing one with an opaque
+    // 'Invalid request'. "Did the operator write anything at all" is a
+    // question about the whole post, and it is asked once, on postBlocksSchema.
+    text: z.string(),
     bold: z.boolean().optional(),
     italic: z.boolean().optional(),
     underline: z.boolean().optional()
@@ -7468,7 +7484,16 @@ const postBlocksSchema = z
   .max(200)
   .refine((blocks) => plainTextLength(blocks) <= LINKEDIN_POST_MAX_CHARS, {
     message: `A LinkedIn post is capped at ${LINKEDIN_POST_MAX_CHARS} characters.`
-  });
+  })
+  .refine(
+    (blocks) =>
+      blocks.some((block) =>
+        block.runs.some(
+          (run) => run.type === 'mention' || (run.type === 'text' && run.text.trim() !== '')
+        )
+      ),
+    { message: 'Write something before saving this post.' }
+  );
 const linkedinPostCreateSchema = z
   .object({
     seatKey: linkedinSeatKeySchema.optional(),

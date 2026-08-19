@@ -3042,4 +3042,22 @@ describe('LinkedIn posts', () => {
     const fromB = await as(tokenB).get(`/api/linkedin/posts/${created.body.post.id}`);
     expect(fromB.status).toBe(404);
   });
+
+  /**
+   * A seat key nobody configured must be refused, not filed. Accepted, the row
+   * lands under a seat that does not exist: no screen lists it and no worker
+   * tick ever opens a session for it -- the same failure the campaigns route
+   * already guards against.
+   */
+  it('refuses a seatKey that is not configured for the workspace', async () => {
+    const token = await seedSession(WORKSPACE_A, 'A');
+    await seat(WORKSPACE_A);
+    const created = await as(token)
+      .post('/api/linkedin/posts')
+      .send({ blocks: BLOCKS, seatKey: 'seat-that-does-not-exist' });
+    expect(created.status).toBe(404);
+
+    const listed = await as(token).get('/api/linkedin/posts?seatKey=seat-that-does-not-exist');
+    expect(listed.body.posts).toHaveLength(0);
+  });
 });
