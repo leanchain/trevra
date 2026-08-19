@@ -2373,20 +2373,10 @@ type ConditionChoice = { value: string; label: string };
 
 type ConditionDraft = {
   sideEffects: string[];
-  actorTypes: string[];
-  environments: string[];
-  maxAmount: string;
-  minConfidence: string;
-  maxRecipients: string;
 };
 
 const EMPTY_CONDITIONS: ConditionDraft = {
-  sideEffects: [],
-  actorTypes: [],
-  environments: [],
-  maxAmount: '',
-  minConfidence: '',
-  maxRecipients: ''
+  sideEffects: []
 };
 
 const conditionLabel = (choices: readonly ConditionChoice[], value: string) =>
@@ -2408,16 +2398,6 @@ const asNumber = (value: unknown): number | null =>
 function buildConditions(draft: ConditionDraft): Record<string, unknown> {
   const conditions: Record<string, unknown> = {};
   if (draft.sideEffects.length > 0) conditions.sideEffects = draft.sideEffects;
-  if (draft.actorTypes.length > 0) conditions.actorTypes = draft.actorTypes;
-  if (draft.environments.length > 0) conditions.environments = draft.environments;
-  const amount = Number(draft.maxAmount);
-  if (draft.maxAmount.trim() !== '' && Number.isFinite(amount)) conditions.maxAmount = amount;
-  const confidence = Number(draft.minConfidence);
-  if (draft.minConfidence.trim() !== '' && Number.isFinite(confidence))
-    conditions.minConfidence = confidence / 100;
-  const recipients = Number(draft.maxRecipients);
-  if (draft.maxRecipients.trim() !== '' && Number.isFinite(recipients))
-    conditions.maxRecipients = recipients;
   return conditions;
 }
 
@@ -2469,17 +2449,12 @@ function describePolicy(
  * policy's stored conditions, so editing one starts from what is already
  * there instead of a blank form. */
 function conditionDraftFromPolicy(conditions: Record<string, unknown>): ConditionDraft {
-  const maxAmount = asNumber(conditions.maxAmount);
-  const minConfidence = asNumber(conditions.minConfidence);
-  const maxRecipients = asNumber(conditions.maxRecipients);
-  return {
-    sideEffects: asStringList(conditions.sideEffects),
-    actorTypes: asStringList(conditions.actorTypes),
-    environments: asStringList(conditions.environments),
-    maxAmount: maxAmount === null ? '' : String(maxAmount),
-    minConfidence: minConfidence === null ? '' : String(Math.round(minConfidence * 100)),
-    maxRecipients: maxRecipients === null ? '' : String(maxRecipients)
-  };
+  // Ignores any other condition keys a saved policy may carry (actorTypes,
+  // environments, thresholds, ...) -- this draft no longer models them.
+  // describePolicy still renders those keys straight from the policy record,
+  // so the list keeps reading correctly; only editing and re-saving a policy
+  // drops them, since buildConditions never writes them back out.
+  return { sideEffects: asStringList(conditions.sideEffects) };
 }
 
 function ConditionChecklist({
@@ -2510,6 +2485,15 @@ function ConditionChecklist({
   );
 }
 
+/**
+ * The two fields the form stopped asking for.
+ *
+ * `actionPattern` is required by the server schema and `skill:*` is what every
+ * policy this UI has ever written used; `priority` only breaks ties between
+ * rules nobody has been able to author more than one of.
+ */
+const POLICY_DEFAULTS = { actionPattern: 'skill:*', priority: 100 } as const;
+
 function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   const [busy, setBusy] = useState('');
   const [policies, setPolicies] = useState<WorkspacePolicy[]>([]);
@@ -2521,16 +2505,14 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   const [editingPolicy, setEditingPolicy] = useState<WorkspacePolicy | null>(null);
   const [policyDraft, setPolicyDraft] = useState({
     name: 'Ask me before anything leaves my business',
-    actionPattern: 'skill:*',
-    effect: 'require_approval' as WorkspacePolicy['effect'],
-    priority: 100
+    effect: 'require_approval' as WorkspacePolicy['effect']
   });
   const [conditionDraft, setConditionDraft] = useState<ConditionDraft>({
     ...EMPTY_CONDITIONS,
     sideEffects: ['external-write']
   });
 
-  const toggleCondition = (key: 'sideEffects' | 'actorTypes' | 'environments', value: string) =>
+  const toggleCondition = (key: 'sideEffects', value: string) =>
     setConditionDraft((current) => ({
       ...current,
       [key]: current[key].includes(value)
@@ -2547,9 +2529,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   const resetDraft = () => {
     setPolicyDraft({
       name: 'Ask me before anything leaves my business',
-      actionPattern: 'skill:*',
-      effect: 'require_approval',
-      priority: 100
+      effect: 'require_approval'
     });
     setConditionDraft({ ...EMPTY_CONDITIONS, sideEffects: ['external-write'] });
   };
@@ -2566,9 +2546,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
     setEditingPolicy(policy);
     setPolicyDraft({
       name: policy.name,
-      actionPattern: policy.actionPattern,
-      effect: policy.effect,
-      priority: policy.priority
+      effect: policy.effect
     });
     setConditionDraft(conditionDraftFromPolicy(policy.conditions));
     setFormOpen(true);
@@ -2580,12 +2558,12 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   };
 
   const savePolicy = async () => {
-    if (!policyDraft.name.trim() || !policyDraft.actionPattern.trim()) return;
+    if (!policyDraft.name.trim()) return;
     const payload = {
       name: policyDraft.name.trim(),
-      actionPattern: policyDraft.actionPattern.trim(),
+      actionPattern: POLICY_DEFAULTS.actionPattern,
       effect: policyDraft.effect,
-      priority: policyDraft.priority,
+      priority: POLICY_DEFAULTS.priority,
       conditions: buildConditions(conditionDraft),
       enabled: true
     };
@@ -2639,7 +2617,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   };
 
   const saving = busy === 'policy-create' || busy === 'policy-edit';
-  const draftIncomplete = !policyDraft.name.trim() || !policyDraft.actionPattern.trim();
+  const draftIncomplete = !policyDraft.name.trim();
 
   return (
     <div className="page-stack">
@@ -2672,17 +2650,6 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                 />
               </label>
               <label>
-                What it covers
-                <input
-                  value={policyDraft.actionPattern}
-                  onChange={(event) =>
-                    setPolicyDraft({ ...policyDraft, actionPattern: event.target.value })
-                  }
-                  placeholder="skill:*"
-                />
-                <small>* stands for everything</small>
-              </label>
-              <label>
                 What happens
                 <select
                   value={policyDraft.effect}
@@ -2698,17 +2665,6 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                   <option value="deny">Block it</option>
                 </select>
               </label>
-              <label>
-                Priority
-                <input
-                  type="number"
-                  value={policyDraft.priority}
-                  onChange={(event) =>
-                    setPolicyDraft({ ...policyDraft, priority: Number(event.target.value) })
-                  }
-                />
-                <small>higher wins a tie</small>
-              </label>
             </div>
             <fieldset className="policy-conditions">
               <legend>When does it apply?</legend>
@@ -2722,67 +2678,6 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
                   selected={conditionDraft.sideEffects}
                   onToggle={(value) => toggleCondition('sideEffects', value)}
                 />
-                <ConditionChecklist
-                  legend="Who is doing it"
-                  choices={ACTOR_CHOICES}
-                  selected={conditionDraft.actorTypes}
-                  onToggle={(value) => toggleCondition('actorTypes', value)}
-                />
-                <ConditionChecklist
-                  legend="Where it runs"
-                  choices={ENVIRONMENT_CHOICES}
-                  selected={conditionDraft.environments}
-                  onToggle={(value) => toggleCondition('environments', value)}
-                />
-              </div>
-              <div className="condition-numbers">
-                <label>
-                  Only when the amount is at most
-                  <span className="condition-number">
-                    <input
-                      type="number"
-                      min="0"
-                      step="100"
-                      placeholder="any amount"
-                      value={conditionDraft.maxAmount}
-                      onChange={(event) =>
-                        setConditionDraft({ ...conditionDraft, maxAmount: event.target.value })
-                      }
-                    />
-                    <small>EUR</small>
-                  </span>
-                </label>
-                <label>
-                  Only when Trevra is at least this sure
-                  <span className="condition-number">
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      placeholder="any confidence"
-                      value={conditionDraft.minConfidence}
-                      onChange={(event) =>
-                        setConditionDraft({ ...conditionDraft, minConfidence: event.target.value })
-                      }
-                    />
-                    <small>%</small>
-                  </span>
-                </label>
-                <label>
-                  Only when it reaches at most
-                  <span className="condition-number">
-                    <input
-                      type="number"
-                      min="1"
-                      placeholder="any number"
-                      value={conditionDraft.maxRecipients}
-                      onChange={(event) =>
-                        setConditionDraft({ ...conditionDraft, maxRecipients: event.target.value })
-                      }
-                    />
-                    <small>people</small>
-                  </span>
-                </label>
               </div>
               <p className="policy-preview">
                 {describePolicy(policyDraft.effect, buildConditions(conditionDraft))}
@@ -2791,7 +2686,7 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
             <div className="panel-footer">
               <span>
                 {draftIncomplete
-                  ? 'Name it and say what it covers to save.'
+                  ? 'Name it to save.'
                   : editingPolicy
                     ? 'Saving replaces the old version of this limit with what is on screen.'
                     : 'Takes effect the moment you add it.'}
