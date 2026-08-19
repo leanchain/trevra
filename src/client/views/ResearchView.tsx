@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CircleAlert, LoaderCircle, MessageSquare, Newspaper, X } from 'lucide-react';
+import { CircleAlert, Database, LoaderCircle, MessageSquare, Newspaper, X } from 'lucide-react';
 import type { ConnectionSummary, SkillRun } from '../../shared/types';
 import {
   getOutreachOfferDefaults,
@@ -246,6 +246,7 @@ export function ResearchView({
   setToast: (message: string) => void;
 }) {
   const [platform, setPlatform] = useState('all');
+  const [redditOpen, setRedditOpen] = useState(false);
   const [threads, setThreads] = useState<FeedThread[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
   const [threadsError, setThreadsError] = useState(false);
@@ -525,7 +526,23 @@ export function ResearchView({
         </section>
       )}
 
-      {showRedditCorpus && <ResearchScreen connections={connections} setToast={setToast} />}
+      {showRedditCorpus && (
+        // Closed on first render: most operators are not managing Reddit sources
+        // on every visit, and mounting it only once opened means it does not
+        // fetch its sources/runs/search state until someone asks for it.
+        <details
+          className="mgr-inputs"
+          open={redditOpen}
+          onToggle={(event) => setRedditOpen(event.currentTarget.open)}
+        >
+          <summary>
+            <Database size={13} /> Reddit research corpus
+          </summary>
+          <div className="mgr-inputs-body">
+            {redditOpen && <ResearchScreen connections={connections} setToast={setToast} />}
+          </div>
+        </details>
+      )}
 
       {drafting && (
         <DraftDialog

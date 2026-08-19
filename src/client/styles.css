@@ -1227,6 +1227,10 @@ button:disabled {
   margin-bottom: 12px;
   max-width: 720px;
 }
+.document-hints .panel-footer,
+.document-hints > .li-hint {
+  grid-column: 1 / -1;
+}
 .document-upload-row {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -5905,7 +5909,7 @@ button:disabled {
    apart by side, surface and a word, never by hue alone. */
 .li-inbox {
   display: grid;
-  grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
   gap: 18px;
   align-items: start;
 }
@@ -6128,7 +6132,11 @@ button:disabled {
 .li-msg-group {
   display: grid;
   gap: 2px;
-  max-width: min(var(--t-measure), 84%);
+  /* Wider than the standard measure and deliberately so: these are somebody's
+     own paragraphs, wrapped where they wrote the break, and a 68ch cap on a
+     wide screen re-wraps them into a narrow column beside empty space. The
+     percentage still keeps inbound and outbound visibly on their own sides. */
+  max-width: min(calc(var(--t-measure) + 12ch), 88%);
   margin-top: 6px;
 }
 .li-msg-group-in {
@@ -6189,6 +6197,53 @@ button:disabled {
   border-top: 1px solid var(--t-line-soft);
   padding-top: 14px;
   flex: none;
+}
+
+/* WHEN, under WHAT. Three rows rather than three columns: each one carries a
+   control of its own, and a wrapped row of radio+select+datetime reads as a
+   jumble at any width narrower than a desk monitor. */
+.li-schedule {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-lg);
+  background: var(--t-surface-2);
+}
+.li-schedule legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--t-track-caps);
+}
+.li-schedule-modes {
+  display: grid;
+  gap: 6px;
+}
+.li-schedule-modes label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: var(--t-text-sm);
+  color: var(--ink);
+}
+.li-schedule-modes input[type='radio'] {
+  flex: none;
+  accent-color: var(--green);
+}
+.li-schedule-modes select,
+.li-schedule-modes input[type='datetime-local'] {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+  color: var(--ink);
+  font-size: var(--t-text-sm);
+}
+.li-schedule .li-hint {
+  margin: 8px 0 0;
 }
 .li-composer textarea {
   width: 100%;
@@ -8283,6 +8338,11 @@ button:disabled {
   color: var(--muted);
   font-size: var(--t-text-xs);
   line-height: 1.55;
+}
+/* The open-card-only detail line under .mgr-warmup: same voice, a hair of
+   space so it doesn't read as one run-on sentence with the headline above. */
+.mgr-warmup-detail {
+  margin-top: 2px;
 }
 .mgr-pips {
   display: inline-flex;
