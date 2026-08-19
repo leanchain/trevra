@@ -49,7 +49,17 @@ export function useWorkspaceMembers(): {
 } {
   const { data } = authClient.useActiveOrganization();
   const members = useMemo<WorkspaceMember[]>(() => {
-    const rows = (data as { members?: Array<{ id: string; userId: string; role: string; user?: { name?: string | null; email?: string | null } }> } | null)?.members ?? [];
+    const rows =
+      (
+        data as {
+          members?: Array<{
+            id: string;
+            userId: string;
+            role: string;
+            user?: { name?: string | null; email?: string | null };
+          }>;
+        } | null
+      )?.members ?? [];
     return rows.map((member) => ({
       id: member.id,
       userId: member.userId,
@@ -59,10 +69,13 @@ export function useWorkspaceMembers(): {
     }));
   }, [data]);
 
-  const nameFor = useCallback((userId: string | null | undefined): string | null => {
-    if (!userId) return null;
-    return members.find((member) => member.userId === userId)?.name ?? null;
-  }, [members]);
+  const nameFor = useCallback(
+    (userId: string | null | undefined): string | null => {
+      if (!userId) return null;
+      return members.find((member) => member.userId === userId)?.name ?? null;
+    },
+    [members]
+  );
 
   return { members, nameFor };
 }
@@ -74,7 +87,12 @@ interface PendingInvitation {
   status: string;
 }
 
-export function TeamSettingsView({ route, setToast, reload, onNavigate }: {
+export function TeamSettingsView({
+  route,
+  setToast,
+  reload,
+  onNavigate
+}: {
   route: Route;
   setToast: (message: string) => void;
   reload: () => Promise<void>;
@@ -86,7 +104,14 @@ export function TeamSettingsView({ route, setToast, reload, onNavigate }: {
   // panel instead of the member list, which a non-member's own read of
   // `useActiveOrganization` would not even include this workspace in.
   if (route.id) {
-    return <AcceptInvitationPanel invitationId={route.id} setToast={setToast} reload={reload} onNavigate={onNavigate} />;
+    return (
+      <AcceptInvitationPanel
+        invitationId={route.id}
+        setToast={setToast}
+        reload={reload}
+        onNavigate={onNavigate}
+      />
+    );
   }
   return <TeamMembersPanel setToast={setToast} />;
 }
@@ -107,13 +132,17 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
     if (result.error) {
       setInvitationsError(result.error.message ?? 'Unable to read pending invitations.');
     } else {
-      setInvitations(((result.data ?? []) as PendingInvitation[]).filter((entry) => entry.status === 'pending'));
+      setInvitations(
+        ((result.data ?? []) as PendingInvitation[]).filter((entry) => entry.status === 'pending')
+      );
       setInvitationsError('');
     }
     setInvitationsLoading(false);
   }, []);
 
-  useEffect(() => { void loadInvitations(); }, [loadInvitations]);
+  useEffect(() => {
+    void loadInvitations();
+  }, [loadInvitations]);
 
   const [email, setEmail] = useState('');
   const [addBusy, setAddBusy] = useState(false);
@@ -131,10 +160,16 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
       // keeps a copy-link fallback for delivery failures or manual sharing.
       await addTeamMember({ email: trimmed });
       setEmail('');
-      setToast(`Invitation created for ${trimmed}. Trevra will email it automatically when SMTP is configured.`);
+      setToast(
+        `Invitation created for ${trimmed}. Trevra will email it automatically when SMTP is configured.`
+      );
       await loadInvitations();
     } catch (err) {
-      setAddError(err instanceof ApiError || err instanceof Error ? err.message : 'Unable to add that teammate.');
+      setAddError(
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'Unable to add that teammate.'
+      );
     } finally {
       setAddBusy(false);
     }
@@ -180,111 +215,246 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
     }
   };
 
-  return <div className="page-stack">
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3>Who is in this workspace</h3>
-          <p>
-            Full access, the same as you, with one exception: only the owner can replace or delete the stored LinkedIn
-            credentials.
-          </p>
+  const [confirmCancelInvite, setConfirmCancelInvite] = useState<PendingInvitation | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelError, setCancelError] = useState('');
+
+  const cancelInvite = async () => {
+    if (!confirmCancelInvite) return;
+    setCancelBusy(true);
+    setCancelError('');
+    const result = await authClient.organization.cancelInvitation({
+      invitationId: confirmCancelInvite.id
+    });
+    setCancelBusy(false);
+    if (result.error) {
+      setCancelError(result.error.message ?? 'Unable to cancel that invitation.');
+      return;
+    }
+    setConfirmCancelInvite(null);
+    setToast(`Invitation to ${confirmCancelInvite.email} canceled.`);
+    await loadInvitations();
+  };
+
+  return (
+    <div className="page-stack">
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3>Who is in this workspace</h3>
+            <p>
+              Full access, the same as you, with one exception: only the owner can replace or delete
+              the stored LinkedIn credentials.
+            </p>
+          </div>
         </div>
-      </div>
 
-      {isPending
-        ? <p className="empty-copy">Reading the member list…</p>
-        : <div className="li-table-scroll compact">
-          <table className="li-table">
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th>{isOwner && <th />}</tr></thead>
-            <tbody>{members.map((member) => <tr key={member.id}>
-              <td>{member.name}</td>
-              <td>{member.email}</td>
-              <td><span className="li-chip">{member.role === 'owner' ? 'Owner' : 'Member'}</span></td>
-              {isOwner && <td>
-                {member.role !== 'owner' && <button
-                  className="li-mini-button li-mini-danger"
-                  type="button"
-                  disabled={removeBusy}
-                  onClick={() => setConfirmRemove(member)}
-                ><Trash2 size={13} /> Remove</button>}
-              </td>}
-            </tr>)}</tbody>
-          </table>
-        </div>}
-    </section>
+        {isPending ? (
+          <p className="empty-copy">Reading the member list…</p>
+        ) : (
+          <div className="li-table-scroll compact">
+            <table className="li-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                  {isOwner && <th />}
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((member) => (
+                  <tr key={member.id}>
+                    <td>{member.name}</td>
+                    <td>{member.email}</td>
+                    <td>
+                      <span className="li-chip">
+                        {member.role === 'owner' ? 'Owner' : 'Member'}
+                      </span>
+                    </td>
+                    {isOwner && (
+                      <td>
+                        {member.role !== 'owner' && (
+                          <button
+                            className="li-mini-button li-mini-danger"
+                            type="button"
+                            disabled={removeBusy}
+                            onClick={() => setConfirmRemove(member)}
+                          >
+                            <Trash2 size={13} /> Remove
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
-    {/* Owner-only, per the design doc's credential-management carve-out
+      {/* Owner-only, per the design doc's credential-management carve-out
         extended to "who is in the workspace at all" -- see the file header. A
         member simply does not see this section; the server 403 on
         `/api/team/members` is the actual boundary. */}
-    {isOwner && <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3>Add a teammate</h3>
-          <p>Files an invitation. They join this workspace only once they accept it -- whether or not they already use Trevra.</p>
-        </div>
-      </div>
+      {isOwner && (
+        <section className="page-panel">
+          <div className="section-heading">
+            <div>
+              <h3>Add a teammate</h3>
+              <p>
+                Files an invitation. They join this workspace only once they accept it -- whether or
+                not they already use Trevra.
+              </p>
+            </div>
+          </div>
 
-      {addError && <div className="error-banner">{addError}</div>}
+          {addError && <div className="error-banner">{addError}</div>}
 
-      <div className="li-filter-row">
-        <label>Email
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="teammate@example.com"
-          />
-        </label>
-        <button className="primary-button" type="button" disabled={addBusy || !email.trim()} onClick={() => void addTeammate()}>
-          {addBusy ? <LoaderCircle className="spin" size={14} /> : <UserPlus size={14} />} Add teammate
-        </button>
-      </div>
-    </section>}
+          <div className="li-filter-row">
+            <label>
+              Email
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="teammate@example.com"
+              />
+            </label>
+            <button
+              className="primary-button"
+              type="button"
+              disabled={addBusy || !email.trim()}
+              onClick={() => void addTeammate()}
+            >
+              {addBusy ? <LoaderCircle className="spin" size={14} /> : <UserPlus size={14} />} Add
+              teammate
+            </button>
+          </div>
+          {!addBusy && !email.trim() && (
+            <p className="li-hint">Type an email above to enable this.</p>
+          )}
+        </section>
+      )}
 
-    {isOwner && <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3>Pending invitations</h3>
-          <p>Invitations are emailed automatically when SMTP is configured. The link remains available as a fallback.</p>
-        </div>
-      </div>
+      {isOwner && (
+        <section className="page-panel">
+          <div className="section-heading">
+            <div>
+              <h3>Pending invitations</h3>
+              <p>
+                Invitations are emailed automatically when SMTP is configured. The link remains
+                available as a fallback.
+              </p>
+            </div>
+          </div>
 
-      {invitationsError && <div className="error-banner">{invitationsError}</div>}
+          {invitationsError && <div className="error-banner">{invitationsError}</div>}
 
-      {invitationsLoading
-        ? <p className="empty-copy">Reading pending invitations…</p>
-        : invitations.length === 0
-          ? <p className="empty-copy">Nothing pending.</p>
-          : <div className="li-table-scroll compact">
-            <table className="li-table">
-              <thead><tr><th>Email</th><th>Role</th><th /></tr></thead>
-              <tbody>{invitations.map((invitation) => <tr key={invitation.id}>
-                <td>{invitation.email}</td>
-                <td><span className="li-chip">{invitation.role === 'owner' ? 'Owner' : 'Member'}</span></td>
-                <td><button className="li-mini-button" type="button" onClick={() => void copyInviteLink(invitation.id)}>
-                  <Copy size={13} /> Copy invite link
-                </button></td>
-              </tr>)}</tbody>
-            </table>
-          </div>}
-    </section>}
+          {invitationsLoading ? (
+            <p className="empty-copy">Reading pending invitations…</p>
+          ) : invitations.length === 0 ? (
+            <p className="empty-copy">Nothing pending.</p>
+          ) : (
+            <div className="li-table-scroll compact">
+              <table className="li-table">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {invitations.map((invitation) => (
+                    <tr key={invitation.id}>
+                      <td>{invitation.email}</td>
+                      <td>
+                        <span className="li-chip">
+                          {invitation.role === 'owner' ? 'Owner' : 'Member'}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="li-row-actions">
+                          <button
+                            className="li-mini-button"
+                            type="button"
+                            onClick={() => void copyInviteLink(invitation.id)}
+                          >
+                            <Copy size={13} /> Copy invite link
+                          </button>
+                          <button
+                            className="li-mini-button li-mini-danger"
+                            type="button"
+                            disabled={cancelBusy}
+                            onClick={() => setConfirmCancelInvite(invitation)}
+                          >
+                            <Trash2 size={13} /> Cancel
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
 
-    {confirmRemove && <ConfirmDrawer
-      title={`Remove ${confirmRemove.name}?`}
-      tone="danger"
-      body={<>
-        <p>{confirmRemove.name} loses access to this workspace immediately -- the inbox, campaigns, CRM, and everything else they could see here.</p>
-        <p>They keep their own separate Trevra account and any other workspace they belong to.</p>
-      </>}
-      confirmLabel={`Remove ${confirmRemove.name}`}
-      busy={removeBusy}
-      error={removeError || null}
-      onCancel={() => { if (!removeBusy) { setConfirmRemove(null); setRemoveError(''); } }}
-      onConfirm={() => void removeMember()}
-    />}
-  </div>;
+      {confirmRemove && (
+        <ConfirmDrawer
+          title={`Remove ${confirmRemove.name}?`}
+          tone="danger"
+          body={
+            <>
+              <p>
+                {confirmRemove.name} loses access to this workspace immediately -- the inbox,
+                campaigns, CRM, and everything else they could see here.
+              </p>
+              <p>
+                They keep their own separate Trevra account and any other workspace they belong to.
+              </p>
+            </>
+          }
+          confirmLabel={`Remove ${confirmRemove.name}`}
+          busy={removeBusy}
+          error={removeError || null}
+          onCancel={() => {
+            if (!removeBusy) {
+              setConfirmRemove(null);
+              setRemoveError('');
+            }
+          }}
+          onConfirm={() => void removeMember()}
+        />
+      )}
+
+      {confirmCancelInvite && (
+        <ConfirmDrawer
+          title={`Cancel the invitation to ${confirmCancelInvite.email}?`}
+          tone="danger"
+          body={
+            <p>
+              The invite link stops working immediately. {confirmCancelInvite.email} will need a
+              fresh invitation to join.
+            </p>
+          }
+          confirmLabel="Cancel invitation"
+          busy={cancelBusy}
+          error={cancelError || null}
+          onCancel={() => {
+            if (!cancelBusy) {
+              setConfirmCancelInvite(null);
+              setCancelError('');
+            }
+          }}
+          onConfirm={() => void cancelInvite()}
+        />
+      )}
+    </div>
+  );
 }
 
 interface InvitationDetail {
@@ -300,7 +470,12 @@ interface InvitationDetail {
  * inside the authenticated shell), reading the one invitation named in the
  * URL and deciding whether to join.
  */
-function AcceptInvitationPanel({ invitationId, setToast, reload, onNavigate }: {
+function AcceptInvitationPanel({
+  invitationId,
+  setToast,
+  reload,
+  onNavigate
+}: {
   invitationId: string;
   setToast: (message: string) => void;
   reload: () => Promise<void>;
@@ -316,11 +491,14 @@ function AcceptInvitationPanel({ invitationId, setToast, reload, onNavigate }: {
     setLoading(true);
     void authClient.organization.getInvitation({ query: { id: invitationId } }).then((result) => {
       if (!active) return;
-      if (result.error) setError(result.error.message ?? 'This invitation link is no longer valid.');
+      if (result.error)
+        setError(result.error.message ?? 'This invitation link is no longer valid.');
       else setInvitation(result.data as unknown as InvitationDetail);
       setLoading(false);
     });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [invitationId]);
 
   const accept = async () => {
@@ -328,7 +506,10 @@ function AcceptInvitationPanel({ invitationId, setToast, reload, onNavigate }: {
     setError('');
     const result = await authClient.organization.acceptInvitation({ invitationId });
     setBusy(null);
-    if (result.error) { setError(result.error.message ?? 'Unable to accept this invitation.'); return; }
+    if (result.error) {
+      setError(result.error.message ?? 'Unable to accept this invitation.');
+      return;
+    }
     setToast(`Joined ${invitation?.organizationName ?? 'the workspace'}. Switched into it now.`);
     // Accepting sets this as the active organization server-side (better-auth's
     // own `acceptInvitation` handler) -- the same "everything downstream is
@@ -344,37 +525,64 @@ function AcceptInvitationPanel({ invitationId, setToast, reload, onNavigate }: {
     setError('');
     const result = await authClient.organization.rejectInvitation({ invitationId });
     setBusy(null);
-    if (result.error) { setError(result.error.message ?? 'Unable to decline this invitation.'); return; }
+    if (result.error) {
+      setError(result.error.message ?? 'Unable to decline this invitation.');
+      return;
+    }
     setToast('Invitation declined.');
     onNavigate('/setup/team');
   };
 
-  return <div className="page-stack">
-    <section className="page-panel">
-      <div className="section-heading"><div><h3>Join a workspace</h3></div></div>
-
-      {loading && <p className="empty-copy">Reading this invitation…</p>}
-
-      {!loading && error && <div className="error-banner">{error}</div>}
-
-      {!loading && !error && invitation && <>
-        <p>
-          You have been invited to <strong>{invitation.organizationName ?? 'a Trevra workspace'}</strong> as{' '}
-          {invitation.role === 'owner' ? 'an owner' : 'a member'}. Accepting adds it alongside any workspace you
-          already have -- you keep your own and can switch back to it any time.
-        </p>
-        <div className="panel-footer">
-          <span>Nothing here is shared until you accept.</span>
-          <span style={{ display: 'flex', gap: 10 }}>
-            <button className="ghost-button" type="button" disabled={busy !== null} onClick={() => void reject()}>
-              {busy === 'reject' ? <LoaderCircle className="spin" size={14} /> : 'Decline'}
-            </button>
-            <button className="primary-button" type="button" disabled={busy !== null} onClick={() => void accept()}>
-              {busy === 'accept' ? <LoaderCircle className="spin" size={14} /> : 'Accept and switch to it'}
-            </button>
-          </span>
+  return (
+    <div className="page-stack">
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3>Join a workspace</h3>
+          </div>
         </div>
-      </>}
-    </section>
-  </div>;
+
+        {loading && <p className="empty-copy">Reading this invitation…</p>}
+
+        {!loading && error && <div className="error-banner">{error}</div>}
+
+        {!loading && !error && invitation && (
+          <>
+            <p>
+              You have been invited to{' '}
+              <strong>{invitation.organizationName ?? 'a Trevra workspace'}</strong> as{' '}
+              {invitation.role === 'owner' ? 'an owner' : 'a member'}. Accepting adds it alongside
+              any workspace you already have -- you keep your own and can switch back to it any
+              time.
+            </p>
+            <div className="panel-footer">
+              <span>Nothing here is shared until you accept.</span>
+              <span style={{ display: 'flex', gap: 10 }}>
+                <button
+                  className="ghost-button"
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => void reject()}
+                >
+                  {busy === 'reject' ? <LoaderCircle className="spin" size={14} /> : 'Decline'}
+                </button>
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => void accept()}
+                >
+                  {busy === 'accept' ? (
+                    <LoaderCircle className="spin" size={14} />
+                  ) : (
+                    'Accept and switch to it'
+                  )}
+                </button>
+              </span>
+            </div>
+          </>
+        )}
+      </section>
+    </div>
+  );
 }

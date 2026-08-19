@@ -120,6 +120,12 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
   const [openId, setOpenId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rescoring, setRescoring] = useState(false);
+  // "Add more accounts" stays collapsed by default once there is already a
+  // ranked list -- opened by the operator, or automatically by a just-run
+  // import so its own result report (rejected lines and all) does not
+  // vanish behind the toggle the moment the first import promotes this
+  // screen out of its empty state.
+  const [showAddMore, setShowAddMore] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -128,28 +134,40 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to load accounts. Try again.'));
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const runImport = async () => {
-    if (!text.trim()) { setError('Paste at least one domain, one per line.'); return; }
+    if (!text.trim()) {
+      setError('Paste at least one domain, one per line.');
+      return;
+    }
     setImporting(true);
     setError('');
     try {
       const imported = await importAccounts({ text, source });
       setResult(imported);
+      setShowAddMore(true);
       // The paste is cleared only when something came of it. A list that was
       // entirely rejected is the operator's data and their next edit.
       if (imported.created > 0) setText('');
-      setToast(imported.created > 0
-        ? `${imported.created} account(s) added.`
-        : 'All usable accounts were already imported.');
+      setToast(
+        imported.created > 0
+          ? `${imported.created} account(s) added.`
+          : 'All usable accounts were already imported.'
+      );
       await load();
     } catch (err) {
       setError(errorMessage(err, 'Unable to import that list'));
-    } finally { setImporting(false); }
+    } finally {
+      setImporting(false);
+    }
   };
 
   /**
@@ -175,12 +193,16 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     setBusyId(row.account.id);
     try {
       const updated = await sendAccountFeedback(row.account.id, { verdict: 'not_a_fit' });
-      setAccounts((current) => current.map((entry) => entry.account.id === row.account.id ? updated : entry));
+      setAccounts((current) =>
+        current.map((entry) => (entry.account.id === row.account.id ? updated : entry))
+      );
       setToast(`${row.account.name} marked as not a fit.`);
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to record that verdict'));
-    } finally { setBusyId(null); }
+    } finally {
+      setBusyId(null);
+    }
   };
 
   const runRescore = async () => {
@@ -192,45 +214,143 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to score the accounts again'));
-    } finally { setRescoring(false); }
+    } finally {
+      setRescoring(false);
+    }
   };
 
-  return <div className="page-stack">
-    {error && <div className="error-banner">{error}</div>}
+  return (
+    <div className="page-stack">
+      {error && <div className="error-banner">{error}</div>}
 
-    {accounts.length > 0 && <section className="page-panel">
+      {accounts.length > 0 && (
+        <section className="page-panel">
+          <div className="section-heading">
+            <div>
+              <h3 aria-level={2}>{accounts.length} account(s), highest score first</h3>
+              <p>Scores use the signals shown under each account. Evidence links to the source.</p>
+            </div>
+            <div className="acc-heading-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={rescoring}
+                onClick={() => void runRescore()}
+              >
+                {rescoring ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}{' '}
+                Score again
+              </button>
+              <button
+                className="ghost-button"
+                type="button"
+                disabled={loading}
+                onClick={() => void load()}
+              >
+                {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}{' '}
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          <div className="acc-list">
+            {accounts.map((row) => (
+              <AccountRow
+                key={row.account.id}
+                row={row}
+                open={openId === row.account.id}
+                busy={busyId === row.account.id}
+                onToggle={() => setOpenId(openId === row.account.id ? null : row.account.id)}
+                onNotAFit={() => void markNotAFit(row)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {accounts.length > 0 ? (
+        <details
+          className="mgr-inputs"
+          open={showAddMore}
+          onToggle={(event) => setShowAddMore(event.currentTarget.open)}
+        >
+          <summary>Add more accounts</summary>
+          <div className="mgr-inputs-body">
+            <div className="page-panel">
+              <AddAccountsForm
+                text={text}
+                setText={setText}
+                importing={importing}
+                source={source}
+                setSource={setSource}
+                onDrop={onDrop}
+                runImport={runImport}
+                heading="Add more accounts"
+                subheading="One domain per line. Existing accounts are skipped."
+              />
+              {result && <ImportReport result={result} />}
+            </div>
+          </div>
+        </details>
+      ) : (
+        <section className="page-panel">
+          <AddAccountsForm
+            text={text}
+            setText={setText}
+            importing={importing}
+            source={source}
+            setSource={setSource}
+            onDrop={onDrop}
+            runImport={runImport}
+            heading="Start with the list you already have"
+            subheading="One domain per line. Accounts are scored after their sites are read."
+          />
+          {result && <ImportReport result={result} />}
+          {!loading && !result && (
+            <div className="empty-state">
+              <Building2 size={26} />
+              <h4 aria-level={3}>No accounts yet</h4>
+              <p>Imported accounts will appear here.</p>
+            </div>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The paste-a-list-of-domains form itself, shared by the always-open empty
+ * state ("start with the list you already have") and the collapsed "Add more
+ * accounts" toggle once there is already a ranked list on screen -- same
+ * inputs, same import call, only the surrounding chrome differs.
+ */
+function AddAccountsForm({
+  text,
+  setText,
+  importing,
+  source,
+  setSource,
+  onDrop,
+  runImport,
+  heading,
+  subheading
+}: {
+  text: string;
+  setText: (value: string) => void;
+  importing: boolean;
+  source: AccountSource;
+  setSource: (value: AccountSource) => void;
+  onDrop: (event: React.DragEvent<HTMLTextAreaElement>) => void;
+  runImport: () => void;
+  heading: string;
+  subheading: string;
+}) {
+  return (
+    <>
       <div className="section-heading">
         <div>
-          <h3 aria-level={2}>{accounts.length} account(s), highest score first</h3>
-          <p>Scores use the signals shown under each account. Evidence links to the source.</p>
-        </div>
-        <div className="acc-heading-actions">
-          <button className="secondary-button" type="button" disabled={rescoring} onClick={() => void runRescore()}>
-            {rescoring ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Score again
-          </button>
-          <button className="ghost-button" type="button" disabled={loading} onClick={() => void load()}>
-            {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />} Refresh
-          </button>
-        </div>
-      </div>
-
-      <div className="acc-list">
-        {accounts.map((row) => <AccountRow
-          key={row.account.id}
-          row={row}
-          open={openId === row.account.id}
-          busy={busyId === row.account.id}
-          onToggle={() => setOpenId(openId === row.account.id ? null : row.account.id)}
-          onNotAFit={() => void markNotAFit(row)}
-        />)}
-      </div>
-    </section>}
-
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>{accounts.length > 0 ? 'Add more accounts' : 'Start with the list you already have'}</h3>
-          <p>{accounts.length > 0 ? 'One domain per line. Existing accounts are skipped.' : 'One domain per line. Accounts are scored after their sites are read.'}</p>
+          <h3 aria-level={2}>{heading}</h3>
+          <p>{subheading}</p>
         </div>
         <FileUp size={20} className="li-heading-icon" />
       </div>
@@ -250,30 +370,41 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       <p className="li-hint">URLs are normalized to the domain.</p>
 
       <div className="li-form-grid acc-import-grid">
-        <label>Where this list came from
-          <select value={source} disabled={importing} onChange={(event) => setSource(event.target.value as AccountSource)}>
-            {SOURCE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        <label>
+          Where this list came from
+          <select
+            value={source}
+            disabled={importing}
+            onChange={(event) => setSource(event.target.value as AccountSource)}
+          >
+            {SOURCE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
           <small className="li-hint">Saved with the account.</small>
         </label>
       </div>
 
       <div className="panel-footer">
-        <span>Import adds accounts. It does not contact anyone.</span>
-        <button className="primary-button" type="button" disabled={importing || !text.trim()} onClick={() => void runImport()}>
-          {importing ? <LoaderCircle className="spin" size={15} /> : <Building2 size={15} />} Import this list
+        <span>
+          {!text.trim()
+            ? 'Paste at least one domain to enable import.'
+            : 'Import adds accounts. It does not contact anyone.'}
+        </span>
+        <button
+          className="primary-button"
+          type="button"
+          disabled={importing || !text.trim()}
+          onClick={() => void runImport()}
+        >
+          {importing ? <LoaderCircle className="spin" size={15} /> : <Building2 size={15} />} Import
+          this list
         </button>
       </div>
-
-      {result && <ImportReport result={result} />}
-
-      {accounts.length === 0 && !loading && !result && <div className="empty-state">
-        <Building2 size={26} />
-        <h4 aria-level={3}>No accounts yet</h4>
-        <p>Imported accounts will appear here.</p>
-      </div>}
-    </section>
-  </div>;
+    </>
+  );
 }
 
 /**
@@ -284,25 +415,39 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
  * nobody finds out until the twentieth company never gets a message.
  */
 function ImportReport({ result }: { result: AccountImportResult }) {
-  return <div className="acc-import-report">
-    <p className="acc-import-counts">
-      <strong>{result.created}</strong> written · <strong>{result.duplicate}</strong> already here ·{' '}
-      <strong>{result.rejected.length}</strong> not usable
-    </p>
-    {result.rejected.length > 0 && <>
-      <p className="li-hint">These lines produced no domain, so nothing was written for them:</p>
-      <ul className="acc-rejected">
-        {result.rejected.map((entry, index) => <li key={`${entry.line}-${index}`}>
-          <code>{entry.line}</code>
-          <span>{entry.reason}</span>
-        </li>)}
-      </ul>
-    </>}
-  </div>;
+  return (
+    <div className="acc-import-report">
+      <p className="acc-import-counts">
+        <strong>{result.created}</strong> written · <strong>{result.duplicate}</strong> already here
+        · <strong>{result.rejected.length}</strong> not usable
+      </p>
+      {result.rejected.length > 0 && (
+        <>
+          <p className="li-hint">
+            These lines produced no domain, so nothing was written for them:
+          </p>
+          <ul className="acc-rejected">
+            {result.rejected.map((entry, index) => (
+              <li key={`${entry.line}-${index}`}>
+                <code>{entry.line}</code>
+                <span>{entry.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
 }
 
 /** One account, as a sentence: who they are, how hot, and the scorer’s own line about why. */
-function AccountRow({ row, open, busy, onToggle, onNotAFit }: {
+function AccountRow({
+  row,
+  open,
+  busy,
+  onToggle,
+  onNotAFit
+}: {
   row: RankedAccount;
   open: boolean;
   busy: boolean;
@@ -316,40 +461,58 @@ function AccountRow({ row, open, busy, onToggle, onNotAFit }: {
   // has stored so far. With neither, there is nothing to expand into.
   const expandable = Boolean(score) || signals.length > 0;
 
-  return <article className={`acc-row${rejected ? ' is-rejected' : ''}`}>
-    <div className="acc-row-head">
-      <h4 aria-level={3}>{account.name}</h4>
-      {score && <span className={`li-chip acc-tier-${score.tier}`}>{TIER_LABELS[score.tier]}</span>}
-      {score && <span className="acc-score">score {score.score}</span>}
-      {rejected && <span className="li-chip acc-tier-rejected">Not a fit</span>}
-    </div>
+  return (
+    <article className={`acc-row${rejected ? ' is-rejected' : ''}`}>
+      <div className="acc-row-head">
+        <h4 aria-level={3}>{account.name}</h4>
+        {score && (
+          <span className={`li-chip acc-tier-${score.tier}`}>{TIER_LABELS[score.tier]}</span>
+        )}
+        {score && <span className="acc-score">score {score.score}</span>}
+        {rejected && <span className="li-chip acc-tier-rejected">Not a fit</span>}
+      </div>
 
-    <p className="acc-sentence">
-      {score
-        ? score.rationale.summary
-        : signals.length > 0
-          ? `${signals.length} signal(s) found. Waiting for a score.`
-          : 'Not read yet.'}
-    </p>
+      <p className="acc-sentence">
+        {score
+          ? score.rationale.summary
+          : signals.length > 0
+            ? `${signals.length} signal(s) found. Waiting for a score.`
+            : 'Not read yet.'}
+      </p>
 
-    <div className="acc-row-actions">
-      {expandable && <button className="ghost-button" type="button" onClick={onToggle} aria-expanded={open}>
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        {score ? 'Why this score' : 'What has been read'}
-      </button>}
-      <a className="li-link acc-site" href={siteUrl(account.domain)} target="_blank" rel="noreferrer">
-        {account.domain} <ExternalLink size={11} />
-      </a>
-      {account.linkedinUrl && <a className="li-link" href={account.linkedinUrl} target="_blank" rel="noreferrer">
-        LinkedIn <ExternalLink size={11} />
-      </a>}
-      <button className="ghost-button acc-reject" type="button" disabled={busy || rejected} onClick={onNotAFit}>
-        {busy ? <LoaderCircle className="spin" size={14} /> : <ThumbsDown size={14} />} Not a fit
-      </button>
-    </div>
+      <div className="acc-row-actions">
+        {expandable && (
+          <button className="ghost-button" type="button" onClick={onToggle} aria-expanded={open}>
+            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            {score ? 'Why this score' : 'What has been read'}
+          </button>
+        )}
+        <a
+          className="li-link acc-site"
+          href={siteUrl(account.domain)}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {account.domain} <ExternalLink size={11} />
+        </a>
+        {account.linkedinUrl && (
+          <a className="li-link" href={account.linkedinUrl} target="_blank" rel="noreferrer">
+            LinkedIn <ExternalLink size={11} />
+          </a>
+        )}
+        <button
+          className="ghost-button acc-reject"
+          type="button"
+          disabled={busy || rejected}
+          onClick={onNotAFit}
+        >
+          {busy ? <LoaderCircle className="spin" size={14} /> : <ThumbsDown size={14} />} Not a fit
+        </button>
+      </div>
 
-    {open && (score ? <ScorePanel score={score} /> : <SignalPanel row={row} />)}
-  </article>;
+      {open && (score ? <ScorePanel score={score} /> : <SignalPanel row={row} />)}
+    </article>
+  );
 }
 
 /**
@@ -364,46 +527,70 @@ function AccountRow({ row, open, busy, onToggle, onNotAFit }: {
  */
 function ScorePanel({ score }: { score: AccountScore }) {
   const { rationale } = score;
-  return <div className="acc-why">
-    <p className="acc-why-window">{score.distinctKinds} signal type(s) over {rationale.windowDays} days. Scored {relativeTime(score.computedAt)}.</p>
+  return (
+    <div className="acc-why">
+      <p className="acc-why-window">
+        {score.distinctKinds} signal type(s) over {rationale.windowDays} days. Scored{' '}
+        {relativeTime(score.computedAt)}.
+      </p>
 
-    {rationale.components.length === 0
-      ? <p className="empty-copy">No signal inside the window carried any weight.</p>
-      : <ul className="acc-components">
-        {rationale.components.map((component, index) => <li key={`${component.kind}-${component.observedAt}-${index}`}>
-          <div className="acc-component-head">
-            <span className="li-chip">{kindLabel(component.kind)}</span>
-            <span className="acc-points">{signed(component.points)}</span>
-          </div>
-          <p className="acc-component-detail">{component.detail}</p>
-          <p className="acc-component-meta">
-            {ageCopy(component.ageDays)} · weight {component.base} × recency {component.decay} ={' '}
-            {component.points}
-          </p>
-          <a className="li-link acc-evidence" href={component.evidenceUrl} target="_blank" rel="noreferrer">Source <ExternalLink size={11} /></a>
-        </li>)}
-      </ul>}
+      {rationale.components.length === 0 ? (
+        <p className="empty-copy">No signal inside the window carried any weight.</p>
+      ) : (
+        <ul className="acc-components">
+          {rationale.components.map((component, index) => (
+            <li key={`${component.kind}-${component.observedAt}-${index}`}>
+              <div className="acc-component-head">
+                <span className="li-chip">{kindLabel(component.kind)}</span>
+                <span className="acc-points">{signed(component.points)}</span>
+              </div>
+              <p className="acc-component-detail">{component.detail}</p>
+              <p className="acc-component-meta">
+                {ageCopy(component.ageDays)} · weight {component.base} × recency {component.decay} ={' '}
+                {component.points}
+              </p>
+              <a
+                className="li-link acc-evidence"
+                href={component.evidenceUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Source <ExternalLink size={11} />
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
 
-    {rationale.combinations.length > 0 && <div className="acc-why-block">
-      <h5 aria-level={4}>Combined signals</h5>
-      <ul className="acc-combinations">
-        {rationale.combinations.map((combination, index) => <li key={`${combination.kinds.join('+')}-${index}`}>
-          <span className="acc-points">{signed(combination.bonus)}</span>
-          <span>{combination.why}</span>
-        </li>)}
-      </ul>
-    </div>}
+      {rationale.combinations.length > 0 && (
+        <div className="acc-why-block">
+          <h5 aria-level={4}>Combined signals</h5>
+          <ul className="acc-combinations">
+            {rationale.combinations.map((combination, index) => (
+              <li key={`${combination.kinds.join('+')}-${index}`}>
+                <span className="acc-points">{signed(combination.bonus)}</span>
+                <span>{combination.why}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
-    {rationale.penalties.length > 0 && <div className="acc-why-block">
-      <h5 aria-level={4}>Taken off</h5>
-      <ul className="acc-penalties">
-        {rationale.penalties.map((penalty, index) => <li key={`${penalty.reason}-${index}`}>
-          <span className="acc-points">{penalty.points}</span>
-          <span>{penalty.reason}</span>
-        </li>)}
-      </ul>
-    </div>}
-  </div>;
+      {rationale.penalties.length > 0 && (
+        <div className="acc-why-block">
+          <h5 aria-level={4}>Taken off</h5>
+          <ul className="acc-penalties">
+            {rationale.penalties.map((penalty, index) => (
+              <li key={`${penalty.reason}-${index}`}>
+                <span className="acc-points">{penalty.points}</span>
+                <span>{penalty.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -414,17 +601,28 @@ function ScorePanel({ score }: { score: AccountScore }) {
  * screen promises not to do.
  */
 function SignalPanel({ row }: { row: RankedAccount }) {
-  return <div className="acc-why">
-    <p className="acc-why-window">Not scored yet. Signals are newest first.</p>
-    <ul className="acc-components">
-      {row.signals.map((signal) => <li key={signal.id}>
-        <div className="acc-component-head">
-          <span className="li-chip">{kindLabel(signal.kind)}</span>
-        </div>
-        <p className="acc-component-detail">{signal.detail}</p>
-        <p className="acc-component-meta">Observed {relativeTime(signal.observedAt)}</p>
-        <a className="li-link acc-evidence" href={signal.evidenceUrl} target="_blank" rel="noreferrer">Source <ExternalLink size={11} /></a>
-      </li>)}
-    </ul>
-  </div>;
+  return (
+    <div className="acc-why">
+      <p className="acc-why-window">Not scored yet. Signals are newest first.</p>
+      <ul className="acc-components">
+        {row.signals.map((signal) => (
+          <li key={signal.id}>
+            <div className="acc-component-head">
+              <span className="li-chip">{kindLabel(signal.kind)}</span>
+            </div>
+            <p className="acc-component-detail">{signal.detail}</p>
+            <p className="acc-component-meta">Observed {relativeTime(signal.observedAt)}</p>
+            <a
+              className="li-link acc-evidence"
+              href={signal.evidenceUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Source <ExternalLink size={11} />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
