@@ -3,6 +3,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { Db } from '../db.js';
 import { PACED_KIND_VALUES } from '../linkedin/limits.js';
 import { sequenceStepsSchema } from '../linkedin/sequence.js';
+import { outreachThreadSchema } from '../outreach/scorer.js';
 import type { PlaybookDefinition } from './types.js';
 
 const playbooks = new Map<string, PlaybookDefinition>();
@@ -11,7 +12,8 @@ export const auditLedOutreachPlaybook: PlaybookDefinition = {
   id: 'gtm.audit-led-outreach',
   version: '1.0.0',
   name: 'Audit-led outreach',
-  description: 'Score a lead, audit its AI visibility, prepare evidence-backed outreach, and stop for founder approval.',
+  description:
+    'Score a lead, audit its AI visibility, prepare evidence-backed outreach, and stop for founder approval.',
   inputSchema: z.object({
     lead: z.object({
       domain: z.string().min(1),
@@ -22,12 +24,14 @@ export const auditLedOutreachPlaybook: PlaybookDefinition = {
       vertical: z.string().nullish(),
       catalogSize: z.number().nonnegative().nullish()
     }),
-    draftConfig: z.object({
-      offer: z.string(),
-      senderName: z.string(),
-      postalAddress: z.string(),
-      voiceSample: z.string().nullish()
-    }).optional()
+    draftConfig: z
+      .object({
+        offer: z.string(),
+        senderName: z.string(),
+        postalAddress: z.string(),
+        voiceSample: z.string().nullish()
+      })
+      .optional()
   }),
   steps: [
     {
@@ -103,12 +107,12 @@ export const auditLedOutreachPlaybook: PlaybookDefinition = {
   source: { type: 'builtin' }
 };
 
-
 export const invoiceDeliveredWorkPlaybook: PlaybookDefinition = {
   id: 'revenue.invoice-delivered-work',
   version: '1.0.0',
   name: 'Invoice delivered work',
-  description: 'Prepare an invoice payload, require founder approval, and create it through the connected accounting provider.',
+  description:
+    'Prepare an invoice payload, require founder approval, and create it through the connected accounting provider.',
   inputSchema: z.object({
     recipient: z.string().email(),
     amount: z.number().positive().max(10_000_000),
@@ -149,7 +153,8 @@ export const protectScopePlaybook: PlaybookDefinition = {
   id: 'revenue.protect-scope',
   version: '1.0.0',
   name: 'Protect project scope',
-  description: 'Require exact approval for a priced change order and create it through HoneyBook, Bonsai, or the configured communication provider.',
+  description:
+    'Require exact approval for a priced change order and create it through HoneyBook, Bonsai, or the configured communication provider.',
   inputSchema: z.object({
     recipient: z.string().email(),
     subject: z.string().min(1).max(200),
@@ -231,7 +236,10 @@ export const communityOutreachPlaybook: PlaybookDefinition = {
       url: z.string().url(),
       summary: z.string().min(1).max(300),
       mechanism: z.string().min(1).max(300),
-      claims: z.array(z.object({ label: z.string().min(1).max(80), value: z.string().min(1).max(80) })).max(8).default([])
+      claims: z
+        .array(z.object({ label: z.string().min(1).max(80), value: z.string().min(1).max(80) }))
+        .max(8)
+        .default([])
     }),
     /** Overrides OUTREACH_ACCOUNT_PROFILES_JSON for this run. */
     account: z.object({ accountAgeDays: z.number().min(0), karma: z.number().min(0) }).nullish()
@@ -253,7 +261,10 @@ export const communityOutreachPlaybook: PlaybookDefinition = {
       type: 'skill',
       skillId: 'gtm.score-threads',
       needs: ['scout'],
-      input: { threads: { $ref: '$.steps.scout.output.threads' }, minScore: { $ref: '$.input.minScore' } }
+      input: {
+        threads: { $ref: '$.steps.scout.output.threads' },
+        minScore: { $ref: '$.input.minScore' }
+      }
     },
     {
       id: 'guard',
@@ -328,81 +339,195 @@ export const communityOutreachPlaybook: PlaybookDefinition = {
   source: { type: 'builtin' }
 };
 
+/**
+ * One thread, chosen by a human, drafted for approval.
+ *
+ * The community playbook scouts and then drafts against `repliable.0` -- the
+ * best thread in a fresh batch, which is the right answer for a scheduled run
+ * and the wrong one for a founder who just picked a row in /research. Same
+ * gate, same approval payload, no scout and no score: the thread arrives whole
+ * from the caller, and its relevance was already computed on the read path.
+ */
+export const threadReplyPlaybook: PlaybookDefinition = {
+  id: 'gtm.thread-reply',
+  version: '1.0.0',
+  name: 'Reply to one discovered thread',
+  description:
+    'Gate one chosen community thread against posting limits, draft a reply to it, and stop for founder approval before posting.',
+  inputSchema: z.object({
+    thread: outreachThreadSchema,
+    angle: z
+      .enum(['technical_deepdive', 'cost_comparison', 'alternative_suggestion', 'minimal_mention'])
+      .optional(),
+    relevanceScore: z.number().min(0).max(10).optional(),
+    product: z.object({
+      name: z.string().min(1).max(80),
+      url: z.string().url(),
+      summary: z.string().min(1).max(300),
+      mechanism: z.string().min(1).max(300),
+      claims: z
+        .array(z.object({ label: z.string().min(1).max(80), value: z.string().min(1).max(80) }))
+        .max(8)
+        .default([])
+    }),
+    account: z.object({ accountAgeDays: z.number().min(0), karma: z.number().min(0) }).nullish()
+  }),
+  steps: [
+    {
+      id: 'guard',
+      type: 'skill',
+      skillId: 'gtm.outreach-guard',
+      input: {
+        thread: { $ref: '$.input.thread' },
+        account: { $ref: '$.input.account' },
+        // The stop signal. Without it the verdict is advisory and a blocked
+        // thread still reaches a founder for approval.
+        requireAllowed: true
+      }
+    },
+    {
+      id: 'draft',
+      type: 'skill',
+      skillId: 'gtm.draft-reply',
+      needs: ['guard'],
+      input: {
+        thread: { $ref: '$.input.thread' },
+        product: { $ref: '$.input.product' },
+        angle: { $ref: '$.input.angle' }
+      }
+    },
+    {
+      id: 'approve-reply',
+      type: 'approval',
+      title: 'Approve community reply',
+      needs: ['draft', 'guard'],
+      payload: {
+        platform: { $ref: '$.input.thread.platform' },
+        threadExternalId: { $ref: '$.input.thread.externalId' },
+        threadUrl: { $ref: '$.input.thread.url' },
+        community: { $ref: '$.input.thread.community' },
+        body: { $ref: '$.steps.draft.output.body' },
+        metadata: {
+          threadTitle: { $ref: '$.input.thread.title' },
+          // Carried so the CRM write-back can try to match the thread's author
+          // to a known contact. Part of the approved payload, so what gets
+          // attributed is visible to whoever approves it.
+          threadAuthor: { $ref: '$.input.thread.author' },
+          relevanceScore: { $ref: '$.input.relevanceScore' },
+          angle: { $ref: '$.steps.draft.output.angle' },
+          safetyAllowed: { $ref: '$.steps.guard.output.allowed' },
+          safetyReason: { $ref: '$.steps.guard.output.reason' },
+          safetyChecks: { $ref: '$.steps.guard.output.checks' },
+          critiquePassed: { $ref: '$.steps.draft.output.critique.passed' },
+          critiqueFindings: { $ref: '$.steps.draft.output.critique.findings' },
+          automationMode: { $ref: '$.steps.draft.output.automationMode' },
+          submitUrl: { $ref: '$.steps.draft.output.submitUrl' }
+        }
+      }
+    },
+    {
+      id: 'post-reply',
+      type: 'action',
+      actionType: 'community.reply',
+      approvalStepId: 'approve-reply',
+      needs: ['approve-reply'],
+      payload: { $ref: '$.steps.approve-reply.input' },
+      retry: { maxAttempts: 3, delaySeconds: 30 }
+    }
+  ],
+  output: {
+    approved: { $ref: '$.steps.approve-reply.output.approved' },
+    delivery: { $ref: '$.steps.post-reply.output' },
+    draft: { $ref: '$.steps.draft.output' },
+    safety: { $ref: '$.steps.guard.output' },
+    thread: { $ref: '$.input.thread' }
+  },
+  source: { type: 'builtin' }
+};
+
 export const linkedinOutreachPlaybook: PlaybookDefinition = {
   id: 'gtm.linkedin-outreach',
   version: '1.0.0',
   name: 'LinkedIn outreach campaign',
   description:
     "Write a LinkedIn sequence, pace it against the seat's warm-up week and real action ledger, gate it on every per-seat ceiling at once, and stop for founder approval before exporting the campaign for the operator's own tool.",
-  inputSchema: z.object({
-    /**
-     * The brief. OPTIONAL, and only since sequences became editable data.
-     *
-     * A campaign assembled from steps -- a template, or an operator's own
-     * nodes -- has copy already and needs nothing drafted, which is the whole
-     * Dripify-shaped path: name it, build it, send it, never fill in an ICP
-     * form. When the brief IS supplied alongside `sequenceSteps` it stops
-     * being generation input and becomes critic evidence, which is why it is
-     * still passed to the sequence step in both cases.
-     */
-    icp: z
-      .object({
-        role: z.string().min(1).max(120),
-        segment: z.string().min(1).max(160),
-        pain: z.string().min(1).max(300)
-      })
-      .optional(),
-    offer: z
-      .object({
-        name: z.string().min(1).max(80),
-        summary: z.string().min(1).max(300),
-        mechanism: z.string().min(1).max(300),
-        proof: z.array(z.object({ label: z.string().min(1).max(80), value: z.string().min(1).max(80) })).max(6).default([]),
-        url: z.string().url().nullish()
-      })
-      .optional(),
-    /**
-     * An explicit sequence, when the operator already has one. Validated and
-     * critiqued by `gtm.linkedin-sequence` exactly as a drafted one is -- it is
-     * the same code path with different starting values, not a bypass.
-     */
-    // IMPORTED, NOT RESTATED. This was a third hand-copy of the step object
-    // (app.ts held the second), and a copy that lacked `condition` stripped
-    // every branch out of the payload BEFORE `gtm.linkedin-sequence` saw it --
-    // so a campaign created with branches was approved and exported without
-    // them, looking correct the whole way. One definition, in the module that
-    // owns the rules it encodes.
-    sequenceSteps: sequenceStepsSchema.optional(),
-    /** Opaque handles or profile URLs. Trevra never resolves them against LinkedIn. */
-    targets: z.array(z.string().min(1).max(500)).min(1).max(500),
-    tone: z.enum(['direct', 'consultative', 'peer']).default('consultative'),
-    includeInMail: z.boolean().default(false),
-    /** `none` drafts the connection request with no note at all. Ignored when `sequenceSteps` carries the copy. */
-    inviteNote: z.enum(['drafted', 'none']).default('drafted'),
-    /** The kind the plan paces. One kind per run, because each has its own band. */
-    kind: z.enum(PACED_KIND_VALUES).default('invite'),
-    horizonDays: z.number().int().min(1).max(90).default(14),
-    seatKey: z.string().min(1).max(64).default('owner'),
-    format: z.enum(['dripify', 'heyreach', 'expandi', 'generic']).default('dripify'),
-    campaignId: z.string().min(1).max(120).nullish(),
-    /** Names and companies for the merge fields. Optional: a target with no entry exports with empty columns. */
-    contacts: z
-      .array(
-        z.object({
-          targetRef: z.string().min(1).max(500),
-          profileUrl: z.string().max(500).nullish(),
-          firstName: z.string().max(120).nullish(),
-          lastName: z.string().max(120).nullish(),
-          company: z.string().max(200).nullish(),
-          role: z.string().max(200).nullish()
+  inputSchema: z
+    .object({
+      /**
+       * The brief. OPTIONAL, and only since sequences became editable data.
+       *
+       * A campaign assembled from steps -- a template, or an operator's own
+       * nodes -- has copy already and needs nothing drafted, which is the whole
+       * Dripify-shaped path: name it, build it, send it, never fill in an ICP
+       * form. When the brief IS supplied alongside `sequenceSteps` it stops
+       * being generation input and becomes critic evidence, which is why it is
+       * still passed to the sequence step in both cases.
+       */
+      icp: z
+        .object({
+          role: z.string().min(1).max(120),
+          segment: z.string().min(1).max(160),
+          pain: z.string().min(1).max(300)
         })
-      )
-      .max(500)
-      .optional()
-  }).refine(
-    (value) => Boolean(value.sequenceSteps) || (Boolean(value.icp) && Boolean(value.offer)),
-    { message: 'Provide sequenceSteps, or an icp and an offer for gtm.linkedin-sequence to draft from' }
-  ),
+        .optional(),
+      offer: z
+        .object({
+          name: z.string().min(1).max(80),
+          summary: z.string().min(1).max(300),
+          mechanism: z.string().min(1).max(300),
+          proof: z
+            .array(z.object({ label: z.string().min(1).max(80), value: z.string().min(1).max(80) }))
+            .max(6)
+            .default([]),
+          url: z.string().url().nullish()
+        })
+        .optional(),
+      /**
+       * An explicit sequence, when the operator already has one. Validated and
+       * critiqued by `gtm.linkedin-sequence` exactly as a drafted one is -- it is
+       * the same code path with different starting values, not a bypass.
+       */
+      // IMPORTED, NOT RESTATED. This was a third hand-copy of the step object
+      // (app.ts held the second), and a copy that lacked `condition` stripped
+      // every branch out of the payload BEFORE `gtm.linkedin-sequence` saw it --
+      // so a campaign created with branches was approved and exported without
+      // them, looking correct the whole way. One definition, in the module that
+      // owns the rules it encodes.
+      sequenceSteps: sequenceStepsSchema.optional(),
+      /** Opaque handles or profile URLs. Trevra never resolves them against LinkedIn. */
+      targets: z.array(z.string().min(1).max(500)).min(1).max(500),
+      tone: z.enum(['direct', 'consultative', 'peer']).default('consultative'),
+      includeInMail: z.boolean().default(false),
+      /** `none` drafts the connection request with no note at all. Ignored when `sequenceSteps` carries the copy. */
+      inviteNote: z.enum(['drafted', 'none']).default('drafted'),
+      /** The kind the plan paces. One kind per run, because each has its own band. */
+      kind: z.enum(PACED_KIND_VALUES).default('invite'),
+      horizonDays: z.number().int().min(1).max(90).default(14),
+      seatKey: z.string().min(1).max(64).default('owner'),
+      format: z.enum(['dripify', 'heyreach', 'expandi', 'generic']).default('dripify'),
+      campaignId: z.string().min(1).max(120).nullish(),
+      /** Names and companies for the merge fields. Optional: a target with no entry exports with empty columns. */
+      contacts: z
+        .array(
+          z.object({
+            targetRef: z.string().min(1).max(500),
+            profileUrl: z.string().max(500).nullish(),
+            firstName: z.string().max(120).nullish(),
+            lastName: z.string().max(120).nullish(),
+            company: z.string().max(200).nullish(),
+            role: z.string().max(200).nullish()
+          })
+        )
+        .max(500)
+        .optional()
+    })
+    .refine(
+      (value) => Boolean(value.sequenceSteps) || (Boolean(value.icp) && Boolean(value.offer)),
+      {
+        message:
+          'Provide sequenceSteps, or an icp and an offer for gtm.linkedin-sequence to draft from'
+      }
+    ),
   steps: [
     {
       id: 'sequence',
@@ -507,6 +632,7 @@ export const linkedinOutreachPlaybook: PlaybookDefinition = {
 
 registerPlaybook(auditLedOutreachPlaybook);
 registerPlaybook(communityOutreachPlaybook);
+registerPlaybook(threadReplyPlaybook);
 registerPlaybook(invoiceDeliveredWorkPlaybook);
 registerPlaybook(protectScopePlaybook);
 registerPlaybook(linkedinOutreachPlaybook);
@@ -522,18 +648,24 @@ export function registerPlaybook(playbook: PlaybookDefinition): PlaybookDefiniti
 
 export function getPlaybook(id: string, version?: string): PlaybookDefinition | undefined {
   if (version) return playbooks.get(registryKey(id, version));
-  return listPlaybooks().filter((playbook) => playbook.id === id).sort((a, b) => b.version.localeCompare(a.version))[0];
+  return listPlaybooks()
+    .filter((playbook) => playbook.id === id)
+    .sort((a, b) => b.version.localeCompare(a.version))[0];
 }
 
 export function listPlaybooks(): PlaybookDefinition[] {
-  return [...playbooks.values()].sort((a, b) => a.id.localeCompare(b.id) || b.version.localeCompare(a.version));
+  return [...playbooks.values()].sort(
+    (a, b) => a.id.localeCompare(b.id) || b.version.localeCompare(a.version)
+  );
 }
 
 export async function seedPlaybooks(db: Db, now: Date = new Date()): Promise<void> {
   const timestamp = now.toISOString();
   for (const playbook of listPlaybooks()) {
     const source = playbook.source ?? { type: 'builtin' as const };
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO playbooks (
         playbook_key,version,name,description,input_schema_json,definition_json,
         source_type,source_ref,created_at,updated_at
@@ -542,30 +674,38 @@ export async function seedPlaybooks(db: Db, now: Date = new Date()): Promise<voi
         name=excluded.name,description=excluded.description,input_schema_json=excluded.input_schema_json,
         definition_json=excluded.definition_json,source_type=excluded.source_type,
         source_ref=excluded.source_ref,updated_at=excluded.updated_at
-    `).run(
-      playbook.id,
-      playbook.version,
-      playbook.name,
-      playbook.description,
-      JSON.stringify(zodToJsonSchema(playbook.inputSchema, { target: 'jsonSchema7', $refStrategy: 'none' })),
-      JSON.stringify(publicDefinition(playbook)),
-      source.type,
-      source.ref ?? null,
-      timestamp,
-      timestamp
-    );
+    `
+      )
+      .run(
+        playbook.id,
+        playbook.version,
+        playbook.name,
+        playbook.description,
+        JSON.stringify(
+          zodToJsonSchema(playbook.inputSchema, { target: 'jsonSchema7', $refStrategy: 'none' })
+        ),
+        JSON.stringify(publicDefinition(playbook)),
+        source.type,
+        source.ref ?? null,
+        timestamp,
+        timestamp
+      );
   }
 }
 
 export async function listWorkspacePlaybooks(db: Db, workspaceId: string) {
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT p.playbook_key,p.version,p.name,p.description,p.input_schema_json,p.definition_json,
       p.source_type,p.source_ref,p.enabled AS registry_enabled,
       COALESCE(wp.enabled,TRUE) AS workspace_enabled,wp.pinned_version,wp.config_json
     FROM playbooks p
     LEFT JOIN workspace_playbooks wp ON wp.workspace_id=? AND wp.playbook_key=p.playbook_key
     ORDER BY p.playbook_key,p.version DESC
-  `).all<Record<string, unknown>>(workspaceId);
+  `
+    )
+    .all<Record<string, unknown>>(workspaceId);
   return rows.map((row) => ({
     id: String(row.playbook_key),
     version: String(row.version),
@@ -590,7 +730,8 @@ function publicDefinition(playbook: PlaybookDefinition): Record<string, unknown>
 }
 
 function validatePlaybook(playbook: PlaybookDefinition): void {
-  if (!playbook.id || !playbook.version || !playbook.name) throw new Error('Playbook id, version, and name are required');
+  if (!playbook.id || !playbook.version || !playbook.name)
+    throw new Error('Playbook id, version, and name are required');
   const ids = new Set<string>();
   for (const step of playbook.steps) {
     if (ids.has(step.id)) throw new Error(`Duplicate playbook step: ${step.id}`);
@@ -598,7 +739,8 @@ function validatePlaybook(playbook: PlaybookDefinition): void {
       throw new Error(`Invalid playbook action type: ${step.actionType}`);
     }
     for (const dependency of step.needs ?? []) {
-      if (!ids.has(dependency)) throw new Error(`Playbook step ${step.id} depends on unknown or later step ${dependency}`);
+      if (!ids.has(dependency))
+        throw new Error(`Playbook step ${step.id} depends on unknown or later step ${dependency}`);
     }
     ids.add(step.id);
   }
@@ -609,11 +751,14 @@ function registryKey(id: string, version: string): string {
 }
 
 function parseObject(value: unknown): Record<string, unknown> {
-  if (typeof value === 'object' && value !== null && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value === 'object' && value !== null && !Array.isArray(value))
+    return value as Record<string, unknown>;
   if (typeof value !== 'string') return {};
   try {
     const parsed = JSON.parse(value);
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
   } catch {
     return {};
   }
