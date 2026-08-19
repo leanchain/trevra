@@ -1,0 +1,164 @@
+name: Companion release
+
+# Independent from the app image/deploy pipeline on purpose: trevra-cli only
+# runs on end users' machines, so it does not need to be built or released in
+# lockstep with every Oracle deploy. This used to be inlined into
+# release.yml's deploy chain, which meant a slow or stuck companion build
+# blocked the *entire* production rollout -- including deploys that never
+# touched packages/trevra-cli. release.yml now only waits for this workflow
+# to publish the version it needs (see deploy_oracle's "Resolve companion
+# version" step) instead of building it inline.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/trevra-cli/bin/**'
+      - 'packages/trevra-cli/lib/**'
+      - 'packages/trevra-cli/test/**'
+      - 'packages/trevra-cli/package.json'
+      - 'packages/trevra-cli/package-lock.json'
+      - 'packages/trevra-cli/README.md'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit SHA to release from (blank = current commit)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: companion-release
+  cancel-in-progress: false
+
+env:
+  # trevra-cli's own test suite never calls playwright.launch -- it only
+  # exercises CLI/service-file logic. Playwright is a runtime dependency for
+  # the end user's machine, not something CI needs, so downloading ~300MB of
+  # Chromium/Firefox/WebKit here on every run is pure waste.
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  release:
+    name: Build, tag and publish companion
+    runs-on: ubuntu-latest
+    # A stuck build (e.g. a test that leaks a child process and never lets
+    # `node --test` exit) must fail loudly instead of occupying a runner for
+    # GitHub's default 6-hour job timeout.
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write # required for `npm publish --provenance`
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changed: ${{ steps.version.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: packages/trevra-cli/package-lock.json
+      - run: npm install --global npm@11.6.2
+      - id: version
+        name: Resolve companion version
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          SHA="$(git rev-parse HEAD)"
+
+          next_patch() {
+            local version="$1" major minor patch
+            IFS=. read -r major minor patch <<<"$version"
+            if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ || ! "$patch" =~ ^[0-9]+$ ]]; then
+              echo "invalid semver: $version" >&2
+              exit 1
+            fi
+            printf '%s.%s.%s\n' "$major" "$minor" "$((patch + 1))"
+          }
+
+          existing_tag="$(git tag --points-at "$SHA" --list 'companion-v*' --sort=-v:refname | head -n1)"
+          if [[ -n "$existing_tag" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "version=${existing_tag#companion-v}" >> "$GITHUB_OUTPUT"
+            echo "${existing_tag} already targets ${SHA}; nothing to build."
+            exit 0
+          fi
+
+          latest_tag="$(git tag --list 'companion-v*' --sort=-v:refname | head -n1)"
+          if [[ -n "$latest_tag" ]] && git diff --quiet "$latest_tag"..HEAD -- \
+            packages/trevra-cli/bin \
+            packages/trevra-cli/lib \
+            packages/trevra-cli/package.json \
+            packages/trevra-cli/README.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "version=${latest_tag#companion-v}" >> "$GITHUB_OUTPUT"
+            echo "No companion code changed since ${latest_tag}."
+            exit 0
+          fi
+
+          base="${latest_tag#companion-v}"
+          [[ -n "$base" ]] || base="$(jq -r .version packages/trevra-cli/package.json)"
+          version="$(next_patch "$base")"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Companion release: companion-v$version (new)"
+      - name: Build exact companion package
+        if: steps.version.outputs.changed == 'true'
+        id: package
+        working-directory: packages/trevra-cli
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm test
+          npm audit --omit=dev
+          filename="$(npm pack --silent --pack-destination "$RUNNER_TEMP")"
+          echo "asset=$RUNNER_TEMP/$filename" >> "$GITHUB_OUTPUT"
+      - name: Create or repair companion release
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ inputs.sha || github.sha }}
+          ASSET: ${{ steps.package.outputs.asset }}
+        run: |
+          set -euo pipefail
+          tag="companion-v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$ASSET" --clobber
+          else
+            gh release create "$tag" "$ASSET" \
+              --target "$SHA" \
+              --title "Trevra LinkedIn Companion ${VERSION}" \
+              --notes "Automated companion release from ${SHA}. release.yml's deploy_oracle job waits for this release and the matching npm publish before advertising it to the relay."
+          fi
+      - name: Publish to npm
+        if: steps.version.outputs.changed == 'true'
+        working-directory: packages/trevra-cli
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          # Trusted Publishing (OIDC) is configured on npmjs.com for this
+          # package (leanchain/trevra, previously workflow release.yml, now
+          # companion.yml -- update the npm Trusted Publisher config's workflow
+          # filename to match) but currently 404s at the exchange step
+          # server-side ("OIDC token exchange error - package not found")
+          # despite a correct, valid GitHub-issued id_token with matching
+          # claims. That looks like an npm-registry-side bug/lag, not a config
+          # mistake here. Falling back to a classic token until it's sorted
+          # out; swap back to OIDC-only once npm's exchange works.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if npm view "trevra@${VERSION}" version >/dev/null 2>&1; then
+            echo "trevra@${VERSION} already exists; publish is idempotently complete."
+            exit 0
+          fi
+          npm publish --access public --provenance

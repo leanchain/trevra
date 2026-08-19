@@ -30,9 +30,6 @@ jobs:
       current: ${{ steps.release.outputs.current }}
       sha: ${{ steps.release.outputs.sha }}
       app_version: ${{ steps.release.outputs.app_version }}
-      companion_changed: ${{ steps.release.outputs.companion_changed }}
-      companion_version: ${{ steps.release.outputs.companion_version }}
-      npm_publish_needed: ${{ steps.release.outputs.npm_publish_needed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,151 +79,20 @@ jobs:
             app_version="$(next_patch "$app_base")"
           fi
 
-          existing_companion_tag="$(git tag --points-at "$SHA" --list 'companion-v*' --sort=-v:refname | head -n1)"
-          latest_companion_tag="$(git tag --list 'companion-v*' --sort=-v:refname | head -n1)"
-          if [[ -n "$existing_companion_tag" ]]; then
-            companion_changed=false
-            companion_version="${existing_companion_tag#companion-v}"
-          elif [[ -n "$latest_companion_tag" ]] && git diff --quiet "$latest_companion_tag"..HEAD -- \
-            packages/trevra-cli/bin \
-            packages/trevra-cli/lib \
-            packages/trevra-cli/package.json \
-            packages/trevra-cli/README.md; then
-            companion_changed=false
-            companion_version="${latest_companion_tag#companion-v}"
-          else
-            companion_changed=true
-            companion_base="${latest_companion_tag#companion-v}"
-            [[ -n "$companion_base" ]] || companion_base="$(jq -r .version packages/trevra-cli/package.json)"
-            companion_version="$(next_patch "$companion_base")"
-          fi
-
-          if npm view "trevra@${companion_version}" version >/dev/null 2>&1; then
-            npm_publish_needed=false
-          else
-            npm_publish_needed=true
-          fi
-
           {
             echo "sha=$SHA"
             echo "app_version=$app_version"
-            echo "companion_changed=$companion_changed"
-            echo "companion_version=$companion_version"
-            echo "npm_publish_needed=$npm_publish_needed"
           } >> "$GITHUB_OUTPUT"
 
           echo "App release: v$app_version"
-          if [[ "$companion_changed" == true ]]; then
-            echo "Companion release: companion-v$companion_version (new)"
-          else
-            echo "Companion release: companion-v$companion_version (unchanged)"
-          fi
-          echo "npm publish needed: $npm_publish_needed"
-
-  companion_release:
-    name: Companion GitHub release
-    needs: prepare
-    if: needs.prepare.outputs.current == 'true' && needs.prepare.outputs.companion_changed == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.sha }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: packages/trevra-cli/package-lock.json
-      - run: npm install --global npm@11.6.2
-      - name: Build exact companion package
-        id: package
-        working-directory: packages/trevra-cli
-        env:
-          VERSION: ${{ needs.prepare.outputs.companion_version }}
-        run: |
-          set -euo pipefail
-          npm ci
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
-          npm test
-          npm audit --omit=dev
-          filename="$(npm pack --silent --pack-destination "$RUNNER_TEMP")"
-          echo "asset=$RUNNER_TEMP/$filename" >> "$GITHUB_OUTPUT"
-      - name: Create or repair companion release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.prepare.outputs.companion_version }}
-          SHA: ${{ needs.prepare.outputs.sha }}
-          ASSET: ${{ steps.package.outputs.asset }}
-        run: |
-          set -euo pipefail
-          tag="companion-v${VERSION}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$ASSET" --clobber
-          else
-            gh release create "$tag" "$ASSET" \
-              --target "$SHA" \
-              --title "Trevra LinkedIn Companion ${VERSION}" \
-              --notes "Automated companion release from ${SHA}. The hosted relay advertises this version only after the production deployment succeeds."
-          fi
-
-  npm_publish:
-    name: Publish companion to npm
-    needs: [prepare, companion_release]
-    if: >-
-      always() &&
-      needs.prepare.result == 'success' &&
-      needs.prepare.outputs.current == 'true' &&
-      needs.prepare.outputs.npm_publish_needed == 'true' &&
-      (needs.companion_release.result == 'success' || needs.companion_release.result == 'skipped')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.sha }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-          cache: npm
-          cache-dependency-path: packages/trevra-cli/package-lock.json
-      - run: npm install --global npm@11.6.2
-      - name: Publish with npm Trusted Publishing
-        working-directory: packages/trevra-cli
-        env:
-          VERSION: ${{ needs.prepare.outputs.companion_version }}
-          # Trusted Publishing (OIDC) is configured on npmjs.com for this
-          # package (leanchain/trevra, workflow release.yml, npm publish) but
-          # currently 404s at the exchange step server-side ("OIDC token
-          # exchange error - package not found") despite a correct, valid
-          # GitHub-issued id_token with matching claims -- confirmed via a
-          # raw curl to the exchange endpoint from inside this job, not just
-          # via npm CLI. That looks like an npm-registry-side bug/lag, not a
-          # config mistake here. Falling back to a classic token until it's
-          # sorted out; swap back to OIDC-only once npm's exchange works.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          npm ci
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
-          if npm view "trevra@${VERSION}" version >/dev/null 2>&1; then
-            echo "trevra@${VERSION} already exists; publish is idempotently complete."
-            exit 0
-          fi
-          npm publish --access public --provenance
 
   deploy_oracle:
     name: Deploy Oracle production
-    needs: [prepare, companion_release]
+    needs: prepare
     if: >-
       always() &&
       needs.prepare.result == 'success' &&
-      needs.prepare.outputs.current == 'true' &&
-      (needs.companion_release.result == 'success' || needs.companion_release.result == 'skipped')
+      needs.prepare.outputs.current == 'true'
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -270,6 +136,56 @@ jobs:
         env:
           SHA: ${{ needs.prepare.outputs.sha }}
         run: docker buildx imagetools inspect "ghcr.io/${{ github.repository }}:sha-${SHA}" >/dev/null
+      - name: Resolve companion version
+        # companion.yml builds and publishes trevra-cli independently (see
+        # that workflow for why) and is triggered by the same push. If this
+        # SHA touched companion code, wait for its release + npm publish to
+        # land before advertising a version to the relay that nobody can
+        # install yet -- see deploy-micro.sh's TREVRA_COMPANION_RELEASE_VERSION
+        # comment for why that ordering matters.
+        if: steps.fresh.outputs.current == 'true'
+        id: companion
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          latest_tag="$(git tag --list 'companion-v*' --sort=-v:refname | head -n1)"
+          if [[ -n "$latest_tag" ]] && git diff --quiet "$latest_tag".."$SHA" -- \
+            packages/trevra-cli/bin \
+            packages/trevra-cli/lib \
+            packages/trevra-cli/package.json \
+            packages/trevra-cli/README.md; then
+            version="${latest_tag#companion-v}"
+            echo "No companion change since ${latest_tag}; using it as-is."
+          else
+            echo "Companion changed since ${latest_tag:-the beginning}; waiting for the 'Companion release' workflow to publish companion-v* for ${SHA}..."
+            version=""
+            for _ in $(seq 1 40); do
+              git fetch --force --tags origin >/dev/null 2>&1
+              tag="$(git tag --points-at "$SHA" --list 'companion-v*' | head -n1)"
+              if [[ -n "$tag" ]]; then
+                version="${tag#companion-v}"
+                break
+              fi
+              sleep 15
+            done
+            if [[ -z "$version" ]]; then
+              echo "No companion-v* release appeared for ${SHA} within 10 minutes; check the 'Companion release' workflow run for this commit." >&2
+              exit 1
+            fi
+          fi
+
+          echo "==> waiting for npm to serve trevra@${version}"
+          for _ in $(seq 1 20); do
+            if npm view "trevra@${version}" version >/dev/null 2>&1; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "trevra@${version} is not visible on npm yet; the relay must not advertise a version nobody can install." >&2
+          exit 1
       - name: Guarded Oracle rollout
         if: steps.fresh.outputs.current == 'true'
         env:
@@ -277,7 +193,7 @@ jobs:
           DB_IP: ${{ vars.ORACLE_DB_IP }}
           DB_PRIVATE_IP: ${{ vars.ORACLE_DB_PRIVATE_IP }}
           SHA: ${{ needs.prepare.outputs.sha }}
-          COMPANION_VERSION: ${{ needs.prepare.outputs.companion_version }}
+          COMPANION_VERSION: ${{ steps.companion.outputs.version }}
         run: |
           set -euo pipefail
           SSH_KEY="$RUNNER_TEMP/ssh/oracle" \

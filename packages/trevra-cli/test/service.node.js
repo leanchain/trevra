@@ -18,13 +18,21 @@ import {
 } from '../lib/service.js';
 
 test('background browser launch is headless while manual mode stays visible', () => {
-  const background = chromeLaunchArgs({ profileDir: '/tmp/trevra-profile', headless: true, startUrl: 'https://www.linkedin.com/feed/' });
+  const background = chromeLaunchArgs({
+    profileDir: '/tmp/trevra-profile',
+    headless: true,
+    startUrl: 'https://www.linkedin.com/feed/'
+  });
   assert.ok(background.includes('--headless'));
   assert.ok(background.includes('--window-size=1365,900'));
   assert.ok(background.includes('--user-data-dir=/tmp/trevra-profile'));
   assert.ok(!background.includes('--start-maximized'));
 
-  const visible = chromeLaunchArgs({ profileDir: '/tmp/trevra-profile', headless: false, startUrl: 'https://www.linkedin.com/feed/' });
+  const visible = chromeLaunchArgs({
+    profileDir: '/tmp/trevra-profile',
+    headless: false,
+    startUrl: 'https://www.linkedin.com/feed/'
+  });
   assert.ok(!visible.includes('--headless'));
   assert.ok(visible.includes('--start-maximized'));
 });
@@ -33,12 +41,21 @@ test('service paths stay under the user home and never use the project checkout'
   const home = mkdtempSync(join(tmpdir(), 'trevra-service-test-'));
   try {
     const linux = servicePaths(home, 'linux');
-    assert.equal(linux.definition, join(home, '.config', 'systemd', 'user', 'trevra-linkedin.service'));
-    assert.equal(linux.cliPath, join(home, '.trevra', 'service', 'node_modules', 'trevra', 'bin', 'trevra.js'));
+    assert.equal(
+      linux.definition,
+      join(home, '.config', 'systemd', 'user', 'trevra-linkedin.service')
+    );
+    assert.equal(
+      linux.cliPath,
+      join(home, '.trevra', 'service', 'node_modules', 'trevra', 'bin', 'trevra.js')
+    );
     assert.equal(linux.userCommand, join(home, '.local', 'bin', 'trevra'));
 
     const mac = servicePaths(home, 'darwin');
-    assert.equal(mac.definition, join(home, 'Library', 'LaunchAgents', 'com.trevra.linkedin.plist'));
+    assert.equal(
+      mac.definition,
+      join(home, 'Library', 'LaunchAgents', 'com.trevra.linkedin.plist')
+    );
 
     const windows = servicePaths(home, 'win32');
     assert.equal(windows.manager, 'Task Scheduler');
@@ -66,12 +83,23 @@ test('background companion auto-updates before accepting relay work', async () =
   const home = mkdtempSync(join(tmpdir(), 'trevra-auto-update-test-'));
   const updatePackage = mkdtempSync(join(tmpdir(), 'trevra-update-package-'));
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  let child;
   try {
     mkdirSync(join(updatePackage, 'bin'), { recursive: true });
-    writeFileSync(join(updatePackage, 'package.json'), JSON.stringify({
-      name: 'trevra', version: '0.2.3', type: 'module', bin: { trevra: 'bin/trevra.js' }, files: ['bin']
-    }));
-    writeFileSync(join(updatePackage, 'bin', 'trevra.js'), '#!/usr/bin/env node\nconsole.log("0.2.3")\n');
+    writeFileSync(
+      join(updatePackage, 'package.json'),
+      JSON.stringify({
+        name: 'trevra',
+        version: '0.2.3',
+        type: 'module',
+        bin: { trevra: 'bin/trevra.js' },
+        files: ['bin']
+      })
+    );
+    writeFileSync(
+      join(updatePackage, 'bin', 'trevra.js'),
+      '#!/usr/bin/env node\nconsole.log("0.2.3")\n'
+    );
 
     await new Promise((resolve) => server.once('listening', resolve));
     const address = server.address();
@@ -81,34 +109,67 @@ test('background companion auto-updates before accepting relay work', async () =
     });
 
     mkdirSync(join(home, '.trevra'), { recursive: true });
-    writeFileSync(join(home, '.trevra', 'companion.json'), JSON.stringify({
-      url: `http://127.0.0.1:${address.port}`,
-      token: 'trv_cmp_test_token_for_update',
-      workspaceId: 'ws_update_test',
-      deviceId: 'dev_update_test',
-      label: 'Update test'
-    }));
+    writeFileSync(
+      join(home, '.trevra', 'companion.json'),
+      JSON.stringify({
+        url: `http://127.0.0.1:${address.port}`,
+        token: 'trv_cmp_test_token_for_update',
+        workspaceId: 'ws_update_test',
+        deviceId: 'dev_update_test',
+        label: 'Update test'
+      })
+    );
 
     const cli = fileURLToPath(new URL('../bin/trevra.js', import.meta.url));
-    const child = spawn(process.execPath, [cli, 'linkedin', 'run'], {
+    child = spawn(process.execPath, [cli, 'linkedin', 'run'], {
       env: { ...process.env, HOME: home, TREVRA_COMPANION_UPDATE_SPEC: updatePackage },
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    // Captured so a timeout failure explains *why* the child is stuck (e.g. its
+    // own nested `npm install` output) instead of a bare "did not exit" --
+    // that silence is what made the first-ever CI run of this test look like a
+    // 30-minute hang with nothing to go on.
+    let output = '';
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      output += chunk;
+    });
+
     const exit = await Promise.race([
       new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))),
       new Promise((_, reject) => {
-        const timer = setTimeout(() => reject(new Error('auto-update child did not exit')), 15_000);
+        const timer = setTimeout(
+          () =>
+            reject(
+              new Error(`auto-update child did not exit within 15s. Output so far:\n${output}`)
+            ),
+          15_000
+        );
         timer.unref();
       })
     ]);
     assert.deepEqual(exit, { code: 75, signal: null });
 
-    const installed = JSON.parse(readFileSync(join(home, '.trevra', 'service', 'node_modules', 'trevra', 'package.json'), 'utf8'));
+    const installed = JSON.parse(
+      readFileSync(
+        join(home, '.trevra', 'service', 'node_modules', 'trevra', 'package.json'),
+        'utf8'
+      )
+    );
     assert.equal(installed.version, '0.2.3');
     const log = readFileSync(join(home, '.trevra', 'logs', 'linkedin-companion.log'), 'utf8');
     assert.match(log, /update_available from=0\.2\.2 to=0\.2\.3/);
     assert.match(log, /update_installed version=0\.2\.3/);
   } finally {
+    // A child stuck mid-update must not be left running past this test: an
+    // unreaped child with open stdio pipes keeps `node --test`'s own process
+    // alive indefinitely, turning one flaky/failing test into a CI job that
+    // never exits (rather than failing fast within the 15s timeout above).
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+    }
     server.close();
     rmSync(home, { recursive: true, force: true });
     rmSync(updatePackage, { recursive: true, force: true });
@@ -122,13 +183,20 @@ test('failed update leaves the currently installed companion untouched', () => {
     const paths = servicePaths(home, 'linux');
     mkdirSync(join(paths.serviceRoot, 'node_modules', 'trevra', 'bin'), { recursive: true });
     writeFileSync(paths.cliPath, '#!/usr/bin/env node\nconsole.log("working")\n');
-    writeFileSync(join(brokenPackage, 'package.json'), JSON.stringify({ name: 'trevra', version: '9.9.9' }));
-    assert.throws(() => installStablePackage({
-      version: '9.9.9',
-      installSpec: brokenPackage,
-      home,
-      platform: 'linux'
-    }), /service executable is missing/);
+    writeFileSync(
+      join(brokenPackage, 'package.json'),
+      JSON.stringify({ name: 'trevra', version: '9.9.9' })
+    );
+    assert.throws(
+      () =>
+        installStablePackage({
+          version: '9.9.9',
+          installSpec: brokenPackage,
+          home,
+          platform: 'linux'
+        }),
+      /service executable is missing/
+    );
     assert.match(readFileSync(paths.cliPath, 'utf8'), /working/);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -186,7 +254,10 @@ test('logs command is available without pairing and never needs the service mana
     });
     assert.match(output, /No companion activity has been logged yet/);
 
-    const help = execFileSync(process.execPath, [cli, 'linkedin', '--help'], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+    const help = execFileSync(process.execPath, [cli, 'linkedin', '--help'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home }
+    });
     assert.match(help, /linkedin logs \[--follow\]/);
     assert.match(help, /linkedin reconnect/);
     assert.match(help, /--seat KEY/);
