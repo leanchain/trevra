@@ -1841,3 +1841,47 @@ describe('GET /api/outreach/threads', () => {
     expect(entry.guard).toMatchObject({ allowed: expect.any(Boolean) });
   });
 });
+
+describe('GET /api/outreach/offer-defaults', () => {
+  it('prefills the reply offer from the newest campaign brief, and returns blanks without one', async () => {
+    const agent = await agentWithSession();
+
+    const empty = await agent.get('/api/outreach/offer-defaults').expect(200);
+    expect(empty.body.offer).toEqual({ name: '', url: '', summary: '', mechanism: '', claims: [] });
+
+    await db!
+      .prepare(
+        `INSERT INTO linkedin_campaigns (id, workspace_id, name, status, seat_key, sequence_json, brief_json, created_at, updated_at)
+         VALUES (?,?,?,?,?,?::jsonb,?::jsonb,?,?)`
+      )
+      .run(
+        'camp_offer_1',
+        DEMO_WORKSPACE_ID,
+        'Offer source',
+        'draft',
+        'owner',
+        JSON.stringify([]),
+        JSON.stringify({
+          icp: { role: 'founder', segment: 'seed saas', pain: 'cost' },
+          offer: {
+            name: 'Trevra',
+            summary: 'A workspace an agent operates and a human approves.',
+            mechanism: 'Composite signals plus a hard approval gate.',
+            proof: [{ label: 'Execution', value: 'Nothing sends without approval' }],
+            url: 'https://usetrevra.com'
+          }
+        }),
+        '2026-08-19T00:00:00.000Z',
+        '2026-08-19T00:00:00.000Z'
+      );
+
+    const filled = await agent.get('/api/outreach/offer-defaults').expect(200);
+    expect(filled.body.offer).toEqual({
+      name: 'Trevra',
+      url: 'https://usetrevra.com',
+      summary: 'A workspace an agent operates and a human approves.',
+      mechanism: 'Composite signals plus a hard approval gate.',
+      claims: [{ label: 'Execution', value: 'Nothing sends without approval' }]
+    });
+  });
+});

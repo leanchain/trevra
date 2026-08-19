@@ -1018,6 +1018,49 @@ export function createApp(db: Db) {
     }
   });
 
+  /**
+   * The offer the draft dialog starts from.
+   *
+   * Read from the newest campaign brief because that is where a founder already
+   * wrote it down; NEVER inferred and never remembered here. A workspace with no
+   * campaign gets empty strings and a 200 -- "nothing recorded yet" is an answer,
+   * not an error, and the dialog is editable either way.
+   */
+  app.get('/api/outreach/offer-defaults', async (req: AuthedRequest, res, next) => {
+    try {
+      const row = await db
+        .prepare(
+          `SELECT brief_json FROM linkedin_campaigns WHERE workspace_id=? ORDER BY created_at DESC LIMIT 1`
+        )
+        .get<{ brief_json: unknown }>(req.auth!.workspaceId);
+      const brief = (
+        typeof row?.brief_json === 'string' ? JSON.parse(row.brief_json) : row?.brief_json
+      ) as { offer?: Record<string, unknown> } | undefined;
+      const offer = (brief?.offer ?? {}) as Record<string, unknown>;
+      const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+      const proof = Array.isArray(offer.proof) ? offer.proof : [];
+      res.json({
+        offer: {
+          name: text(offer.name),
+          url: text(offer.url),
+          summary: text(offer.summary),
+          mechanism: text(offer.mechanism),
+          claims: proof
+            .filter(
+              (entry): entry is { label: string; value: string } =>
+                Boolean(entry) &&
+                typeof entry === 'object' &&
+                typeof (entry as { label?: unknown }).label === 'string' &&
+                typeof (entry as { value?: unknown }).value === 'string'
+            )
+            .map((entry) => ({ label: entry.label, value: entry.value }))
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get('/api/playbooks', async (req: AuthedRequest, res, next) => {
     try {
       res.json({ playbooks: await listWorkspacePlaybooks(db, req.auth!.workspaceId) });

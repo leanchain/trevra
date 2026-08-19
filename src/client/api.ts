@@ -339,6 +339,21 @@ export async function getOutreachThreads(
   return result.threads ?? [];
 }
 
+/** The offer a drafted reply opens with -- name, url, summary, mechanism, and its proof claims. */
+export interface OutreachOffer {
+  name: string;
+  url: string;
+  summary: string;
+  mechanism: string;
+  claims: Array<{ label: string; value: string }>;
+}
+
+/** Prefills the draft-reply dialog from the newest campaign brief; blank fields when there is none. */
+export async function getOutreachOfferDefaults(): Promise<OutreachOffer> {
+  const result = await request<{ offer: OutreachOffer }>('/api/outreach/offer-defaults');
+  return result.offer;
+}
+
 /**
  * What Trevra's own agent did, if this deployment runs one.
  *
