@@ -100,7 +100,7 @@ export async function publishPost(page: LinkedInPage, body: string): Promise<Lin
     const compose = page.locator(POST_SELECTORS.postComposeBox);
     if ((await compose.count()) === 0) {
       return fail(
-        'compose_unavailable',
+        'unknown',
         `${POST_SELECTORS.postComposeBox} did not match after opening the composer; a draft may be open. Check it by hand.`
       );
     }

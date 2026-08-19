@@ -67,6 +67,18 @@ describe('publishPost', () => {
     expect(clicked).toEqual([]);
   });
 
+  it('reports unknown, not compose_unavailable, when the compose box does not appear after a successful Start-post click', async () => {
+    // The click already happened -- this is ambiguity AFTER an action, not
+    // drift before one, so it must classify the same way sendDm's identical
+    // branch does (compose box missing after the Message click): unknown.
+    const { page, clicked } = fakePage({
+      counts: { [POST_SELECTORS.startPostButton]: 1, [POST_SELECTORS.postComposeBox]: 0 }
+    });
+    const result = await publishPost(page, 'Hello world');
+    expectFailure(result, 'unknown');
+    expect(clicked).toEqual([POST_SELECTORS.startPostButton]);
+  });
+
   it('types the body and clicks Post when everything is present', async () => {
     const { page, clicked, typed } = fakePage({
       counts: {
