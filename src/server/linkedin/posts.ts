@@ -87,7 +87,14 @@ function toPost(row: PostRow): LinkedInPost {
   };
 }
 
-const EDITABLE_STATUSES: readonly LinkedInPostStatus[] = ['draft', 'scheduled'];
+/**
+ * 'failed' and 'missed' are editable ON PURPOSE. The spec's own words for a
+ * missed post are "the user reschedules or discards from the UI", and with
+ * only draft/scheduled here neither is reachable: a post that failed once (a
+ * drifted selector, a worker restart) is a permanent dead end nothing can
+ * move. Re-editing one clears its stored error -- see updatePost.
+ */
+const EDITABLE_STATUSES: readonly LinkedInPostStatus[] = ['draft', 'scheduled', 'failed', 'missed'];
 
 export interface PostInsert {
   id: string;
@@ -200,6 +207,7 @@ export async function updatePost(
     SET blocks_json = COALESCE(?::jsonb, blocks_json),
         status = ?,
         scheduled_at = ?,
+        error_json = NULL,
         updated_at = ?
     WHERE workspace_id = ? AND id = ?
     RETURNING ${POST_COLUMNS}
@@ -323,4 +331,34 @@ export async function markPostMissed(db: Db, postId: string, now: Date): Promise
   await db
     .prepare(`UPDATE linkedin_posts SET status = 'missed', updated_at = ? WHERE id = ?`)
     .run(now.toISOString(), postId);
+}
+
+/**
+ * A post stuck in 'publishing' longer than this was claimed by a worker that
+ * never reported back -- a crash, a deploy, an OOM kill between the claim and
+ * the outcome. Left alone, `assertEditable` (draft/scheduled/failed/missed
+ * only) and `claimNextDuePost` (scheduled only) both permanently ignore it:
+ * nothing, automated or user-driven, can ever move it again. Swept into
+ * 'failed' (not silently retried -- a duplicate post is worse than a missed
+ * one) so the queue UI's existing failed-post affordance is what reaches it.
+ */
+export async function sweepStalePublishing(
+  db: Db,
+  workspaceId: string,
+  now: Date,
+  staleAfterMs = 15 * 60_000
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - staleAfterMs).toISOString();
+  const result = await db
+    .prepare(
+      `
+    UPDATE linkedin_posts
+    SET status = 'failed',
+        error_json = '{"kind":"unknown","detail":"worker restarted mid-publish -- check LinkedIn before rescheduling"}'::jsonb,
+        updated_at = ?
+    WHERE workspace_id = ? AND status = 'publishing' AND updated_at <= ?
+  `
+    )
+    .run(now.toISOString(), workspaceId, cutoff);
+  return result.changes;
 }

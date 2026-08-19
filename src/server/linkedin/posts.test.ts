@@ -12,6 +12,7 @@ import {
   markPostMissed,
   markPostPublished,
   releasePostToScheduled,
+  sweepStalePublishing,
   updatePost
 } from './posts.js';
 
@@ -339,5 +340,171 @@ describe('markPostFailed / markPostMissed', () => {
     const claimed = await claimNextDuePost(db, WORKSPACE_ID, NOW);
     await markPostMissed(db, claimed!.id, NOW);
     expect(await getPost(db, WORKSPACE_ID, claimed!.id)).toMatchObject({ status: 'missed' });
+  });
+});
+
+/**
+ * The crash window. `claimNextDuePost` moves a row to 'publishing' BEFORE the
+ * driver runs; if the worker dies in between (deploy, OOM, restart) nothing
+ * else in this module will ever look at that row again -- `claimNextDuePost`
+ * only selects 'scheduled' and `assertEditable` refuses 'publishing'.
+ */
+describe('sweepStalePublishing', () => {
+  async function claimAndBackdate(postId: string, updatedAt: string): Promise<void> {
+    await createPost(
+      db,
+      {
+        id: postId,
+        workspaceId: WORKSPACE_ID,
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T08:00:00.000Z',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    const claimed = await claimNextDuePost(db, WORKSPACE_ID, NOW);
+    expect(claimed?.id).toBe(postId);
+    await db
+      .prepare('UPDATE linkedin_posts SET updated_at = ? WHERE id = ?')
+      .run(updatedAt, postId);
+  }
+
+  it('fails a post left publishing past the stale threshold, with a reason the queue can show', async () => {
+    await claimAndBackdate('lipost_stuck', '2026-08-19T08:30:00.000Z'); // 30 min before NOW
+    expect(await sweepStalePublishing(db, WORKSPACE_ID, NOW)).toBe(1);
+    expect(await getPost(db, WORKSPACE_ID, 'lipost_stuck')).toMatchObject({
+      status: 'failed',
+      error: {
+        kind: 'unknown',
+        detail: 'worker restarted mid-publish -- check LinkedIn before rescheduling'
+      }
+    });
+  });
+
+  it('leaves a post that is publishing RIGHT NOW alone -- it is mid-type, not stuck', async () => {
+    await claimAndBackdate('lipost_inflight', '2026-08-19T08:58:00.000Z'); // 2 min before NOW
+    expect(await sweepStalePublishing(db, WORKSPACE_ID, NOW)).toBe(0);
+    expect(await getPost(db, WORKSPACE_ID, 'lipost_inflight')).toMatchObject({
+      status: 'publishing',
+      error: null
+    });
+  });
+
+  it('never reaches another workspace', async () => {
+    await claimAndBackdate('lipost_ws_scoped', '2026-08-19T07:00:00.000Z');
+    expect(await sweepStalePublishing(db, 'ws_someone_else', NOW)).toBe(0);
+    expect(await getPost(db, WORKSPACE_ID, 'lipost_ws_scoped')).toMatchObject({
+      status: 'publishing'
+    });
+  });
+
+  it('leaves the swept post recoverable -- edit it back to scheduled and it claims again', async () => {
+    await claimAndBackdate('lipost_recover', '2026-08-19T08:00:00.000Z');
+    await sweepStalePublishing(db, WORKSPACE_ID, NOW);
+    const rescheduled = await updatePost(
+      db,
+      WORKSPACE_ID,
+      'lipost_recover',
+      { status: 'scheduled', scheduledAt: '2026-08-19T08:45:00.000Z' },
+      NOW
+    );
+    expect(rescheduled).toMatchObject({ status: 'scheduled', error: null });
+    expect((await claimNextDuePost(db, WORKSPACE_ID, NOW))?.id).toBe('lipost_recover');
+  });
+});
+
+/**
+ * A post that failed or was missed is NOT a dead end. The spec's words for a
+ * missed post are "the user reschedules or discards from the UI", and the
+ * driver's post selectors are explicitly unverified against a live LinkedIn --
+ * first-rollout failures are expected, and every one of them has to be
+ * reachable again.
+ */
+describe('recovering failed and missed posts', () => {
+  async function failedPost(postId: string): Promise<void> {
+    await createPost(
+      db,
+      {
+        id: postId,
+        workspaceId: WORKSPACE_ID,
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T08:00:00.000Z',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    const claimed = await claimNextDuePost(db, WORKSPACE_ID, NOW);
+    await markPostFailed(db, claimed!.id, { kind: 'selector_drift', detail: 'gone' }, NOW);
+  }
+
+  it('edits a failed post back to a draft, clearing the stale failure reason', async () => {
+    await failedPost('lipost_failed_edit');
+    const edited = await updatePost(
+      db,
+      WORKSPACE_ID,
+      'lipost_failed_edit',
+      { status: 'draft', blocks: [{ runs: [{ type: 'text', text: 'Rewritten' }] }] },
+      NOW
+    );
+    expect(edited).toMatchObject({ status: 'draft', error: null });
+    expect(edited.blocks).toEqual([{ runs: [{ type: 'text', text: 'Rewritten' }] }]);
+  });
+
+  it('cancels a failed post', async () => {
+    await failedPost('lipost_failed_cancel');
+    expect(await cancelPost(db, WORKSPACE_ID, 'lipost_failed_cancel', NOW)).toMatchObject({
+      status: 'canceled'
+    });
+  });
+
+  it('reschedules a missed post to a new time', async () => {
+    await createPost(
+      db,
+      {
+        id: 'lipost_missed_reschedule',
+        workspaceId: WORKSPACE_ID,
+        blocks: BLOCKS,
+        status: 'scheduled',
+        scheduledAt: '2026-08-19T00:00:00.000Z',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    const claimed = await claimNextDuePost(db, WORKSPACE_ID, NOW);
+    await markPostMissed(db, claimed!.id, NOW);
+    const rescheduled = await updatePost(
+      db,
+      WORKSPACE_ID,
+      'lipost_missed_reschedule',
+      { status: 'scheduled', scheduledAt: '2026-08-20T09:00:00.000Z' },
+      NOW
+    );
+    expect(rescheduled).toMatchObject({
+      status: 'scheduled',
+      scheduledAt: '2026-08-20T09:00:00.000Z'
+    });
+  });
+
+  it('still refuses a posted or canceled post -- widening editability is not removing the guard', async () => {
+    const post = await createPost(
+      db,
+      {
+        id: 'lipost_terminal',
+        workspaceId: WORKSPACE_ID,
+        blocks: BLOCKS,
+        status: 'draft',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    await markPostPublished(db, post.id, { postedUrl: null }, NOW);
+    await expect(
+      updatePost(db, WORKSPACE_ID, post.id, { status: 'draft' }, NOW)
+    ).rejects.toBeInstanceOf(LinkedInPostsApiError);
+    await expect(cancelPost(db, WORKSPACE_ID, post.id, NOW)).rejects.toBeInstanceOf(
+      LinkedInPostsApiError
+    );
   });
 });
