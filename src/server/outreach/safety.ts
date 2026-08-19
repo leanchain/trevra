@@ -11,7 +11,12 @@ import {
   readAccountProfiles,
   type AccountProfile
 } from './config.js';
-import { communityVolume, countPostsToday, lastPostInCommunity } from './store.js';
+import {
+  communityVolume,
+  countPostsToday,
+  lastPostInCommunity,
+  type CommunityVolume
+} from './store.js';
 import { outreachThreadSchema } from './scorer.js';
 import type { OutreachThread } from './types.js';
 
@@ -66,13 +71,64 @@ export interface SafetyVerdict {
   automationReason: string;
 }
 
+/**
+ * The three DB-derived facts the gate needs, behind an interface.
+ *
+ * They vary by (platform, community), never by thread, so a page of fifty rows
+ * asks a handful of distinct questions. Callers scoring one thread get the
+ * direct implementation and behave exactly as before.
+ */
+export interface SafetyCounters {
+  postsToday(platform: string, now: Date): Promise<number>;
+  lastPostInCommunity(platform: string, community: string): Promise<Date | null>;
+  communityVolume(platform: string, community: string): Promise<CommunityVolume>;
+}
+
+export function dbCounters(db: Db, workspaceId: string): SafetyCounters {
+  return {
+    postsToday: (platform, now) => countPostsToday(db, workspaceId, platform, now),
+    lastPostInCommunity: (platform, community) =>
+      lastPostInCommunity(db, workspaceId, platform, community),
+    communityVolume: (platform, community) => communityVolume(db, workspaceId, platform, community)
+  };
+}
+
+/** Same answers, asked once per distinct key. Request-scoped: never a module-level cache. */
+export function memoisedCounters(inner: SafetyCounters): SafetyCounters {
+  const posts = new Map<string, Promise<number>>();
+  const last = new Map<string, Promise<Date | null>>();
+  const volume = new Map<string, Promise<CommunityVolume>>();
+  const once = <T>(
+    cache: Map<string, Promise<T>>,
+    key: string,
+    load: () => Promise<T>
+  ): Promise<T> => {
+    const hit = cache.get(key);
+    if (hit) return hit;
+    const pending = load();
+    cache.set(key, pending);
+    return pending;
+  };
+  return {
+    postsToday: (platform, now) => once(posts, platform, () => inner.postsToday(platform, now)),
+    lastPostInCommunity: (platform, community) =>
+      once(last, `${platform}|${community}`, () => inner.lastPostInCommunity(platform, community)),
+    communityVolume: (platform, community) =>
+      once(volume, `${platform}|${community}`, () => inner.communityVolume(platform, community))
+  };
+}
+
 export interface SafetyOptions {
   credentials?: CredentialAccessor;
   /** Overrides the profile read from the environment. Used by the skill's own input and by tests. */
   account?: AccountProfile | null;
+  /** Injected DB-derived facts. Defaults to the direct store calls, scoped to this request. */
+  counters?: SafetyCounters;
 }
 
-function automationOf(platform: string): Pick<SafetyVerdict, 'automationMode' | 'automationReason'> {
+function automationOf(
+  platform: string
+): Pick<SafetyVerdict, 'automationMode' | 'automationReason'> {
   const channel = getChannel(platform);
   if (!channel) {
     return {
@@ -101,16 +157,19 @@ export async function evaluateSafety(
   const limits = limitsFor(thread.platform);
   const credentials = options.credentials ?? envCredentials;
   const declared = options.account !== undefined ? null : readAccountProfiles(credentials);
-  const profile = options.account !== undefined ? options.account : (declared?.profiles[thread.platform] ?? null);
+  const profile =
+    options.account !== undefined ? options.account : (declared?.profiles[thread.platform] ?? null);
   // A malformed profiles variable degrades to "no profile" and says so in the
   // check detail, rather than throwing and taking the whole run with it.
   const profileNote = declared?.warning ? ` ${declared.warning}` : '';
   const checks: SafetyCheck[] = [];
+  const counters = options.counters ?? dbCounters(db, workspaceId);
 
   const community = thread.community?.trim() ? thread.community.trim() : null;
   const communityKey = community?.toLowerCase() ?? null;
 
-  const blacklistedCommunity = communityKey !== null && BLACKLISTED_COMMUNITIES.includes(communityKey);
+  const blacklistedCommunity =
+    communityKey !== null && BLACKLISTED_COMMUNITIES.includes(communityKey);
   checks.push({
     check: 'blacklisted-community',
     passed: !blacklistedCommunity,
@@ -131,7 +190,7 @@ export async function evaluateSafety(
       : 'Thread text contains no blacklisted terms.'
   });
 
-  const postsToday = await countPostsToday(db, workspaceId, thread.platform, now);
+  const postsToday = await counters.postsToday(thread.platform, now);
   const underCap = postsToday < limits.maxPostsPerDay;
   checks.push({
     check: 'daily-cap',
@@ -141,7 +200,9 @@ export async function evaluateSafety(
 
   // An undeclared profile fails any non-zero minimum. Unproven standing is not
   // sufficient standing -- the safe default when the answer is unknown is no.
-  const ageOk = limits.minAccountAgeDays === 0 || (profile !== null && profile.accountAgeDays >= limits.minAccountAgeDays);
+  const ageOk =
+    limits.minAccountAgeDays === 0 ||
+    (profile !== null && profile.accountAgeDays >= limits.minAccountAgeDays);
   checks.push({
     check: 'account-age',
     passed: ageOk,
@@ -177,8 +238,9 @@ export async function evaluateSafety(
       detail: `${thread.platform} has no community concept; the self-promotion ratio does not apply.`
     });
   } else {
-    const last = await lastPostInCommunity(db, workspaceId, thread.platform, community);
-    const hoursSince = last === null ? Number.POSITIVE_INFINITY : (now.getTime() - last.getTime()) / 3_600_000;
+    const last = await counters.lastPostInCommunity(thread.platform, community);
+    const hoursSince =
+      last === null ? Number.POSITIVE_INFINITY : (now.getTime() - last.getTime()) / 3_600_000;
     const cooldownOk = hoursSince >= limits.cooldownHours;
     checks.push({
       check: 'community-cooldown',
@@ -194,7 +256,7 @@ export async function evaluateSafety(
     // out. The reference measured the same way, and its comment explains why --
     // the tool sees only the threads it discovered, never a community's total
     // traffic, so this throttles our frequency against our own visibility.
-    const volume = await communityVolume(db, workspaceId, thread.platform, community);
+    const volume = await counters.communityVolume(thread.platform, community);
     const ratio = volume.discovered === 0 ? 0 : (volume.posted + 1) / volume.discovered;
     const ratioOk = volume.discovered === 0 || ratio <= MAX_SELF_PROMO_RATIO;
     checks.push({

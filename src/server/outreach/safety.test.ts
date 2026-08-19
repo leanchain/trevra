@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.js';
 import type { CredentialAccessor } from '../research/types.js';
-import { evaluateSafety } from './safety.js';
+import { evaluateSafety, memoisedCounters } from './safety.js';
 import { recordPost, recordSeenThreads } from './store.js';
 import type { OutreachThread } from './types.js';
 
@@ -45,7 +45,12 @@ function thread(overrides: Partial<OutreachThread> = {}): OutreachThread {
 
 let postSeq = 0;
 async function logPost(
-  overrides: { platform?: string; community?: string | null; hoursAgo?: number; status?: 'posted' | 'manual_handoff' | 'failed' } = {}
+  overrides: {
+    platform?: string;
+    community?: string | null;
+    hoursAgo?: number;
+    status?: 'posted' | 'manual_handoff' | 'failed';
+  } = {}
 ): Promise<void> {
   postSeq += 1;
   await recordPost(
@@ -77,20 +82,30 @@ describe('daily cap', () => {
   it('allows a reply while under the platform cap', async () => {
     // Reddit's cap is 5.
     for (let index = 0; index < 4; index += 1) await logPost({ community: `sub${index}` });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(check(verdict, 'daily-cap').passed).toBe(true);
     expect(check(verdict, 'daily-cap').detail).toContain('4 of 5');
   });
 
   it('blocks the reply that would exceed the cap', async () => {
     for (let index = 0; index < 5; index += 1) await logPost({ community: `sub${index}` });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(verdict.allowed).toBe(false);
     expect(verdict.reason).toContain('daily-cap');
     expect(check(verdict, 'daily-cap').detail).toContain('5 of 5');
@@ -98,30 +113,48 @@ describe('daily cap', () => {
 
   it('uses a rolling 24h window, so posts do not reset at midnight', async () => {
     // Five posts, but all older than 24 hours.
-    for (let index = 0; index < 5; index += 1) await logPost({ community: `sub${index}`, hoursAgo: 25 });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    for (let index = 0; index < 5; index += 1)
+      await logPost({ community: `sub${index}`, hoursAgo: 25 });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(check(verdict, 'daily-cap').passed).toBe(true);
     expect(check(verdict, 'daily-cap').detail).toContain('0 of 5');
   });
 
   it('counts manual handoffs against the cap, because a human posting costs the same attention', async () => {
-    for (let index = 0; index < 5; index += 1) await logPost({ community: `sub${index}`, status: 'manual_handoff' });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    for (let index = 0; index < 5; index += 1)
+      await logPost({ community: `sub${index}`, status: 'manual_handoff' });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(check(verdict, 'daily-cap').passed).toBe(false);
   });
 
   it('does not count failed attempts against the cap', async () => {
-    for (let index = 0; index < 5; index += 1) await logPost({ community: `sub${index}`, status: 'failed' });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    for (let index = 0; index < 5; index += 1)
+      await logPost({ community: `sub${index}`, status: 'failed' });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(check(verdict, 'daily-cap').passed).toBe(true);
   });
 
@@ -132,7 +165,11 @@ describe('daily cap', () => {
       db,
       {
         workspaceId: DEMO_WORKSPACE_ID,
-        thread: thread({ platform: 'github', community: 'anthropics/claude-code', url: 'https://github.com/anthropics/claude-code/issues/1' })
+        thread: thread({
+          platform: 'github',
+          community: 'anthropics/claude-code',
+          url: 'https://github.com/anthropics/claude-code/issues/1'
+        })
       },
       NOW,
       { account: GOOD_ACCOUNT, credentials: noCredentials }
@@ -145,10 +182,15 @@ describe('daily cap', () => {
 describe('community cooldown', () => {
   it('blocks a second post into the same community inside the window', async () => {
     await logPost({ community: 'webdev', hoursAgo: 1 });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(verdict.allowed).toBe(false);
     expect(check(verdict, 'community-cooldown').passed).toBe(false);
     expect(check(verdict, 'community-cooldown').detail).toContain('48h cooldown not elapsed');
@@ -156,28 +198,43 @@ describe('community cooldown', () => {
 
   it('allows the post once the cooldown has elapsed', async () => {
     await logPost({ community: 'webdev', hoursAgo: 49 });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(check(verdict, 'community-cooldown').passed).toBe(true);
   });
 
   it('scopes the cooldown to one community, not the whole platform', async () => {
     await logPost({ community: 'programming', hoursAgo: 1 });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ community: 'webdev' }) }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ community: 'webdev' }) },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(check(verdict, 'community-cooldown').passed).toBe(true);
   });
 
   it('matches communities case-insensitively', async () => {
     await logPost({ community: 'WebDev', hoursAgo: 1 });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ community: 'webdev' }) }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ community: 'webdev' }) },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(check(verdict, 'community-cooldown').passed).toBe(false);
   });
 
@@ -185,7 +242,14 @@ describe('community cooldown', () => {
     await logPost({ platform: 'hackernews', community: null, hoursAgo: 1 });
     const verdict = await evaluateSafety(
       db,
-      { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ platform: 'hackernews', community: null, url: 'https://news.ycombinator.com/item?id=1' }) },
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        thread: thread({
+          platform: 'hackernews',
+          community: null,
+          url: 'https://news.ycombinator.com/item?id=1'
+        })
+      },
       NOW,
       { account: GOOD_ACCOUNT, credentials: noCredentials }
     );
@@ -196,10 +260,15 @@ describe('community cooldown', () => {
 
 describe('account standing', () => {
   it('fails age and karma when no profile is declared for a platform that requires them', async () => {
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: null,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: null,
+        credentials: noCredentials
+      }
+    );
     expect(verdict.allowed).toBe(false);
     expect(check(verdict, 'account-age').passed).toBe(false);
     expect(check(verdict, 'account-age').detail).toContain('OUTREACH_ACCOUNT_PROFILES_JSON');
@@ -208,17 +277,26 @@ describe('account standing', () => {
 
   it('fails an account below the platform minimum', async () => {
     // Reddit wants 30 days and 50 karma.
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: { accountAgeDays: 12, karma: 20 },
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: { accountAgeDays: 12, karma: 20 },
+        credentials: noCredentials
+      }
+    );
     expect(check(verdict, 'account-age').passed).toBe(false);
     expect(check(verdict, 'account-age').detail).toContain('12 days old; 30 required');
     expect(check(verdict, 'account-karma').passed).toBe(false);
   });
 
   it('enforces the stricter Hacker News minimums', async () => {
-    const hn = thread({ platform: 'hackernews', community: null, url: 'https://news.ycombinator.com/item?id=1' });
+    const hn = thread({
+      platform: 'hackernews',
+      community: null,
+      url: 'https://news.ycombinator.com/item?id=1'
+    });
     // Passes on Reddit's 30/50, fails HN's 60/100.
     const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: hn }, NOW, {
       account: { accountAgeDays: 45, karma: 80 },
@@ -231,7 +309,14 @@ describe('account standing', () => {
   it('needs no profile on a platform that sets no minimums', async () => {
     const verdict = await evaluateSafety(
       db,
-      { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ platform: 'github', community: 'anthropics/claude-code', url: 'https://github.com/anthropics/claude-code/issues/1' }) },
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        thread: thread({
+          platform: 'github',
+          community: 'anthropics/claude-code',
+          url: 'https://github.com/anthropics/claude-code/issues/1'
+        })
+      },
       NOW,
       { account: null, credentials: noCredentials }
     );
@@ -241,9 +326,17 @@ describe('account standing', () => {
 
   it('reads the profile from OUTREACH_ACCOUNT_PROFILES_JSON when none is passed', async () => {
     const credentials: CredentialAccessor = {
-      get: (name) => (name === 'OUTREACH_ACCOUNT_PROFILES_JSON' ? JSON.stringify({ reddit: { accountAgeDays: 900, karma: 5000 } }) : undefined)
+      get: (name) =>
+        name === 'OUTREACH_ACCOUNT_PROFILES_JSON'
+          ? JSON.stringify({ reddit: { accountAgeDays: 900, karma: 5000 } })
+          : undefined
     };
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, { credentials });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      { credentials }
+    );
     expect(check(verdict, 'account-age').passed).toBe(true);
     expect(check(verdict, 'account-karma').passed).toBe(true);
   });
@@ -251,10 +344,15 @@ describe('account standing', () => {
 
 describe('blacklists', () => {
   it('blocks a blacklisted community regardless of how relevant the thread is', async () => {
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ community: 'AskReddit' }) }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ community: 'AskReddit' }) },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(verdict.allowed).toBe(false);
     expect(verdict.reason).toContain('blacklisted-community');
   });
@@ -262,7 +360,10 @@ describe('blacklists', () => {
   it('blocks a thread whose text contains a blacklisted term', async () => {
     const verdict = await evaluateSafety(
       db,
-      { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ content: 'this is obvious spam, reported' }) },
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        thread: thread({ content: 'this is obvious spam, reported' })
+      },
       NOW,
       { account: GOOD_ACCOUNT, credentials: noCredentials }
     );
@@ -275,27 +376,39 @@ describe('self-promotion ratio', () => {
     await recordSeenThreads(
       db,
       DEMO_WORKSPACE_ID,
-      Array.from({ length: count }, (_, index) => thread({ externalId: `${community}-seen-${index}`, community })),
+      Array.from({ length: count }, (_, index) =>
+        thread({ externalId: `${community}-seen-${index}`, community })
+      ),
       NOW
     );
   }
 
   it('allows a reply that stays at or under 10% of discovered threads', async () => {
     await discover(10, 'webdev');
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     // (0 posted + 1) / 10 = exactly 10%.
     expect(check(verdict, 'self-promo-ratio').passed).toBe(true);
   });
 
   it('blocks a reply that would push us over 10%', async () => {
     await discover(9, 'webdev');
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     // (0 + 1) / 9 = 11.1%.
     expect(check(verdict, 'self-promo-ratio').passed).toBe(false);
     expect(check(verdict, 'self-promo-ratio').detail).toContain('11.1%');
@@ -306,10 +419,15 @@ describe('self-promotion ratio', () => {
     // Two posted long enough ago that the cooldown is clear.
     await logPost({ community: 'webdev', hoursAgo: 200 });
     await logPost({ community: 'webdev', hoursAgo: 150 });
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     // (2 + 1) / 20 = 15%.
     expect(check(verdict, 'self-promo-ratio').passed).toBe(false);
   });
@@ -320,7 +438,10 @@ describe('verdict shape', () => {
     await logPost({ community: 'webdev', hoursAgo: 1 });
     const verdict = await evaluateSafety(
       db,
-      { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ community: 'AskReddit', content: 'spam' }) },
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        thread: thread({ community: 'AskReddit', content: 'spam' })
+      },
       NOW,
       { account: null, credentials: noCredentials }
     );
@@ -332,27 +453,44 @@ describe('verdict shape', () => {
   });
 
   it('passes a clean thread on a fresh workspace', async () => {
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(verdict.allowed).toBe(true);
     expect(verdict.reason).toBeNull();
     expect(verdict.checks.every((entry) => entry.passed)).toBe(true);
   });
 
   it('reports what the platform permits, so approval shows whether Trevra may post at all', async () => {
-    const reddit = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const reddit = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     // Reddit's channel adapter is prepare-only: an approved reply is a handoff.
     expect(reddit.automationMode).toBe('prepare-only');
     expect(reddit.automationReason).toMatch(/self-promotion/i);
 
     const github = await evaluateSafety(
       db,
-      { workspaceId: DEMO_WORKSPACE_ID, thread: thread({ platform: 'github', community: 'anthropics/claude-code', url: 'https://github.com/anthropics/claude-code/issues/1' }) },
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        thread: thread({
+          platform: 'github',
+          community: 'anthropics/claude-code',
+          url: 'https://github.com/anthropics/claude-code/issues/1'
+        })
+      },
       NOW,
       { account: GOOD_ACCOUNT, credentials: noCredentials }
     );
@@ -361,7 +499,9 @@ describe('verdict shape', () => {
 
   it('isolates workspaces: another workspace’s posts do not consume our cap', async () => {
     await db
-      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+      .prepare(
+        'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+      )
       .run('ws_safety_other', 'Other', NOW.toISOString());
     await db.prepare('DELETE FROM outreach_posts WHERE workspace_id=?').run('ws_safety_other');
     for (let index = 0; index < 5; index += 1) {
@@ -383,10 +523,71 @@ describe('verdict shape', () => {
         NOW
       );
     }
-    const verdict = await evaluateSafety(db, { workspaceId: DEMO_WORKSPACE_ID, thread: thread() }, NOW, {
-      account: GOOD_ACCOUNT,
-      credentials: noCredentials
-    });
+    const verdict = await evaluateSafety(
+      db,
+      { workspaceId: DEMO_WORKSPACE_ID, thread: thread() },
+      NOW,
+      {
+        account: GOOD_ACCOUNT,
+        credentials: noCredentials
+      }
+    );
     expect(verdict.allowed).toBe(true);
+  });
+});
+
+describe('injectable counters', () => {
+  it('asks a supplied counters implementation instead of the database', async () => {
+    const asked: string[] = [];
+    const counters = {
+      async postsToday(platform: string) {
+        asked.push(`postsToday:${platform}`);
+        return 0;
+      },
+      async lastPostInCommunity(platform: string, community: string) {
+        asked.push(`lastPost:${platform}/${community}`);
+        return null;
+      },
+      async communityVolume(platform: string, community: string) {
+        asked.push(`volume:${platform}/${community}`);
+        return { posted: 0, discovered: 0 };
+      }
+    };
+
+    const verdict = await evaluateSafety(
+      db,
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        thread: thread({ platform: 'reddit', community: 'webdev' })
+      },
+      NOW,
+      { account: { accountAgeDays: 900, karma: 1200 }, counters }
+    );
+
+    expect(verdict.allowed).toBe(true);
+    expect(asked).toEqual(['postsToday:reddit', 'lastPost:reddit/webdev', 'volume:reddit/webdev']);
+  });
+
+  it('memoises repeated lookups for the same platform and community', async () => {
+    let calls = 0;
+    const inner = {
+      async postsToday() {
+        calls += 1;
+        return 0;
+      },
+      async lastPostInCommunity() {
+        return null;
+      },
+      async communityVolume() {
+        return { posted: 0, discovered: 0 };
+      }
+    };
+    const counters = memoisedCounters(inner);
+
+    await counters.postsToday('reddit', NOW);
+    await counters.postsToday('reddit', NOW);
+    await counters.postsToday('hackernews', NOW);
+
+    expect(calls).toBe(2);
   });
 });
