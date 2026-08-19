@@ -1184,6 +1184,39 @@ export function createApp(db: Db) {
     }
   );
 
+  // Same owner-only carve-out as create and delete: flipping `enabled` off is
+  // how you turn a refusal off, which is the same privilege as never writing
+  // it. `updated_at` moves; `version` does not, because nothing reads it.
+  app.patch(
+    '/api/policies/:id',
+    ownerOnly("change this workspace's policies"),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = policyPatchSchema.parse(req.body ?? {});
+        const sets: string[] = [];
+        const values: unknown[] = [];
+        if (input.name !== undefined) (sets.push('name=?'), values.push(input.name));
+        if (input.priority !== undefined) (sets.push('priority=?'), values.push(input.priority));
+        if (input.actionPattern !== undefined)
+          (sets.push('action_pattern=?'), values.push(input.actionPattern));
+        if (input.effect !== undefined) (sets.push('effect=?'), values.push(input.effect));
+        if (input.conditions !== undefined)
+          (sets.push('conditions_json=?'), values.push(JSON.stringify(input.conditions)));
+        if (input.enabled !== undefined) (sets.push('enabled=?'), values.push(input.enabled));
+        if (sets.length === 0) return res.status(400).json({ error: 'Nothing to change' });
+        sets.push('updated_at=?');
+        values.push(new Date().toISOString());
+        const result = await db
+          .prepare(`UPDATE workspace_policies SET ${sets.join(',')} WHERE id=? AND workspace_id=?`)
+          .run(...values, String(req.params.id), req.auth!.workspaceId);
+        if (result.changes === 0) return res.status(404).json({ error: 'Policy not found' });
+        res.json({ policies: await listWorkspacePolicies(db, req.auth!.workspaceId) });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
   // Same carve-out as the create route, and for the mirror-image reason:
   // deleting a `deny` policy is how you turn a refusal off.
   app.delete(
@@ -5604,6 +5637,9 @@ const policyWriteSchema = z.object({
   conditions: z.record(z.unknown()).default({}),
   enabled: z.boolean().default(true)
 });
+
+/** Every field optional: a patch says what changed, not what the row is. */
+const policyPatchSchema = policyWriteSchema.partial();
 
 /**
  * Where the operator's key is allowed to go. Bounds only: the HTTPS and
