@@ -284,4 +284,42 @@ describe('listOutreachThreads', () => {
     // clamp is missing entirely rather than merely rounding down.
     expect(rows).toHaveLength(1);
   });
+
+  it('returns the body and metadata a re-score needs, not just the hash', async () => {
+    await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [
+        thread({
+          externalId: 'body-1',
+          content: 'my api cost tripled last month',
+          metadata: { tags: ['ask_hn'] }
+        })
+      ],
+      NOW
+    );
+
+    const [row] = await listOutreachThreads(db, DEMO_WORKSPACE_ID, {});
+
+    expect(row.content).toBe('my api cost tripled last month');
+    expect(row.metadata_json).toEqual({ tags: ['ask_hn'] });
+  });
+
+  it('refreshes stored content when an author edits the thread', async () => {
+    await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'body-2', content: 'first read' })],
+      NOW
+    );
+    await recordSeenThreads(
+      db,
+      DEMO_WORKSPACE_ID,
+      [thread({ externalId: 'body-2', content: 'edited later' })],
+      NOW
+    );
+
+    const rows = await listOutreachThreads(db, DEMO_WORKSPACE_ID, {});
+    expect(rows.find((row) => row.external_id === 'body-2')?.content).toBe('edited later');
+  });
 });

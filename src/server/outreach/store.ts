@@ -75,13 +75,14 @@ export async function recordSeenThreads(
         LIMIT 1
       ), upserted AS (
       INSERT INTO outreach_threads (
-        id, workspace_id, platform, external_id, url, title, content_hash, author,
+        id, workspace_id, platform, external_id, url, title, content, content_hash, author,
         community, score, num_comments, thread_created_at, metadata_json, first_seen_at, last_seen_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?)
       ON CONFLICT (workspace_id, platform, external_id) DO UPDATE SET
         score = excluded.score,
         num_comments = excluded.num_comments,
         title = excluded.title,
+        content = excluded.content,
         content_hash = excluded.content_hash,
         metadata_json = excluded.metadata_json,
         last_seen_at = excluded.last_seen_at
@@ -107,6 +108,7 @@ export async function recordSeenThreads(
         thread.externalId,
         thread.url,
         thread.title,
+        thread.content,
         hash,
         thread.author,
         thread.community,
@@ -354,12 +356,15 @@ export interface OutreachThreadRow {
   external_id: string;
   url: string;
   title: string;
+  /** The body as last read. '' for rows discovered before migration 082. */
+  content: string;
   author: string | null;
   community: string | null;
   score: number;
   num_comments: number;
   thread_created_at: string | null;
   first_seen_at: string;
+  metadata_json: Record<string, unknown>;
 }
 
 /**
@@ -382,8 +387,8 @@ export async function listOutreachThreads(
   return db
     .prepare(
       `
-    SELECT id, platform, external_id, url, title, author, community, score,
-           num_comments, thread_created_at, first_seen_at
+    SELECT id, platform, external_id, url, title, content, author, community, score,
+           num_comments, thread_created_at, first_seen_at, metadata_json
     FROM outreach_threads
     WHERE ${clauses.join(' AND ')}
     ORDER BY score DESC, first_seen_at DESC
