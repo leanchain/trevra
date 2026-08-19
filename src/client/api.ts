@@ -320,6 +320,7 @@ export interface FeedThread {
     score: number;
     components: Array<{ label: string; points: number }>;
     highValueMatches: string[];
+    mediumMatches: string[];
     negativeMatches: string[];
   };
   topics: string[];

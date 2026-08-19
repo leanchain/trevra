@@ -12,7 +12,7 @@ import {
 } from '../api';
 import { ResearchScreen } from '../ResearchScreen';
 import { EvidenceList } from './inspector';
-import { factsLine, platformLabel, whyChips } from './researchFormat';
+import { chipPoints, factsLine, platformLabel, whyChips } from './researchFormat';
 import { useDialog } from '../ui/dialog';
 
 /*
@@ -426,8 +426,11 @@ export function ResearchView({
                   <p>{factsLine(entry, now)}</p>
                   <p className="client-why">
                     {whyChips(entry).map((chip) => (
-                      <span className="client-status" key={chip}>
-                        {chip}
+                      <span
+                        className={`client-status ${chip.tone === 'negative' ? 'is-negative' : ''}`}
+                        key={chip.label}
+                      >
+                        {chip.label} <b>{chipPoints(chip)}</b>
                       </span>
                     ))}
                   </p>

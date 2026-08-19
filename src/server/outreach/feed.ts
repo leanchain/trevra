@@ -25,6 +25,7 @@ export interface FeedThread {
     score: number;
     components: Array<{ label: string; points: number }>;
     highValueMatches: string[];
+    mediumMatches: string[];
     negativeMatches: string[];
   };
   topics: string[];
@@ -77,6 +78,7 @@ export async function loadThreadFeed(
         score: breakdown.score,
         components: breakdown.components,
         highValueMatches: breakdown.highValueMatches,
+        mediumMatches: breakdown.mediumMatches,
         negativeMatches: breakdown.negativeMatches
       },
       topics,

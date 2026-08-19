@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FeedThread } from '../api';
-import { ageLabel, factsLine, whyChips } from './researchFormat';
+import { ageLabel, chipPoints, factsLine, whyChips } from './researchFormat';
 
 const NOW = new Date('2026-08-19T12:00:00.000Z');
 
@@ -28,6 +28,7 @@ function entry(overrides: Partial<FeedThread> = {}): FeedThread {
         { label: 'labelled question', points: 0.5 }
       ],
       highValueMatches: ['token cost', 'api cost'],
+      mediumMatches: [],
       negativeMatches: []
     },
     topics: ['token_cost'],
@@ -70,17 +71,61 @@ describe('ageLabel', () => {
 });
 
 describe('whyChips', () => {
-  it("renders the scorer's own components", () => {
-    expect(whyChips(entry())).toEqual(['high-value keywords (2)', 'labelled question']);
+  it('names the keywords that matched instead of counting them', () => {
+    expect(whyChips(entry())).toEqual([
+      { label: '"token cost", "api cost"', points: 4, tone: 'positive' },
+      { label: 'labelled a question', points: 0.5, tone: 'positive' }
+    ]);
   });
 
-  it('surfaces a negative match rather than hiding it', () => {
+  it("never calls the platform's vote count a score", () => {
     const chips = whyChips(
       entry({
-        relevance: { ...entry().relevance, negativeMatches: ['stop spamming'] }
+        relevance: {
+          ...entry().relevance,
+          components: [
+            { label: 'thread score > 10', points: 1 },
+            { label: 'more than 5 comments', points: 0.5 },
+            { label: 'less than 24h old', points: 1 }
+          ]
+        }
       })
     );
-    expect(chips).toContain('negative: stop spamming');
+    expect(chips.map((chip) => chip.label)).toEqual([
+      '10+ points',
+      '5+ comments',
+      'posted in the last 24h'
+    ]);
+  });
+
+  it('surfaces a negative match, named, as a negative chip', () => {
+    const chips = whyChips(
+      entry({
+        relevance: {
+          ...entry().relevance,
+          components: [{ label: 'negative keywords (1)', points: -3 }],
+          negativeMatches: ['stop spamming']
+        }
+      })
+    );
+    expect(chips).toEqual([{ label: 'avoid: "stop spamming"', points: -3, tone: 'negative' }]);
+  });
+
+  it('passes an unmapped label through rather than dropping the reason', () => {
+    const chips = whyChips(
+      entry({
+        relevance: {
+          ...entry().relevance,
+          components: [{ label: 'some future rule', points: 0.25 }]
+        }
+      })
+    );
+    expect(chips).toEqual([{ label: 'some future rule', points: 0.25, tone: 'positive' }]);
+  });
+
+  it("renders a chip's worth with its sign", () => {
+    expect(chipPoints({ label: 'x', points: 2, tone: 'positive' })).toBe('+2');
+    expect(chipPoints({ label: 'x', points: -3, tone: 'negative' })).toBe('-3');
   });
 });
 

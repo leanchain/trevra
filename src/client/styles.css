@@ -1101,6 +1101,19 @@ button:disabled {
   flex-wrap: wrap;
   gap: 0.35rem;
 }
+/* Why-chips quote the words a thread actually used -- capitalising them would
+   misquote the source. */
+.client-why .client-status {
+  text-transform: none;
+}
+.client-why .client-status b {
+  color: var(--t-text);
+  font-variant-numeric: tabular-nums;
+}
+.client-why .client-status.is-negative,
+.client-why .client-status.is-negative b {
+  color: var(--danger, #b42318);
+}
 .client-blocked {
   color: var(--danger, #b42318);
 }
