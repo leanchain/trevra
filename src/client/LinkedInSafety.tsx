@@ -31,7 +31,15 @@ import type { ManagedCampaign } from '../server/linkedin/managed-campaigns';
 // it keeps that in one place so two mounted readers cannot disagree. This
 // screen links to that screen per account, so it names the account first.
 import { useActiveSeatKey } from './LinkedInAccounts';
-import { AcceptanceMeter, ConfidenceTag, LiStat, VolumeChart, WarmupRamp, WindowPicker, type VolumePoint } from './LinkedInViz';
+import {
+  AcceptanceMeter,
+  ConfidenceTag,
+  LiStat,
+  VolumeChart,
+  WarmupRamp,
+  WindowPicker,
+  type VolumePoint
+} from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 import { Hint } from './ui/hint';
 
@@ -259,7 +267,9 @@ export function useOutreachRefresh(reload: RefreshHandler): void {
   useEffect(() => {
     const handler: RefreshHandler = () => latest.current();
     refreshHandlers.add(handler);
-    return () => { refreshHandlers.delete(handler); };
+    return () => {
+      refreshHandlers.delete(handler);
+    };
   }, []);
 }
 
@@ -301,13 +311,17 @@ export function useSeatLimits(seatKey?: string): SeatLimitsRead {
       setLimits(await getLinkedInLimits(seatKey));
       setError('');
     } catch (err) {
-      setError(errorMessage(err, 'Unable to read this seat’s ceilings. Nothing was changed — try again.'));
+      setError(
+        errorMessage(err, 'Unable to read this seat’s ceilings. Nothing was changed — try again.')
+      );
     } finally {
       setLoading(false);
     }
   }, [seatKey]);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
   useOutreachRefresh(reload);
 
   return { limits, loading, error, reload };
@@ -351,13 +365,19 @@ export function useSeatLimits(seatKey?: string): SeatLimitsRead {
  * the volume to 30% of it", not "cuts to 30% the volume".
  */
 const throttleVerb = (factor: number | null, object: string, past = false) =>
-  factor === null ? `${past ? 'reduced' : 'reduces'} ${object}`
-    : factor === 0.5 ? `${past ? 'halved' : 'halves'} ${object}`
+  factor === null
+    ? `${past ? 'reduced' : 'reduces'} ${object}`
+    : factor === 0.5
+      ? `${past ? 'halved' : 'halves'} ${object}`
       : `${past ? 'cut' : 'cuts'} ${object} to ${Math.round(factor * 100)}% of it`;
 
 /** The same decision quoted as an imperative, for “X would quietly become end it”. */
 const throttleImperative = (factor: number | null) =>
-  factor === null ? 'reduce it' : factor === 0.5 ? 'halve it' : `cut it to ${Math.round(factor * 100)}%`;
+  factor === null
+    ? 'reduce it'
+    : factor === 0.5
+      ? 'halve it'
+      : `cut it to ${Math.round(factor * 100)}%`;
 
 export const SEAT_STOP_COPY = {
   /** The verb for an IMMEDIATE stop. Never used over the agent, whose stop is cooperative. */
@@ -369,7 +389,8 @@ export const SEAT_STOP_COPY = {
   reasonFieldLabel: 'Reason for pausing',
   /** Enforced by `pause()` below, not merely printed. */
   reasonRequired: 'Say why. This is the note you will read three weeks from now.',
-  running: 'Stop everything at once. Ceilings drop to zero, the worker halts within one tick, and a campaign already in a browser is the only thing that finishes.',
+  running:
+    'Stop everything at once. Ceilings drop to zero, the worker halts within one tick, and a campaign already in a browser is the only thing that finishes.',
   paused: (reason: string | null) =>
     `Everything is stopped${reason ? `: ${reason}` : '.'} No slot will be scheduled and the local worker halts within one tick.`,
   /*
@@ -384,9 +405,12 @@ export const SEAT_STOP_COPY = {
    * delete. The reasoning is worth keeping; the dead string is not.
    */
   pausedToast: 'Seat paused. Every ceiling is now zero and nothing will be scheduled.',
-  resumedToast: 'Seat resumed. The warm-up ramp picks up where it left off — it is measured from when this seat started sending through Trevra, so resuming does not restart it.',
-  pauseFailed: 'Unable to pause the seat. Nothing changed — the seat is still running. Try again, or stop the campaigns individually on Campaigns.',
-  resumeFailed: 'Unable to resume the seat. It is still paused, which is the safe end of that failure. Try again.',
+  resumedToast:
+    'Seat resumed. The warm-up ramp picks up where it left off — it is measured from when this seat started sending through Trevra, so resuming does not restart it.',
+  pauseFailed:
+    'Unable to pause the seat. Nothing changed — the seat is still running. Try again, or stop the campaigns individually on Campaigns.',
+  resumeFailed:
+    'Unable to resume the seat. It is still paused, which is the safe end of that failure. Try again.',
   /**
    * Pausing is protective and reversible; resuming puts real invites back on a
    * real account. The reason field was on the way DOWN only, so the cheap
@@ -397,9 +421,10 @@ export const SEAT_STOP_COPY = {
     title: 'Resume outreach on this seat?',
     confirmLabel: 'Resume outreach on this seat',
     whatRestarts: (reason: string | null) =>
-      'Real invites and messages start going out again, on the LinkedIn account this seat signs in as.'
-      + (reason ? ` It was stopped because: ${reason}.` : ''),
-    warmupKeeps: 'The warm-up ramp picks up where it left off — it is measured from when this seat started sending through Trevra, so resuming does not restart it.',
+      'Real invites and messages start going out again, on the LinkedIn account this seat signs in as.' +
+      (reason ? ` It was stopped because: ${reason}.` : ''),
+    warmupKeeps:
+      'The warm-up ramp picks up where it left off — it is measured from when this seat started sending through Trevra, so resuming does not restart it.',
     /*
      * NO REASON FIELD ON THE WAY UP, AND THAT IS THE HONEST END OF IT.
      *
@@ -419,7 +444,8 @@ export const SEAT_STOP_COPY = {
      * `reason` on that route stored beside `pausedReason`, at which point this
      * drawer takes `requireReason` back and passes the argument through.
      */
-    noRecord: 'Pausing left a note; resuming does not. There is nowhere to store one on the way up — the pause reason it replaces is what the ledger keeps.'
+    noRecord:
+      'Pausing left a note; resuming does not. There is nowhere to store one on the way up — the pause reason it replaces is what the ledger keeps.'
   },
   /**
    * Why a human is the only thing that may cut a seat to zero.
@@ -496,15 +522,20 @@ export function useSeatStop(): SeatStop {
   const [failure, setFailure] = useState('');
 
   const reloadSeats = useCallback(async () => {
-    try { setSeats(await getLinkedInManagerSeats()); }
-    catch { /* Falls back to the primary seat below rather than blanking the control. */ }
+    try {
+      setSeats(await getLinkedInManagerSeats());
+    } catch {
+      /* Falls back to the primary seat below rather than blanking the control. */
+    }
   }, []);
 
   const reload = useCallback(async () => {
     await Promise.all([reloadLimits(), reloadSeats()]);
   }, [reloadLimits, reloadSeats]);
 
-  useEffect(() => { void reloadSeats(); }, [reloadSeats]);
+  useEffect(() => {
+    void reloadSeats();
+  }, [reloadSeats]);
   useOutreachRefresh(reloadSeats);
 
   const primary = limits?.seat ?? null;
@@ -515,8 +546,8 @@ export function useSeatStop(): SeatStop {
   // must keep offering the stop, which is what `StopBar` derives from this.
   const paused = live ? live.length === 0 : primary?.posture === 'paused';
   const pausedReason = known
-    ? known.find((row) => row.posture === 'paused')?.pausedReason ?? null
-    : primary?.pausedReason ?? null;
+    ? (known.find((row) => row.posture === 'paused')?.pausedReason ?? null)
+    : (primary?.pausedReason ?? null);
 
   /**
    * One call per account that is not already in the state being asked for, all
@@ -526,45 +557,73 @@ export function useSeatStop(): SeatStop {
    * fourth did not must say which one is still running, not report the whole
    * stop as failed and not report it as done.
    */
-  const applyToSeats = useCallback(async (
-    targets: LinkedInSeat[] | null,
-    act: (seatKey: string | undefined) => Promise<unknown>,
-    failedCopy: string
-  ): Promise<boolean> => {
-    const keys: Array<string | undefined> = targets ? targets.map((row) => row.seatKey) : [undefined];
-    if (keys.length === 0) return true;
-    const settled = await Promise.allSettled(keys.map((key) => act(key)));
-    const broken = settled
-      .map((outcome, index) => ({ outcome, label: targets?.[index]?.label ?? targets?.[index]?.seatKey ?? null }))
-      .filter((entry) => entry.outcome.status === 'rejected');
-    if (broken.length === 0) return true;
-    const named = broken.map((entry) => entry.label).filter((label): label is string => Boolean(label));
-    setFailure(named.length > 0 ? `${failedCopy} Still not changed: ${named.join(', ')}.` : failedCopy);
-    return false;
-  }, []);
-
-  const pause = useCallback(async (reason: string) => {
-    if (!reason.trim()) { setFailure(SEAT_STOP_COPY.reasonRequired); return false; }
-    setBusy(true);
-    setFailure('');
-    try {
-      const ok = await applyToSeats(live, (seatKey) => pauseLinkedInSeat(reason.trim(), seatKey), SEAT_STOP_COPY.pauseFailed);
-      // Every mounted outreach screen is now describing a seat that stopped.
-      await reloadOutreach();
-      await reloadSeats();
-      return ok;
-    } catch (err) {
-      setFailure(errorMessage(err, SEAT_STOP_COPY.pauseFailed));
+  const applyToSeats = useCallback(
+    async (
+      targets: LinkedInSeat[] | null,
+      act: (seatKey: string | undefined) => Promise<unknown>,
+      failedCopy: string
+    ): Promise<boolean> => {
+      const keys: Array<string | undefined> = targets
+        ? targets.map((row) => row.seatKey)
+        : [undefined];
+      if (keys.length === 0) return true;
+      const settled = await Promise.allSettled(keys.map((key) => act(key)));
+      const broken = settled
+        .map((outcome, index) => ({
+          outcome,
+          label: targets?.[index]?.label ?? targets?.[index]?.seatKey ?? null
+        }))
+        .filter((entry) => entry.outcome.status === 'rejected');
+      if (broken.length === 0) return true;
+      const named = broken
+        .map((entry) => entry.label)
+        .filter((label): label is string => Boolean(label));
+      setFailure(
+        named.length > 0 ? `${failedCopy} Still not changed: ${named.join(', ')}.` : failedCopy
+      );
       return false;
-    } finally { setBusy(false); }
-  }, [applyToSeats, live, reloadSeats]);
+    },
+    []
+  );
+
+  const pause = useCallback(
+    async (reason: string) => {
+      if (!reason.trim()) {
+        setFailure(SEAT_STOP_COPY.reasonRequired);
+        return false;
+      }
+      setBusy(true);
+      setFailure('');
+      try {
+        const ok = await applyToSeats(
+          live,
+          (seatKey) => pauseLinkedInSeat(reason.trim(), seatKey),
+          SEAT_STOP_COPY.pauseFailed
+        );
+        // Every mounted outreach screen is now describing a seat that stopped.
+        await reloadOutreach();
+        await reloadSeats();
+        return ok;
+      } catch (err) {
+        setFailure(errorMessage(err, SEAT_STOP_COPY.pauseFailed));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [applyToSeats, live, reloadSeats]
+  );
 
   const resume = useCallback(async () => {
     setBusy(true);
     setFailure('');
     try {
       const stopped = known?.filter((row) => row.posture === 'paused') ?? null;
-      const ok = await applyToSeats(stopped, (seatKey) => resumeLinkedInSeat(seatKey), SEAT_STOP_COPY.resumeFailed);
+      const ok = await applyToSeats(
+        stopped,
+        (seatKey) => resumeLinkedInSeat(seatKey),
+        SEAT_STOP_COPY.resumeFailed
+      );
       await reloadOutreach();
       await reloadSeats();
       return ok;
@@ -573,13 +632,15 @@ export function useSeatStop(): SeatStop {
       // the operator unable to tell whether outreach restarted.
       setFailure(errorMessage(err, SEAT_STOP_COPY.resumeFailed));
       return false;
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   }, [applyToSeats, known, reloadSeats]);
 
   return {
     configured,
     paused,
-    posture: paused ? 'paused' : primary?.posture ?? known?.[0]?.posture ?? null,
+    posture: paused ? 'paused' : (primary?.posture ?? known?.[0]?.posture ?? null),
     pausedReason,
     loading,
     busy,
@@ -611,7 +672,15 @@ const DAY_MS = 86_400_000;
  */
 const PRIMARY_ACCOUNT_KEY = 'owner';
 
-const WEEKDAY_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
+const WEEKDAY_LONG = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday'
+] as const;
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
 /** Where a number came from, in words rather than in a file path. */
@@ -630,9 +699,18 @@ const clock = (minute: number) =>
  * zone beside it would read as the account's and be an hour or a day out.
  */
 function moment(at: number, timezone?: string | null): string {
-  const options: Intl.DateTimeFormatOptions = { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+  const options: Intl.DateTimeFormatOptions = {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  };
   try {
-    return new Intl.DateTimeFormat(undefined, timezone ? { ...options, timeZone: timezone } : options).format(new Date(at));
+    return new Intl.DateTimeFormat(
+      undefined,
+      timezone ? { ...options, timeZone: timezone } : options
+    ).format(new Date(at));
   } catch {
     return new Intl.DateTimeFormat(undefined, options).format(new Date(at));
   }
@@ -655,7 +733,8 @@ function warmupWeekOf(activatedAt: string | null, now: number): number {
 }
 
 /** Mirrors `warmupMultiplier` in src/server/linkedin/limits.ts. Past the ramp is 1.0. */
-const warmupMultiplierOf = (week: number) => (week < 1 ? WARMUP_MULTIPLIERS[0] : WARMUP_MULTIPLIERS[week - 1] ?? 1);
+const warmupMultiplierOf = (week: number) =>
+  week < 1 ? WARMUP_MULTIPLIERS[0] : (WARMUP_MULTIPLIERS[week - 1] ?? 1);
 
 /** When `week` ends and the next one starts. Null when the clock is unknown or the ramp is over. */
 function warmupWeekEndsAt(activatedAt: string | null, week: number): number | null {
@@ -702,7 +781,11 @@ interface CampaignRamp {
  * weeks since the ACCOUNT started sending through Trevra, this one counts days
  * since THIS CAMPAIGN started -- and both apply at once.
  */
-function campaignRampOf(startedAt: string | null, now: number, fractions: readonly number[]): CampaignRamp | null {
+function campaignRampOf(
+  startedAt: string | null,
+  now: number,
+  fractions: readonly number[]
+): CampaignRamp | null {
   if (!startedAt || fractions.length === 0) return null;
   const start = Date.parse(startedAt);
   if (Number.isNaN(start)) return null;
@@ -710,22 +793,35 @@ function campaignRampOf(startedAt: string | null, now: number, fractions: readon
   // Past the end of the published ramp is full speed, which is what the last
   // entry always is -- the server walks the ramp until it reaches 1.
   const fraction = fractions[Math.min(day, fractions.length) - 1] ?? 1;
-  return { day, fraction, steps: fractions.length, nextStepAt: fraction < 1 ? start + day * DAY_MS : null };
+  return {
+    day,
+    fraction,
+    steps: fractions.length,
+    nextStepAt: fraction < 1 ? start + day * DAY_MS : null
+  };
 }
 
 /** Now, in one account's own clock. Null when the runtime does not know the timezone. */
 function accountClock(timezone: string, now: number): { weekday: number; minute: number } | null {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone, hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit'
+      timeZone: timezone,
+      hour12: false,
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit'
     }).formatToParts(new Date(now));
-    const weekday = WEEKDAY_SHORT.indexOf(parts.find((part) => part.type === 'weekday')?.value as typeof WEEKDAY_SHORT[number]);
+    const weekday = WEEKDAY_SHORT.indexOf(
+      parts.find((part) => part.type === 'weekday')?.value as (typeof WEEKDAY_SHORT)[number]
+    );
     const hour = Number(parts.find((part) => part.type === 'hour')?.value);
     const minute = Number(parts.find((part) => part.type === 'minute')?.value);
     if (weekday < 0 || !Number.isFinite(hour) || !Number.isFinite(minute)) return null;
     // Some ICU builds render midnight as hour 24 under hour12: false.
     return { weekday, minute: (hour % 24) * 60 + minute };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 type HoursState =
@@ -744,7 +840,11 @@ function hoursStateOf(row: LinkedInSeat, now: number): HoursState {
   if (row.workingDays.length === 0) return { state: 'never' };
   const local = accountClock(row.timezone, now);
   if (!local) return { state: 'unknown' };
-  if (row.workingDays.includes(local.weekday) && local.minute >= row.workStartMinute && local.minute < row.workEndMinute) {
+  if (
+    row.workingDays.includes(local.weekday) &&
+    local.minute >= row.workStartMinute &&
+    local.minute < row.workEndMinute
+  ) {
     return { state: 'open', until: clock(row.workEndMinute) };
   }
   for (let offset = 0; offset <= 7; offset += 1) {
@@ -759,7 +859,10 @@ function hoursStateOf(row: LinkedInSeat, now: number): HoursState {
 
 /** The days an account works, in the operator's own order: Mon first, Sunday last. */
 const workingDaysLabel = (days: readonly number[]) =>
-  [1, 2, 3, 4, 5, 6, 0].filter((day) => days.includes(day)).map((day) => WEEKDAY_SHORT[day]).join(', ');
+  [1, 2, 3, 4, 5, 6, 0]
+    .filter((day) => days.includes(day))
+    .map((day) => WEEKDAY_SHORT[day])
+    .join(', ');
 
 /**
  * The window Trevra falls back to when no account is configured, from the
@@ -821,7 +924,10 @@ const UNCOUNTED_STATUSES: readonly LinkedInActionStatus[] = ['planned', 'held', 
 const ACTION_READ_LIMIT = 500;
 
 /** What this account actually did in the last 24 hours, counted the way the engine counts it. */
-function countLast24h(actions: readonly LinkedInActionView[], now: number): Partial<Record<LinkedInActionKind, number>> {
+function countLast24h(
+  actions: readonly LinkedInActionView[],
+  now: number
+): Partial<Record<LinkedInActionKind, number>> {
   const since = now - DAY_MS;
   const counts: Partial<Record<LinkedInActionKind, number>> = {};
   for (const action of actions) {
@@ -856,12 +962,17 @@ interface AccountTruth {
 function useAccountTruth(): AccountTruth {
   const [accounts, setAccounts] = useState<LinkedInSeat[]>([]);
   const [campaigns, setCampaigns] = useState<ManagedCampaign[]>([]);
-  const [usage, setUsage] = useState<Map<string, Partial<Record<LinkedInActionKind, number>>>>(new Map());
+  const [usage, setUsage] = useState<Map<string, Partial<Record<LinkedInActionKind, number>>>>(
+    new Map()
+  );
   const [error, setError] = useState('');
 
   const reload = useCallback(async () => {
     try {
-      const [rows, managed] = await Promise.all([getLinkedInManagerSeats(), getLinkedInManagedCampaigns()]);
+      const [rows, managed] = await Promise.all([
+        getLinkedInManagerSeats(),
+        getLinkedInManagedCampaigns()
+      ]);
       setAccounts(rows);
       setCampaigns(managed);
       // Only for the accounts the limits report does not count. A 48-hour read
@@ -876,26 +987,60 @@ function useAccountTruth(): AccountTruth {
       const now = Date.now();
       const since = new Date(now - 2 * DAY_MS).toISOString();
       const until = new Date(now).toISOString();
-      const counted = await Promise.all(rows
-        .filter((row) => row.seatKey !== PRIMARY_ACCOUNT_KEY)
-        .map(async (row) => {
-          const actions = await getLinkedInActions({ seatKey: row.seatKey, from: since, to: until, limit: ACTION_READ_LIMIT });
-          // A FULL PAGE IS NOT A COUNT. There is no cursor, so a page that came
-          // back full is a floor and every “used” figure derived from it would
-          // undercount while reading as exact. The screen already knows how to
-          // say “this could not be counted”, and that is the true answer here.
-          return [row.seatKey, actions.length >= ACTION_READ_LIMIT ? null : countLast24h(actions, now)] as const;
-        }));
-      setUsage(new Map(counted.filter(
-        (entry): entry is readonly [string, Partial<Record<LinkedInActionKind, number>>] => entry[1] !== null
-      )));
+      const counted = await Promise.all(
+        rows
+          .filter((row) => row.seatKey !== PRIMARY_ACCOUNT_KEY)
+          .map(async (row) => {
+            // ISOLATED FROM THE SETTINGS READ ABOVE. This loop counts what an
+            // account DID; the try/catch around `rows`/`managed` above is about
+            // whether the account's own settings could be read at all, and those
+            // are two different failures with two different sentences. Without
+            // this try/catch, one account's usage call failing threw past both
+            // reads and set the settings-read error -- "your own settings for
+            // these accounts could not be read" -- on a screen where the
+            // settings loaded fine and it was only this count that did not.
+            try {
+              const actions = await getLinkedInActions({
+                seatKey: row.seatKey,
+                from: since,
+                to: until,
+                limit: ACTION_READ_LIMIT
+              });
+              // A FULL PAGE IS NOT A COUNT. There is no cursor, so a page that came
+              // back full is a floor and every “used” figure derived from it would
+              // undercount while reading as exact. The screen already knows how to
+              // say “this could not be counted”, and that is the true answer here.
+              return [
+                row.seatKey,
+                actions.length >= ACTION_READ_LIMIT ? null : countLast24h(actions, now)
+              ] as const;
+            } catch {
+              return [row.seatKey, null] as const;
+            }
+          })
+      );
+      setUsage(
+        new Map(
+          counted.filter(
+            (entry): entry is readonly [string, Partial<Record<LinkedInActionKind, number>>] =>
+              entry[1] !== null
+          )
+        )
+      );
       setError('');
     } catch (err) {
-      setError(errorMessage(err, 'Unable to read how these accounts are set up. Nothing was changed — try again.'));
+      setError(
+        errorMessage(
+          err,
+          'Unable to read how these accounts are set up. Nothing was changed — try again.'
+        )
+      );
     }
   }, []);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
   useOutreachRefresh(reload);
 
   return { accounts, campaigns, usage, error };
@@ -917,7 +1062,13 @@ interface AccountView {
   primary: boolean;
 }
 
-export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, seriesLoading }: {
+export function LinkedInSafetyScreen({
+  limits,
+  analytics,
+  days,
+  onDaysChange,
+  seriesLoading
+}: {
   limits: LinkedInLimitsReport;
   analytics: LinkedInAnalytics | null;
   days: number;
@@ -928,47 +1079,54 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
   const { accounts, campaigns, usage, error: configError } = useAccountTruth();
   const now = Date.now();
 
-  const views: AccountView[] = accounts.length > 0
-    ? accounts.map((row) => ({
-      key: row.seatKey,
-      label: row.label,
-      status: row.seatKey === PRIMARY_ACCOUNT_KEY && seat.posture ? seat.posture : statusOf(row, now),
-      pausedReason: row.pausedReason,
-      config: row,
-      primary: row.seatKey === PRIMARY_ACCOUNT_KEY && seat.configured
-    }))
-    : seat.configured
-      ? [{
-        key: PRIMARY_ACCOUNT_KEY,
-        label: seat.label ?? 'This LinkedIn account',
-        status: seat.posture,
-        pausedReason: seat.pausedReason,
-        config: null,
-        primary: true
-      }]
-      : [];
+  const views: AccountView[] =
+    accounts.length > 0
+      ? accounts.map((row) => ({
+          key: row.seatKey,
+          label: row.label,
+          status:
+            row.seatKey === PRIMARY_ACCOUNT_KEY && seat.posture ? seat.posture : statusOf(row, now),
+          pausedReason: row.pausedReason,
+          config: row,
+          primary: row.seatKey === PRIMARY_ACCOUNT_KEY && seat.configured
+        }))
+      : seat.configured
+        ? [
+            {
+              key: PRIMARY_ACCOUNT_KEY,
+              label: seat.label ?? 'This LinkedIn account',
+              status: seat.posture,
+              pausedReason: seat.pausedReason,
+              config: null,
+              primary: true
+            }
+          ]
+        : [];
 
   // Nothing to answer for. Four em dashes, an empty chart and a warm-up ramp
   // for an account that does not exist reads as a broken product rather than
   // an unconfigured one.
   if (views.length === 0) {
-    return <div className="page-stack li-viz">
-      <section className="page-panel">
-        <div className="empty-state">
-          <Gauge size={28} />
-          <h4 aria-level={2}>No LinkedIn account is set up yet</h4>
-          <p>
-            Every number on this screen describes one real account — its days, its hours, its limits and what it has
-            already done today. Until there is an account, there is nothing here that would be true.
-          </p>
-          {/* A real link, not a callback: account management has one canonical
+    return (
+      <div className="page-stack li-viz">
+        <section className="page-panel">
+          <div className="empty-state">
+            <Gauge size={28} />
+            <h4 aria-level={2}>No LinkedIn account is set up yet</h4>
+            <p>
+              Every number on this screen describes one real account — its days, its hours, its
+              limits and what it has already done today. Until there is an account, there is nothing
+              here that would be true.
+            </p>
+            {/* A real link, not a callback: account management has one canonical
               home, so this empty state cannot send a new user to a second setup flow. */}
-          <a className="primary-button" href="/outreach" style={{ textDecoration: 'none' }}>
-            <Settings2 size={15} /> Add a LinkedIn account
-          </a>
-        </div>
-      </section>
-    </div>;
+            <a className="primary-button" href="/outreach" style={{ textDecoration: 'none' }}>
+              <Settings2 size={15} /> Add a LinkedIn account
+            </a>
+          </div>
+        </section>
+      </div>
+    );
   }
 
   const hardFacts = limits.limits.filter((limit) => limit.confidence === 'HARD FACT').length;
@@ -1002,89 +1160,122 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
     byKind.set(limit.kind, bucket);
   }
 
-  return <div className="page-stack li-viz">
+  return (
+    <div className="page-stack li-viz">
+      {configError && (
+        <div className="li-warn-block">
+          <CircleAlert size={18} />
+          <div>
+            <strong>Your own settings for these accounts could not be read.</strong>
+            <p>
+              {configError} What is below is Trevra’s half of the limits only — the working days,
+              the hours and the four per-account ceilings you set are missing from it, and they are
+              enforced whether or not this screen can show them.
+            </p>
+          </div>
+        </div>
+      )}
 
-    {configError && <div className="li-warn-block">
-      <CircleAlert size={18} />
-      <div>
-        <strong>Your own settings for these accounts could not be read.</strong>
-        <p>
-          {configError} What is below is Trevra’s half of the limits only — the working days, the hours and the four
-          per-account ceilings you set are missing from it, and they are enforced whether or not this screen can show them.
-        </p>
-      </div>
-    </div>}
+      {views.map((view) => (
+        <AccountPanel
+          key={view.key}
+          account={view}
+          report={view.primary ? limits : null}
+          ranges={limits.operatorRanges}
+          fallbackWindow={fallbackWindowLabel(signals.rhythm)}
+          campaigns={campaigns.filter((campaign) => campaign.seatKey === view.key)}
+          campaignFractions={limits.campaignWarmupFractions}
+          used={view.primary ? null : (usage.get(view.key) ?? null)}
+          now={now}
+        />
+      ))}
 
-    {views.map((view) => <AccountPanel
-      key={view.key}
-      account={view}
-      report={view.primary ? limits : null}
-      ranges={limits.operatorRanges}
-      fallbackWindow={fallbackWindowLabel(signals.rhythm)}
-      campaigns={campaigns.filter((campaign) => campaign.seatKey === view.key)}
-      campaignFractions={limits.campaignWarmupFractions}
-      used={view.primary ? null : usage.get(view.key) ?? null}
-      now={now}
-    />)}
-
-    {/* The honesty rule, stated once, before the evidence. */}
-    <section className="li-honesty">
-      <CircleAlert size={20} />
-      <div>
-        <strong>
-          {hardFacts === 1 ? 'One limit here is published by LinkedIn.' : `${hardFacts} limits here are published by LinkedIn.`}
-          {' '}Every other one was measured by people running their own accounts.
-        </strong>
-        {/* The InMail month is the one HARD FACT in the table and it was the one
+      {/* The honesty rule, stated once, before the evidence. */}
+      <section className="li-honesty">
+        <CircleAlert size={20} />
+        <div>
+          <strong>
+            {hardFacts === 1
+              ? 'One limit here is published by LinkedIn.'
+              : `${hardFacts} limits here are published by LinkedIn.`}{' '}
+            Every other one was measured by people running their own accounts.
+          </strong>
+          {/* The InMail month is the one HARD FACT in the table and it was the one
             number written out as a literal beside the tag that says so. It is
             in `bands.inmail.perMonth`, in the same payload this screen is
             already holding, so it is read from there — and when the payload has
             no monthly figure for InMail the sentence simply does not claim one
             rather than falling back to a number nobody sent. */}
-        <p>
-          <Hint label="Why these numbers are trustworthy" trigger={<>Why these numbers</>}>
-            LinkedIn publishes only the InMail quota{inmailMonth === null ? '' : <> — <b>{inmailMonth} a month</b> on a
-            Sales Navigator seat</>}, refusing the one after that itself, not Trevra; it sets no invite limit.
-            Everything else — the daily and weekly numbers, both warm-ups, the{' '}
-            {Math.round(signals.dayOverDay.maxDelta * 100)}% day-to-day change limit, the{' '}
-            {Math.round(signals.acceptance.floor * 100)}% acceptance floor — is practitioner telemetry: directionally
-            right, not a guarantee. You are betting your own account; the tags say which numbers are which.
-          </Hint>
-        </p>
-      </div>
-    </section>
-
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>How much went out each day</h3>
           <p>
-            No day may differ from the last worked day by more than {Math.round(signals.dayOverDay.maxDelta * 100)}%, up or down.
-            <Hint label="Why a steady line matters">
-              A steady line is what keeps an account alive — a quiet week followed by a busy Monday is the shape
-              LinkedIn restricts accounts for.
+            <Hint label="Why these numbers are trustworthy" trigger={<>Why these numbers</>}>
+              LinkedIn publishes only the InMail quota
+              {inmailMonth === null ? (
+                ''
+              ) : (
+                <>
+                  {' '}
+                  — <b>{inmailMonth} a month</b> on a Sales Navigator seat
+                </>
+              )}
+              , refusing the one after that itself, not Trevra; it sets no invite limit. Everything
+              else — the daily and weekly numbers, both warm-ups, the{' '}
+              {Math.round(signals.dayOverDay.maxDelta * 100)}% day-to-day change limit, the{' '}
+              {Math.round(signals.acceptance.floor * 100)}% acceptance floor — is practitioner
+              telemetry: directionally right, not a guarantee. You are betting your own account; the
+              tags say which numbers are which.
             </Hint>
           </p>
         </div>
-        <ConfidenceTag confidence={signals.dayOverDay.confidence} source={sourceLabel(signals.dayOverDay.confidence)} />
-      </div>
-      <WindowPicker days={days} onDaysChange={onDaysChange} loading={seriesLoading} />
-      {points.length === 0
-        ? <p className="empty-copy">Nothing has been recorded in this window, so there is no volume to chart. The shaded range appears once this account has two worked days of history.</p>
-        : <VolumeChart points={points} maxDelta={signals.dayOverDay.maxDelta} minRampStep={signals.dayOverDay.minRampStep}
-          caption={`Actions that went out per day, last ${analytics?.windowDays ?? points.length} days`} />}
-      <p className="panel-note">
-        <Hint label="How the day-to-day limit works" trigger={<>How the day-to-day limit works</>}>
-          Step-ups compare against the last day this account actually worked — days off and weekends are skipped,
-          not counted as zero. The minimum step up is {signals.dayOverDay.minRampStep} action a day, so an account at
-          zero is not frozen by a percentage of zero.{' '}
-          {/* “The reported trigger is 50%” used to be typed out here with nothing
+      </section>
+
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>How much went out each day</h3>
+            <p>
+              No day may differ from the last worked day by more than{' '}
+              {Math.round(signals.dayOverDay.maxDelta * 100)}%, up or down.
+              <Hint label="Why a steady line matters">
+                A steady line is what keeps an account alive — a quiet week followed by a busy
+                Monday is the shape LinkedIn restricts accounts for.
+              </Hint>
+            </p>
+          </div>
+          <ConfidenceTag
+            confidence={signals.dayOverDay.confidence}
+            source={sourceLabel(signals.dayOverDay.confidence)}
+          />
+        </div>
+        <WindowPicker days={days} onDaysChange={onDaysChange} loading={seriesLoading} />
+        {points.length === 0 ? (
+          <p className="empty-copy">
+            Nothing has been recorded in this window, so there is no volume to chart. The shaded
+            range appears once this account has two worked days of history.
+          </p>
+        ) : (
+          <VolumeChart
+            points={points}
+            maxDelta={signals.dayOverDay.maxDelta}
+            minRampStep={signals.dayOverDay.minRampStep}
+            caption={`Actions that went out per day, last ${analytics?.windowDays ?? points.length} days`}
+          />
+        )}
+        <p className="panel-note">
+          <Hint
+            label="How the day-to-day limit works"
+            trigger={<>How the day-to-day limit works</>}
+          >
+            Step-ups compare against the last day this account actually worked — days off and
+            weekends are skipped, not counted as zero. The minimum step up is{' '}
+            {signals.dayOverDay.minRampStep} action a day, so an account at zero is not frozen by a
+            percentage of zero.{' '}
+            {/* “The reported trigger is 50%” used to be typed out here with nothing
               behind it — no field, no tag, no way to tell whether it was still
               true. It is a real figure and it lives in exactly one place, the
               server's own rule sentence, which carries the caveat with it. That
               sentence is rendered instead of a literal restating half of it. */}
-          {signals.dayOverDay.rule}{' '}
-          {/* WHICH DAY EACH COLUMN IS, said rather than assumed. `linkedinAnalytics`
+            {signals.dayOverDay.rule}{' '}
+            {/* WHICH DAY EACH COLUMN IS, said rather than assumed. `linkedinAnalytics`
               in src/server/linkedin/campaigns.ts groups this series into UTC
               calendar days and hands back one total per day, so the client holds
               buckets and not the moments inside them — see `dayLabel` in
@@ -1092,130 +1283,167 @@ export function LinkedInSafetyScreen({ limits, analytics, days, onDaysChange, se
               account working a long way from UTC that is not the account's own
               day, and the honest fix for a chart that cannot re-bucket what it
               was given is to name the bucket it is drawing. */}
-          Each column is a UTC day — an account working far from UTC will see late-evening actions land in the next
-          column along.
-        </Hint>
-      </p>
-    </section>
-
-    <div className="li-two-col">
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>The account warm-up, week by week</h3>
-            <p>{seat.warmupWeek > seat.warmupWeeks
-              ? `${primaryLabel} is past its ramp, so Trevra’s full limits apply.`
-              : `${primaryLabel} is in week ${seat.warmupWeek} of ${seat.warmupWeeks}, so it may use ${Math.round(seat.warmupMultiplier * 100)}% of those limits.`}</p>
-          </div>
-          <ConfidenceTag confidence="REPORTED" source={sourceLabel('REPORTED')} compact />
-        </div>
-        <WarmupRamp multipliers={WARMUP_MULTIPLIERS} currentWeek={seat.warmupWeek} weeks={seat.warmupWeeks} />
-        <p className="panel-note">
-          <Hint label="What week 1 includes" trigger={<>What week 1 includes</>}>
-            Week 1 is profile views, follows, likes and endorsements only — no invites, no messages. Those four are
-            never reduced by the warm-up; they are what it consists of. The clock runs from when this account started
-            sending through Trevra, not from the LinkedIn account’s age, so there is nothing to declare that lifts it
-            early.
+            Each column is a UTC day — an account working far from UTC will see late-evening actions
+            land in the next column along.
           </Hint>
         </p>
       </section>
 
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>How many invites are being accepted</h3>
-            <p>
-              Sustained acceptance under {Math.round(signals.acceptance.floor * 100)}% reads as spam to LinkedIn. Counted
-              over {signals.acceptance.windowDays} days, and only over invites that were answered — one sitting unopened
-              is not a refusal.
-            </p>
+      <div className="li-two-col">
+        <section className="page-panel">
+          <div className="section-heading">
+            <div>
+              <h3 aria-level={2}>The account warm-up, week by week</h3>
+              <p>
+                {seat.warmupWeek > seat.warmupWeeks
+                  ? `${primaryLabel} is past its ramp, so Trevra’s full limits apply.`
+                  : `${primaryLabel} is in week ${seat.warmupWeek} of ${seat.warmupWeeks}, so it may use ${Math.round(seat.warmupMultiplier * 100)}% of those limits.`}
+              </p>
+            </div>
+            <ConfidenceTag confidence="REPORTED" source={sourceLabel('REPORTED')} compact />
           </div>
-          <ConfidenceTag confidence={signals.acceptance.confidence} source={sourceLabel(signals.acceptance.confidence)} compact />
-        </div>
-        <AcceptanceMeter
-          rate={signals.acceptance.rate}
-          floor={signals.acceptance.floor}
-          decided={signals.acceptance.decided}
-          accepted={signals.acceptance.accepted}
-          windowDays={signals.acceptance.windowDays}
-          throttled={signals.acceptance.throttled}
-        />
-        <p className="panel-note">
-          <Hint label="What happens under the floor" trigger={<>What happens under the floor</>}>
-            Under the floor, Trevra {throttleVerb(signals.acceptance.throttleFactor, 'this account’s volume')} until
-            it recovers — reduced, never stopped. A seat cut to zero could never earn back the acceptances that would
-            clear it, so ending an account stays your decision, not a multiplier’s.
-          </Hint>
-        </p>
-      </section>
-    </div>
-
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>Trevra’s own limits, and what {primaryLabel} has used
-            <Hint label="How to read these windows">
-              Rolling windows, not calendar ones — “the last 24 hours”, never “since midnight”. These are Trevra’s
-              {' '}<b>{seat.band === 'steady' ? 'steady' : 'warm-up'}</b> band figures — {seat.band === 'steady'
-                ? 'what an account past its ramp gets'
-                : 'the conservative set a paused or slowed-down account draws from too'}. Your own numbers are above;
-              both are separate ceilings and both have to pass.
+          <WarmupRamp
+            multipliers={WARMUP_MULTIPLIERS}
+            currentWeek={seat.warmupWeek}
+            weeks={seat.warmupWeeks}
+          />
+          <p className="panel-note">
+            <Hint label="What week 1 includes" trigger={<>What week 1 includes</>}>
+              Week 1 is profile views, follows, likes and endorsements only — no invites, no
+              messages. Those four are never reduced by the warm-up; they are what it consists of.
+              The clock runs from when this account started sending through Trevra, not from the
+              LinkedIn account’s age, so there is nothing to declare that lifts it early.
             </Hint>
-          </h3>
-          {/* WHICH BAND THESE NUMBERS CAME FROM. `seat.band` was in the payload
+          </p>
+        </section>
+
+        <section className="page-panel">
+          <div className="section-heading">
+            <div>
+              <h3 aria-level={2}>How many invites are being accepted</h3>
+              <p>
+                Sustained acceptance under {Math.round(signals.acceptance.floor * 100)}% reads as
+                spam to LinkedIn. Counted over {signals.acceptance.windowDays} days, and only over
+                invites that were answered — one sitting unopened is not a refusal.
+              </p>
+            </div>
+            <ConfidenceTag
+              confidence={signals.acceptance.confidence}
+              source={sourceLabel(signals.acceptance.confidence)}
+              compact
+            />
+          </div>
+          <AcceptanceMeter
+            rate={signals.acceptance.rate}
+            floor={signals.acceptance.floor}
+            decided={signals.acceptance.decided}
+            accepted={signals.acceptance.accepted}
+            windowDays={signals.acceptance.windowDays}
+            throttled={signals.acceptance.throttled}
+          />
+          <p className="panel-note">
+            <Hint label="What happens under the floor" trigger={<>What happens under the floor</>}>
+              Under the floor, Trevra{' '}
+              {throttleVerb(signals.acceptance.throttleFactor, 'this account’s volume')} until it
+              recovers — reduced, never stopped. A seat cut to zero could never earn back the
+              acceptances that would clear it, so ending an account stays your decision, not a
+              multiplier’s.
+            </Hint>
+          </p>
+        </section>
+      </div>
+
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>
+              Trevra’s own limits, and what {primaryLabel} has used
+              <Hint label="How to read these windows">
+                Rolling windows, not calendar ones — “the last 24 hours”, never “since midnight”.
+                These are Trevra’s <b>{seat.band === 'steady' ? 'steady' : 'warm-up'}</b> band
+                figures —{' '}
+                {seat.band === 'steady'
+                  ? 'what an account past its ramp gets'
+                  : 'the conservative set a paused or slowed-down account draws from too'}
+                . Your own numbers are above; both are separate ceilings and both have to pass.
+              </Hint>
+            </h3>
+            {/* WHICH BAND THESE NUMBERS CAME FROM. `seat.band` was in the payload
               and on no screen, so the same table rendered two different sets of
               figures on two different days with nothing on the page to say why
               — and “why did my limits drop” is precisely the question this
               screen exists to answer. */}
+          </div>
+          <Gauge size={20} className="li-heading-icon" />
         </div>
-        <Gauge size={20} className="li-heading-icon" />
-      </div>
-      <div className="li-ceilings">
-        {[...byKind.entries()].map(([kind, rows]) => <div className="li-ceiling-group" key={kind}>
-          <h4 aria-level={3}>{KIND_LABELS[kind]}</h4>
-          {rows.map((limit) => <CeilingRow
-            key={`${limit.kind}-${limit.window}`}
-            limit={limit}
-            throttleFactor={signals.acceptance.throttleFactor}
-          />)}
-        </div>)}
-      </div>
-    </section>
+        <div className="li-ceilings">
+          {[...byKind.entries()].map(([kind, rows]) => (
+            <div className="li-ceiling-group" key={kind}>
+              <h4 aria-level={3}>{KIND_LABELS[kind]}</h4>
+              {rows.map((limit) => (
+                <CeilingRow
+                  key={`${limit.kind}-${limit.window}`}
+                  limit={limit}
+                  throttleFactor={signals.acceptance.throttleFactor}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </section>
 
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>How actions are spaced out</h3>
-          <p>Under every ceiling there is a second question — not how many, but when. Bursts are what get noticed.</p>
+      <section className="page-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>How actions are spaced out</h3>
+            <p>
+              Under every ceiling there is a second question — not how many, but when. Bursts are
+              what get noticed.
+            </p>
+          </div>
+          <ConfidenceTag
+            confidence={signals.rhythm.confidence}
+            source={sourceLabel(signals.rhythm.confidence)}
+          />
         </div>
-        <ConfidenceTag confidence={signals.rhythm.confidence} source={sourceLabel(signals.rhythm.confidence)} />
-      </div>
-      <div className="li-stat-row">
-        <LiStat
-          label="Working hours"
-          value="Each account’s own"
-          detail={<>per account, in its own timezone. Falls back to {fallbackWindowLabel(signals.rhythm)} only when none is configured</>}
-        />
-        <LiStat
-          label="Gap between actions"
-          value={`${signals.rhythm.actionGapSeconds.min}–${signals.rhythm.actionGapSeconds.max}s`}
-          detail="randomised and spread across the day — never back-to-back"
-        />
-        <LiStat
-          label="Weekends"
-          value={signals.rhythm.weekendFactor === 0 ? 'Left empty' : `×${signals.rhythm.weekendFactor}`}
-          detail={signals.rhythm.weekendFactor === 0
-            ? 'unless you tick Saturday or Sunday, which then counts as an ordinary working day'
-            : 'reduced weekend volume'}
-        />
-        <LiStat
-          label="Days Trevra holds back"
-          value={signals.rhythm.enforcementScanWeekdays.map((day) => WEEKDAY_SHORT[day]).join(' · ')}
-          detail="restrictions cluster here, so a day’s maximum is never scheduled on one — capped, not skipped, to avoid a sawtooth"
-        />
-      </div>
-    </section>
-  </div>;
+        <div className="li-stat-row">
+          <LiStat
+            label="Working hours"
+            value="Each account’s own"
+            detail={
+              <>
+                per account, in its own timezone. Falls back to{' '}
+                {fallbackWindowLabel(signals.rhythm)} only when none is configured
+              </>
+            }
+          />
+          <LiStat
+            label="Gap between actions"
+            value={`${signals.rhythm.actionGapSeconds.min}–${signals.rhythm.actionGapSeconds.max}s`}
+            detail="randomised and spread across the day — never back-to-back"
+          />
+          <LiStat
+            label="Weekends"
+            value={
+              signals.rhythm.weekendFactor === 0 ? 'Left empty' : `×${signals.rhythm.weekendFactor}`
+            }
+            detail={
+              signals.rhythm.weekendFactor === 0
+                ? 'unless you tick Saturday or Sunday, which then counts as an ordinary working day'
+                : 'reduced weekend volume'
+            }
+          />
+          <LiStat
+            label="Days Trevra holds back"
+            value={signals.rhythm.enforcementScanWeekdays
+              .map((day) => WEEKDAY_SHORT[day])
+              .join(' · ')}
+            detail="restrictions cluster here, so a day’s maximum is never scheduled on one — capped, not skipped, to avoid a sawtooth"
+          />
+        </div>
+      </section>
+    </div>
+  );
 }
 
 /* =========================================================================
@@ -1277,7 +1505,16 @@ const ANSWER_TONE_ICON = {
   danger: <CircleAlert size={19} />
 } as const;
 
-function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, campaignFractions, used, now }: {
+function AccountPanel({
+  account,
+  report,
+  ranges,
+  fallbackWindow,
+  campaigns,
+  campaignFractions,
+  used,
+  now
+}: {
   account: AccountView;
   /** Passed only for the account `GET /api/linkedin/limits` reports on. */
   report: LinkedInLimitsReport | null;
@@ -1317,13 +1554,23 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
 
   const running = campaigns
     .filter((campaign) => campaign.status === 'running')
-    .map((campaign) => ({ campaign, ramp: campaignRampOf(campaign.startedAt, now, campaignFractions) }))
-    .filter((entry): entry is { campaign: ManagedCampaign; ramp: CampaignRamp } => entry.ramp !== null);
+    .map((campaign) => ({
+      campaign,
+      ramp: campaignRampOf(campaign.startedAt, now, campaignFractions)
+    }))
+    .filter(
+      (entry): entry is { campaign: ManagedCampaign; ramp: CampaignRamp } => entry.ramp !== null
+    );
   const slowest = running.reduce<{ campaign: ManagedCampaign; ramp: CampaignRamp } | null>(
-    (lowest, entry) => (lowest === null || entry.ramp.fraction < lowest.ramp.fraction ? entry : lowest), null);
+    (lowest, entry) =>
+      lowest === null || entry.ramp.fraction < lowest.ramp.fraction ? entry : lowest,
+    null
+  );
 
-  const dayLimit = (kind: PacedKind) => report?.limits.find((limit) => limit.kind === kind && limit.window === 'day') ?? null;
-  const monthLimit = (kind: PacedKind) => report?.limits.find((limit) => limit.kind === kind && limit.window === 'month') ?? null;
+  const dayLimit = (kind: PacedKind) =>
+    report?.limits.find((limit) => limit.kind === kind && limit.window === 'day') ?? null;
+  const monthLimit = (kind: PacedKind) =>
+    report?.limits.find((limit) => limit.kind === kind && limit.window === 'month') ?? null;
   const usedOf = (kinds: readonly PacedKind[]): number | null => {
     if (report) return kinds.reduce((total, kind) => total + (dayLimit(kind)?.used ?? 0), 0);
     if (!used) return null;
@@ -1345,7 +1592,7 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
     // read rather than re-decided. Absent (a week or month row, or an older
     // payload) means nothing said otherwise, which is the band.
     return limit.ceilingSource === 'operator' || limit.ceilingSource === 'operator-override'
-      ? limit.operatorLimit ?? limit.bandCeiling
+      ? (limit.operatorLimit ?? limit.bandCeiling)
       : limit.bandCeiling;
   };
 
@@ -1363,7 +1610,13 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
   const ceilingOf = (kind: PacedKind, yours: number | null): number | null =>
     dayLimit(kind)?.ceiling ?? yours;
 
-  const capOf = (key: string, label: string, kinds: readonly PacedKind[], yours: number | null, range: LinkedInOperatorRange): AccountCap => ({
+  const capOf = (
+    key: string,
+    label: string,
+    kinds: readonly PacedKind[],
+    yours: number | null,
+    range: LinkedInOperatorRange
+  ): AccountCap => ({
     key,
     label,
     kinds,
@@ -1386,9 +1639,10 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
         // The published InMail quota is the live case and it is a MONTH, so it
         // belongs beside the daily number rather than under it: a day with room
         // left in it still refuses an InMail once the month is spent.
-        alsoBoundBy: month === null
-          ? null
-          : `${month.ceiling} in ${WINDOW_LABELS[month.window]}${month.confidence === 'HARD FACT' ? ', published by LinkedIn' : ''}`
+        alsoBoundBy:
+          month === null
+            ? null
+            : `${month.ceiling} in ${WINDOW_LABELS[month.window]}${month.confidence === 'HARD FACT' ? ', published by LinkedIn' : ''}`
       };
     })
   });
@@ -1398,9 +1652,27 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
      shown. The ranges are the server's own, so “editable 0-75” cannot drift
      from what the route will accept. */
   const caps: AccountCap[] = [
-    capOf('invite', 'Connection invites', ['invite'], config?.dailyInviteLimit ?? null, ranges.invite),
-    capOf('message', 'Messages', MESSAGE_POOL_KINDS, config?.dailyMessageLimit ?? null, ranges.message),
-    capOf('profile_view', 'Profile views', ['profile_view'], config?.dailyProfileViewLimit ?? null, ranges.profileView),
+    capOf(
+      'invite',
+      'Connection invites',
+      ['invite'],
+      config?.dailyInviteLimit ?? null,
+      ranges.invite
+    ),
+    capOf(
+      'message',
+      'Messages',
+      MESSAGE_POOL_KINDS,
+      config?.dailyMessageLimit ?? null,
+      ranges.message
+    ),
+    capOf(
+      'profile_view',
+      'Profile views',
+      ['profile_view'],
+      config?.dailyProfileViewLimit ?? null,
+      ranges.profileView
+    ),
     capOf('follow', 'Follows', ['follow'], config?.dailyFollowLimit ?? null, ranges.follow)
   ];
 
@@ -1412,7 +1684,8 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
      the two ramps are then two separate checks with the stricter one binding,
      which is why they are compared as counts below rather than as fractions. */
   const campaignBase = baseOf('invite', invites.yours);
-  const campaignInvites = slowest && campaignBase !== null ? Math.floor(campaignBase * slowest.ramp.fraction) : null;
+  const campaignInvites =
+    slowest && campaignBase !== null ? Math.floor(campaignBase * slowest.ramp.fraction) : null;
   /** Whichever ramp actually binds today, as one number. */
   const invitesToday = smallest([inviteCeiling, campaignInvites]);
 
@@ -1428,9 +1701,11 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
       return {
         tone: 'danger' as const,
         title: 'You paused this account. Nothing goes out.',
-        detail: account.pausedReason
-          ? <>The note you left: “{account.pausedReason}”.</>
-          : <>No reason was recorded.</>,
+        detail: account.pausedReason ? (
+          <>The note you left: “{account.pausedReason}”.</>
+        ) : (
+          <>No reason was recorded.</>
+        ),
         lifts: <>When you resume it. The Stop bar at the top of every screen does both.</>
       };
     }
@@ -1438,24 +1713,59 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
       return {
         tone: 'danger' as const,
         title: 'This account can never act: no working days are set.',
-        detail: <>Trevra only acts on the days you tick for an account, and none are ticked, so every automated action is refused before any limit is consulted.</>,
-        lifts: <>When you tick at least one day on <a className="li-link" href="/setup/seat" onClick={openThisAccount}>this account’s screen</a>.</>
+        detail: (
+          <>
+            Trevra only acts on the days you tick for an account, and none are ticked, so every
+            automated action is refused before any limit is consulted.
+          </>
+        ),
+        lifts: (
+          <>
+            When you tick at least one day on{' '}
+            <a className="li-link" href="/setup/seat" onClick={openThisAccount}>
+              this account’s screen
+            </a>
+            .
+          </>
+        )
       };
     }
     if (hours?.state === 'closed' && config) {
       return {
         tone: 'warn' as const,
         title: `Outside this account’s hours. Nothing goes out until ${hours.opens}.`,
-        detail: <>You set it to work {workingDaysLabel(config.workingDays)}, {clock(config.workStartMinute)}–{clock(config.workEndMinute)}, {config.timezone}. Actions are spread across that window, not fired at the open.</>,
-        lifts: <>{hours.opens}, {config.timezone}.</>
+        detail: (
+          <>
+            You set it to work {workingDaysLabel(config.workingDays)},{' '}
+            {clock(config.workStartMinute)}–{clock(config.workEndMinute)}, {config.timezone}.
+            Actions are spread across that window, not fired at the open.
+          </>
+        ),
+        lifts: (
+          <>
+            {hours.opens}, {config.timezone}.
+          </>
+        )
       };
     }
     if (report?.signals.acceptance.throttled && report.signals.acceptance.rate !== null) {
       return {
         tone: 'danger' as const,
         title: `Too few invites are being accepted, so Trevra ${throttleVerb(throttleFactor, 'this account’s volume', true)}.`,
-        detail: <>{report.signals.acceptance.accepted} of {report.signals.acceptance.decided} answered invites were accepted over {report.signals.acceptance.windowDays} days — {Math.round(report.signals.acceptance.rate * 100)}%, under the {Math.round(report.signals.acceptance.floor * 100)}% floor.</>,
-        lifts: <>When acceptance climbs back over the floor. Better targeting lifts it; more invites do not.</>
+        detail: (
+          <>
+            {report.signals.acceptance.accepted} of {report.signals.acceptance.decided} answered
+            invites were accepted over {report.signals.acceptance.windowDays} days —{' '}
+            {Math.round(report.signals.acceptance.rate * 100)}%, under the{' '}
+            {Math.round(report.signals.acceptance.floor * 100)}% floor.
+          </>
+        ),
+        lifts: (
+          <>
+            When acceptance climbs back over the floor. Better targeting lifts it; more invites do
+            not.
+          </>
+        )
       };
     }
     /* BOTH RAMPS ARE LIVE AT ONCE and they are two separate checks. The
@@ -1464,32 +1774,78 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
        an operator is feeling today, and they are compared as COUNTS: they are
        percentages of the same base, so only the number each one lands on is
        comparable once the floors are applied. */
-    const campaignBinds = slowest !== null && campaignInvites !== null
-      && (inviteCeiling === null || campaignInvites < inviteCeiling);
+    const campaignBinds =
+      slowest !== null &&
+      campaignInvites !== null &&
+      (inviteCeiling === null || campaignInvites < inviteCeiling);
     if (campaignBinds && slowest) {
       return {
         tone: 'warn' as const,
         title: `“${slowest.campaign.name}” is on day ${slowest.ramp.day} of its own ${slowest.ramp.steps}-day warm-up.`,
-        detail: <>
-          A new campaign runs at {Math.round(slowest.ramp.fraction * 100)}% of this account’s daily ceiling on day
-          {' '}{slowest.ramp.day}{campaignInvites === null ? '' : `, which is ${campaignInvites} invite${campaignInvites === 1 ? '' : 's'} today`}. It steps up each day to full speed on day {slowest.ramp.steps}. This is the single most common reason day one looks broken.
-          {multiplier < 1 && <> The account is warming up too, at {Math.round(multiplier * 100)}%{inviteCeiling === null ? '' : `, which allows ${inviteCeiling}`}; whichever allows less is what you get.</>}
-        </>,
-        lifts: slowest.ramp.nextStepAt === null
-          ? <>It is already at full speed.</>
-          : <>{moment(slowest.ramp.nextStepAt, config?.timezone)} — day {slowest.ramp.day + 1}, at {Math.round((campaignFractions[Math.min(slowest.ramp.day + 1, slowest.ramp.steps) - 1] ?? 1) * 100)}%.</>
+        detail: (
+          <>
+            A new campaign runs at {Math.round(slowest.ramp.fraction * 100)}% of this account’s
+            daily ceiling on day {slowest.ramp.day}
+            {campaignInvites === null
+              ? ''
+              : `, which is ${campaignInvites} invite${campaignInvites === 1 ? '' : 's'} today`}
+            . It steps up each day to full speed on day {slowest.ramp.steps}. This is the single
+            most common reason day one looks broken.
+            {multiplier < 1 && (
+              <>
+                {' '}
+                The account is warming up too, at {Math.round(multiplier * 100)}%
+                {inviteCeiling === null ? '' : `, which allows ${inviteCeiling}`}; whichever allows
+                less is what you get.
+              </>
+            )}
+          </>
+        ),
+        lifts:
+          slowest.ramp.nextStepAt === null ? (
+            <>It is already at full speed.</>
+          ) : (
+            <>
+              {moment(slowest.ramp.nextStepAt, config?.timezone)} — day {slowest.ramp.day + 1}, at{' '}
+              {Math.round(
+                (campaignFractions[Math.min(slowest.ramp.day + 1, slowest.ramp.steps) - 1] ?? 1) *
+                  100
+              )}
+              %.
+            </>
+          )
       };
     }
     if (multiplier < 1) {
       return {
         tone: 'warn' as const,
         title: `This account is in warm-up week ${week} of ${weeks}.`,
-        detail: <>
-          It may use {Math.round(multiplier * 100)}% of {override ? 'your own ceilings' : 'Trevra’s limits'}{inviteCeiling === null ? '' : `, which is ${inviteCeiling} invite${inviteCeiling === 1 ? '' : 's'} in any 24 hours`}. Profile views, follows, likes and endorsements are not reduced — they are what the warm-up consists of.
-        </>,
-        lifts: weekEndsAt === null
-          ? <>When week {week + 1} starts. The clock runs from when this account started sending through Trevra.</>
-          : <>{moment(weekEndsAt, config?.timezone)}, when week {week + 1} starts{rampEndsAt === null ? '' : `; the ramp is over on ${moment(rampEndsAt, config?.timezone)}`}.</>
+        detail: (
+          <>
+            It may use {Math.round(multiplier * 100)}% of{' '}
+            {override ? 'your own ceilings' : 'Trevra’s limits'}
+            {inviteCeiling === null
+              ? ''
+              : `, which is ${inviteCeiling} invite${inviteCeiling === 1 ? '' : 's'} in any 24 hours`}
+            . Profile views, follows, likes and endorsements are not reduced — they are what the
+            warm-up consists of.
+          </>
+        ),
+        lifts:
+          weekEndsAt === null ? (
+            <>
+              When week {week + 1} starts. The clock runs from when this account started sending
+              through Trevra.
+            </>
+          ) : (
+            <>
+              {moment(weekEndsAt, config?.timezone)}, when week {week + 1} starts
+              {rampEndsAt === null
+                ? ''
+                : `; the ramp is over on ${moment(rampEndsAt, config?.timezone)}`}
+              .
+            </>
+          )
       };
     }
     /* WHAT IS FULL -- pool and per-kind alike, because they are two
@@ -1506,16 +1862,24 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
         ceiling: effectiveOf(cap),
         // A pool has no Trevra band to name, and no single `ceilingSource`
         // either; a single-kind cap's are its own.
-        band: cap.kinds.length > 1 ? null : cap.detail[0]?.band ?? null,
-        source: cap.kinds.length > 1 ? null : cap.detail[0]?.source ?? null
+        band: cap.kinds.length > 1 ? null : (cap.detail[0]?.band ?? null),
+        source: cap.kinds.length > 1 ? null : (cap.detail[0]?.source ?? null)
       },
       ...(cap.kinds.length > 1
         ? cap.detail.map((entry) => ({
-          cap, pooled: false, label: KIND_LABELS[entry.kind], used: entry.used, ceiling: entry.ceiling, band: entry.band, source: entry.source
-        }))
+            cap,
+            pooled: false,
+            label: KIND_LABELS[entry.kind],
+            used: entry.used,
+            ceiling: entry.ceiling,
+            band: entry.band,
+            source: entry.source
+          }))
         : [])
     ]);
-    const full = gates.find((gate) => gate.used !== null && gate.ceiling !== null && gate.used >= gate.ceiling);
+    const full = gates.find(
+      (gate) => gate.used !== null && gate.ceiling !== null && gate.used >= gate.ceiling
+    );
     if (full) {
       const ceiling = full.ceiling ?? 0;
       const band = full.band;
@@ -1527,14 +1891,42 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
         // Same three cases as the chip, and from the same field for the same
         // reason: the row knows which number it was built from, the seat flag
         // only knows what the operator opted into.
-        detail: full.pooled
-          ? <>That ceiling is your own setting of {full.cap.yours} per 24 hours, counted over direct messages, replies and InMail <b>together</b> — one pool, the way the check counts it. Trevra’s own numbers for each of those three are separate and are below.</>
-          : full.source === 'operator-override'
-            ? <>That ceiling is your own setting of {full.cap.yours} per 24 hours, which you put ahead of Trevra’s researched band of {band ?? '—'}{multiplier < 1 ? `, and the warm-up week takes it to ${ceiling}` : ''}.</>
-            : full.source === 'operator' || (full.source === null && full.cap.yours !== null && (band === null || full.cap.yours <= band))
-              ? <>That ceiling is your own setting of {full.cap.yours} per 24 hours{band === null ? '' : `, which is the stricter of the two — Trevra’s band here is ${band}`}{multiplier < 1 ? `, and the warm-up week takes it to ${ceiling}` : ''}.</>
-              : <>That ceiling is Trevra’s own limit for this account. Your setting of {full.cap.yours ?? '—'} per 24 hours is the higher of the two, so it is not what bound this.</>,
-        lifts: <>Gradually, as the oldest of those actions ages past 24 hours. This window rolls; it does not reset at midnight.</>
+        detail: full.pooled ? (
+          <>
+            That ceiling is your own setting of {full.cap.yours} per 24 hours, counted over direct
+            messages, replies and InMail <b>together</b> — one pool, the way the check counts it.
+            Trevra’s own numbers for each of those three are separate and are below.
+          </>
+        ) : full.source === 'operator-override' ? (
+          <>
+            That ceiling is your own setting of {full.cap.yours} per 24 hours, which you put ahead
+            of Trevra’s researched band of {band ?? '—'}
+            {multiplier < 1 ? `, and the warm-up week takes it to ${ceiling}` : ''}.
+          </>
+        ) : full.source === 'operator' ||
+          (full.source === null &&
+            full.cap.yours !== null &&
+            (band === null || full.cap.yours <= band)) ? (
+          <>
+            That ceiling is your own setting of {full.cap.yours} per 24 hours
+            {band === null
+              ? ''
+              : `, which is the stricter of the two — Trevra’s band here is ${band}`}
+            {multiplier < 1 ? `, and the warm-up week takes it to ${ceiling}` : ''}.
+          </>
+        ) : (
+          <>
+            That ceiling is Trevra’s own limit for this account. Your setting of{' '}
+            {full.cap.yours ?? '—'} per 24 hours is the higher of the two, so it is not what bound
+            this.
+          </>
+        ),
+        lifts: (
+          <>
+            Gradually, as the oldest of those actions ages past 24 hours. This window rolls; it does
+            not reset at midnight.
+          </>
+        )
       };
     }
     // Nothing is binding. What may be claimed here depends on what was read:
@@ -1543,109 +1935,209 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
     const counted = caps.every((cap) => cap.used !== null);
     return {
       tone: 'ok' as const,
-      title: counted ? 'Nothing is holding this account back right now.' : 'Nothing on Trevra’s side is holding this account back.',
-      detail: <>
-        It is inside its working hours and past its warm-up{report ? ', and it is accepting invites at a healthy rate' : ''}
-        {counted ? ', with room left under every ceiling' : ''}. What goes out from here is what the running campaigns have queued.
-        {!counted && <> Its last 24 hours could not be counted on this screen, so the numbers above are incomplete.</>}
-      </>,
+      title: counted
+        ? 'Nothing is holding this account back right now.'
+        : 'Nothing on Trevra’s side is holding this account back.',
+      detail: (
+        <>
+          It is inside its working hours and past its warm-up
+          {report ? ', and it is accepting invites at a healthy rate' : ''}
+          {counted ? ', with room left under every ceiling' : ''}. What goes out from here is what
+          the running campaigns have queued.
+          {!counted && (
+            <>
+              {' '}
+              Its last 24 hours could not be counted on this screen, so the numbers above are
+              incomplete.
+            </>
+          )}
+        </>
+      ),
       lifts: <>Nothing is waiting on a clock.</>
     };
   })();
-  return <section className="page-panel">
-    <div className="section-heading">
-      <div>
-        <h3 aria-level={2}>{account.label}</h3>
-        <p>
-          {config
-            ? <>Works {workingDaysLabel(config.workingDays) || 'no days'}, {clock(config.workStartMinute)}–{clock(config.workEndMinute)}, {config.timezone}.{' '}
-              {hours?.state === 'open' ? `Inside its hours now, until ${hours.until}.`
-                : hours?.state === 'closed' ? `Quiet until ${hours.opens}.`
-                  : hours?.state === 'unknown' ? 'This browser does not recognise that timezone, so “now” could not be placed in it.'
-                    : 'No working day is ticked, so nothing is ever scheduled.'}</>
-            : <>Its working days, hours and per-account ceilings could not be read, so only Trevra’s own limits are shown for it.</>}
-        </p>
+  return (
+    <section className="page-panel">
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}>{account.label}</h3>
+          <p>
+            {config ? (
+              <>
+                Works {workingDaysLabel(config.workingDays) || 'no days'},{' '}
+                {clock(config.workStartMinute)}–{clock(config.workEndMinute)}, {config.timezone}.{' '}
+                {hours?.state === 'open'
+                  ? `Inside its hours now, until ${hours.until}.`
+                  : hours?.state === 'closed'
+                    ? `Quiet until ${hours.opens}.`
+                    : hours?.state === 'unknown'
+                      ? 'This browser does not recognise that timezone, so “now” could not be placed in it.'
+                      : 'No working day is ticked, so nothing is ever scheduled.'}
+              </>
+            ) : (
+              <>
+                Its working days, hours and per-account ceilings could not be read, so only Trevra’s
+                own limits are shown for it.
+              </>
+            )}
+          </p>
+        </div>
+        <PostureBadge posture={account.status} reason={account.pausedReason} />
       </div>
-      <PostureBadge posture={account.status} reason={account.pausedReason} />
-    </div>
 
-    <div className={`li-answer li-answer-${answer.tone}`}>
-      {ANSWER_TONE_ICON[answer.tone]}
-      <div>
-        <strong>{answer.title}</strong>
-        <p>{answer.detail}</p>
-        <p><b>Lifts:</b> {answer.lifts}</p>
+      <div className={`li-answer li-answer-${answer.tone}`}>
+        {ANSWER_TONE_ICON[answer.tone]}
+        <div>
+          <strong>{answer.title}</strong>
+          <p>{answer.detail}</p>
+          <p>
+            <b>Lifts:</b> {answer.lifts}
+          </p>
+        </div>
       </div>
-    </div>
 
-    <div className="li-caps">
-      {caps.map((cap) => <CapCell key={cap.key} cap={cap} />)}
-    </div>
-    <p className="panel-note">
-      <Hint label="How your numbers and Trevra’s band combine" trigger={<>How your numbers and Trevra’s band combine</>}>
-        {/* NOT “the smaller one always applies” any more, because for messages it
+      <details className="li-manual-fields">
+        <summary>
+          <Gauge size={13} /> Show ceilings, warm-up and band override
+        </summary>
+
+        <div className="li-caps">
+          {caps.map((cap) => (
+            <CapCell key={cap.key} cap={cap} />
+          ))}
+        </div>
+        <p className="panel-note">
+          <Hint
+            label="How your numbers and Trevra’s band combine"
+            trigger={<>How your numbers and Trevra’s band combine</>}
+          >
+            {/* NOT “the smaller one always applies” any more, because for messages it
             never was: your number is one pool over three kinds and Trevra's is
             per kind, so they are ceilings on two different quantities and both
             are checked. */}
-        Your numbers and Trevra’s researched band are <b>two ceilings — both have to pass</b>. Your messages number
-        pools direct messages, replies and InMail together; Trevra’s is per kind. Edit yours on{' '}
-        <a className="li-link" href="/setup/seat" onClick={openThisAccount}>this account’s screen</a>:{' '}
-        {caps.map((cap) => `${cap.label.toLowerCase()} ${cap.range.min}–${cap.range.max}`).join(', ')}
-        {caps.every((cap) => cap.range.min === 0) ? ', 0 turns an action off' : ''}. Every window here is the last 24
-        hours, rolling.
-        {!report && <> Trevra’s own limits for this account are applied on every action, but this screen can publish
-          them{' '}for the workspace’s first account only.</>}
-      </Hint>
-    </p>
-
-    <div className="li-facts">
-      <div className="li-fact">
-        <h4 aria-level={3}>When it may act</h4>
-        {config
-          ? <p>
-            <b>{workingDaysLabel(config.workingDays) || 'No days'}</b>, {clock(config.workStartMinute)}–{clock(config.workEndMinute)}, {config.timezone}.
-            Outside that, every automated action is refused — the planner and the check both read this same window.
-          </p>
-          : <p>Not readable for this account. Trevra falls back to {fallbackWindow}, and only when no account is configured at all.</p>}
-      </div>
-      <div className="li-fact">
-        <h4 aria-level={3}>Account warm-up</h4>
-        <p>
-          {week > weeks
-            ? <>Finished. This account is past its ramp, so {override ? 'your own ceilings apply in full' : 'Trevra’s full limits apply'}.</>
-            : <><b>Week {week} of {weeks}</b> — {Math.round(multiplier * 100)}% of {override ? 'your own ceilings' : 'Trevra’s limits'}{week === 1 ? ', and no invites or messages at all in week 1' : ''}.</>}
+            Your numbers and Trevra’s researched band are <b>two ceilings — both have to pass</b>.
+            Your messages number pools direct messages, replies and InMail together; Trevra’s is per
+            kind. Edit yours on{' '}
+            <a className="li-link" href="/setup/seat" onClick={openThisAccount}>
+              this account’s screen
+            </a>
+            :{' '}
+            {caps
+              .map((cap) => `${cap.label.toLowerCase()} ${cap.range.min}–${cap.range.max}`)
+              .join(', ')}
+            {caps.every((cap) => cap.range.min === 0) ? ', 0 turns an action off' : ''}. Every
+            window here is the last 24 hours, rolling.
+            {!report && (
+              <>
+                {' '}
+                Trevra’s own limits for this account are applied on every action, but this screen
+                can publish them for the workspace’s first account only.
+              </>
+            )}
+          </Hint>
         </p>
-        {week <= weeks && <p>
-          {weekEndsAt === null
-            ? <>Measured from when this account started sending through Trevra.</>
-            : <>Week {week + 1} starts {moment(weekEndsAt, config?.timezone)}{rampEndsAt === null ? '' : `, full limits ${moment(rampEndsAt, config?.timezone)}`}.</>}
-        </p>}
-      </div>
-      <div className="li-fact">
-        <h4 aria-level={3}>Campaign warm-up</h4>
-        {running.length === 0
-          ? <p>No campaign is running on this account, so only the account warm-up above applies.</p>
-          : <>
+
+        <div className="li-facts">
+          <div className="li-fact">
+            <h4 aria-level={3}>When it may act</h4>
+            {config ? (
+              <p>
+                <b>{workingDaysLabel(config.workingDays) || 'No days'}</b>,{' '}
+                {clock(config.workStartMinute)}–{clock(config.workEndMinute)}, {config.timezone}.
+                Outside that, every automated action is refused — the planner and the check both
+                read this same window.
+              </p>
+            ) : (
+              <p>
+                Not readable for this account. Trevra falls back to {fallbackWindow}, and only when
+                no account is configured at all.
+              </p>
+            )}
+          </div>
+          <div className="li-fact">
+            <h4 aria-level={3}>Account warm-up</h4>
             <p>
-              {running.map((entry) => `“${entry.campaign.name}” day ${entry.ramp.day} of ${entry.ramp.steps} (${Math.round(entry.ramp.fraction * 100)}%)`).join(' · ')}.
+              {week > weeks ? (
+                <>
+                  Finished. This account is past its ramp, so{' '}
+                  {override ? 'your own ceilings apply in full' : 'Trevra’s full limits apply'}.
+                </>
+              ) : (
+                <>
+                  <b>
+                    Week {week} of {weeks}
+                  </b>{' '}
+                  — {Math.round(multiplier * 100)}% of{' '}
+                  {override ? 'your own ceilings' : 'Trevra’s limits'}
+                  {week === 1 ? ', and no invites or messages at all in week 1' : ''}.
+                </>
+              )}
             </p>
-            <p>
-              {/* The steps are PRINTED FROM THE SERVER'S OWN LIST rather than
+            {week <= weeks && (
+              <p>
+                {weekEndsAt === null ? (
+                  <>Measured from when this account started sending through Trevra.</>
+                ) : (
+                  <>
+                    Week {week + 1} starts {moment(weekEndsAt, config?.timezone)}
+                    {rampEndsAt === null
+                      ? ''
+                      : `, full limits ${moment(rampEndsAt, config?.timezone)}`}
+                    .
+                  </>
+                )}
+              </p>
+            )}
+          </div>
+          <div className="li-fact">
+            <h4 aria-level={3}>Campaign warm-up</h4>
+            {running.length === 0 ? (
+              <p>
+                No campaign is running on this account, so only the account warm-up above applies.
+              </p>
+            ) : (
+              <>
+                <p>
+                  {running
+                    .map(
+                      (entry) =>
+                        `“${entry.campaign.name}” day ${entry.ramp.day} of ${entry.ramp.steps} (${Math.round(entry.ramp.fraction * 100)}%)`
+                    )
+                    .join(' · ')}
+                  .
+                </p>
+                <p>
+                  {/* The steps are PRINTED FROM THE SERVER'S OWN LIST rather than
                   typed out as “20/40/60/80/100%”, which was a literal sitting
                   beside a client-side re-implementation of the same
                   arithmetic — two copies of one policy, neither of them the
                   one the runner reads. */}
-              A campaign’s first {campaignFractions.length} days run at
-              {' '}{campaignFractions.map((fraction) => `${Math.round(fraction * 100)}%`).join('/')} of this account’s
-              daily ceiling, whatever the account’s own warm-up says. Both apply and the stricter one binds
-              {invitesToday === null ? '' : `, which today is ${invitesToday} invite${invitesToday === 1 ? '' : 's'}`}.
-            </p>
-          </>}
-      </div>
-    </div>
+                  A campaign’s first {campaignFractions.length} days run at{' '}
+                  {campaignFractions.map((fraction) => `${Math.round(fraction * 100)}%`).join('/')}{' '}
+                  of this account’s daily ceiling, whatever the account’s own warm-up says. Both
+                  apply and the stricter one binds
+                  {invitesToday === null
+                    ? ''
+                    : `, which today is ${invitesToday} invite${invitesToday === 1 ? '' : 's'}`}
+                  .
+                </p>
+              </>
+            )}
+          </div>
+        </div>
 
-    {config && <BandOverride account={config} caps={caps} week={week} weeks={weeks} rampDays={campaignFractions.length} />}
-  </section>;
+        {config && (
+          <BandOverride
+            account={config}
+            caps={caps}
+            week={week}
+            weeks={weeks}
+            rampDays={campaignFractions.length}
+          />
+        )}
+      </details>
+    </section>
+  );
 }
 
 /* =========================================================================
@@ -1673,7 +2165,13 @@ function AccountPanel({ account, report, ranges, fallbackWindow, campaigns, camp
  * opens a drawer, for the same reason the seat's resume does and its pause
  * does not.
  * ====================================================================== */
-function BandOverride({ account, caps, week, weeks, rampDays }: {
+function BandOverride({
+  account,
+  caps,
+  week,
+  weeks,
+  rampDays
+}: {
   account: LinkedInSeat;
   caps: readonly AccountCap[];
   week: number;
@@ -1697,67 +2195,118 @@ function BandOverride({ account, caps, week, weeks, rampDays }: {
     } catch (error) {
       // Each of these names what did NOT change, which is the only thing an
       // operator can act on: the account is still on whichever ceiling it was.
-      setFailure(errorMessage(error, next
-        ? 'Unable to record that. Nothing changed — Trevra’s band is still what binds on this account.'
-        : 'Unable to put Trevra’s band back. Nothing changed — your own numbers are still what bind on this account.'));
-    } finally { setBusy(false); }
+      setFailure(
+        errorMessage(
+          error,
+          next
+            ? 'Unable to record that. Nothing changed — Trevra’s band is still what binds on this account.'
+            : 'Unable to put Trevra’s band back. Nothing changed — your own numbers are still what bind on this account.'
+        )
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
   /** Both numbers for one cap, in one clause. The pool is stated as a pool. */
-  const comparison = (cap: AccountCap) => cap.kinds.length > 1
-    ? `${cap.label.toLowerCase()}, your pool of ${cap.yours ?? '—'} against Trevra’s per-kind bands of ${cap.detail.map((entry) => `${entry.band ?? '—'} ${KIND_LABELS[entry.kind].toLowerCase()}`).join(', ')}`
-    : `${cap.label.toLowerCase()}, yours ${cap.yours ?? '—'} against Trevra’s band of ${cap.detail[0]?.band ?? '—'}`;
+  const comparison = (cap: AccountCap) =>
+    cap.kinds.length > 1
+      ? `${cap.label.toLowerCase()}, your pool of ${cap.yours ?? '—'} against Trevra’s per-kind bands of ${cap.detail.map((entry) => `${entry.band ?? '—'} ${KIND_LABELS[entry.kind].toLowerCase()}`).join(', ')}`
+      : `${cap.label.toLowerCase()}, yours ${cap.yours ?? '—'} against Trevra’s band of ${cap.detail[0]?.band ?? '—'}`;
   const comparisons = caps.map(comparison).join('; ');
   const rampsStillApply = `Both warm-ups still apply — the account ramp (${week > weeks ? `finished, ${weeks} weeks` : `week ${week} of ${weeks}`}) and each campaign’s ${rampDays}-day ramp multiply whichever ceiling binds. This raises the base the ramps are a percentage of; it never turns a ramp off.`;
 
-  return <>
-    {failure && <div className="error-banner">{failure}</div>}
+  return (
+    <>
+      {failure && <div className="error-banner">{failure}</div>}
 
-    {on
-      ? <div className="li-warn-block">
-        <CircleAlert size={18} />
-        <div>
-          <strong>Your own ceilings bind on this account, ahead of Trevra’s researched band.</strong>
-          <p>
-            You set this. Where the two differ — {comparisons} — yours is what the check uses, higher or lower.
-            Trevra’s band is the researched safe number; yours is your own risk — LinkedIn can restrict an account
-            that stayed inside every number on this screen.
-          </p>
-          <p>{rampsStillApply}</p>
-          <button className="secondary-button" type="button" disabled={busy} onClick={() => void write(false)}>
-            {busy ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />} Put Trevra’s band back
-          </button>
+      {on ? (
+        <div className="li-warn-block">
+          <CircleAlert size={18} />
+          <div>
+            <strong>
+              Your own ceilings bind on this account, ahead of Trevra’s researched band.
+            </strong>
+            <p>
+              You set this. Where the two differ — {comparisons} — yours is what the check uses,
+              higher or lower. Trevra’s band is the researched safe number; yours is your own risk —
+              LinkedIn can restrict an account that stayed inside every number on this screen.
+            </p>
+            <p>{rampsStillApply}</p>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={busy}
+              onClick={() => void write(false)}
+            >
+              {busy ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />} Put
+              Trevra’s band back
+            </button>
+          </div>
         </div>
-      </div>
-      : <>
-        <p className="panel-note">
-          <b>Trevra’s researched band binds on this account</b> wherever it is stricter — {comparisons}. That’s the
-          safe default: the band is what research says keeps an account alive; a settings field is a preference, not
-          evidence. Know this account and want your own numbers to bind instead? Say so — it’s your account and your
-          risk, and it’s recorded here.
-        </p>
-        <button className="secondary-button" type="button" disabled={busy} onClick={() => setPending(true)}>
-          <Settings2 size={14} /> Use my own ceilings on this account
-        </button>
-      </>}
+      ) : (
+        <>
+          <p className="panel-note">
+            <b>Trevra’s researched band binds on this account</b> wherever it is stricter —{' '}
+            {comparisons}. That’s the safe default: the band is what research says keeps an account
+            alive; a settings field is a preference, not evidence. Know this account and want your
+            own numbers to bind instead? Say so — it’s your account and your risk, and it’s recorded
+            here.
+          </p>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busy}
+            onClick={() => setPending(true)}
+          >
+            <Settings2 size={14} /> Use my own ceilings on this account
+          </button>
+        </>
+      )}
 
-    {pending && <ConfirmDrawer
-      title="Let your own ceilings bind instead of Trevra’s band?"
-      tone="danger"
-      body={<>
-        <p>Right now Trevra’s band binds wherever it is stricter: {comparisons}. Turn this on and your own numbers bind instead, whatever they are.</p>
-        <p><b>Trevra’s band is the researched safe number. Yours is your own risk.</b> The band came from practitioners running their own accounts; the field you typed is a preference. LinkedIn can restrict an account that stayed inside every number on this screen, and it will not ask which of the two you chose.</p>
-        <p>{rampsStillApply}</p>
-        <p>It lifts the band and nothing else. The rolling 7-day and 30-day windows, the day-over-day change limit, the acceptance floor, this account’s working days and hours, LinkedIn’s published InMail quota and the outstanding-invite backlog are all unchanged and can all still refuse an action.</p>
-        <p>It is stored on this account, so it stays visible as a decision somebody made rather than a setting that drifted.</p>
-      </>}
-      confirmLabel="Use my own ceilings"
-      busy={busy}
-      error={failure || null}
-      onCancel={() => { if (!busy) { setPending(false); setFailure(''); } }}
-      onConfirm={() => void write(true)}
-    />}
-  </>;
+      {pending && (
+        <ConfirmDrawer
+          title="Let your own ceilings bind instead of Trevra’s band?"
+          tone="danger"
+          body={
+            <>
+              <p>
+                Right now Trevra’s band binds wherever it is stricter: {comparisons}. Turn this on
+                and your own numbers bind instead, whatever they are.
+              </p>
+              <p>
+                <b>Trevra’s band is the researched safe number. Yours is your own risk.</b> The band
+                came from practitioners running their own accounts; the field you typed is a
+                preference. LinkedIn can restrict an account that stayed inside every number on this
+                screen, and it will not ask which of the two you chose.
+              </p>
+              <p>{rampsStillApply}</p>
+              <p>
+                It lifts the band and nothing else. The rolling 7-day and 30-day windows, the
+                day-over-day change limit, the acceptance floor, this account’s working days and
+                hours, LinkedIn’s published InMail quota and the outstanding-invite backlog are all
+                unchanged and can all still refuse an action.
+              </p>
+              <p>
+                It is stored on this account, so it stays visible as a decision somebody made rather
+                than a setting that drifted.
+              </p>
+            </>
+          }
+          confirmLabel="Use my own ceilings"
+          busy={busy}
+          error={failure || null}
+          onCancel={() => {
+            if (!busy) {
+              setPending(false);
+              setFailure('');
+            }
+          }}
+          onConfirm={() => void write(true)}
+        />
+      )}
+    </>
+  );
 }
 
 /** The smallest number that is actually known. Null when none of them is. */
@@ -1776,14 +2325,15 @@ function smallest(values: readonly (number | null)[]): number | null {
  * alone.
  */
 const effectiveOf = (cap: AccountCap): number | null =>
-  cap.kinds.length > 1 ? cap.yours : cap.detail[0]?.ceiling ?? cap.yours;
+  cap.kinds.length > 1 ? cap.yours : (cap.detail[0]?.ceiling ?? cap.yours);
 
 function CapCell({ cap }: { cap: AccountCap }) {
   const ceiling = effectiveOf(cap);
-  const share = ceiling === null || ceiling === 0 || cap.used === null ? 0 : Math.min(1, cap.used / ceiling);
+  const share =
+    ceiling === null || ceiling === 0 || cap.used === null ? 0 : Math.min(1, cap.used / ceiling);
   const spent = ceiling !== null && cap.used !== null && cap.used >= ceiling;
   const pooled = cap.kinds.length > 1;
-  const band = pooled ? null : cap.detail[0]?.band ?? null;
+  const band = pooled ? null : (cap.detail[0]?.band ?? null);
 
   /* WHICH OF THE TWO IS BINDING, taken from the server's own `ceilingSource`
      where it sent one. That field is per KIND, and the seat-level override
@@ -1793,39 +2343,69 @@ function CapCell({ cap }: { cap: AccountCap }) {
 
      The pool is none of those cases: it is the operator's alone, because there
      is no pooled Trevra figure for it to be the stricter of. */
-  const source = pooled ? null : cap.detail[0]?.source ?? null;
-  const binds = pooled ? 'Trevra’s are per kind, below'
-    : source === 'operator-override' ? 'yours binds, ahead of the band'
-      : source === 'operator' ? 'yours applies, the stricter one'
-        : source === 'band' ? 'Trevra’s applies'
-          : cap.override && cap.yours !== null ? 'yours binds, ahead of the band'
-            : cap.yours === null ? 'Trevra’s applies'
-              : band === null ? 'the smaller of the two applies'
-                : cap.yours === band ? 'both agree'
-                  : cap.yours < band ? 'yours applies' : 'Trevra’s applies';
+  const source = pooled ? null : (cap.detail[0]?.source ?? null);
+  const binds = pooled
+    ? 'Trevra’s are per kind, below'
+    : source === 'operator-override'
+      ? 'yours binds, ahead of the band'
+      : source === 'operator'
+        ? 'yours applies, the stricter one'
+        : source === 'band'
+          ? 'Trevra’s applies'
+          : cap.override && cap.yours !== null
+            ? 'yours binds, ahead of the band'
+            : cap.yours === null
+              ? 'Trevra’s applies'
+              : band === null
+                ? 'the smaller of the two applies'
+                : cap.yours === band
+                  ? 'both agree'
+                  : cap.yours < band
+                    ? 'yours applies'
+                    : 'Trevra’s applies';
 
-  return <div className={`li-cap${spent ? ' li-cap-spent' : ''}`}>
-    {/* One line per label, so the four numbers under them share a baseline.
+  return (
+    <div className={`li-cap${spent ? ' li-cap-spent' : ''}`}>
+      {/* One line per label, so the four numbers under them share a baseline.
         What a ceiling counts is a sentence, and it belongs with the other
         sentence in this cell rather than pushing the number down a line. */}
-    <p className="li-cap-label">{cap.label}</p>
-    <strong>{cap.used === null ? '—' : cap.used}<em>/{ceiling ?? '—'}</em></strong>
-    <div className="li-cap-meter"><i style={{ width: `${share * 100}%` }} /></div>
-    <small>
-      Yours <b>{cap.yours ?? '—'}</b>{pooled ? ', over DMs, replies and InMail together' : <> · Trevra’s band <b>{band ?? 'not shown here'}</b></>} · {binds}
-    </small>
-    {pooled && <small className="li-cap-counts">
-      {/* The pool has room in it right up until one KIND runs out, and then it
+      <p className="li-cap-label">{cap.label}</p>
+      <strong>
+        {cap.used === null ? '—' : cap.used}
+        <em>/{ceiling ?? '—'}</em>
+      </strong>
+      <div className="li-cap-meter">
+        <i style={{ width: `${share * 100}%` }} />
+      </div>
+      <small>
+        Yours <b>{cap.yours ?? '—'}</b>
+        {pooled ? (
+          ', over DMs, replies and InMail together'
+        ) : (
+          <>
+            {' '}
+            · Trevra’s band <b>{band ?? 'not shown here'}</b>
+          </>
+        )}{' '}
+        · {binds}
+      </small>
+      {pooled && (
+        <small className="li-cap-counts">
+          {/* The pool has room in it right up until one KIND runs out, and then it
           stops — so both are shown. Printing one of Trevra's per-kind numbers
           as if it were the pool's is what put 12 beside a pool that also
           contains InMail, enforced at 3. */}
-      {cap.detail.map((entry) => <span key={entry.kind}>
-        {KIND_LABELS[entry.kind]} {entry.used ?? '—'}/{entry.ceiling ?? '—'} today
-        {entry.band === null ? '' : ` of ${entry.band}`}
-        {entry.alsoBoundBy === null ? '' : `, and ${entry.alsoBoundBy}`}.{' '}
-      </span>)}
-    </small>}
-  </div>;
+          {cap.detail.map((entry) => (
+            <span key={entry.kind}>
+              {KIND_LABELS[entry.kind]} {entry.used ?? '—'}/{entry.ceiling ?? '—'} today
+              {entry.band === null ? '' : ` of ${entry.band}`}
+              {entry.alsoBoundBy === null ? '' : `, and ${entry.alsoBoundBy}`}.{' '}
+            </span>
+          ))}
+        </small>
+      )}
+    </div>
+  );
 }
 
 /* =========================================================================
@@ -1874,7 +2454,7 @@ function boundByLabel(limit: LinkedInCeiling): string {
  */
 const unrampedOf = (limit: LinkedInCeiling): number =>
   limit.ceilingSource === 'operator' || limit.ceilingSource === 'operator-override'
-    ? limit.operatorLimit ?? limit.bandCeiling
+    ? (limit.operatorLimit ?? limit.bandCeiling)
     : limit.bandCeiling;
 
 /** The pool caveat, on the three kinds one operator number counts together. */
@@ -1915,8 +2495,8 @@ function ceilingSentence(limit: LinkedInCeiling, throttleFactor: number): string
       return `Slowed down: ${limit.ceiling} ${kind} ${window}, instead of ${unramped} when running normally.`;
     case 'monthly-quota':
       return limit.kind === 'inmail'
-        ? `LinkedIn’s own quota: ${limit.ceiling} InMails a month on Sales Navigator. The one after that is refused by LinkedIn, not Trevra. `
-          + 'Trevra does not send InMail, so this ceiling binds nothing here — it is published because it is a real limit on your account.'
+        ? `LinkedIn’s own quota: ${limit.ceiling} InMails a month on Sales Navigator. The one after that is refused by LinkedIn, not Trevra. ` +
+            'Trevra does not send InMail, so this ceiling binds nothing here — it is published because it is a real limit on your account.'
         : `${limit.ceiling} ${kind} ${window}.`;
     /* `band-ceiling` is ALSO reached with an operator number set -- one that is
        higher than the band, so the band won. Saying only “this is what Trevra
@@ -1924,8 +2504,11 @@ function ceilingSentence(limit: LinkedInCeiling, throttleFactor: number): string
        raises it, and the way out of it unmentioned. */
     case 'band-ceiling':
     case 'weekly-band':
-      return limit.window === 'day' && limit.ceilingSource === 'band'
-        && limit.operatorLimit !== null && limit.operatorLimit !== undefined && limit.operatorLimit > limit.bandCeiling
+      return limit.window === 'day' &&
+        limit.ceilingSource === 'band' &&
+        limit.operatorLimit !== null &&
+        limit.operatorLimit !== undefined &&
+        limit.operatorLimit > limit.bandCeiling
         ? `${limit.ceiling} ${kind} ${window} is what Trevra allows. Your own setting of ${limit.operatorLimit} is higher, so it is not what bound this${poolNote(limit)} — letting your own ceilings bind is what would change it.`
         : `${limit.ceiling} ${kind} ${window} is what Trevra allows this account.`;
     default:
@@ -1936,38 +2519,56 @@ function ceilingSentence(limit: LinkedInCeiling, throttleFactor: number): string
 function CeilingRow({ limit, throttleFactor }: { limit: LinkedInCeiling; throttleFactor: number }) {
   const share = limit.ceiling === 0 ? 0 : Math.min(1, limit.used / limit.ceiling);
   const spent = limit.ceiling > 0 && limit.remaining === 0;
-  return <div className="li-ceiling">
-    <div className="li-ceiling-head">
-      <span className="li-ceiling-window">{WINDOW_LABELS[limit.window]}</span>
-      <strong className={spent ? 'li-ceiling-spent' : ''}>
-        <b>{limit.used}</b> / {limit.ceiling}
-      </strong>
-      <span className="li-chip">{boundByLabel(limit)}</span>
-      <ConfidenceTag confidence={limit.confidence} source={sourceLabel(limit.confidence)} compact />
-      <Hint label={`Why ${WINDOW_LABELS[limit.window]} is ${limit.ceiling}`}>
-        <p>{ceilingSentence(limit, throttleFactor)}</p>
-        {/* Compared against `unrampedOf`, not against the band: with the account's
+  return (
+    <div className="li-ceiling">
+      <div className="li-ceiling-head">
+        <span className="li-ceiling-window">{WINDOW_LABELS[limit.window]}</span>
+        <strong className={spent ? 'li-ceiling-spent' : ''}>
+          <b>{limit.used}</b> / {limit.ceiling}
+        </strong>
+        <span className="li-chip">{boundByLabel(limit)}</span>
+        <ConfidenceTag
+          confidence={limit.confidence}
+          source={sourceLabel(limit.confidence)}
+          compact
+        />
+        <Hint label={`Why ${WINDOW_LABELS[limit.window]} is ${limit.ceiling}`}>
+          <p>{ceilingSentence(limit, throttleFactor)}</p>
+          {/* Compared against `unrampedOf`, not against the band: with the account's
             own setting binding, the band is not the number the ramps reduced and
             naming it here would describe a reduction that never happened. */}
-        {limit.ceiling !== unrampedOf(limit) && <p>
-          Full ramp gets {unrampedOf(limit)} here; {limit.ceiling} applies today.
-        </p>}
-        {limit.ceilingSource === 'operator-override' && <p>
-          Yours, not Trevra’s — the researched band here is {limit.bandCeiling}.
-        </p>}
-        {limit.window !== 'day' && <p>Rolling, not calendar — a calendar cap of {limit.ceiling} delivers {limit.ceiling * 2} across the boundary.</p>}
-        {/* `limit.source` shipped on every ceiling and appeared on no screen. It
+          {limit.ceiling !== unrampedOf(limit) && (
+            <p>
+              Full ramp gets {unrampedOf(limit)} here; {limit.ceiling} applies today.
+            </p>
+          )}
+          {limit.ceilingSource === 'operator-override' && (
+            <p>Yours, not Trevra’s — the researched band here is {limit.bandCeiling}.</p>
+          )}
+          {limit.window !== 'day' && (
+            <p>
+              Rolling, not calendar — a calendar cap of {limit.ceiling} delivers {limit.ceiling * 2}{' '}
+              across the boundary.
+            </p>
+          )}
+          {/* `limit.source` shipped on every ceiling and appeared on no screen. It
             is the citation behind the tag beside it — which plan section a number
             came from — and “where did 18 come from” is a question an operator
             betting their own account is entitled to follow up. The words stay
             first; the reference is the last thing on the line. */}
-        <p>{limit.remaining} left · {sourceLabel(limit.confidence)} · {limit.source}</p>
-      </Hint>
+          <p>
+            {limit.remaining} left · {sourceLabel(limit.confidence)} · {limit.source}
+          </p>
+        </Hint>
+      </div>
+      <div className="li-ceiling-meter">
+        <i
+          className={spent ? 'li-ceiling-fill li-ceiling-fill-spent' : 'li-ceiling-fill'}
+          style={{ width: `${share * 100}%` }}
+        />
+      </div>
     </div>
-    <div className="li-ceiling-meter">
-      <i className={spent ? 'li-ceiling-fill li-ceiling-fill-spent' : 'li-ceiling-fill'} style={{ width: `${share * 100}%` }} />
-    </div>
-  </div>;
+  );
 }
 
 /** What an account is doing, in the operator's words rather than the column's. */
@@ -1978,11 +2579,31 @@ const STATUS_LABELS: Record<string, string> = {
   paused: 'Paused'
 };
 
-export function PostureBadge({ posture, reason }: { posture: string | null; reason?: string | null }) {
-  if (!posture) return <span className="li-posture li-posture-none"><CircleAlert size={13} /> No account</span>;
-  const icon = posture === 'paused' || posture === 'cooldown' ? <CircleAlert size={13} />
-    : posture === 'steady' ? <ShieldCheck size={13} /> : <TrendingUp size={13} />;
-  return <span className={`li-posture li-posture-${posture}`} title={reason ?? undefined}>
-    {icon} {STATUS_LABELS[posture] ?? posture}{posture === 'paused' && reason ? `: ${reason}` : ''}
-  </span>;
+export function PostureBadge({
+  posture,
+  reason
+}: {
+  posture: string | null;
+  reason?: string | null;
+}) {
+  if (!posture)
+    return (
+      <span className="li-posture li-posture-none">
+        <CircleAlert size={13} /> No account
+      </span>
+    );
+  const icon =
+    posture === 'paused' || posture === 'cooldown' ? (
+      <CircleAlert size={13} />
+    ) : posture === 'steady' ? (
+      <ShieldCheck size={13} />
+    ) : (
+      <TrendingUp size={13} />
+    );
+  return (
+    <span className={`li-posture li-posture-${posture}`} title={reason ?? undefined}>
+      {icon} {STATUS_LABELS[posture] ?? posture}
+      {posture === 'paused' && reason ? `: ${reason}` : ''}
+    </span>
+  );
 }

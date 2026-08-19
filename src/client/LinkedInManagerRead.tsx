@@ -884,6 +884,16 @@ export function OutreachManagerRead({
     if (!seats.some((seat) => seat.seatKey === seatFilter)) setSeatFilter('');
   }, [seats, seatFilter]);
 
+  // The Results panel reads whichever campaign is EXPANDED, the same way
+  // seatFilter above starts from the account picked elsewhere: opening a
+  // different card is the operator choosing what those numbers are about, so
+  // the filter follows it. An explicit pick from the Results dropdown itself
+  // is not fought -- it only reverts when openCampaignId next changes, i.e.
+  // when a card is opened or closed.
+  useEffect(() => {
+    setCampaignFilter(openCampaignId);
+  }, [openCampaignId]);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -1446,55 +1456,83 @@ export function OutreachManagerRead({
                       )}
                     </p>
                   ) : (
-                    <p className="mgr-warmup">
-                      {campaign.status === 'draft' ? (
-                        <>
-                          Not started.{' '}
-                          {rampFractions(report) && fullCeilings ? (
-                            <>
-                              Day 1 is held to{' '}
-                              {Math.round((rampFractionForDay(report, 1) ?? 1) * 100)}% of what{' '}
-                              {seatLabel(campaign.seatKey)} may send, reaching full speed on day{' '}
-                              {rampFractions(report)?.length}. At full speed that is{' '}
-                              {plural(fullCeilings.invite.full, 'invite')} and{' '}
-                              {plural(fullCeilings.dm.full, 'message')} a day.
-                            </>
-                          ) : (
-                            <>Nothing goes out until you start it.</>
-                          )}
-                        </>
-                      ) : warmup && warmup.fraction < 1 ? (
-                        <>
-                          <WarmupPips day={warmup.day} days={warmup.days} /> Warm-up day{' '}
-                          {warmup.day} of {warmup.days} — this campaign may use{' '}
-                          {Math.round(warmup.fraction * 100)}% of what {seatLabel(campaign.seatKey)}{' '}
-                          is allowed today
-                          {ceilings ? <Allowance ceilings={ceilings} of="today" /> : ''}. That is
-                          why day one looks slow.
-                          {ceilings && (
-                            <> The invite ceiling is {ceilingSourceNote(ceilings.invite)}.</>
-                          )}
-                        </>
-                      ) : warmup ? (
-                        <>
-                          <WarmupPips day={warmup.days} days={warmup.days} /> Full speed
-                          {ceilings ? <Allowance ceilings={ceilings} of="full" /> : ''}.
-                          {ceilings && (
-                            <> The invite ceiling is {ceilingSourceNote(ceilings.invite)}.</>
-                          )}
-                        </>
-                      ) : campaign.startedAt ? (
-                        // Started, but this account's ceilings could not be
-                        // read. Saying nothing beats printing a ramp day
-                        // that was never confirmed by anything.
-                        <>
-                          Running. Today&rsquo;s allowance for {seatLabel(campaign.seatKey)} could
-                          not be read just now.
-                        </>
-                      ) : (
-                        <>Warm-up starts when the campaign starts.</>
-                      )}
-                    </p>
+                    <>
+                      {/* ONE LINE, ALWAYS. The four-number Allowance breakdown and its
+                        band/operator citation are detail an operator asks for by
+                        opening the card, exactly like the member list and timeline
+                        just below -- not a paragraph every collapsed card pays for. */}
+                      <p className="mgr-warmup">
+                        {campaign.status === 'draft' ? (
+                          <>
+                            Not started.{' '}
+                            {rampFractions(report) && fullCeilings ? (
+                              <>
+                                Day 1 is held to{' '}
+                                {Math.round((rampFractionForDay(report, 1) ?? 1) * 100)}% of what{' '}
+                                {seatLabel(campaign.seatKey)} may send.
+                              </>
+                            ) : (
+                              <>Nothing goes out until you start it.</>
+                            )}
+                          </>
+                        ) : warmup && warmup.fraction < 1 ? (
+                          <>
+                            <WarmupPips day={warmup.day} days={warmup.days} /> Warm-up day{' '}
+                            {warmup.day} of {warmup.days} — this campaign may use{' '}
+                            {Math.round(warmup.fraction * 100)}% of what{' '}
+                            {seatLabel(campaign.seatKey)} is allowed today. That is why day one
+                            looks slow.
+                          </>
+                        ) : warmup ? (
+                          <>
+                            <WarmupPips day={warmup.days} days={warmup.days} /> Full speed.
+                          </>
+                        ) : campaign.startedAt ? (
+                          // Started, but this account's ceilings could not be
+                          // read. Saying nothing beats printing a ramp day
+                          // that was never confirmed by anything.
+                          <>
+                            Running. Today&rsquo;s allowance for {seatLabel(campaign.seatKey)} could
+                            not be read just now.
+                          </>
+                        ) : (
+                          <>Warm-up starts when the campaign starts.</>
+                        )}
+                      </p>
+
+                      {open &&
+                        campaign.status === 'draft' &&
+                        rampFractions(report) &&
+                        fullCeilings && (
+                          <p className="mgr-warmup mgr-warmup-detail">
+                            Reaching full speed on day {rampFractions(report)?.length}. At full
+                            speed that is {plural(fullCeilings.invite.full, 'invite')} and{' '}
+                            {plural(fullCeilings.dm.full, 'message')} a day.
+                          </p>
+                        )}
+                      {open &&
+                        campaign.status !== 'draft' &&
+                        warmup &&
+                        warmup.fraction < 1 &&
+                        ceilings && (
+                          <p className="mgr-warmup mgr-warmup-detail">
+                            Allowed today
+                            <Allowance ceilings={ceilings} of="today" />. The invite ceiling is{' '}
+                            {ceilingSourceNote(ceilings.invite)}.
+                          </p>
+                        )}
+                      {open &&
+                        campaign.status !== 'draft' &&
+                        warmup &&
+                        warmup.fraction >= 1 &&
+                        ceilings && (
+                          <p className="mgr-warmup mgr-warmup-detail">
+                            At full speed
+                            <Allowance ceilings={ceilings} of="full" />. The invite ceiling is{' '}
+                            {ceilingSourceNote(ceilings.invite)}.
+                          </p>
+                        )}
+                    </>
                   )}
 
                   {open && (
@@ -1584,42 +1622,15 @@ export function OutreachManagerRead({
               )}
             </div>
 
+            {/* The one or two numbers an operator checks without clicking anything:
+              volume and quality. Everything else this panel knows -- the other
+              eight tiles and the full A/B breakdown -- is real detail, not a
+              headline, and sits behind the toggle below the same way "Campaign
+              inputs" further down does. */}
             <div className="li-stat-row mgr-stats">
               <div className="li-stat">
                 <p>Invites sent</p>
                 <strong>{analytics?.invitesSent ?? 0}</strong>
-              </div>
-              {/* ACCEPTED OUT OF INVITES SENT -- the one acceptance denominator a
-            user is shown, here and on the funnel. "Invites sent" now counts
-            declined invites too: they were sent, and leaving them out inflated
-            this percentage by exactly the refusals it was measuring. */}
-              <div className="li-stat">
-                <p>Invites accepted</p>
-                <strong>{analytics?.invitesAccepted ?? 0}</strong>
-                <span>
-                  {ratePercent(analytics?.invitesAccepted ?? 0, analytics?.invitesSent ?? 0)} of
-                  invites sent
-                </span>
-              </div>
-              <div className="li-stat">
-                <p>Messages sent</p>
-                <strong>{analytics?.messagesSent ?? 0}</strong>
-              </div>
-              <div className="li-stat mgr-stat-secondary">
-                <p>Leads messaged</p>
-                <strong>{analytics?.contactedLeads ?? 0}</strong>
-                <span>People who got at least one message</span>
-              </div>
-              {/* TWO TILES, BECAUSE THEY COUNT TWO POPULATIONS. "Replies" is anyone
-            who replied to anything, an invite that came back with a note
-            included. The rate divides messaged leads who replied by messaged
-            leads -- the same population top and bottom, which is what stops it
-            printing 133%, as it did when the numerator counted replies to any
-            action kind and the denominator counted messaged leads only. */}
-              <div className="li-stat">
-                <p>Replies</p>
-                <strong>{analytics?.repliedLeads ?? 0}</strong>
-                <span>People who replied to anything</span>
               </div>
               <div className="li-stat">
                 <p>Reply rate</p>
@@ -1634,47 +1645,90 @@ export function OutreachManagerRead({
                   messaged replied
                 </span>
               </div>
-              <div className="li-stat mgr-stat-secondary">
-                <p>Profile views</p>
-                <strong>{analytics?.profileViews ?? 0}</strong>
-              </div>
-              {/*
-          SIX OF THE WORKFLOW'S ACTIONS CAN RUN; ALL SIX ARE COUNTED HERE.
-          Follows and withdrawals were missing, so a workflow built out of them
-          reported nothing but zeros forever -- while the accounts table below
-          advertised a daily follow limit as a live ceiling on work this panel
-          insisted was never happening.
-        */}
-              <div className="li-stat mgr-stat-secondary">
-                <p>Follows</p>
-                <strong>{analytics?.followsSent ?? 0}</strong>
-              </div>
-              <div className="li-stat mgr-stat-withdrawn">
-                <p>Invites withdrawn</p>
-                <strong>{analytics?.invitesWithdrawn ?? 0}</strong>
-                <span>Still-pending invites the workflow cleaned up</span>
-              </div>
-              <div className="li-stat mgr-stat-needs-you">
-                <p>Needs you</p>
-                <strong>{visiblePendingTasks.length}</strong>
-                {visiblePendingTasks.length > 0 ? (
-                  <a className="li-link" href="/outreach/inbox">
-                    Open Messages
-                  </a>
-                ) : (
-                  <span>No manual messages waiting</span>
-                )}
-              </div>
             </div>
 
-            <h4 className="li-subhead" aria-level={3}>
-              Message versions, side by side
-            </h4>
-            {analytics ? (
-              <VariantResults analytics={analytics} stepsById={variantStepsById} />
-            ) : (
-              <p className="empty-copy">Reading results…</p>
-            )}
+            <details className="mgr-inputs">
+              <summary>
+                More results
+                <span>{plural(visiblePendingTasks.length, 'task')} waiting · message versions</span>
+              </summary>
+              <div className="mgr-inputs-body">
+                <div className="li-stat-row mgr-stats">
+                  {/* ACCEPTED OUT OF INVITES SENT -- the one acceptance denominator a
+                user is shown, here and on the funnel. "Invites sent" now counts
+                declined invites too: they were sent, and leaving them out inflated
+                this percentage by exactly the refusals it was measuring. */}
+                  <div className="li-stat">
+                    <p>Invites accepted</p>
+                    <strong>{analytics?.invitesAccepted ?? 0}</strong>
+                    <span>
+                      {ratePercent(analytics?.invitesAccepted ?? 0, analytics?.invitesSent ?? 0)} of
+                      invites sent
+                    </span>
+                  </div>
+                  <div className="li-stat">
+                    <p>Messages sent</p>
+                    <strong>{analytics?.messagesSent ?? 0}</strong>
+                  </div>
+                  <div className="li-stat mgr-stat-secondary">
+                    <p>Leads messaged</p>
+                    <strong>{analytics?.contactedLeads ?? 0}</strong>
+                    <span>People who got at least one message</span>
+                  </div>
+                  {/* TWO TILES, BECAUSE THEY COUNT TWO POPULATIONS. "Replies" is anyone
+                who replied to anything, an invite that came back with a note
+                included. The rate divides messaged leads who replied by messaged
+                leads -- the same population top and bottom, which is what stops it
+                printing 133%, as it did when the numerator counted replies to any
+                action kind and the denominator counted messaged leads only. */}
+                  <div className="li-stat">
+                    <p>Replies</p>
+                    <strong>{analytics?.repliedLeads ?? 0}</strong>
+                    <span>People who replied to anything</span>
+                  </div>
+                  <div className="li-stat mgr-stat-secondary">
+                    <p>Profile views</p>
+                    <strong>{analytics?.profileViews ?? 0}</strong>
+                  </div>
+                  {/*
+              SIX OF THE WORKFLOW'S ACTIONS CAN RUN; ALL SIX ARE COUNTED HERE.
+              Follows and withdrawals were missing, so a workflow built out of them
+              reported nothing but zeros forever -- while the accounts table below
+              advertised a daily follow limit as a live ceiling on work this panel
+              insisted was never happening.
+            */}
+                  <div className="li-stat mgr-stat-secondary">
+                    <p>Follows</p>
+                    <strong>{analytics?.followsSent ?? 0}</strong>
+                  </div>
+                  <div className="li-stat mgr-stat-withdrawn">
+                    <p>Invites withdrawn</p>
+                    <strong>{analytics?.invitesWithdrawn ?? 0}</strong>
+                    <span>Still-pending invites the workflow cleaned up</span>
+                  </div>
+                  <div className="li-stat mgr-stat-needs-you">
+                    <p>Needs you</p>
+                    <strong>{visiblePendingTasks.length}</strong>
+                    {visiblePendingTasks.length > 0 ? (
+                      <a className="li-link" href="/outreach/inbox">
+                        Open Messages
+                      </a>
+                    ) : (
+                      <span>No manual messages waiting</span>
+                    )}
+                  </div>
+                </div>
+
+                <h4 className="li-subhead" aria-level={3}>
+                  Message versions, side by side
+                </h4>
+                {analytics ? (
+                  <VariantResults analytics={analytics} stepsById={variantStepsById} />
+                ) : (
+                  <p className="empty-copy">Reading results…</p>
+                )}
+              </div>
+            </details>
           </section>
 
           <section className="page-panel mgr-manual-tasks">
