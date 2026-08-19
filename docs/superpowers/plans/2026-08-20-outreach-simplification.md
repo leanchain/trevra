@@ -11,6 +11,8 @@
 **Design spec:** `docs/superpowers/specs/2026-08-20-outreach-simplification-design.md`
 **Blast-radius analysis (read before any server task):** `.superpowers/notes/legacy-campaigns-blast-radius.md`
 
+**One deliberate divergence from the spec:** the spec writes `SUB_ROUTES.outreach` as the five live subs. That cannot work — `parseRoute` flattens any sub not in the list to the section root, so the legacy addresses would never reach the redirect table and `#leads` / `#accounts` would be lost. Task 1 keeps the six legacy names listed as redirect carriers, exactly as the Setup work did. Everything else follows the spec.
+
 ## Global Constraints
 
 - **Never commit to `main`.** Every task starts by proving the working directory: `git rev-parse --show-toplevel && git branch --show-current`. The branch must be `outreach-simplification`.
@@ -143,7 +145,7 @@ git commit -m "outreach: route table for four screens"
 
 - Consumes: `SUB_ROUTES.outreach` from Task 1; `scrollToId` from `src/client/ui/scrollToId.ts`; `replaceNavigate`, `type Route` from `src/client/ui/route.ts`.
 - Produces: `export function OutreachView({ route, setToast, onNavigate }: { route: Route; setToast: (message: string) => void; onNavigate: (path: string) => void })`. `App.tsx` renders `{route.section === 'outreach' && <OutreachView route={route} setToast={setToast} onNavigate={go} />}`.
-- Produces: element ids `outreach-leads` and `outreach-accounts` — Task 10 attaches the folds to them.
+- Produces: element ids `leads` and `accounts` — Task 10 attaches the folds to them.
 
 - [ ] **Step 1: Create the view**
 
@@ -178,8 +180,8 @@ const OUTREACH_LEGACY_REDIRECTS: Record<string, string> = {
 
 /** Legacy addresses whose content is now a fold on the Campaigns screen. */
 const OUTREACH_LEGACY_ANCHORS: Record<string, string> = {
-  leads: 'outreach-leads',
-  accounts: 'outreach-accounts'
+  leads: 'leads',
+  accounts: 'accounts'
 };
 
 /** Which tab owns the screen being shown. Legacy subs are mid-redirect and own none. */
@@ -267,7 +269,7 @@ Replace the deleted JSX block with:
 
 and add `import { OutreachView } from './views/OutreachView';` beside the other view imports.
 
-Keep `useAccountsRoute` and its effect, but change the target: `if (accountsOpen) replaceNavigate('/outreach/accounts');` stays as-is — `/outreach/accounts` is a legacy carrier that `OutreachView` redirects to `/outreach#outreach-accounts`.
+Keep `useAccountsRoute` and its effect, but change the target: `if (accountsOpen) replaceNavigate('/outreach/accounts');` stays as-is — `/outreach/accounts` is a legacy carrier that `OutreachView` redirects to `/outreach#accounts`.
 
 - [ ] **Step 3: Update the sidebar entry and the title map**
 
@@ -611,7 +613,7 @@ git commit -m "db: drop linkedin_exports"
 **Interfaces:**
 
 - Consumes: `OutreachLeads` from `../LinkedInLeads`, `AccountsScreen` from `../AccountsScreen`, both unchanged.
-- Produces: the ids `outreach-leads` and `outreach-accounts` that Task 2's anchor map already targets.
+- Produces: the ids `leads` and `accounts` that Task 2's anchor map already targets.
 
 - [ ] **Step 1: Add the folds**
 
@@ -622,13 +624,13 @@ In `src/client/views/OutreachView.tsx`, replace the `sub === ''` line with:
   sub === '' && (
     <>
       <OutreachManagerRead setToast={setToast} onNavigate={onNavigate} />
-      <details className="mgr-inputs" id="outreach-leads">
+      <details className="mgr-inputs" id="leads">
         <summary>Find people</summary>
         <div className="mgr-inputs-body">
           <OutreachLeads setToast={setToast} />
         </div>
       </details>
-      <details className="mgr-inputs" id="outreach-accounts">
+      <details className="mgr-inputs" id="accounts">
         <summary>Target accounts</summary>
         <div className="mgr-inputs-body">
           <AccountsScreen setToast={setToast} />
@@ -658,8 +660,8 @@ The element may not exist yet on the first tick; `scrollToId` already polls, so 
 
 - [ ] **Step 3: Repoint the links into the folds**
 
-- `src/client/LinkedInManagerLeadConfig.tsx` L955 and L1003: `href="/outreach/leads"` → `href="/outreach#outreach-leads"`.
-- `src/client/LinkedInLeads.tsx` L460: `navigate('/outreach/campaigns')` → `navigate('/outreach')`.
+- `src/client/LinkedInManagerLeadConfig.tsx` L955 and L1003: `href="/outreach/leads"` → `href="/outreach#leads"`.
+- `src/client/LinkedInLeads.tsx` L460: `navigate('/outreach/campaigns')` → `navigate('/outreach/new')`.
 
 - [ ] **Step 4: Typecheck and test**
 
