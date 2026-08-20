@@ -131,7 +131,6 @@ beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   app = createApp(db);
   for (const workspaceId of [WORKSPACE_A, WORKSPACE_B]) {
-    await db.prepare('DELETE FROM linkedin_exports WHERE workspace_id=?').run(workspaceId);
     // Children before parents: messages reference threads and leads reference
     // sources, and withdrawals reference the ledger rows deleted below.
     await db.prepare('DELETE FROM linkedin_messages WHERE workspace_id=?').run(workspaceId);
