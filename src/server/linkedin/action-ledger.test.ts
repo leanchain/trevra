@@ -1,19 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { openDatabase, type Db } from '../db.js';
+import { id, openDatabase, type Db } from '../db.js';
 import { ACTION_STATUS_VALUES, recordAction, type LinkedInActionStatus } from './actions.js';
-import { createCampaign, getCampaign, newCampaignId, stopCampaign } from './campaigns.js';
 import { linkedinAnalytics, skipAction, type CampaignStatus } from './action-ledger.js';
 import type { ManagedCampaignStatus } from './managed-campaigns.js';
-import { upsertSeat } from './seats.js';
+import { OWNER_SEAT_KEY, upsertSeat } from './seats.js';
 
 /**
- * WHAT A PAUSE LEAVES BEHIND, AND WHETHER ANYONE CAN SEE IT.
+ * THE SKIP GATE AND THE ANALYTICS FUNNEL, AGAINST A REAL LEDGER.
  *
- * Migration 051 gave the ledger a ninth status, 'held', and everything in this
- * file is about the three places that never learned the word: the legacy stop
- * path, the skip gate, and the analytics funnel. Each of them was silent --
- * no error, no log, nothing on a screen -- which is why they are pinned with
- * tests rather than trusted to a comment.
+ * This file used to sit beside the legacy campaign CRUD in `campaigns.ts`,
+ * which is why its fixtures mint a `linkedin_campaigns` row directly rather
+ * than through any campaign-creation function: `createCampaign` was deleted
+ * with the rest of the legacy sequence-builder campaign system, but
+ * `skipAction` and `linkedinAnalytics` are shared, live code -- every
+ * `/api/linkedin/actions*` route and the analytics screen still call them --
+ * and the regressions pinned below have nothing to do with the legacy CRUD
+ * that used to sit next to them.
  *
  * Real ephemeral Postgres, per the repo's harness: every assertion below IS a
  * query, and a stub would prove nothing about the SQL that ships.
@@ -21,7 +23,7 @@ import { upsertSeat } from './seats.js';
 let db: Db;
 
 const NOW = new Date('2026-08-06T09:00:00.000Z');
-const WORKSPACE = 'ws_linkedin_campaigns_test';
+const WORKSPACE = 'ws_linkedin_action_ledger_test';
 
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
@@ -29,7 +31,7 @@ beforeEach(async () => {
     .prepare(
       'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
     )
-    .run(WORKSPACE, 'LinkedIn Campaigns Test', NOW.toISOString());
+    .run(WORKSPACE, 'LinkedIn Action Ledger Test', NOW.toISOString());
   await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(WORKSPACE);
   await db.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=?').run(WORKSPACE);
   // No seat by default: the series then falls back to UTC, which is what the
@@ -41,9 +43,23 @@ afterEach(async () => {
   await db?.close();
 });
 
-async function campaign(name: string, status: 'draft' | 'running' = 'running'): Promise<string> {
-  const campaignId = newCampaignId();
-  await createCampaign(db, { id: campaignId, workspaceId: WORKSPACE, name, status }, NOW);
+/**
+ * A `linkedin_campaigns` row, inserted directly rather than through any
+ * campaign-creation function -- this module has no dependency on how a
+ * campaign came to exist, only on the row `linkedinAnalytics`' LEFT JOIN
+ * reads back.
+ */
+async function campaign(name: string, status: CampaignStatus = 'running'): Promise<string> {
+  const campaignId = id('lcmp');
+  const timestamp = NOW.toISOString();
+  await db
+    .prepare(
+      `
+    INSERT INTO linkedin_campaigns (id, workspace_id, name, status, seat_key, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?)
+  `
+    )
+    .run(campaignId, WORKSPACE, name, status, OWNER_SEAT_KEY, timestamp, timestamp);
   return campaignId;
 }
 
@@ -76,48 +92,6 @@ async function park(actionId: string): Promise<void> {
     .prepare("UPDATE linkedin_actions SET status='held' WHERE workspace_id=? AND id=?")
     .run(WORKSPACE, actionId);
 }
-
-async function statusOf(actionId: string): Promise<string> {
-  const row = await db
-    .prepare('SELECT status FROM linkedin_actions WHERE workspace_id=? AND id=?')
-    .get<{ status: string }>(WORKSPACE, actionId);
-  if (!row) throw new Error(`no action ${actionId}`);
-  return row.status;
-}
-
-describe('stopping a campaign that was paused', () => {
-  /**
-   * The failure this pins is not "a row has the wrong status". A held row that
-   * survives a stop is unclaimable (the worker claims 'planned'), unrestorable
-   * (a stopped campaign refuses to start) and unskippable, while still holding
-   * the target inside `idx_linkedin_actions_target` -- so the person it names
-   * can never be approached by that seat again, by any campaign, forever.
-   */
-  it('releases the rows a pause parked, not only the planned ones', async () => {
-    const campaignId = await campaign('Paused then stopped');
-    const planned = await action(campaignId, 'planned');
-    const parked = await action(campaignId, 'planned');
-    await park(parked);
-
-    const result = await stopCampaign(db, WORKSPACE, campaignId, NOW);
-
-    expect(result?.released).toBe(2);
-    expect(await statusOf(planned)).toBe('skipped');
-    expect(await statusOf(parked)).toBe('skipped');
-  });
-
-  it('still leaves a claimed row to the worker holding it', async () => {
-    const campaignId = await campaign('Mid-send');
-    const claimed = await action(campaignId, 'planned');
-    await park(claimed);
-    await db
-      .prepare('UPDATE linkedin_actions SET claimed_at=? WHERE workspace_id=? AND id=?')
-      .run(NOW.toISOString(), WORKSPACE, claimed);
-
-    expect((await stopCampaign(db, WORKSPACE, campaignId, NOW))?.released).toBe(0);
-    expect(await statusOf(claimed)).toBe('held');
-  });
-});
 
 describe('skipping a held action', () => {
   /**
@@ -388,12 +362,12 @@ describe('one status vocabulary per column', () => {
   /**
    * PART OF THIS TEST IS CHECKED BY `npx tsc --noEmit`, NOT BY VITEST, and
    * that is deliberate: the bug was a type that disagreed with its own column,
-   * and vitest strips types before it runs anything. The two assignments below
+   * and vitest strips types before it runs anything. The assignments below
    * are the assertion -- they do not compile against the old unions -- and the
-   * queries after them prove the same values are what the database actually
+   * query after them proves the same value is what the database actually
    * hands back.
    */
-  it('lets a paused campaign be a paused campaign, in the type and in both readers', async () => {
+  it('lets a paused campaign be a paused campaign, in the type and in the funnel', async () => {
     // Refuses to compile if `CampaignStatus` omits 'paused', which is what
     // forced the pause guards in app.ts to widen to `string` first.
     const paused: CampaignStatus = 'paused';
@@ -408,12 +382,8 @@ describe('one status vocabulary per column', () => {
       .run(WORKSPACE, campaignId);
     await action(campaignId, 'held');
 
-    // The legacy reader, which used to cast this very row onto a union that
-    // said the value it was holding could not exist.
-    const read = await getCampaign(db, WORKSPACE, campaignId);
-    expect(read?.status).toBe(paused);
-
-    // And the funnel's own copy of the column, which carried the second cast.
+    // The funnel's own copy of the column, which carried a cast that said the
+    // value it was holding could not exist.
     const analytics = await linkedinAnalytics(db, WORKSPACE, 30, NOW);
     expect(analytics.byCampaign[0].status).toBe(paused);
   });

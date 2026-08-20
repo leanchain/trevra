@@ -9,9 +9,8 @@ import { openDatabase, type Db } from '../db.js';
 import { createApp } from '../app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from '../auth-service.js';
 import { recordAction } from './actions.js';
-import { upsertSeat } from './seats.js';
+import { OWNER_SEAT_KEY, upsertSeat } from './seats.js';
 import { LinkedInApiError } from './errors.js';
-import { createCampaign } from './campaigns.js';
 import { writeActionStatus } from './action-ledger.js';
 import { canonicalPayloadHash } from '../control-plane/payload.js';
 import { encodeBackgroundRunDetail, recordSeatEvent } from './seat-events.js';
@@ -87,6 +86,35 @@ async function seat(workspaceId: string, activatedOn?: string): Promise<void> {
     { label: 'Pankaj (founder)', timezone: 'Europe/Zurich' },
     activatedAt
   );
+}
+
+/**
+ * A `linkedin_campaigns` row, inserted directly now that the legacy
+ * `createCampaign` this used to call is gone with the rest of `campaigns.ts`.
+ * Only the columns this file's fixtures actually set.
+ */
+async function createCampaign(
+  db: Db,
+  input: { id: string; workspaceId: string; name: string; status?: string; seatKey?: string },
+  now: Date
+): Promise<void> {
+  const timestamp = now.toISOString();
+  await db
+    .prepare(
+      `
+    INSERT INTO linkedin_campaigns (id, workspace_id, name, status, seat_key, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?)
+  `
+    )
+    .run(
+      input.id,
+      input.workspaceId,
+      input.name,
+      input.status ?? 'draft',
+      input.seatKey ?? OWNER_SEAT_KEY,
+      timestamp,
+      timestamp
+    );
 }
 
 async function actionCount(workspaceId: string): Promise<number> {

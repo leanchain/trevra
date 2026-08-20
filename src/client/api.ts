@@ -89,18 +89,15 @@ import type {
   WithdrawalRecord,
   WithdrawalStatus
 } from '../server/linkedin/withdraw';
-import type { LinkedInCampaign, LinkedInExportRecord } from '../server/linkedin/campaigns';
 import type {
   CampaignStatus,
   LinkedInActionView,
   LinkedInAnalytics
 } from '../server/linkedin/action-ledger';
 import type { LinkedInExclusion } from '../server/linkedin/exclusions';
-import type { ExportContact, ExportFormat, ScheduledDay } from '../server/linkedin/export';
 import type { BandName, LinkedInBand, PacedKind } from '../server/linkedin/limits';
-import type { SeatDetectRequest } from '../server/linkedin/local-worker';
+import type { ExecutableKind, SeatDetectRequest } from '../server/linkedin/local-worker';
 import type { PacingPlan } from '../server/linkedin/pacing';
-import type { CampaignQueued } from '../server/linkedin/queue';
 import type { LinkedInSeat, SeatPatch, SeatPosture } from '../server/linkedin/seats';
 import type {
   LinkedInIcp,
@@ -108,6 +105,67 @@ import type {
   LinkedInSequence,
   SequenceTone
 } from '../server/linkedin/sequence';
+
+/**
+ * THE LEGACY SEQUENCE-BUILDER CAMPAIGN TYPES, NO LONGER IMPORTED FROM A
+ * SERVER MODULE BECAUSE THE SERVER MODULES THEY LIVED IN ARE GONE.
+ *
+ * `campaigns.ts`, `export.ts` and `queue.ts` were deleted with the legacy
+ * `/api/linkedin/campaigns*` routes -- already removed -- that the client
+ * functions below (`createCampaign`, `queueLinkedInCampaign`, etc.) called.
+ * Those functions are themselves dead code now, unreachable from any live
+ * route; they are deleted along with `LinkedInCampaigns.tsx`, their only
+ * caller, later in the outreach simplification plan. Until then these five
+ * shapes are copied verbatim from the deleted modules so this file keeps
+ * compiling exactly as it did.
+ */
+interface LinkedInCampaign {
+  id: string;
+  workspaceId: string;
+  name: string;
+  seatKey: string;
+  status: CampaignStatus;
+  sequence: unknown;
+  playbookRunId: string | null;
+  stopRequestedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface LinkedInExportRecord {
+  id: string;
+  campaignId: string;
+  format: string;
+  filename: string;
+  contentType: string;
+  payloadHash: string | null;
+  status: 'current' | 'superseded';
+  size: number;
+  createdAt: string;
+}
+
+type ExportFormat = 'dripify' | 'heyreach' | 'expandi' | 'generic';
+
+interface ExportContact {
+  targetRef: string;
+  profileUrl?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  company?: string | null;
+  role?: string | null;
+}
+
+interface ScheduledDay {
+  date: string;
+  count: number;
+  kinds: LinkedInActionKind[];
+}
+
+interface CampaignQueued {
+  seatKey: string;
+  kinds: ExecutableKind[];
+  recorded: { attempted: number; written: number; duplicate: number };
+}
 
 export class ApiError extends Error {
   constructor(
