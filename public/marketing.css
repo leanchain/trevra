@@ -510,12 +510,10 @@ html:has(.static-launch) {
   border-radius: var(--t-r-xs);
 }
 .launch-button:focus-visible,
-.launch-nav-cta:focus-visible,
-.launch-final :is(a, button, summary):focus-visible {
+.launch-nav-cta:focus-visible {
   outline-color: var(--m-cta-btn);
 }
 .policy-card :is(a, button, summary):focus-visible,
-.ledger :is(a, button, summary):focus-visible,
 .gate :is(a, button, summary, input):focus-visible {
   outline-color: var(--m-slab-green);
 }
@@ -861,8 +859,7 @@ html:has(.static-launch) {
 
 /* --- Night artifacts: policy file, ledger, gate panels. ----------------- */
 
-.policy-card,
-.ledger {
+.policy-card {
   position: relative;
   overflow: hidden;
   border: 1px solid var(--m-slab-line);
@@ -948,8 +945,7 @@ html:has(.static-launch) {
 
 .split-heading h1,
 .split-heading h2,
-.gate-head h2,
-.launch-final h2 {
+.gate-head h2 {
   margin-bottom: 0;
   font-family: var(--t-display);
   font-size: var(--m-display-sec);
@@ -965,123 +961,6 @@ html:has(.static-launch) {
   color: var(--launch-muted);
   font-size: var(--t-text-lg);
   line-height: 1.7;
-}
-
-/* --- The run, and the ledger it writes. ---------------------------------
-   The ledger card carries no bottom radius and no bottom border: the gate
-   band begins immediately underneath in the same material, so the machine's
-   surface reads as one shape that widens to fill the screen and then stops
-   the reader. */
-.run-section {
-  border-top: 1px solid var(--launch-line);
-  padding-bottom: 0;
-}
-
-.ledger {
-  border-radius: var(--t-r-lg) var(--t-r-lg) 0 0;
-  border-bottom: 0;
-}
-
-.ledger-cap {
-  min-height: 52px;
-  padding: 12px 20px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  border-bottom: 1px solid var(--m-slab-line);
-  color: var(--m-slab-muted);
-  font-size: var(--t-text-xs);
-}
-.ledger-cap strong {
-  color: var(--m-slab-ink);
-  font-family: var(--t-mono);
-  font-weight: var(--t-w-strong);
-}
-.ledger-cap code {
-  font-family: var(--t-mono);
-}
-.ledger-cap-note {
-  color: var(--m-slab-muted);
-}
-
-.ledger-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--t-text-sm);
-}
-.ledger-table caption {
-  padding: 14px 20px 0;
-  color: var(--m-slab-muted);
-  font-size: var(--t-text-xs);
-  text-align: left;
-}
-.ledger-table th,
-.ledger-table td {
-  padding: 11px 20px;
-  text-align: left;
-  font-weight: var(--t-w-body);
-}
-.ledger-table thead th {
-  color: var(--m-slab-muted);
-  font-family: var(--t-mono);
-  font-size: var(--t-text-chip);
-  font-weight: var(--t-w-body);
-  text-transform: uppercase;
-  letter-spacing: var(--t-track-caps);
-}
-.ledger-table tbody tr {
-  border-top: 1px solid var(--m-slab-line-soft);
-}
-.ledger-table tbody th {
-  font-family: var(--t-mono);
-  font-size: var(--t-text-xs);
-  color: var(--m-slab-ink);
-}
-.ledger-table td code {
-  font-family: var(--t-mono);
-  font-size: var(--t-text-xs);
-  color: var(--m-slab-muted);
-}
-.ledger-table td:last-child {
-  text-align: right;
-  white-space: nowrap;
-  font-weight: var(--t-w-bold);
-  font-size: var(--t-text-xs);
-}
-.state-done {
-  color: var(--m-slab-green);
-}
-.state-ready {
-  color: var(--m-slab-blue);
-}
-.state-gate {
-  color: var(--m-slab-amber);
-}
-.state-blocked {
-  color: var(--m-slab-amber-2);
-}
-.row-gate {
-  background: var(--m-slab-amber-bg);
-}
-.row-blocked td:last-child::before {
-  content: '';
-}
-
-.ledger-note {
-  margin: 0;
-  padding: 14px 20px 20px;
-  border-top: 1px solid var(--m-slab-line-soft);
-  color: var(--m-slab-muted);
-  font-size: var(--t-text-xs);
-  line-height: 1.65;
-}
-.ledger-note code {
-  font-family: var(--t-mono);
-}
-.ledger-note a {
-  color: var(--m-slab-green);
 }
 
 /* --- The gate. ----------------------------------------------------------
@@ -1399,100 +1278,6 @@ html:has(.static-launch) {
   line-height: 1.6;
 }
 
-/* --- Catalog: an index, not a wall of cards. ---------------------------- */
-
-.catalog-section {
-  padding-top: 88px;
-}
-
-/* The filter only exists where it can work: React renders it into .catalog-bar,
-   the static shell ships the links alone. An input with no handler that eats
-   Enter silently is worse than no input. */
-.catalog-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px 24px;
-  margin-bottom: 34px;
-}
-.catalog-links {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  margin: 0 0 34px;
-  color: var(--launch-muted);
-  font-size: var(--t-text-xs);
-}
-.catalog-bar .catalog-links {
-  margin-bottom: 0;
-}
-.catalog-links a {
-  display: inline-flex;
-  align-items: center;
-  min-height: var(--t-tap);
-  color: var(--launch-green);
-  text-underline-offset: 3px;
-}
-
-.catalog-filter {
-  min-height: var(--t-tap);
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 14px;
-  border: 1px solid var(--launch-line-strong);
-  border-radius: var(--t-r-sm);
-  background: var(--t-field);
-  color: var(--launch-muted);
-  cursor: text;
-}
-.catalog-filter:focus-within {
-  border-color: var(--launch-green);
-}
-.catalog-filter input {
-  width: 190px;
-  max-width: 46vw;
-  min-height: var(--t-tap);
-  border: 0;
-  background: transparent;
-  color: var(--launch-ink);
-  font: inherit;
-  font-size: var(--t-text-sm);
-  outline: none;
-}
-.catalog-filter input::placeholder {
-  color: var(--launch-muted);
-  opacity: 1;
-}
-
-.catalog-empty {
-  max-width: var(--t-measure);
-  color: var(--launch-muted);
-  font-size: var(--t-text-sm);
-}
-.catalog-empty a {
-  color: var(--launch-green);
-}
-
-.module-group + .module-group {
-  margin-top: 44px;
-}
-.module-group > h3 {
-  margin-bottom: 6px;
-  font-size: var(--t-text-xl);
-  font-weight: var(--t-w-bold);
-  letter-spacing: var(--t-track-heading);
-}
-.module-group > p {
-  max-width: var(--t-measure);
-  margin-bottom: 16px;
-  color: var(--launch-muted);
-  font-size: var(--t-text-sm);
-  line-height: 1.6;
-}
-
 .module-list {
   margin: 0;
   padding: 0;
@@ -1746,30 +1531,6 @@ html:has(.static-launch) {
   color: var(--launch-green);
 }
 
-/* --- Closing slab ------------------------------------------------------- */
-
-.launch-final {
-  width: min(calc(100% - 40px), var(--t-page));
-  margin: 0 auto 26px;
-  padding: 52px 56px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 44px;
-  border-radius: var(--t-r-xl);
-  background: var(--m-cta);
-  color: var(--m-cta-ink);
-}
-.launch-final h2 {
-  max-width: 18ch;
-}
-.launch-final p {
-  max-width: 52ch;
-  margin: 16px 0 0;
-  color: var(--m-cta-ink-2);
-  font-size: var(--t-text-md);
-  line-height: 1.65;
-}
 .launch-button.light {
   border-color: var(--m-cta-btn);
   background: var(--m-cta-btn);
@@ -1898,11 +1659,6 @@ html:has(.static-launch) {
   .deploy-grid {
     grid-template-columns: 1fr;
   }
-  .launch-final {
-    grid-template-columns: 1fr;
-    align-items: start;
-    gap: 32px;
-  }
   .launch-footer {
     grid-template-columns: 1.4fr repeat(3, 1fr);
     gap: 32px;
@@ -1925,15 +1681,11 @@ html:has(.static-launch) {
   }
   .launch-hero,
   .launch-section,
-  .launch-final,
   .launch-footer {
     width: min(calc(100% - 28px), var(--t-page));
   }
   .launch-section {
     padding: 72px 0;
-  }
-  .run-section {
-    padding-bottom: 0;
   }
   .split-heading {
     grid-template-columns: 1fr;
@@ -1942,26 +1694,6 @@ html:has(.static-launch) {
   }
   .hero-lede {
     font-size: var(--t-text-lg);
-  }
-  /* The run id column is the one that can go; the state column is the proof
-     the sentence above it makes. */
-  .ledger-table thead th:first-child,
-  .ledger-table tbody th {
-    font-size: var(--t-text-chip);
-  }
-  .ledger-table th,
-  .ledger-table td {
-    padding: 10px 14px;
-  }
-  .ledger-table thead th:nth-child(2),
-  .ledger-table tbody td:first-of-type {
-    display: none;
-  }
-  .ledger-cap,
-  .ledger-note,
-  .ledger-table caption {
-    padding-left: 14px;
-    padding-right: 14px;
   }
   .gate {
     padding: 60px 14px 68px;
@@ -1988,9 +1720,6 @@ html:has(.static-launch) {
   }
   .deploy-card {
     padding: 24px;
-  }
-  .launch-final {
-    padding: 34px 24px;
   }
   .launch-footer {
     grid-template-columns: repeat(2, 1fr);
