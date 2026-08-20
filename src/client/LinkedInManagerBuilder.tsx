@@ -100,7 +100,11 @@ export function OutreachManagerBuilder({
               <p>A campaign sends from a real account, with its own hours and limits.</p>
             </div>
           </div>
-          <button className="primary-button" type="button" onClick={() => onNavigate('/outreach')}>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => onNavigate('/outreach/settings')}
+          >
             Add account <ChevronRight size={14} />
           </button>
         </section>

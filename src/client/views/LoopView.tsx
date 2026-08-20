@@ -180,7 +180,7 @@ export function LoopView({
             ? `${queued} scheduled ${queued === 1 ? 'action is' : 'actions are'} paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'}`
             : `This LinkedIn account is paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'}`,
         action: 'Open Settings',
-        href: '/outreach'
+        href: '/outreach/settings'
       };
     }
     if (!seat?.configured)
@@ -188,7 +188,7 @@ export function LoopView({
         stage: 'reach',
         sentence: 'No LinkedIn account is connected.',
         action: 'Connect an account',
-        href: '/outreach'
+        href: '/outreach/settings'
       };
     if (waitingCount > 0)
       return {
@@ -437,7 +437,7 @@ function OnboardingChecklist({
       title: 'Add a LinkedIn account',
       detail: 'Set the timezone and daily limits.',
       cta: 'Add account',
-      href: '/outreach'
+      href: '/outreach/settings'
     },
     {
       done: (outreachSetup?.leadLists ?? 0) > 0,
