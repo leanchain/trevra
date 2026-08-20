@@ -15,7 +15,20 @@ file / paste / directory / provider
               v
            accounts
               |
-   enrich -> score -> audit -> outreach
+No downstream GTM code should need to know whether an account came from a CSV, a public directory, an internal intelligence service, or a future provider.
+
+## Implementation status
+
+- [x] Newline, CSV and JSON account import.
+- [x] File chooser and drag/drop import.
+- [x] Whole-folder import with local manifest detection.
+- [x] Import Review workbench with editable rows, provenance, include/exclude controls and exact-payload inspection.
+- [x] Duplicate/invalid rows remain visible for correction instead of being silently discarded.
+- [x] Existing `e-commerce/shops/` artifacts can be imported directly without a candidates API.
+- [x] Built-in directory discovery provider.
+- [x] Generic deployment-owned HTTP provider contract for optional live intelligence sources.
+- [x] Retention enforcement before provider results are persisted into `accounts`.
+- [ ] Persist detected contact names/emails/phones into the shared contact model once that spine exists.
 ```
 
 No downstream GTM code should need to know whether an account came from a CSV, a public directory, an internal intelligence service, or a future provider.

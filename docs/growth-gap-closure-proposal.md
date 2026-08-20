@@ -548,71 +548,76 @@ The phases are ordered so each leaves Trevra more coherent without requiring the
 
 Add forward-only PostgreSQL migrations and server stores for:
 
-- `account_contacts`;
-- `outreach_threads`;
-- `outreach_messages`;
-- `outreach_deliveries`;
-- `outreach_suppressions`.
+- [ ] `account_contacts`;
+- [ ] `outreach_threads`;
+- [ ] `outreach_messages`;
+- [ ] `outreach_deliveries`;
+- [ ] `outreach_suppressions`.
 
 Add deterministic services for:
 
-- contact upsert/lookup;
-- thread creation and lifecycle transition;
-- suppression add/check;
-- outbound message/delivery claim;
-- domain-event emission.
+- [ ] contact upsert/lookup;
+- [ ] thread creation and lifecycle transition;
+- [ ] suppression add/check;
+- [ ] outbound message/delivery claim;
+- [ ] domain-event emission.
 
-Tests must cover workspace isolation, uniqueness/dedupe, legal/illegal ladder transitions, suppression precedence, and competing delivery claims.
+- [ ] Tests cover workspace isolation, uniqueness/dedupe, legal/illegal ladder transitions, suppression precedence, and competing delivery claims.
 
 ### Phase B — sourcing parity inside Trevra
 
-- add the directory research provider;
-- add provider-level tests for SSRF, redirect guard, junk filtering, bounds and dedupe;
-- add a disabled/unavailable `beseam` provider contract without requiring the e-commerce backend yet;
-- add the account persistence path from `gtm.source-leads` results if not already complete for all providers.
+- [x] Add the directory research provider.
+- [x] Add directory behavior tests for junk filtering, evidence, missing input and dedupe.
+- [ ] Add explicit provider-level regression tests covering SSRF rejection, redirect revalidation and source/candidate bounds end to end. The guard exists, but this release-gate coverage is not yet complete.
+- [x] Add a generic deployment-owned HTTP provider contract without requiring Beseam or the e-commerce backend.
+- [x] Add the account persistence path from `gtm.source-leads` results, including retention enforcement before persistence.
+- [x] Make paste/file/folder upload the standard ingestion path for existing prospect data.
+- [x] Add the client-side Import Review workbench with editable fields, include/exclude controls, duplicate/invalid review, provenance and exact-payload inspection.
+- [x] Support direct import of existing `e-commerce/shops/` manifests without a Beseam candidates API.
+- [ ] Persist detected contact names/emails/phones into the future shared contact spine. They are review-only evidence today.
 
 ### Phase C — guarded cold-email action
 
-- add `outreach.email.send` to the prepared-action execution layer;
-- wire suppression and cap checks;
-- persist deterministic message identity;
-- add durable delivery claiming;
-- add `uncertain` semantics and prevent blind retries;
-- update `gtm.audit-led-outreach` to use the new action type;
-- preserve exact approval hashing and policy evaluation.
+- [ ] Add `outreach.email.send` to the prepared-action execution layer.
+- [ ] Wire suppression and cap checks.
+- [ ] Persist deterministic message identity.
+- [ ] Add durable delivery claiming.
+- [ ] Add `uncertain` semantics and prevent blind retries.
+- [ ] Update `gtm.audit-led-outreach` to use the new action type.
+- [ ] Preserve exact approval hashing and policy evaluation.
 
 ### Phase D — inbound email and reply state
 
-- normalize Gmail inbound messages;
-- normalize Microsoft 365 inbound messages;
-- track sync cursor/checkpoint per workspace connection using existing integration patterns;
-- verify replies through `In-Reply-To` / `References` or provider-equivalent stable thread identity;
-- ingest inbound messages;
-- classify unsubscribe, bounce, OOO, normal reply and unverified sender-only matches;
-- add suppression on verified unsubscribe;
-- expose API required by `/outreach/inbox` / `/outreach/replies`.
+- [ ] Normalize Gmail inbound messages.
+- [ ] Normalize Microsoft 365 inbound messages.
+- [ ] Track sync cursor/checkpoint per workspace connection using existing integration patterns.
+- [ ] Verify replies through `In-Reply-To` / `References` or provider-equivalent stable thread identity.
+- [ ] Ingest inbound messages.
+- [ ] Classify unsubscribe, bounce, OOO, normal reply and unverified sender-only matches.
+- [ ] Add suppression on verified unsubscribe.
+- [ ] Expose API required by `/outreach/inbox` / `/outreach/replies`.
 
 ### Phase E — loop integration
 
-- connect replied threads to opportunity creation/association;
-- expose funnel counts from account -> sent -> replied -> opportunity -> paid;
-- add run/message/reply links in the ledger;
-- update `docs/founder-skills.md` to reflect what is actually live after implementation.
+- [ ] Connect replied threads to opportunity creation/association.
+- [ ] Expose funnel counts from account -> sent -> replied -> opportunity -> paid.
+- [ ] Add run/message/reply links in the ledger.
+- [ ] Update `docs/founder-skills.md` to reflect what is actually live after implementation.
 
 ### Phase F — cutover preparation, still without deleting e-commerce code
 
 Build Trevra-side migration/import tooling for:
 
-- growth leads -> accounts;
-- contact names/emails -> account contacts;
-- suppressions -> outreach suppressions;
-- sent messages and message IDs -> outreach messages/deliveries;
-- terminal lead states -> outreach thread state where mapping is unambiguous.
+- [ ] growth leads -> accounts as a full legacy-growth migration;
+- [x] existing shop company manifests -> accounts through the standard folder-import path;
+- [ ] contact names/emails -> account contacts;
+- [ ] suppressions -> outreach suppressions;
+- [ ] sent messages and message IDs -> outreach messages/deliveries;
+- [ ] terminal lead states -> outreach thread state where mapping is unambiguous.
 
 Existing Python `approved` messages must **not** be imported as executable Trevra approvals. They may be imported as drafts, but sending requires a new Trevra exact-payload approval.
 
 Only after this phase passes the exit criteria does work begin in the e-commerce repository.
-
 ---
 
 ## 11. Tests required before cutover
