@@ -67,79 +67,6 @@ export const KIND_LABELS: Record<PacedKind, string> = {
   endorse: 'Endorsements'
 };
 
-/** Singular, for one row in a table, where the plural reads as a count. */
-export const ACTION_KIND_LABELS_ONE: Record<LinkedInActionKind, string> = {
-  invite: 'Invite',
-  dm: 'Message',
-  reply: 'Reply',
-  inmail: 'InMail',
-  profile_view: 'Profile view',
-  comment: 'Comment',
-  follow: 'Follow',
-  like: 'Like',
-  endorse: 'Endorsement',
-  withdraw: 'Invite withdrawal'
-};
-
-export const ACTION_STATUS_LABELS: Record<LinkedInActionStatus, string> = {
-  planned: 'Planned',
-  /* NAMED AFTER WHAT PUT IT THERE, because 'Held' alone is the wrong word
-     twice over. This subsystem already says "held back" about an action a
-     safety check refused -- a thing that will never happen -- and a held row
-     is the opposite of that: it is intact, in order, and waiting on a human.
-     And a reader meeting this chip has almost always just pressed Pause, so
-     the label has to connect to the button they pressed.
-     `pauseManagedCampaign` (migration 051) is the only writer of this status
-     and resuming is the only thing that clears it back to 'planned'. */
-  held: 'Held by pause',
-  exported: 'Exported',
-  sent: 'Sent',
-  accepted: 'Accepted',
-  replied: 'Replied',
-  declined: 'Declined',
-  skipped: 'Skipped',
-  withdrawn: 'Withdrawn'
-};
-
-/**
- * A status the ledger holds and this map does not, spelled rather than blanked.
- *
- * THE TWO CASES THIS FALLBACK WAS WRITTEN FOR ARE BOTH CLOSED NOW, and the
- * history is why it stays. `withdrawn` (migration 032) and then `held` (051)
- * each spent a release being written into `linkedin_actions.status` and
- * counted by `campaigns.ts` while `LinkedInActionStatus` in
- * src/server/linkedin/actions.ts named neither -- so each arrived at every
- * reader typed as something it demonstrably was not, and this table had no
- * entry for it. `held` was the more expensive of the two: the operator meeting
- * it has just paused a campaign and is looking straight at these rows to find
- * out what the pause did.
- *
- * The union names both today, so this map is exhaustive and the compiler is
- * what keeps it that way -- the next status is a type error here rather than
- * an audit. What the fallback still covers is the window between the ledger
- * writing a value and a deployed client having learned it, and there a table
- * cell reading `undefined` beside an invite is worse than one reading the raw
- * word.
- */
-export const actionStatusLabel = (status: LinkedInActionStatus): string =>
-  ACTION_STATUS_LABELS[status] ?? String(status).replaceAll('_', ' ');
-
-/** The competitors' own spelling of their own names. `generic` is ours. */
-export const EXPORT_FORMAT_LABELS: Record<ExportFormat, string> = {
-  dripify: 'Dripify',
-  heyreach: 'HeyReach',
-  expandi: 'Expandi',
-  generic: 'Generic CSV'
-};
-
-export const TONE_LABELS: Record<SequenceTone, string> = {
-  direct: 'Direct',
-  consultative: 'Consultative',
-  peer: 'Peer to peer'
-};
-
-const WINDOW_LABELS = { day: 'any 24 hours', week: 'any 7 days', month: 'any 30 days' } as const;
-
 /**
  * The three kinds ONE operator “messages” number counts together.
  *
@@ -148,8 +75,6 @@ const WINDOW_LABELS = { day: 'any 24 hours', week: 'any 7 days', month: 'any 30 
  * operator's pool over.
  */
 const MESSAGE_POOL_KINDS: readonly PacedKind[] = ['dm', 'reply', 'inmail'];
-
-export const humanizeRule = (boundBy: string) => boundBy.replaceAll('-', ' ');
 
 /**
  * One sentence out of whatever was thrown, or the caller's fallback.
@@ -207,13 +132,6 @@ export function stageTargets(targets: readonly string[]): void {
   stagedTargets = [...new Set(targets.map((target) => target.trim()).filter(Boolean))];
 }
 
-/** Read the staged list and clear it. Empty when nothing was staged. */
-export function takeStagedTargets(): string[] {
-  const taken = stagedTargets;
-  stagedTargets = [];
-  return taken;
-}
-
 /**
  * Re-read this screen when the shell asks, or when another screen changed the
  * ledger underneath it.
@@ -238,7 +156,7 @@ export function useOutreachRefresh(reload: RefreshHandler): void {
  * The ceilings, read once per screen.
  * ---------------------------------------------------------------------- */
 
-export interface SeatLimitsRead {
+interface SeatLimitsRead {
   /** Null until the first read lands, and after a first read that failed. */
   limits: LinkedInLimitsReport | null;
   /** True during the first read and during every re-read after it. */
@@ -421,7 +339,7 @@ export const SEAT_STOP_COPY = {
     `Trevra never cuts this seat to zero on its own. Below the acceptance floor it ${throttleVerb(throttleFactor, 'the volume')}, because a seat cut to zero can never produce the outcomes that would clear the throttle — “${throttleImperative(throttleFactor)}” would quietly become “end it”. Ending a seat is a decision for a human, and this is that decision.`
 } as const;
 
-export interface SeatStop {
+interface SeatStop {
   /** False when no seat exists: there is nothing to stop and nothing to resume. */
   configured: boolean;
   paused: boolean;

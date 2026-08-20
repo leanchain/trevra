@@ -24,7 +24,7 @@ import type {
  * the bundler sees it, so nothing under src/server/ -- zod, pg, the Playwright
  * driver -- can reach the browser build through these lines. And reading the
  * shapes from the modules that own them is what stops the screen drifting from
- * the ledger: a field renamed in linkedin/campaigns.ts fails the typecheck here
+ * the ledger: a field renamed in linkedin/actions.ts fails the typecheck here
  * instead of rendering `undefined` beside a number an operator is betting a
  * LinkedIn account on.
  */
@@ -92,16 +92,12 @@ import type {
 import type {
   CampaignStatus,
   LinkedInActionView,
-  LinkedInAnalytics,
-  LinkedInCampaign,
-  LinkedInExportRecord
-} from '../server/linkedin/campaigns';
+  LinkedInAnalytics
+} from '../server/linkedin/action-ledger';
 import type { LinkedInExclusion } from '../server/linkedin/exclusions';
-import type { ExportContact, ExportFormat, ScheduledDay } from '../server/linkedin/export';
 import type { BandName, LinkedInBand, PacedKind } from '../server/linkedin/limits';
-import type { SeatDetectRequest } from '../server/linkedin/local-worker';
+import type { ExecutableKind, SeatDetectRequest } from '../server/linkedin/local-worker';
 import type { PacingPlan } from '../server/linkedin/pacing';
-import type { CampaignQueued } from '../server/linkedin/queue';
 import type { LinkedInSeat, SeatPatch, SeatPosture } from '../server/linkedin/seats';
 import type {
   LinkedInIcp,
@@ -110,6 +106,16 @@ import type {
   SequenceTone
 } from '../server/linkedin/sequence';
 
+/**
+ * `ExportFormat` is declared locally rather than imported: the
+ * sequence-builder campaign routes (`campaigns.ts`, `export.ts`, `queue.ts`)
+ * that used to own this shape are gone, and every function that only served
+ * those routes is gone with them (deleted in the outreach simplification
+ * plan). This one survives because it is still live -- the Safety screen's
+ * export-format vocabulary -- so it is copied verbatim rather than
+ * reintroducing the deleted modules.
+ */
+type ExportFormat = 'dripify' | 'heyreach' | 'expandi' | 'generic';
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -168,7 +174,7 @@ export async function getDashboard(): Promise<DashboardPayload> {
  * 403s a member and this simply surfaces that ApiError like every other
  * gated call.
  */
-export interface TeamMemberInvited {
+interface TeamMemberInvited {
   status: 'invited';
   /** better-auth's own created `invitation` row. No email is sent unless the deployment configured one -- see the Team screen's copyable link. */
   invitation: {
@@ -741,7 +747,6 @@ export type {
   BandName,
   BranchOn,
   CampaignStatus,
-  ExportContact,
   ExportFormat,
   LeadSourceKind,
   LeadSourceStatus,
@@ -749,10 +754,8 @@ export type {
   LinkedInActionStatus,
   LinkedInActionView,
   LinkedInAnalytics,
-  LinkedInCampaign,
   LinkedInConversation,
   LinkedInExclusion,
-  LinkedInExportRecord,
   LinkedInIcp,
   LinkedInLead,
   LinkedInLeadSource,
@@ -767,7 +770,6 @@ export type {
   LinkedInThreadRecord,
   PacedKind,
   PacingPlan,
-  ScheduledDay,
   SeatPosture,
   SequenceTone,
   StepCondition,
@@ -794,129 +796,6 @@ export {
   WARMUP_MULTIPLIERS,
   WARMUP_WEEKS
 } from '../server/linkedin/limits';
-
-/**
- * The kinds, statuses and formats that do NOT live in that table.
- *
- * Restated as values because their modules pull zod and pg, and importing the
- * value would drag both into the browser bundle. The `readonly X[]` annotation
- * is the guard: adding a kind or a format on the server breaks this line at
- * typecheck rather than silently leaving an option missing from a filter.
- */
-export const LINKEDIN_ACTION_KINDS: readonly LinkedInActionKind[] = [
-  'invite',
-  'dm',
-  'reply',
-  'inmail',
-  'profile_view',
-  'comment',
-  'follow',
-  'like',
-  'endorse',
-  'withdraw'
-];
-/**
- * 'held' IS ON THIS LIST NOW, and its absence was half of a two-sided bug.
- *
- * The server's own filter enum omitted BOTH 'held' and 'withdrawn' while this
- * list omitted 'held' and offered 'withdrawn' -- so the filter control rendered
- * an option the API answered 400 to, and the rows a paused campaign parks
- * (migration 051) could not be selected from either side. The `readonly
- * LinkedInActionStatus[]` annotation is what should have caught it and cannot:
- * it proves every entry is a real status, never that every real status is an
- * entry. Server-side that gap is now closed by an `Exclude` check in `app.ts`;
- * here the list stays hand-written because importing the value would drag zod
- * and pg into the browser bundle, so this comment is the guard.
- */
-export const LINKEDIN_ACTION_STATUSES: readonly LinkedInActionStatus[] = [
-  'planned',
-  'held',
-  'exported',
-  'sent',
-  'accepted',
-  'replied',
-  'declined',
-  'skipped',
-  'withdrawn'
-];
-export const LINKEDIN_EXPORT_FORMATS: readonly ExportFormat[] = [
-  'dripify',
-  'heyreach',
-  'expandi',
-  'generic'
-];
-
-/**
- * The five outcomes a step may branch on, restated as values for the reason
- * every other list here is: `branching.ts` pulls zod, and importing the value
- * would drag it into the browser bundle. `readonly BranchOn[]` is the guard.
- *
- * `always` leads, because it is what every existing sequence is and the
- * control has to open on the unremarkable answer. `GET
- * /api/linkedin/sequence-templates` returns the same closed list in the
- * server's own order; `branchOnOptions` below reconciles the two.
- */
-export const LINKEDIN_BRANCH_ON: readonly BranchOn[] = [
-  'always',
-  'accepted',
-  'replied',
-  'not_accepted',
-  'not_replied'
-];
-
-/** Whatever the server published, with `always` first and nothing invented. */
-export function branchOnOptions(published?: readonly BranchOn[] | null): readonly BranchOn[] {
-  const list = Array.isArray(published) && published.length > 0 ? published : LINKEDIN_BRANCH_ON;
-  return ['always', ...list.filter((value) => value !== 'always')];
-}
-
-/**
- * The kinds a sequence step may be.
- *
- * `follow`, `like` and `endorse` joined the four in migration 034: the server
- * validates a step against the WHOLE action taxonomy
- * (`sequenceStepInputSchema`), and the warm-up ramp in plan 1.4 is written in
- * terms of passive engagement, so a builder that could not schedule any of it
- * could only ever author half of a warm-up. `comment` stays out -- the ledger
- * records one, nothing here schedules one.
- */
-export type SequenceStepKind = Extract<
-  LinkedInActionKind,
-  'profile_view' | 'invite' | 'dm' | 'inmail' | 'follow' | 'like' | 'endorse'
->;
-export const SEQUENCE_STEP_KINDS: readonly SequenceStepKind[] = [
-  'profile_view',
-  'invite',
-  'dm',
-  'inmail',
-  'follow',
-  'like',
-  'endorse'
-];
-
-/** The three ENGAGEMENT kinds `POST /api/linkedin/engagement` performs. */
-export type LinkedInEngagementKind = Extract<LinkedInActionKind, 'follow' | 'like' | 'endorse'>;
-export const LINKEDIN_ENGAGEMENT_KINDS: readonly LinkedInEngagementKind[] = [
-  'follow',
-  'like',
-  'endorse'
-];
-
-/**
- * The merge fields step copy may carry. A CLOSED set: the server rejects a
- * `{{field}}` it does not know, so the builder offers exactly these and flags
- * anything else it finds rather than letting an operator invent one and lose
- * the save at the door.
- */
-export const LINKEDIN_MERGE_FIELDS: readonly string[] = [
-  'firstName',
-  'lastName',
-  'company',
-  'jobTitle'
-];
-
-/** LinkedIn truncates a connection-request note here -- `INVITE_NOTE_MAX_CHARS` in src/server/linkedin/sequence.ts. */
-export const LINKEDIN_INVITE_NOTE_MAX_CHARS = 300;
 
 /**
  * HARD FACT -- published by LinkedIn or a contractual term. REPORTED --
@@ -993,7 +872,7 @@ interface LinkedInSignalBase {
  * PUT validates against exactly this range, so a control built from anything
  * else eventually offers a number the route refuses.
  */
-export interface LinkedInOperatorRange {
+interface LinkedInOperatorRange {
   min: number;
   max: number;
   default: number;
@@ -1068,7 +947,7 @@ export interface LinkedInLimitsReport {
  */
 export type LinkedInQueueWaitReason = 'computer' | 'account_paused' | 'account_cooldown' | 'worker';
 
-export interface LinkedInMaintenanceTiming {
+interface LinkedInMaintenanceTiming {
   task: 'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
   nextRunAt: string | null;
   nextRunWindowEndAt: string | null;
@@ -1076,7 +955,7 @@ export interface LinkedInMaintenanceTiming {
   waitingFor: LinkedInQueueWaitReason | null;
 }
 
-export interface LinkedInBackgroundRunSchedule {
+interface LinkedInBackgroundRunSchedule {
   startAt: string;
   endAt: string;
   timezone: string;
@@ -1135,118 +1014,12 @@ export interface LinkedInWorkerStatus {
   source: string;
 }
 
-export interface LinkedInExcluded {
-  targetRef: string;
-  reason: string;
-}
-
-export interface LinkedInPlanResponse {
-  plan: PacingPlan;
-  excluded: LinkedInExcluded[];
-  /** Always false. A plan is a dry run; only an approved campaign persists slots. */
-  persisted: boolean;
-}
-
-export interface LinkedInCampaignDetail {
-  campaign: LinkedInCampaign;
-  run: PlaybookRun | null;
-  actions: LinkedInActionView[];
-  exports: LinkedInExportRecord[];
-}
-
-export interface LinkedInCampaignCreated {
-  campaign: LinkedInCampaign;
-  run: PlaybookRun;
-  excluded: LinkedInExcluded[];
-}
-
-/** What the queue route answers with: the campaign it queued, and what the ledger did. */
-export interface LinkedInCampaignQueued extends CampaignQueued {
-  campaignId: string;
-}
-
-export interface LinkedInExportResponse {
-  export: LinkedInExportRecord;
-  /** False when the same approved bytes had already been rendered. */
-  rendered: boolean;
-  schedule?: ScheduledDay[];
-  ceilingsApplied?: string[];
-  warmupWeek?: number;
-  timezone?: string;
-  recorded?: { attempted: number; written: number; duplicate: number };
-  downloadPath?: string;
-}
-
-export interface LinkedInImportResponse {
-  persisted: boolean;
-  parsed: number;
-  kind: LinkedInActionKind;
-  targets: string[];
-  contacts: ExportContact[];
-  excluded: LinkedInExcluded[];
-  /** Already carries a non-skipped action of this kind. Planning them again would be refused. */
-  alreadyContacted: string[];
-  skippedRows: Array<{ row: number; reason: string }>;
-}
-
-/** What every campaign carries, whichever way its copy arrives. */
-interface LinkedInCampaignCommonInput {
-  targets: string[];
-  tone?: SequenceTone;
-  includeInMail?: boolean;
-  /** `none` drafts a connection request with no note at all. Ignored when the campaign carries its own steps. */
-  inviteNote?: 'drafted' | 'none';
-  kind?: PacedKind;
-  horizonDays?: number;
-  seatKey?: string;
-  format?: ExportFormat;
-  contacts?: ExportContact[];
-}
-
-/**
- * Starting a campaign, and there are exactly two ways to do it.
- *
- * A BRIEF is something to draft copy from. `sequenceSteps` is copy that
- * already exists -- a template the operator picked, or a sequence they
- * assembled step by step -- and it skips generation entirely: one run, one
- * approval, and the stored sequence is the one that was posted.
- *
- * The union is the server's rule written where the compiler can hold us to it:
- * the route refuses a request carrying both, so `sequenceSteps?: never` on the
- * brief arm turns that 400 into a type error instead.
- */
-export interface LinkedInCampaignInput {
-  name: string;
-  version?: string;
-  input:
-    | (LinkedInCampaignCommonInput & {
-        icp: LinkedInIcp;
-        offer: LinkedInOffer;
-        sequenceSteps?: never;
-      })
-    | (LinkedInCampaignCommonInput & {
-        sequenceSteps: EditableSequenceStep[];
-        icp?: never;
-        offer?: never;
-      });
-}
-
 /**
  * One LinkedIn account's state. `seatKey` absent means the first account, which
  * is what every caller written before multi-account meant and still means.
  */
 export async function getLinkedInSeat(seatKey?: string): Promise<LinkedInSeatResponse> {
   return request(`/api/linkedin/seat${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`);
-}
-
-export async function saveLinkedInSeat(
-  patch: SeatPatch,
-  seatKey?: string
-): Promise<{ seat: LinkedInSeat; posture: SeatPosture }> {
-  return request('/api/linkedin/seat', {
-    method: 'PUT',
-    body: JSON.stringify(seatKey ? { ...patch, seatKey } : patch)
-  });
 }
 
 /** What one read of the logged-in session produced. */
@@ -1256,7 +1029,7 @@ export interface LinkedInDetectedProfile {
   connectionsCount: number | null;
 }
 
-export interface LinkedInSeatDetection {
+interface LinkedInSeatDetection {
   /** 'pending' on a 202: the read was queued for a machine that can open a browser. */
   status?: 'detected' | 'pending';
   /** null when the read reached LinkedIn but produced nothing usable. */
@@ -1417,38 +1190,8 @@ export async function deleteLeadList(listId: string): Promise<{ deleted: unknown
   });
 }
 
-/**
- * Delete a campaign and the outreach records it produced.
- *
- * THE ONE CALL IN THIS FILE THAT REMOVES LEDGER ROWS, and the confirm dialog
- * has to say so: a stopped campaign's actions are the record of who was
- * approached and with what, and this is the erasure path rather than the
- * housekeeping one. EXCLUSIONS SURVIVE -- somebody who asked to be left alone
- * stays left alone, which is why `exclusionsKept` comes back true. Refused with
- * a 409 while the campaign is running or paused (stop it first) or while a
- * worker holds any of its actions. Owner-only.
- */
-export async function deleteLinkedInCampaign(campaignId: string): Promise<{
-  deleted: boolean;
-  campaignId: string;
-  removed: { exports: number; manualTasks: number; members: number; actions: number };
-  exclusionsKept: boolean;
-}> {
-  return request(`/api/linkedin/campaigns/${encodeURIComponent(campaignId)}`, { method: 'DELETE' });
-}
-
 export async function getLinkedInLimits(seatKey?: string): Promise<LinkedInLimitsReport> {
   return request(`/api/linkedin/limits${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`);
-}
-
-/** A dry run. No slot becomes a `linkedin_actions` row on this path. */
-export async function planLinkedIn(input: {
-  kind: PacedKind;
-  targets: string[];
-  horizonDays?: number;
-  seatKey?: string;
-}): Promise<LinkedInPlanResponse> {
-  return request('/api/linkedin/plan', { method: 'POST', body: JSON.stringify(input) });
 }
 
 export async function getLinkedInActions(
@@ -1504,278 +1247,6 @@ export async function editLinkedInActionBody(
   return result.action;
 }
 
-/**
- * The sequence-builder campaigns, for one account or for all of them.
- *
- * `seatKey` FILTERS. A campaign is filed against the LinkedIn account it sends
- * from, and this call used to ask for every campaign in the workspace whatever
- * account the operator had switched to -- so the list offered Stop, Edit and
- * Queue on campaigns belonging to somebody else's profile. Omit it only where
- * the question really is workspace-wide.
- */
-export async function getLinkedInCampaigns(seatKey?: string): Promise<LinkedInCampaign[]> {
-  const result = await request<{ campaigns: LinkedInCampaign[] }>(
-    `/api/linkedin/campaigns${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
-  );
-  return result.campaigns;
-}
-
-/** Runs `gtm.linkedin-outreach`, whose first step is the `gtm.linkedin-sequence` skill. */
-export async function createLinkedInCampaign(
-  input: LinkedInCampaignInput
-): Promise<LinkedInCampaignCreated> {
-  return request('/api/linkedin/campaigns', { method: 'POST', body: JSON.stringify(input) });
-}
-
-export async function getLinkedInCampaign(id: string): Promise<LinkedInCampaignDetail> {
-  return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}`);
-}
-
-/**
- * One step as the builder edits it.
- *
- * Deliberately NOT the server's `SequenceStep`, which also carries `variables`
- * and `critique`. Both are DERIVED from the copy by the thing that reads it;
- * sending them back would be handing the server its own homework, and typing
- * the editor against them would make every hand-written step claim a critique
- * that never ran.
- */
-export interface EditableSequenceStep {
-  id: string;
-  /** Days after campaign start. The first step is day 0. */
-  day: number;
-  kind: SequenceStepKind;
-  /** Why this step exists, for the human approving the campaign. */
-  intent: string;
-  /** The copy, with `{{mergeField}}` placeholders. Empty for `profile_view`. */
-  template: string;
-  /**
-   * A branch on an EARLIER step's outcome.
-   *
-   * `undefined` and `null` both mean unconditional, and the server accepts
-   * either (`stepConditionSchema.nullish()`), so clearing a branch in the
-   * builder is a save rather than a 400. `always` is spelled out rather than
-   * dropped when an operator picks it: the shape stays uniform, and an
-   * `always` naming a step that no longer exists is an edit they want to hear
-   * about at save time.
-   */
-  condition?: StepCondition | null;
-}
-
-export interface LinkedInSequenceTemplate {
-  id: string;
-  name: string;
-  description: string;
-  steps: EditableSequenceStep[];
-}
-
-/**
- * Everything `GET /api/linkedin/sequence-templates` publishes.
- *
- * The templates were only ever half of it. `mergeFields`, `inviteNoteMaxChars`
- * and `branchOn` ride along precisely so a builder does not hardcode what the
- * server validates -- the failure mode being an editor that lets an operator
- * pick a branch the API then refuses.
- */
-export interface LinkedInSequenceConfig {
-  templates: LinkedInSequenceTemplate[];
-  /** Null when the server published none. Never a slug this file invented. */
-  defaultTemplateId: string | null;
-  mergeFields: readonly string[];
-  inviteNoteMaxChars: number;
-  maxSteps: number;
-  branchOn: readonly BranchOn[];
-  actionKinds: readonly LinkedInActionKind[];
-  pacedKinds: readonly PacedKind[];
-}
-
-/**
- * A proposed brief and sequence. NOTHING is persisted -- no campaign, no run,
- * no ledger row. It is the AI's first draft for the operator to edit.
- *
- * `degraded` names what enrichment could not determine from the domain. Those
- * fields must render EMPTY: a plausible guess sitting in a brief field is the
- * one failure this screen cannot recover from, because the operator would
- * approve it without ever knowing it was invented.
- */
-export interface LinkedInCampaignDraft {
-  brief: { icp: Partial<LinkedInIcp>; offer: Partial<LinkedInOffer> };
-  sequence: { steps: EditableSequenceStep[] };
-  degraded: string[];
-  /**
-   * The template this draft was shaped from, or null when the brief was
-   * complete enough to draft specific copy instead.
-   *
-   * The route has always returned it and the screen has always needed it -- to
-   * show which shape it is looking at, and to send the same one back to
-   * `POST /api/linkedin/campaigns`. Reading it through a cast was the client
-   * asserting a field this type denied.
-   */
-  templateId: string | null;
-  /**
-   * The four fields a homepage cannot state, PROPOSED by a model -- absent when
-   * no model is configured. Deliberately outside `brief`: everything in there
-   * was read off the site with evidence behind it, and these were not. They are
-   * still named in `degraded`, because a guess does not make a field known.
-   */
-  suggested?: { role: string; segment: string; pain: string; mechanism: string };
-  /** Which backend proposed them, for the sentence the screen shows. */
-  suggestedBy?: 'model' | 'cli';
-}
-
-export async function getLinkedInSequenceTemplates(): Promise<LinkedInSequenceTemplate[]> {
-  const result = await request<{ templates?: LinkedInSequenceTemplate[] }>(
-    '/api/linkedin/sequence-templates'
-  );
-  return result.templates ?? [];
-}
-
-/**
- * The same route, read whole.
- *
- * Every field is defaulted from the constants above rather than trusted: a
- * deployment one version behind serves a response with no `branchOn` in it,
- * and a branch control that renders an empty dropdown there is worse than one
- * that renders the five it already knows.
- */
-export async function getLinkedInSequenceConfig(): Promise<LinkedInSequenceConfig> {
-  const result = await request<Partial<LinkedInSequenceConfig>>('/api/linkedin/sequence-templates');
-  return {
-    templates: Array.isArray(result.templates) ? result.templates : [],
-    defaultTemplateId: result.defaultTemplateId ?? null,
-    mergeFields:
-      Array.isArray(result.mergeFields) && result.mergeFields.length > 0
-        ? result.mergeFields
-        : LINKEDIN_MERGE_FIELDS,
-    inviteNoteMaxChars: Number.isFinite(Number(result.inviteNoteMaxChars))
-      ? Number(result.inviteNoteMaxChars)
-      : LINKEDIN_INVITE_NOTE_MAX_CHARS,
-    maxSteps: Number.isFinite(Number(result.maxSteps)) ? Number(result.maxSteps) : 25,
-    branchOn: branchOnOptions(Array.isArray(result.branchOn) ? result.branchOn : null),
-    actionKinds:
-      Array.isArray(result.actionKinds) && result.actionKinds.length > 0
-        ? result.actionKinds
-        : LINKEDIN_ACTION_KINDS,
-    pacedKinds: Array.isArray(result.pacedKinds) ? result.pacedKinds : []
-  };
-}
-
-/** Writes nothing. The response is a draft the operator edits before a campaign exists. */
-/**
- * `tone`, `inviteNote` and `includeInMail` are the same three controls the
- * campaign path has. Absent means the server's own defaults -- a consultative
- * tone, a drafted invite note and no InMail.
- */
-export async function draftLinkedInCampaign(input: {
-  domain: string;
-  targets?: string[];
-  templateId?: string;
-  tone?: SequenceTone;
-  inviteNote?: LinkedInInviteNoteMode;
-  includeInMail?: boolean;
-}): Promise<LinkedInCampaignDraft> {
-  return request('/api/linkedin/campaigns/draft', { method: 'POST', body: JSON.stringify(input) });
-}
-
-/** `none` drafts a bare connection request; `drafted` is a connection request with a note. */
-export type LinkedInInviteNoteMode = 'drafted' | 'none';
-
-/**
- * What a campaign is configured with, beyond its copy.
- *
- * Every field optional and every one absent-means-unchanged on an edit. These
- * are the playbook's own names and the playbook's own values -- `horizonDays`
- * and `kind` are what the pacing engine reads, `format` is the tool the export
- * is rendered for, and the three copy dials are `gtm.linkedin-sequence`'s.
- */
-export interface LinkedInCampaignSettings {
-  tone?: SequenceTone;
-  inviteNote?: LinkedInInviteNoteMode;
-  includeInMail?: boolean;
-  kind?: PacedKind;
-  horizonDays?: number;
-  format?: ExportFormat;
-}
-
-/** Exactly what `PATCH /api/linkedin/campaigns/:id/sequence` returns -- every field, none optional. */
-export interface LinkedInSequenceSaved {
-  campaign: LinkedInCampaign;
-  /** The critiqued sequence now stored on the campaign. */
-  sequence: LinkedInSequence;
-  /** The re-plan. Its approval step is the one that has to be granted again. */
-  run: PlaybookRun;
-  /** The run whose approval this edit retired. Null when there was nothing to retire. */
-  previousRunId: string | null;
-  /** True when the save threw away an approval that had already been given. */
-  approvalInvalidated: boolean;
-}
-
-/**
- * Replace a campaign's sequence.
- *
- * Re-plans, and INVALIDATES any approval already recorded: an approval is bound
- * to the hash of the bytes that were read, and these are different bytes. The
- * screen says so before the button is pressed, not after.
- */
-/**
- * Edit a bound campaign: the copy, and anything it was created with.
- *
- * `settings` are ABSENT-MEANS-UNCHANGED, merged server-side over the input the
- * campaign already carries, so editing the words cannot re-default the tone,
- * the paced kind, the horizon or the export format. Editing is no longer a
- * narrower act than creating, which is why these controls need not be greyed
- * out on a campaign that already exists.
- *
- * Re-plans and re-approves: the previous approval is retired by this call.
- */
-export async function saveLinkedInCampaignSequence(
-  id: string,
-  steps: EditableSequenceStep[],
-  settings: LinkedInCampaignSettings = {}
-): Promise<LinkedInSequenceSaved> {
-  return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/sequence`, {
-    method: 'PATCH',
-    body: JSON.stringify({ steps, ...settings })
-  });
-}
-
-/** Renders the APPROVED bytes. Only the format may be chosen at this point. */
-export async function exportLinkedInCampaign(
-  id: string,
-  format?: ExportFormat
-): Promise<LinkedInExportResponse> {
-  return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/export`, {
-    method: 'POST',
-    body: JSON.stringify(format ? { format } : {})
-  });
-}
-
-/**
- * Hand the APPROVED campaign to this deployment's own worker.
- *
- * The sibling of `exportLinkedInCampaign` and the other half of what an
- * approval is for: export renders bytes for somebody else's tool, this queues
- * them for the browser on this machine. IT SENDS NOTHING HERE -- the rows are
- * written 'planned', the worker claims them on its own tick and re-runs the
- * safety gate immediately before each action.
- *
- * Self-hosted only, and the server says which kind of off it is: a 409 on
- * hosted Trevra is a decision about who the automation operator is, not a
- * switch to go hunting for. Surface its message verbatim.
- */
-export async function queueLinkedInCampaign(campaignId: string): Promise<LinkedInCampaignQueued> {
-  return request(`/api/linkedin/campaigns/${encodeURIComponent(campaignId)}/queue`, {
-    method: 'POST',
-    body: '{}'
-  });
-}
-
-export async function stopLinkedInCampaign(
-  id: string
-): Promise<{ campaign: LinkedInCampaign; releasedActions: number }> {
-  return request(`/api/linkedin/campaigns/${encodeURIComponent(id)}/stop`, { method: 'POST' });
-}
-
 export async function listLinkedInPosts(
   filters: { seatKey?: string; status?: LinkedInPostStatus; limit?: number } = {}
 ): Promise<LinkedInPost[]> {
@@ -1802,20 +1273,6 @@ export async function createLinkedInPost(input: {
   return result.post;
 }
 
-export async function updateLinkedInPost(
-  postId: string,
-  patch: { blocks?: PostBlock[]; status?: 'draft' | 'scheduled'; scheduledAt?: string | null }
-): Promise<LinkedInPost> {
-  const result = await request<{ post: LinkedInPost }>(
-    `/api/linkedin/posts/${encodeURIComponent(postId)}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(patch)
-    }
-  );
-  return result.post;
-}
-
 export async function cancelLinkedInPost(postId: string): Promise<LinkedInPost> {
   const result = await request<{ post: LinkedInPost }>(
     `/api/linkedin/posts/${encodeURIComponent(postId)}`,
@@ -1834,30 +1291,6 @@ export async function publishLinkedInPostNow(postId: string): Promise<LinkedInPo
     }
   );
   return result.post;
-}
-
-export function linkedInExportDownloadPath(campaignId: string, exportId: string): string {
-  return `/api/linkedin/campaigns/${encodeURIComponent(campaignId)}/export/${encodeURIComponent(exportId)}`;
-}
-
-/** Persists nothing. The response splits the file into usable, excluded and already-contacted. */
-export async function importLinkedInTargets(
-  file: File,
-  kind: LinkedInActionKind = 'invite'
-): Promise<LinkedInImportResponse> {
-  const form = new FormData();
-  form.append('file', file);
-  form.append('kind', kind);
-  const response = await fetch('/api/linkedin/targets/import', {
-    method: 'POST',
-    body: form,
-    credentials: 'include'
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: response.statusText }));
-    throw new ApiError(body.error ?? 'Target import failed', response.status);
-  }
-  return response.json();
 }
 
 export async function getLinkedInExclusions(): Promise<LinkedInExclusion[]> {
@@ -2232,7 +1665,7 @@ export async function tickLinkedInManagedCampaigns(): Promise<ManagedCampaignTic
  * live on `ManagedAnalytics`, and restating them here would be a shape that
  * looks authoritative while being unable to notice the server changing.
  */
-export type LinkedInManagedAnalytics = ManagedAnalytics;
+type LinkedInManagedAnalytics = ManagedAnalytics;
 
 export async function getLinkedInManagedAnalytics(
   filters: { campaignId?: string; seatKey?: string; sinceDays?: number } = {}
@@ -2249,7 +1682,7 @@ export async function getLinkedInWorkerStatus(): Promise<LinkedInWorkerStatus> {
   return request('/api/linkedin/worker/status');
 }
 
-export interface LinkedInCompanionDevice {
+interface LinkedInCompanionDevice {
   id: string;
   label: string;
   createdAt: string;
@@ -2278,33 +1711,6 @@ export interface LinkedInCompanionStatus {
 
 export async function getLinkedInCompanionStatus(): Promise<LinkedInCompanionStatus> {
   return request('/api/linkedin/companion');
-}
-
-export interface LinkedInBackgroundRunHistoryItem {
-  id: string;
-  kind: 'maintenance' | 'actions';
-  seatKey: string;
-  seatLabel: string;
-  startedAt: string;
-  finishedAt: string | null;
-  status: string;
-  tasks: string[];
-  executedCount: number;
-  reason: string | null;
-}
-
-export interface LinkedInActivityResponse {
-  nextRun: (LinkedInBackgroundRunSchedule & { seatKey: string; seatLabel: string }) | null;
-  runs: LinkedInBackgroundRunHistoryItem[];
-}
-
-export async function getLinkedInActivity(
-  limit = 50,
-  seatKey?: string
-): Promise<LinkedInActivityResponse> {
-  const query = new URLSearchParams({ limit: String(limit) });
-  if (seatKey) query.set('seatKey', seatKey);
-  return request(`/api/linkedin/activity?${query}`);
 }
 
 export async function createLinkedInCompanionPairing(): Promise<{
@@ -2337,7 +1743,7 @@ export async function revokeLinkedInCompanionDevice(
  * sentence and names which kind of off it is; render it verbatim.
  * ================================================================== */
 
-export interface LinkedInLeadSourceList {
+interface LinkedInLeadSourceList {
   sources: LinkedInLeadSource[];
   enabled: boolean;
   /** Null exactly when `enabled`. A calm explanation, not an error. */
@@ -2382,16 +1788,6 @@ export async function getLinkedInLeadSources(
     enabled: result.enabled === true,
     offReason: result.offReason ?? null
   };
-}
-
-export async function getLinkedInLeadSource(
-  id: string,
-  seatKey?: string
-): Promise<LinkedInLeadSource> {
-  const result = await request<{ source: LinkedInLeadSource }>(
-    `/api/linkedin/lead-sources/${encodeURIComponent(id)}${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
-  );
-  return result.source;
 }
 
 /** The people one walk stored, with the source they came from. */
@@ -2477,7 +1873,7 @@ export async function importLinkedInLeadSource(
  * worker claims, gates again, and executes at paced gaps.
  * ================================================================== */
 
-export interface LinkedInInboxSyncResult {
+interface LinkedInInboxSyncResult {
   /** Null on success. The routes turn a non-null into a 409 before it reaches here. */
   blocked: string | null;
   threads: number;
@@ -2493,7 +1889,7 @@ export interface LinkedInInboxSyncResult {
   degraded: string[];
 }
 
-export interface LinkedInThreadSyncResult {
+interface LinkedInThreadSyncResult {
   blocked: string | null;
   inserted: number;
   inbound: number;
@@ -2508,7 +1904,7 @@ export interface LinkedInThreadSyncResult {
  * that it passed -- the same honesty rule the limits route follows. A refusal
  * never reaches here: it is a 409 carrying the gate's own sentence.
  */
-export interface LinkedInQueuedReply {
+interface LinkedInQueuedReply {
   actionId: string;
   threadId: string;
   threadUrn: string;
@@ -2642,7 +2038,7 @@ export async function replyToLinkedInThread(
  * UI that will read as broken the first time somebody checks.
  * ================================================================== */
 
-export interface LinkedInPendingSyncResult {
+interface LinkedInPendingSyncResult {
   blocked: string | null;
   /** Entries LinkedIn showed us. */
   listed: number;
@@ -2664,7 +2060,7 @@ export interface LinkedInWithdrawalCandidates {
   staleAfterDays: number;
 }
 
-export interface LinkedInWithdrawalsQueued {
+interface LinkedInWithdrawalsQueued {
   candidates: WithdrawalCandidate[];
   queued: number;
   duplicates: number;
@@ -2751,32 +2147,6 @@ export async function getLinkedInWithdrawals(
     `/api/linkedin/withdrawals${query.size ? `?${query}` : ''}`
   );
   return Array.isArray(result.withdrawals) ? result.withdrawals : [];
-}
-
-/* =====================================================================
- * Engagement (migration 034): follow, like, endorse.
- *
- * FILED `planned` AND FULLY GATED. `evaluateEngagementSafety` is the ordinary
- * safety gate with an engagement kind -- every check, unfiltered, no exception
- * for "it is only a like". A refusal is a 409 in the gate's own words, and a
- * duplicate is a 409 too: one target takes one action of one kind per seat.
- * ================================================================== */
-
-export interface LinkedInQueuedEngagement {
-  actionId: string;
-  kind: LinkedInEngagementKind;
-  targetRef: string;
-  plannedFor: string;
-  verdict: LinkedInSafetyVerdict;
-}
-
-export async function queueLinkedInEngagement(input: {
-  kind: LinkedInEngagementKind;
-  targetRef: string;
-  campaignId?: string;
-  plannedFor?: string;
-}): Promise<LinkedInQueuedEngagement> {
-  return request('/api/linkedin/engagement', { method: 'POST', body: JSON.stringify(input) });
 }
 
 /* =====================================================================
@@ -2888,7 +2258,7 @@ export async function searchResearch(input: Record<string, unknown>): Promise<{ 
  * -------------------------------------------------------------------------- */
 
 /** The row: which handle this workspace speaks as, and when its session was last live. */
-export interface RedditAccountRow {
+interface RedditAccountRow {
   workspaceId: string;
   username: string | null;
   authMode: 'manual' | 'credentials';
@@ -2897,7 +2267,7 @@ export interface RedditAccountRow {
   updatedAt: string;
 }
 
-export interface RedditAuth {
+interface RedditAuth {
   hasCredentials: boolean;
   /** `u/pankaj`, or null. Public by design. */
   username: string | null;
@@ -2972,62 +2342,4 @@ export interface RedditLoginResult {
  */
 export async function loginReddit(otp?: string): Promise<RedditLoginResult> {
   return request('/api/reddit/login', { method: 'POST', body: JSON.stringify(otp ? { otp } : {}) });
-}
-
-/** One post exactly as the listing reported it. A count nobody could read is null, never 0. */
-export interface RedditThread {
-  id: string;
-  url: string;
-  title: string;
-  author: string | null;
-  subreddit: string | null;
-  score: number | null;
-  comments: number | null;
-  createdAt: string | null;
-}
-
-export interface RedditResearchRead {
-  subreddit: string;
-  sort: 'hot' | 'new' | 'top' | 'rising';
-  threads: RedditThread[];
-  /** What could not be read. Shown, never swallowed. */
-  degraded: string[];
-}
-
-export interface RedditResearchResult {
-  reads: RedditResearchRead[];
-  /** Named rather than dropped: a private or misspelled subreddit has to reach the operator. */
-  refused: Array<{ subreddit: string; reason: string }>;
-}
-
-/**
- * Read subreddits through the signed-in session.
- *
- * Read-only, so there is nothing to approve. The server walks them one at a
- * time -- a burst of parallel listing reads from one account is exactly what
- * gets rate-limited -- so this call is slow by design with several names.
- */
-export async function researchReddit(input: {
-  subreddits: string[];
-  sort?: 'hot' | 'new' | 'top' | 'rising';
-  limit?: number;
-}): Promise<RedditResearchResult> {
-  return request('/api/reddit/research', { method: 'POST', body: JSON.stringify(input) });
-}
-
-/**
- * Post one comment, in one thread, right now.
- *
- * NO QUEUE AND NO APPROVAL STEP: there is no Reddit pacing engine to hand it
- * to, so the operator is the pacing engine and they wrote the words. A 409
- * arrives as an ApiError whose message is the server's own sentence -- a locked
- * thread, a rate limit, or a dead session. Surface it verbatim, and do NOT
- * retry it: the reply may already be posted, and a duplicate cannot be un-sent.
- */
-export async function commentOnReddit(input: { url: string; body: string }): Promise<{
-  posted: true;
-  url: string;
-  detail: string | null;
-}> {
-  return request('/api/reddit/comment', { method: 'POST', body: JSON.stringify(input) });
 }

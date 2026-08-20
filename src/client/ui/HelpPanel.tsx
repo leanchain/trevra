@@ -264,42 +264,23 @@ export function ShortcutSheet({ onClose }: { onClose: () => void }) {
 const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   { path: '/loop', label: 'Loop', hint: 'What the loop is doing, and where it is stuck' },
   { path: '/loop/cost', label: 'What this cost', hint: 'Spent, sent, produced — one period' },
-  {
-    path: '/outreach',
-    label: 'Outreach · Settings',
-    hint: 'LinkedIn accounts, working hours, and sending limits'
-  },
-  {
-    path: '/outreach/accounts',
-    label: 'Outreach · Target accounts',
-    hint: 'Rank companies by the buying signals Trevra can prove'
-  },
-  {
-    path: '/outreach/manager',
-    label: 'Outreach · Campaigns',
-    hint: 'Run campaigns, read results, and handle work waiting on you'
-  },
-  {
-    path: '/outreach/manager/new',
-    label: 'Outreach · New campaign',
-    hint: 'Choose a sending account, lead list and workflow, then start'
-  },
+  { path: '/outreach', label: 'Outreach · Campaigns', hint: 'Campaigns, people and companies' },
+  { path: '/outreach/new', label: 'Outreach · New campaign', hint: 'Build and start one' },
   {
     path: '/outreach/inbox',
     label: 'Outreach · Messages',
     hint: 'Replies and conversations with campaign contacts'
   },
   {
-    path: '/outreach/leads',
-    label: 'Outreach · Find people',
-    hint: 'Turn a search, a post or keywords into a list of people'
+    path: '/outreach/posts',
+    label: 'Outreach · Posts',
+    hint: 'Scheduled and published LinkedIn posts'
   },
   {
-    path: '/outreach/campaigns',
-    label: 'Outreach · Approve & export',
-    hint: 'Write a sequence, approve the wording, export it'
+    path: '/outreach/settings',
+    label: 'Outreach · Settings',
+    hint: 'LinkedIn accounts and their limits'
   },
-  { path: '/outreach/plan', label: 'Outreach · Plan preview', hint: 'A dry run. Writes nothing' },
   { path: '/ledger', label: 'Run ledger', hint: 'Every run, with the evidence' },
   {
     path: '/research',

@@ -8,7 +8,7 @@ export const MAINTENANCE_TASK_LABELS = {
   lead_sources: 'Lead sourcing'
 } as const;
 
-export const QUEUE_WAIT_COPY: Record<LinkedInQueueWaitReason, string> = {
+const QUEUE_WAIT_COPY: Record<LinkedInQueueWaitReason, string> = {
   computer: 'Waiting for your paired computer',
   account_paused: 'Waiting for this LinkedIn account to be resumed',
   account_cooldown: 'Waiting for this LinkedIn account to leave cooldown',
@@ -105,10 +105,4 @@ export function formatVisitWindow(
     hour12: false
   });
   return `${day}, ${time.format(start)}–${time.format(end)} ${zone}`;
-}
-
-export function formatPlannedTime(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
 }

@@ -3,9 +3,9 @@ import { id, type Db } from '../db.js';
 // alone: it is the only thing in this file a route must turn into a 409 rather
 // than a 400, and carrying the status on the error is how every other refusal
 // in this subsystem reaches the response without the route re-deciding it.
-// campaigns.ts imports db and actions and nothing else, so this direction adds
-// no cycle -- the reverse import, from campaigns.ts to here, would.
-import { LinkedInApiError } from './campaigns.js';
+// errors.ts is a leaf with no imports of its own, so this direction adds no
+// cycle.
+import { LinkedInApiError } from './errors.js';
 import {
   normalizeLeadRow,
   normalizeScrapedLead,

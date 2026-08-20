@@ -27,7 +27,7 @@ import type {
   LinkedInLeadContact,
   LinkedInLeadList
 } from '../server/linkedin/lead-lists';
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { errorMessage } from './LinkedInSafety';
 
 /**

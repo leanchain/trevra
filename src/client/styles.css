@@ -1236,24 +1236,6 @@ button:disabled {
   gap: 12px;
   align-items: center;
 }
-.file-picker {
-  min-height: var(--t-tap);
-  border: 1px dashed var(--t-green-200);
-  border-radius: var(--t-r-sm);
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--green);
-  cursor: pointer;
-  background: var(--green-3);
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-}
-.file-picker input {
-  display: none;
-}
 .panel-footer {
   display: flex;
   justify-content: space-between;
@@ -4309,23 +4291,6 @@ button:disabled {
   background: var(--t-surface-2);
   color: var(--muted);
 }
-.li-campaign-running {
-  background: var(--blue-bg);
-  color: var(--blue);
-}
-.li-campaign-completed {
-  background: var(--green-3);
-  color: var(--green);
-}
-.li-campaign-stopped {
-  background: var(--red-bg);
-  color: var(--red);
-}
-.li-campaign-draft {
-  background: var(--t-surface-2);
-  color: var(--muted);
-}
-
 /* Forms, filters, tables. */
 .li-form-grid {
   display: grid;
@@ -4366,14 +4331,6 @@ button:disabled {
 }
 .li-span-2 {
   grid-column: 1 / -1;
-}
-.li-form-side {
-  display: grid;
-  gap: 10px;
-  align-content: start;
-}
-.li-form-side .panel-note {
-  margin: 0;
 }
 /* Not a grid label: it is a checkbox and its text on one line. The :not()
    above is the cause-level fix for what used to be two !important rules. */
@@ -4553,90 +4510,6 @@ button:disabled {
   font-weight: 700;
 }
 
-/* Campaigns. */
-.li-campaign-list {
-  display: grid;
-}
-.li-campaign-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto auto;
-  gap: 12px;
-  align-items: center;
-  text-align: left;
-  border: 0;
-  border-top: 1px solid var(--t-line-soft);
-  background: transparent;
-  color: var(--ink);
-  padding: 12px 4px;
-  min-height: var(--t-tap);
-  cursor: pointer;
-}
-.li-campaign-row:first-child {
-  border-top: 0;
-}
-.li-campaign-row.is-open {
-  background: var(--green-3);
-  border-radius: var(--t-r-sm);
-}
-.li-campaign-name {
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-}
-.li-campaign-date {
-  color: var(--muted);
-  font-size: var(--t-text-xs);
-}
-.li-detail-actions {
-  display: flex;
-  flex-wrap: wrap;
-  min-width: 0;
-  gap: 8px;
-  align-items: center;
-}
-.li-detail-actions select {
-  min-height: var(--t-tap);
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-sm);
-  background: var(--t-field);
-  padding: 8px 10px;
-  font-size: var(--t-text-xs);
-  color: var(--ink);
-}
-.li-approval {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 16px;
-  align-items: center;
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-md);
-  padding: 14px 16px;
-  background: var(--t-field);
-}
-.li-approval.is-waiting {
-  border-color: var(--line);
-  border-left: 3px solid var(--amber);
-  background: var(--panel);
-}
-.li-approval strong {
-  display: block;
-  font-size: var(--t-text-xs);
-  margin-bottom: 5px;
-}
-.li-approval p {
-  margin: 0;
-  color: var(--t-amber-ink);
-  font-size: var(--t-text-xs);
-  line-height: 1.55;
-  max-width: var(--t-measure);
-}
-.li-approval-actions {
-  display: flex;
-  gap: 8px;
-}
-.li-sequence {
-  display: grid;
-  gap: 10px;
-}
 .li-step {
   border: 1px solid var(--line);
   border-radius: var(--t-r-md);
@@ -4721,89 +4594,6 @@ button:disabled {
   line-height: 1.6;
 }
 
-/* The sequence builder. Action nodes in day order, edited in place.
-   Nothing here is a new visual language: a card is the .li-step already used
-   for a rendered sequence, its fields are the .li-form-grid already used for
-   the brief, and its buttons are the .li-mini-button already used in tables. */
-.li-create-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-.li-create-actions .li-hint {
-  flex: 1 1 22ch;
-  margin: 0;
-}
-
-.li-template-list {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-}
-.li-template-card {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 14px;
-  align-items: center;
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-md);
-  padding: 13px 14px;
-  background: var(--t-field);
-}
-.li-template-card strong {
-  display: block;
-  font-size: var(--t-text-xs);
-}
-.li-template-card p {
-  margin: 5px 0 0;
-  color: var(--muted);
-  font-size: var(--t-text-xs);
-  line-height: 1.55;
-  max-width: var(--t-measure);
-}
-.li-template-steps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 9px;
-}
-
-/* The brief, folded. Same disclosure as the seat's manual fields: a summary
-   that reads as a link, no marker, and green once it is open. */
-.li-brief-fold {
-  margin-top: 20px;
-  border-top: 1px solid var(--t-line-soft);
-  padding-top: 13px;
-}
-.li-brief-fold > summary {
-  list-style: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 24px;
-  color: var(--muted);
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-  cursor: pointer;
-}
-.li-brief-fold > summary::-webkit-details-marker {
-  display: none;
-}
-.li-brief-fold > summary:hover {
-  color: var(--green);
-}
-.li-brief-fold[open] > summary {
-  color: var(--green);
-  margin-bottom: 11px;
-}
-.li-brief-fold > .li-hint {
-  margin: 0 0 13px;
-}
-.li-brief-fold .li-degraded {
-  margin: 0 0 14px;
-}
-
 .li-step-card header {
   justify-content: flex-start;
 }
@@ -4828,28 +4618,6 @@ button:disabled {
 .li-kind-inmail {
   background: var(--amber-bg);
   color: var(--amber);
-}
-.li-day-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--t-text-chip);
-  font-weight: 700;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: var(--t-track-caps);
-}
-.li-day-control input {
-  width: 68px;
-  min-height: var(--t-tap);
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-sm);
-  background: var(--t-field);
-  padding: 6px 9px;
-  color: var(--ink);
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
 }
 .li-step-tools {
   display: flex;
@@ -4912,19 +4680,6 @@ button:disabled {
   font-size: var(--t-text-xs);
   line-height: 1.5;
 }
-.li-merge-legend {
-  margin: 12px 0 0;
-}
-.li-merge-legend code {
-  background: var(--green-3);
-  color: var(--green);
-  border-radius: var(--t-r-xs);
-  padding: 2px 6px;
-  font-family: var(--t-mono);
-  font-size: var(--t-text-xs);
-  margin-right: 4px;
-}
-
 .li-add-step {
   display: flex;
   align-items: center;
@@ -4933,12 +4688,6 @@ button:disabled {
   margin-top: 18px;
   border-top: 1px dashed var(--line);
   padding-top: 13px;
-}
-.li-add-step-groups {
-  display: flex;
-  align-items: flex-start;
-  gap: 18px;
-  flex-wrap: wrap;
 }
 /* Same reset and legend treatment as .condition-group -- a fieldset here for
    the same reason: it groups related choices under a label a screen reader
@@ -5195,67 +4944,6 @@ button:disabled {
   .li-wf-wait {
     grid-template-columns: 1fr;
   }
-}
-
-/* Plan preview: a calendar of exact slots. */
-.li-reasons {
-  max-width: var(--t-measure);
-  margin: 0;
-  padding-left: 19px;
-  color: var(--muted);
-  font-size: var(--t-text-xs);
-  line-height: 1.7;
-}
-.li-calendar {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 12px;
-}
-.li-cal-day {
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-md);
-  padding: 11px 12px;
-  background: var(--t-field);
-}
-.li-cal-day header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-}
-.li-cal-day header strong {
-  font-size: var(--t-text-xs);
-}
-.li-cal-day header span {
-  color: var(--green);
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-.li-cal-load {
-  display: block;
-  height: 4px;
-  border-radius: var(--t-r-sm);
-  background: var(--t-green-fill);
-  margin: 8px 0 10px;
-  min-width: 4px;
-}
-.li-cal-day ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 6px;
-}
-.li-cal-day li {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 9px;
-  font-size: var(--t-text-xs);
-}
-.li-cal-day time {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
 }
 
 /* The local worker, and the login you do by hand. */
@@ -5546,119 +5234,6 @@ button:disabled {
   }
 }
 
-/* ---- LinkedIn background activity ---------------------------------------
-   One upcoming sitting and an actual history. These rows deliberately look
-   like an operations ledger rather than an analytics chart: time, account,
-   outcome, and what the browser did are the answers. */
-.li-activity-page {
-  gap: 16px;
-}
-.li-activity-next .section-heading h2,
-.li-activity-page .section-heading h2 {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.li-activity-next-value {
-  display: grid;
-  gap: 5px;
-  padding: 15px 16px;
-  border: 1px solid var(--t-green-200);
-  border-radius: var(--t-r-md);
-  background: var(--green-3);
-}
-.li-activity-next-value > strong {
-  font-family: var(--t-display);
-  font-size: var(--t-text-xl);
-  line-height: 1.25;
-}
-.li-activity-next-value > span,
-.li-activity-next-value > small {
-  color: var(--muted);
-  font-size: var(--t-text-xs);
-}
-.li-activity-runs {
-  display: grid;
-}
-.li-activity-run {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: start;
-  padding: 14px 2px;
-  border-top: 1px solid var(--t-line-soft);
-}
-.li-activity-run:first-child {
-  border-top: 0;
-}
-.li-activity-run-icon {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--t-r-pill);
-  background: var(--t-surface-2);
-  color: var(--muted);
-}
-.li-activity-run-icon.is-good {
-  background: var(--green-3);
-  color: var(--green);
-}
-.li-activity-run-icon.is-warn {
-  background: var(--amber-bg);
-  color: var(--amber);
-}
-.li-activity-run-main {
-  min-width: 0;
-}
-.li-activity-run-head {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  flex-wrap: wrap;
-}
-.li-activity-run-head strong {
-  font-size: var(--t-text-sm);
-}
-.li-activity-run-head span {
-  color: var(--muted);
-  font-size: var(--t-text-xs);
-}
-.li-activity-run-main p {
-  margin: 5px 0 0;
-  color: var(--ink);
-  font-size: var(--t-text-sm);
-  line-height: 1.45;
-}
-.li-activity-run-main small {
-  display: block;
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: var(--t-text-xs);
-}
-.li-activity-run-time {
-  display: grid;
-  gap: 3px;
-  min-width: 150px;
-  text-align: right;
-}
-.li-activity-run-time strong {
-  font-size: var(--t-text-xs);
-}
-.li-activity-run-time small {
-  color: var(--muted);
-  font-size: var(--t-text-chip);
-}
-@media (max-width: 700px) {
-  .li-activity-run {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-  .li-activity-run-time {
-    grid-column: 2;
-    min-width: 0;
-    text-align: left;
-  }
-}
 .li-seat-card {
   border: 1px solid var(--line);
   border-radius: var(--t-r-md);
@@ -5785,60 +5360,6 @@ button:disabled {
 }
 .li-manual-fields .li-form-grid {
   margin-bottom: 10px;
-}
-
-/* ---- branching -----------------------------------------------------------
-   A step that waits on an earlier one is INDENTED AND CONNECTED, because a
-   dropdown alone puts the shape of a sequence in a control nobody reads twice.
-   `always` gets none of this: it is what every existing sequence is, and
-   decorating the ordinary case is how the branched one stops standing out. */
-.li-step-branched {
-  position: relative;
-  margin-left: 26px;
-  border-left: 2px solid var(--t-green-200);
-}
-.li-step-branched::before {
-  content: '';
-  position: absolute;
-  left: -26px;
-  top: 26px;
-  width: 24px;
-  height: 2px;
-  background: var(--t-green-200);
-  border-radius: var(--t-r-sm);
-}
-.li-branch-chip {
-  gap: 5px;
-  background: var(--green-3);
-  color: var(--green);
-}
-.li-branch-row {
-  display: flex;
-  gap: 10px;
-  align-items: end;
-  flex-wrap: wrap;
-  margin-bottom: 11px;
-}
-.li-branch-control {
-  display: grid;
-  gap: 5px;
-  font-size: var(--t-text-chip);
-  font-weight: 700;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: var(--t-track-caps);
-}
-.li-branch-control select {
-  min-height: var(--t-tap);
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-sm);
-  background: var(--t-field);
-  padding: 7px 10px;
-  color: var(--ink);
-  font-size: var(--t-text-xs);
-  font-weight: 700;
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 /* The three engagement kinds. Muted like a profile view, because all four are
@@ -6506,31 +6027,6 @@ button:disabled {
 }
 /* The same rows, opened inside the campaign builder rather than on their own
    screen: inset so they read as a picker over the field they fill. */
-/* A model's proposal, styled as neither an error nor a success: it is an
-   unverified thing the operator has to read. Same shape as .li-degraded, one
-   step warmer, so the two read as siblings rather than as a fault and a fix. */
-.li-suggested {
-  display: flex;
-  gap: 10px;
-  align-items: start;
-  margin: 12px 0;
-  padding: 12px 14px;
-  border: 1px dashed var(--t-line-soft);
-  border-radius: var(--t-r-sm);
-  background: var(--t-surface-2);
-}
-.li-suggested strong {
-  display: block;
-  font-size: var(--t-text-xs);
-}
-.li-suggested p {
-  margin: 4px 0 8px;
-  color: var(--muted);
-  font-size: var(--t-text-xs);
-  line-height: 1.5;
-  max-width: var(--t-measure);
-}
-
 /* Keywords, the button that turns them into a URL, and why filters are not
    here. One row on a wide screen, stacked on a narrow one. */
 .li-search-builder {
@@ -6655,26 +6151,6 @@ button:disabled {
     border-bottom: 0;
   }
 }
-.li-lead-picker {
-  display: grid;
-  gap: 10px;
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--t-r-sm);
-  background: var(--t-surface-2);
-}
-.li-lead-picker .panel-note {
-  margin: 0;
-}
-.li-lead-picker .li-source-row:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.li-lead-picker .li-source-row:disabled:hover {
-  background: transparent;
-}
-
 /* ---- the pending-invite backlog ------------------------------------------
    One number against one ceiling, so it is a meter and not a chart -- the same
    shape as .li-ceiling-meter, and the fill turns red only where red MEANS
@@ -6799,7 +6275,6 @@ button:disabled {
    after the rules it corrects so the floor is the last word. */
 .panel-disclosure,
 .proof-pack summary,
-.li-brief-fold > summary,
 .li-manual-fields > summary,
 .li-gate-checks > summary,
 .li-inline-check {
@@ -6846,15 +6321,9 @@ button:disabled {
   }
 }
 @media (max-width: 760px) {
-  .li-approval {
-    grid-template-columns: 1fr;
-  }
   .li-form-grid,
   .li-signin-fields,
   .li-signin-row {
-    grid-template-columns: 1fr;
-  }
-  .li-template-card {
     grid-template-columns: 1fr;
   }
   .li-step-card header {
@@ -6875,17 +6344,6 @@ button:disabled {
   }
   .li-msg-group {
     max-width: 100%;
-  }
-  /* The connector needs a gutter it does not have on a phone. The branch is
-     still legible: the chip in the card header says it in words. */
-  .li-step-branched {
-    margin-left: 0;
-  }
-  .li-step-branched::before {
-    display: none;
-  }
-  .li-branch-control {
-    flex: 1 1 100%;
   }
   .li-source-count {
     margin-left: 0;
@@ -7573,70 +7031,6 @@ button:disabled {
   color: var(--ink);
 }
 
-/* The Outreach destinations people revisit stay visible; specialist surfaces
-   share one native select instead of stretching a rarely-used strip across
-   the page. The label owns the active underline, the select keeps the
-   platform's keyboard/touch behavior. */
-.outreach-more-select {
-  padding-right: 7px;
-}
-.outreach-more-select select {
-  min-height: 28px;
-  max-width: 9rem;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-weight: inherit;
-  cursor: pointer;
-}
-.outreach-more-select select:focus-visible {
-  outline: 2px solid var(--t-focus);
-  outline-offset: 2px;
-  border-radius: var(--t-r-xs);
-}
-.outreach-more-select option {
-  color: var(--ink);
-  background: var(--panel);
-}
-
-/* Optional Outreach pages become normal-looking tabs once pinned. The close
-   control only removes the tab from the strip; it never deletes the feature. */
-.outreach-pinned-tab {
-  gap: 3px !important;
-  padding-right: 5px !important;
-}
-.outreach-pinned-open,
-.outreach-pinned-close {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-weight: inherit;
-  cursor: pointer;
-}
-.outreach-pinned-open {
-  padding: 0;
-}
-.outreach-pinned-close {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border-radius: 50%;
-  color: var(--muted);
-}
-.outreach-pinned-close:hover {
-  background: var(--t-surface-2);
-  color: var(--ink);
-}
-.outreach-pinned-open:focus-visible,
-.outreach-pinned-close:focus-visible {
-  outline: 2px solid var(--t-focus);
-  outline-offset: 2px;
-}
 .setup-nav > .is-active,
 .setup-nav > [aria-current='page'],
 .outreach-nav > .is-active,
@@ -9810,12 +9204,25 @@ button:disabled {
 }
 
 /* Outreach simple mode: campaigns + messages + settings, with specialist
-   surfaces under More and only the high-signal campaign data in the main path. */
+   surfaces under More and only the high-signal campaign data in the main path.
+
+   `.mgr-simple-hide` rather than the bare `.mgr-inputs` idiom it is built on:
+   this file used to write `.outreach-simple .mgr-inputs`, back when every
+   `.mgr-inputs` disclosure under `.outreach-simple` was manager-screen
+   overflow this rule was meant to bury. The Find people and Target accounts
+   folds (`#leads`, `#accounts`) were absorbed into this same `.outreach-simple`
+   tree later and happen to reuse `.mgr-inputs` for their OWN disclosures --
+   "Add more accounts", "Daily lead limit" -- which the blanket selector then
+   buried right along with the manager screen's overflow, on a rule that had
+   no idea a second, unrelated meaning of the class had moved in underneath
+   it. `.mgr-simple-hide` is the opt-in: only the two disclosures that still
+   mean "manager screen overflow" (`LinkedInManagerRead.tsx`'s "More results"
+   and "Campaign inputs") carry it. */
 .outreach-simple .section-heading > div > p,
 .outreach-simple .onboarding-head p,
 .outreach-simple .onboarding-steps small,
 .outreach-simple .mgr-preview,
-.outreach-simple .mgr-inputs,
+.outreach-simple .mgr-simple-hide,
 .outreach-simple .mgr-manual-tasks,
 .outreach-simple .li-subhead,
 .outreach-simple .mgr-ab {
@@ -9832,6 +9239,21 @@ button:disabled {
 }
 .outreach-simple .panel-footer > span {
   display: none;
+}
+/* The other two rules above are structural (`.section-heading > div > p`,
+   `.panel-footer > span`) rather than a class this codebase can opt in or out
+   of -- they were written to bury subtitle copy and disabled-button captions
+   across the manager/builder screens, and both patterns are common enough
+   that giving every OTHER instance an opt-in class would be the riskier
+   change. #leads and #accounts are the two islands absorbed into this tree
+   that still need their own copy, so they are named back in instead. */
+.outreach-simple #leads .section-heading > div > p,
+.outreach-simple #accounts .section-heading > div > p {
+  display: block;
+}
+.outreach-simple #leads .panel-footer > span,
+.outreach-simple #accounts .panel-footer > span {
+  display: inline;
 }
 
 /* Post composer: formatting toolbar + contenteditable body + live preview.

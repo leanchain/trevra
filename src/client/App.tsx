@@ -65,19 +65,7 @@ import {
   type WorkspaceErasurePreview
 } from './api';
 import { authClient, useIsWorkspaceOwner } from './auth-client';
-import { AccountsScreen } from './AccountsScreen';
-import { OutreachCampaigns, OutreachPlan } from './LinkedInCampaigns';
-import { OutreachInbox } from './LinkedInInbox';
-import { OutreachLeads } from './LinkedInLeads';
-import {
-  ActiveLinkedInAccountName,
-  LinkedInAccounts,
-  LinkedInCompanionAttention
-} from './LinkedInAccounts';
-import { OutreachActivity } from './LinkedInActivity';
-import { OutreachManagerBuilder } from './LinkedInManagerBuilder';
-import { OutreachManagerRead } from './LinkedInManagerRead';
-import { LinkedInPosts } from './LinkedInPosts';
+import { ActiveLinkedInAccountName } from './LinkedInActiveAccount';
 import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions, relativeTime } from './LinkedInScreen';
 import { TeamSettingsView } from './TeamScreen';
@@ -100,6 +88,7 @@ import { SeatPauseButton, StopBar, useStopControls } from './ui/StopBar';
 import { scrollToId } from './ui/scrollToId';
 import { LedgerView } from './views/LedgerView';
 import { LoopCostView, LoopView } from './views/LoopView';
+import { OutreachView } from './views/OutreachView';
 import { initials, money, prettyProvider, usd } from './views/format';
 
 /** Five primary product areas: loop, outreach, ledger, research, and setup. */
@@ -107,7 +96,7 @@ const NAV_ITEMS: Array<{ section: Section; path: string; icon: React.ReactNode; 
   { section: 'loop', path: '/loop', icon: <Repeat size={18} />, label: 'Loop' },
   {
     section: 'outreach',
-    path: '/outreach/manager',
+    path: '/outreach',
     icon: <Linkedin size={18} />,
     label: 'Outreach'
   },
@@ -116,32 +105,6 @@ const NAV_ITEMS: Array<{ section: Section; path: string; icon: React.ReactNode; 
   { section: 'setup', path: '/setup', icon: <Settings2 size={18} />, label: 'Setup' }
 ];
 
-/** The normal outreach product stays small; specialist/legacy surfaces live under More. */
-const OUTREACH_ROUTES: Array<{ sub: string; label: string }> = [
-  { sub: 'manager', label: 'Campaigns' },
-  { sub: 'inbox', label: 'Messages' },
-  { sub: '', label: 'Settings' }
-];
-const OUTREACH_MORE_ROUTES: Array<{ sub: string; label: string }> = [
-  { sub: 'accounts', label: 'Target accounts' },
-  { sub: 'leads', label: 'Find people' },
-  { sub: 'activity', label: 'Activity' },
-  { sub: 'plan', label: 'Plan preview' },
-  { sub: 'posts', label: 'Scheduled posts' },
-  { sub: 'campaigns', label: 'Approve & export' }
-];
-const OUTREACH_PINNED_TABS_STORAGE_KEY = 'trevra.outreach.pinned-tabs';
-
-function readPinnedOutreachTabs(): string[] {
-  try {
-    const raw = JSON.parse(window.localStorage.getItem(OUTREACH_PINNED_TABS_STORAGE_KEY) ?? '[]');
-    if (!Array.isArray(raw)) return [];
-    const allowed = new Set(OUTREACH_MORE_ROUTES.map((entry) => entry.sub));
-    return raw.filter((value): value is string => typeof value === 'string' && allowed.has(value));
-  } catch {
-    return [];
-  }
-}
 type ToastMessage = { message: string; undo?: () => void };
 
 const reducedMotion = () =>
@@ -258,36 +221,10 @@ export function App() {
   const [error, setError] = useState('');
   const [needsAuth, setNeedsAuth] = useState<boolean | null>(null);
   const [route, go] = useRoute();
-  const [pinnedOutreachTabs, setPinnedOutreachTabs] = useState<string[]>(readPinnedOutreachTabs);
   const accountsOpen = useAccountsRoute();
   useEffect(() => {
     if (accountsOpen) replaceNavigate('/outreach/accounts');
   }, [accountsOpen]);
-  // The old user-facing send queue is gone. Old bookmarks land on Campaigns.
-  useEffect(() => {
-    if (route.section === 'outreach' && route.sub === 'queue') replaceNavigate('/outreach/manager');
-  }, [route.section, route.sub]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        OUTREACH_PINNED_TABS_STORAGE_KEY,
-        JSON.stringify(pinnedOutreachTabs)
-      );
-    } catch {
-      /* Optional navigation still works for this tab if storage is unavailable. */
-    }
-  }, [pinnedOutreachTabs]);
-
-  // Deep links to optional Outreach pages pin themselves so the visible tab
-  // strip always matches the page being shown.
-  useEffect(() => {
-    if (route.section !== 'outreach') return;
-    if (!OUTREACH_MORE_ROUTES.some((entry) => entry.sub === route.sub)) return;
-    setPinnedOutreachTabs((current) =>
-      current.includes(route.sub) ? current : [...current, route.sub]
-    );
-  }, [route.section, route.sub]);
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toast, setToastState] = useState<ToastMessage | null>(null);
@@ -451,97 +388,7 @@ export function App() {
           ))}
 
         {route.section === 'outreach' && (
-          <div className="page-stack outreach-simple">
-            <LinkedInCompanionAttention setToast={setToast} />
-            <nav className="outreach-nav" aria-label="Outreach sections">
-              {OUTREACH_ROUTES.map((entry) => (
-                <button
-                  key={entry.sub}
-                  type="button"
-                  className={route.sub === entry.sub ? 'is-active' : undefined}
-                  aria-current={route.sub === entry.sub ? 'page' : undefined}
-                  onClick={() => go(`/outreach${entry.sub ? `/${entry.sub}` : ''}`)}
-                >
-                  {entry.label}
-                </button>
-              ))}
-              {pinnedOutreachTabs.map((sub) => {
-                const entry = OUTREACH_MORE_ROUTES.find((candidate) => candidate.sub === sub);
-                if (!entry) return null;
-                const active = route.sub === entry.sub;
-                return (
-                  <span
-                    key={entry.sub}
-                    className={`outreach-pinned-tab${active ? ' is-active' : ''}`}
-                  >
-                    <button
-                      className="outreach-pinned-open"
-                      type="button"
-                      aria-current={active ? 'page' : undefined}
-                      onClick={() => go(`/outreach/${entry.sub}`)}
-                    >
-                      {entry.label}
-                    </button>
-                    <button
-                      className="outreach-pinned-close"
-                      type="button"
-                      aria-label={`Remove ${entry.label} tab`}
-                      title={`Remove ${entry.label} tab`}
-                      onClick={() => {
-                        setPinnedOutreachTabs((current) =>
-                          current.filter((value) => value !== entry.sub)
-                        );
-                        if (active) go('/outreach/manager');
-                      }}
-                    >
-                      <X size={12} />
-                    </button>
-                  </span>
-                );
-              })}
-              {OUTREACH_MORE_ROUTES.some((entry) => !pinnedOutreachTabs.includes(entry.sub)) && (
-                <label className="outreach-more-select">
-                  <select
-                    aria-label="More"
-                    value=""
-                    onChange={(event) => {
-                      const sub = event.target.value;
-                      if (!sub) return;
-                      setPinnedOutreachTabs((current) =>
-                        current.includes(sub) ? current : [...current, sub]
-                      );
-                      go(`/outreach/${sub}`);
-                    }}
-                  >
-                    <option value="">⋯ More</option>
-                    {OUTREACH_MORE_ROUTES.filter(
-                      (entry) => !pinnedOutreachTabs.includes(entry.sub)
-                    ).map((entry) => (
-                      <option key={entry.sub} value={entry.sub}>
-                        {entry.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-            </nav>
-            {route.sub === '' && <LinkedInAccounts setToast={setToast} />}
-            {route.sub === 'accounts' && <AccountsScreen setToast={setToast} />}
-            {route.sub === 'campaigns' && (
-              <OutreachCampaigns setToast={setToast} campaignId={route.id} />
-            )}
-            {route.sub === 'inbox' && <OutreachInbox setToast={setToast} />}
-            {route.sub === 'activity' && <OutreachActivity />}
-            {route.sub === 'leads' && <OutreachLeads setToast={setToast} />}
-            {route.sub === 'manager' &&
-              (route.id === 'new' ? (
-                <OutreachManagerBuilder setToast={setToast} onNavigate={go} />
-              ) : (
-                <OutreachManagerRead setToast={setToast} onNavigate={go} />
-              ))}
-            {route.sub === 'plan' && <OutreachPlan setToast={setToast} />}
-            {route.sub === 'posts' && <LinkedInPosts setToast={setToast} />}
-          </div>
+          <OutreachView route={route} setToast={setToast} onNavigate={go} />
         )}
 
         {route.section === 'ledger' && (
@@ -681,7 +528,7 @@ const SETUP_LEGACY_REDIRECTS: Record<string, string> = {
   team: '/setup/workspace',
   skills: '/setup/workspace',
   reddit: '/research',
-  seat: '/outreach',
+  seat: '/outreach/settings',
   research: '/research'
 };
 
@@ -2734,15 +2581,11 @@ function NavButton({
 function viewTitle(route: Route): string {
   if (route.section === 'loop') return route.sub === 'cost' ? 'What this cost' : 'Your loop';
   if (route.section === 'outreach') {
-    if (route.sub === 'accounts') return 'Target accounts';
-    if (route.sub === 'campaigns') return 'Approve & export';
     if (route.sub === 'inbox') return 'Messages';
-    if (route.sub === 'activity') return 'LinkedIn activity';
-    if (route.sub === 'leads') return 'Find people';
-    if (route.sub === 'manager') return route.id === 'new' ? 'New campaign' : 'Campaigns';
-    if (route.sub === 'plan') return 'Plan preview';
     if (route.sub === 'posts') return 'Scheduled posts';
-    return 'Settings';
+    if (route.sub === 'settings') return 'Outreach settings';
+    if (route.sub === 'new') return 'New campaign';
+    return 'Campaigns';
   }
   if (route.section === 'ledger') return 'Run ledger';
   if (route.section === 'research') return 'Research';

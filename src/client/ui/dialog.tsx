@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject
+} from 'react';
 import { createPortal } from 'react-dom';
 import { LoaderCircle, X } from 'lucide-react';
 
@@ -28,8 +36,9 @@ const FOCUSABLE = [
 
 /** Tab stops that are actually on screen. A hidden control is not a stop. */
 function tabStops(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE))
-    .filter((node) => node.getClientRects().length > 0);
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+    (node) => node.getClientRects().length > 0
+  );
 }
 
 /**
@@ -65,12 +74,14 @@ export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => voi
     const shell = document.querySelector<HTMLElement>('.app-shell');
     const inerted: HTMLElement[] = [];
     const switchOff = (node: Element) => {
-      if (!(node instanceof HTMLElement) || node.hasAttribute('inert') || node.contains(container)) return;
+      if (!(node instanceof HTMLElement) || node.hasAttribute('inert') || node.contains(container))
+        return;
       node.setAttribute('inert', '');
       inerted.push(node);
     };
     if (shell) {
-      if (shell.contains(container)) for (const child of Array.from(shell.children)) switchOff(child);
+      if (shell.contains(container))
+        for (const child of Array.from(shell.children)) switchOff(child);
       else switchOff(shell);
     }
 
@@ -83,13 +94,19 @@ export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => voi
       }
       if (event.key !== 'Tab') return;
       const stops = tabStops(container);
-      if (stops.length === 0) { event.preventDefault(); return; }
+      if (stops.length === 0) {
+        event.preventDefault();
+        return;
+      }
       const first = stops[0];
       const last = stops[stops.length - 1];
       const active = document.activeElement;
       const inside = active instanceof Node && container.contains(active);
       if (event.shiftKey) {
-        if (!inside || active === first || active === heading) { event.preventDefault(); last.focus(); }
+        if (!inside || active === first || active === heading) {
+          event.preventDefault();
+          last.focus();
+        }
       } else if (!inside || active === last) {
         event.preventDefault();
         first.focus();
@@ -120,7 +137,7 @@ export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => voi
  */
 const DANGER_BUTTON = 'li-danger-button';
 
-export interface ConfirmDrawerProps {
+interface ConfirmDrawerProps {
   /** Names the thing about to happen, as a question. Never "Are you sure?". */
   title: string;
   /** What it costs and what cannot be got back. String or your own nodes. */
@@ -173,7 +190,9 @@ export function ConfirmDrawer({
 
   // A confirmation that vanishes mid-write would leave the operator unable to
   // tell whether it went through, so escape routes are shut while it runs.
-  const cancel = () => { if (!busy) onCancel(); };
+  const cancel = () => {
+    if (!busy) onCancel();
+  };
   useDialog(dialog, cancel);
 
   const missingReason = requireReason && reason.trim() === '';
@@ -189,27 +208,50 @@ export function ConfirmDrawer({
         onClick={(event) => event.stopPropagation()}
       >
         <header>
-          <div><h3 id={titleId}>{title}</h3></div>
-          <button className="icon-button" aria-label="Close without changing anything" disabled={busy} onClick={cancel}>
+          <div>
+            <h3 id={titleId}>{title}</h3>
+          </div>
+          <button
+            className="icon-button"
+            aria-label="Close without changing anything"
+            disabled={busy}
+            onClick={cancel}
+          >
             <X size={20} />
           </button>
         </header>
         <div className="drawer-body">
           {typeof body === 'string' ? <p>{body}</p> : body}
-          {requireReason && <label>
-            {reasonLabel}
-            <textarea rows={3} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="A line is enough." />
-          </label>}
+          {requireReason && (
+            <label>
+              {reasonLabel}
+              <textarea
+                rows={3}
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder="A line is enough."
+              />
+            </label>
+          )}
           {error && <div className="error-banner">{error}</div>}
         </div>
         <footer>
-          <button className="secondary-button" disabled={busy} onClick={cancel}>{cancelLabel}</button>
+          <button className="secondary-button" disabled={busy} onClick={cancel}>
+            {cancelLabel}
+          </button>
           <button
-            className={tone === 'danger' ? DANGER_BUTTON : tone === 'caution' ? 'ghost-button danger' : 'primary-button'}
+            className={
+              tone === 'danger'
+                ? DANGER_BUTTON
+                : tone === 'caution'
+                  ? 'ghost-button danger'
+                  : 'primary-button'
+            }
             disabled={busy || missingReason}
             onClick={() => onConfirm(reason.trim())}
           >
-            {busy && <LoaderCircle className="spin" size={16} />}{confirmLabel}
+            {busy && <LoaderCircle className="spin" size={16} />}
+            {confirmLabel}
           </button>
         </footer>
       </section>

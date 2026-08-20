@@ -8,7 +8,7 @@ matters: **what must work, properly, for the work to actually get done.**
 
 The premise: building is cheap, making it right is not, and every extra feature
 spends the expensive thing on the cheap one. The parity list is therefore mostly
-a list of things to *not* build.
+a list of things to _not_ build.
 
 ---
 
@@ -17,17 +17,17 @@ a list of things to *not* build.
 Stripped of politeness, the requirement from the GTM side was narrow and
 unusually clear:
 
-| Said | Means |
-|---|---|
-| Data quality is primary | Precision beats coverage. A wrong alert is worse than no alert. |
-| Funding triggers are noisy, crowded, late | **Do not build the signal everyone else sells.** By the time it fires, twenty reps are in the inbox. |
-| Signals from posts and comments show real intent | Public commentary is the source that isn't commoditised. |
-| Layer hiring + site changes + public commentary | **A single signal is noise. A combination is an intent.** This is the product. |
-| Early detection is critical — once a signal pops, the opportunity decays | Latency is a feature, not an optimisation. |
-| Extremely simple, low friction, works with existing account lists | Setup is a CSV, not an onboarding project. |
-| 500 target accounts to track | The unit of work is **an account watchlist**, not a lead database. |
-| Real-time alerts for early signals over broad coverage | Depth on 500 beats breadth on 50,000. |
-| Public feeds + paid local data (trade registries) | Source adapters, bring-your-own key. Big vendors skip painful local markets — that is the edge. |
+| Said                                                                     | Means                                                                                                |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| Data quality is primary                                                  | Precision beats coverage. A wrong alert is worse than no alert.                                      |
+| Funding triggers are noisy, crowded, late                                | **Do not build the signal everyone else sells.** By the time it fires, twenty reps are in the inbox. |
+| Signals from posts and comments show real intent                         | Public commentary is the source that isn't commoditised.                                             |
+| Layer hiring + site changes + public commentary                          | **A single signal is noise. A combination is an intent.** This is the product.                       |
+| Early detection is critical — once a signal pops, the opportunity decays | Latency is a feature, not an optimisation.                                                           |
+| Extremely simple, low friction, works with existing account lists        | Setup is a CSV, not an onboarding project.                                                           |
+| 500 target accounts to track                                             | The unit of work is **an account watchlist**, not a lead database.                                   |
+| Real-time alerts for early signals over broad coverage                   | Depth on 500 beats breadth on 50,000.                                                                |
+| Public feeds + paid local data (trade registries)                        | Source adapters, bring-your-own key. Big vendors skip painful local markets — that is the edge.      |
 
 Note what is absent: no sequences, no credits, no CRM sync, no visitor
 deanonymisation, no AI SDR. The people who will use this asked for none of it.
@@ -74,7 +74,7 @@ time should go.
 The actual invention. Not "account did X" but **"account did X and Y within N
 days, and Z is also true"**. Guido's example: hiring a platform engineer +
 language change on the pricing page + a CTO comment on an open-source thread →
-*evaluating a move to open source*.
+_evaluating a move to open source_.
 
 Defined per workspace, in the customer's own words, with a window and a
 threshold. A handful of them, curated, not a rule-builder IDE.
@@ -92,7 +92,7 @@ clickable link with a date, and how confident and why.
 
 **Works properly when:** the recipient can decide in fifteen seconds without
 opening the app, and can always answer "why did this fire" without asking us.
-Evidence is not an appendix — it *is* the alert.
+Evidence is not an appendix — it _is_ the alert.
 
 ### 3.5 The touch — and yes, Trevra sends it
 
@@ -104,12 +104,12 @@ the replacement and forgot to wire it up.**
 
 Dripify is a hard ceiling on exactly the thing §3.3 makes the product:
 
-| Dripify cannot | Trevra can, today, in code that exists |
-|---|---|
-| Personalise per lead — **no custom CSV variables**, only ~17 built-in tokens, still "In Development" | Draft a message per target citing the actual signal that fired |
+| Dripify cannot                                                                                                                                               | Trevra can, today, in code that exists                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| Personalise per lead — **no custom CSV variables**, only ~17 built-in tokens, still "In Development"                                                         | Draft a message per target citing the actual signal that fired                                      |
 | Evaluate a branch we defined — an export can never resolve `if accepted → X`, which is why `conditionInstruction()` exists as a written apology to the human | `branching.ts` evaluates `accepted / replied / not_accepted / not_replied` against real inbox state |
-| Tell us what happened without a webhook config per trigger per campaign, on a Pro plan, carrying no message content | Record the outcome as the action executes — no webhook, no form, no self-reporting |
-| Smooth variance across days, ramp from account age, throttle on acceptance rate | All three, shipped, in `limits.ts`, every constant confidence-tagged |
+| Tell us what happened without a webhook config per trigger per campaign, on a Pro plan, carrying no message content                                          | Record the outcome as the action executes — no webhook, no form, no self-reporting                  |
+| Smooth variance across days, ramp from account age, throttle on acceptance rate                                                                              | All three, shipped, in `limits.ts`, every constant confidence-tagged                                |
 
 The self-reported outcome loop is the defect that makes §6's act-on rate
 unmeasurable. Sending it ourselves doesn't just save the subscription — it is
@@ -130,12 +130,12 @@ The gap is one missing writer. Only three things ever insert into
 and inbox replies. **No API path queues an invite or a DM as `planned`**, so the
 worker that could execute them never sees one. That is the build.
 
-| To replace Dripify | Effort |
-|---|---|
-| Queue invite + dm from an approved campaign — the missing writer | small |
-| Verify every driver selector against a live account, and keep verifying | **the real cost — see below** |
-| Lead import from a search URL or a post's engagers | skip for now — Guido brings a CSV of 500 |
-| Keep the exporter | free, and it is the migration path for anyone already paying for a tool |
+| To replace Dripify                                                      | Effort                                                                  |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Queue invite + dm from an approved campaign — the missing writer        | small                                                                   |
+| Verify every driver selector against a live account, and keep verifying | **the real cost — see below**                                           |
+| Lead import from a search URL or a post's engagers                      | skip for now — Guido brings a CSV of 500                                |
+| Keep the exporter                                                       | free, and it is the migration path for anyone already paying for a tool |
 
 #### The honest cost, stated once
 
@@ -151,8 +151,8 @@ worker that could execute them never sees one. That is the build.
    **operator** runs the worker, on **their own machine**, against **their own
    logged-in Chrome profile**, and Trevra holds no credentials and never touches
    LinkedIn. That is a materially different position from shipping an extension
-   or proxying a cookie session through a datacenter — and it is also *safer for
-   the account*, because a real browser on a real residential IP is not the
+   or proxying a cookie session through a datacenter — and it is also _safer for
+   the account_, because a real browser on a real residential IP is not the
    fingerprint enforcement looks for.
 3. **The account risk is the operator's, and the UI must say so** in the same
    breath as it shows a REPORTED limit. That rule is already written down.
@@ -165,8 +165,8 @@ worker that could execute them never sees one. That is the build.
    both halves is **hosted brain, local hands** — a signed companion the customer
    runs, driven by the hosted control plane, executing only what a human already
    approved. That is the same worker with a different transport, and it is a
-   better story than any cloud sender can tell: *we never hold your session, so
-   we cannot get you banned.*
+   better story than any cloud sender can tell: _we never hold your session, so
+   we cannot get you banned._
 
 #### The shape, then
 
@@ -186,7 +186,7 @@ Dripify's, and the success case remains a handful of relevant touches a week.
 Already built, already the best thing in the repo. Every collection, every rule
 evaluation, every alert, every send — inspectable, with evidence, exportable.
 
-**Works properly when:** it is how *we* debug a bad alert, not just how a
+**Works properly when:** it is how _we_ debug a bad alert, not just how a
 customer audits one. If the ledger cannot explain a false positive, the ledger
 is incomplete.
 
@@ -194,20 +194,20 @@ is incomplete.
 
 ## 4. What that means for the code
 
-| Need | State today |
-|---|---|
-| Account watchlist from CSV | ~80% — `clients` + marketplace importer, needs a domain-first path |
-| Seven commentary collectors | **shipped** — `outreach/scouts/*`, real API calls |
-| Site + tech fingerprint | **shipped** — `gtm.enrich-company`, but fingerprints once, never diffs |
-| Change detection over time | partial — `gtm.watch-signal` is snapshot-diff, per-domain, no upsert |
-| Hiring/careers watcher | absent — small; a careers-page diff, not a jobs data vendor |
-| Paid local source adapter | absent — needs the same shape as a scout, BYO key |
-| **Composite rules across signals and time** | **absent — the build** |
-| Real-time alerting | absent — polling exists (60s worker), no Slack, no alert object |
-| Approved draft + send | **shipped** — `gtm.outreach-draft`, approval path, Gmail/Graph |
-| Dripify/HeyReach/Expandi CSV export | **shipped** — `linkedin/export.ts`, merge-field remap tagged `REPORTED`, branch conditions written out as instructions |
-| **Outcome webhook ingest from Dripify** | **absent — the second build.** Today outcomes are operator-reported via `POST /api/linkedin/actions/outcome` |
-| Ledger + evidence + export | **shipped** |
+| Need                                        | State today                                                                                                                             |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Account watchlist from CSV                  | ~80% — `clients` + marketplace importer, needs a domain-first path                                                                      |
+| Seven commentary collectors                 | **shipped** — `outreach/scouts/*`, real API calls                                                                                       |
+| Site + tech fingerprint                     | **shipped** — `gtm.enrich-company`, but fingerprints once, never diffs                                                                  |
+| Change detection over time                  | partial — `gtm.watch-signal` is snapshot-diff, per-domain, no upsert                                                                    |
+| Hiring/careers watcher                      | absent — small; a careers-page diff, not a jobs data vendor                                                                             |
+| Paid local source adapter                   | absent — needs the same shape as a scout, BYO key                                                                                       |
+| **Composite rules across signals and time** | **absent — the build**                                                                                                                  |
+| Real-time alerting                          | absent — polling exists (60s worker), no Slack, no alert object                                                                         |
+| Approved draft + send                       | **shipped** — `gtm.outreach-draft`, approval path, Gmail/Graph                                                                          |
+| Dripify/HeyReach/Expandi CSV export         | **removed** — the legacy campaign system it shipped under is gone; the managed system (`linkedin/managed-campaigns.ts`) does not export |
+| **Outcome webhook ingest from Dripify**     | **absent — the second build.** Today outcomes are operator-reported via `POST /api/linkedin/actions/outcome`                            |
+| Ledger + evidence + export                  | **shipped**                                                                                                                             |
 
 One honest constraint: everything runs on a single 60-second `setInterval` and
 `domain_events` has no subscribers. "Within minutes" is reachable on that; true
@@ -254,7 +254,7 @@ the missing Nango action scripts, so "frozen" is closer to today's reality than
 "shipped" is.
 
 If that is wrong — if the delivery graph is the business and the watchlist is
-the marketing tool for it — that is a fine answer too, but it has to be *the*
+the marketing tool for it — that is a fine answer too, but it has to be _the_
 answer, said once, and then the other half stops getting attention.
 
 ---
@@ -321,14 +321,14 @@ alongside. Do §8.0 first because it is hours, not days.
 **W1 — The watchlist.** A domain-keyed watched-account table and a paste-a-CSV
 import for 500 rows. Deliberately **not** `clients`: a watched account is not a
 customer, and overloading a 10-column index that exists for ranking revenue is
-how both concepts get worse. *Decision needed: new table (recommended) vs. a
-flag on `clients`.*
+how both concepts get worse. _Decision needed: new table (recommended) vs. a
+flag on `clients`._
 
 **W2 — Observations.** The substrate everything else reads: one append-only row
 per thing seen — account, source, kind, URL, observed-at, payload, hash. Nothing
 without a URL and a timestamp ever becomes a row.
 
-**W3 — Collectors that fill it.** The seven scouts exist but they are *thread*
+**W3 — Collectors that fill it.** The seven scouts exist but they are _thread_
 scouts — they score public threads for reply opportunities, keyed to topics, not
 to accounts. **Repointing them to "what did this account's people do" is real
 work, not a config change.** Plus: a periodic site diff (`gtm.enrich-company`
@@ -384,8 +384,8 @@ alert each need to be inspectable. §3.6's bar is that the ledger explains a
 
 ### What "hosted this year" changes
 
-Selling a managed product moves two things from *later* to *scope*, and one from
-*noted* to *blocking*:
+Selling a managed product moves two things from _later_ to _scope_, and one from
+_noted_ to _blocking_:
 
 - **L3 stops being optional.** `TREVRA_DEPLOYMENT_MODE=hosted` refuses all
   LinkedIn automation in three places with a loud startup failure. A hosted
@@ -396,12 +396,12 @@ Selling a managed product moves two things from *later* to *scope*, and one from
 - **The key-custody warning becomes customer-facing copy.**
   [byok-and-hosted-agent.md](./byok-and-hosted-agent.md) §7 already says a hosted
   service holding customer model keys is a concentrated liability and that users
-  deserve to weigh it *before* pasting. That paragraph now has to exist on a
+  deserve to weigh it _before_ pasting. That paragraph now has to exist on a
   screen, not just in a document.
 - **Nango's licence is now a blocker, not a footnote.**
   [system-of-record.md](./system-of-record.md) records it plainly: Nango is
   ELv2. Self-hosting Trevra with Nango is permitted; **a paid Trevra Cloud that
   resells Nango's OAuth flows as a feature likely is not, without a commercial
-  agreement.** That doc says to resolve it *before* hosted becomes the
+  agreement.** That doc says to resolve it _before_ hosted becomes the
   go-to-market motion. It now is. Resolve it early — a licence conversation has
   a lead time that a launch date does not forgive.

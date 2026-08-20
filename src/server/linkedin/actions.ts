@@ -107,7 +107,7 @@ export const COUNTED_MESSAGE_KINDS: readonly LinkedInActionKind[] = ['dm', 'repl
  * 'held' IS FIRST-CLASS HERE, and it took two migrations to become so.
  * Migration 051 introduced it as the status `pauseManagedCampaign` parks a
  * scheduled-but-unclaimed row in, and for a while it lived only in that
- * migration's prose and in three WHERE clauses: `campaigns.ts` casts a raw
+ * migration's prose and in three WHERE clauses: `campaigns.ts` cast a raw
  * `status` column straight onto this union, so every held row arrived at every
  * reader typed as something it demonstrably was not. That is not a cosmetic
  * gap -- it is why the funnel had no column for it, why `SKIPPABLE` refused
@@ -272,44 +272,57 @@ export interface LinkedInActionRecord {
  * same person. The partial unique index does the enforcing; this reports it
  * without throwing -- same contract as `outreach/store.ts` `recordPost`.
  */
-export async function recordAction(db: Db, record: LinkedInActionRecord, now: Date): Promise<{ id: string; duplicate: boolean }> {
+export async function recordAction(
+  db: Db,
+  record: LinkedInActionRecord,
+  now: Date
+): Promise<{ id: string; duplicate: boolean }> {
   const seatKey = record.seatKey ?? OWNER_SEAT_KEY;
   const counted = isCountedStatus(record.status);
-  const recordedAt = record.recordedAt === undefined ? (counted ? now.toISOString() : null) : record.recordedAt;
+  const recordedAt =
+    record.recordedAt === undefined ? (counted ? now.toISOString() : null) : record.recordedAt;
   const actionId = id('lact');
   const replayScope = record.replayScope?.trim() || 'legacy';
 
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     INSERT INTO linkedin_actions (
       id, workspace_id, seat_key, kind, target_ref, campaign_id,
       status, planned_for, recorded_at, source, payload_hash, queued_by_user_id, replay_scope, created_at
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, seat_key, kind, target_ref, replay_scope) WHERE status <> 'skipped' DO NOTHING
     RETURNING id
-  `).get<{ id: string }>(
-    actionId,
-    record.workspaceId,
-    seatKey,
-    record.kind,
-    record.targetRef,
-    record.campaignId ?? null,
-    record.status,
-    record.plannedFor ?? null,
-    recordedAt,
-    record.source,
-    record.payloadHash ?? null,
-    record.queuedByUserId ?? null,
-    replayScope,
-    now.toISOString()
-  );
+  `
+    )
+    .get<{ id: string }>(
+      actionId,
+      record.workspaceId,
+      seatKey,
+      record.kind,
+      record.targetRef,
+      record.campaignId ?? null,
+      record.status,
+      record.plannedFor ?? null,
+      recordedAt,
+      record.source,
+      record.payloadHash ?? null,
+      record.queuedByUserId ?? null,
+      replayScope,
+      now.toISOString()
+    );
 
   if (row) return { id: row.id, duplicate: false };
 
-  const existing = await db.prepare(`
+  const existing = await db
+    .prepare(
+      `
     SELECT id FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND kind=? AND target_ref=? AND replay_scope=? AND status <> 'skipped'
     ORDER BY created_at DESC LIMIT 1
-  `).get<{ id: string }>(record.workspaceId, seatKey, record.kind, record.targetRef, replayScope);
+  `
+    )
+    .get<{ id: string }>(record.workspaceId, seatKey, record.kind, record.targetRef, replayScope);
   return { id: existing?.id ?? actionId, duplicate: true };
 }
 
@@ -334,10 +347,14 @@ export async function countActionKindsInWindow(
 ): Promise<number> {
   if (kinds.length === 0) return 0;
   const since = new Date(now.getTime() - sinceHours * 3_600_000).toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT COUNT(*)::int AS total FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND kind = ANY(?::text[]) AND ${COUNTED} AND recorded_at > ?
-  `).get<{ total: number }>(seat.workspaceId, seat.seatKey, [...kinds], since);
+  `
+    )
+    .get<{ total: number }>(seat.workspaceId, seat.seatKey, [...kinds], since);
   return row?.total ?? 0;
 }
 
@@ -371,15 +388,24 @@ export interface AcceptanceRate {
  * for a signal that cannot exist until it has sent something. The warm-up ramp
  * is what protects a new account; this loop is what protects an active one.
  */
-export async function acceptanceRate(db: Db, seat: SeatRef, days: number, now: Date): Promise<AcceptanceRate> {
+export async function acceptanceRate(
+  db: Db,
+  seat: SeatRef,
+  days: number,
+  now: Date
+): Promise<AcceptanceRate> {
   const since = new Date(now.getTime() - days * 86_400_000).toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT
       COUNT(*) FILTER (WHERE status IN ('accepted', 'replied', 'declined'))::int AS decided,
       COUNT(*) FILTER (WHERE status IN ('accepted', 'replied'))::int AS accepted
     FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND kind='invite' AND recorded_at > ?
-  `).get<{ decided: number; accepted: number }>(seat.workspaceId, seat.seatKey, since);
+  `
+    )
+    .get<{ decided: number; accepted: number }>(seat.workspaceId, seat.seatKey, since);
 
   const decided = row?.decided ?? 0;
   const accepted = row?.accepted ?? 0;
@@ -408,7 +434,9 @@ export async function dailyCountsForLastNDays(
   const nowIso = now.toISOString();
   const since = new Date(now.getTime() - days * 86_400_000).toISOString();
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT
       FLOOR(EXTRACT(EPOCH FROM (?::timestamptz - recorded_at)) / 86400)::int AS bucket,
       COUNT(*)::int AS total
@@ -416,7 +444,16 @@ export async function dailyCountsForLastNDays(
     WHERE workspace_id=? AND seat_key=? AND kind=? AND ${COUNTED}
       AND recorded_at > ? AND recorded_at <= ?
     GROUP BY 1
-  `).all<{ bucket: number; total: number }>(nowIso, seat.workspaceId, seat.seatKey, kind, since, nowIso);
+  `
+    )
+    .all<{ bucket: number; total: number }>(
+      nowIso,
+      seat.workspaceId,
+      seat.seatKey,
+      kind,
+      since,
+      nowIso
+    );
 
   // bucket 0 is the newest 24h; the array is oldest-first, so it lands last.
   const counts = new Array<number>(days).fill(0);
@@ -473,16 +510,20 @@ export async function countPendingInvites(
   options: { before?: Date } = {}
 ): Promise<number> {
   const before = options.before;
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT COUNT(*)::int AS total FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND kind='invite' AND status IN ('sent', 'exported')
       AND (?::timestamptz IS NULL OR COALESCE(pending_since, recorded_at) < ?::timestamptz)
-  `).get<{ total: number }>(
-    seat.workspaceId,
-    seat.seatKey,
-    before?.toISOString() ?? null,
-    before?.toISOString() ?? null
-  );
+  `
+    )
+    .get<{ total: number }>(
+      seat.workspaceId,
+      seat.seatKey,
+      before?.toISOString() ?? null,
+      before?.toISOString() ?? null
+    );
   return row?.total ?? 0;
 }
 
@@ -533,11 +574,15 @@ export async function hasTarget(
   // The same normalisation `recordAction` applies on the way in, so the
   // question and the write can never disagree about which scope a row is in.
   const scope = replayScope?.trim() || 'legacy';
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT id FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND kind=? AND target_ref=? AND replay_scope=? AND status <> 'skipped'
       AND id IS DISTINCT FROM ?::text
     LIMIT 1
-  `).get<{ id: string }>(seat.workspaceId, seat.seatKey, kind, targetRef, scope, excludeActionId);
+  `
+    )
+    .get<{ id: string }>(seat.workspaceId, seat.seatKey, kind, targetRef, scope, excludeActionId);
   return row !== undefined;
 }

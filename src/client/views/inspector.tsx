@@ -69,7 +69,7 @@ const KEY_ACRONYMS: Record<string, string> = {
   vat: 'VAT'
 };
 
-export function humanizeKey(key: string): string {
+function humanizeKey(key: string): string {
   const spaced = key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_-]+/g, ' ')
@@ -104,9 +104,9 @@ export function humanizeId(value: string): string {
  * rather than making the URL carry a fact the person typing it does not have.
  */
 export type InspectorTarget = { kind: 'playbook' | 'agent' | 'skill' | 'auto'; id: string };
-export type RunFact = { label: string; value: string };
+type RunFact = { label: string; value: string };
 
-export interface InspectorNode {
+interface InspectorNode {
   key: string;
   title: string;
   kindLabel: string;
@@ -128,7 +128,7 @@ export interface InspectorNode {
   raw: unknown;
 }
 
-export interface InspectorRun {
+interface InspectorRun {
   id: string;
   kindLabel: string;
   title: string;
@@ -162,10 +162,7 @@ export function runStatusLabel(status: string): string {
   return status.replace(/_/g, ' ');
 }
 
-export function durationBetween(
-  startedAt: string | null,
-  finishedAt: string | null
-): number | null {
+function durationBetween(startedAt: string | null, finishedAt: string | null): number | null {
   if (!startedAt || !finishedAt) return null;
   const start = Date.parse(startedAt);
   const end = Date.parse(finishedAt);
@@ -245,7 +242,7 @@ function playbookNode(step: PlaybookStepRun): InspectorNode {
   };
 }
 
-export function inspectorFromPlaybookRun(run: PlaybookRun): InspectorRun {
+function inspectorFromPlaybookRun(run: PlaybookRun): InspectorRun {
   const done = run.steps.filter((step) => step.status === 'completed').length;
   return {
     id: run.id,
@@ -308,7 +305,7 @@ function agentNode(step: AgentRunStep): InspectorNode {
   };
 }
 
-export function inspectorFromAgentRun(run: AgentRun): InspectorRun {
+function inspectorFromAgentRun(run: AgentRun): InspectorRun {
   return {
     id: run.id,
     kindLabel: 'Run by Trevra’s agent',
@@ -334,7 +331,7 @@ export function inspectorFromAgentRun(run: AgentRun): InspectorRun {
   };
 }
 
-export function inspectorFromSkillRun(run: SkillRun): InspectorRun {
+function inspectorFromSkillRun(run: SkillRun): InspectorRun {
   const durationMs =
     Number.isFinite(run.durationMs) && run.durationMs > 0
       ? run.durationMs
@@ -658,7 +655,7 @@ function SignedNote({ value }: { value: string }) {
   );
 }
 
-export function RunSection({ title, children }: { title: string; children: React.ReactNode }) {
+function RunSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="run-section">
       <h5>{title}</h5>
@@ -667,7 +664,7 @@ export function RunSection({ title, children }: { title: string; children: React
   );
 }
 
-export function FactGrid({ facts }: { facts: RunFact[] }) {
+function FactGrid({ facts }: { facts: RunFact[] }) {
   return (
     <div className="run-facts">
       {facts.map((fact) => (

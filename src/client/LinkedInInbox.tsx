@@ -20,7 +20,6 @@ import {
   completeLinkedInManualTask,
   editLinkedInActionBody,
   getLinkedInActions,
-  getLinkedInCampaigns,
   getLinkedInManagedCampaigns,
   getLinkedInManualTasks,
   getLinkedInSeat,
@@ -31,7 +30,6 @@ import {
   syncLinkedInInbox,
   syncLinkedInThread,
   type LinkedInActionView,
-  type LinkedInCampaign,
   type LinkedInConversation,
   type LinkedInMessageRecord,
   type LinkedInSafetyVerdict,
@@ -39,7 +37,7 @@ import {
   type LinkedInThreadRecord
 } from './api';
 import type { ManagedCampaign, ManualTaskView } from '../server/linkedin/managed-campaigns';
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { errorMessage, reloadOutreach, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 import { DELAY_CHOICES, plannedForFrom, queueWaitCopy, type ScheduleMode } from './LinkedInTiming';
@@ -379,7 +377,6 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
    */
   const [activeSeatKey] = useActiveSeatKey();
   const [threads, setThreads] = useState<LinkedInThreadRecord[]>([]);
-  const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
   const [seatDetail, setSeatDetail] = useState<LinkedInSeatResponse | null>(null);
   const [managed, setManaged] = useState<ManagedCampaign[]>([]);
   /** Campaign steps waiting on a human. Pending only: a closed task is not a to-do. */
@@ -542,11 +539,6 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
   useEffect(() => {
     void (async () => {
       try {
-        setCampaigns(await getLinkedInCampaigns(activeSeatKey));
-      } catch {
-        /* no error banner over the inbox for a filter */
-      }
-      try {
         setManaged(await getLinkedInManagedCampaigns());
       } catch {
         /* a task still names its person without a campaign name */
@@ -563,6 +555,37 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       managed.find((campaign) => campaign.id === campaignId)?.name ?? 'A campaign',
     [managed]
   );
+  /**
+   * The Campaign filter's own options, scoped to the active account.
+   *
+   * `managed` above stays unfiltered -- a task or reply already on screen may
+   * name a campaign under an account the operator has since switched away
+   * from, and `campaignName` still has to resolve it. The filter is a
+   * different question: "which campaign, sending from the account I am
+   * looking at", the same scoping `getLinkedInCampaigns(seatKey)` used to do
+   * server-side before that route was deleted. `GET /api/linkedin/manager/campaigns`
+   * has no seatKey param, so this filters the workspace-wide read it already
+   * has rather than asking the server a second, narrower question.
+   */
+  const seatCampaigns = useMemo(
+    () => managed.filter((campaign) => campaign.seatKey === activeSeatKey),
+    [managed, activeSeatKey]
+  );
+  /**
+   * A campaign filter chosen under one account does not carry over to another:
+   * once `seatCampaigns` re-scopes, an id no longer among them would keep
+   * querying by it while the select can show nothing selected -- an inbox
+   * that reads empty with no visible reason. Cleared here, the same tick the
+   * options change, so the visible filter and the query never disagree.
+   */
+  useEffect(() => {
+    if (
+      filters.campaignId &&
+      !seatCampaigns.some((campaign) => campaign.id === filters.campaignId)
+    ) {
+      setFilters((current) => ({ ...current, campaignId: '' }));
+    }
+  }, [seatCampaigns, filters.campaignId]);
   const replyStageFor = useCallback(
     (action: LinkedInActionView) => replyStage(action, seatDetail?.execution.waitingFor),
     [seatDetail]
@@ -1138,7 +1161,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
             }
           >
             <option value="">Any campaign</option>
-            {campaigns.map((campaign) => (
+            {seatCampaigns.map((campaign) => (
               <option key={campaign.id} value={campaign.id}>
                 {campaign.name}
               </option>

@@ -29,12 +29,16 @@ export const NOT_ENOUGH_DATA = 'not enough data';
  * the whole question: a rate arrives as `0.5` whether it was 1-of-2 or
  * 500-of-1000, and by then the caller cannot tell which.
  */
-export function ratePercent(numerator: number, denominator: number, minSample: number = RATE_MIN_SAMPLE): string {
+export function ratePercent(
+  numerator: number,
+  denominator: number,
+  minSample: number = RATE_MIN_SAMPLE
+): string {
   if (!Number.isFinite(denominator) || denominator < Math.max(1, minSample)) return NOT_ENOUGH_DATA;
   return `${Math.round((numerator / denominator) * 100)}%`;
 }
 
-export type ClientMarketingEvent =
+type ClientMarketingEvent =
   | 'page_view'
   | 'signup_started'
   | 'email_signup_submitted'
@@ -80,11 +84,16 @@ export function trackEvent(eventName: ClientMarketingEvent, metadata: EventPrope
     visitorId: getVisitorId(),
     path: window.location.pathname,
     ...attribution,
-    metadata: Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== undefined))
+    metadata: Object.fromEntries(
+      Object.entries(metadata).filter(([, value]) => value !== undefined)
+    )
   };
   const body = JSON.stringify(payload);
   if (navigator.sendBeacon) {
-    const sent = navigator.sendBeacon('/api/marketing/events', new Blob([body], { type: 'application/json' }));
+    const sent = navigator.sendBeacon(
+      '/api/marketing/events',
+      new Blob([body], { type: 'application/json' })
+    );
     if (sent) return;
   }
   void fetch('/api/marketing/events', {

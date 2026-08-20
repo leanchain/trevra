@@ -1,6 +1,6 @@
 import { id, type Db } from '../db.js';
 import { recordAction, type SeatRef } from './actions.js';
-import { recordDetectedAcceptance } from './campaigns.js';
+import { recordDetectedAcceptance } from './action-ledger.js';
 import {
   normalisedProfileUrl,
   playwrightDegreeDriver,
@@ -10,7 +10,11 @@ import {
   type LinkedInFailureKind,
   type LinkedInPage
 } from './driver.js';
-import type { LinkedInListPage, LinkedInWithdrawDriver, PendingInviteList } from './driver-withdraw.js';
+import type {
+  LinkedInListPage,
+  LinkedInWithdrawDriver,
+  PendingInviteList
+} from './driver-withdraw.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
 import { bandFor } from './limits.js';
 import { actionGapSeconds } from './local-worker.js';
@@ -172,7 +176,9 @@ export function targetMatchKeys(target: string): string[] {
   if (!canonical) return [];
   let handle: string;
   try {
-    handle = decodeURIComponent(new URL(canonical).pathname.replace(/^\/in\//, '').replace(/\/+$/, ''));
+    handle = decodeURIComponent(
+      new URL(canonical).pathname.replace(/^\/in\//, '').replace(/\/+$/, '')
+    );
   } catch {
     return [];
   }
@@ -268,7 +274,9 @@ export async function syncPendingInvites(
     // recorded send date forward a few days at a time and make a three-week-old
     // invite look permanently three weeks old. The first reading is the closest
     // one to the truth we will ever get.
-    const hit = await db.prepare(`
+    const hit = await db
+      .prepare(
+        `
       WITH listed AS (
         SELECT * FROM unnest(?::int[], ?::text[], ?::timestamptz[]) AS t(entry, key, sent_at)
       ),
@@ -291,14 +299,16 @@ export async function syncPendingInvites(
         RETURNING 1
       )
       SELECT COUNT(DISTINCT entry)::int AS matched, (SELECT COUNT(*)::int FROM updated) AS rows_touched FROM hits
-    `).get<{ matched: number; rows_touched: number }>(
-      entryIndexes,
-      entryKeys,
-      sentAts,
-      seat.workspaceId,
-      seat.seatKey,
-      nowIso
-    );
+    `
+      )
+      .get<{ matched: number; rows_touched: number }>(
+        entryIndexes,
+        entryKeys,
+        sentAts,
+        seat.workspaceId,
+        seat.seatKey,
+        nowIso
+      );
     matched = hit?.matched ?? 0;
     unmatched += new Set(entryIndexes).size - matched;
   }
@@ -313,12 +323,16 @@ export async function syncPendingInvites(
   // count computed alongside the UPDATE would see the rows it just refreshed
   // with their OLD `pending_seen_at` -- which is, by construction, older than
   // this sync -- and report every invite LinkedIn had just shown us as gone.
-  const gone = await db.prepare(`
+  const gone = await db
+    .prepare(
+      `
     SELECT COUNT(*)::int AS total FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND kind='invite'
       AND status IN ('sent', 'exported')
       AND pending_seen_at IS NOT NULL AND pending_seen_at < ?::timestamptz
-  `).get<{ total: number }>(seat.workspaceId, seat.seatKey, nowIso);
+  `
+    )
+    .get<{ total: number }>(seat.workspaceId, seat.seatKey, nowIso);
 
   /*
    * THE SYNC CLOCK, AND A TRUNCATED READ DOES NOT MOVE IT.
@@ -339,10 +353,14 @@ export async function syncPendingInvites(
    * 070.
    */
   if (!list.truncated) {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       UPDATE linkedin_seats SET pending_synced_at=?::timestamptz
       WHERE workspace_id=? AND seat_key=?
-    `).run(nowIso, seat.workspaceId, seat.seatKey);
+    `
+      )
+      .run(nowIso, seat.workspaceId, seat.seatKey);
   }
 
   return {
@@ -441,13 +459,19 @@ export async function selectWithdrawalCandidates(
   const cutoff = new Date(now.getTime() - olderThanDays * 86_400_000).toISOString();
   // NULL, not an empty array: an absent filter must select everything, and
   // `= ANY('{}')` selects nothing.
-  const actionIds = options.actionIds && options.actionIds.length > 0 ? [...options.actionIds] : null;
+  const actionIds =
+    options.actionIds && options.actionIds.length > 0 ? [...options.actionIds] : null;
   // Same NULL-not-empty rule read the other way: an absent exclusion must
   // exclude nothing, and `<> ALL('{}')` is true for every row, so either shape
   // works here -- NULL is used anyway so both filters read identically.
-  const excludeIds = options.excludeActionIds && options.excludeActionIds.length > 0 ? [...options.excludeActionIds] : null;
+  const excludeIds =
+    options.excludeActionIds && options.excludeActionIds.length > 0
+      ? [...options.excludeActionIds]
+      : null;
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT a.id, a.target_ref, a.campaign_id,
       FLOOR(EXTRACT(EPOCH FROM (?::timestamptz - COALESCE(a.pending_since, a.recorded_at))) / 86400)::int AS pending_days
     FROM linkedin_actions a
@@ -465,17 +489,19 @@ export async function selectWithdrawalCandidates(
       )
     ORDER BY COALESCE(a.pending_since, a.recorded_at) ASC
     LIMIT ?
-  `).all<{ id: string; target_ref: string; campaign_id: string | null; pending_days: number }>(
-    now.toISOString(),
-    seat.workspaceId,
-    seat.seatKey,
-    cutoff,
-    actionIds,
-    actionIds,
-    excludeIds,
-    excludeIds,
-    limit
-  );
+  `
+    )
+    .all<{ id: string; target_ref: string; campaign_id: string | null; pending_days: number }>(
+      now.toISOString(),
+      seat.workspaceId,
+      seat.seatKey,
+      cutoff,
+      actionIds,
+      actionIds,
+      excludeIds,
+      excludeIds,
+      limit
+    );
 
   return rows.map((row) => ({
     actionId: row.id,
@@ -516,7 +542,9 @@ export async function enqueueWithdrawals(
   if (candidates.length === 0) return { queued: 0, duplicates: 0, ids: [] };
   const nowIso = now.toISOString();
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     INSERT INTO linkedin_withdrawals (
       id, workspace_id, seat_key, action_id, target_ref, status, pending_days, queued_at
     )
@@ -525,16 +553,18 @@ export async function enqueueWithdrawals(
     )
     ON CONFLICT (workspace_id, seat_key, action_id) WHERE status <> 'failed' DO NOTHING
     RETURNING id
-  `).all<{ id: string }>(
-    candidates.map(() => id('lwd')),
-    candidates.map(() => seat.workspaceId),
-    candidates.map(() => seat.seatKey),
-    candidates.map((candidate) => candidate.actionId),
-    candidates.map((candidate) => candidate.targetRef),
-    candidates.map(() => 'queued'),
-    candidates.map((candidate) => candidate.pendingDays),
-    candidates.map(() => nowIso)
-  );
+  `
+    )
+    .all<{ id: string }>(
+      candidates.map(() => id('lwd')),
+      candidates.map(() => seat.workspaceId),
+      candidates.map(() => seat.seatKey),
+      candidates.map((candidate) => candidate.actionId),
+      candidates.map((candidate) => candidate.targetRef),
+      candidates.map(() => 'queued'),
+      candidates.map((candidate) => candidate.pendingDays),
+      candidates.map(() => nowIso)
+    );
 
   const ids = rows.map((row) => row.id);
   return { queued: ids.length, duplicates: candidates.length - ids.length, ids };
@@ -636,12 +666,16 @@ export async function listWithdrawals(
   }
   params.push(Math.max(1, Math.min(filters.limit ?? 100, 500)));
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT ${WITHDRAWAL_COLUMNS} FROM linkedin_withdrawals
     WHERE ${clauses.join(' AND ')}
     ORDER BY queued_at DESC, id DESC
     LIMIT ?
-  `).all<WithdrawalRow>(...params);
+  `
+    )
+    .all<WithdrawalRow>(...params);
 
   return rows.map((row) => ({
     id: row.id,
@@ -685,12 +719,21 @@ export function withdrawalCeilingFor(posture: SeatPosture | null): number {
 }
 
 /** Withdrawals this seat actually performed in the `hours` before `now`. */
-export async function withdrawalsInWindow(db: Db, seat: SeatRef, hours: number, now: Date): Promise<number> {
+export async function withdrawalsInWindow(
+  db: Db,
+  seat: SeatRef,
+  hours: number,
+  now: Date
+): Promise<number> {
   const since = new Date(now.getTime() - hours * 3_600_000).toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT COUNT(*)::int AS total FROM linkedin_withdrawals
     WHERE workspace_id=? AND seat_key=? AND status='withdrawn' AND finished_at > ?::timestamptz
-  `).get<{ total: number }>(seat.workspaceId, seat.seatKey, since);
+  `
+    )
+    .get<{ total: number }>(seat.workspaceId, seat.seatKey, since);
   return row?.total ?? 0;
 }
 
@@ -806,7 +849,9 @@ export async function claimNextWithdrawal(
   batchId: string,
   now: Date
 ): Promise<ClaimedWithdrawal | null> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     UPDATE linkedin_withdrawals SET claimed_at=?, batch_id=?
     WHERE id = (
       SELECT id FROM linkedin_withdrawals
@@ -816,7 +861,9 @@ export async function claimNextWithdrawal(
       LIMIT 1
     )
     RETURNING id, workspace_id, seat_key, action_id, target_ref, pending_days
-  `).get<ClaimedRow>(now.toISOString(), batchId, seat.workspaceId, seat.seatKey);
+  `
+    )
+    .get<ClaimedRow>(now.toISOString(), batchId, seat.workspaceId, seat.seatKey);
   if (!row) return null;
   return {
     id: row.id,
@@ -844,11 +891,19 @@ interface InviteLineage {
   workflow_step_id: string | null;
 }
 
-async function inviteLineage(db: Db, workspaceId: string, actionId: string): Promise<InviteLineage> {
-  const row = await db.prepare(`
+async function inviteLineage(
+  db: Db,
+  workspaceId: string,
+  actionId: string
+): Promise<InviteLineage> {
+  const row = await db
+    .prepare(
+      `
     SELECT campaign_id, campaign_member_id, workflow_step_id FROM linkedin_actions
     WHERE id=? AND workspace_id=?
-  `).get<InviteLineage>(actionId, workspaceId);
+  `
+    )
+    .get<InviteLineage>(actionId, workspaceId);
   return row ?? { campaign_id: null, campaign_member_id: null, workflow_step_id: null };
 }
 
@@ -908,18 +963,36 @@ async function recordWithdrawalAction(
     now
   );
   if (written.duplicate) return;
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE linkedin_actions SET campaign_member_id=?, workflow_step_id=?, external_ref=?
     WHERE id=? AND workspace_id=?
-  `).run(lineage.campaign_member_id, lineage.workflow_step_id, claimed.actionId, written.id, seat.workspaceId);
+  `
+    )
+    .run(
+      lineage.campaign_member_id,
+      lineage.workflow_step_id,
+      claimed.actionId,
+      written.id,
+      seat.workspaceId
+    );
 }
 
 /** Put a claimed withdrawal back in the queue untouched. Nothing was clicked. */
-export async function releaseWithdrawalClaim(db: Db, withdrawalId: string, workspaceId: string): Promise<void> {
-  await db.prepare(`
+export async function releaseWithdrawalClaim(
+  db: Db,
+  withdrawalId: string,
+  workspaceId: string
+): Promise<void> {
+  await db
+    .prepare(
+      `
     UPDATE linkedin_withdrawals SET claimed_at=NULL, batch_id=NULL
     WHERE id=? AND workspace_id=?
-  `).run(withdrawalId, workspaceId);
+  `
+    )
+    .run(withdrawalId, workspaceId);
 }
 
 /**
@@ -938,12 +1011,20 @@ export async function releaseWithdrawalClaim(db: Db, withdrawalId: string, works
  * withdrawing and re-sending. `pending_seen_at` is cleared because it is
  * evidence about something that is no longer pending.
  */
-export async function markActionWithdrawn(db: Db, seat: SeatRef, actionId: string): Promise<boolean> {
-  const result = await db.prepare(`
+export async function markActionWithdrawn(
+  db: Db,
+  seat: SeatRef,
+  actionId: string
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `
     UPDATE linkedin_actions
     SET status='${WITHDRAWN_STATUS}', pending_seen_at=NULL
     WHERE id=? AND workspace_id=? AND seat_key=? AND kind='invite' AND status IN ('sent', 'exported')
-  `).run(actionId, seat.workspaceId, seat.seatKey);
+  `
+    )
+    .run(actionId, seat.workspaceId, seat.seatKey);
   return result.changes > 0;
 }
 
@@ -957,11 +1038,15 @@ async function settle(
   now: Date,
   keepClaim = false
 ): Promise<void> {
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE linkedin_withdrawals
     SET status=?, failure_kind=?, detail=?, finished_at=?, claimed_at=${keepClaim ? 'claimed_at' : 'NULL'}
     WHERE id=? AND workspace_id=?
-  `).run(status, failureKind, detail, now.toISOString(), withdrawalId, workspaceId);
+  `
+    )
+    .run(status, failureKind, detail, now.toISOString(), withdrawalId, workspaceId);
 }
 
 export interface WithdrawalExecutionDeps {
@@ -1020,17 +1105,29 @@ export async function executeWithdrawal(
   now: Date
 ): Promise<WithdrawalOutcome> {
   // --- 1. Is the invite still ours to withdraw? ---
-  const subject = await db.prepare(`
+  const subject = await db
+    .prepare(
+      `
     SELECT status FROM linkedin_actions
     WHERE id=? AND workspace_id=? AND seat_key=? AND kind='invite'
-  `).get<{ status: string }>(claimed.actionId, seat.workspaceId, seat.seatKey);
+  `
+    )
+    .get<{ status: string }>(claimed.actionId, seat.workspaceId, seat.seatKey);
 
   if (!subject || (subject.status !== 'sent' && subject.status !== 'exported')) {
     const detail = subject
       ? `The invite is '${subject.status}' in the ledger, not awaiting an answer, so there was nothing to withdraw and nothing was clicked.`
       : 'The invite this withdrawal was queued for is no longer in the ledger, so nothing was clicked.';
     await settle(db, claimed.id, seat.workspaceId, 'stale', null, detail, now);
-    return { status: 'stale', failureKind: null, detail, withdrawn: false, blocked: false, halt: false, cooldown: false };
+    return {
+      status: 'stale',
+      failureKind: null,
+      detail,
+      withdrawn: false,
+      blocked: false,
+      halt: false,
+      cooldown: false
+    };
   }
 
   // --- 2. The gate, per action, immediately before the browser is touched. ---
@@ -1046,13 +1143,29 @@ export async function executeWithdrawal(
     // "I could not find out whether this is safe" is not "it is safe".
     await releaseWithdrawalClaim(db, claimed.id, seat.workspaceId);
     const detail = `The safety gate could not be evaluated: ${cause instanceof Error ? cause.message : String(cause)}`;
-    return { status: 'queued', failureKind: null, detail, withdrawn: false, blocked: true, halt: true, cooldown: false };
+    return {
+      status: 'queued',
+      failureKind: null,
+      detail,
+      withdrawn: false,
+      blocked: true,
+      halt: true,
+      cooldown: false
+    };
   }
 
   if (!verdict.allowed) {
     await releaseWithdrawalClaim(db, claimed.id, seat.workspaceId);
     const detail = verdict.reason ?? 'The safety gate refused this withdrawal.';
-    return { status: 'queued', failureKind: null, detail, withdrawn: false, blocked: true, halt: false, cooldown: false };
+    return {
+      status: 'queued',
+      failureKind: null,
+      detail,
+      withdrawn: false,
+      blocked: true,
+      halt: false,
+      cooldown: false
+    };
   }
 
   // --- 3. The driver re-reads LinkedIn and acts. ---
@@ -1070,7 +1183,15 @@ export async function executeWithdrawal(
       ? `Withdrawn after ${claimed.pendingDays ?? '?'} day(s) pending.`
       : 'LinkedIn withdrew the invite, but its ledger row had already moved on and was left exactly as it was. Nothing was overwritten.';
     await settle(db, claimed.id, seat.workspaceId, 'withdrawn', null, detail, now);
-    return { status: 'withdrawn', failureKind: null, detail, withdrawn: marked, blocked: false, halt: false, cooldown: false };
+    return {
+      status: 'withdrawn',
+      failureKind: null,
+      detail,
+      withdrawn: marked,
+      blocked: false,
+      halt: false,
+      cooldown: false
+    };
   }
 
   const failureKind = result.failureKind ?? 'unknown';
@@ -1083,7 +1204,15 @@ export async function executeWithdrawal(
     // the one place -- the acceptance rate -- where a guess changes what the
     // pacing engine does next.
     await settle(db, claimed.id, seat.workspaceId, 'stale', failureKind, detail, now);
-    return { status: 'stale', failureKind, detail, withdrawn: false, blocked: false, halt: false, cooldown: false };
+    return {
+      status: 'stale',
+      failureKind,
+      detail,
+      withdrawn: false,
+      blocked: false,
+      halt: false,
+      cooldown: false
+    };
   }
 
   if (failureKind === 'limit_wall' || failureKind === 'challenge') {
@@ -1091,7 +1220,15 @@ export async function executeWithdrawal(
     // later attempt -- but the seat goes into cooldown and the pass is over.
     // Whatever produced this needs a person, not a retry.
     await settle(db, claimed.id, seat.workspaceId, 'failed', failureKind, detail, now);
-    return { status: 'failed', failureKind, detail, withdrawn: false, blocked: false, halt: true, cooldown: true };
+    return {
+      status: 'failed',
+      failureKind,
+      detail,
+      withdrawn: false,
+      blocked: false,
+      halt: true,
+      cooldown: true
+    };
   }
 
   if (failureKind === 'selector_drift') {
@@ -1099,14 +1236,30 @@ export async function executeWithdrawal(
     // pass still ends: if one selector has drifted, every remaining row would
     // reload the same list for nothing.
     await settle(db, claimed.id, seat.workspaceId, 'failed', failureKind, detail, now);
-    return { status: 'failed', failureKind, detail, withdrawn: false, blocked: false, halt: true, cooldown: false };
+    return {
+      status: 'failed',
+      failureKind,
+      detail,
+      withdrawn: false,
+      blocked: false,
+      halt: true,
+      cooldown: false
+    };
   }
 
   // `unknown`: we clicked and lost the thread. HOLD the claim -- the invite may
   // or may not still be standing, and both "withdrawn" and "still pending"
   // would be inventions. A human settles this row.
   await settle(db, claimed.id, seat.workspaceId, 'held', failureKind, detail, now, true);
-  return { status: 'held', failureKind, detail, withdrawn: false, blocked: false, halt: true, cooldown: false };
+  return {
+    status: 'held',
+    failureKind,
+    detail,
+    withdrawn: false,
+    blocked: false,
+    halt: true,
+    cooldown: false
+  };
 }
 
 /* ---------------------------------------------------------------------------
@@ -1156,7 +1309,8 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTim
  * traffic on a restricted account.
  */
 function postureRefusal(posture: SeatPosture | null): string | null {
-  if (posture === null) return 'No LinkedIn seat is configured for this workspace, so there is nothing to pace against.';
+  if (posture === null)
+    return 'No LinkedIn seat is configured for this workspace, so there is nothing to pace against.';
   if (posture === 'paused') return 'The seat is paused.';
   if (posture === 'cooldown') {
     return 'The seat is in cooldown after a limit wall or challenge; resume it by hand once you know why.';
@@ -1224,7 +1378,8 @@ export async function runWithdrawalBatch(
     const claimed = await claimNextWithdrawal(db, seat, deps.batchId, now());
     if (!claimed) break;
 
-    if (index > 0) await sleep(Math.round(actionGapSeconds(`${deps.batchId}:${claimed.id}`) * 1000));
+    if (index > 0)
+      await sleep(Math.round(actionGapSeconds(`${deps.batchId}:${claimed.id}`) * 1000));
 
     const outcome = await executeWithdrawal(db, seat, deps, claimed, now());
 
@@ -1238,7 +1393,8 @@ export async function runWithdrawalBatch(
     // defaults to the owner, so a limit wall on a secondary account used to put
     // the OWNER into cooldown -- stopping the account that was behaving and
     // leaving the restricted one to keep clicking.
-    if (outcome.cooldown) await upsertSeat(db, seat.workspaceId, { posture: 'cooldown' }, now(), seat.seatKey);
+    if (outcome.cooldown)
+      await upsertSeat(db, seat.workspaceId, { posture: 'cooldown' }, now(), seat.seatKey);
 
     if (outcome.halt) {
       result.halted = true;
@@ -1355,7 +1511,9 @@ export async function selectAcceptanceCandidates(
   options: { limit?: number } = {}
 ): Promise<AcceptanceCandidate[]> {
   const limit = Math.max(1, Math.trunc(options.limit ?? DEFAULT_MAX_ACCEPTANCE_CHECKS));
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT a.id, a.target_ref, a.campaign_id, a.campaign_member_id, a.workflow_step_id, a.pending_seen_at
     FROM linkedin_actions a
     JOIN linkedin_seats s ON s.workspace_id = a.workspace_id AND s.seat_key = a.seat_key
@@ -1368,7 +1526,9 @@ export async function selectAcceptanceCandidates(
       AND (a.acceptance_checked_at IS NULL OR a.acceptance_checked_at < a.pending_seen_at)
     ORDER BY a.pending_seen_at ASC, a.id ASC
     LIMIT ?
-  `).all<AcceptanceCandidateRow>(seat.workspaceId, seat.seatKey, limit);
+  `
+    )
+    .all<AcceptanceCandidateRow>(seat.workspaceId, seat.seatKey, limit);
 
   return rows.map((row) => ({
     actionId: row.id,
@@ -1381,19 +1541,32 @@ export async function selectAcceptanceCandidates(
 }
 
 /** Record that a page view was spent on this invite, so it is not re-read every tick. */
-async function markAcceptanceChecked(db: Db, seat: SeatRef, actionId: string, now: Date): Promise<void> {
-  await db.prepare(`
+async function markAcceptanceChecked(
+  db: Db,
+  seat: SeatRef,
+  actionId: string,
+  now: Date
+): Promise<void> {
+  await db
+    .prepare(
+      `
     UPDATE linkedin_actions SET acceptance_checked_at=?::timestamptz
     WHERE id=? AND workspace_id=? AND seat_key=?
-  `).run(now.toISOString(), actionId, seat.workspaceId, seat.seatKey);
+  `
+    )
+    .run(now.toISOString(), actionId, seat.workspaceId, seat.seatKey);
 }
 
 /** The profile still shows a pending invite: refresh the evidence and leave the status alone. */
 async function markStillPending(db: Db, seat: SeatRef, actionId: string, now: Date): Promise<void> {
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE linkedin_actions SET pending_seen_at=?::timestamptz, acceptance_checked_at=?::timestamptz
     WHERE id=? AND workspace_id=? AND seat_key=?
-  `).run(now.toISOString(), now.toISOString(), actionId, seat.workspaceId, seat.seatKey);
+  `
+    )
+    .run(now.toISOString(), now.toISOString(), actionId, seat.workspaceId, seat.seatKey);
 }
 
 /**
@@ -1433,16 +1606,24 @@ async function recordAcceptanceCheckView(
     // A re-check of the same invite. The view happened again and the budget was
     // spent again, so the row's date moves rather than a second row appearing:
     // one row per invite, dated at the most recent look.
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       UPDATE linkedin_actions SET recorded_at=?::timestamptz
       WHERE id=? AND workspace_id=?
-    `).run(now.toISOString(), written.id, seat.workspaceId);
+    `
+      )
+      .run(now.toISOString(), written.id, seat.workspaceId);
     return;
   }
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE linkedin_actions SET campaign_member_id=?, workflow_step_id=?
     WHERE id=? AND workspace_id=?
-  `).run(candidate.campaignMemberId, candidate.workflowStepId, written.id, seat.workspaceId);
+  `
+    )
+    .run(candidate.campaignMemberId, candidate.workflowStepId, written.id, seat.workspaceId);
 }
 
 export interface AcceptanceDetectionDeps {
@@ -1531,7 +1712,8 @@ export async function detectAcceptedInvites(
       break;
     }
 
-    if (index > 0) await sleep(Math.round(actionGapSeconds(`acceptance:${candidate.actionId}`) * 1000));
+    if (index > 0)
+      await sleep(Math.round(actionGapSeconds(`acceptance:${candidate.actionId}`) * 1000));
 
     const at = now();
     const evaluate =
@@ -1565,7 +1747,9 @@ export async function detectAcceptedInvites(
     }
     if (!verdict.allowed) {
       result.blocked += 1;
-      log(`LinkedIn acceptance check for ${candidate.targetRef} was refused: ${verdict.reason ?? 'the safety gate refused it.'}`);
+      log(
+        `LinkedIn acceptance check for ${candidate.targetRef} was refused: ${verdict.reason ?? 'the safety gate refused it.'}`
+      );
       // The refusals that reach here are seat-wide almost every time -- outside
       // working hours, over the day's view ceiling, posture -- so continuing
       // would spend the pass discovering the same answer once per candidate.
@@ -1581,21 +1765,25 @@ export async function detectAcceptedInvites(
       // `selector_drift` from `openProfile` means the NAVIGATION failed, so no
       // page was loaded and no view was registered. Every other kind is read
       // off a page that did load, and a page that loaded was viewed.
-      if (failureKind !== 'selector_drift') await recordAcceptanceCheckView(db, seat, candidate, at);
+      if (failureKind !== 'selector_drift')
+        await recordAcceptanceCheckView(db, seat, candidate, at);
 
       if (failureKind === 'limit_wall' || failureKind === 'challenge') {
         // LINKEDIN SAID STOP. The seat cools and the pass ends -- whatever
         // produced this needs a person, not another profile.
         await upsertSeat(db, seat.workspaceId, { posture: 'cooldown' }, at, seat.seatKey);
         result.halted = true;
-        result.haltReason = read.detail ?? `LinkedIn answered the acceptance check with a ${failureKind}.`;
+        result.haltReason =
+          read.detail ?? `LinkedIn answered the acceptance check with a ${failureKind}.`;
         break;
       }
       if (failureKind === 'selector_drift') {
         // One profile that would not open is one thing; the next nine would be
         // the same navigation failing nine more times.
         result.halted = true;
-        result.haltReason = read.detail ?? 'A profile could not be opened, so the pass stopped rather than repeating it.';
+        result.haltReason =
+          read.detail ??
+          'A profile could not be opened, so the pass stopped rather than repeating it.';
         break;
       }
       // `not_found` (the profile is gone) and `unknown`. The invite's outcome is
@@ -1620,7 +1808,11 @@ export async function detectAcceptedInvites(
     if (read.degree === 1) {
       const written = await recordDetectedAcceptance(
         db,
-        { workspaceId: seat.workspaceId, actionId: candidate.actionId, detectedAt: at.toISOString() },
+        {
+          workspaceId: seat.workspaceId,
+          actionId: candidate.actionId,
+          detectedAt: at.toISOString()
+        },
         at
       );
       await markAcceptanceChecked(db, seat, candidate.actionId, at);
@@ -1638,7 +1830,8 @@ export async function detectAcceptedInvites(
     // not know. Rule 2.
     result.unknown += 1;
     await markAcceptanceChecked(db, seat, candidate.actionId, at);
-    if (read.degraded.length > 0) log(`LinkedIn acceptance check for ${candidate.targetRef}: ${read.degraded.join(' ')}`);
+    if (read.degraded.length > 0)
+      log(`LinkedIn acceptance check for ${candidate.targetRef}: ${read.degraded.join(' ')}`);
   }
 
   return result;

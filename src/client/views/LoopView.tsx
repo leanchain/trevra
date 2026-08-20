@@ -44,12 +44,10 @@ interface Block {
   href: string;
 }
 
-export interface LoopData {
+interface LoopData {
   planned: number;
-  exported: number;
-  /** Of `planned`/`exported`, the subset that is an invite rather than a follow-up step. */
+  /** Of `planned`, the subset that is an invite rather than a follow-up step. */
   plannedInvites: number;
-  exportedInvites: number;
   waitingApprovals: PlaybookRun[];
 }
 
@@ -63,9 +61,7 @@ export function LoopView({
   const { limits, error: seatError } = useSeatLimits();
   const [loop, setLoop] = useState<LoopData>({
     planned: 0,
-    exported: 0,
     plannedInvites: 0,
-    exportedInvites: 0,
     waitingApprovals: []
   });
   const [cost, setCost] = useState<LoopCost | null>(null);
@@ -81,17 +77,14 @@ export function LoopView({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [planned, exported, waiting] = await Promise.all([
+      const [planned, waiting] = await Promise.all([
         getLinkedInActions({ status: 'planned', limit: 200 }).catch(() => []),
-        getLinkedInActions({ status: 'exported', limit: 200 }).catch(() => []),
         getPlaybookRuns({ status: 'waiting_approval', limit: 20 }).catch(() => [] as PlaybookRun[])
       ]);
       if (!cancelled)
         setLoop({
           planned: planned.length,
-          exported: exported.length,
           plannedInvites: planned.filter((action) => action.kind === 'invite').length,
-          exportedInvites: exported.filter((action) => action.kind === 'invite').length,
           waitingApprovals: waiting
         });
     })();
@@ -125,8 +118,8 @@ export function LoopView({
   useOutreachRefresh(loadAnalytics);
 
   const seat = limits?.seat ?? null;
-  const queued = loop.planned + loop.exported;
-  const invitesQueued = loop.plannedInvites + loop.exportedInvites;
+  const queued = loop.planned;
+  const invitesQueued = loop.plannedInvites;
   const followUpsQueued = queued - invitesQueued;
   const funnel = analytics?.total ?? null;
   const waitingCount = loop.waitingApprovals.length;
@@ -139,7 +132,7 @@ export function LoopView({
       label: 'Find',
       value: 'Build a lead list',
       unit: 'CSV or search',
-      href: '/outreach/manager'
+      href: '/outreach'
     },
     {
       id: 'reach',
@@ -158,7 +151,7 @@ export function LoopView({
         : seatError
           ? 'unavailable'
           : 'loading',
-      href: limits ? (seat?.configured ? '/outreach/manager' : '/outreach') : null,
+      href: limits ? (seat?.configured ? '/outreach' : '/outreach/settings') : null,
       unavailable: !limits
     },
     {
@@ -180,7 +173,7 @@ export function LoopView({
             ? `${queued} scheduled ${queued === 1 ? 'action is' : 'actions are'} paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'}`
             : `This LinkedIn account is paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'}`,
         action: 'Open Settings',
-        href: '/outreach'
+        href: '/outreach/settings'
       };
     }
     if (!seat?.configured)
@@ -188,7 +181,7 @@ export function LoopView({
         stage: 'reach',
         sentence: 'No LinkedIn account is connected.',
         action: 'Connect an account',
-        href: '/outreach'
+        href: '/outreach/settings'
       };
     if (waitingCount > 0)
       return {
@@ -202,7 +195,7 @@ export function LoopView({
         stage: 'find',
         sentence: 'Nothing is queued.',
         action: 'Start a campaign',
-        href: '/outreach/manager'
+        href: '/outreach'
       };
     return null;
   }, [limits, seat, queued, waitingCount]);
@@ -437,28 +430,28 @@ function OnboardingChecklist({
       title: 'Add a LinkedIn account',
       detail: 'Set the timezone and daily limits.',
       cta: 'Add account',
-      href: '/outreach'
+      href: '/outreach/settings'
     },
     {
       done: (outreachSetup?.leadLists ?? 0) > 0,
       title: 'Build one lead list',
       detail: 'Import leads or build a list from LinkedIn search.',
       cta: 'Build lead list',
-      href: '/outreach/manager'
+      href: '/outreach'
     },
     {
       done: (outreachSetup?.workflows ?? 0) > 0,
       title: 'Build one workflow',
       detail: 'Choose the outreach steps and timing.',
       cta: 'Build workflow',
-      href: '/outreach/manager'
+      href: '/outreach'
     },
     {
       done: (outreachSetup?.campaigns ?? 0) > 0,
       title: 'Create your first campaign',
       detail: 'Choose the account, lead list, and workflow.',
       cta: 'Create campaign',
-      href: '/outreach/manager'
+      href: '/outreach'
     }
   ];
   const progressReady = outreachSetup !== null;

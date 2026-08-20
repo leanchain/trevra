@@ -37,7 +37,7 @@ export function ageLabel(entry: FeedThread, now: Date): string {
   return `first seen ${elapsed(entry.row.first_seen_at, now)} ago`;
 }
 
-export interface WhyChip {
+interface WhyChip {
   /** What the reader sees. */
   label: string;
   /** The contribution this reason made to the relevance score. */

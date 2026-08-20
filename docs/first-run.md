@@ -34,16 +34,16 @@ step complete.
 
 Four verifiable steps, in order:
 
-1. **Add the LinkedIn account you will send from** → `/outreach`
+1. **Add the LinkedIn account you will send from** → `/outreach/settings`
    - name the sending account;
    - set timezone, working days/hours and operator ceilings;
    - connect/sign in when the deployment supports browser execution.
-2. **Build one lead list** → `/outreach/manager`
-   - import people directly, or use `/outreach/leads` to turn a LinkedIn source
-     into a reviewed list.
-3. **Build one workflow** → `/outreach/manager`
+2. **Build one lead list** → `/outreach/new`
+   - import people directly, or use the Find people fold at `/outreach/leads`
+     to turn a LinkedIn source into a reviewed list.
+3. **Build one workflow** → `/outreach/new`
    - view, invite, message, follow, wait, or stop for a manual message.
-4. **Create the campaign** → `/outreach/manager`
+4. **Create the campaign** → `/outreach/new`
    - pick one sending account, one lead list and one workflow;
    - creation sends nothing; Start is a separate decision.
 

@@ -34,7 +34,13 @@ import { zipArchive, type ZipEntry } from './zip.js';
  * schema's -- "runs" is three tables, because a job Trevra ran, a playbook it
  * ran and a skill it ran are one thing to the person reading the file.
  */
-export const LEDGER_EXPORT_SECTIONS = ['runs', 'steps', 'evidence', 'approvals', 'actions'] as const;
+export const LEDGER_EXPORT_SECTIONS = [
+  'runs',
+  'steps',
+  'evidence',
+  'approvals',
+  'actions'
+] as const;
 export type LedgerExportSection = (typeof LEDGER_EXPORT_SECTIONS)[number];
 
 /** Default window, in days. Matches the analytics range the rest of the shell defaults to. */
@@ -202,7 +208,7 @@ const SOURCES: Record<LedgerExportSection, LedgerSource[]> = {
     {
       // Dated the way every other window over this table is dated: when it
       // happened, falling back to its planned slot and then to when it was
-      // filed. See linkedin/campaigns.ts, which buckets its series the same way.
+      // filed. See linkedin/action-ledger.ts, which buckets its series the same way.
       table: 'linkedin_actions',
       sql: `
         SELECT * FROM linkedin_actions
@@ -236,11 +242,16 @@ export async function createLedgerExport(
   input: { workspaceId: string; windowDays: number; include: LedgerExportSection[] },
   now: Date
 ): Promise<LedgerExportRecord> {
-  const windowDays = Math.max(1, Math.min(Math.trunc(input.windowDays), LEDGER_EXPORT_MAX_WINDOW_DAYS));
+  const windowDays = Math.max(
+    1,
+    Math.min(Math.trunc(input.windowDays), LEDGER_EXPORT_MAX_WINDOW_DAYS)
+  );
   // Same boundary the analytics series uses: whole UTC days, counted inclusive
   // of today, so "30 days" means the same span on both screens.
   const start = new Date(now.getTime() - (windowDays - 1) * 86_400_000);
-  const since = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate())).toISOString();
+  const since = new Date(
+    Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate())
+  ).toISOString();
 
   // De-duplicated and put back in the canonical order, so two requests asking
   // for the same sections in different orders produce the same manifest.
@@ -256,7 +267,8 @@ export async function createLedgerExport(
       const params = source.params
         ? source.params(input.workspaceId, since)
         : [input.workspaceId, since];
-      const rows = await db.prepare(`${source.sql} LIMIT ${LEDGER_EXPORT_ROW_LIMIT + 1}`)
+      const rows = await db
+        .prepare(`${source.sql} LIMIT ${LEDGER_EXPORT_ROW_LIMIT + 1}`)
         .all<Record<string, unknown>>(...params);
 
       const truncated = rows.length > LEDGER_EXPORT_ROW_LIMIT;
@@ -303,24 +315,28 @@ export async function createLedgerExport(
   const filename = `trevra-ledger-${now.toISOString().slice(0, 10)}-${exportId}.zip`;
   const contentType = 'application/zip';
 
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     INSERT INTO ledger_exports (
       id, workspace_id, window_days, include_json, counts_json, sha256_json,
       filename, content_type, bytes, created_at
     ) VALUES (?,?,?,?::jsonb,?::jsonb,?::jsonb,?,?,?,?)
     RETURNING ${METADATA_COLUMNS}
-  `).get<LedgerExportRow>(
-    exportId,
-    input.workspaceId,
-    windowDays,
-    JSON.stringify(include),
-    JSON.stringify(counts),
-    JSON.stringify(sha256),
-    filename,
-    contentType,
-    bytes,
-    now.toISOString()
-  );
+  `
+    )
+    .get<LedgerExportRow>(
+      exportId,
+      input.workspaceId,
+      windowDays,
+      JSON.stringify(include),
+      JSON.stringify(counts),
+      JSON.stringify(sha256),
+      filename,
+      contentType,
+      bytes,
+      now.toISOString()
+    );
 
   return toRecord(row as LedgerExportRow);
 }
@@ -338,9 +354,13 @@ export async function readLedgerExport(
   workspaceId: string,
   exportId: string
 ): Promise<(LedgerExportRecord & { bytes: Buffer }) | undefined> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT ${METADATA_COLUMNS}, bytes FROM ledger_exports WHERE id=? AND workspace_id=?
-  `).get<LedgerExportRow & { bytes: Buffer }>(exportId, workspaceId);
+  `
+    )
+    .get<LedgerExportRow & { bytes: Buffer }>(exportId, workspaceId);
   return row ? { ...toRecord(row), bytes: row.bytes } : undefined;
 }
 
@@ -351,11 +371,19 @@ const METADATA_COLUMNS = `
   TO_CHAR(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
 `;
 
-export async function listLedgerExports(db: Db, workspaceId: string, limit = 20): Promise<LedgerExportRecord[]> {
-  const rows = await db.prepare(`
+export async function listLedgerExports(
+  db: Db,
+  workspaceId: string,
+  limit = 20
+): Promise<LedgerExportRecord[]> {
+  const rows = await db
+    .prepare(
+      `
     SELECT ${METADATA_COLUMNS} FROM ledger_exports
     WHERE workspace_id=? ORDER BY created_at DESC, id DESC LIMIT ?
-  `).all<LedgerExportRow>(workspaceId, Math.max(1, Math.min(Math.trunc(limit), 100)));
+  `
+    )
+    .all<LedgerExportRow>(workspaceId, Math.max(1, Math.min(Math.trunc(limit), 100)));
   return rows.map(toRecord);
 }
 
@@ -387,10 +415,14 @@ function toRecord(row: LedgerExportRow): LedgerExportRecord {
 
 function asNumberMap(value: unknown): Record<string, number> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, Number(item)]));
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, Number(item)])
+  );
 }
 
 function asStringMap(value: unknown): Record<string, string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, String(item)]));
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, String(item)])
+  );
 }

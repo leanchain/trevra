@@ -70,30 +70,6 @@ export const sourceNote = (confidence: LinkedInLimitConfidence) =>
     ? 'Published by LinkedIn, or a term of its own contract.'
     : 'Measured by people running LinkedIn outreach, not published by LinkedIn. Directionally right, never a guarantee.';
 
-/**
- * Why today's number is the number it is.
- *
- * The server names the rule that bound the ceiling -- `warmup-multiplier`,
- * `acceptance-rate`, `cooldown-band`. Those are this product's words for
- * itself. An operator asks "why can I only send 12 today", and every one of
- * these is an answer to that question in words they never had to learn.
- */
-const LIMIT_REASON: Record<string, string> = {
-  'band-ceiling': 'the normal daily limit for an account this size',
-  'weekly-band': 'the weekly limit for an account this size',
-  'monthly-quota': 'LinkedIn’s own monthly quota',
-  'seat-unconfigured': 'no LinkedIn account is connected, so nothing may go out',
-  'seat-paused': 'this account is paused',
-  'acceptance-rate':
-    'too few invites are being accepted, so the daily number is halved until that recovers',
-  'warmup-multiplier': 'this account is still ramping up, so it sends less than its full allowance',
-  'cooldown-band': 'this account is in cooldown, so the careful starter limits apply'
-};
-
-/** The server's rule name in the operator's words, or the rule name made readable. */
-export const limitReason = (boundBy: string) =>
-  LIMIT_REASON[boundBy] ?? boundBy.replaceAll('-', ' ');
-
 /* -------------------------------------------------------------------------
  * `/setup/limits` -- the never-contact list.
  * ---------------------------------------------------------------------- */

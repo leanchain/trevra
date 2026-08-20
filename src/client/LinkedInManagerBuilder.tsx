@@ -22,7 +22,7 @@ interface Readiness {
 const EMPTY: Readiness = { seats: 0, lists: 0, workflows: 0 };
 
 /**
- * `/outreach/manager/new` — construction only.
+ * `/outreach/new` — construction only.
  *
  * This used to gate lead-list and workflow creation behind a three-step
  * checklist, one step visible at a time -- and the moment a step was done,
@@ -79,11 +79,7 @@ export function OutreachManagerBuilder({
   return (
     <div className="page-stack">
       <div className="builder-back">
-        <button
-          className="ghost-button"
-          type="button"
-          onClick={() => onNavigate('/outreach/manager')}
-        >
+        <button className="ghost-button" type="button" onClick={() => onNavigate('/outreach')}>
           <ChevronLeft size={14} /> Back to campaigns
         </button>
       </div>
@@ -104,7 +100,11 @@ export function OutreachManagerBuilder({
               <p>A campaign sends from a real account, with its own hours and limits.</p>
             </div>
           </div>
-          <button className="primary-button" type="button" onClick={() => onNavigate('/outreach')}>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => onNavigate('/outreach/settings')}
+          >
             Add account <ChevronRight size={14} />
           </button>
         </section>
@@ -115,7 +115,7 @@ export function OutreachManagerBuilder({
           <LinkedInManagerCampaignConfig
             onChanged={refresh}
             setToast={setToast}
-            onStarted={() => onNavigate('/outreach/manager')}
+            onStarted={() => onNavigate('/outreach')}
             prefill={prefill}
           />
 

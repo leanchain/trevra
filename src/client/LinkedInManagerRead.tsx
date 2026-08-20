@@ -58,7 +58,7 @@ import {
   type ManagedKind
 } from './LinkedInManagerCampaignConfig';
 import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { ConfirmDrawer } from './ui/dialog';
 
 /**
@@ -1143,7 +1143,7 @@ export function OutreachManagerRead({
       leadListId: campaign.leadListId,
       workflowId: campaign.workflowId
     });
-    onNavigate('/outreach/manager/new');
+    onNavigate('/outreach/new');
   };
 
   const pendingTasks = tasks.filter((task) => task.status === 'pending');
@@ -1210,7 +1210,7 @@ export function OutreachManagerRead({
             <button
               className="primary-button"
               type="button"
-              onClick={() => onNavigate('/outreach/manager/new')}
+              onClick={() => onNavigate('/outreach/new')}
             >
               <Plus size={14} /> New campaign
             </button>
@@ -1283,7 +1283,7 @@ export function OutreachManagerRead({
               <button
                 className="primary-button"
                 type="button"
-                onClick={() => onNavigate('/outreach/manager/new')}
+                onClick={() => onNavigate('/outreach/new')}
               >
                 <Plus size={14} /> Build your first campaign
               </button>
@@ -1656,7 +1656,7 @@ export function OutreachManagerRead({
               </div>
             </div>
 
-            <details className="mgr-inputs">
+            <details className="mgr-inputs mgr-simple-hide">
               <summary>
                 More results
                 <span>{plural(visiblePendingTasks.length, 'task')} waiting · message versions</span>
@@ -1903,7 +1903,7 @@ export function OutreachManagerRead({
         </>
       )}
 
-      <details className="mgr-inputs">
+      <details className="mgr-inputs mgr-simple-hide">
         <summary>
           Campaign inputs{' '}
           <span>
@@ -1917,8 +1917,8 @@ export function OutreachManagerRead({
                 <h3 aria-level={2}>LinkedIn accounts</h3>
                 <p>
                   Each sending account has its own timezone, working hours and daily limits. Manage
-                  them on Outreach &rarr; LinkedIn accounts. If an account is not connected, its
-                  campaigns wait instead of sending from another account.
+                  them on Outreach &rarr; Settings. If an account is not connected, its campaigns
+                  wait instead of sending from another account.
                 </p>
               </div>
             </div>
@@ -1930,7 +1930,7 @@ export function OutreachManagerRead({
                   hours it is allowed to work.
                 </p>
                 <div className="mgr-actions">
-                  <a className="primary-button" href="/outreach">
+                  <a className="primary-button" href="/outreach/settings">
                     Add a LinkedIn account
                   </a>
                 </div>

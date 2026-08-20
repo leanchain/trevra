@@ -1,14 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
-import { acceptanceRate, countActionsInWindow, hasTarget, recordAction, type SeatRef } from './actions.js';
-import { ingestOutcome, linkedinAnalytics, recordDetectedAcceptance, writeActionStatus } from './campaigns.js';
+import {
+  acceptanceRate,
+  countActionsInWindow,
+  hasTarget,
+  recordAction,
+  type SeatRef
+} from './actions.js';
+import {
+  ingestOutcome,
+  linkedinAnalytics,
+  recordDetectedAcceptance,
+  writeActionStatus
+} from './action-ledger.js';
 import type {
   LinkedInDegreeDriver,
   LinkedInDegreeRead,
   LinkedInDriverResult,
   LinkedInPage
 } from './driver.js';
-import type { LinkedInListPage, LinkedInWithdrawDriver, PendingInviteList } from './driver-withdraw.js';
+import type {
+  LinkedInListPage,
+  LinkedInWithdrawDriver,
+  PendingInviteList
+} from './driver-withdraw.js';
 import type { LinkedInSafetyVerdict } from './guard.js';
 import { LINKEDIN_LIMITS } from './limits.js';
 import { OWNER_SEAT_KEY, getSeat, upsertSeat } from './seats.js';
@@ -56,7 +71,9 @@ const SEAT: SeatRef = { workspaceId: WORKSPACE_ID, seatKey: OWNER_SEAT_KEY };
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db
-    .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE_ID, 'LinkedIn Withdraw Test', NOW.toISOString());
   await db.prepare('DELETE FROM linkedin_withdrawals WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(WORKSPACE_ID);
@@ -69,35 +86,63 @@ afterEach(async () => {
 
 /** A steady seat, activated long enough ago to be past the warm-up ramp. */
 function steadySeat() {
-  return upsertSeat(db, WORKSPACE_ID, { label: 'Test seat', timezone: 'UTC' }, new Date('2026-01-01T09:00:00.000Z'));
+  return upsertSeat(
+    db,
+    WORKSPACE_ID,
+    { label: 'Test seat', timezone: 'UTC' },
+    new Date('2026-01-01T09:00:00.000Z')
+  );
 }
 
 /** An invite sent `daysAgo`, in the ledger, awaiting an answer. */
-async function pendingInvite(handle: string, daysAgo: number, status: 'sent' | 'exported' = 'sent'): Promise<string> {
+async function pendingInvite(
+  handle: string,
+  daysAgo: number,
+  status: 'sent' | 'exported' = 'sent'
+): Promise<string> {
   const at = new Date(NOW.getTime() - daysAgo * 86_400_000);
   const { id } = await recordAction(
     db,
-    { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: `https://www.linkedin.com/in/${handle}/`, status, source: 'export' },
+    {
+      workspaceId: WORKSPACE_ID,
+      kind: 'invite',
+      targetRef: `https://www.linkedin.com/in/${handle}/`,
+      status,
+      source: 'export'
+    },
     at
   );
   return id;
 }
 
 async function statusOf(actionId: string): Promise<string | undefined> {
-  const row = await db.prepare('SELECT status FROM linkedin_actions WHERE id=?').get<{ status: string }>(actionId);
+  const row = await db
+    .prepare('SELECT status FROM linkedin_actions WHERE id=?')
+    .get<{ status: string }>(actionId);
   return row?.status;
 }
 
 async function withdrawalRow(withdrawalId: string) {
   return db
     .prepare('SELECT status, claimed_at, failure_kind, detail FROM linkedin_withdrawals WHERE id=?')
-    .get<{ status: string; claimed_at: string | null; failure_kind: string | null; detail: string | null }>(withdrawalId);
+    .get<{
+      status: string;
+      claimed_at: string | null;
+      failure_kind: string | null;
+      detail: string | null;
+    }>(withdrawalId);
 }
 
-const okResult: LinkedInDriverResult = { ok: true, externalRef: 'https://www.linkedin.com/in/x/', failureKind: null };
+const okResult: LinkedInDriverResult = {
+  ok: true,
+  externalRef: 'https://www.linkedin.com/in/x/',
+  failureKind: null
+};
 
 /** Records what the caller asked the driver to do, and answers however the test says. */
-function fakeDriver(answer: (target: string, index: number) => LinkedInDriverResult = () => okResult) {
+function fakeDriver(
+  answer: (target: string, index: number) => LinkedInDriverResult = () => okResult
+) {
   const targets: string[] = [];
   const driver: LinkedInWithdrawDriver = {
     listPendingInvites: async () => ({ ok: true, invites: [], truncated: false, degraded: [] }),
@@ -132,7 +177,12 @@ function allowed(): WithdrawalVerdict {
 }
 
 function refused(reason: string): WithdrawalVerdict {
-  return { ...allowed(), allowed: false, reason, gate: { ...allowed().gate, allowed: false, reason } };
+  return {
+    ...allowed(),
+    allowed: false,
+    reason,
+    gate: { ...allowed().gate, allowed: false, reason }
+  };
 }
 
 describe('targetMatchKeys', () => {
@@ -157,7 +207,13 @@ describe('syncPendingInvites', () => {
     const result = await syncPendingInvites(
       db,
       SEAT,
-      list([{ profileUrl: 'https://www.linkedin.com/in/maya/', name: 'Maya', sentAt: '2026-07-01T09:00:00.000Z' }]),
+      list([
+        {
+          profileUrl: 'https://www.linkedin.com/in/maya/',
+          name: 'Maya',
+          sentAt: '2026-07-01T09:00:00.000Z'
+        }
+      ]),
       NOW
     );
 
@@ -173,7 +229,13 @@ describe('syncPendingInvites', () => {
   it('matches a bare-handle target_ref against a canonical URL from the list', async () => {
     await recordAction(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'invite', targetRef: 'in/Maya', status: 'sent', source: 'manual' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'in/Maya',
+        status: 'sent',
+        source: 'manual'
+      },
       new Date(NOW.getTime() - 86_400_000)
     );
     const result = await syncPendingInvites(
@@ -190,11 +252,22 @@ describe('syncPendingInvites', () => {
     // a three-week-old invite look permanently three weeks old and it would
     // never age into a candidate.
     const actionId = await pendingInvite('maya', 30);
-    const invite = { profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: '2026-07-01T09:00:00.000Z' };
+    const invite = {
+      profileUrl: 'https://www.linkedin.com/in/maya/',
+      name: null,
+      sentAt: '2026-07-01T09:00:00.000Z'
+    };
     await syncPendingInvites(db, SEAT, list([invite]), NOW);
-    await syncPendingInvites(db, SEAT, list([{ ...invite, sentAt: '2026-08-01T09:00:00.000Z' }]), NOW);
+    await syncPendingInvites(
+      db,
+      SEAT,
+      list([{ ...invite, sentAt: '2026-08-01T09:00:00.000Z' }]),
+      NOW
+    );
 
-    const row = await db.prepare('SELECT pending_since FROM linkedin_actions WHERE id=?').get<{ pending_since: string }>(actionId);
+    const row = await db
+      .prepare('SELECT pending_since FROM linkedin_actions WHERE id=?')
+      .get<{ pending_since: string }>(actionId);
     expect(new Date(row!.pending_since).toISOString()).toBe('2026-07-01T09:00:00.000Z');
   });
 
@@ -216,7 +289,12 @@ describe('syncPendingInvites', () => {
     // Accepted, declined, expired and withdrawn are indistinguishable from a
     // list, and the acceptance-rate throttle reads exactly those statuses.
     const actionId = await pendingInvite('maya', 30);
-    await syncPendingInvites(db, SEAT, list([{ profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: null }]), NOW);
+    await syncPendingInvites(
+      db,
+      SEAT,
+      list([{ profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: null }]),
+      NOW
+    );
 
     const later = new Date(NOW.getTime() + 86_400_000);
     const result = await syncPendingInvites(db, SEAT, list([]), later);
@@ -230,7 +308,7 @@ describe('syncPendingInvites', () => {
     expect((await syncPendingInvites(db, SEAT, list([]), NOW)).disappeared).toBe(0);
   });
 
-  it('passes the driver\'s truncation through', async () => {
+  it("passes the driver's truncation through", async () => {
     expect((await syncPendingInvites(db, SEAT, list([], true), NOW)).truncated).toBe(true);
   });
 });
@@ -267,7 +345,7 @@ describe('selectWithdrawalCandidates', () => {
     expect(await selectWithdrawalCandidates(db, SEAT, NOW, { olderThanDays: 90 })).toHaveLength(0);
   });
 
-  it('measures age by LinkedIn\'s clock when it has one', async () => {
+  it("measures age by LinkedIn's clock when it has one", async () => {
     // The ledger says we recorded it yesterday; LinkedIn says the recipient got
     // it two months ago. The recipient's experience is what "stale" means.
     const actionId = await pendingInvite('imported', 1);
@@ -284,7 +362,11 @@ describe('selectWithdrawalCandidates', () => {
       const actionId = await pendingInvite(`x-${status}`, 40);
       await db.prepare('UPDATE linkedin_actions SET status=? WHERE id=?').run(status, actionId);
     }
-    await db.prepare("UPDATE linkedin_actions SET status='planned', recorded_at=NULL WHERE target_ref LIKE '%planned%'").run();
+    await db
+      .prepare(
+        "UPDATE linkedin_actions SET status='planned', recorded_at=NULL WHERE target_ref LIKE '%planned%'"
+      )
+      .run();
 
     expect(await selectWithdrawalCandidates(db, SEAT, NOW)).toEqual([]);
   });
@@ -292,7 +374,13 @@ describe('selectWithdrawalCandidates', () => {
   it('ignores a kind that is not an invite', async () => {
     await recordAction(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'dm', targetRef: 'https://www.linkedin.com/in/dm/', status: 'sent', source: 'export' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'dm',
+        targetRef: 'https://www.linkedin.com/in/dm/',
+        status: 'sent',
+        source: 'export'
+      },
       new Date(NOW.getTime() - 40 * 86_400_000)
     );
     expect(await selectWithdrawalCandidates(db, SEAT, NOW)).toEqual([]);
@@ -308,7 +396,12 @@ describe('selectWithdrawalCandidates', () => {
 
   it('re-proposes one whose withdrawal definitely failed', async () => {
     await pendingInvite('maya', 40);
-    const { ids } = await enqueueWithdrawals(db, SEAT, await selectWithdrawalCandidates(db, SEAT, NOW), NOW);
+    const { ids } = await enqueueWithdrawals(
+      db,
+      SEAT,
+      await selectWithdrawalCandidates(db, SEAT, NOW),
+      NOW
+    );
     await db.prepare("UPDATE linkedin_withdrawals SET status='failed' WHERE id=?").run(ids[0]);
 
     expect(await selectWithdrawalCandidates(db, SEAT, NOW)).toHaveLength(1);
@@ -431,7 +524,7 @@ describe('markActionWithdrawn, and what the eighth status means to everything el
 });
 
 describe('evaluateWithdrawalSafety', () => {
-  it('derives the daily ceiling from the seat\'s own invite band', () => {
+  it("derives the daily ceiling from the seat's own invite band", () => {
     expect(withdrawalCeilingFor('steady')).toBe(LINKEDIN_LIMITS.invite.steady.perDay);
     expect(withdrawalCeilingFor('warmup')).toBe(LINKEDIN_LIMITS.invite.warmup.perDay);
     expect(withdrawalCeilingFor('cooldown')).toBe(LINKEDIN_LIMITS.invite.warmup.perDay);
@@ -442,7 +535,12 @@ describe('evaluateWithdrawalSafety', () => {
     await steadySeat();
     const actionId = await pendingInvite('maya', 40);
 
-    const verdict = await evaluateWithdrawalSafety(db, SEAT, { actionId, targetRef: 'https://www.linkedin.com/in/maya/' }, NOW);
+    const verdict = await evaluateWithdrawalSafety(
+      db,
+      SEAT,
+      { actionId, targetRef: 'https://www.linkedin.com/in/maya/' },
+      NOW
+    );
     expect(verdict.allowed).toBe(true);
     expect(verdict.gate.allowed).toBe(true);
   });
@@ -451,8 +549,15 @@ describe('evaluateWithdrawalSafety', () => {
     await steadySeat();
     const actionId = await pendingInvite('maya', 40);
 
-    const verdict = await evaluateWithdrawalSafety(db, SEAT, { actionId, targetRef: 'https://www.linkedin.com/in/maya/' }, NOW);
-    expect(verdict.gate.checks.find((entry) => entry.check === 'duplicate-target')?.passed).toBe(true);
+    const verdict = await evaluateWithdrawalSafety(
+      db,
+      SEAT,
+      { actionId, targetRef: 'https://www.linkedin.com/in/maya/' },
+      NOW
+    );
+    expect(verdict.gate.checks.find((entry) => entry.check === 'duplicate-target')?.passed).toBe(
+      true
+    );
   });
 
   it('refuses when the seat is paused, and says which check said so', async () => {
@@ -460,7 +565,12 @@ describe('evaluateWithdrawalSafety', () => {
     await upsertSeat(db, WORKSPACE_ID, { posture: 'paused' }, NOW);
     const actionId = await pendingInvite('maya', 40);
 
-    const verdict = await evaluateWithdrawalSafety(db, SEAT, { actionId, targetRef: 'https://www.linkedin.com/in/maya/' }, NOW);
+    const verdict = await evaluateWithdrawalSafety(
+      db,
+      SEAT,
+      { actionId, targetRef: 'https://www.linkedin.com/in/maya/' },
+      NOW
+    );
     expect(verdict.allowed).toBe(false);
     expect(verdict.reason).toContain('seat-paused');
   });
@@ -470,7 +580,12 @@ describe('evaluateWithdrawalSafety', () => {
     const actionId = await pendingInvite('maya', 40);
     const midnight = new Date('2026-08-04T02:00:00.000Z');
 
-    const verdict = await evaluateWithdrawalSafety(db, SEAT, { actionId, targetRef: 'https://www.linkedin.com/in/maya/' }, midnight);
+    const verdict = await evaluateWithdrawalSafety(
+      db,
+      SEAT,
+      { actionId, targetRef: 'https://www.linkedin.com/in/maya/' },
+      midnight
+    );
     expect(verdict.allowed).toBe(false);
     expect(verdict.reason).toContain('business-hours');
   });
@@ -488,11 +603,23 @@ describe('evaluateWithdrawalSafety', () => {
           `INSERT INTO linkedin_withdrawals (id, workspace_id, seat_key, action_id, target_ref, status, finished_at)
            VALUES (?,?,?,?,?, 'withdrawn', ?)`
         )
-        .run(`lwd_seed_${index}`, WORKSPACE_ID, OWNER_SEAT_KEY, `seed_${index}`, `seed-${index}`, NOW.toISOString());
+        .run(
+          `lwd_seed_${index}`,
+          WORKSPACE_ID,
+          OWNER_SEAT_KEY,
+          `seed_${index}`,
+          `seed-${index}`,
+          NOW.toISOString()
+        );
     }
 
     expect(await withdrawalsInWindow(db, SEAT, 24, NOW)).toBe(ceiling);
-    const verdict = await evaluateWithdrawalSafety(db, SEAT, { actionId, targetRef: 'https://www.linkedin.com/in/maya/' }, NOW);
+    const verdict = await evaluateWithdrawalSafety(
+      db,
+      SEAT,
+      { actionId, targetRef: 'https://www.linkedin.com/in/maya/' },
+      NOW
+    );
     expect(verdict.allowed).toBe(false);
     expect(verdict.reason).toContain('withdrawal-daily-ceiling');
     expect(verdict.gate.allowed).toBe(true);
@@ -513,7 +640,13 @@ describe('executeWithdrawal', () => {
     const claimed = await claimOne();
     const { driver, targets } = fakeDriver();
 
-    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed, NOW);
+    const outcome = await executeWithdrawal(
+      db,
+      SEAT,
+      { driver, page, evaluate: async () => allowed() },
+      claimed,
+      NOW
+    );
 
     expect(outcome).toMatchObject({ status: 'withdrawn', withdrawn: true, halt: false });
     expect(targets).toEqual(['https://www.linkedin.com/in/maya/']);
@@ -530,7 +663,13 @@ describe('executeWithdrawal', () => {
     await db.prepare("UPDATE linkedin_actions SET status='accepted' WHERE id=?").run(actionId);
     const { driver, targets } = fakeDriver();
 
-    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed, NOW);
+    const outcome = await executeWithdrawal(
+      db,
+      SEAT,
+      { driver, page, evaluate: async () => allowed() },
+      claimed,
+      NOW
+    );
 
     expect(outcome.status).toBe('stale');
     expect(targets).toEqual([]);
@@ -543,9 +682,19 @@ describe('executeWithdrawal', () => {
     await steadySeat();
     const actionId = await pendingInvite('maya', 40);
     const claimed = await claimOne();
-    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'already_connected', detail: 'no entry' }));
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'already_connected',
+      detail: 'no entry'
+    }));
 
-    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed, NOW);
+    const outcome = await executeWithdrawal(
+      db,
+      SEAT,
+      { driver, page, evaluate: async () => allowed() },
+      claimed,
+      NOW
+    );
 
     expect(outcome).toMatchObject({ status: 'stale', halt: false, withdrawn: false });
     expect(await statusOf(actionId)).toBe('sent');
@@ -603,9 +752,19 @@ describe('executeWithdrawal', () => {
     await steadySeat();
     const actionId = await pendingInvite('maya', 40);
     const claimed = await claimOne();
-    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'limit_wall', detail: 'a wall' }));
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'limit_wall',
+      detail: 'a wall'
+    }));
 
-    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed, NOW);
+    const outcome = await executeWithdrawal(
+      db,
+      SEAT,
+      { driver, page, evaluate: async () => allowed() },
+      claimed,
+      NOW
+    );
 
     expect(outcome).toMatchObject({ status: 'failed', halt: true, cooldown: true });
     expect(await statusOf(actionId)).toBe('sent');
@@ -616,9 +775,19 @@ describe('executeWithdrawal', () => {
     await steadySeat();
     const actionId = await pendingInvite('maya', 40);
     const claimed = await claimOne();
-    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'selector_drift', detail: 'no button' }));
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'selector_drift',
+      detail: 'no button'
+    }));
 
-    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed, NOW);
+    const outcome = await executeWithdrawal(
+      db,
+      SEAT,
+      { driver, page, evaluate: async () => allowed() },
+      claimed,
+      NOW
+    );
 
     expect(outcome).toMatchObject({ status: 'failed', halt: true, cooldown: false });
     expect(await statusOf(actionId)).toBe('sent');
@@ -628,9 +797,19 @@ describe('executeWithdrawal', () => {
     await steadySeat();
     const actionId = await pendingInvite('maya', 40);
     const claimed = await claimOne();
-    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'unknown', detail: 'dialog still open' }));
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'unknown',
+      detail: 'dialog still open'
+    }));
 
-    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed, NOW);
+    const outcome = await executeWithdrawal(
+      db,
+      SEAT,
+      { driver, page, evaluate: async () => allowed() },
+      claimed,
+      NOW
+    );
 
     expect(outcome).toMatchObject({ status: 'held', halt: true });
     expect(await statusOf(actionId)).toBe('sent');
@@ -694,9 +873,13 @@ describe('runWithdrawalBatch', () => {
     await runWithdrawalBatch(db, SEAT, first.deps);
 
     await db
-      .prepare("UPDATE linkedin_withdrawals SET status='queued', claimed_at=NULL, finished_at=NULL WHERE workspace_id=?")
+      .prepare(
+        "UPDATE linkedin_withdrawals SET status='queued', claimed_at=NULL, finished_at=NULL WHERE workspace_id=?"
+      )
       .run(WORKSPACE_ID);
-    await db.prepare("UPDATE linkedin_actions SET status='sent' WHERE workspace_id=?").run(WORKSPACE_ID);
+    await db
+      .prepare("UPDATE linkedin_actions SET status='sent' WHERE workspace_id=?")
+      .run(WORKSPACE_ID);
     const second = batchDeps();
     await runWithdrawalBatch(db, SEAT, second.deps);
 
@@ -721,7 +904,10 @@ describe('runWithdrawalBatch', () => {
 
     await upsertSeat(db, WORKSPACE_ID, { posture: 'paused' }, NOW);
     const paused = batchDeps();
-    expect(await runWithdrawalBatch(db, SEAT, paused.deps)).toMatchObject({ halted: true, withdrawn: 0 });
+    expect(await runWithdrawalBatch(db, SEAT, paused.deps)).toMatchObject({
+      halted: true,
+      withdrawn: 0
+    });
     expect(paused.targets).toEqual([]);
 
     await upsertSeat(db, WORKSPACE_ID, { posture: 'cooldown' }, NOW);
@@ -734,7 +920,10 @@ describe('runWithdrawalBatch', () => {
 
   it('refuses when no seat is configured at all', async () => {
     const { deps } = batchDeps();
-    expect(await runWithdrawalBatch(db, SEAT, deps)).toMatchObject({ halted: true, haltReason: expect.stringContaining('No LinkedIn seat') });
+    expect(await runWithdrawalBatch(db, SEAT, deps)).toMatchObject({
+      halted: true,
+      haltReason: expect.stringContaining('No LinkedIn seat')
+    });
   });
 
   it('stops between actions when a stop is requested', async () => {
@@ -752,7 +941,11 @@ describe('runWithdrawalBatch', () => {
     await steadySeat();
     for (const handle of ['a', 'b']) await pendingInvite(handle, 40);
     await sweepStaleInvites(db, SEAT, NOW);
-    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'limit_wall', detail: 'a wall' }));
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'limit_wall',
+      detail: 'a wall'
+    }));
     const { deps } = batchDeps({ driver });
 
     const result = await runWithdrawalBatch(db, SEAT, deps);
@@ -770,7 +963,11 @@ describe('runWithdrawalBatch', () => {
     );
     const { deps } = batchDeps({ driver });
 
-    expect(await runWithdrawalBatch(db, SEAT, deps)).toMatchObject({ stale: 1, withdrawn: 1, halted: false });
+    expect(await runWithdrawalBatch(db, SEAT, deps)).toMatchObject({
+      stale: 1,
+      withdrawn: 1,
+      halted: false
+    });
   });
 
   it('does nothing at all when the queue is empty', async () => {
@@ -815,7 +1012,14 @@ describe('a withdrawal pass is bound to its own account', () => {
     const at = new Date(NOW.getTime() - daysAgo * 86_400_000);
     const { id } = await recordAction(
       db,
-      { workspaceId: WORKSPACE_ID, seatKey: 'sales', kind: 'invite', targetRef: `https://www.linkedin.com/in/${handle}/`, status: 'sent', source: 'export' },
+      {
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'sales',
+        kind: 'invite',
+        targetRef: `https://www.linkedin.com/in/${handle}/`,
+        status: 'sent',
+        source: 'export'
+      },
       at
     );
     return id;
@@ -823,7 +1027,13 @@ describe('a withdrawal pass is bound to its own account', () => {
 
   beforeEach(async () => {
     await steadySeat();
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'UTC' }, new Date('2026-01-01T09:00:00.000Z'), 'sales');
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Sales seat', timezone: 'UTC' },
+      new Date('2026-01-01T09:00:00.000Z'),
+      'sales'
+    );
   });
 
   it('STOPS A PAUSED SECONDARY even while the owner seat is perfectly healthy', async () => {
@@ -847,14 +1057,21 @@ describe('a withdrawal pass is bound to its own account', () => {
     // A restriction on one LinkedIn account says nothing about another, which
     // is the entire reason an operator runs more than one.
     const { deps, targets } = batchDeps();
-    expect(await runWithdrawalBatch(db, SALES, deps)).toMatchObject({ halted: false, withdrawn: 1 });
+    expect(await runWithdrawalBatch(db, SALES, deps)).toMatchObject({
+      halted: false,
+      withdrawn: 1
+    });
     expect(targets).toHaveLength(1);
   });
 
   it('COOLS THE SEAT THAT HIT THE WALL, and leaves the owner alone', async () => {
     await salesInvite('lead', 40);
     await sweepStaleInvites(db, SALES, NOW);
-    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'limit_wall', detail: 'a wall' }));
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'limit_wall',
+      detail: 'a wall'
+    }));
 
     const result = await runWithdrawalBatch(db, SALES, batchDeps({ driver }).deps);
 
@@ -863,13 +1080,18 @@ describe('a withdrawal pass is bound to its own account', () => {
     expect((await getSeat(db, WORKSPACE_ID))?.posture).not.toBe('cooldown');
   });
 
-  it('reads its own posture for the withdrawal ceiling, not the owner\'s', async () => {
+  it("reads its own posture for the withdrawal ceiling, not the owner's", async () => {
     const actionId = await salesInvite('lead', 40);
     // The owner is in cooldown; the sales seat is steady. The ceiling this
     // verdict reports must be the sales seat's.
     await upsertSeat(db, WORKSPACE_ID, { posture: 'cooldown' }, NOW);
 
-    const verdict = await evaluateWithdrawalSafety(db, SALES, { actionId, targetRef: 'https://www.linkedin.com/in/lead/' }, NOW);
+    const verdict = await evaluateWithdrawalSafety(
+      db,
+      SALES,
+      { actionId, targetRef: 'https://www.linkedin.com/in/lead/' },
+      NOW
+    );
     expect(verdict.dailyCeiling).toBe(withdrawalCeilingFor('steady'));
   });
 });
@@ -892,7 +1114,11 @@ describe('the batched pending-invite sync', () => {
     // change -- and the batched form has to agree, which is why the match set
     // is computed per ENTRY and the rows are updated once each.
     const actionId = await pendingInvite('maya', 30);
-    const entry = { profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: '2026-07-01T09:00:00.000Z' };
+    const entry = {
+      profileUrl: 'https://www.linkedin.com/in/maya/',
+      name: null,
+      sentAt: '2026-07-01T09:00:00.000Z'
+    };
     const result = await syncPendingInvites(db, SEAT, list([entry, entry]), NOW);
 
     expect(result).toMatchObject({ listed: 2, matched: 2, unmatched: 0 });
@@ -902,7 +1128,7 @@ describe('the batched pending-invite sync', () => {
     expect(new Date(row!.pending_since).toISOString()).toBe('2026-07-01T09:00:00.000Z');
   });
 
-  it('takes the earliest entry\'s sentAt when two entries reach the same row', async () => {
+  it("takes the earliest entry's sentAt when two entries reach the same row", async () => {
     // The loop's COALESCE meant the FIRST entry set `pending_since` and every
     // later one was a no-op. DISTINCT ON ... ORDER BY entry reproduces that.
     const actionId = await pendingInvite('maya', 30);
@@ -910,8 +1136,16 @@ describe('the batched pending-invite sync', () => {
       db,
       SEAT,
       list([
-        { profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: '2026-07-01T09:00:00.000Z' },
-        { profileUrl: 'https://www.linkedin.com/in/maya', name: null, sentAt: '2026-07-20T09:00:00.000Z' }
+        {
+          profileUrl: 'https://www.linkedin.com/in/maya/',
+          name: null,
+          sentAt: '2026-07-01T09:00:00.000Z'
+        },
+        {
+          profileUrl: 'https://www.linkedin.com/in/maya',
+          name: null,
+          sentAt: '2026-07-20T09:00:00.000Z'
+        }
       ]),
       NOW
     );
@@ -941,7 +1175,9 @@ describe('the batched pending-invite sync', () => {
 
     expect(result).toMatchObject({ listed: 4, matched: 2, unmatched: 2 });
     const stamped = await db
-      .prepare('SELECT id FROM linkedin_actions WHERE workspace_id=? AND pending_seen_at IS NOT NULL ORDER BY id')
+      .prepare(
+        'SELECT id FROM linkedin_actions WHERE workspace_id=? AND pending_seen_at IS NOT NULL ORDER BY id'
+      )
       .all<{ id: string }>(WORKSPACE_ID);
     expect(stamped.map((row) => row.id).sort()).toEqual([maya, jonas].sort());
   });
@@ -963,7 +1199,12 @@ describe('the batched pending-invite sync', () => {
     );
 
     const later = new Date(NOW.getTime() + 86_400_000);
-    const result = await syncPendingInvites(db, SEAT, list([{ profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: null }]), later);
+    const result = await syncPendingInvites(
+      db,
+      SEAT,
+      list([{ profileUrl: 'https://www.linkedin.com/in/maya/', name: null, sentAt: null }]),
+      later
+    );
     expect(result).toMatchObject({ matched: 1, disappeared: 1 });
     expect(await statusOf(seen)).toBe('sent');
     expect(await statusOf(unseen)).toBe('sent');
@@ -1001,9 +1242,15 @@ describe('the batched withdrawal enqueue', () => {
     await pendingInvite('two', 30);
     const candidates = await selectWithdrawalCandidates(db, SEAT, NOW);
 
-    expect(await enqueueWithdrawals(db, SEAT, candidates, NOW)).toMatchObject({ queued: 2, duplicates: 0 });
+    expect(await enqueueWithdrawals(db, SEAT, candidates, NOW)).toMatchObject({
+      queued: 2,
+      duplicates: 0
+    });
     // The partial unique index does the enforcing; a losing insert is a no-op.
-    expect(await enqueueWithdrawals(db, SEAT, candidates, NOW)).toMatchObject({ queued: 0, duplicates: 2 });
+    expect(await enqueueWithdrawals(db, SEAT, candidates, NOW)).toMatchObject({
+      queued: 0,
+      duplicates: 2
+    });
   });
 
   it('handles one invite named twice inside a SINGLE batch', async () => {
@@ -1017,7 +1264,11 @@ describe('the batched withdrawal enqueue', () => {
   });
 
   it('is a no-op for an empty candidate list', async () => {
-    expect(await enqueueWithdrawals(db, SEAT, [], NOW)).toEqual({ queued: 0, duplicates: 0, ids: [] });
+    expect(await enqueueWithdrawals(db, SEAT, [], NOW)).toEqual({
+      queued: 0,
+      duplicates: 0,
+      ids: []
+    });
   });
 });
 
@@ -1113,7 +1364,14 @@ describe('acceptance detection', () => {
     });
 
     expect(opened).toHaveLength(2);
-    expect(result).toMatchObject({ checked: 2, accepted: 1, unknown: 1, stillPending: 0, blocked: 0, halted: false });
+    expect(result).toMatchObject({
+      checked: 2,
+      accepted: 1,
+      unknown: 1,
+      stillPending: 0,
+      blocked: 0,
+      halted: false
+    });
     expect(await statusOf(acceptedId)).toBe('accepted');
     // THE UNKNOWN CASE. Not 'declined', not 'withdrawn', not accepted: the
     // status it already had, because nobody found out.
@@ -1124,16 +1382,27 @@ describe('acceptance detection', () => {
     const actionId = await vanishedInvite('mystery');
     const { driver } = fakeDegreeDriver({
       // A localised or redesigned badge: the read succeeded, the parse did not.
-      [url('mystery')]: { ok: true, profileUrl: url('mystery'), degree: null, pending: false, degraded: ['badge read "1er"'] }
+      [url('mystery')]: {
+        ok: true,
+        profileUrl: url('mystery'),
+        degree: null,
+        pending: false,
+        degraded: ['badge read "1er"']
+      }
     });
 
     const result = await detectAcceptedInvites(db, SEAT, {
-      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
 
     expect(result).toMatchObject({ checked: 1, accepted: 0, unknown: 1 });
     expect(await statusOf(actionId)).toBe('sent');
-    const row = await db.prepare('SELECT accepted_source, acceptance_checked_at FROM linkedin_actions WHERE id=?')
+    const row = await db
+      .prepare('SELECT accepted_source, acceptance_checked_at FROM linkedin_actions WHERE id=?')
       .get<{ accepted_source: string | null; acceptance_checked_at: string | null }>(actionId);
     expect(row?.accepted_source).toBeNull();
     // The page view was spent, so it is recorded and the invite is not re-read
@@ -1146,14 +1415,20 @@ describe('acceptance detection', () => {
     const { driver } = fakeDegreeDriver({ [url('slow-poke')]: degree(url('slow-poke'), 2, true) });
 
     const result = await detectAcceptedInvites(db, SEAT, {
-      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
 
     expect(result).toMatchObject({ checked: 1, stillPending: 1, accepted: 0, unknown: 0 });
     expect(await statusOf(actionId)).toBe('sent');
     // The list read was stale, not the invite decided, so the evidence is
     // refreshed and the staleness clock starts again from today.
-    const row = await db.prepare('SELECT pending_seen_at FROM linkedin_actions WHERE id=?').get<{ pending_seen_at: string }>(actionId);
+    const row = await db
+      .prepare('SELECT pending_seen_at FROM linkedin_actions WHERE id=?')
+      .get<{ pending_seen_at: string }>(actionId);
     expect(new Date(row!.pending_seen_at).getTime()).toBe(NOW.getTime());
   });
 
@@ -1161,17 +1436,27 @@ describe('acceptance detection', () => {
     const actionId = await vanishedInvite('provenance');
     const { driver } = fakeDegreeDriver({ [url('provenance')]: degree(url('provenance'), 1) });
     await detectAcceptedInvites(db, SEAT, {
-      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
 
-    let row = await db.prepare('SELECT status, accepted_source, accepted_at FROM linkedin_actions WHERE id=?')
+    let row = await db
+      .prepare('SELECT status, accepted_source, accepted_at FROM linkedin_actions WHERE id=?')
       .get<{ status: string; accepted_source: string; accepted_at: string }>(actionId);
     expect(row).toMatchObject({ status: 'accepted', accepted_source: 'detected' });
     const detectedAt = new Date(row!.accepted_at).toISOString();
 
     // A person then confirms it by hand through the one sanctioned route.
-    await ingestOutcome(db, { workspaceId: WORKSPACE_ID, actionId, outcome: 'accepted' }, new Date(NOW.getTime() + 3_600_000));
-    row = await db.prepare('SELECT status, accepted_source, accepted_at FROM linkedin_actions WHERE id=?')
+    await ingestOutcome(
+      db,
+      { workspaceId: WORKSPACE_ID, actionId, outcome: 'accepted' },
+      new Date(NOW.getTime() + 3_600_000)
+    );
+    row = await db
+      .prepare('SELECT status, accepted_source, accepted_at FROM linkedin_actions WHERE id=?')
       .get<{ status: string; accepted_source: string; accepted_at: string }>(actionId);
     // The SOURCE becomes the human's; the DATE stays at the earliest evidence,
     // which is when the acceptance was actually established rather than when
@@ -1185,14 +1470,22 @@ describe('acceptance detection', () => {
     // A person reported a reply -- strictly more information than a badge.
     await ingestOutcome(db, { workspaceId: WORKSPACE_ID, actionId, outcome: 'replied' }, NOW);
 
-    const written = await recordDetectedAcceptance(db, { workspaceId: WORKSPACE_ID, actionId }, NOW);
+    const written = await recordDetectedAcceptance(
+      db,
+      { workspaceId: WORKSPACE_ID, actionId },
+      NOW
+    );
     expect(written.applied).toBe(false);
     expect(await statusOf(actionId)).toBe('replied');
 
     // And the direct writer refuses it too, so the rule does not depend on the
     // wrapper having asked first.
     await expect(
-      writeActionStatus(db, { workspaceId: WORKSPACE_ID, actionId, status: 'accepted', via: 'acceptance-detector' }, NOW)
+      writeActionStatus(
+        db,
+        { workspaceId: WORKSPACE_ID, actionId, status: 'accepted', via: 'acceptance-detector' },
+        NOW
+      )
     ).rejects.toThrow(/no longer an undecided invite/);
   });
 
@@ -1200,19 +1493,31 @@ describe('acceptance detection', () => {
     const actionId = await vanishedInvite('scope');
     for (const status of ['sent', 'replied'] as const) {
       await expect(
-        writeActionStatus(db, { workspaceId: WORKSPACE_ID, actionId, status, via: 'acceptance-detector' }, NOW)
+        writeActionStatus(
+          db,
+          { workspaceId: WORKSPACE_ID, actionId, status, via: 'acceptance-detector' },
+          NOW
+        )
       ).rejects.toThrow(/Trevra plans and approves/);
     }
   });
 
   it('does not move the invite recorded_at, so an old invite keeps its budget day', async () => {
     const actionId = await vanishedInvite('old-invite', 40);
-    const before = await db.prepare('SELECT recorded_at FROM linkedin_actions WHERE id=?').get<{ recorded_at: string }>(actionId);
+    const before = await db
+      .prepare('SELECT recorded_at FROM linkedin_actions WHERE id=?')
+      .get<{ recorded_at: string }>(actionId);
     const { driver } = fakeDegreeDriver({ [url('old-invite')]: degree(url('old-invite'), 1) });
     await detectAcceptedInvites(db, SEAT, {
-      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
-    const after = await db.prepare('SELECT recorded_at FROM linkedin_actions WHERE id=?').get<{ recorded_at: string }>(actionId);
+    const after = await db
+      .prepare('SELECT recorded_at FROM linkedin_actions WHERE id=?')
+      .get<{ recorded_at: string }>(actionId);
     // Forty days ago is when it was sent, and every rolling window reads this
     // column. An acceptance today must not bill today's invite budget.
     expect(new Date(after!.recorded_at).getTime()).toBe(new Date(before!.recorded_at).getTime());
@@ -1232,14 +1537,20 @@ describe('acceptance detection', () => {
     expect((await acceptanceRate(db, SEAT, 90, NOW)).accepted).toBe(0);
 
     await detectAcceptedInvites(db, SEAT, {
-      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
 
     const rate = await acceptanceRate(db, SEAT, 90, NOW);
     expect(rate.accepted).toBe(2);
     expect(rate.decided).toBe(2);
     // And the number an operator actually looks at, on the screen that shows it.
-    const analytics = await linkedinAnalytics(db, WORKSPACE_ID, null, NOW, { seatKey: OWNER_SEAT_KEY });
+    const analytics = await linkedinAnalytics(db, WORKSPACE_ID, null, NOW, {
+      seatKey: OWNER_SEAT_KEY
+    });
     expect(analytics.invites.invitesAccepted).toBe(2);
     expect(analytics.invites.invitesSent).toBe(3);
     expect(analytics.invites.acceptanceRate).toBeCloseTo(2 / 3);
@@ -1249,14 +1560,22 @@ describe('acceptance detection', () => {
     await vanishedInvite('viewed');
     const { driver } = fakeDegreeDriver({ [url('viewed')]: degree(url('viewed'), 1) });
     await detectAcceptedInvites(db, SEAT, {
-      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
 
     // Reading a degree IS viewing the profile. If this row is missing the seat
     // spends a view budget nothing charges it for.
-    const views = await db.prepare(`
+    const views = await db
+      .prepare(
+        `
       SELECT source, status, target_ref FROM linkedin_actions WHERE workspace_id=? AND kind='profile_view'
-    `).all<{ source: string; status: string; target_ref: string }>(WORKSPACE_ID);
+    `
+      )
+      .all<{ source: string; status: string; target_ref: string }>(WORKSPACE_ID);
     expect(views).toHaveLength(1);
     expect(views[0]).toMatchObject({ source: 'system', status: 'sent', target_ref: url('viewed') });
     expect(await countActionsInWindow(db, SEAT, 'profile_view', 24, NOW)).toBe(1);
@@ -1282,7 +1601,12 @@ describe('acceptance detection', () => {
     // Asked once, refused, and NOT ONE PROFILE OPENED.
     expect(asked).toHaveLength(1);
     expect(opened).toEqual([]);
-    expect(result).toMatchObject({ blocked: 1, checked: 0, halted: true, haltReason: 'Outside working hours.' });
+    expect(result).toMatchObject({
+      blocked: 1,
+      checked: 0,
+      halted: true,
+      haltReason: 'Outside working hours.'
+    });
   });
 
   it('cools the seat and halts on a limit wall', async () => {
@@ -1294,7 +1618,11 @@ describe('acceptance detection', () => {
     });
 
     const result = await detectAcceptedInvites(db, SEAT, {
-      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
 
     // ONE profile, whichever the ordering put first. LinkedIn said stop, so the
@@ -1307,14 +1635,26 @@ describe('acceptance detection', () => {
 
   it('never reads one seat’s invites with another seat’s browser', async () => {
     const other: SeatRef = { workspaceId: WORKSPACE_ID, seatKey: 'second' };
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Second', timezone: 'UTC' }, new Date('2026-01-01T09:00:00.000Z'), other.seatKey);
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Second', timezone: 'UTC' },
+      new Date('2026-01-01T09:00:00.000Z'),
+      other.seatKey
+    );
 
     // One vanished invite on the OWNER seat only.
     await vanishedInvite('owner-target');
-    const { driver, opened } = fakeDegreeDriver({ [url('owner-target')]: degree(url('owner-target'), 1) });
+    const { driver, opened } = fakeDegreeDriver({
+      [url('owner-target')]: degree(url('owner-target'), 1)
+    });
 
     const result = await detectAcceptedInvites(db, other, {
-      driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
 
     // The second seat has nothing of its own, and the owner's invite is not its
@@ -1328,7 +1668,8 @@ describe('acceptance detection', () => {
   it('licenses no conclusion from a TRUNCATED pending sync', async () => {
     const actionId = await pendingInvite('tail-of-a-big-backlog', 30);
     await syncPendingInvites(
-      db, SEAT,
+      db,
+      SEAT,
       list([{ profileUrl: url('tail-of-a-big-backlog'), name: null, sentAt: null }]),
       new Date(NOW.getTime() - 5 * 86_400_000)
     );
@@ -1346,13 +1687,21 @@ describe('acceptance detection', () => {
 
     const first = fakeDegreeDriver(answers);
     await detectAcceptedInvites(db, SEAT, {
-      driver: first.driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver: first.driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
     expect(first.opened).toHaveLength(1);
 
     const second = fakeDegreeDriver(answers);
     await detectAcceptedInvites(db, SEAT, {
-      driver: second.driver, page: detectorPage, now: () => NOW, sleep: async () => {}, evaluate: async () => allowedGate()
+      driver: second.driver,
+      page: detectorPage,
+      now: () => NOW,
+      sleep: async () => {},
+      evaluate: async () => allowedGate()
     });
     expect(second.opened).toEqual([]);
   });
@@ -1368,7 +1717,13 @@ describe('the withdrawal ledger row', () => {
     expect(claimed?.id).toBe(ids[0]);
 
     const { driver } = fakeDriver();
-    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed!, NOW);
+    const outcome = await executeWithdrawal(
+      db,
+      SEAT,
+      { driver, page, evaluate: async () => allowed() },
+      claimed!,
+      NOW
+    );
     expect(outcome.status).toBe('withdrawn');
     expect(await statusOf(actionId)).toBe(WITHDRAWN_STATUS);
 
@@ -1378,10 +1733,21 @@ describe('the withdrawal ledger row', () => {
      * today, on this account, and used to be invisible to every rolling count
      * in the product.
      */
-    const rows = await db.prepare(`
+    const rows = await db
+      .prepare(
+        `
       SELECT kind, status, source, target_ref, external_ref, recorded_at, seat_key
       FROM linkedin_actions WHERE workspace_id=? AND kind='withdraw'
-    `).all<{ kind: string; status: string; source: string; target_ref: string; external_ref: string; seat_key: string }>(WORKSPACE_ID);
+    `
+      )
+      .all<{
+        kind: string;
+        status: string;
+        source: string;
+        target_ref: string;
+        external_ref: string;
+        seat_key: string;
+      }>(WORKSPACE_ID);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       status: 'sent',
@@ -1403,11 +1769,23 @@ describe('the withdrawal ledger row', () => {
     // The entry was not on the live list: accepted, declined, expired and
     // already-withdrawn are indistinguishable, so nothing is concluded and
     // nothing is filed.
-    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'already_connected', detail: 'gone' }));
-    const outcome = await executeWithdrawal(db, SEAT, { driver, page, evaluate: async () => allowed() }, claimed!, NOW);
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'already_connected',
+      detail: 'gone'
+    }));
+    const outcome = await executeWithdrawal(
+      db,
+      SEAT,
+      { driver, page, evaluate: async () => allowed() },
+      claimed!,
+      NOW
+    );
     expect(outcome.status).toBe('stale');
 
-    const rows = await db.prepare(`SELECT id FROM linkedin_actions WHERE workspace_id=? AND kind='withdraw'`).all<{ id: string }>(WORKSPACE_ID);
+    const rows = await db
+      .prepare(`SELECT id FROM linkedin_actions WHERE workspace_id=? AND kind='withdraw'`)
+      .all<{ id: string }>(WORKSPACE_ID);
     expect(rows).toEqual([]);
   });
 });

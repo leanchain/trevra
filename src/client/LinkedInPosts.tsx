@@ -17,7 +17,7 @@ import {
   type ApiError,
   type LinkedInPost
 } from './api';
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { useActiveSeatKey } from './LinkedInActiveAccount';
 
 const MAX_CHARS = 3000;
 const EMPTY_BLOCKS: PostBlock[] = [{ runs: [{ type: 'text', text: '' }] }];
@@ -174,7 +174,7 @@ function renderBlocksIntoDom(container: HTMLElement, blocks: PostBlock[]): void 
   });
 }
 
-export function PostComposer({
+function PostComposer({
   onCreated,
   setToast
 }: {

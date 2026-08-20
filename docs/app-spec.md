@@ -128,7 +128,7 @@ An empty state that does not tell you what to do next is a bug.
 
 - **Purpose:** run the seat — what may go out today, why that number, where the variance is.
 - **Primary action:** none on the seat screen; it is a read. The primary lives on Campaigns.
-- **Campaigns:** `/outreach/manager` is the operating surface; `/outreach/manager/new` is the construction journey. Do not put lead-list/workflow editors back into the daily operating page.
+- **Campaigns:** `/outreach` is the operating surface; `/outreach/new` is the construction journey. Do not put lead-list/workflow editors back into the daily operating page.
 - **Empty:** “No LinkedIn account is set up yet.” + one button to the canonical account manager at Outreach → LinkedIn accounts.
 - **Never:** drop a `HARD FACT` / `REPORTED` tag on the way to the screen.
 

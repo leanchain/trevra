@@ -35,7 +35,7 @@ import {
   ownerSeat,
   type LinkedInActionKind
 } from './linkedin/actions.js';
-import { linkedinAnalytics } from './linkedin/campaigns.js';
+import { linkedinAnalytics } from './linkedin/action-ledger.js';
 
 /**
  * The same two words the LinkedIn limits table uses, on purpose. A founder who

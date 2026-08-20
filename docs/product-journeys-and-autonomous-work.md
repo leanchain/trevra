@@ -20,13 +20,13 @@ failure recovery being understandable together.
 
 Trevra is one GTM loop with five primary destinations:
 
-| Destination | Job |
-| --- | --- |
-| **Loop** | Show where the GTM loop is stuck and give one next action. |
-| **Outreach** | Operate sending accounts, prospect inputs, campaigns and replies. |
-| **Money** | Review prepared work around agreements, delivery, invoicing and collection. |
-| **Ledger** | Inspect what agents/workflows actually did and the evidence behind it. |
-| **Setup** | Configure access, data sources and limits that change infrequently. |
+| Destination  | Job                                                                         |
+| ------------ | --------------------------------------------------------------------------- |
+| **Loop**     | Show where the GTM loop is stuck and give one next action.                  |
+| **Outreach** | Operate sending accounts, prospect inputs, campaigns and replies.           |
+| **Money**    | Review prepared work around agreements, delivery, invoicing and collection. |
+| **Ledger**   | Inspect what agents/workflows actually did and the evidence behind it.      |
+| **Setup**    | Configure access, data sources and limits that change infrequently.         |
 
 The shell also has a persistent stop surface, contextual help, keyboard shortcuts,
 workspace switching, theme control and direct URLs for app screens.
@@ -271,12 +271,12 @@ control is not expert configuration just because it is changed rarely.
 
 ### I. Campaign construction is a separate journey from campaign operation
 
-`/outreach/manager` is now the returning-operator surface: campaign status,
+`/outreach` is now the returning-operator surface: campaign status,
 results, manual work, and a collapsed read-only reference to campaign inputs.
 It no longer embeds CSV import, workflow editing and campaign creation in the
 same long page.
 
-`/outreach/manager/new` is the construction journey. It checks the three real
+`/outreach/new` is the construction journey. It checks the three real
 prerequisites in order — sending account, lead list, workflow — and opens only
 the first missing piece. Once all three exist, the campaign form becomes the
 primary surface. Starting a campaign returns to the operating screen.

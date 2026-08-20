@@ -9,8 +9,9 @@ import { openDatabase, type Db } from '../db.js';
 import { createApp } from '../app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from '../auth-service.js';
 import { recordAction } from './actions.js';
-import { upsertSeat } from './seats.js';
-import { createCampaign, LinkedInApiError, writeActionStatus } from './campaigns.js';
+import { OWNER_SEAT_KEY, upsertSeat } from './seats.js';
+import { LinkedInApiError } from './errors.js';
+import { writeActionStatus } from './action-ledger.js';
 import { canonicalPayloadHash } from '../control-plane/payload.js';
 import { encodeBackgroundRunDetail, recordSeatEvent } from './seat-events.js';
 import { AVAILABILITY_RETURN_MARKER, markSideTaskRun } from './side-tasks.js';
@@ -87,6 +88,35 @@ async function seat(workspaceId: string, activatedOn?: string): Promise<void> {
   );
 }
 
+/**
+ * A `linkedin_campaigns` row, inserted directly now that the legacy
+ * `createCampaign` this used to call is gone with the rest of `campaigns.ts`.
+ * Only the columns this file's fixtures actually set.
+ */
+async function createCampaign(
+  db: Db,
+  input: { id: string; workspaceId: string; name: string; status?: string; seatKey?: string },
+  now: Date
+): Promise<void> {
+  const timestamp = now.toISOString();
+  await db
+    .prepare(
+      `
+    INSERT INTO linkedin_campaigns (id, workspace_id, name, status, seat_key, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?)
+  `
+    )
+    .run(
+      input.id,
+      input.workspaceId,
+      input.name,
+      input.status ?? 'draft',
+      input.seatKey ?? OWNER_SEAT_KEY,
+      timestamp,
+      timestamp
+    );
+}
+
 async function actionCount(workspaceId: string): Promise<number> {
   const row = await db
     .prepare('SELECT COUNT(*)::int AS total FROM linkedin_actions WHERE workspace_id=?')
@@ -101,7 +131,6 @@ beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   app = createApp(db);
   for (const workspaceId of [WORKSPACE_A, WORKSPACE_B]) {
-    await db.prepare('DELETE FROM linkedin_exports WHERE workspace_id=?').run(workspaceId);
     // Children before parents: messages reference threads and leads reference
     // sources, and withdrawals reference the ledger rows deleted below.
     await db.prepare('DELETE FROM linkedin_messages WHERE workspace_id=?').run(workspaceId);
@@ -811,11 +840,11 @@ describe('GET /api/linkedin/worker/status', () => {
 /* ---------------------------------------------------------------------------
  * Campaigns and exports.
  *
- * The approved run is seeded directly rather than driven through
- * `gtm.linkedin-outreach`, because what these tests are about is the export
- * layer -- the bytes, the ledger, and the download -- and routing them through
- * a guard whose verdict depends on the day of the week would make them assert
- * the calendar instead.
+ * The approved run is seeded directly rather than driven through the
+ * playbook that used to produce it, because what these tests are about is
+ * the export layer -- the bytes, the ledger, and the download -- and routing
+ * them through a guard whose verdict depends on the day of the week would
+ * make them assert the calendar instead.
  * ------------------------------------------------------------------------ */
 
 const APPROVED_PAYLOAD = {
@@ -913,7 +942,10 @@ async function seedApprovedCampaign(
     .run(
       runId,
       workspaceId,
-      'gtm.linkedin-outreach',
+      // Any registered playbook_key/version satisfies the FK on playbook_runs;
+      // the row this fixture builds is never read back through the registry,
+      // only through linkedin_campaigns and linkedin_actions.
+      'gtm.audit-led-outreach',
       '1.0.0',
       'running',
       'user',
@@ -985,274 +1017,11 @@ async function seedApprovedCampaign(
   return campaignId;
 }
 
-describe('campaign exports', () => {
-  it('renders once, stores the bytes, and serves them back byte-identically', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-
-    const created = (
-      await as(sessionA)
-        .post(`/api/linkedin/campaigns/${campaignId}/export`)
-        .send({ format: 'dripify' })
-        .expect(201)
-    ).body as {
-      export: { id: string; filename: string; contentType: string };
-      rendered: boolean;
-      downloadPath: string;
-    };
-
-    expect(created.rendered).toBe(true);
-    expect(created.export.contentType).toBe('text/csv');
-
-    const stored = await db
-      .prepare('SELECT bytes FROM linkedin_exports WHERE id=?')
-      .get<{ bytes: string }>(created.export.id);
-    const download = await as(sessionA).get(created.downloadPath).expect(200);
-
-    expect(download.headers['content-type']).toMatch(/^text\/csv/);
-    expect(download.headers['content-disposition']).toBe(
-      `attachment; filename="${created.export.filename}"`
-    );
-    expect(download.text).toBe(stored?.bytes);
-    // The quoted-comma rule holds on the way out too: Acme, Inc. must not shift
-    // every column right of it.
-    expect(download.text).toContain('"Acme, Inc."');
-  });
-
-  it('does not write another ledger row on a re-export or on any download', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-
-    const first = (
-      await as(sessionA)
-        .post(`/api/linkedin/campaigns/${campaignId}/export`)
-        .send({ format: 'dripify' })
-        .expect(201)
-    ).body as { export: { id: string }; downloadPath: string };
-    const afterFirst = await actionCount(WORKSPACE_A);
-    expect(afterFirst).toBe(APPROVED_PAYLOAD.plan.slots.length);
-
-    await as(sessionA).get(first.downloadPath).expect(200);
-    await as(sessionA).get(first.downloadPath).expect(200);
-    expect(await actionCount(WORKSPACE_A)).toBe(afterFirst);
-
-    // The same approved bytes: hand back the same file rather than re-render,
-    // because rendering writes the ledger the pacing engine reasons from.
-    const again = (
-      await as(sessionA)
-        .post(`/api/linkedin/campaigns/${campaignId}/export`)
-        .send({ format: 'dripify' })
-        .expect(200)
-    ).body as { export: { id: string }; rendered: boolean };
-    expect(again.rendered).toBe(false);
-    expect(again.export.id).toBe(first.export.id);
-    expect(await actionCount(WORKSPACE_A)).toBe(afterFirst);
-  });
-
-  it('serves each format under the content type its renderer declared', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-    const expected: Record<string, RegExp> = {
-      dripify: /^text\/csv/,
-      expandi: /^text\/csv/,
-      heyreach: /^application\/json/,
-      generic: /^text\/plain/
-    };
-
-    for (const [format, contentType] of Object.entries(expected)) {
-      const created = (
-        await as(sessionA)
-          .post(`/api/linkedin/campaigns/${campaignId}/export`)
-          .send({ format })
-          .expect(201)
-      ).body as { downloadPath: string };
-      const download = await as(sessionA).get(created.downloadPath).expect(200);
-      expect(download.headers['content-type']).toMatch(contentType);
-    }
-  });
-
-  it("will not serve one workspace's export to another", async () => {
-    const mine = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-    const created = (
-      await as(sessionA)
-        .post(`/api/linkedin/campaigns/${mine}/export`)
-        .send({ format: 'dripify' })
-        .expect(201)
-    ).body as { downloadPath: string };
-
-    await as(sessionB).get(created.downloadPath).expect(404);
-    await as(sessionB).get(`/api/linkedin/campaigns/${mine}`).expect(404);
-    await as(sessionB).get(`/api/linkedin/campaigns/${mine}/exports`).expect(404);
-  });
-
-  it('refuses to export a campaign nobody has approved', async () => {
-    const iso = NOW.toISOString();
-    await db
-      .prepare(
-        `
-      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at)
-      VALUES (?,?,?,?,?::jsonb,'owner',?,?)
-    `
-      )
-      .run('lcmp_unapproved', WORKSPACE_A, 'Unapproved', 'draft', '{}', iso, iso);
-    await as(sessionA)
-      .post('/api/linkedin/campaigns/lcmp_unapproved/export')
-      .send({ format: 'dripify' })
-      .expect(409);
-  });
-});
-
-/* ---------------------------------------------------------------------------
- * Queueing an approved campaign for THIS deployment's local worker
- * (docs/core-product.md section 8, L1).
- *
- * The sibling of the export route above, reached from the same approval and
- * refusing the same things. What it writes is 'planned' rows; it sends nothing,
- * and the safety gate it does NOT run here is run per action by the worker,
- * immediately before it acts.
- * ------------------------------------------------------------------------ */
-
-/** Both slots named, so the approved copy can actually be filled. */
-const FULL_CONTACTS = [
-  ...APPROVED_PAYLOAD.contacts,
-  {
-    targetRef: 'https://www.linkedin.com/in/jonas',
-    firstName: 'Jonas',
-    lastName: 'Weber',
-    company: 'Northwind',
-    role: 'CTO'
-  }
-];
-
-describe('campaign queue', () => {
-  it('queues the approved copy with real names in it, and sends nothing', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads', {
-      contacts: FULL_CONTACTS
-    });
-
-    const queued = (
-      await as(sessionA).post(`/api/linkedin/campaigns/${campaignId}/queue`).send({}).expect(201)
-    ).body as {
-      campaignId: string;
-      seatKey: string;
-      recorded: { attempted: number; written: number; duplicate: number };
-    };
-
-    expect(queued.recorded).toEqual({ attempted: 2, written: 2, duplicate: 0 });
-
-    const rows = await db
-      .prepare(
-        'SELECT status, source, body FROM linkedin_actions WHERE workspace_id=? ORDER BY planned_for'
-      )
-      .all<{ status: string; source: string; body: string | null }>(WORKSPACE_A);
-    expect(rows.map((row) => row.status)).toEqual(['planned', 'planned']);
-    expect(rows.map((row) => row.source)).toEqual(['campaign', 'campaign']);
-    expect(rows[0].body).toBe('Hi Maya, saw Acme, Inc. is hiring platform engineers.');
-    for (const row of rows) expect(row.body ?? '').not.toContain('{{');
-  });
-
-  it('is idempotent, because the replay guard is what makes a retry safe', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads', {
-      contacts: FULL_CONTACTS
-    });
-    await as(sessionA).post(`/api/linkedin/campaigns/${campaignId}/queue`).send({}).expect(201);
-    const again = (
-      await as(sessionA).post(`/api/linkedin/campaigns/${campaignId}/queue`).send({}).expect(201)
-    ).body as { recorded: { written: number; duplicate: number } };
-
-    expect(again.recorded).toEqual({ attempted: 2, written: 0, duplicate: 2 });
-    expect(await actionCount(WORKSPACE_A)).toBe(2);
-  });
-
-  it('refuses when the approved contact list cannot fill the approved copy', async () => {
-    // The default payload names only one of its two targets.
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-    const refused = await as(sessionA)
-      .post(`/api/linkedin/campaigns/${campaignId}/queue`)
-      .send({})
-      .expect(400);
-    expect(String(refused.body.error)).toContain('https://www.linkedin.com/in/jonas');
-    expect(await actionCount(WORKSPACE_A)).toBe(0);
-  });
-
-  it('refuses to queue a campaign nobody has approved, and one that belongs to somebody else', async () => {
-    const iso = NOW.toISOString();
-    await db
-      .prepare(
-        `
-      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at)
-      VALUES (?,?,?,?,?::jsonb,'owner',?,?)
-    `
-      )
-      .run('lcmp_unapproved_q', WORKSPACE_A, 'Unapproved', 'draft', '{}', iso, iso);
-    await as(sessionA).post('/api/linkedin/campaigns/lcmp_unapproved_q/queue').send({}).expect(409);
-
-    const mine = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads', {
-      contacts: FULL_CONTACTS
-    });
-    await as(sessionB).post(`/api/linkedin/campaigns/${mine}/queue`).send({}).expect(404);
-  });
-
-  it('refuses on a hosted deployment, where the export path is the one that exists', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads', {
-      contacts: FULL_CONTACTS
-    });
-    const previous = process.env.TREVRA_DEPLOYMENT_MODE;
-    process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
-    try {
-      const refused = await as(sessionA)
-        .post(`/api/linkedin/campaigns/${campaignId}/queue`)
-        .send({})
-        .expect(409);
-      expect(String(refused.body.error)).toContain('hosted deployment');
-      expect(await actionCount(WORKSPACE_A)).toBe(0);
-    } finally {
-      if (previous === undefined) delete process.env.TREVRA_DEPLOYMENT_MODE;
-      else process.env.TREVRA_DEPLOYMENT_MODE = previous;
-    }
-  });
-});
-
 /* ---------------------------------------------------------------------------
  * Sequences as data: the template library, the editor, and the one rule that
  * makes an editable sequence safe -- an edit is a different payload, so it
  * cannot ride the approval the old copy earned.
  * ------------------------------------------------------------------------ */
-
-const EDITED_STEPS = [
-  {
-    id: 'invite',
-    day: 0,
-    kind: 'invite',
-    intent: 'Rewritten by hand after the plan was approved.',
-    template: 'Hi {{firstName}}, rewritten by hand for {{company}}.'
-  }
-];
-
-/** The full playbook input, so an edit has something to re-plan from (029). */
-async function seedCampaignBrief(workspaceId: string, campaignId: string): Promise<void> {
-  await db
-    .prepare('UPDATE linkedin_campaigns SET brief_json=?::jsonb WHERE id=? AND workspace_id=?')
-    .run(
-      JSON.stringify({
-        targets: APPROVED_PAYLOAD.plan.slots.map((slot) => slot.targetRef),
-        icp: {
-          role: 'Head of Platform',
-          segment: 'Series A B2B SaaS',
-          pain: 'routing breaks on every territory change'
-        },
-        offer: {
-          name: 'Trevra',
-          summary: 'a go-to-market runtime that keeps routing rules in one reviewable file',
-          mechanism: 'routing lives in version control, so a territory change is a diff',
-          proof: [],
-          url: 'https://trevra.dev'
-        },
-        kind: 'invite',
-        horizonDays: 14,
-        format: 'dripify'
-      }),
-      campaignId,
-      workspaceId
-    );
-}
 
 describe('sequence templates', () => {
   it('lists ready sequences with the merge-field vocabulary the editor has to enforce', async () => {
@@ -1295,479 +1064,6 @@ describe('sequence templates', () => {
 
   it('needs a session, like every other route here', async () => {
     await request(app).get('/api/linkedin/sequence-templates').expect(401);
-  });
-});
-
-describe('drafting a campaign from a domain', () => {
-  it('refuses a template id that does not exist, before it touches the network', async () => {
-    const refused = await as(sessionA)
-      .post('/api/linkedin/campaigns/draft')
-      .send({ domain: 'acme.test', templateId: 'no-such-template' })
-      .expect(404);
-    expect((refused.body as { error: string }).error).toContain('no-such-template');
-  });
-
-  it('answers a domain it cannot read as an operator error, never as a fault', async () => {
-    const refused = await as(sessionA)
-      .post('/api/linkedin/campaigns/draft')
-      .send({ domain: 'not-a-real-host.invalid' })
-      .expect(400);
-    expect((refused.body as { error: string }).error).toContain('not-a-real-host.invalid');
-  });
-});
-
-describe('editing a sequence', () => {
-  it('names the offending step when the edit breaks a rule, and stores nothing', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-    await seedCampaignBrief(WORKSPACE_A, campaignId);
-
-    const refused = await as(sessionA)
-      .patch(`/api/linkedin/campaigns/${campaignId}/sequence`)
-      .send({ steps: [{ id: 'open', day: 0, kind: 'dm', template: 'Hi {{fistName}}.' }] })
-      .expect(400);
-    expect((refused.body as { error: string }).error).toContain("'open'");
-    expect((refused.body as { error: string }).error).toContain('{{fistName}}');
-
-    const stored = await db
-      .prepare('SELECT sequence_json,playbook_run_id FROM linkedin_campaigns WHERE id=?')
-      .get<{ sequence_json: { steps: Array<{ template: string }> }; playbook_run_id: string }>(
-        campaignId
-      );
-    expect(stored?.sequence_json.steps[0].template).toContain('hiring platform engineers');
-    expect(stored?.playbook_run_id).toBe(`pbr_${WORKSPACE_A}`);
-  });
-
-  it('re-plans behind a new run, so the approval the old copy earned is retired', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-    await seedCampaignBrief(WORKSPACE_A, campaignId);
-
-    const patched = (
-      await as(sessionA)
-        .patch(`/api/linkedin/campaigns/${campaignId}/sequence`)
-        .send({ steps: EDITED_STEPS })
-        .expect(200)
-    ).body as {
-      campaign: { playbookRunId: string };
-      sequence: { steps: Array<{ id: string; template: string; variables: string[] }> };
-      run: { id: string };
-      previousRunId: string | null;
-      approvalInvalidated: boolean;
-    };
-
-    expect(patched.sequence.steps.map((step) => step.id)).toEqual(['invite']);
-    expect(patched.sequence.steps[0].template).toContain('rewritten by hand');
-    expect(patched.sequence.steps[0].variables).toEqual(['firstName', 'company']);
-
-    // The old approval is unreachable: the campaign points somewhere else now.
-    expect(patched.previousRunId).toBe(`pbr_${WORKSPACE_A}`);
-    expect(patched.approvalInvalidated).toBe(true);
-    expect(patched.run.id).not.toBe(`pbr_${WORKSPACE_A}`);
-    expect(patched.campaign.playbookRunId).toBe(patched.run.id);
-  });
-
-  /**
-   * THE TEST THIS WHOLE FEATURE TURNS ON.
-   *
-   * An approval binds a payload hash. Editing the copy makes a different
-   * payload, so the approved bytes stop describing the campaign -- and an
-   * export renders the APPROVED payload, which means without this check an
-   * operator could approve mild copy, rewrite it, and export the rewrite under
-   * the signature the mild version earned.
-   *
-   * Written against the stored state rather than by driving a second playbook
-   * run, so it asserts the rule and not the day of the week the guard happens
-   * to see.
-   */
-  it('will not export copy that was edited after the plan behind it was approved', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-
-    await db.prepare('UPDATE linkedin_campaigns SET sequence_json=?::jsonb WHERE id=?').run(
-      JSON.stringify({
-        steps: EDITED_STEPS.map((step) => ({
-          ...step,
-          variables: ['firstName', 'company'],
-          critique: null
-        })),
-        antiSlopNotes: [],
-        antiSlopPassed: true
-      }),
-      campaignId
-    );
-
-    const refused = await as(sessionA)
-      .post(`/api/linkedin/campaigns/${campaignId}/export`)
-      .send({ format: 'dripify' })
-      .expect(409);
-    expect((refused.body as { error: string }).error).toMatch(/edited after/);
-
-    // Refused before the ledger, not after: an export writes `linkedin_actions`.
-    expect(await actionCount(WORKSPACE_A)).toBe(0);
-    const files = await db
-      .prepare('SELECT COUNT(*)::int AS total FROM linkedin_exports WHERE workspace_id=?')
-      .get<{ total: number }>(WORKSPACE_A);
-    expect(files?.total).toBe(0);
-  });
-
-  it('still exports a campaign whose stored copy matches what was approved', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-    await as(sessionA)
-      .post(`/api/linkedin/campaigns/${campaignId}/export`)
-      .send({ format: 'dripify' })
-      .expect(201);
-  });
-
-  it('refuses to rewrite the copy of a campaign that has already gone out', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-    await seedCampaignBrief(WORKSPACE_A, campaignId);
-    await as(sessionA)
-      .post(`/api/linkedin/campaigns/${campaignId}/export`)
-      .send({ format: 'dripify' })
-      .expect(201);
-    expect(await actionCount(WORKSPACE_A)).toBeGreaterThan(0);
-
-    const refused = await as(sessionA)
-      .patch(`/api/linkedin/campaigns/${campaignId}/sequence`)
-      .send({ steps: EDITED_STEPS })
-      .expect(409);
-    expect((refused.body as { error: string }).error).toMatch(/already been exported or sent/);
-
-    const stored = await db
-      .prepare('SELECT sequence_json FROM linkedin_campaigns WHERE id=?')
-      .get<{ sequence_json: { steps: Array<{ template: string }> } }>(campaignId);
-    expect(stored?.sequence_json.steps[0].template).toContain('hiring platform engineers');
-  });
-
-  it("will not let one workspace edit another workspace's campaign", async () => {
-    const mine = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-    await seedCampaignBrief(WORKSPACE_A, mine);
-    await as(sessionB)
-      .patch(`/api/linkedin/campaigns/${mine}/sequence`)
-      .send({ steps: EDITED_STEPS })
-      .expect(404);
-  });
-});
-
-/* ---------------------------------------------------------------------------
- * Starting a campaign from copy that already exists.
- *
- * The template path -- pick a shape, edit the lines, launch -- has no ICP
- * brief behind it and never needed one. What it needs is for ONE request to
- * produce ONE run and ONE approval, because the alternative it replaced (post
- * a brief, let the server draft a sequence, immediately PATCH over it) spent a
- * second playbook run and a second approval retiring a sequence nobody asked
- * for.
- * ------------------------------------------------------------------------ */
-
-const ASSEMBLED_STEPS = [
-  {
-    id: 'view',
-    day: 0,
-    kind: 'profile_view',
-    intent: 'Show up in their viewer list before the invite lands. No copy.',
-    // A profile view carries no message, and '' is how the client says so.
-    template: ''
-  },
-  {
-    id: 'invite',
-    day: 1,
-    kind: 'invite',
-    intent: 'Connect, naming the problem rather than the sender.',
-    template:
-      '{{firstName}} -- territory changes at {{company}} rewrite the routing rules by hand every quarter.'
-  },
-  {
-    id: 'open',
-    day: 4,
-    kind: 'dm',
-    intent: 'One message, one mechanism.',
-    template:
-      'Thanks for connecting, {{firstName}}. Routing lives in version control, so a territory change is a diff.'
-  }
-];
-
-describe('creating a campaign from an assembled sequence', () => {
-  it('runs the plan once, stops at one approval, and stores exactly the copy that was posted', async () => {
-    await seat(WORKSPACE_A, '2026-01-01');
-
-    const created = (
-      await as(sessionA)
-        .post('/api/linkedin/campaigns')
-        .send({
-          name: 'Template only',
-          input: {
-            targets: ['in/asha', 'in/ben'],
-            sequenceSteps: ASSEMBLED_STEPS,
-            kind: 'invite',
-            horizonDays: 14,
-            format: 'dripify'
-          }
-        })
-        .expect(201)
-    ).body as {
-      campaign: { id: string; playbookRunId: string };
-      run: { id: string; status: string };
-    };
-
-    // ONE RUN. Two would mean the create path still drafts something first.
-    const runs = await db
-      .prepare('SELECT id FROM playbook_runs WHERE workspace_id=?')
-      .all<{ id: string }>(WORKSPACE_A);
-    expect(runs.map((row) => row.id)).toEqual([created.run.id]);
-    expect(created.campaign.playbookRunId).toBe(created.run.id);
-
-    // ONE PENDING APPROVAL, and it is the campaign approval -- the sequence
-    // still went through planPacing and the guard at requireAllowed: true.
-    expect(created.run.status).toBe('waiting_approval');
-    const waiting = await db
-      .prepare("SELECT step_id FROM playbook_step_runs WHERE status='waiting_approval'")
-      .all<{ step_id: string }>();
-    expect(waiting.map((row) => row.step_id)).toEqual(['approve-campaign']);
-
-    const paced = await db
-      .prepare(
-        "SELECT status FROM playbook_step_runs WHERE playbook_run_id=? AND step_id IN ('pace','guard')"
-      )
-      .all<{ status: string }>(created.run.id);
-    expect(paced.map((row) => row.status)).toEqual(['completed', 'completed']);
-
-    // BYTE-IDENTICAL. `variables` and `critique` are the critic's own columns;
-    // everything the operator wrote comes back exactly as it went up.
-    const stored = await db.prepare('SELECT sequence_json FROM linkedin_campaigns WHERE id=?').get<{
-      sequence_json: {
-        steps: Array<{ id: string; day: number; kind: string; intent: string; template: string }>;
-      };
-    }>(created.campaign.id);
-    expect(
-      stored?.sequence_json.steps.map(({ id, day, kind, intent, template }) => ({
-        id,
-        day,
-        kind,
-        intent,
-        template
-      }))
-    ).toEqual(ASSEMBLED_STEPS);
-  });
-
-  /**
-   * THE DUPLICATE-SCHEMA BUG, HELD DOWN.
-   *
-   * The step object was declared THREE times -- `sequenceStepInputSchema` in
-   * sequence.ts, `linkedinSequenceStepsSchema` in app.ts, and the playbook's
-   * own `sequenceSteps` in registry.ts -- and only the first learned about
-   * `condition`. So a branch an operator wrote was parsed away twice on the way
-   * in, and the campaign came back looking perfect, because a stripped branch
-   * is a valid unconditional step. There is one schema now, and this asserts
-   * the branch survives every layer between the request body and the row.
-   */
-  it('carries a branch through the route, the playbook and the stored sequence', async () => {
-    await seat(WORKSPACE_A, '2026-01-01');
-
-    const branched = [
-      ASSEMBLED_STEPS[0],
-      ASSEMBLED_STEPS[1],
-      {
-        id: 'follow-up',
-        day: 4,
-        kind: 'dm',
-        intent: 'Only for the ones who accepted.',
-        template: 'Thanks for connecting, {{firstName}}.',
-        condition: { on: 'accepted', ofStepId: 'invite' }
-      }
-    ];
-
-    const created = (
-      await as(sessionA)
-        .post('/api/linkedin/campaigns')
-        .send({
-          name: 'Branched',
-          input: {
-            targets: ['in/asha'],
-            sequenceSteps: branched,
-            kind: 'invite',
-            horizonDays: 14,
-            format: 'dripify'
-          }
-        })
-        .expect(201)
-    ).body as { campaign: { id: string } };
-
-    const stored = await db.prepare('SELECT sequence_json FROM linkedin_campaigns WHERE id=?').get<{
-      sequence_json: {
-        steps: Array<{ id: string; condition?: { on: string; ofStepId: string } | null }>;
-      };
-    }>(created.campaign.id);
-    const steps = stored?.sequence_json.steps ?? [];
-    expect(steps.find((step) => step.id === 'follow-up')?.condition).toEqual({
-      on: 'accepted',
-      ofStepId: 'invite'
-    });
-    // And the unconditional steps stay unconditional -- the field is absent
-    // rather than null, so a sequence with no branches hashes as it always did
-    // and no approval in flight is retired by this change.
-    expect(steps.find((step) => step.id === 'invite')?.condition).toBeUndefined();
-  });
-
-  it('refuses a branch that waits on a step which cannot answer it, before anything runs', async () => {
-    await seat(WORKSPACE_A, '2026-01-01');
-    const refused = await as(sessionA)
-      .post('/api/linkedin/campaigns')
-      .send({
-        name: 'Dead arm',
-        input: {
-          targets: ['in/asha'],
-          sequenceSteps: [
-            { id: 'view', day: 0, kind: 'profile_view', intent: 'Look first.', template: '' },
-            {
-              id: 'follow-up',
-              day: 2,
-              kind: 'dm',
-              intent: 'Waits on something nobody can accept.',
-              template: 'Hello {{firstName}}.',
-              condition: { on: 'accepted', ofStepId: 'view' }
-            }
-          ]
-        }
-      })
-      .expect(400);
-    // The validator's own sentence, verbatim: a profile view is never accepted,
-    // so this branch could never be decided either way.
-    expect((refused.body as { error: string }).error).toContain("'follow-up'");
-    expect((refused.body as { error: string }).error).toContain('profile view');
-
-    const runs = await db
-      .prepare('SELECT id FROM playbook_runs WHERE workspace_id=?')
-      .all<{ id: string }>(WORKSPACE_A);
-    expect(runs).toEqual([]);
-  });
-
-  it('refuses a request carrying both a brief and a sequence, in one sentence, before anything runs', async () => {
-    await seat(WORKSPACE_A, '2026-01-01');
-    const refused = await as(sessionA)
-      .post('/api/linkedin/campaigns')
-      .send({
-        name: 'Both',
-        input: {
-          targets: ['in/asha'],
-          sequenceSteps: ASSEMBLED_STEPS,
-          icp: { role: 'CTO', segment: 'seed-stage SaaS', pain: 'revenue leaks between tools' },
-          offer: {
-            name: 'Trevra',
-            summary: 'Revenue system of record',
-            mechanism: 'Reads the tools you already use'
-          }
-        }
-      })
-      .expect(400);
-    expect((refused.body as { error: string }).error).toContain('not both');
-
-    const runs = await db
-      .prepare('SELECT id FROM playbook_runs WHERE workspace_id=?')
-      .all<{ id: string }>(WORKSPACE_A);
-    expect(runs).toEqual([]);
-  });
-
-  it('refuses a request carrying neither, rather than starting a campaign with no copy', async () => {
-    await seat(WORKSPACE_A, '2026-01-01');
-    const refused = await as(sessionA)
-      .post('/api/linkedin/campaigns')
-      .send({ name: 'Neither', input: { targets: ['in/asha'] } })
-      .expect(400);
-    expect((refused.body as { error: string }).error).toContain('sequenceSteps');
-
-    const runs = await db
-      .prepare('SELECT id FROM playbook_runs WHERE workspace_id=?')
-      .all<{ id: string }>(WORKSPACE_A);
-    expect(runs).toEqual([]);
-  });
-
-  it('holds an assembled sequence to the same rules the editor does, and starts nothing', async () => {
-    await seat(WORKSPACE_A, '2026-01-01');
-    const refused = await as(sessionA)
-      .post('/api/linkedin/campaigns')
-      .send({
-        name: 'Bad step',
-        input: {
-          targets: ['in/asha'],
-          sequenceSteps: [{ id: 'open', day: 0, kind: 'dm', template: 'Hi {{fistName}}.' }]
-        }
-      })
-      .expect(400);
-    expect((refused.body as { error: string }).error).toContain("'open'");
-    expect((refused.body as { error: string }).error).toContain('{{fistName}}');
-
-    const runs = await db
-      .prepare('SELECT id FROM playbook_runs WHERE workspace_id=?')
-      .all<{ id: string }>(WORKSPACE_A);
-    expect(runs).toEqual([]);
-    const campaigns = await db
-      .prepare('SELECT id FROM linkedin_campaigns WHERE workspace_id=?')
-      .all<{ id: string }>(WORKSPACE_A);
-    expect(campaigns).toEqual([]);
-  });
-});
-
-describe('campaign lifecycle', () => {
-  it('lists campaigns and releases their queued slots when stopped', async () => {
-    const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
-    await recordAction(
-      db,
-      {
-        workspaceId: WORKSPACE_A,
-        kind: 'invite',
-        targetRef: 'in/queued',
-        campaignId,
-        status: 'planned',
-        source: 'export',
-        plannedFor: '2026-08-12T09:00:00.000Z'
-      },
-      NOW
-    );
-
-    const listed = (await as(sessionA).get('/api/linkedin/campaigns').expect(200)).body as {
-      campaigns: Array<{ id: string; name: string }>;
-    };
-    expect(listed.campaigns.map((campaign) => campaign.id)).toContain(campaignId);
-
-    const stopped = (
-      await as(sessionA).post(`/api/linkedin/campaigns/${campaignId}/stop`).send({}).expect(200)
-    ).body as {
-      campaign: { status: string; stopRequestedAt: string | null };
-      releasedActions: number;
-    };
-
-    expect(stopped.campaign.status).toBe('stopped');
-    expect(stopped.campaign.stopRequestedAt).toBeTruthy();
-    expect(stopped.releasedActions).toBe(1);
-
-    const released = await db
-      .prepare(
-        "SELECT status FROM linkedin_actions WHERE workspace_id=? AND target_ref='in/queued'"
-      )
-      .get<{ status: string }>(WORKSPACE_A);
-    expect(released?.status).toBe('skipped');
-  });
-
-  it('refuses to start a campaign whose entire target list is excluded', async () => {
-    await seat(WORKSPACE_A, '2026-01-01');
-    await as(sessionA)
-      .post('/api/linkedin/exclusions')
-      .send({ targets: [{ targetRef: 'in/maya' }] })
-      .expect(201);
-    await as(sessionA)
-      .post('/api/linkedin/campaigns')
-      .send({
-        name: 'All excluded',
-        input: {
-          targets: ['in/maya'],
-          icp: { role: 'CTO', segment: 'seed-stage SaaS', pain: 'revenue leaks between tools' },
-          offer: {
-            name: 'Trevra',
-            summary: 'Revenue system of record',
-            mechanism: 'Reads the tools you already use'
-          }
-        }
-      })
-      .expect(400);
   });
 });
 
@@ -2631,14 +1927,6 @@ describe('account (seat) scoping', () => {
   /** Past the warm-up ramp, so a campaign run reaches its approval step rather than being refused for having no slots. */
   const ESTABLISHED = new Date(NOW.getTime() - 90 * 86_400_000);
 
-  const SEQUENCE_STEP = {
-    id: 'open',
-    day: 0,
-    kind: 'invite',
-    intent: 'Open the conversation',
-    template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.'
-  };
-
   /** Two LinkedIn accounts in one workspace, both established. */
   async function twoAccounts(workspaceId: string): Promise<void> {
     await upsertSeat(
@@ -2702,109 +1990,6 @@ describe('account (seat) scoping', () => {
       'in/owner-target',
       'in/partner-target'
     ]);
-  });
-
-  it('lists only the campaigns filed against the account asked for', async () => {
-    await twoAccounts(WORKSPACE_A);
-    await createCampaign(
-      db,
-      {
-        id: 'lcmp_owner_only',
-        workspaceId: WORKSPACE_A,
-        name: 'Owner campaign',
-        status: 'running'
-      },
-      NOW
-    );
-    await createCampaign(
-      db,
-      {
-        id: 'lcmp_partner_only',
-        workspaceId: WORKSPACE_A,
-        name: 'Partner campaign',
-        status: 'running',
-        seatKey: SECOND_SEAT
-      },
-      NOW
-    );
-
-    type List = { campaigns: Array<{ id: string; seatKey: string }> };
-    const owner = (await as(sessionA).get('/api/linkedin/campaigns?seatKey=owner').expect(200))
-      .body as List;
-    expect(owner.campaigns.map((campaign) => campaign.id)).toEqual(['lcmp_owner_only']);
-    expect(owner.campaigns[0].seatKey).toBe('owner');
-
-    const partner = (
-      await as(sessionA).get(`/api/linkedin/campaigns?seatKey=${SECOND_SEAT}`).expect(200)
-    ).body as List;
-    expect(partner.campaigns.map((campaign) => campaign.id)).toEqual(['lcmp_partner_only']);
-
-    const both = (await as(sessionA).get('/api/linkedin/campaigns').expect(200)).body as List;
-    expect(both.campaigns.map((campaign) => campaign.id).sort()).toEqual([
-      'lcmp_owner_only',
-      'lcmp_partner_only'
-    ]);
-  });
-
-  it('files a new campaign against the account it was planned for, not against the owner', async () => {
-    await twoAccounts(WORKSPACE_A);
-
-    const created = (
-      await as(sessionA)
-        .post('/api/linkedin/campaigns')
-        .send({
-          name: 'Partner outreach',
-          input: {
-            seatKey: SECOND_SEAT,
-            targets: ['https://www.linkedin.com/in/ada-lovelace/'],
-            sequenceSteps: [SEQUENCE_STEP]
-          }
-        })
-        .expect(201)
-    ).body as { campaign: { id: string; seatKey: string }; run: { input: { seatKey?: string } } };
-
-    // The row, not just the response: `createCampaign` used to default the
-    // column to the owner whatever the run was planned against.
-    expect(created.campaign.seatKey).toBe(SECOND_SEAT);
-    const stored = await db
-      .prepare('SELECT seat_key FROM linkedin_campaigns WHERE id=?')
-      .get<{ seat_key: string }>(created.campaign.id);
-    expect(stored?.seat_key).toBe(SECOND_SEAT);
-    // The plan was paced against the same account, so the campaign and its
-    // schedule cannot describe two different LinkedIn profiles.
-    expect(created.run.input.seatKey).toBe(SECOND_SEAT);
-
-    type List = { campaigns: Array<{ id: string }> };
-    const ownerList = (await as(sessionA).get('/api/linkedin/campaigns?seatKey=owner').expect(200))
-      .body as List;
-    expect(ownerList.campaigns.map((campaign) => campaign.id)).not.toContain(created.campaign.id);
-    const partnerList = (
-      await as(sessionA).get(`/api/linkedin/campaigns?seatKey=${SECOND_SEAT}`).expect(200)
-    ).body as List;
-    expect(partnerList.campaigns.map((campaign) => campaign.id)).toContain(created.campaign.id);
-  });
-
-  it('refuses to plan a campaign for an account this workspace does not have', async () => {
-    await twoAccounts(WORKSPACE_A);
-    const refused = await as(sessionA)
-      .post('/api/linkedin/campaigns')
-      .send({
-        name: 'Ghost outreach',
-        input: {
-          seatKey: 'ghost',
-          targets: ['https://www.linkedin.com/in/ada-lovelace/'],
-          sequenceSteps: [SEQUENCE_STEP]
-        }
-      })
-      .expect(404);
-    expect(refused.body.error).toContain('not configured for this workspace');
-    // Refused BEFORE anything was written: no campaign, no run, no slots.
-    expect(
-      await db
-        .prepare('SELECT COUNT(*)::int AS total FROM linkedin_campaigns WHERE workspace_id=?')
-        .get<{ total: number }>(WORKSPACE_A)
-    ).toEqual({ total: 0 });
-    expect(await actionCount(WORKSPACE_A)).toBe(0);
   });
 
   it('counts analytics for one account only, and says which account it counted', async () => {

@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
 import { LoaderCircle, RefreshCw, TrendingUp } from 'lucide-react';
 import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
-import { getLinkedInAnalytics, type LinkedInAnalytics } from './api';
-import { errorMessage, useOutreachRefresh } from './LinkedInSafety';
+import { type LinkedInAnalytics } from './api';
 import { FunnelBars, LiStat } from './LinkedInViz';
 
 /**
@@ -13,9 +11,9 @@ import { FunnelBars, LiStat } from './LinkedInViz';
  * funnel, a per-campaign table, and a daily volume chart that the Seat screen
  * already drew from the same route. It is gone as a destination. The funnel is
  * a loop-level question -- how far does what goes out actually get -- so the
- * shell renders `LinkedInFunnel` on `/loop`; the per-campaign table is a
- * campaign question, so `LinkedInCampaignBreakdown` renders under
- * `/outreach/campaigns`; the chart stayed where it was.
+ * shell renders `LinkedInFunnel` on `/loop`; the per-campaign table was a
+ * campaign question, and it has since been removed; the chart stayed where
+ * it was.
  *
  * THE WINDOW IS A CONTROL NOW, AND THE COPY IS THE SERVER'S ANSWER.
  * Both panels used to send a hardcoded 7 and then print "every action ever
@@ -58,44 +56,6 @@ function windowSentence(windowDays: number | null): string {
   return windowDays === null
     ? 'Every LinkedIn action this workspace has ever filed — all of it, from the first slot planned to the last reply recorded.'
     : `Every LinkedIn action filed in the last ${windowDays} days — a window, not all time. Widen it to count further back.`;
-}
-
-interface AnalyticsRead {
-  analytics: LinkedInAnalytics | null;
-  loading: boolean;
-  error: string;
-  reload: () => Promise<void>;
-  days: number;
-  setDays: (days: number) => void;
-}
-
-/** `GET /api/linkedin/analytics`, over the window the reader picked. */
-function useOutreachAnalytics(): AnalyticsRead {
-  const [days, setDays] = useState<number>(DEFAULT_WINDOW_DAYS);
-  const [analytics, setAnalytics] = useState<LinkedInAnalytics | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      setAnalytics(await getLinkedInAnalytics(days));
-      setError('');
-    } catch (err) {
-      setError(
-        errorMessage(err, 'Unable to read the outreach ledger. Nothing was changed — try again.')
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [days]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-  useOutreachRefresh(reload);
-
-  return { analytics, loading, error, reload, days, setDays };
 }
 
 /** The picker itself, in the same clothes as every other window control in the product. */
@@ -149,7 +109,7 @@ function ReadFailure({
 }
 
 /**
- * planned → exported → sent → accepted → replied, for the whole workspace.
+ * planned → sent → accepted → replied, for the whole workspace.
  *
  * Rendered by the shell on `/loop`, where it answers the second stage of the
  * loop -- what goes out, and how far does it get -- for somebody who has not
@@ -178,7 +138,7 @@ export function LinkedInFunnel({
 }) {
   const total = analytics?.total;
   const invites = analytics?.invites;
-  const anything = total ? total.planned + total.exported + total.sent + total.skipped > 0 : false;
+  const anything = total ? total.planned + total.sent + total.skipped > 0 : false;
 
   return (
     <section className="page-panel li-viz">
@@ -207,14 +167,10 @@ export function LinkedInFunnel({
           <TrendingUp size={26} />
           <h4 aria-level={3}>Nothing has gone out in this window</h4>
           <p>
-            A slot enters this ledger when an approved plan is exported. Widen the window, or build
-            a campaign and the funnel fills itself in.
+            A slot enters this ledger when a campaign plans it. Widen the window, or build a
+            campaign and the funnel fills itself in.
           </p>
-          <a
-            className="primary-button"
-            href="/outreach/campaigns"
-            style={{ textDecoration: 'none' }}
-          >
+          <a className="primary-button" href="/outreach" style={{ textDecoration: 'none' }}>
             Build a campaign
           </a>
         </div>
@@ -223,7 +179,6 @@ export function LinkedInFunnel({
           <FunnelBars
             stages={[
               { label: 'Planned', value: total.planned, hint: 'scheduled, not yet in a file' },
-              { label: 'Exported', value: total.exported, hint: 'handed to your tool' },
               { label: 'Sent', value: total.sent, hint: 'reported as sent' },
               { label: 'Accepted', value: total.accepted, hint: 'includes replies' },
               { label: 'Replied', value: total.replied }
@@ -262,7 +217,7 @@ export function LinkedInFunnel({
           {/* The honesty rule the Seat screen states at the top of itself, said
               once here too, because this panel is read on a screen that has no
           <p className="panel-note">
-            <b>Planned</b> and <b>exported</b> are facts from Trevra’s ledger. <b>Sent</b>, <b>accepted</b> and{' '}
+            <b>Planned</b> is a fact from Trevra’s ledger. <b>Sent</b>, <b>accepted</b> and{' '}
             <b>replied</b> are reported outcomes; the local worker records them after it acts. An outcome nobody reported
             stays missing rather than being guessed.
           </p>
@@ -282,90 +237,6 @@ export function LinkedInFunnel({
             {RATE_MIN_SAMPLE} in the denominator.
           </p>
         </>
-      )}
-    </section>
-  );
-}
-
-/**
- * The same funnel, split by campaign.
- *
- * Under Campaigns rather than on a screen of its own: “which of my campaigns is
- * working” is a question asked with the campaign list already on screen, and
- * it was two clicks and a different window away.
- */
-export function LinkedInCampaignBreakdown() {
-  const { analytics, loading, error, reload, days, setDays } = useOutreachAnalytics();
-
-  return (
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>By campaign</h3>
-          <p>
-            {analytics ? windowSentence(analytics.windowDays) : 'Reading the outreach ledger…'}{' '}
-            Acceptance is accepted out of invites sent, so a campaign whose invites are still
-            unanswered reads low rather than blank.
-          </p>
-        </div>
-      </div>
-
-      <WindowChoice days={days} onChange={setDays} loading={loading} />
-
-      {error && <ReadFailure message={error} loading={loading} onRetry={() => void reload()} />}
-
-      {!analytics || analytics.byCampaign.length === 0 ? (
-        <p className="empty-copy">
-          {loading
-            ? 'Reading the outreach ledger…'
-            : error
-              ? 'No count to show.'
-              : 'No campaign has filed an action in this window.'}
-        </p>
-      ) : (
-        <div className="li-table-scroll">
-          <table className="li-table">
-            <thead>
-              <tr>
-                <th>Campaign</th>
-                <th>Status</th>
-                <th>Planned</th>
-                <th>Exported</th>
-                <th>Sent</th>
-                <th>Accepted</th>
-                <th>Replied</th>
-                <th>Declined</th>
-                <th>Acceptance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {analytics.byCampaign.map((row) => (
-                <tr key={row.campaignId}>
-                  <td>{row.name ?? row.campaignId}</td>
-                  <td>
-                    {row.status ? (
-                      <span className={`li-chip li-campaign-${row.status}`}>{row.status}</span>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td className="li-num">{row.planned}</td>
-                  <td className="li-num">{row.exported}</td>
-                  <td className="li-num">{row.sent}</td>
-                  <td className="li-num">{row.accepted}</td>
-                  <td className="li-num">{row.replied}</td>
-                  <td className="li-num">{row.declined}</td>
-                  <td
-                    className="li-num"
-                    title={`${row.invitesAccepted} accepted of ${row.invitesSent} invites sent`}
-                  >
-                    {ratePercent(row.invitesAccepted, row.invitesSent)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       )}
     </section>
   );

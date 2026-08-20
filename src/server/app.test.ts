@@ -1215,154 +1215,6 @@ describe('Trevra API on PostgreSQL', () => {
   });
 
   /**
-   * AN UNAPPROVED CAMPAIGN CANNOT BE EXPORTED OR QUEUED.
-   *
-   * `placeStepBehindApproval` writes the payload at the moment it STOPS for a
-   * human, so "a payload exists" was true of a campaign sitting at
-   * `waiting_approval` and of one a founder had rejected. Both used to 201 --
-   * and the queue route writes 'planned' rows a local worker will send. The
-   * only thing standing between an undecided campaign and a send must not be a
-   * disabled button.
-   */
-  it('refuses to export or queue a campaign whose approval has not been granted', async () => {
-    const agent = await agentWithSession();
-    await agent
-      .put('/api/linkedin/seat')
-      .send({ label: 'Founder', timezone: 'Europe/Zurich' })
-      .expect(200);
-    // Past the warm-up ramp, so the plan has slots and the run reaches its
-    // approval step rather than failing the guard first. `activated_at` is
-    // write-once through the API by design, which is why this is set in SQL.
-    await db!
-      .prepare("UPDATE linkedin_seats SET activated_at=? WHERE workspace_id=? AND seat_key='owner'")
-      .run(new Date(Date.now() - 90 * 86_400_000).toISOString(), DEMO_WORKSPACE_ID);
-
-    const created = await agent
-      .post('/api/linkedin/campaigns')
-      .send({
-        name: 'Q3 founders',
-        input: {
-          targets: ['https://www.linkedin.com/in/ada-lovelace/'],
-          sequenceSteps: [
-            {
-              id: 'open',
-              day: 0,
-              kind: 'invite',
-              intent: 'Open the conversation',
-              template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.'
-            }
-          ]
-        }
-      })
-      .expect(201);
-    const campaignId = created.body.campaign.id;
-    const run = created.body.run;
-    expect(run.status).toBe('waiting_approval');
-
-    for (const path of [
-      `/api/linkedin/campaigns/${campaignId}/export`,
-      `/api/linkedin/campaigns/${campaignId}/queue`
-    ]) {
-      const refused = await agent.post(path).send({}).expect(409);
-      expect(refused.body.error).toContain('still waiting for a founder to approve it');
-    }
-
-    // And the check does not over-refuse: once the same payload is approved,
-    // the export is the approved bytes and goes through.
-    const step = run.steps.find((item: { stepType: string }) => item.stepType === 'approval');
-    await agent
-      .post(`/api/playbook-runs/${run.id}/steps/${step.stepId}/decision`)
-      .send({ decision: 'approve' })
-      .expect(200);
-    const exported = await agent
-      .post(`/api/linkedin/campaigns/${campaignId}/export`)
-      .send({})
-      .expect(201);
-    expect(exported.body.export).toBeTruthy();
-  });
-
-  /**
-   * EDITING A BOUND CAMPAIGN IS NOT A NARROWER ACT THAN CREATING ONE.
-   *
-   * The edit route took `steps` and nothing else, so tone, action kind, horizon
-   * and export format were fixed at creation and the client had to grey those
-   * controls out. Absent still means unchanged -- and it means unchanged across
-   * a SECOND edit too, which is what the re-plan input order buys.
-   */
-  it('lets an edit change what the campaign was created with, and leaves absent fields alone', async () => {
-    const agent = await agentWithSession();
-    await agent
-      .put('/api/linkedin/seat')
-      .send({ label: 'Founder', timezone: 'Europe/Zurich' })
-      .expect(200);
-    await db!
-      .prepare("UPDATE linkedin_seats SET activated_at=? WHERE workspace_id=? AND seat_key='owner'")
-      .run(new Date(Date.now() - 90 * 86_400_000).toISOString(), DEMO_WORKSPACE_ID);
-
-    const steps = [
-      {
-        id: 'open',
-        day: 0,
-        kind: 'invite',
-        intent: 'Open the conversation',
-        template: 'Hi {{firstName}}, saw {{company}} is hiring RevOps.'
-      }
-    ];
-    const created = await agent
-      .post('/api/linkedin/campaigns')
-      .send({
-        name: 'Q3 founders',
-        input: { targets: ['https://www.linkedin.com/in/ada-lovelace/'], sequenceSteps: steps }
-      })
-      .expect(201);
-    const campaignId = created.body.campaign.id;
-    // The playbook's own defaults, which is what the campaign was created with.
-    expect(created.body.run.input).toMatchObject({
-      tone: 'consultative',
-      kind: 'invite',
-      horizonDays: 14,
-      format: 'dripify'
-    });
-
-    const edited = await agent
-      .patch(`/api/linkedin/campaigns/${campaignId}/sequence`)
-      .send({
-        steps,
-        tone: 'direct',
-        kind: 'dm',
-        horizonDays: 7,
-        format: 'heyreach',
-        includeInMail: true,
-        inviteNote: 'none'
-      })
-      .expect(200);
-    expect(edited.body.run.input).toMatchObject({
-      tone: 'direct',
-      kind: 'dm',
-      horizonDays: 7,
-      format: 'heyreach',
-      includeInMail: true,
-      inviteNote: 'none'
-    });
-
-    // A second edit that touches only the copy must not revert any of it.
-    const reworded = [
-      { ...steps[0], template: 'Hi {{firstName}}, noticed {{company}} is scaling RevOps.' }
-    ];
-    const again = await agent
-      .patch(`/api/linkedin/campaigns/${campaignId}/sequence`)
-      .send({ steps: reworded })
-      .expect(200);
-    expect(again.body.run.input).toMatchObject({
-      tone: 'direct',
-      kind: 'dm',
-      horizonDays: 7,
-      format: 'heyreach'
-    });
-    expect(again.body.approvalInvalidated).toBe(true);
-  });
-
-  /**
    * Resuming says WHY, and the account's history keeps it.
    *
    * The safety screen asked for a reason and threw it away, because no route
@@ -1407,36 +1259,6 @@ describe('Trevra API on PostgreSQL', () => {
     const silent = await agent.post('/api/linkedin/seat/resume').send({}).expect(200);
     expect(silent.body.resumeReason).toBeNull();
     expect(silent.body.posture).not.toBe('paused');
-  });
-
-  /**
-   * The Draft-with-AI path takes the same three copy controls the campaign path
-   * does. `.strict()` refused them outright before, so the controls beside the
-   * button did nothing at all.
-   */
-  it('accepts tone, invite-note and InMail controls on the campaign draft route', async () => {
-    const agent = await agentWithSession();
-    // A domain that will not resolve is a 400 from enrichment -- which is past
-    // the schema, and the schema is what this asserts. An unknown field still
-    // fails at 400 with an `Invalid request` body, so the two are told apart by
-    // the error, not the status.
-    const accepted = await agent
-      .post('/api/linkedin/campaigns/draft')
-      .send({
-        domain: 'not-a-real-domain.invalid',
-        tone: 'direct',
-        inviteNote: 'none',
-        includeInMail: true
-      })
-      .expect(400);
-    expect(accepted.body.error).not.toBe('Invalid request');
-    expect(accepted.body.error).toContain('not-a-real-domain.invalid');
-
-    const refused = await agent
-      .post('/api/linkedin/campaigns/draft')
-      .send({ domain: 'not-a-real-domain.invalid', tone: 'shouty' })
-      .expect(400);
-    expect(refused.body.error).toBe('Invalid request');
   });
 
   /**
@@ -1494,7 +1316,6 @@ describe('owner-only acts', () => {
     await member.agent.get('/api/policies').expect(200);
     await member.agent.get('/api/agent-setup').expect(200);
     await member.agent.get('/api/linkedin/seat').expect(200);
-    await member.agent.get('/api/linkedin/campaigns').expect(200);
     await member.agent.get('/api/ledger/exports').expect(200);
 
     // Control-plane and registry: standing permissions, and code published in
@@ -1544,7 +1365,6 @@ describe('owner-only acts', () => {
     // The two downloads. Both are files of client names and message bodies that
     // cannot be recalled once they have left.
     await member.agent.get('/api/ledger/exports/exp_whatever').expect(403);
-    await member.agent.get('/api/linkedin/campaigns/cmp_x/export/exp_x').expect(403);
 
     // The LinkedIn account itself.
     await member.agent.put('/api/linkedin/seat').send({ inviteDailyLimit: 75 }).expect(403);
@@ -1559,9 +1379,6 @@ describe('owner-only acts', () => {
 
     // Queueing is the closest an HTTP caller gets to a send; stopping and
     // deleting do not come back.
-    await member.agent.post('/api/linkedin/campaigns/cmp_x/queue').send({}).expect(403);
-    await member.agent.post('/api/linkedin/campaigns/cmp_x/stop').send({}).expect(403);
-    await member.agent.delete('/api/linkedin/campaigns/cmp_x').expect(403);
     await member.agent.post('/api/linkedin/manager/campaigns/cmp_x/start').send({}).expect(403);
     await member.agent.post('/api/linkedin/manager/campaigns/cmp_x/stop').send({}).expect(403);
     await member.agent.delete('/api/linkedin/manager/lead-lists/lst_x').expect(403);
@@ -1616,71 +1433,23 @@ describe('PATCH /api/policies/:id', () => {
   });
 });
 
-describe('pause is honoured by the legacy campaign routes', () => {
-  /**
-   * The bug this pins: `pauseManagedCampaign` writes `status='paused'` and
-   * parks the queue in 'held', and these three routes gated on 'stopped'
-   * alone -- so queueing a PAUSED campaign wrote fresh 'planned' rows for the
-   * worker to claim and exporting one wrote 'exported' rows that consume
-   * pacing budget. Both reopen exactly what the pause closed.
-   */
-  it('refuses to queue or export a paused campaign', async () => {
-    const agent = await agentWithSession();
-    const campaignId = `cmp_${randomBytes(6).toString('hex')}`;
-    const now = new Date().toISOString();
-    await db!
-      .prepare(
-        `
-      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,created_at,updated_at)
-      VALUES (?,?,?,'paused','{}'::jsonb,'owner',?,?)
-    `
-      )
-      .run(campaignId, DEMO_WORKSPACE_ID, 'Paused outreach', now, now);
-
-    const queued = await agent
-      .post(`/api/linkedin/campaigns/${campaignId}/queue`)
-      .send({})
-      .expect(409);
-    expect(queued.body.error).toMatch(/paused/i);
-    const exported = await agent
-      .post(`/api/linkedin/campaigns/${campaignId}/export`)
-      .send({})
-      .expect(409);
-    expect(exported.body.error).toMatch(/paused/i);
-
-    // Nothing was written by either refusal -- the whole point of refusing.
-    const actions = await db!
-      .prepare('SELECT COUNT(*) AS count FROM linkedin_actions WHERE campaign_id=?')
-      .get<{ count: number }>(campaignId);
-    expect(Number(actions?.count ?? 0)).toBe(0);
-
-    // A stopped campaign still says 'stopped', not 'paused'.
-    await db!.prepare("UPDATE linkedin_campaigns SET status='stopped' WHERE id=?").run(campaignId);
-    const stopped = await agent
-      .post(`/api/linkedin/campaigns/${campaignId}/queue`)
-      .send({})
-      .expect(409);
-    expect(stopped.body.error).toMatch(/was stopped/i);
-  });
-
-  /** The other half of migration 051: 'held' rows must be READABLE. */
-  it('accepts every ledger status the database can hold as an actions filter', async () => {
-    const agent = await agentWithSession();
-    for (const status of [
-      'planned',
-      'held',
-      'exported',
-      'sent',
-      'accepted',
-      'replied',
-      'declined',
-      'skipped',
-      'withdrawn'
-    ]) {
-      await agent.get(`/api/linkedin/actions?status=${status}`).expect(200);
-    }
-    await agent.get('/api/linkedin/actions?status=invented').expect(400);
-  });
+/** The other half of migration 051: 'held' rows must be READABLE. */
+it('accepts every ledger status the database can hold as an actions filter', async () => {
+  const agent = await agentWithSession();
+  for (const status of [
+    'planned',
+    'held',
+    'exported',
+    'sent',
+    'accepted',
+    'replied',
+    'declined',
+    'skipped',
+    'withdrawn'
+  ]) {
+    await agent.get(`/api/linkedin/actions?status=${status}`).expect(200);
+  }
+  await agent.get('/api/linkedin/actions?status=invented').expect(400);
 });
 
 describe('export and erasure', () => {

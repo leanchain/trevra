@@ -18,7 +18,7 @@ import {
   type LinkedInLimitsReport
 } from './api';
 import { effectiveDailyCeiling } from '../server/linkedin/limits';
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { LinkedInManagerLeadConfig } from './LinkedInManagerLeadConfig';
 import { LinkedInManagerWorkflowConfig } from './LinkedInManagerWorkflowConfig';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
@@ -199,7 +199,7 @@ export function ceilingSourceNote(ceiling: EnforcedCeiling): string {
 }
 
 /** Everything needed to build the same campaign a second time, minus the name. */
-export interface CampaignPrefill {
+interface CampaignPrefill {
   /** A suggested name. The operator edits it before creating. */
   name: string;
   seatKey: string;
@@ -437,7 +437,7 @@ export function LinkedInManagerCampaignConfig({
           <h4 aria-level={3}>Add a LinkedIn account first</h4>
           <p>A campaign sends from a real LinkedIn account, with its own hours and limits.</p>
           <div className="mgr-actions">
-            <a className="primary-button" href="/outreach">
+            <a className="primary-button" href="/outreach/settings">
               Add a LinkedIn account
             </a>
           </div>

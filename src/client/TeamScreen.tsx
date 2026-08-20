@@ -34,7 +34,7 @@ import type { Route } from './ui/route';
  * truth for who is in the workspace; it is the one source, read once.
  * ---------------------------------------------------------------------- */
 
-export interface WorkspaceMember {
+interface WorkspaceMember {
   /** The `member` row's own id -- what `organization.removeMember` takes, not the user id. */
   id: string;
   userId: string;

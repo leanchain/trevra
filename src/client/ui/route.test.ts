@@ -138,6 +138,29 @@ describe('parseRoute', () => {
     }
     expect(parseRoute('/setup/team/inv_1').id).toBe('inv_1');
   });
+
+  it('parses the four outreach screens', () => {
+    expect(parseRoute('/outreach')).toMatchObject({
+      section: 'outreach',
+      sub: '',
+      path: '/outreach'
+    });
+    expect(parseRoute('/outreach/new')).toMatchObject({ section: 'outreach', sub: 'new' });
+    expect(parseRoute('/outreach/inbox')).toMatchObject({ section: 'outreach', sub: 'inbox' });
+    expect(parseRoute('/outreach/posts')).toMatchObject({ section: 'outreach', sub: 'posts' });
+    expect(parseRoute('/outreach/settings')).toMatchObject({
+      section: 'outreach',
+      sub: 'settings'
+    });
+  });
+
+  it('keeps legacy outreach subs parseable so the view can redirect them', () => {
+    for (const sub of ['manager', 'campaigns', 'plan', 'activity', 'leads', 'accounts']) {
+      expect(parseRoute(`/outreach/${sub}`)).toMatchObject({ section: 'outreach', sub });
+    }
+    expect(parseRoute('/outreach/manager/new')).toMatchObject({ sub: 'manager', id: 'new' });
+    expect(parseRoute('/outreach/campaigns/abc')).toMatchObject({ sub: 'campaigns', id: 'abc' });
+  });
 });
 
 describe('isAppPath', () => {
