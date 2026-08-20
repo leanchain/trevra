@@ -46,6 +46,8 @@ const SUB_ROUTES: Record<Section, readonly string[]> = {
   outreach: [
     '',
     'new',
+    'campaign',
+    'workflow',
     'inbox',
     'posts',
     'settings',

@@ -12,15 +12,14 @@ import {
   Pause,
   Play,
   Plus,
-  RefreshCw,
   Square,
   Trash2,
   Users,
-  Workflow as WorkflowIcon,
-  Zap
+  Workflow as WorkflowIcon
 } from 'lucide-react';
 import {
   completeLinkedInManualTask,
+  deleteLinkedInManagedCampaign,
   getLinkedInLimits,
   getLinkedInManagedAnalytics,
   getLinkedInManagedCampaign,
@@ -34,9 +33,7 @@ import {
   setLinkedInManagedMemberPaused,
   startLinkedInManagedCampaign,
   stopLinkedInManagedCampaign,
-  tickLinkedInManagedCampaigns,
-  type LinkedInLimitsReport,
-  type ManagedCampaignTickResult
+  type LinkedInLimitsReport
 } from './api';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
 import type { LinkedInSeat } from '../server/linkedin/seats';
@@ -840,10 +837,13 @@ function VariantResults({
 
 export function OutreachManagerRead({
   setToast,
-  onNavigate
+  onNavigate,
+  initialCampaignId
 }: {
   setToast: (message: string) => void;
   onNavigate: (path: string) => void;
+  /** Deep links created by the builder open the new campaign immediately. */
+  initialCampaignId?: string | null;
 }) {
   /**
    * The account the operator picked, shared with every other LinkedIn screen.
@@ -867,14 +867,14 @@ export function OutreachManagerRead({
   const [limitsBySeat, setLimitsBySeat] = useState<Record<string, LinkedInLimitsReport>>({});
   const [tasks, setTasks] = useState<ManualTaskView[]>([]);
   const [analytics, setAnalytics] = useState<ManagedAnalytics | null>(null);
-  const [openCampaignId, setOpenCampaignId] = useState('');
+  const [openCampaignId, setOpenCampaignId] = useState(initialCampaignId ?? '');
   const [openTaskId, setOpenTaskId] = useState('');
   const [loading, setLoading] = useState(true);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const [tick, setTick] = useState<ManagedCampaignTickResult | null>(null);
   const [stopping, setStopping] = useState<ManagedCampaign | null>(null);
+  const [deleting, setDeleting] = useState<ManagedCampaign | null>(null);
   const [campaignFilter, setCampaignFilter] = useState('');
   const [seatFilter, setSeatFilter] = useState(activeSeatKey);
   const [windowDays, setWindowDays] = useState<number | null>(30);
@@ -884,6 +884,10 @@ export function OutreachManagerRead({
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (initialCampaignId) setOpenCampaignId(initialCampaignId);
+  }, [initialCampaignId]);
 
   // A remembered account that no longer exists would filter every number on
   // this screen to nothing and explain that nowhere, so an unknown key falls
@@ -1063,6 +1067,20 @@ export function OutreachManagerRead({
       'Unable to stop that campaign.'
     );
 
+  const deleteCampaign = (campaign: ManagedCampaign) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        await deleteLinkedInManagedCampaign(campaign.id);
+        setToast(`“${campaign.name}” was deleted from Campaigns.`);
+        setDeleting(null);
+        if (openCampaignId === campaign.id) setOpenCampaignId('');
+        if (campaignFilter === campaign.id) setCampaignFilter('');
+        await refreshAll();
+      },
+      'Unable to delete that campaign. Cancel or stop it first if it is still active.'
+    );
+
   const setMemberPaused = (member: ManagedCampaignMember, paused: boolean) =>
     guard(
       `member:${member.id}`,
@@ -1110,17 +1128,6 @@ export function OutreachManagerRead({
       setError('Your browser blocked the copy. Select the text and copy it by hand.');
     }
   };
-
-  const runNow = () =>
-    guard(
-      'tick',
-      async () => {
-        const result = await tickLinkedInManagedCampaigns();
-        setTick(result);
-        await refreshAll();
-      },
-      'Unable to advance the running campaigns.'
-    );
 
   const pickSeatFilter = (key: string) => {
     setSeatFilter(key);
@@ -1214,24 +1221,6 @@ export function OutreachManagerRead({
             >
               <Plus size={14} /> New campaign
             </button>
-            <button
-              className="secondary-button"
-              type="button"
-              disabled={busy !== '' || runningCount === 0}
-              onClick={() => void runNow()}
-            >
-              {busy === 'tick' ? <LoaderCircle className="spin" size={14} /> : <Zap size={14} />}{' '}
-              Run now
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              disabled={loading}
-              onClick={() => void refreshAll()}
-            >
-              {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}{' '}
-              Refresh
-            </button>
           </div>
         </div>
 
@@ -1245,26 +1234,6 @@ export function OutreachManagerRead({
             </a>
           </span>
         </p>
-        {runningCount === 0 && campaigns.length > 0 && (
-          <p className="li-hint">Run now becomes available once a campaign is running.</p>
-        )}
-
-        {tick && (
-          <div className="li-dryrun">
-            <Zap size={18} />
-            <div>
-              <strong>Run now finished</strong>
-              <p>
-                Advanced {plural(tick.campaignsTicked, 'campaign')}:{' '}
-                {plural(tick.actionsPlanned, 'action')} queued,{' '}
-                {plural(tick.manualTasksCreated, 'message')} for you to write,{' '}
-                {plural(tick.membersCompleted, 'lead')} finished.
-                {tick.membersBlocked > 0 &&
-                  ` ${plural(tick.membersBlocked, 'lead')} could not move yet — no profile link, or today's limit for that account is already used.`}
-              </p>
-            </div>
-          </div>
-        )}
 
         {loading && campaigns.length === 0 ? (
           <div className="mgr-list" aria-hidden="true">
@@ -1364,13 +1333,10 @@ export function OutreachManagerRead({
                         </button>
                       )}
                       {/*
-                      STOP IS OFFERED ON A DRAFT TOO, and it is the only way out
-                      of a campaign created by mistake. There is no delete route
-                      and this screen does not invent one: stopping a draft is a
-                      real server operation that takes its leads back out of it,
-                      which is the part an operator actually needs. The drawer
-                      says exactly what it does and what it does not undo before
-                      it happens.
+                      Cancel/Stop is the lifecycle boundary before hard deletion.
+                      Draft, running and paused campaigns can still own leads or
+                      queued work, so they must be cancelled/stopped first. Only
+                      terminal campaigns expose Delete below.
                     */}
                       {(campaign.status === 'draft' ||
                         campaign.status === 'running' ||
@@ -1384,6 +1350,25 @@ export function OutreachManagerRead({
                           <Square size={14} /> {campaign.status === 'draft' ? 'Cancel' : 'Stop'}
                         </button>
                       )}
+                      {workflow && (
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={busy !== ''}
+                          title={
+                            campaign.status === 'running'
+                              ? 'Edit the saved workflow. This running campaign keeps its current workflow version until you pause and resume it.'
+                              : 'Edit this campaign’s saved workflow.'
+                          }
+                          onClick={() =>
+                            onNavigate(
+                              `/outreach/workflow/${encodeURIComponent(workflow.id)}/${encodeURIComponent(campaign.id)}`
+                            )
+                          }
+                        >
+                          <WorkflowIcon size={14} /> Edit workflow
+                        </button>
+                      )}
                       {terminal && rebuildable && (
                         <button
                           className="secondary-button"
@@ -1392,6 +1377,16 @@ export function OutreachManagerRead({
                           onClick={() => rebuild(campaign)}
                         >
                           <Copy size={14} /> Build it again
+                        </button>
+                      )}
+                      {terminal && (
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={busy !== ''}
+                          onClick={() => setDeleting(campaign)}
+                        >
+                          <Trash2 size={14} /> Delete
                         </button>
                       )}
                     </div>
@@ -1420,6 +1415,14 @@ export function OutreachManagerRead({
                     </span>
                     {campaign.startedAt && <span>Started {ago(campaign.startedAt, now)}</span>}
                   </p>
+
+                  {open && workflow && campaign.status === 'running' && (
+                    <p className="li-hint">
+                      This campaign is locked to workflow v{campaign.workflowVersion ?? '—'} while
+                      it is running. You can edit the saved workflow, but those changes only reach
+                      this campaign after you pause and resume it.
+                    </p>
+                  )}
 
                   <StatusBar counts={counts} total={members.length} />
                   <StatusLegend counts={counts} total={members.length} />
@@ -2151,9 +2154,8 @@ export function OutreachManagerRead({
                   Cancelling takes its leads back out of it, which frees them for another campaign.
                 </p>
                 <p>
-                  There is no way to delete a campaign, so it stays in the list as stopped, and a
-                  stopped campaign cannot be started. Build a new one when you want this list to
-                  run.
+                  It stays in the list as stopped until you choose Delete. A stopped campaign cannot
+                  be started again; build a new one when you want this list to run.
                 </p>
               </>
             ) : (
@@ -2163,8 +2165,8 @@ export function OutreachManagerRead({
                   has not started is cancelled.
                 </p>
                 <p>
-                  A stopped campaign cannot be started again — you would create a new one. To pick
-                  it up later, pause it instead.
+                  A stopped campaign cannot be started again — you can delete it afterwards, or
+                  create a new campaign. To pick it up later, pause it instead.
                 </p>
               </>
             )
@@ -2174,6 +2176,29 @@ export function OutreachManagerRead({
           busy={busy === `campaign:${stopping.id}`}
           onConfirm={() => void stopCampaign(stopping)}
           onCancel={() => setStopping(null)}
+        />
+      )}
+
+      {deleting && (
+        <ConfirmDrawer
+          title={`Delete “${deleting.name}”?`}
+          body={
+            <>
+              <p>
+                This permanently removes the campaign and its lead progress from Campaigns. It
+                cannot be undone.
+              </p>
+              <p>
+                Running, paused and draft campaigns cannot be deleted. Cancel or stop them first.
+                Actions that already reached LinkedIn remain in historical results.
+              </p>
+            </>
+          }
+          confirmLabel="Delete campaign"
+          tone="danger"
+          busy={busy === `campaign:${deleting.id}`}
+          onConfirm={() => void deleteCampaign(deleting)}
+          onCancel={() => setDeleting(null)}
         />
       )}
     </div>

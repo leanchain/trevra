@@ -6,11 +6,14 @@ import { createLeadList, importLeadCsv } from './lead-lists.js';
 import {
   campaignWorkflowSteps,
   createManagedCampaign,
+  deleteManagedCampaign,
   enrolNewContacts,
+  getManagedCampaign,
   listCampaignMembers,
   managedAnalytics,
   releaseSeatWork,
-  startManagedCampaign
+  startManagedCampaign,
+  stopManagedCampaign
 } from './managed-campaigns.js';
 import { upsertSeat } from './seats.js';
 import { saveWorkflow } from './workflows.js';
@@ -31,12 +34,27 @@ const WORKSPACE = 'ws_linkedin_managed_campaigns_test';
 
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
-  await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+  await db
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE, 'Managed Campaigns Test', NOW.toISOString());
-  for (const table of ['linkedin_actions', 'linkedin_campaigns', 'linkedin_workflows', 'linkedin_lead_contacts', 'linkedin_lead_lists', 'linkedin_seats']) {
+  for (const table of [
+    'linkedin_actions',
+    'linkedin_campaigns',
+    'linkedin_workflows',
+    'linkedin_lead_contacts',
+    'linkedin_lead_lists',
+    'linkedin_seats'
+  ]) {
     await db.prepare(`DELETE FROM ${table} WHERE workspace_id=?`).run(WORKSPACE);
   }
-  await upsertSeat(db, WORKSPACE, { label: 'Owner', timezone: 'Europe/Zurich' }, new Date('2026-01-01T09:00:00.000Z'));
+  await upsertSeat(
+    db,
+    WORKSPACE,
+    { label: 'Owner', timezone: 'Europe/Zurich' },
+    new Date('2026-01-01T09:00:00.000Z')
+  );
 });
 
 afterEach(async () => {
@@ -54,46 +72,124 @@ async function leadList(name: string, people: readonly string[]): Promise<string
 }
 
 async function workflow(name = 'Connect'): Promise<string> {
-  return (await saveWorkflow(db, {
-    workspaceId: WORKSPACE,
-    name,
-    steps: [{ id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: 'Hi {{first_name}}' } }]
-  }, NOW)).id;
+  return (
+    await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name,
+        steps: [
+          {
+            id: 'invite',
+            action: 'connection_request',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { message: 'Hi {{first_name}}' }
+          }
+        ]
+      },
+      NOW
+    )
+  ).id;
 }
 
 async function statusOf(actionId: string): Promise<string> {
-  const row = await db.prepare('SELECT status FROM linkedin_actions WHERE workspace_id=? AND id=?')
+  const row = await db
+    .prepare('SELECT status FROM linkedin_actions WHERE workspace_id=? AND id=?')
     .get<{ status: string }>(WORKSPACE, actionId);
   if (!row) throw new Error(`no action ${actionId}`);
   return row.status;
 }
 
-async function queue(seatKey: string, handle: string, status: 'planned' | 'held', claimed = false): Promise<string> {
-  const written = await recordAction(db, {
-    workspaceId: WORKSPACE,
-    seatKey,
-    kind: 'invite',
-    targetRef: `https://www.linkedin.com/in/${handle}/`,
-    status: 'planned',
-    source: 'campaign',
-    plannedFor: NOW.toISOString()
-  }, NOW);
-  await db.prepare('UPDATE linkedin_actions SET status=?, claimed_at=? WHERE workspace_id=? AND id=?')
+async function queue(
+  seatKey: string,
+  handle: string,
+  status: 'planned' | 'held',
+  claimed = false
+): Promise<string> {
+  const written = await recordAction(
+    db,
+    {
+      workspaceId: WORKSPACE,
+      seatKey,
+      kind: 'invite',
+      targetRef: `https://www.linkedin.com/in/${handle}/`,
+      status: 'planned',
+      source: 'campaign',
+      plannedFor: NOW.toISOString()
+    },
+    NOW
+  );
+  await db
+    .prepare('UPDATE linkedin_actions SET status=?, claimed_at=? WHERE workspace_id=? AND id=?')
     .run(status, claimed ? NOW.toISOString() : null, WORKSPACE, written.id);
   return written.id;
 }
 
 /** One ledger row, at the status it ended up in. */
-async function ledger(kind: 'invite' | 'dm', handle: string, status: 'sent' | 'accepted' | 'replied' | 'declined' | 'withdrawn'): Promise<void> {
-  await recordAction(db, {
-    workspaceId: WORKSPACE,
-    kind,
-    targetRef: `https://www.linkedin.com/in/${handle}/`,
-    status,
-    source: 'campaign',
-    plannedFor: NOW.toISOString()
-  }, NOW);
+async function ledger(
+  kind: 'invite' | 'dm',
+  handle: string,
+  status: 'sent' | 'accepted' | 'replied' | 'declined' | 'withdrawn'
+): Promise<void> {
+  await recordAction(
+    db,
+    {
+      workspaceId: WORKSPACE,
+      kind,
+      targetRef: `https://www.linkedin.com/in/${handle}/`,
+      status,
+      source: 'campaign',
+      plannedFor: NOW.toISOString()
+    },
+    NOW
+  );
 }
+
+describe('managed campaign deletion', () => {
+  it('refuses a running campaign until it is stopped, then removes it', async () => {
+    const listId = await leadList('Delete guard', ['maya']);
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Delete guard',
+        leadListId: listId,
+        workflowId: await workflow('Delete guard')
+      },
+      NOW
+    );
+
+    await startManagedCampaign(db, WORKSPACE, created.campaign.id, NOW);
+    await expect(deleteManagedCampaign(db, WORKSPACE, created.campaign.id)).rejects.toThrow(
+      'Cancel or stop it first'
+    );
+    expect(await getManagedCampaign(db, WORKSPACE, created.campaign.id)).toBeDefined();
+
+    await stopManagedCampaign(db, WORKSPACE, created.campaign.id, NOW);
+    await expect(deleteManagedCampaign(db, WORKSPACE, created.campaign.id)).resolves.toBe(true);
+    expect(await getManagedCampaign(db, WORKSPACE, created.campaign.id)).toBeUndefined();
+  });
+
+  it('allows a completed old campaign to be deleted', async () => {
+    const listId = await leadList('Completed cleanup', ['nora']);
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Completed cleanup',
+        leadListId: listId,
+        workflowId: await workflow('Completed cleanup')
+      },
+      NOW
+    );
+    await db
+      .prepare(`UPDATE linkedin_campaigns SET status='completed' WHERE workspace_id=? AND id=?`)
+      .run(WORKSPACE, created.campaign.id);
+
+    await expect(deleteManagedCampaign(db, WORKSPACE, created.campaign.id)).resolves.toBe(true);
+    expect(await getManagedCampaign(db, WORKSPACE, created.campaign.id)).toBeUndefined();
+  });
+});
 
 /**
  * THE TWO RATES THIS PANEL SHOWS, AND THE POPULATIONS THEY DIVIDE.
@@ -175,10 +271,16 @@ describe('the derived campaign-member id', () => {
    */
   it('is scoped to the workspace, not only to the campaign and the contact', async () => {
     const listId = await leadList('Digest', ['maya']);
-    const campaign = await createManagedCampaign(db, { workspaceId: WORKSPACE, name: 'Digest', leadListId: listId, workflowId: await workflow() }, NOW);
+    const campaign = await createManagedCampaign(
+      db,
+      { workspaceId: WORKSPACE, name: 'Digest', leadListId: listId, workflowId: await workflow() },
+      NOW
+    );
     const [member] = await listCampaignMembers(db, WORKSPACE, campaign.campaign.id);
 
-    const digest = createHash('md5').update(`${WORKSPACE}:${campaign.campaign.id}:${member.contactId}`).digest('hex');
+    const digest = createHash('md5')
+      .update(`${WORKSPACE}:${campaign.campaign.id}:${member.contactId}`)
+      .digest('hex');
     expect(member.id).toBe(`limem_${digest}`);
   });
 
@@ -189,11 +291,27 @@ describe('the derived campaign-member id', () => {
    */
   it('keeps enrolment idempotent for the same tenant', async () => {
     const listId = await leadList('Idempotent', ['maya', 'jonas']);
-    const created = await createManagedCampaign(db, { workspaceId: WORKSPACE, name: 'Idempotent', leadListId: listId, workflowId: await workflow() }, NOW);
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Idempotent',
+        leadListId: listId,
+        workflowId: await workflow()
+      },
+      NOW
+    );
     await startManagedCampaign(db, WORKSPACE, created.campaign.id, NOW);
     const steps = await campaignWorkflowSteps(db, WORKSPACE, created.campaign.id);
 
-    expect(await enrolNewContacts(db, WORKSPACE, { id: created.campaign.id, leadListId: listId, steps }, NOW)).toBe(0);
+    expect(
+      await enrolNewContacts(
+        db,
+        WORKSPACE,
+        { id: created.campaign.id, leadListId: listId, steps },
+        NOW
+      )
+    ).toBe(0);
     expect(await listCampaignMembers(db, WORKSPACE, created.campaign.id)).toHaveLength(2);
   });
 });
@@ -206,26 +324,60 @@ describe('releaseSeatWork', () => {
    * names -- and if the seat key is reused, which 'owner' always is, the NEXT
    * account inherits the previous operator's parked outreach and sends it.
    */
-  it('skips a seat\'s planned and held work, cancels its tasks, and reports what was in flight', async () => {
+  it("skips a seat's planned and held work, cancels its tasks, and reports what was in flight", async () => {
     const listId = await leadList('Seat work', ['maya']);
-    const created = await createManagedCampaign(db, { workspaceId: WORKSPACE, name: 'Seat work', leadListId: listId, workflowId: await workflow() }, NOW);
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Seat work',
+        leadListId: listId,
+        workflowId: await workflow()
+      },
+      NOW
+    );
     const [member] = await listCampaignMembers(db, WORKSPACE, created.campaign.id);
 
     const planned = await queue('owner', 'planned-one', 'planned');
     const held = await queue('owner', 'held-one', 'held');
     const inFlight = await queue('owner', 'claimed-one', 'planned', true);
 
-    await upsertSeat(db, WORKSPACE, { label: 'Secondary', timezone: 'Europe/Zurich' }, NOW, 'secondary');
+    await upsertSeat(
+      db,
+      WORKSPACE,
+      { label: 'Secondary', timezone: 'Europe/Zurich' },
+      NOW,
+      'secondary'
+    );
     const otherSeat = await queue('secondary', 'other-seat', 'planned');
 
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_manual_tasks (id,workspace_id,campaign_id,member_id,contact_id,seat_key,workflow_step_id,status,created_at)
       VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(id('litask'), WORKSPACE, created.campaign.id, member.id, member.contactId, 'owner', 'invite', 'pending', NOW.toISOString());
+    `
+      )
+      .run(
+        id('litask'),
+        WORKSPACE,
+        created.campaign.id,
+        member.id,
+        member.contactId,
+        'owner',
+        'invite',
+        'pending',
+        NOW.toISOString()
+      );
 
     const report = await releaseSeatWork(db, WORKSPACE, 'owner', NOW);
 
-    expect(report).toEqual({ seatKey: 'owner', actionsSkipped: 2, tasksCancelled: 1, actionsInFlight: 1 });
+    expect(report).toEqual({
+      seatKey: 'owner',
+      actionsSkipped: 2,
+      tasksCancelled: 1,
+      actionsInFlight: 1
+    });
     expect(await statusOf(planned)).toBe('skipped');
     expect(await statusOf(held)).toBe('skipped');
     // The two boundaries every other release path in this file also draws.
@@ -236,6 +388,10 @@ describe('releaseSeatWork', () => {
   it('is idempotent, so a disconnect that retries releases nothing twice', async () => {
     await queue('owner', 'retry-one', 'planned');
     expect((await releaseSeatWork(db, WORKSPACE, 'owner', NOW)).actionsSkipped).toBe(1);
-    expect(await releaseSeatWork(db, WORKSPACE, 'owner', NOW)).toMatchObject({ actionsSkipped: 0, tasksCancelled: 0, actionsInFlight: 0 });
+    expect(await releaseSeatWork(db, WORKSPACE, 'owner', NOW)).toMatchObject({
+      actionsSkipped: 0,
+      tasksCancelled: 0,
+      actionsInFlight: 0
+    });
   });
 });

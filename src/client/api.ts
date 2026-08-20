@@ -1567,13 +1567,20 @@ export async function createLinkedInManagedCampaign(input: {
     body: JSON.stringify(input)
   });
 }
-
 export async function getLinkedInManagedCampaign(
   id: string
 ): Promise<{ campaign: ManagedCampaign; members: ManagedCampaignMember[] }> {
   return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}`);
 }
 
+export async function deleteLinkedInManagedCampaign(id: string): Promise<boolean> {
+  return (
+    await request<{ deleted: boolean }>(
+      `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    )
+  ).deleted;
+}
 export async function startLinkedInManagedCampaign(id: string): Promise<ManagedCampaign> {
   return (
     await request<{ campaign: ManagedCampaign }>(

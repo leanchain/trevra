@@ -42,6 +42,18 @@ describe('parseRoute', () => {
       id: null,
       path: '/outreach/posts'
     });
+    expect(parseRoute('/outreach/campaign/licmp_123')).toMatchObject({
+      section: 'outreach',
+      sub: 'campaign',
+      id: 'licmp_123',
+      path: '/outreach/campaign/licmp_123'
+    });
+    expect(parseRoute('/outreach/workflow/liwf_123/licmp_123')).toMatchObject({
+      section: 'outreach',
+      sub: 'workflow',
+      id: 'liwf_123/licmp_123',
+      path: '/outreach/workflow/liwf_123/licmp_123'
+    });
     expect(parseRoute('/research')).toMatchObject({
       section: 'research',
       sub: '',

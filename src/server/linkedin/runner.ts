@@ -105,6 +105,8 @@ interface DueMemberRow {
   id: string;
   contact_id: string;
   step_index: number;
+  current_step_id: string | null;
+  completed_step_ids: unknown;
   assigned_variants: unknown;
   first_name: string;
   last_name: string;
@@ -162,6 +164,41 @@ function kindForStep(step: WorkflowStep): BudgetedKind | null {
     case 'withdraw_pending':
       return null;
   }
+}
+
+function parseStepIds(value: unknown): string[] {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : value;
+  return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function resolveMemberStep(
+  steps: readonly WorkflowStep[],
+  currentStepId: string | null,
+  completedStepIds: readonly string[],
+  fallbackIndex: number
+): { index: number; step: WorkflowStep | null } {
+  const completed = new Set(completedStepIds);
+  if (currentStepId && !completed.has(currentStepId)) {
+    const currentIndex = steps.findIndex((step) => step.id === currentStepId);
+    if (currentIndex >= 0) return { index: currentIndex, step: steps[currentIndex] };
+  }
+
+  let lastCompletedIndex = -1;
+  for (let index = 0; index < steps.length; index += 1) {
+    if (completed.has(steps[index].id)) lastCompletedIndex = index;
+  }
+  let index = lastCompletedIndex >= 0 ? lastCompletedIndex + 1 : Math.max(0, fallbackIndex);
+  while (index < steps.length && completed.has(steps[index].id)) index += 1;
+  return { index, step: steps[index] ?? null };
 }
 
 function parseVariants(value: unknown): Record<string, string> {
@@ -544,7 +581,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
     const members = await db
       .prepare(
         `
-      SELECT m.id, m.contact_id, m.step_index, m.assigned_variants,
+      SELECT m.id, m.contact_id, m.step_index, m.current_step_id, m.completed_step_ids, m.assigned_variants,
              l.first_name, l.last_name, l.company, l.email, l.phone, l.country, l.profile_url
       FROM linkedin_campaign_members m
       JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
@@ -610,7 +647,15 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           phone: member.phone,
           country: member.country
         };
-        const stepIndex = Number(member.step_index);
+        const completedStepIds = parseStepIds(member.completed_step_ids);
+        const cursor = resolveMemberStep(
+          steps,
+          member.current_step_id,
+          completedStepIds,
+          Number(member.step_index)
+        );
+        const stepIndex = cursor.index;
+        const step = cursor.step;
 
         /* --- Reply short-circuit. ---
          *
@@ -621,6 +666,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         if (member.profile_url && replied.has(targetKey(member.profile_url))) {
           memberWrites.set(member.id, {
             stepIndex,
+            currentStepId: null,
+            completedStepIds,
             status: 'replied',
             nextEligibleAt: null,
             lastActionId: null,
@@ -630,10 +677,11 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           continue;
         }
 
-        const step = steps[stepIndex];
         if (!step) {
           memberWrites.set(member.id, {
             stepIndex,
+            currentStepId: null,
+            completedStepIds,
             status: 'completed',
             nextEligibleAt: null,
             lastActionId: null,
@@ -682,7 +730,14 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             const stale = staleAt !== null && now.getTime() >= staleAt.getTime();
 
             if (terminalNegative || stale) {
-              const advanced = advanceMember({ stepIndex, steps, from: now, actionId: null, now });
+              const advanced = advanceMember({
+                stepIndex,
+                steps,
+                completedStepIds,
+                from: now,
+                actionId: null,
+                now
+              });
               memberWrites.set(member.id, advanced.write);
               if (advanced.completed) result.membersCompleted += 1;
               continue;
@@ -693,6 +748,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
               staleAt && staleAt.getTime() < recheckAt.getTime() ? staleAt : recheckAt;
             memberWrites.set(member.id, {
               stepIndex,
+              currentStepId: step.id,
+              completedStepIds,
               status: 'waiting',
               nextEligibleAt: nextCheck.toISOString(),
               lastActionId: null,
@@ -721,6 +778,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           // here as well would skip the step after this one.
           memberWrites.set(member.id, {
             stepIndex,
+            currentStepId: step.id,
+            completedStepIds,
             status: 'manual',
             nextEligibleAt: null,
             lastActionId: null,
@@ -744,6 +803,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             // instant it becomes stale rather than re-polled every tick.
             memberWrites.set(member.id, {
               stepIndex,
+              currentStepId: step.id,
+              completedStepIds,
               status: 'waiting',
               nextEligibleAt: outcome.waitUntil.toISOString(),
               lastActionId: null,
@@ -752,7 +813,14 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             });
             continue;
           }
-          const advanced = advanceMember({ stepIndex, steps, from: now, actionId: null, now });
+          const advanced = advanceMember({
+            stepIndex,
+            steps,
+            completedStepIds,
+            from: now,
+            actionId: null,
+            now
+          });
           memberWrites.set(member.id, advanced.write);
           if (advanced.completed) result.membersCompleted += 1;
           continue;
@@ -769,6 +837,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         if (!member.profile_url) {
           memberWrites.set(member.id, {
             stepIndex,
+            currentStepId: null,
+            completedStepIds,
             status: 'failed',
             nextEligibleAt: null,
             lastActionId: null,
@@ -856,6 +926,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         const advanced = advanceMember({
           stepIndex,
           steps,
+          completedStepIds,
           from: plannedFor,
           actionId: written.id,
           now
@@ -934,6 +1005,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
  */
 interface MemberWrite {
   stepIndex: number;
+  currentStepId: string | null;
+  completedStepIds: string[];
   status: string;
   nextEligibleAt: string | null;
   lastActionId: string | null;
@@ -957,11 +1030,19 @@ interface MemberWrite {
 function advanceMember(input: {
   stepIndex: number;
   steps: readonly WorkflowStep[];
+  completedStepIds: readonly string[];
   from: Date;
   actionId: string | null;
   now: Date;
 }): { write: MemberWrite; completed: boolean } {
-  const nextIndex = input.stepIndex + 1;
+  const currentStep = input.steps[input.stepIndex];
+  const completedStepIds = [...input.completedStepIds];
+  if (currentStep && !completedStepIds.includes(currentStep.id))
+    completedStepIds.push(currentStep.id);
+
+  const completed = new Set(completedStepIds);
+  let nextIndex = input.stepIndex + 1;
+  while (nextIndex < input.steps.length && completed.has(input.steps[nextIndex].id)) nextIndex += 1;
   const nextStep = input.steps[nextIndex];
   const status = nextStep ? 'waiting' : 'completed';
   const nextEligible = nextStep
@@ -970,6 +1051,8 @@ function advanceMember(input: {
   return {
     write: {
       stepIndex: nextIndex,
+      currentStepId: nextStep?.id ?? null,
+      completedStepIds,
       status,
       nextEligibleAt: nextEligible,
       lastActionId: input.actionId,
@@ -1013,6 +1096,8 @@ async function flushMemberWrites(
       `
     UPDATE linkedin_campaign_members m
     SET step_index = w.step_index,
+        current_step_id = w.current_step_id,
+        completed_step_ids = w.completed_step_ids,
         status = w.status,
         next_eligible_at = w.next_eligible_at,
         last_action_id = COALESCE(w.last_action_id, m.last_action_id),
@@ -1021,14 +1106,16 @@ async function flushMemberWrites(
           ELSE COALESCE(m.assigned_variants, '{}'::jsonb) || w.variants
         END,
         updated_at = w.updated_at
-    FROM unnest(?::text[], ?::int[], ?::text[], ?::timestamptz[], ?::text[], ?::jsonb[], ?::timestamptz[])
-      AS w(id, step_index, status, next_eligible_at, last_action_id, variants, updated_at)
+    FROM unnest(?::text[], ?::int[], ?::text[], ?::jsonb[], ?::text[], ?::timestamptz[], ?::text[], ?::jsonb[], ?::timestamptz[])
+      AS w(id, step_index, current_step_id, completed_step_ids, status, next_eligible_at, last_action_id, variants, updated_at)
     WHERE m.workspace_id=? AND m.id = w.id
   `
     )
     .run(
       entries.map(([memberId]) => memberId),
       entries.map(([, write]) => write.stepIndex),
+      entries.map(([, write]) => write.currentStepId),
+      entries.map(([, write]) => JSON.stringify(write.completedStepIds)),
       entries.map(([, write]) => write.status),
       entries.map(([, write]) => write.nextEligibleAt),
       entries.map(([, write]) => write.lastActionId),

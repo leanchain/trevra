@@ -295,6 +295,53 @@ describe('LinkedIn manager HTTP surface', () => {
     ).toHaveLength(1);
   });
 
+  it('requires an active campaign to be stopped before it can be deleted', async () => {
+    const list = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/lead-lists')
+        .send({ name: 'Delete lifecycle', sourceKind: 'csv' })
+        .expect(201)
+    ).body.list;
+    const workflow = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/workflows')
+        .send({
+          name: 'Delete lifecycle flow',
+          steps: [
+            {
+              id: 'view',
+              action: 'profile_view',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: {}
+            }
+          ]
+        })
+        .expect(201)
+    ).body.workflow;
+    const campaign = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/campaigns')
+        .send({ name: 'Delete lifecycle', leadListId: list.id, workflowId: workflow.id })
+        .expect(201)
+    ).body.campaign;
+
+    await as(tokenA)
+      .post(`/api/linkedin/manager/campaigns/${campaign.id}/start`)
+      .send({})
+      .expect(200);
+    const refused = await as(tokenA)
+      .delete(`/api/linkedin/manager/campaigns/${campaign.id}`)
+      .expect(409);
+    expect(refused.body.error).toMatch(/stop it first/i);
+
+    await as(tokenA)
+      .post(`/api/linkedin/manager/campaigns/${campaign.id}/stop`)
+      .send({})
+      .expect(200);
+    await as(tokenA).delete(`/api/linkedin/manager/campaigns/${campaign.id}`).expect(200);
+    await as(tokenA).get(`/api/linkedin/manager/campaigns/${campaign.id}`).expect(404);
+  });
+
   it('only exposes safety-reducing member controls and releases the active lead claim on remove', async () => {
     const list = (
       await as(tokenA)

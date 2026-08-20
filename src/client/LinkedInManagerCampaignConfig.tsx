@@ -1,19 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  CircleAlert,
-  LoaderCircle,
-  Play,
-  Plus,
-  Users,
-  Workflow as WorkflowIcon
-} from 'lucide-react';
+import { CircleAlert, LoaderCircle, Plus, Users, Workflow as WorkflowIcon } from 'lucide-react';
 import {
   createLinkedInManagedCampaign,
   getLinkedInLimits,
   getLinkedInManagerLeadLists,
   getLinkedInManagerSeats,
   getLinkedInManagerWorkflows,
-  startLinkedInManagedCampaign,
   type LinkedInCeilingSource,
   type LinkedInLimitsReport
 } from './api';
@@ -230,13 +222,13 @@ export function takeStagedCampaignPrefill(): CampaignPrefill | null {
 export function LinkedInManagerCampaignConfig({
   onChanged,
   setToast,
-  onStarted,
+  onCreated,
   prefill
 }: {
   onChanged: () => Promise<void>;
   setToast: (message: string) => void;
-  /** After an explicit Start succeeds, the builder can return to operations. */
-  onStarted?: (campaign: ManagedCampaign) => void;
+  /** Creation is a navigation boundary: show the new campaign instead of resetting this form in place. */
+  onCreated?: (campaign: ManagedCampaign) => void;
   /** Fills the form from a finished campaign, so "run this list again" is one click. */
   prefill?: CampaignPrefill | null;
 }) {
@@ -257,11 +249,6 @@ export function LinkedInManagerCampaignConfig({
   const [limits, setLimits] = useState<LinkedInLimitsReport | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const [created, setCreated] = useState<{
-    campaign: ManagedCampaign;
-    enrolled: number;
-    skippedAlreadyActive: number;
-  } | null>(null);
 
   const refreshOptions = async () => {
     const [nextSeats, nextLists, nextWorkflows] = await Promise.all([
@@ -286,7 +273,6 @@ export function LinkedInManagerCampaignConfig({
     setName(prefill.name);
     setNameTouched(true);
     setWorkflowId(prefill.workflowId);
-    setCreated(null);
     if (prefill.seatKey === activeSeatKey) {
       setListId(prefill.leadListId);
       setError('');
@@ -377,32 +363,17 @@ export function LinkedInManagerCampaignConfig({
         leadListId: listId,
         workflowId
       });
-      setCreated(result);
-      setName('');
-      setNameTouched(false);
-      await Promise.all([refreshOptions(), onChanged()]);
+      setToast(
+        `“${result.campaign.name}” was created with ${plural(result.enrolled, 'contact')}${
+          result.skippedAlreadyActive > 0
+            ? `; ${plural(result.skippedAlreadyActive, 'contact')} already active elsewhere ${result.skippedAlreadyActive === 1 ? 'was' : 'were'} skipped`
+            : ''
+        }. Nothing is running yet.`
+      );
+      onCreated?.(result.campaign);
+      if (!onCreated) await onChanged();
     } catch (err) {
       setError(errorMessage(err, 'Unable to create that campaign.'));
-    } finally {
-      setBusy('');
-    }
-  };
-
-  const startNow = async () => {
-    if (!created) return;
-    setBusy('start');
-    setError('');
-    try {
-      await startLinkedInManagedCampaign(created.campaign.id);
-      setToast(
-        `“${created.campaign.name}” is running.${dayOneFraction === null ? '' : ` Day one is held to ${Math.round(dayOneFraction * 100)}% of what this account may send.`}`
-      );
-      const started = created.campaign;
-      setCreated(null);
-      await onChanged();
-      onStarted?.(started);
-    } catch (err) {
-      setError(errorMessage(err, 'The campaign was created but could not be started.'));
     } finally {
       setBusy('');
     }
@@ -617,58 +588,6 @@ export function LinkedInManagerCampaignConfig({
               </div>
             )}
           </aside>
-        </div>
-      )}
-
-      {created && (
-        <div className="li-dryrun mgr-created">
-          <Play size={18} />
-          <div>
-            <strong>“{created.campaign.name}” is ready</strong>
-            <p className="mgr-launch-summary">
-              <b>{plural(created.enrolled, 'contact')}</b>
-              {seat && (
-                <>
-                  {' '}
-                  · <b>{seat.label}</b>
-                </>
-              )}
-              {workflow && (
-                <>
-                  {' '}
-                  · <b>{workflow.name}</b>
-                </>
-              )}
-            </p>
-            <p>
-              {created.skippedAlreadyActive > 0 &&
-                `${plural(created.skippedAlreadyActive, 'contact')} skipped — already in another active campaign. `}
-              It is not running yet: nothing goes out until you start it.
-            </p>
-            <div className="mgr-actions">
-              <button
-                className="primary-button"
-                type="button"
-                disabled={busy !== ''}
-                onClick={() => void startNow()}
-              >
-                {busy === 'start' ? (
-                  <LoaderCircle className="spin" size={14} />
-                ) : (
-                  <Play size={14} />
-                )}{' '}
-                Start it now
-              </button>
-              <button
-                className="secondary-button"
-                type="button"
-                disabled={busy !== ''}
-                onClick={() => setCreated(null)}
-              >
-                Create another campaign
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

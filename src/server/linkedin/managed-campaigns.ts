@@ -79,7 +79,10 @@ export interface ManagedCampaignMember {
   campaignId: string;
   contactId: string;
   status: ManagedMemberStatus;
+  /** Compatibility/display position; durable progress is keyed by step ids. */
   stepIndex: number;
+  currentStepId: string | null;
+  completedStepIds: string[];
   nextEligibleAt: string | null;
   assignedVariants: Record<string, string>;
   lastActionId: string | null;
@@ -113,6 +116,8 @@ interface MemberRow {
   contact_id: string;
   status: string;
   step_index: number;
+  current_step_id: string | null;
+  completed_step_ids: unknown;
   next_eligible_at: string | null;
   assigned_variants: unknown;
   last_action_id: string | null;
@@ -209,6 +214,31 @@ function parseVariants(value: unknown): Record<string, string> {
       )
     : {};
 }
+function parseStepIds(value: unknown): string[] {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : value;
+  return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function nextUncompletedStep(
+  steps: readonly WorkflowStep[],
+  afterIndex: number,
+  completedStepIds: readonly string[]
+): { index: number; step: WorkflowStep | null } {
+  const completed = new Set(completedStepIds);
+  let index = Math.max(0, afterIndex + 1);
+  while (index < steps.length && completed.has(steps[index].id)) index += 1;
+  return { index, step: steps[index] ?? null };
+}
+
 function toMember(row: MemberRow): ManagedCampaignMember {
   return {
     id: row.id,
@@ -216,6 +246,8 @@ function toMember(row: MemberRow): ManagedCampaignMember {
     contactId: row.contact_id,
     status: row.status as ManagedMemberStatus,
     stepIndex: Number(row.step_index),
+    currentStepId: row.current_step_id,
+    completedStepIds: parseStepIds(row.completed_step_ids),
     nextEligibleAt: row.next_eligible_at,
     assignedVariants: parseVariants(row.assigned_variants),
     lastActionId: row.last_action_id,
@@ -268,6 +300,29 @@ export async function getManagedCampaign(
   return row ? toCampaign(row) : undefined;
 }
 
+/** Permanently remove a terminal managed campaign. */
+export async function deleteManagedCampaign(
+  db: Db,
+  workspaceId: string,
+  campaignId: string
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const row = await tx
+      .prepare('SELECT status FROM linkedin_campaigns WHERE workspace_id=? AND id=? FOR UPDATE')
+      .get<{ status: CampaignStatus }>(workspaceId, campaignId);
+    if (!row) return false;
+    if (row.status !== 'stopped' && row.status !== 'completed') {
+      throw new Error(
+        'Only a stopped or completed campaign can be deleted. Cancel or stop it first.'
+      );
+    }
+    const deleted = await tx
+      .prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=? AND id=?')
+      .run(workspaceId, campaignId);
+    return deleted.changes > 0;
+  });
+}
+
 export async function listCampaignMembers(
   db: Db,
   workspaceId: string,
@@ -276,7 +331,8 @@ export async function listCampaignMembers(
   const rows = await db
     .prepare(
       `
-    SELECT m.id,m.campaign_id,m.contact_id,m.status,m.step_index,m.next_eligible_at,m.assigned_variants,m.last_action_id,
+    SELECT m.id,m.campaign_id,m.contact_id,m.status,m.step_index,m.current_step_id,m.completed_step_ids,
+           m.next_eligible_at,m.assigned_variants,m.last_action_id,
            l.first_name,l.last_name,l.company,l.profile_url
     FROM linkedin_campaign_members m JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
     WHERE m.workspace_id=? AND m.campaign_id=? ORDER BY m.created_at,m.id
@@ -349,8 +405,10 @@ export async function createManagedCampaign(
     const inserted = await tx
       .prepare(
         `
-      INSERT INTO linkedin_campaign_members (id,workspace_id,campaign_id,contact_id,status,step_index,assigned_variants,created_at,updated_at)
-      SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'pending', 0, '{}'::jsonb, ?, ?
+      INSERT INTO linkedin_campaign_members (
+        id,workspace_id,campaign_id,contact_id,status,step_index,current_step_id,completed_step_ids,assigned_variants,created_at,updated_at
+      )
+      SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'pending', 0, ?, '[]'::jsonb, '{}'::jsonb, ?, ?
       FROM linkedin_lead_list_members m WHERE m.workspace_id=? AND m.list_id=?
       ON CONFLICT DO NOTHING RETURNING id
     `
@@ -360,6 +418,7 @@ export async function createManagedCampaign(
         campaignId,
         input.workspaceId,
         campaignId,
+        workflow.steps[0]?.id ?? null,
         timestamp,
         timestamp,
         input.workspaceId,
@@ -465,8 +524,10 @@ export async function enrolNewContacts(
   const inserted = await db
     .prepare(
       `
-    INSERT INTO linkedin_campaign_members (id,workspace_id,campaign_id,contact_id,status,step_index,next_eligible_at,assigned_variants,created_at,updated_at)
-    SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'active', 0, ?::timestamptz, '{}'::jsonb, ?, ?
+    INSERT INTO linkedin_campaign_members (
+      id,workspace_id,campaign_id,contact_id,status,step_index,current_step_id,completed_step_ids,next_eligible_at,assigned_variants,created_at,updated_at
+    )
+    SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'active', 0, ?, '[]'::jsonb, ?::timestamptz, '{}'::jsonb, ?, ?
     FROM linkedin_lead_list_members m WHERE m.workspace_id=? AND m.list_id=?
     ON CONFLICT DO NOTHING RETURNING id
   `
@@ -476,6 +537,7 @@ export async function enrolNewContacts(
       campaign.id,
       workspaceId,
       campaign.id,
+      campaign.steps[0]?.id ?? null,
       eligible,
       timestamp,
       timestamp,
@@ -559,9 +621,14 @@ export async function startManagedCampaign(
       .run(timestamp, snapshot, timestamp, workspaceId, campaignId);
     await tx
       .prepare(
-        `UPDATE linkedin_campaign_members SET status='active',next_eligible_at=COALESCE(next_eligible_at,?::timestamptz),updated_at=? WHERE workspace_id=? AND campaign_id=? AND status='pending'`
+        `UPDATE linkedin_campaign_members
+         SET status='active',
+             current_step_id=COALESCE(current_step_id,?),
+             next_eligible_at=COALESCE(next_eligible_at,?::timestamptz),
+             updated_at=?
+         WHERE workspace_id=? AND campaign_id=? AND status='pending'`
       )
-      .run(eligible, timestamp, workspaceId, campaignId);
+      .run(workflow.steps[0]?.id ?? null, eligible, timestamp, workspaceId, campaignId);
     await tx
       .prepare(
         `UPDATE linkedin_actions SET status='planned' WHERE workspace_id=? AND campaign_id=? AND status='held'`
@@ -940,7 +1007,8 @@ export async function completeManualTask(
     const task = await tx
       .prepare(
         `
-      SELECT t.member_id, t.campaign_id, t.seat_key, t.workflow_step_id, t.suggested_body, l.profile_url
+      SELECT t.member_id, t.campaign_id, t.seat_key, t.workflow_step_id, t.suggested_body, l.profile_url,
+             m.step_index, m.current_step_id, m.completed_step_ids
       FROM linkedin_manual_tasks t
       JOIN linkedin_campaign_members m ON m.id = t.member_id AND m.workspace_id = t.workspace_id
       JOIN linkedin_lead_contacts l ON l.id = m.contact_id AND l.workspace_id = m.workspace_id
@@ -954,28 +1022,45 @@ export async function completeManualTask(
         workflow_step_id: string | null;
         suggested_body: string | null;
         profile_url: string | null;
+        step_index: number;
+        current_step_id: string | null;
+        completed_step_ids: unknown;
       }>(workspaceId, taskId);
     if (!task) return false;
-    // RETURNING the NEW step_index, which is the index of the step this member
-    // is about to wait for.
+
+    const steps = await campaignWorkflowSteps(tx, workspaceId, task.campaign_id);
+    const completedStepIds = parseStepIds(task.completed_step_ids);
+    if (task.workflow_step_id && !completedStepIds.includes(task.workflow_step_id)) {
+      completedStepIds.push(task.workflow_step_id);
+    }
+    const completedIndex = task.workflow_step_id
+      ? steps.findIndex((step) => step.id === task.workflow_step_id)
+      : Number(task.step_index);
+    const next = nextUncompletedStep(
+      steps,
+      completedIndex >= 0 ? completedIndex : Number(task.step_index),
+      completedStepIds
+    );
+    const eligible = new Date(
+      now.getTime() + (next.step ? delayMilliseconds(next.step.delayBefore) : 0)
+    ).toISOString();
     const member = await tx
       .prepare(
-        `UPDATE linkedin_campaign_members SET status='active',step_index=step_index+1,updated_at=? WHERE workspace_id=? AND id=? AND status='manual' RETURNING step_index`
+        `UPDATE linkedin_campaign_members
+         SET status='active', step_index=?, current_step_id=?, completed_step_ids=?::jsonb,
+             next_eligible_at=?::timestamptz, updated_at=?
+         WHERE workspace_id=? AND id=? AND status='manual' RETURNING id`
       )
-      .get<{ step_index: number }>(timestamp, workspaceId, task.member_id);
+      .get<{ id: string }>(
+        next.index,
+        next.step?.id ?? null,
+        JSON.stringify(completedStepIds),
+        eligible,
+        timestamp,
+        workspaceId,
+        task.member_id
+      );
     if (!member) return false;
-    const steps = await campaignWorkflowSteps(tx, workspaceId, task.campaign_id);
-    const nextStep = steps[Number(member.step_index)];
-    // No next step: due immediately, and the next tick files the member
-    // 'completed' when it reads past the end of the sequence.
-    const eligible = new Date(
-      now.getTime() + (nextStep ? delayMilliseconds(nextStep.delayBefore) : 0)
-    ).toISOString();
-    await tx
-      .prepare(
-        `UPDATE linkedin_campaign_members SET next_eligible_at=?::timestamptz WHERE workspace_id=? AND id=?`
-      )
-      .run(eligible, workspaceId, task.member_id);
     await tx
       .prepare(
         `UPDATE linkedin_manual_tasks SET status='completed',completed_at=? WHERE workspace_id=? AND id=?`

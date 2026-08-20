@@ -334,6 +334,7 @@ import {
   campaignWarmupFraction,
   completeManualTask,
   createManagedCampaign,
+  deleteManagedCampaign,
   getManagedCampaign,
   listCampaignMembers,
   listManagedCampaigns,
@@ -346,7 +347,6 @@ import {
   startManagedCampaign,
   stopManagedCampaign
 } from './linkedin/managed-campaigns.js';
-// The account spine (migration 039). `accounts/types.ts` is the contract these
 // three modules and this file are written against; nothing here reaches past
 // the functions below into the store's own SQL.
 import {
@@ -3531,7 +3531,6 @@ export function createApp(db: Db) {
       }
     })
   );
-
   app.get(
     '/api/linkedin/manager/campaigns/:id',
     linkedinRoute(async (req, res) => {
@@ -3545,6 +3544,27 @@ export function createApp(db: Db) {
     })
   );
 
+  // Deleting is destructive cleanup, not a stop control. It is owner-only and
+  // the domain function refuses anything except a stopped or completed row, so
+  // a running/paused/draft campaign must go through Cancel/Stop first even if a
+  // caller bypasses the browser UI.
+  app.delete(
+    '/api/linkedin/manager/campaigns/:id',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'delete a managed campaign');
+      try {
+        const deleted = await deleteManagedCampaign(
+          db,
+          req.auth!.workspaceId,
+          String(req.params.id)
+        );
+        if (!deleted) throw new LinkedInApiError('Managed campaign not found', 404);
+        res.json({ deleted: true });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
   // Owner-only: starting is the act that begins really approaching strangers on
   // the owner's account, on a cadence nobody has to press a button for again.
   app.post(

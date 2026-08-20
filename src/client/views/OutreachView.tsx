@@ -6,6 +6,7 @@ import { OutreachInbox } from '../LinkedInInbox';
 import { OutreachLeads } from '../LinkedInLeads';
 import { OutreachManagerBuilder } from '../LinkedInManagerBuilder';
 import { OutreachManagerRead } from '../LinkedInManagerRead';
+import { LinkedInManagerWorkflowConfig } from '../LinkedInManagerWorkflowConfig';
 import { LinkedInPosts } from '../LinkedInPosts';
 import { replaceNavigate, type Route } from '../ui/route';
 import { scrollToId } from '../ui/scrollToId';
@@ -35,7 +36,7 @@ const OUTREACH_LEGACY_ANCHORS: Record<string, string> = {
 
 /** Which tab owns the screen being shown. Legacy subs are mid-redirect and own none. */
 function activeSub(sub: string): string {
-  if (sub === 'new') return '';
+  if (sub === 'new' || sub === 'campaign' || sub === 'workflow') return '';
   return OUTREACH_TABS.some((tab) => tab.sub === sub) ? sub : '';
 }
 
@@ -73,6 +74,7 @@ export function OutreachView({
   }, [anchor]);
 
   const current = activeSub(sub);
+  const [workflowId, campaignId] = sub === 'workflow' ? (route.id ?? '').split('/') : ['', ''];
 
   return (
     <div className="page-stack outreach-simple">
@@ -95,6 +97,39 @@ export function OutreachView({
       {sub === 'posts' && <LinkedInPosts setToast={setToast} />}
       {sub === 'settings' && <LinkedInAccounts setToast={setToast} />}
       {sub === 'new' && <OutreachManagerBuilder setToast={setToast} onNavigate={onNavigate} />}
+      {sub === 'campaign' && route.id && (
+        <OutreachManagerRead
+          setToast={setToast}
+          onNavigate={onNavigate}
+          initialCampaignId={route.id}
+        />
+      )}
+      {sub === 'workflow' && workflowId && (
+        <div className="page-stack">
+          <div className="builder-back">
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() =>
+                onNavigate(
+                  campaignId ? `/outreach/campaign/${encodeURIComponent(campaignId)}` : '/outreach'
+                )
+              }
+            >
+              Back to campaign
+            </button>
+          </div>
+          <p className="li-hint">
+            Saving here updates the reusable workflow. If the campaign is already running, its live
+            steps stay locked until you pause and resume it.
+          </p>
+          <LinkedInManagerWorkflowConfig
+            initialWorkflowId={workflowId}
+            setToast={setToast}
+            onChanged={async () => undefined}
+          />
+        </div>
+      )}
       {sub === '' && (
         <>
           <OutreachManagerRead setToast={setToast} onNavigate={onNavigate} />

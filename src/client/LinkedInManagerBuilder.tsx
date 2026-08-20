@@ -115,7 +115,9 @@ export function OutreachManagerBuilder({
           <LinkedInManagerCampaignConfig
             onChanged={refresh}
             setToast={setToast}
-            onStarted={() => onNavigate('/outreach')}
+            onCreated={(campaign) =>
+              onNavigate(`/outreach/campaign/${encodeURIComponent(campaign.id)}`)
+            }
             prefill={prefill}
           />
 

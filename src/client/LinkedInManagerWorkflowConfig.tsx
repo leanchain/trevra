@@ -519,7 +519,8 @@ export function LinkedInManagerWorkflowConfig({
   onChanged,
   setToast,
   compact = false,
-  onCreated
+  onCreated,
+  initialWorkflowId
 }: {
   onChanged: () => Promise<void>;
   setToast: (message: string) => void;
@@ -533,6 +534,8 @@ export function LinkedInManagerWorkflowConfig({
   compact?: boolean;
   /** Compact mode only: fires with the workflow a starter click just created. */
   onCreated?: (workflow: LinkedInWorkflow) => void;
+  /** Full editor only: immediately open this saved workflow for editing. */
+  initialWorkflowId?: string | null;
 }) {
   const [library, setLibrary] = useState<LinkedInWorkflow[]>([]);
   const [id, setId] = useState<string | null>(null);
@@ -544,6 +547,7 @@ export function LinkedInManagerWorkflowConfig({
   const [armedId, setArmedId] = useState<string | null>(null);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
+  const openedInitialWorkflowId = useRef<string | null>(null);
 
   /**
    * Step ids, minted once per edit session and never handed out twice.
@@ -647,6 +651,20 @@ export function LinkedInManagerWorkflowConfig({
     setSteps(workflow.steps);
     setError('');
   };
+
+  useEffect(() => {
+    if (compact || !initialWorkflowId || openedInitialWorkflowId.current === initialWorkflowId)
+      return;
+    if (library.length === 0) return;
+    const workflow = library.find((candidate) => candidate.id === initialWorkflowId);
+    openedInitialWorkflowId.current = initialWorkflowId;
+    if (!workflow) {
+      setError('That workflow no longer exists.');
+      return;
+    }
+    edit(workflow);
+  }, [compact, initialWorkflowId, library]);
+
   const applyStarter = (starter: Starter) => {
     setSteps(starter.build(mintId));
     setError('');
@@ -719,7 +737,14 @@ export function LinkedInManagerWorkflowConfig({
         ? await updateLinkedInManagerWorkflow(id, payload)
         : await createLinkedInManagerWorkflow(payload);
       setToast(`Workflow “${saved.name}” saved. This stored configuration and queued nothing.`);
-      reset();
+      if (id) {
+        claimIds(saved.steps);
+        setId(saved.id);
+        setName(saved.name);
+        setSteps(saved.steps);
+      } else {
+        reset();
+      }
       await Promise.all([refresh(), onChanged()]);
     } catch (err) {
       setError(errorMessage(err, 'Unable to save that workflow.'));

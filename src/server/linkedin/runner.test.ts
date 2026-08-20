@@ -973,6 +973,85 @@ describe('managed campaign runner', () => {
     ]);
   });
 
+  it('resumes by stable step id without replaying an already-run step after edits or reordering', async () => {
+    const listId = await seededList('Stable cursor', [
+      { first: 'Stable', last: 'Cursor', company: 'Acme', slug: 'stable-cursor' }
+    ]);
+    const workflowId = (
+      await saveWorkflow(
+        db,
+        {
+          workspaceId: WORKSPACE,
+          name: 'Message then follow',
+          steps: [
+            {
+              id: 'intro',
+              action: 'message',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: { variants: [{ id: 'a', body: 'Original message', weight: 50 }] }
+            },
+            {
+              id: 'follow',
+              action: 'follow',
+              delayBefore: { amount: 1, unit: 'hours' },
+              config: {}
+            }
+          ]
+        },
+        NOW
+      )
+    ).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Stable cursor');
+
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(1);
+    const cursor = await db
+      .prepare(
+        'SELECT current_step_id, completed_step_ids FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=?'
+      )
+      .get<{ current_step_id: string | null; completed_step_ids: string[] }>(WORKSPACE, campaignId);
+    expect(cursor?.current_step_id).toBe('follow');
+    expect(cursor?.completed_step_ids).toContain('intro');
+
+    await pauseManagedCampaign(db, WORKSPACE, campaignId, at(30 * 60_000));
+    await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        id: workflowId,
+        name: 'Message then follow',
+        steps: [
+          {
+            id: 'new-earlier-step',
+            action: 'profile_view',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          },
+          {
+            id: 'follow',
+            action: 'follow',
+            delayBefore: { amount: 1, unit: 'hours' },
+            config: {}
+          },
+          {
+            id: 'intro',
+            action: 'message',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { variants: [{ id: 'a', body: 'Edited message', weight: 50 }] }
+          }
+        ]
+      },
+      at(HOUR)
+    );
+    await startManagedCampaign(db, WORKSPACE, campaignId, at(HOUR));
+
+    expect((await runManagedCampaigns(db, WORKSPACE, at(2 * HOUR))).actionsPlanned).toBe(1);
+    const rows = await actions();
+    expect(rows.map((row) => row.kind)).toEqual(['dm', 'follow']);
+    expect(rows.filter((row) => row.workflow_step_id === 'intro')).toHaveLength(1);
+    expect(rows.find((row) => row.workflow_step_id === 'intro')?.body).toBe('Original message');
+    expect(rows.some((row) => row.workflow_step_id === 'new-earlier-step')).toBe(false);
+  });
+
   /**
    * Two of the six workflow actions produced no measurable output at all: a
    * follow-only workflow reported zeros forever, and `withdraw_pending` had
