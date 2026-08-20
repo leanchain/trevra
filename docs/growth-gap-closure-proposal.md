@@ -97,40 +97,72 @@ The real remaining gap is narrower:
 
 Do not introduce a second CRM-shaped tree under names copied from the Python app.
 
-The GTM spine should be:
+The GTM spine has two valid entry shapes:
 
 ```text
-Account
-  -> Contact
-  -> Outreach thread
-  -> Outreach message / delivery
-  -> Reply outcome
-  -> Opportunity
-  -> Client
-  -> Project
-  -> Invoice
-  -> Payment
+Outbound / account-led
+  Account
+    -> Person
+    -> Outreach thread
+    -> Outreach message / delivery
+    -> Reply outcome
+    -> Opportunity
+    -> Client
+    -> Project
+    -> Invoice
+    -> Payment
+
+Inbound / person-led
+  Website / product / form
+    -> Person
+    -> Inbound submission
+    -> optional Account association
+    -> Opportunity / follow-up
 ```
 
-Sources converge at `accounts`. Channels diverge only where their mechanics are truly different.
+A Person does **not** require an Account. Outbound company discovery converges at `accounts`; inbound website/product capture converges at the shared Person model. When a real company identity is explicitly known, both paths can be associated without creating a second lead database.
 
-This follows the intent of migration `039_accounts.sql`: CSV, sourced candidates, LinkedIn and manual discovery are different doors into the same company identity, not separate lead databases.
+This follows the intent of migration `039_accounts.sql` for company identity while keeping inbound people independent of company identity. The generic capture boundary is specified in `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`.
 
 ### Proposed new nouns
 
-#### `account_contacts`
+#### `contacts`
 
-One person/contact method belonging to an account.
+One canonical Person inside a workspace.
 
 Suggested fields:
 
 ```text
 id
 workspace_id
-account_id
 name
 email
 email_normalized
+phone
+phone_normalized
+role
+created_at
+updated_at
+```
+
+Constraints:
+
+- every query/write is workspace scoped;
+- deterministic normalized email/external identity prevents duplicate People where practical;
+- a Person can exist without an Account;
+- fuzzy names and email domains never invent identity/company links;
+- conflicting source values do not silently overwrite operator-owned canonical fields.
+
+#### `account_contacts`
+
+Optional association between a Person and an Account when a real company relationship is explicitly known.
+
+Suggested fields:
+
+```text
+workspace_id
+account_id
+contact_id
 role
 source
 confidence
@@ -141,9 +173,9 @@ updated_at
 Constraints:
 
 - workspace-scoped foreign keys;
-- normalized email uniqueness should prevent duplicate contact rows within an account/workspace where practical;
-- source/provenance must survive later enrichment;
-- a contact is not required for an account to exist.
+- unique `(workspace_id, account_id, contact_id)`;
+- source/provenance survives later enrichment;
+- neither inbound capture nor Person existence depends on this association.
 
 #### `outreach_threads`
 
@@ -548,7 +580,8 @@ The phases are ordered so each leaves Trevra more coherent without requiring the
 
 Add forward-only PostgreSQL migrations and server stores for:
 
-- [ ] `account_contacts`;
+- [ ] `contacts` as the workspace Person spine;
+- [ ] optional `account_contacts` associations;
 - [ ] `outreach_threads`;
 - [ ] `outreach_messages`;
 - [ ] `outreach_deliveries`;
@@ -556,13 +589,14 @@ Add forward-only PostgreSQL migrations and server stores for:
 
 Add deterministic services for:
 
-- [ ] contact upsert/lookup;
+- [ ] Person/contact upsert/lookup without requiring an Account;
+- [ ] optional Account↔Person association;
 - [ ] thread creation and lifecycle transition;
 - [ ] suppression add/check;
 - [ ] outbound message/delivery claim;
 - [ ] domain-event emission.
 
-- [ ] Tests cover workspace isolation, uniqueness/dedupe, legal/illegal ladder transitions, suppression precedence, and competing delivery claims.
+- [ ] Tests cover workspace isolation, Person dedupe, optional Account association, legal/illegal ladder transitions, suppression precedence, and competing delivery claims.
 
 ### Phase B — sourcing parity inside Trevra
 
@@ -574,7 +608,18 @@ Add deterministic services for:
 - [x] Make paste/file/folder upload the standard ingestion path for existing prospect data.
 - [x] Add the client-side Import Review workbench with editable fields, include/exclude controls, duplicate/invalid review, provenance and exact-payload inspection.
 - [x] Support direct import of existing `e-commerce/shops/` manifests without a Beseam candidates API.
-- [ ] Persist detected contact names/emails/phones into the future shared contact spine. They are review-only evidence today.
+- [ ] Persist detected contact names/emails/phones into the future shared Person/contact spine without requiring an Account. They are review-only evidence today.
+
+### Phase B.5 — generic inbound lead capture
+
+Design: `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`.
+
+- [ ] Add workspace-scoped Capture Sources with one-time signing secrets and rotation.
+- [ ] Add `inbound_submissions` as immutable source/UTM/consent/message evidence.
+- [ ] Add signed, idempotent `POST /api/intake/v1/submissions` that derives workspace only from the Capture Source.
+- [ ] Add `Setup -> Lead capture` so any founder/startup can connect its own landing page to its own Trevra workspace.
+- [ ] Capture/match a Person directly; an Account is optional and only linked when explicitly known.
+- [ ] Cut Beseam `ecom-clean-lp /api/lead` over through its existing Cloudflare Worker while keeping product/edge endpoints outside Trevra.
 
 ### Phase C — guarded cold-email action
 
@@ -610,7 +655,7 @@ Build Trevra-side migration/import tooling for:
 
 - [ ] growth leads -> accounts as a full legacy-growth migration;
 - [x] existing shop company manifests -> accounts through the standard folder-import path;
-- [ ] contact names/emails -> account contacts;
+- [ ] contact names/emails/phones -> shared People/contacts, with optional Account association only when explicitly known;
 - [ ] suppressions -> outreach suppressions;
 - [ ] sent messages and message IDs -> outreach messages/deliveries;
 - [ ] terminal lead states -> outreach thread state where mapping is unambiguous.
