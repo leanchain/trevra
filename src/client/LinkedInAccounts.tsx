@@ -480,11 +480,10 @@ function AccountPanel({
 }) {
   const auth = detail?.auth ?? null;
   const state = accountState(account, detail);
-  // Healthy is 'connected' or 'easing-in' -- the two states STATE_TONES marks
-  // 'ok'. Everything else (needs-signin, not-connected, paused, cooling-down)
-  // is something an operator may need to act on, so the panel opens for it.
-  const needsAttention = STATE_TONES[state] !== 'ok';
-
+  // Account identity/profile facts are primary settings information, not
+  // overflow. Keep the panel open by default so a healthy account still shows
+  // the rich LinkedIn details that were previously visible on this route.
+  const [detailsOpen, setDetailsOpen] = useState(true);
   // Sign-in. `password` is the one value here that must not outlive its own
   // submit: nothing else reads it and it is cleared the moment the request
   // carrying it has been made. No screen can render it back -- the API has no
@@ -738,14 +737,16 @@ function AccountPanel({
           </span>
         </div>
 
-        {/* `.li-manual-fields`, matching the disclosure style the rest of
-          Outreach settled on. Not a `.mgr-inputs` workaround any more --
-          `.outreach-simple` used to blanket-hide `.mgr-inputs`, but that rule
-          is now scoped to the opt-in `.mgr-simple-hide` (see styles.css and
-          PendingInviteWithdrawalsSection below). */}
-        <details className="li-manual-fields" open={needsAttention}>
+        {/* Keep the rich account/profile details visible by default. The panel
+          is still a disclosure so an operator can collapse it explicitly, but
+          healthy accounts no longer hide their LinkedIn identity and history
+          just because they need no attention. */}
+        <details
+          className="li-manual-fields"
+          open={detailsOpen}
+          onToggle={(event) => setDetailsOpen(event.currentTarget.open)}
+        >
           <summary>Details</summary>
-
           {detail?.backgroundRun && (
             <div className="li-next-background-run">
               <Clock3 size={17} aria-hidden="true" />
