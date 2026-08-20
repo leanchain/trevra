@@ -15,7 +15,7 @@ import { FunnelBars, LiStat } from './LinkedInViz';
  * a loop-level question -- how far does what goes out actually get -- so the
  * shell renders `LinkedInFunnel` on `/loop`; the per-campaign table is a
  * campaign question, so `LinkedInCampaignBreakdown` renders under
- * `/outreach/campaigns`; the chart stayed where it was.
+ * `/outreach`; the chart stayed where it was.
  *
  * THE WINDOW IS A CONTROL NOW, AND THE COPY IS THE SERVER'S ANSWER.
  * Both panels used to send a hardcoded 7 and then print "every action ever
@@ -210,11 +210,7 @@ export function LinkedInFunnel({
             A slot enters this ledger when an approved plan is exported. Widen the window, or build
             a campaign and the funnel fills itself in.
           </p>
-          <a
-            className="primary-button"
-            href="/outreach/campaigns"
-            style={{ textDecoration: 'none' }}
-          >
+          <a className="primary-button" href="/outreach" style={{ textDecoration: 'none' }}>
             Build a campaign
           </a>
         </div>
