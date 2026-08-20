@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AccountsScreen } from '../AccountsScreen';
-import { LinkedInAccounts, LinkedInCompanionAttention } from '../LinkedInAccounts';
+import { LinkedInAccounts } from '../LinkedInAccounts';
+import { LinkedInCompanionAttention } from '../LinkedInCompanion';
 import { OutreachInbox } from '../LinkedInInbox';
 import { OutreachLeads } from '../LinkedInLeads';
 import { OutreachManagerBuilder } from '../LinkedInManagerBuilder';
