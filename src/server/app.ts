@@ -6583,7 +6583,7 @@ function rethrowLinkedInManagerError(error: unknown): never {
     throw new LinkedInApiError(error.message, 409);
   if (
     error instanceof Error &&
-    /(required|must |needs |could not map|does not exist in this csv|duplicate|unsupported variable|withdraw-pending|source must|working hours|seat_key)/i.test(
+    /(required|must |needs |could not map|does not exist in this csv|duplicate|unsupported variable|withdraw-pending|source must|working hours|seat_key|is not configured)/i.test(
       error.message
     )
   ) {
