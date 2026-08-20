@@ -1,0 +1,177 @@
+<!doctype html>
+<!--
+  Trevra social share card, source for public/og/trevra-social.png.
+
+  Build input only -- never served, never linked from the app. Rasterized by
+  scripts/render-og-image.ts (`npm run og:build`) with headless Chrome at a
+  fixed 1200x630 viewport. No webfont, no external asset, no network request:
+  the render must work offline, so every color, font stack, weight, and
+  tracking value below is copied verbatim from the `:root` tokens in
+  public/marketing.css (see the TYPEFACE note at the top of that file)
+  instead of linking that stylesheet, since this file has to stand alone.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Trevra social card</title>
+    <style>
+      :root {
+        /* -- copied from public/marketing.css :root -------------------- */
+        --t-ink: #142019;
+        --t-muted: #5c6a61;
+        --t-line: #d8ddd3;
+        --t-bg-warm: #f5f5ef;
+        --t-surface: #ffffff;
+        --t-green-100: #dfeee4;
+        --t-green-fill: #176b45;
+        --t-green-ink: #12492e;
+        --t-w-bold: 700;
+        --t-track-display: -0.025em; /* 48px and up */
+        --t-track-title: -0.018em; /* 24px to 40px */
+        --t-display:
+          'Segoe UI Variable Display', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+          Roboto, 'Helvetica Neue', Arial, sans-serif;
+        --t-body:
+          'Segoe UI Variable Text', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+          Roboto, 'Helvetica Neue', Arial, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+        background: var(--t-bg-warm);
+        font-family: var(--t-body);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .frame {
+        width: 1200px;
+        height: 630px;
+        padding: 54px;
+        display: flex;
+      }
+
+      .card {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 30px;
+        background: var(--t-surface);
+        border: 1px solid var(--t-line);
+        border-radius: 32px;
+        padding: 0 76px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+      }
+
+      .mark {
+        width: 88px;
+        height: 88px;
+        flex: none;
+        border-radius: 20px;
+        background: var(--t-green-fill);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .mark svg {
+        width: 52px;
+        height: auto;
+        display: block;
+      }
+
+      .wordmark {
+        font-family: var(--t-body);
+        font-weight: var(--t-w-bold);
+        font-size: 42px;
+        letter-spacing: var(--t-track-title);
+        color: var(--t-ink);
+      }
+
+      .headline {
+        font-family: var(--t-display);
+        font-weight: var(--t-w-bold);
+        font-size: 68px;
+        line-height: 1.1;
+        letter-spacing: var(--t-track-display);
+        color: var(--t-ink);
+        margin: 0;
+      }
+
+      .headline .accent {
+        display: block;
+        color: var(--t-green-fill);
+      }
+
+      .sub {
+        max-width: 940px;
+        font-family: var(--t-body);
+        font-weight: 400;
+        font-size: 23px;
+        line-height: 1.5;
+        color: var(--t-muted);
+        margin: 0;
+        white-space: nowrap;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 14px;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+        padding: 13px 24px;
+        border-radius: 999px;
+        background: var(--t-green-100);
+        color: var(--t-green-ink);
+        font-family: var(--t-body);
+        font-weight: var(--t-w-bold);
+        font-size: 19px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <div class="card">
+        <div class="brand">
+          <span class="mark">
+            <svg viewBox="0 0 64 64" fill="#ffffff" aria-hidden="true">
+              <rect x="11" y="15" width="11" height="11" rx="3" />
+              <rect x="42" y="15" width="11" height="11" rx="3" />
+              <rect x="25.5" y="15" width="13" height="34" rx="3.4" />
+            </svg>
+          </span>
+          <span class="wordmark">Trevra</span>
+        </div>
+        <h1 class="headline">GTM infrastructure<span class="accent">for AI agents</span></h1>
+        <p class="sub">
+          Agents do the work. External actions require approval. Every run is logged.
+        </p>
+        <div class="chips">
+          <span class="chip">Claude Code</span>
+          <span class="chip">Codex</span>
+          <span class="chip">Approval gate</span>
+          <span class="chip">Open source</span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -7,6 +7,13 @@ import { openDatabase, type Db } from './db.js';
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 import { renderAppIndex, renderNotFoundPage } from './public-site.js';
+import { injectMarketingHead } from '../shared/marketing-head.js';
+import {
+  renderSecurityText,
+  SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_TITLE
+} from '../shared/site-metadata.js';
 import { MarketingApp } from '../client/MarketingApp';
 
 const HOSTED = 'https://app.usetrevra.example/#get-started';
@@ -30,8 +37,24 @@ const marketingCss = await readFile(resolve('public/marketing.css'), 'utf8');
 const privacyDoc = await readFile(resolve('public/privacy/index.html'), 'utf8');
 const termsDoc = await readFile(resolve('public/terms/index.html'), 'utf8');
 const securityDoc = await readFile(resolve('public/security/index.html'), 'utf8');
-const securityTxt = await readFile(resolve('public/.well-known/security.txt'), 'utf8');
+const howItWorksDoc = await readFile(resolve('public/how-it-works/index.html'), 'utf8');
 const redirects = await readFile(resolve('public/_redirects'), 'utf8');
+
+// public/.well-known/security.txt used to be a hand-maintained copy with a
+// hardcoded expiry; scripts/build-marketing-seo.ts now generates the only
+// version, into dist/, from this same renderSecurityText() renderer -- so
+// the static-deploy-target assertion below renders the equivalent text
+// directly instead of reading a file that no longer exists.
+const securityTxt = renderSecurityText(
+  {
+    origin: 'https://usetrevra.com',
+    name: SITE_NAME,
+    description: SITE_DESCRIPTION,
+    supportEmail: 'support@usetrevra.com',
+    securityEmail: 'security@usetrevra.com'
+  },
+  '2099-01-01T00:00:00Z'
+);
 
 let db: Db | undefined;
 
@@ -42,7 +65,9 @@ afterEach(async () => {
   db = undefined;
   delete process.env.VITE_HOSTED_APP_URL;
   delete process.env.PUBLIC_SITE_URL;
+  delete process.env.PUBLIC_SITE_TITLE;
   delete process.env.PUBLIC_SITE_DESCRIPTION;
+  delete process.env.GOOGLE_SITE_VERIFICATION;
 });
 
 async function publicApp() {
@@ -142,6 +167,89 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
     );
   });
 
+  /**
+   * og:description and twitter:description used to be the page's own,
+   * different copy, deliberately left untouched. There is one description
+   * now: these two get the same config-driven rewrite as <meta
+   * name="description">, and both are wrapped by Prettier the same way.
+   */
+  it('rewrites the wrapped og:description and twitter:description tags too', () => {
+    expect(indexHtml).toMatch(/<meta\s+property="og:description"[\s\S]*?\/>/);
+    expect(indexHtml).toMatch(/<meta\s+name="twitter:description"[\s\S]*?\/>/);
+    process.env.PUBLIC_SITE_DESCRIPTION = 'a distinct configured description';
+    const rendered = renderAppIndex(indexHtml, 'test-nonce');
+    expect(rendered).toContain(
+      '<meta property="og:description" content="a distinct configured description" />'
+    );
+    expect(rendered).toContain(
+      '<meta name="twitter:description" content="a distinct configured description" />'
+    );
+  });
+
+  /**
+   * SENTINELS, NOT THE DEFAULTS.
+   *
+   * These two used to assert the output contained SITE_TITLE and
+   * SITE_DESCRIPTION -- which is what index.html already ships and what
+   * renderAppIndex writes back, so they passed whether or not a single
+   * replacement matched. A configured title and description that appear
+   * nowhere in the file can only get there through the replacements.
+   */
+  it('rewrites the title in every head tag that carries it', () => {
+    const title = 'A distinct configured title';
+    process.env.PUBLIC_SITE_TITLE = title;
+    const rendered = renderAppIndex(indexHtml, 'test-nonce');
+    expect(rendered).toContain(`<title>${title}</title>`);
+    expect(rendered).toContain(`<meta property="og:title" content="${title}" />`);
+    expect(rendered).toContain(`<meta name="twitter:title" content="${title}" />`);
+    // No head tag is left behind carrying the shipped default.
+    for (const tag of rendered.match(/<meta\s+(?:property|name)="(?:og|twitter):title"[^>]*>/g) ??
+      [])
+      expect(tag).toContain(title);
+    expect(rendered).not.toContain(`<title>${SITE_TITLE}</title>`);
+  });
+
+  it('rewrites the description in every head tag that carries it', () => {
+    const description = 'A distinct configured description';
+    process.env.PUBLIC_SITE_DESCRIPTION = description;
+    const rendered = renderAppIndex(indexHtml, 'test-nonce');
+    expect(rendered).toContain(`<meta name="description" content="${description}" />`);
+    expect(rendered).toContain(`<meta property="og:description" content="${description}" />`);
+    expect(rendered).toContain(`<meta name="twitter:description" content="${description}" />`);
+    for (const tag of rendered.match(
+      /<meta\s+(?:property|name)="(?:og:|twitter:)?description"[\s\S]*?>/g
+    ) ?? [])
+      expect(tag).toContain(description);
+    expect(rendered).not.toContain(`content="${SITE_DESCRIPTION}"`);
+  });
+
+  /**
+   * Express serving a `build:marketing` dist. Both TREVRA_ markers were
+   * consumed at build time, so the marker replacements no-op: the page used to
+   * ship the build-time JSON-LD with no nonce -- blocked outright by this
+   * server's nonce-only script-src -- no verification meta, and usetrevra.com
+   * as the canonical of a self-host origin.
+   */
+  it('re-injects a head that a marketing build already injected', () => {
+    process.env.PUBLIC_SITE_URL = 'https://selfhost.example';
+    process.env.GOOGLE_SITE_VERIFICATION = 'serve-time-token';
+    const built = injectMarketingHead(indexHtml, {
+      origin: 'https://usetrevra.com',
+      verification: '<meta name="google-site-verification" content="build-time-token" />',
+      jsonLd: { '@type': 'WebSite', url: 'https://usetrevra.com' }
+    });
+    expect(built).not.toContain('<!-- TREVRA_JSON_LD -->');
+
+    const rendered = renderAppIndex(built, 'test-nonce');
+    const blocks = rendered.match(/<script[^>]*application\/ld\+json[^>]*>/g) ?? [];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toContain('nonce="test-nonce"');
+    expect(rendered).toContain('content="serve-time-token"');
+    expect(rendered).not.toContain('build-time-token');
+    expect(rendered).not.toContain('https://usetrevra.com');
+    expect(rendered).toContain('<link rel="canonical" href="https://selfhost.example/" />');
+  });
+
   it('leaves the shipped CTAs on their own fallback when nothing is configured', () => {
     const rendered = renderAppIndex(indexHtml, 'test-nonce');
     const marked = rendered.match(/<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi) ?? [];
@@ -236,7 +344,8 @@ describe('the server-rendered public documents', () => {
     for (const [name, doc] of [
       ['privacy', privacyDoc],
       ['terms', termsDoc],
-      ['security', securityDoc]
+      ['security', securityDoc],
+      ['how-it-works', howItWorksDoc]
     ] as const) {
       expect(doc, name).toMatch(/<main class="static-launch"[ >]/);
       expect(
@@ -246,16 +355,14 @@ describe('the server-rendered public documents', () => {
     }
   });
 
-  it('styles /security and /how-it-works the same way as the landing page', async () => {
+  it('serves /security and /how-it-works only as static documents, not Express routes', async () => {
     const app = await publicApp();
-    for (const path of ['/security', '/how-it-works']) {
-      const html = (await request(app).get(path).expect(200)).text;
-      expect(html, path).toMatch(/<main class="static-launch"[ >]/);
-      expect(
-        classesIn(html).filter((name) => !styled(name)),
-        path
-      ).toEqual([]);
-    }
+    const security = await request(app).get('/security').expect(404);
+    expect(security.text).not.toContain('Responsible disclosure');
+    expect(security.headers.link).toBeUndefined();
+    const howItWorks = await request(app).get('/how-it-works').expect(404);
+    expect(howItWorks.text).not.toContain('static-launch');
+    expect(howItWorks.headers.link).toBeUndefined();
   });
 
   it('keeps the responsible-disclosure page security.txt points at', async () => {
@@ -263,9 +370,6 @@ describe('the server-rendered public documents', () => {
     const app = await publicApp();
     const policy = (await request(app).get('/.well-known/security.txt').expect(200)).text;
     expect(policy).toContain('Policy: https://trevra.example/security');
-    expect((await request(app).get('/security').expect(200)).text).toContain(
-      'Responsible disclosure'
-    );
 
     // The static deploy target has to resolve the same RFC 9116 Policy target.
     expect(securityTxt).toContain('Policy: https://usetrevra.com/security');

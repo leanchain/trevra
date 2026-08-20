@@ -3,45 +3,45 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Privacy | Trevra</title>
+    <title>How It Works | Trevra</title>
     <meta
       name="description"
-      content="What Trevra records on the public site, what a hosted workspace holds, and what a self-hosted operator keeps entirely to themselves."
+      content="How Trevra runs typed modules for Claude Code and Codex, holds external actions at an approval gate, hashes approved payloads, and records every run."
     />
     <meta name="robots" content="index,follow" />
     <meta name="theme-color" content="#1f6f4a" />
-    <link rel="canonical" href="https://usetrevra.com/privacy" />
+    <link rel="canonical" href="https://usetrevra.com/how-it-works" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/marketing.css" />
     <script src="/theme.js"></script>
     <script defer src="/marketing-analytics.js"></script>
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Trevra" />
-    <meta property="og:title" content="Privacy | Trevra" />
+    <meta property="og:title" content="How It Works | Trevra" />
     <meta
       property="og:description"
-      content="What Trevra records on the public site, what a hosted workspace holds, and what a self-hosted operator keeps entirely to themselves."
+      content="How Trevra runs typed modules for Claude Code and Codex, holds external actions at an approval gate, hashes approved payloads, and records every run."
     />
-    <meta property="og:url" content="https://usetrevra.com/privacy" />
+    <meta property="og:url" content="https://usetrevra.com/how-it-works" />
     <meta property="og:image" content="https://usetrevra.com/og/trevra-social.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="Trevra — GTM infrastructure for AI agents" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Privacy | Trevra" />
+    <meta name="twitter:title" content="How It Works | Trevra" />
     <meta
       name="twitter:description"
-      content="What Trevra records on the public site, what a hosted workspace holds, and what a self-hosted operator keeps entirely to themselves."
+      content="How Trevra runs typed modules for Claude Code and Codex, holds external actions at an approval gate, hashes approved payloads, and records every run."
     />
     <meta name="twitter:image" content="https://usetrevra.com/og/trevra-social.png" />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@type": "WebPage",
-        "@id": "https://usetrevra.com/privacy/#webpage",
-        "name": "Privacy | Trevra",
-        "description": "What Trevra records on the public site, what a hosted workspace holds, and what a self-hosted operator keeps entirely to themselves.",
-        "url": "https://usetrevra.com/privacy",
+        "@id": "https://usetrevra.com/how-it-works/#webpage",
+        "name": "How It Works | Trevra",
+        "description": "How Trevra runs typed modules for Claude Code and Codex, holds external actions at an approval gate, hashes approved payloads, and records every run.",
+        "url": "https://usetrevra.com/how-it-works",
         "isPartOf": { "@id": "https://usetrevra.com/#website" },
         "about": { "@id": "https://usetrevra.com/#application" }
       }
@@ -83,7 +83,7 @@
             </summary>
             <nav aria-label="Sections">
               <a href="/#approval">The gate</a><a href="/#deploy">Deploy</a
-              ><a href="/terms">Terms</a>
+              ><a href="/privacy">Privacy</a><a href="/terms">Terms</a>
             </nav>
           </details>
           <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch theme">
@@ -118,92 +118,65 @@
       </header>
       <section class="launch-section">
         <div class="split-heading">
-          <h1>Your workspace data is not marketing inventory.</h1>
+          <h1>How Trevra works.</h1>
           <p>
-            This notice explains the information Trevra processes, why it is used, and the controls
-            available to workspace owners. This notice covers the public site and the pre-release
-            hosted service. A hosted workspace that accepts customer data will publish an expanded
-            data-processing notice before it does.
+            Claude Code and Codex call typed modules to do the work. External actions stop at an
+            approval gate, and every run is recorded.
           </p>
         </div>
         <div class="launch-faq">
           <details open>
-            <summary>Information processed</summary>
+            <summary>1. Point an agent at a Trevra workspace</summary>
             <p>
-              Trevra processes account identity, workspace settings, connected-account records
-              authorized by the user, uploaded agreements, client and project information, invoices
-              and payment states, prepared actions, approval history, and security or operational
-              logs.
+              Claude Code or Codex connects to a Trevra workspace and calls typed modules to do
+              go-to-market work: research, drafting, and outreach.
             </p>
           </details>
           <details open>
-            <summary>Purposes</summary>
+            <summary>2. The module declares its shape up front</summary>
             <p>
-              Data is used to provide the service, reconstruct commercial history, detect revenue
-              work, prepare and execute authorized actions, maintain audit records, secure the
-              service, and measure aggregate product adoption.
+              Each module is versioned on GitHub with a typed input, a typed output, a declared
+              side-effect class, and whether it needs approval. Installing one never grants it
+              permission to write externally on its own.
             </p>
           </details>
           <details open>
-            <summary>Connected services and processors</summary>
+            <summary>3. External actions stop at the approval gate</summary>
             <p>
-              Connected providers remain independent third parties. Depending on deployment
-              configuration, infrastructure and processing may involve cloud hosting, PostgreSQL,
-              Nango, model providers explicitly enabled for document extraction, email or accounting
-              providers, and payment services.
+              Sending a message or taking any other consequential action is held for your approval
+              by default. You review the exact payload before anything leaves the workspace.
             </p>
           </details>
           <details open>
-            <summary>Hosted workspace data</summary>
+            <summary>4. The approved payload is hashed and executed</summary>
             <p>
-              Workspace records, evidence, integrations, and credentials are used to provide the
-              product. Provider credentials belong in the integration provider or a secret manager
-              rather than application tables or source control.
+              What you approve is cryptographically hashed before execution, so a modified payload
+              is rejected. The run — its inputs, outputs, and evidence — is recorded.
             </p>
           </details>
           <details open>
-            <summary>Analytics</summary>
+            <summary>Modules are the unit of work</summary>
             <p>
-              Trevra records limited first-party events such as page views and clicks on the main
-              calls to action, attribution fields, a session-scoped visitor identifier, and the
-              current path. The contract excludes email bodies, documents, invoice details, client
-              content, and IP-address storage. Browsers sending Do Not Track or Global Privacy
-              Control are not measured at all.
-            </p>
-            <p>
-              Trevra&rsquo;s built-in traction measurement does not store IP addresses. It stores a
-              salted hash of a session-scoped random identifier, the landing path, referral domain,
-              campaign parameters, and product conversion events. Browser Do Not Track and Global
-              Privacy Control signals disable client-side marketing events.
+              A module is a small, typed, versioned unit of go-to-market work, not a freeform
+              prompt. The catalog is public and synced from GitHub, and every module publishes its
+              input and output schemas alongside its side-effect class.
             </p>
           </details>
           <details open>
-            <summary>Retention and deletion</summary>
+            <summary>Approval is the default</summary>
             <p>
-              Commercial records are retained while a workspace is active and as needed for
-              security, dispute, backup, or legal obligations. Workspace owners may request account
-              export or deletion through the support contact below. Backup deletion can follow a
-              delayed rotation schedule.
+              External actions require approval unless you write a narrow standing instruction with
+              explicit ceilings. Approval integrity comes from the payload hash, not from trust.
             </p>
           </details>
           <details open>
-            <summary>Self-hosting</summary>
+            <summary>Self-hostable on your own PostgreSQL</summary>
             <p>
-              Self-hosted operators control their own infrastructure, retention, backups, access
-              policy, and legal obligations. Trevra does not receive self-hosted workspace data
-              unless the operator deliberately sends it to a Trevra-managed service.
-            </p>
-          </details>
-          <details open>
-            <summary>Data rights and contact</summary>
-            <p>
-              Applicable privacy rights vary by location. Requests may be sent to
-              <a href="mailto:founder@usetrevra.com">founder@usetrevra.com</a>. Identity
-              verification may be required before fulfilling a request.
+              Trevra is open source. Run the module runner on your own PostgreSQL and keep the
+              ledger, evidence, and configuration in infrastructure you control.
             </p>
           </details>
         </div>
-        <p class="footer-note">Last updated August 5, 2026.</p>
       </section>
       <footer class="launch-footer">
         <div class="footer-brand">

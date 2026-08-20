@@ -1,6 +1,6 @@
 # Trevra
 
-Trevra is the open-source ledger and control plane for agent-operated go-to-market. Claude runs the revenue loop through modular skills; Trevra reconstructs what was sourced, proposed, agreed, delivered, invoiced, and paid, assembles a Revenue Proof Pack behind every finding, prepares the corrective work, and executes only what the founder approved or explicitly delegated — through the tools the business already uses.
+Trevra is the open-source ledger and control plane for agent-operated go-to-market. Claude Code and Codex run the work through typed modules; Trevra reconstructs what was sourced, proposed, agreed, delivered, invoiced, and paid, keeps the evidence behind every finding, prepares the corrective work, and executes only what the founder approved or explicitly delegated — through the tools the business already uses.
 
 ## Public launch and discoverability
 
@@ -22,7 +22,7 @@ Trevra is **PostgreSQL-only**. There is no SQLite dependency, fallback, database
 
 - prioritized daily revenue queue;
 - proposal follow-ups, scope protection, unbilled-work detection, and overdue-payment collection;
-- Revenue Proof Packs connecting agreements, requests, delivery proof, invoices, and payment history;
+- evidence trails connecting agreements, requests, delivery proof, invoices, and payment history;
 - client commercial timelines;
 - confirmed revenue-at-risk, invoiced, and collected metrics;
 - editable prepared actions and scheduled delivery;
@@ -58,7 +58,7 @@ Architecture and operations are documented in:
 
 ## Operate from Claude Code or Codex
 
-Trevra ships a restricted agent API, a local stdio MCP server, and a hosted Streamable HTTP MCP endpoint. Agent tokens can read the evidence-backed revenue brief, run enabled skills, inspect the run ledger, list pending actions, and prepare recommendations. They cannot approve or execute actions.
+Trevra ships a restricted agent API, a local stdio MCP server, and a hosted Streamable HTTP MCP endpoint. Agent tokens can read the evidence-backed workspace queue, run enabled skills, inspect the run ledger, list pending actions, and prepare recommendations. They cannot approve or execute actions.
 
 Create a scoped token in **Setup → Agent access**, then connect a local MCP bridge:
 
@@ -162,7 +162,7 @@ After Nango starts, configure its provider integrations and copy the Nango envir
 docker compose --env-file .env.dev -f compose.dev.yml up -d --force-recreate trevra
 ```
 
-Until those Nango keys are configured, the core Trevra demo, document import, marketplace import, recommendations, Proof Packs, and simulated development execution still work; live OAuth connections do not.
+Until those Nango keys are configured, the core Trevra demo, document import, marketplace import, recommendations, and simulated development execution still work; live OAuth connections do not.
 
 Stop the stack without deleting data:
 
@@ -193,6 +193,7 @@ npm run dev
 ```
 
 Open `http://localhost:43173`.
+
 ## Tests and build
 
 The test runner launches a real PostgreSQL 17 Testcontainer. Docker must be running.
