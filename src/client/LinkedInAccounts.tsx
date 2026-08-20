@@ -745,39 +745,6 @@ function AccountPanel({
         <details className="li-manual-fields" open={needsAttention}>
           <summary>Details</summary>
 
-          {actionError && <div className="error-banner">{actionError}</div>}
-
-          {blocked && (
-            <Wall title="One thing has to happen on your own machine first." message={blocked} />
-          )}
-
-          {queued && (
-            <Wall
-              title={
-                queueWaitCopy(request?.waitingFor) ??
-                (companion ? 'Waiting for your connected computer.' : 'Waiting on your own worker.')
-              }
-            >
-              <p>
-                {request?.nextAttemptAt
-                  ? `Expected by ${new Date(request.nextAttemptAt).toLocaleString()}. `
-                  : request?.waitingFor
-                    ? 'There is no honest clock time until that prerequisite is back. '
-                    : ''}
-                Queued {request?.requestedAt ? relativeTime(request.requestedAt) : 'now'}. Missed
-                worker checks are not replayed; once the prerequisite is ready, the next normal
-                worker cycle picks it up.
-              </p>
-            </Wall>
-          )}
-
-          {request?.status === 'failed' && request.failureReason && (
-            <Wall
-              title="The last read of this account did not finish."
-              message={request.failureReason}
-            />
-          )}
-
           {detail?.backgroundRun && (
             <div className="li-next-background-run">
               <Clock3 size={17} aria-hidden="true" />
@@ -1146,6 +1113,43 @@ function AccountPanel({
 
           {connected && note && <p className="li-signin-error">{note.message}</p>}
         </details>
+
+        {/* Feedback for Check / Pause / Resume lives here, not inside the
+          disclosure above: those three buttons stay visible on a collapsed,
+          healthy panel, so a failure or in-progress status they raise must
+          stay visible too, not get buried behind a closed "Details". */}
+        {actionError && <div className="error-banner">{actionError}</div>}
+
+        {blocked && (
+          <Wall title="One thing has to happen on your own machine first." message={blocked} />
+        )}
+
+        {queued && (
+          <Wall
+            title={
+              queueWaitCopy(request?.waitingFor) ??
+              (companion ? 'Waiting for your connected computer.' : 'Waiting on your own worker.')
+            }
+          >
+            <p>
+              {request?.nextAttemptAt
+                ? `Expected by ${new Date(request.nextAttemptAt).toLocaleString()}. `
+                : request?.waitingFor
+                  ? 'There is no honest clock time until that prerequisite is back. '
+                  : ''}
+              Queued {request?.requestedAt ? relativeTime(request.requestedAt) : 'now'}. Missed
+              worker checks are not replayed; once the prerequisite is ready, the next normal worker
+              cycle picks it up.
+            </p>
+          </Wall>
+        )}
+
+        {request?.status === 'failed' && request.failureReason && (
+          <Wall
+            title="The last read of this account did not finish."
+            message={request.failureReason}
+          />
+        )}
 
         <div className="li-seat-actions">
           <button
