@@ -210,6 +210,50 @@ const ACTION_META: Record<Action, ActionMeta> = {
     chip: 'li-kind-inmail',
     blurb: 'Advanced destructive cleanup; only runs for a verified 1st-degree connection.'
   },
+  follow_company: {
+    label: 'Follow company',
+    Icon: UserCheck,
+    chip: 'li-kind-profile_view',
+    blurb: 'Follows one configured LinkedIn company page when the control is available.'
+  },
+  like_company_post: {
+    label: 'Like company post',
+    Icon: UserCheck,
+    chip: 'li-kind-profile_view',
+    blurb: 'Likes the latest visible post on one configured company page.'
+  },
+  invite_to_follow_company: {
+    label: 'Invite to follow company',
+    Icon: UserCheck,
+    chip: 'li-kind-invite',
+    blurb: 'Uses the company admin invite surface only when this sender is eligible.'
+  },
+  invite_to_event: {
+    label: 'Invite to event',
+    Icon: UserCheck,
+    chip: 'li-kind-invite',
+    blurb: 'Invites this lead from one configured LinkedIn event surface.'
+  },
+  invite_to_group: {
+    label: 'Invite to group',
+    Icon: UserCheck,
+    chip: 'li-kind-invite',
+    blurb: 'Invites this lead from one configured LinkedIn group surface.'
+  },
+  group_message: {
+    label: 'Group member message',
+    Icon: MessageSquare,
+    chip: 'li-kind-dm',
+    blurb:
+      'Messages only from a legitimate group-member Message surface; never falls back to profile DM.'
+  },
+  event_message: {
+    label: 'Event attendee message',
+    Icon: MessageSquare,
+    chip: 'li-kind-dm',
+    blurb:
+      'Messages only from a legitimate event-attendee Message surface; never falls back to profile DM.'
+  },
   withdraw_pending: {
     label: 'Withdraw pending invite',
     Icon: UserMinus,
@@ -307,6 +351,13 @@ const ACTION_ORDER: readonly Action[] = [
   'follow',
   'unfollow',
   'disconnect',
+  'follow_company',
+  'like_company_post',
+  'invite_to_follow_company',
+  'invite_to_event',
+  'invite_to_group',
+  'group_message',
+  'event_message',
   'like_post',
   'endorse_skills',
   'connection_request',
@@ -614,6 +665,46 @@ function blankStep(action: Action, stepId: string, delayBefore: WorkflowDelay): 
   )
     return { ...base, action, config: {} };
   if (action === 'disconnect') return { ...base, action, config: { acknowledgeDestructive: true } };
+  if (
+    action === 'follow_company' ||
+    action === 'like_company_post' ||
+    action === 'invite_to_follow_company'
+  )
+    return {
+      ...base,
+      action,
+      config: { companyUrl: 'https://www.linkedin.com/company/' }
+    } as WorkflowStep;
+  if (action === 'invite_to_event')
+    return {
+      ...base,
+      action,
+      config: { eventUrl: 'https://www.linkedin.com/events/' }
+    } as WorkflowStep;
+  if (action === 'invite_to_group')
+    return {
+      ...base,
+      action,
+      config: { groupUrl: 'https://www.linkedin.com/groups/' }
+    } as WorkflowStep;
+  if (action === 'group_message')
+    return {
+      ...base,
+      action,
+      config: {
+        groupUrl: 'https://www.linkedin.com/groups/',
+        variants: [{ id: 'a', body: '', weight: 100 }]
+      }
+    };
+  if (action === 'event_message')
+    return {
+      ...base,
+      action,
+      config: {
+        eventUrl: 'https://www.linkedin.com/events/',
+        variants: [{ id: 'a', body: '', weight: 100 }]
+      }
+    };
   if (action === 'endorse_skills') return { ...base, action, config: { maxSkills: 3 } };
   if (action === 'message')
     return {
@@ -1832,6 +1923,72 @@ function WorkflowStepCard({
             ? `If this step is still waiting ${step.sla.amount} ${step.sla.unit} after it becomes due, Trevra escalates it ahead of newer continuation work. This never raises LinkedIn limits.`
             : 'Optional: set a follow-up SLA to escalate this step if it waits too long. It changes priority, not LinkedIn limits.'}
         </p>
+
+        {(step.action === 'follow_company' ||
+          step.action === 'like_company_post' ||
+          step.action === 'invite_to_follow_company') && (
+          <label className="li-span-2">
+            LinkedIn company URL
+            <input
+              type="url"
+              value={step.config.companyUrl}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  config: { ...step.config, companyUrl: event.target.value }
+                } as WorkflowStep)
+              }
+              placeholder="https://www.linkedin.com/company/acme/"
+            />
+          </label>
+        )}
+        {(step.action === 'invite_to_event' || step.action === 'event_message') && (
+          <label className="li-span-2">
+            LinkedIn event URL
+            <input
+              type="url"
+              value={step.config.eventUrl}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  config: { ...step.config, eventUrl: event.target.value }
+                } as WorkflowStep)
+              }
+              placeholder="https://www.linkedin.com/events/.../"
+            />
+          </label>
+        )}
+        {(step.action === 'invite_to_group' || step.action === 'group_message') && (
+          <label className="li-span-2">
+            LinkedIn group URL
+            <input
+              type="url"
+              value={step.config.groupUrl}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  config: { ...step.config, groupUrl: event.target.value }
+                } as WorkflowStep)
+              }
+              placeholder="https://www.linkedin.com/groups/123/"
+            />
+          </label>
+        )}
+        {(step.action === 'group_message' || step.action === 'event_message') && (
+          <div className="li-span-2">
+            <CompactVariants
+              variants={step.config.variants}
+              bodyMax={8000}
+              bind={(key, element) => {
+                fields.current[key] = element;
+              }}
+              insert={insert}
+              onChange={(variants) =>
+                onChange({ ...step, config: { ...step.config, variants } } as WorkflowStep)
+              }
+            />
+          </div>
+        )}
 
         {step.action === 'disconnect' && (
           <div className="li-span-2 mgr-danger-note">

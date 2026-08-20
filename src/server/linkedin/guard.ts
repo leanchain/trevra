@@ -376,7 +376,7 @@ interface SeatLedgerFacts {
 }
 
 /** The three kinds that share the operator's account-level message ceiling. */
-const MESSAGE_KINDS = ['dm', 'reply', 'inmail'] as const;
+const MESSAGE_KINDS = ['dm', 'reply', 'inmail', 'group_message', 'event_message'] as const;
 
 async function seatLedgerFacts(
   db: Db,
@@ -403,9 +403,17 @@ async function seatLedgerFacts(
   // 'invite' is always in the scan because the acceptance rate is about invites
   // whatever kind is under evaluation; the message kinds are always in it
   // because the operator's pool ceiling is about all three.
-  const pacedKinds: PacedKind[] = ['follow', 'unfollow', 'disconnect'].includes(input.kind)
-    ? ['follow', 'unfollow', 'disconnect']
-    : [input.kind];
+  const pacedKinds: PacedKind[] = ['follow', 'unfollow', 'disconnect', 'company_follow'].includes(
+    input.kind
+  )
+    ? ['follow', 'unfollow', 'disconnect', 'company_follow']
+    : ['like', 'company_like'].includes(input.kind)
+      ? ['like', 'company_like']
+      : ['invite', 'company_invite_follow', 'event_invite', 'group_invite'].includes(input.kind)
+        ? ['invite', 'company_invite_follow', 'event_invite', 'group_invite']
+        : ['dm', 'group_message', 'event_message'].includes(input.kind)
+          ? ['dm', 'group_message', 'event_message']
+          : [input.kind];
   const scanKinds = [...new Set<string>([...pacedKinds, ...MESSAGE_KINDS, 'invite'])];
 
   const row = await db

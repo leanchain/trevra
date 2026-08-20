@@ -65,6 +65,13 @@ export const KIND_LABELS: Record<PacedKind, string> = {
   follow: 'Follows',
   unfollow: 'Unfollows',
   disconnect: 'Connection removals',
+  company_follow: 'Company follows',
+  company_like: 'Company post likes',
+  company_invite_follow: 'Company follow invitations',
+  event_invite: 'Event invitations',
+  group_invite: 'Group invitations',
+  group_message: 'Group messages',
+  event_message: 'Event messages',
   like: 'Likes',
   endorse: 'Endorsements'
 };
@@ -76,7 +83,13 @@ export const KIND_LABELS: Record<PacedKind, string> = {
  * limits route appends its pool note from and the list `guard.ts` counts the
  * operator's pool over.
  */
-const MESSAGE_POOL_KINDS: readonly PacedKind[] = ['dm', 'reply', 'inmail'];
+const MESSAGE_POOL_KINDS: readonly PacedKind[] = [
+  'dm',
+  'reply',
+  'inmail',
+  'group_message',
+  'event_message'
+];
 
 /**
  * One sentence out of whatever was thrown, or the caller's fallback.

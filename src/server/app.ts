@@ -7965,7 +7965,7 @@ interface LinkedInCeiling {
 const LINKEDIN_WINDOW_HOURS = { day: 24, week: 24 * 7, month: 24 * 30 } as const;
 
 /** The three kinds that share ONE operator setting. `guard.ts` counts them together. */
-const MESSAGE_POOL_KINDS = ['dm', 'reply', 'inmail'] as const;
+const MESSAGE_POOL_KINDS = ['dm', 'reply', 'inmail', 'group_message', 'event_message'] as const;
 
 /** A ramp that never reaches full is a bug in the ramp; this only stops the walk. */
 const CAMPAIGN_RAMP_MAX_DAYS = 60;

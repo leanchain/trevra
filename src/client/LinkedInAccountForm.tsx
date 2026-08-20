@@ -71,7 +71,7 @@ export const LIMIT_FIELDS: ReadonlyArray<{
   {
     field: 'dailyInviteLimit',
     kind: 'invite',
-    kinds: ['invite'],
+    kinds: ['invite', 'company_invite_follow', 'event_invite', 'group_invite'],
     range: 'invite',
     label: 'Connection invites',
     column: 'Invites'
@@ -79,11 +79,11 @@ export const LIMIT_FIELDS: ReadonlyArray<{
   {
     field: 'dailyMessageLimit',
     kind: 'dm',
-    kinds: ['dm', 'reply', 'inmail'],
+    kinds: ['dm', 'reply', 'inmail', 'group_message', 'event_message'],
     range: 'message',
     label: 'Messages',
     column: 'Messages',
-    pooledKindsLabel: 'new messages, replies and InMail'
+    pooledKindsLabel: 'new messages, replies, InMail, group messages and event messages'
   },
   {
     field: 'dailyProfileViewLimit',
@@ -96,10 +96,10 @@ export const LIMIT_FIELDS: ReadonlyArray<{
   {
     field: 'dailyFollowLimit',
     kind: 'follow',
-    kinds: ['follow'],
+    kinds: ['follow', 'unfollow', 'disconnect', 'company_follow'],
     range: 'follow',
-    label: 'Follows',
-    column: 'Follows'
+    label: 'Relationship changes',
+    column: 'Follow / cleanup'
   }
 ];
 

@@ -49,6 +49,32 @@ describe('LinkedIn manager workflows', () => {
     expect(delayMilliseconds(result[2].delayBefore)).toBe(14 * 24 * 3_600_000);
   });
 
+  it('accepts only LinkedIn company/event/group destinations for community nodes', () => {
+    expect(() =>
+      workflowStepsSchema.parse([
+        {
+          id: 'company',
+          action: 'follow_company',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { companyUrl: 'https://evil.example/company/acme/' }
+        }
+      ])
+    ).toThrow(/LinkedIn company URL/);
+    expect(
+      workflowStepsSchema.parse([
+        {
+          id: 'group',
+          action: 'group_message',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {
+            groupUrl: 'https://www.linkedin.com/groups/123/',
+            variants: [{ id: 'a', body: 'Hello', weight: 100 }]
+          }
+        }
+      ])[0].action
+    ).toBe('group_message');
+  });
+
   it('requires an explicit destructive acknowledgement for disconnect steps', () => {
     expect(() =>
       workflowStepsSchema.parse([

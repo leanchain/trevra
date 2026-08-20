@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
-import { recordAction } from './actions.js';
+import { recordAction, type LinkedInActionKind } from './actions.js';
 import { runCampaignChannelActions } from './campaign-channels.js';
 import { decideAdmission, type AdmissionKind, type AdmissionPolicy } from './admission.js';
 import {
@@ -77,12 +77,28 @@ const BUDGETED_KINDS = [
   'inmail',
   'profile_view',
   'follow',
-  'unfollow',
-  'disconnect',
   'like',
   'endorse'
 ] as const;
 type BudgetedKind = (typeof BUDGETED_KINDS)[number];
+const MANAGED_LEDGER_KINDS: readonly LinkedInActionKind[] = [
+  'invite',
+  'dm',
+  'inmail',
+  'profile_view',
+  'follow',
+  'unfollow',
+  'disconnect',
+  'company_follow',
+  'company_like',
+  'company_invite_follow',
+  'event_invite',
+  'group_invite',
+  'group_message',
+  'event_message',
+  'like',
+  'endorse'
+];
 
 /** Statuses that still hold the one-active-campaign claim on a contact. */
 const LIVE_MEMBER_STATUSES = ['pending', 'active', 'waiting', 'manual', 'paused'] as const;
@@ -186,8 +202,8 @@ function seatDailyCeilingFor(seat: LinkedInSeat, kind: BudgetedKind, now: Date):
   return effectiveDailyCeiling(band.perDay, seatOperatorLimit(seat, kind), seat.safetyBandOverride);
 }
 
-/** The ledger kind a step writes, or null for the two steps that write none. */
-function kindForStep(step: WorkflowStep): BudgetedKind | null {
+/** The exact ledger kind a step writes. */
+function ledgerKindForStep(step: WorkflowStep): LinkedInActionKind | null {
   switch (step.action) {
     case 'connection_request':
       return 'invite';
@@ -203,6 +219,20 @@ function kindForStep(step: WorkflowStep): BudgetedKind | null {
       return 'unfollow';
     case 'disconnect':
       return 'disconnect';
+    case 'follow_company':
+      return 'company_follow';
+    case 'like_company_post':
+      return 'company_like';
+    case 'invite_to_follow_company':
+      return 'company_invite_follow';
+    case 'invite_to_event':
+      return 'event_invite';
+    case 'invite_to_group':
+      return 'group_invite';
+    case 'group_message':
+      return 'group_message';
+    case 'event_message':
+      return 'event_message';
     case 'like_post':
       return 'like';
     case 'endorse_skills':
@@ -212,10 +242,37 @@ function kindForStep(step: WorkflowStep): BudgetedKind | null {
   }
 }
 
+/** Capacity bucket a step consumes. Several distinct ledger kinds intentionally share one. */
+function budgetKindForStep(step: WorkflowStep): BudgetedKind | null {
+  const ledger = ledgerKindForStep(step);
+  return ledger ? budgetKindForLedgerKind(ledger) : null;
+}
+
+function budgetKindForLedgerKind(kind: LinkedInActionKind): BudgetedKind | null {
+  if (
+    kind === 'invite' ||
+    kind === 'company_invite_follow' ||
+    kind === 'event_invite' ||
+    kind === 'group_invite'
+  )
+    return 'invite';
+  if (kind === 'dm' || kind === 'group_message' || kind === 'event_message') return 'dm';
+  if (kind === 'inmail') return 'inmail';
+  if (kind === 'profile_view') return 'profile_view';
+  if (
+    kind === 'follow' ||
+    kind === 'unfollow' ||
+    kind === 'disconnect' ||
+    kind === 'company_follow'
+  )
+    return 'follow';
+  if (kind === 'like' || kind === 'company_like') return 'like';
+  if (kind === 'endorse') return 'endorse';
+  return null;
+}
+
 function admissionKindForStep(step: WorkflowStep): AdmissionKind | null {
-  const kind = kindForStep(step);
-  if (kind === 'unfollow' || kind === 'disconnect') return 'follow';
-  return kind;
+  return budgetKindForStep(step);
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> {
@@ -698,11 +755,19 @@ function queuePriorityForStep(
   let score = stepIndex > 0 ? 1_000 : 0;
   if (step.action === 'message' || step.action === 'manual_message' || step.action === 'monitor')
     score += 300;
-  if (step.action === 'connection_request') score += 150;
+  if (
+    step.action === 'connection_request' ||
+    step.action === 'invite_to_follow_company' ||
+    step.action === 'invite_to_event' ||
+    step.action === 'invite_to_group'
+  )
+    score += 150;
   if (step.action === 'unfollow' || step.action === 'disconnect') score -= 250;
   if (
     step.action === 'profile_view' ||
     step.action === 'follow' ||
+    step.action === 'follow_company' ||
+    step.action === 'like_company_post' ||
     step.action === 'like_post' ||
     step.action === 'endorse_skills'
   )
@@ -873,9 +938,13 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           sender.key,
           windowStart,
           windowEnd,
-          [...BUDGETED_KINDS]
+          [...MANAGED_LEDGER_KINDS]
         );
-      const usedByKind = new Map(used.map((row) => [row.kind, Number(row.total)]));
+      const usedByKind = new Map<BudgetedKind, number>();
+      for (const row of used) {
+        const bucket = budgetKindForLedgerKind(row.kind as LinkedInActionKind);
+        if (bucket) usedByKind.set(bucket, (usedByKind.get(bucket) ?? 0) + Number(row.total));
+      }
       const inmailUsage = await db
         .prepare(
           `SELECT COUNT(*) FILTER (WHERE kind='inmail' AND status<>'skipped')::int AS total,
@@ -1547,8 +1616,9 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           continue;
         }
 
-        const kind = kindForStep(step);
-        if (!kind) continue;
+        const ledgerKind = ledgerKindForStep(step);
+        const budgetKind = budgetKindForStep(step);
+        if (!ledgerKind || !budgetKind) continue;
         if (!member.profile_url) {
           memberWrites.set(member.id, {
             stepIndex,
@@ -1563,7 +1633,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           continue;
         }
 
-        if (kind === 'inmail' && seat.capabilities.inmail !== 'available') {
+        if (ledgerKind === 'inmail' && seat.capabilities.inmail !== 'available') {
           memberWrites.set(
             member.id,
             stayOnStep(
@@ -1580,7 +1650,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           continue;
         }
 
-        const remaining = budget.get(kind) ?? 0;
+        const remaining = budget.get(budgetKind) ?? 0;
         if (remaining <= 0) continue;
 
         let variantId: string | null = null;
@@ -1600,7 +1670,12 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             const template = step.config.message ?? '';
             body = template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
           }
-        } else if (step.action === 'message' || step.action === 'inmail') {
+        } else if (
+          step.action === 'message' ||
+          step.action === 'inmail' ||
+          step.action === 'group_message' ||
+          step.action === 'event_message'
+        ) {
           const assigned = parseVariants(member.assigned_variants)[step.id];
           const variant =
             step.config.variants.find((candidate) => candidate.id === assigned) ??
@@ -1631,7 +1706,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           {
             workspaceId,
             seatKey: senderKey,
-            kind,
+            kind: ledgerKind,
             targetRef: member.profile_url,
             campaignId: campaign.id,
             status: 'planned',
@@ -1668,13 +1743,21 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
                           (paidInmailRemainingBySeat.get(senderKey) ?? 0) > 0,
                         paidCreditCapRemaining: paidInmailRemainingBySeat.get(senderKey) ?? 0
                       }
-                    : {}
+                    : step.action === 'follow_company' ||
+                        step.action === 'like_company_post' ||
+                        step.action === 'invite_to_follow_company'
+                      ? { companyUrl: step.config.companyUrl }
+                      : step.action === 'invite_to_event' || step.action === 'event_message'
+                        ? { eventUrl: step.config.eventUrl }
+                        : step.action === 'invite_to_group' || step.action === 'group_message'
+                          ? { groupUrl: step.config.groupUrl }
+                          : {}
               ),
               written.id,
               workspaceId
             );
           result.actionsPlanned += 1;
-          budget.set(kind, remaining - 1);
+          budget.set(budgetKind, remaining - 1);
           floors.set(senderKey, plannedFor);
         }
 

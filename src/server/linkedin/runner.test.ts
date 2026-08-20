@@ -151,6 +151,116 @@ function plus(iso: string | null, ms: number): string {
 }
 
 describe('managed campaign runner', () => {
+  it('plans every company, event and group workflow action with a distinct ledger kind and destination metadata', async () => {
+    const listId = await seededList('Community actions', [
+      { first: 'Maya', last: 'Smith', company: 'Acme', slug: 'maya-community' }
+    ]);
+    const workflowId = (
+      await saveWorkflow(
+        db,
+        {
+          workspaceId: WORKSPACE,
+          name: 'Community surface actions',
+          steps: [
+            {
+              id: 'company-follow',
+              action: 'follow_company',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: { companyUrl: 'https://www.linkedin.com/company/acme/' }
+            },
+            {
+              id: 'company-like',
+              action: 'like_company_post',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: { companyUrl: 'https://www.linkedin.com/company/acme/' }
+            },
+            {
+              id: 'company-invite',
+              action: 'invite_to_follow_company',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: { companyUrl: 'https://www.linkedin.com/company/acme/' }
+            },
+            {
+              id: 'event-invite',
+              action: 'invite_to_event',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: { eventUrl: 'https://www.linkedin.com/events/acme-123/' }
+            },
+            {
+              id: 'group-invite',
+              action: 'invite_to_group',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: { groupUrl: 'https://www.linkedin.com/groups/123/' }
+            },
+            {
+              id: 'group-message',
+              action: 'group_message',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: {
+                groupUrl: 'https://www.linkedin.com/groups/123/',
+                variants: [{ id: 'a', body: 'Group hello {{first_name}}', weight: 100 }]
+              }
+            },
+            {
+              id: 'event-message',
+              action: 'event_message',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: {
+                eventUrl: 'https://www.linkedin.com/events/acme-123/',
+                variants: [{ id: 'a', body: 'Event hello {{first_name}}', weight: 100 }]
+              }
+            }
+          ]
+        },
+        NOW
+      )
+    ).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Community');
+
+    for (let index = 0; index < 7; index += 1) {
+      await runManagedCampaigns(db, WORKSPACE, at(index * 2 * HOUR));
+    }
+    // The sender window closes at 18:00; a later community step can therefore
+    // land on the next working day even with a zero workflow delay.
+    await runManagedCampaigns(db, WORKSPACE, at(2 * DAY));
+
+    const rows = await db
+      .prepare(
+        `
+      SELECT kind,workflow_step_id,body,channel_metadata_json
+      FROM linkedin_actions
+      WHERE workspace_id=? AND campaign_id=?
+      ORDER BY created_at ASC,id ASC
+    `
+      )
+      .all<{
+        kind: string;
+        workflow_step_id: string;
+        body: string | null;
+        channel_metadata_json: Record<string, unknown>;
+      }>(WORKSPACE, campaignId);
+    expect(rows.map((row) => row.kind)).toEqual([
+      'company_follow',
+      'company_like',
+      'company_invite_follow',
+      'event_invite',
+      'group_invite',
+      'group_message',
+      'event_message'
+    ]);
+    expect(rows[0].channel_metadata_json).toMatchObject({
+      companyUrl: 'https://www.linkedin.com/company/acme/'
+    });
+    expect(rows[3].channel_metadata_json).toMatchObject({
+      eventUrl: 'https://www.linkedin.com/events/acme-123/'
+    });
+    expect(rows[4].channel_metadata_json).toMatchObject({
+      groupUrl: 'https://www.linkedin.com/groups/123/'
+    });
+    expect(rows[5].body).toBe('Group hello Maya');
+    expect(rows[6].body).toBe('Event hello Maya');
+  });
+
   it('walks a six-action workflow one step at a time, honouring hour and day delays', async () => {
     const listId = await seededList('Six actions', [
       { first: 'Maya', last: 'Smith', company: 'Acme', slug: 'maya-smith' }

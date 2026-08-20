@@ -668,7 +668,7 @@ export async function createManagedCampaign(
         AND (?::boolean=false OR NOT EXISTS (
           SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.seat_key = ANY(?::text[])
             AND c.profile_url IS NOT NULL AND LOWER(a.target_ref)=LOWER(c.profile_url)
-            AND a.kind IN ('dm','reply','inmail') AND a.status IN ('sent','replied')
+            AND a.kind IN ('dm','reply','inmail','group_message','event_message') AND a.status IN ('sent','replied')
         ))
       RETURNING m.id
     `

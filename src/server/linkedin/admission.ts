@@ -67,18 +67,27 @@ export function workflowAdmissionDemand(
         demand.profile_view += 1;
         break;
       case 'connection_request':
+      case 'invite_to_follow_company':
+      case 'invite_to_event':
+      case 'invite_to_group':
         demand.invite += 1;
         break;
       case 'message':
+      case 'group_message':
+      case 'event_message':
         demand.dm += 1;
         break;
       case 'inmail':
         demand.inmail += 1;
         break;
       case 'follow':
+      case 'unfollow':
+      case 'disconnect':
+      case 'follow_company':
         demand.follow += 1;
         break;
       case 'like_post':
+      case 'like_company_post':
         demand.like += 1;
         break;
       case 'endorse_skills':

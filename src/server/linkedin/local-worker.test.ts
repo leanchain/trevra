@@ -331,6 +331,34 @@ function fakeDriver(
       calls.push({ method: 'disconnectProfile', target });
       return answer(target, calls.length - 1);
     },
+    followCompany: async (_page, companyUrl) => {
+      calls.push({ method: 'followCompany', target: companyUrl });
+      return answer(companyUrl, calls.length - 1);
+    },
+    likeCompanyRecentPost: async (_page, companyUrl) => {
+      calls.push({ method: 'likeCompanyRecentPost', target: companyUrl });
+      return answer(companyUrl, calls.length - 1);
+    },
+    inviteConnectionToFollowCompany: async (_page, target, companyUrl) => {
+      calls.push({ method: 'inviteConnectionToFollowCompany', target, body: companyUrl });
+      return answer(target, calls.length - 1);
+    },
+    inviteConnectionToEvent: async (_page, target, eventUrl) => {
+      calls.push({ method: 'inviteConnectionToEvent', target, body: eventUrl });
+      return answer(target, calls.length - 1);
+    },
+    inviteConnectionToGroup: async (_page, target, groupUrl) => {
+      calls.push({ method: 'inviteConnectionToGroup', target, body: groupUrl });
+      return answer(target, calls.length - 1);
+    },
+    messageGroupMember: async (_page, target, groupUrl, body) => {
+      calls.push({ method: 'messageGroupMember', target, body: `${groupUrl}|${body}` });
+      return answer(target, calls.length - 1);
+    },
+    messageEventAttendee: async (_page, target, eventUrl, body) => {
+      calls.push({ method: 'messageEventAttendee', target, body: `${eventUrl}|${body}` });
+      return answer(target, calls.length - 1);
+    },
     // `seed` is recorded as the body, because the thing worth asserting about
     // these two is that the BATCH-SCOPED seed reaches them: it is what makes
     // the in-action click jitter reproducible, and a driver handed no seed
@@ -403,6 +431,55 @@ describe('dispatch is exhaustive', () => {
       action({ id: 'lact_follow', kind: 'follow', targetRef: 'in/e', body: null }),
       action({ id: 'lact_unfollow', kind: 'unfollow', targetRef: 'in/e2', body: null }),
       action({ id: 'lact_disconnect', kind: 'disconnect', targetRef: 'in/e3', body: null }),
+      action({
+        id: 'lact_company_follow',
+        kind: 'company_follow',
+        targetRef: 'in/cf',
+        body: null,
+        channelMetadata: { companyUrl: 'https://www.linkedin.com/company/acme/' }
+      }),
+      action({
+        id: 'lact_company_like',
+        kind: 'company_like',
+        targetRef: 'in/cl',
+        body: null,
+        channelMetadata: { companyUrl: 'https://www.linkedin.com/company/acme/' }
+      }),
+      action({
+        id: 'lact_company_invite',
+        kind: 'company_invite_follow',
+        targetRef: 'in/ci',
+        body: null,
+        channelMetadata: { companyUrl: 'https://www.linkedin.com/company/acme/' }
+      }),
+      action({
+        id: 'lact_event_invite',
+        kind: 'event_invite',
+        targetRef: 'in/ei',
+        body: null,
+        channelMetadata: { eventUrl: 'https://www.linkedin.com/events/acme-123/' }
+      }),
+      action({
+        id: 'lact_group_invite',
+        kind: 'group_invite',
+        targetRef: 'in/gi',
+        body: null,
+        channelMetadata: { groupUrl: 'https://www.linkedin.com/groups/123/' }
+      }),
+      action({
+        id: 'lact_group_message',
+        kind: 'group_message',
+        targetRef: 'in/gm',
+        body: 'group approved',
+        channelMetadata: { groupUrl: 'https://www.linkedin.com/groups/123/' }
+      }),
+      action({
+        id: 'lact_event_message',
+        kind: 'event_message',
+        targetRef: 'in/em',
+        body: 'event approved',
+        channelMetadata: { eventUrl: 'https://www.linkedin.com/events/acme-123/' }
+      }),
       action({ id: 'lact_like', kind: 'like', targetRef: 'in/f', body: null }),
       action({ id: 'lact_endorse', kind: 'endorse', targetRef: 'in/g', body: null })
     ]);
@@ -416,7 +493,7 @@ describe('dispatch is exhaustive', () => {
       evaluate: async () => verdict()
     });
 
-    expect(result.executed).toBe(9);
+    expect(result.executed).toBe(16);
     expect(calls.map((entry) => entry.method)).toEqual([
       'sendInvite',
       'sendDm',
@@ -425,6 +502,13 @@ describe('dispatch is exhaustive', () => {
       'followProfile',
       'unfollowProfile',
       'disconnectProfile',
+      'followCompany',
+      'likeCompanyRecentPost',
+      'inviteConnectionToFollowCompany',
+      'inviteConnectionToEvent',
+      'inviteConnectionToGroup',
+      'messageGroupMember',
+      'messageEventAttendee',
       'likeRecentPost',
       'endorseSkills'
     ]);

@@ -146,7 +146,13 @@ export function hasBranching(steps: readonly BranchableStep[]): boolean {
  * one was a branch that could never be decided for exactly the reason the
  * paragraph above gives, arrived at from the other direction.
  */
-const RESULT_BEARING_KINDS: readonly LinkedInActionKind[] = ['invite', 'dm', 'reply'];
+const RESULT_BEARING_KINDS: readonly LinkedInActionKind[] = [
+  'invite',
+  'dm',
+  'reply',
+  'group_message',
+  'event_message'
+];
 
 /** Kind names as an operator reading a refusal would say them. */
 const KIND_NOUNS: Record<LinkedInActionKind, string> = {
@@ -159,6 +165,13 @@ const KIND_NOUNS: Record<LinkedInActionKind, string> = {
   follow: 'follow',
   unfollow: 'unfollow',
   disconnect: 'disconnect',
+  company_follow: 'company follow',
+  company_like: 'company like',
+  company_invite_follow: 'company follow invite',
+  event_invite: 'event invite',
+  group_invite: 'group invite',
+  group_message: 'group message',
+  event_message: 'event message',
   like: 'like',
   endorse: 'skill endorsement',
   withdraw: 'invite withdrawal'

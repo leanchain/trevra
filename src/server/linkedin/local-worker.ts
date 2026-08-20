@@ -156,6 +156,13 @@ export type ExecutableKind =
   | 'follow'
   | 'unfollow'
   | 'disconnect'
+  | 'company_follow'
+  | 'company_like'
+  | 'company_invite_follow'
+  | 'event_invite'
+  | 'group_invite'
+  | 'group_message'
+  | 'event_message'
   | 'like'
   | 'endorse';
 export const EXECUTABLE_KINDS: readonly ExecutableKind[] = [
@@ -167,6 +174,13 @@ export const EXECUTABLE_KINDS: readonly ExecutableKind[] = [
   'follow',
   'unfollow',
   'disconnect',
+  'company_follow',
+  'company_like',
+  'company_invite_follow',
+  'event_invite',
+  'group_invite',
+  'group_message',
+  'event_message',
   'like',
   'endorse'
 ];
@@ -943,6 +957,99 @@ async function execute(
       return deps.driver.unfollowProfile(deps.page, action.targetRef);
     case 'disconnect':
       return deps.driver.disconnectProfile(deps.page, action.targetRef);
+    case 'company_follow': {
+      const companyUrl =
+        typeof action.channelMetadata?.companyUrl === 'string'
+          ? action.channelMetadata.companyUrl
+          : '';
+      return deps.driver.followCompany
+        ? deps.driver.followCompany(deps.page, companyUrl, { seed })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no company-follow driver configured. Nothing was attempted.'
+          };
+    }
+    case 'company_like': {
+      const companyUrl =
+        typeof action.channelMetadata?.companyUrl === 'string'
+          ? action.channelMetadata.companyUrl
+          : '';
+      return deps.driver.likeCompanyRecentPost
+        ? deps.driver.likeCompanyRecentPost(deps.page, companyUrl, { seed })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no company-like driver configured. Nothing was attempted.'
+          };
+    }
+    case 'company_invite_follow': {
+      const companyUrl =
+        typeof action.channelMetadata?.companyUrl === 'string'
+          ? action.channelMetadata.companyUrl
+          : '';
+      return deps.driver.inviteConnectionToFollowCompany
+        ? deps.driver.inviteConnectionToFollowCompany(deps.page, action.targetRef, companyUrl, {
+            seed
+          })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no company-invite driver configured. Nothing was attempted.'
+          };
+    }
+    case 'event_invite': {
+      const eventUrl =
+        typeof action.channelMetadata?.eventUrl === 'string' ? action.channelMetadata.eventUrl : '';
+      return deps.driver.inviteConnectionToEvent
+        ? deps.driver.inviteConnectionToEvent(deps.page, action.targetRef, eventUrl, { seed })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no event-invite driver configured. Nothing was attempted.'
+          };
+    }
+    case 'group_invite': {
+      const groupUrl =
+        typeof action.channelMetadata?.groupUrl === 'string' ? action.channelMetadata.groupUrl : '';
+      return deps.driver.inviteConnectionToGroup
+        ? deps.driver.inviteConnectionToGroup(deps.page, action.targetRef, groupUrl, { seed })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no group-invite driver configured. Nothing was attempted.'
+          };
+    }
+    case 'group_message': {
+      const groupUrl =
+        typeof action.channelMetadata?.groupUrl === 'string' ? action.channelMetadata.groupUrl : '';
+      return deps.driver.messageGroupMember
+        ? deps.driver.messageGroupMember(deps.page, action.targetRef, groupUrl, action.body ?? '', {
+            seed
+          })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no group-message driver configured. Nothing was attempted.'
+          };
+    }
+    case 'event_message': {
+      const eventUrl =
+        typeof action.channelMetadata?.eventUrl === 'string' ? action.channelMetadata.eventUrl : '';
+      return deps.driver.messageEventAttendee
+        ? deps.driver.messageEventAttendee(
+            deps.page,
+            action.targetRef,
+            eventUrl,
+            action.body ?? '',
+            { seed }
+          )
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no event-message driver configured. Nothing was attempted.'
+          };
+    }
     case 'like':
       return deps.driver.likeRecentPost(deps.page, action.targetRef, { seed });
     case 'endorse':
@@ -1391,7 +1498,13 @@ const EXECUTABLE_KIND_LIST = EXECUTABLE_KINDS.map((kind) => `'${kind}'`).join(',
  * and a second hand-written `['dm', 'reply']` over there is how a queue that
  * silently never drains gets built.
  */
-export const KINDS_REQUIRING_BODY: readonly ExecutableKind[] = ['dm', 'reply', 'inmail'];
+export const KINDS_REQUIRING_BODY: readonly ExecutableKind[] = [
+  'dm',
+  'reply',
+  'inmail',
+  'group_message',
+  'event_message'
+];
 const BODY_REQUIRED_LIST = KINDS_REQUIRING_BODY.map((kind) => `'${kind}'`).join(', ');
 
 const UTC_ISO_FORMAT = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;

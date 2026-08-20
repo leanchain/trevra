@@ -58,6 +58,15 @@ import {
   likeRecentPost,
   unfollowProfile
 } from './driver-engage.js';
+import {
+  followCompany,
+  inviteConnectionToEvent,
+  inviteConnectionToFollowCompany,
+  inviteConnectionToGroup,
+  likeCompanyRecentPost,
+  messageEventAttendee,
+  messageGroupMember
+} from './driver-community.js';
 import { publishPost } from './driver-post.js';
 import {
   listConversations,
@@ -284,6 +293,48 @@ export interface LinkedInDriver {
   followProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
   unfollowProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
   disconnectProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
+  followCompany?(
+    page: LinkedInPage,
+    companyUrl: string,
+    options?: { seed?: string }
+  ): Promise<LinkedInDriverResult>;
+  likeCompanyRecentPost?(
+    page: LinkedInPage,
+    companyUrl: string,
+    options?: { seed?: string }
+  ): Promise<LinkedInDriverResult>;
+  inviteConnectionToFollowCompany?(
+    page: LinkedInPage,
+    target: string,
+    companyUrl: string,
+    options?: { seed?: string }
+  ): Promise<LinkedInDriverResult>;
+  inviteConnectionToEvent?(
+    page: LinkedInPage,
+    target: string,
+    eventUrl: string,
+    options?: { seed?: string }
+  ): Promise<LinkedInDriverResult>;
+  inviteConnectionToGroup?(
+    page: LinkedInPage,
+    target: string,
+    groupUrl: string,
+    options?: { seed?: string }
+  ): Promise<LinkedInDriverResult>;
+  messageGroupMember?(
+    page: LinkedInPage,
+    target: string,
+    groupUrl: string,
+    body: string,
+    options?: { seed?: string }
+  ): Promise<LinkedInDriverResult>;
+  messageEventAttendee?(
+    page: LinkedInPage,
+    target: string,
+    eventUrl: string,
+    body: string,
+    options?: { seed?: string }
+  ): Promise<LinkedInDriverResult>;
   /** `seed` is the batch-scoped seed for the deterministic in-action click jitter. */
   likeRecentPost(
     page: LinkedInPage,
@@ -1915,6 +1966,13 @@ export const playwrightDriver: LinkedInDriver = {
   followProfile,
   unfollowProfile,
   disconnectProfile,
+  followCompany,
+  likeCompanyRecentPost,
+  inviteConnectionToFollowCompany,
+  inviteConnectionToEvent,
+  inviteConnectionToGroup,
+  messageGroupMember,
+  messageEventAttendee,
   likeRecentPost,
   endorseSkills,
   publishPost,

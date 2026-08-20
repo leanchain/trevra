@@ -186,6 +186,32 @@ describe('volume ceilings', () => {
     expect(check(verdict, 'rolling-24h').detail).toContain('20 of 20');
   });
 
+  it('shares connection-invite pacing with company/event/group invitations without changing acceptance semantics', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 1);
+    const eventInvite = await guard({ kind: 'event_invite' }, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(eventInvite, 'rolling-24h').passed).toBe(false);
+    expect(check(eventInvite, 'rolling-24h').detail).toContain('18 of 18');
+    // Only actual connection requests consume the outstanding-connection-invite backlog rule.
+    expect(check(eventInvite, 'pending-invite-backlog').passed).toBe(true);
+  });
+
+  it('shares the DM pacing bucket with legitimate group/event message surfaces', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 12; index += 1) await log('dm', 'sent', 1);
+    const groupMessage = await guard({ kind: 'group_message' }, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(groupMessage, 'rolling-24h').passed).toBe(false);
+    expect(check(groupMessage, 'rolling-24h').detail).toContain('12 of 12');
+  });
+
+  it('shares company likes with the ordinary Like bucket', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 30; index += 1) await log('like', 'sent', 1);
+    const companyLike = await guard({ kind: 'company_like' }, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(companyLike, 'rolling-24h').passed).toBe(false);
+    expect(check(companyLike, 'rolling-24h').detail).toContain('30 of 30');
+  });
+
   it('blocks the invite that would exceed the rolling 24h band', async () => {
     await seat('2026-01-01');
     for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 1);

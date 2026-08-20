@@ -197,6 +197,65 @@ export const workflowStepSchema = z.discriminatedUnion('action', [
       config: z.object({ acknowledgeDestructive: z.literal(true) }).strict()
     })
     .strict(),
+  z
+    .object({
+      ...common,
+      action: z.literal('follow_company'),
+      config: z.object({ companyUrl: z.string().url().max(2000) }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      ...common,
+      action: z.literal('like_company_post'),
+      config: z.object({ companyUrl: z.string().url().max(2000) }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      ...common,
+      action: z.literal('invite_to_follow_company'),
+      config: z.object({ companyUrl: z.string().url().max(2000) }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      ...common,
+      action: z.literal('invite_to_event'),
+      config: z.object({ eventUrl: z.string().url().max(2000) }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      ...common,
+      action: z.literal('invite_to_group'),
+      config: z.object({ groupUrl: z.string().url().max(2000) }).strict()
+    })
+    .strict(),
+  z
+    .object({
+      ...common,
+      action: z.literal('group_message'),
+      config: z
+        .object({
+          groupUrl: z.string().url().max(2000),
+          variants: z.array(workflowVariantSchema).min(1).max(MESSAGE_VARIANT_MAX)
+        })
+        .strict()
+    })
+    .strict(),
+  z
+    .object({
+      ...common,
+      action: z.literal('event_message'),
+      config: z
+        .object({
+          eventUrl: z.string().url().max(2000),
+          variants: z.array(workflowVariantSchema).min(1).max(MESSAGE_VARIANT_MAX)
+        })
+        .strict()
+    })
+    .strict(),
   z.object({ ...common, action: z.literal('like_post'), config: z.object({}).strict() }).strict(),
   z
     .object({
@@ -457,7 +516,9 @@ export const workflowStepsSchema = z
             const valid =
               condition.kind === 'accepted'
                 ? referenced?.action === 'connection_request'
-                : ['message', 'inmail', 'email'].includes(referenced?.action ?? '');
+                : ['message', 'inmail', 'email', 'group_message', 'event_message'].includes(
+                    referenced?.action ?? ''
+                  );
             if (referencedIndex === undefined || referencedIndex >= index || !valid)
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,
@@ -480,6 +541,14 @@ export const workflowStepsSchema = z
     };
     visit(steps[0]?.id ?? '');
     steps.forEach((step, index) => {
+      const community = expectedCommunityUrl(step);
+      if (community && !isExpectedCommunityUrl(community.kind, community.url)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, 'config'],
+          message: `Step '${step.id}' needs a LinkedIn ${community.kind} URL.`
+        });
+      }
       if (!reachable.has(step.id))
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -489,13 +558,54 @@ export const workflowStepsSchema = z
     });
   });
 
+function expectedCommunityUrl(
+  step: WorkflowStep
+): { kind: 'company' | 'event' | 'group'; url: string } | null {
+  if (
+    step.action === 'follow_company' ||
+    step.action === 'like_company_post' ||
+    step.action === 'invite_to_follow_company'
+  )
+    return { kind: 'company', url: step.config.companyUrl };
+  if (step.action === 'invite_to_event' || step.action === 'event_message')
+    return { kind: 'event', url: step.config.eventUrl };
+  if (step.action === 'invite_to_group' || step.action === 'group_message')
+    return { kind: 'group', url: step.config.groupUrl };
+  return null;
+}
+
+function isExpectedCommunityUrl(kind: 'company' | 'event' | 'group', raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    if (
+      url.protocol !== 'https:' ||
+      !['linkedin.com', 'www.linkedin.com'].includes(url.hostname.toLowerCase())
+    )
+      return false;
+    const rule =
+      kind === 'company'
+        ? /^\/company\/[^/]+/i
+        : kind === 'event'
+          ? /^\/events\/[^/]+/i
+          : /^\/groups\/[^/]+/i;
+    return rule.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
 function templatesOf(step: WorkflowStep): string[] {
   if (step.action === 'connection_request')
     return (
       step.config.variants?.map((variant) => variant.body) ??
       (step.config.message ? [step.config.message] : [])
     );
-  if (step.action === 'message') return step.config.variants.map((variant) => variant.body);
+  if (
+    step.action === 'message' ||
+    step.action === 'group_message' ||
+    step.action === 'event_message'
+  )
+    return step.config.variants.map((variant) => variant.body);
   if (step.action === 'email' || step.action === 'inmail')
     return [step.config.subject, ...step.config.variants.map((variant) => variant.body)];
   if (step.action === 'manual_message' || step.action === 'manual_comment')
@@ -564,6 +674,15 @@ export function diagnoseWorkflow(
     'message',
     'manual_message',
     'follow',
+    'unfollow',
+    'disconnect',
+    'follow_company',
+    'like_company_post',
+    'invite_to_follow_company',
+    'invite_to_event',
+    'invite_to_group',
+    'group_message',
+    'event_message',
     'like_post',
     'endorse_skills',
     'inmail',
@@ -581,10 +700,23 @@ export function diagnoseWorkflow(
   }
 
   const repeated: Array<{ label: string; actions: WorkflowStep['action'][]; threshold: number }> = [
-    { label: 'message', actions: ['message', 'inmail', 'email'], threshold: 4 },
-    { label: 'Like', actions: ['like_post'], threshold: 2 },
+    {
+      label: 'message',
+      actions: ['message', 'inmail', 'email', 'group_message', 'event_message'],
+      threshold: 4
+    },
+    { label: 'Like', actions: ['like_post', 'like_company_post'], threshold: 2 },
     { label: 'endorsement', actions: ['endorse_skills'], threshold: 2 },
-    { label: 'connection request', actions: ['connection_request'], threshold: 2 }
+    {
+      label: 'invite',
+      actions: [
+        'connection_request',
+        'invite_to_follow_company',
+        'invite_to_event',
+        'invite_to_group'
+      ],
+      threshold: 2
+    }
   ];
   for (const spec of repeated) {
     const matches = steps.filter((step) => spec.actions.includes(step.action));
@@ -600,7 +732,9 @@ export function diagnoseWorkflow(
 
   const messages = steps
     .map((step, index) => ({ step, index }))
-    .filter(({ step }) => ['message', 'inmail', 'email'].includes(step.action));
+    .filter(({ step }) =>
+      ['message', 'inmail', 'email', 'group_message', 'event_message'].includes(step.action)
+    );
   for (let at = 1; at < messages.length; at += 1) {
     const previous = messages[at - 1];
     const current = messages[at];

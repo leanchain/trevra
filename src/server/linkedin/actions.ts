@@ -47,6 +47,13 @@ export const ACTION_KIND_VALUES = [
   'follow',
   'unfollow',
   'disconnect',
+  'company_follow',
+  'company_like',
+  'company_invite_follow',
+  'event_invite',
+  'group_invite',
+  'group_message',
+  'event_message',
   'like',
   'endorse',
   'withdraw'
@@ -101,7 +108,13 @@ export function isSendableActionKind(kind: string): boolean {
  * difference is deliberate: a ceiling that counts a kind nobody can send is
  * merely inert, but a dashboard that does is claiming delivery.
  */
-export const COUNTED_MESSAGE_KINDS: readonly LinkedInActionKind[] = ['dm', 'reply', 'inmail'];
+export const COUNTED_MESSAGE_KINDS: readonly LinkedInActionKind[] = [
+  'dm',
+  'reply',
+  'inmail',
+  'group_message',
+  'event_message'
+];
 
 /**
  * Every status a ledger row can hold.
