@@ -63,6 +63,37 @@ check_host() {
 check_host "ubuntu@${DB_IP}" db
 check_host "ubuntu@${APP_IP}" app
 
+# Fail before pulling/recreating anything if the managed app environment is
+# incomplete. Values are never printed; only missing variable names leave the
+# remote shell. Keep this list aligned with validateEnvironment() plus the
+# Oracle-specific tunnel/companion requirements.
+if ! ssh "ubuntu@${APP_IP}" bash -s -- "${APP_DIR}/.env.oracle" <<'REMOTE'
+set -euo pipefail
+file="$1"
+required=(
+  DATABASE_URL CLOUDFLARE_TUNNEL_TOKEN
+  APP_ORIGIN BETTER_AUTH_URL PUBLIC_SITE_URL
+  BETTER_AUTH_SECRET GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
+  PUBLIC_SUPPORT_EMAIL SECURITY_CONTACT_EMAIL
+  MARKETING_HASH_SALT TRACTION_ADMIN_TOKEN TREVRA_AGENT_TOKEN_PEPPER INDEXNOW_KEY
+  NANGO_API_KEY NANGO_WEBHOOK_SIGNING_KEY TREVRA_SECRETS_KEY
+  SMTP_SERVER SMTP_PORT SMTP_USERNAME SMTP_PASSWORD EMAIL_FROM
+  TREVRA_COMPANION_RELEASE_VERSION
+)
+missing=()
+for key in "${required[@]}"; do
+  grep -Eq "^${key}=.+$" "$file" || missing+=("$key")
+done
+if ((${#missing[@]})); then
+  printf 'missing managed app environment: %s\n' "${missing[*]}" >&2
+  exit 1
+fi
+REMOTE
+then
+  echo "Hosted app environment is incomplete; fill the missing keys in ${APP_DIR}/.env.oracle before deploying." >&2
+  exit 1
+fi
+
 # One Oracle stack gets one deployer at a time. GitHub Actions is serialized,
 # but a maintainer can still run this script manually while CI is deploying.
 # Coordinate through an atomic directory on the app VM so both callers see the

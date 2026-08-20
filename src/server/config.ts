@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { browserProviderSettings } from './browser/provider.js';
+import { smtpConfig } from './email.js';
 import { companionBrowserConfigured } from './linkedin/companion.js';
 const booleanString = z.enum(['true', 'false']);
 const optionalUrl = z.preprocess(
-  (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
   z.string().url().optional()
 );
 
@@ -47,13 +48,13 @@ function isLoopbackHttpUrl(value: string | undefined): boolean {
  * minute; every other way of finding out is an incident.
  */
 const DEPLOYMENT_MODE_REQUIRED =
-  'TREVRA_DEPLOYMENT_MODE must be set explicitly when NODE_ENV=production; Trevra will not guess it. '
-  + 'Set TREVRA_DEPLOYMENT_MODE=hosted if this deployment serves workspaces belonging to anyone but you '
-  + '(a fresh workspace is created for every email that signs in, so this is true of any deployment strangers can reach), '
-  + 'or TREVRA_DEPLOYMENT_MODE=local if you are self-hosting for yourself alone. '
-  + 'Unset, it would fall back to local, which enables the LinkedIn and Reddit local workers (each driving a browser '
-  + "signed into one human's account), the shared browser-profile paths, and the operator-wide subscription CLI agent "
-  + 'backend: capabilities that are fine for one self-hoster and are not fine for a deployment with tenants';
+  'TREVRA_DEPLOYMENT_MODE must be set explicitly when NODE_ENV=production; Trevra will not guess it. ' +
+  'Set TREVRA_DEPLOYMENT_MODE=hosted if this deployment serves workspaces belonging to anyone but you ' +
+  '(a fresh workspace is created for every email that signs in, so this is true of any deployment strangers can reach), ' +
+  'or TREVRA_DEPLOYMENT_MODE=local if you are self-hosting for yourself alone. ' +
+  'Unset, it would fall back to local, which enables the LinkedIn and Reddit local workers (each driving a browser ' +
+  "signed into one human's account), the shared browser-profile paths, and the operator-wide subscription CLI agent " +
+  'backend: capabilities that are fine for one self-hoster and are not fine for a deployment with tenants';
 
 /**
  * Enforced in all three places the mode is read, so no entry point can boot on
@@ -81,7 +82,14 @@ export interface RuntimeConfig {
    * worker stays off. `TREVRA_LINKEDIN_LOCAL=false` remains the explicit master
    * off switch on every execution home.
    */
-  linkedinLocalWorker: { enabled: boolean; profileDir: string | null; hosted: boolean; remoteBrowser: boolean; companionBrowser: boolean; headless: boolean };
+  linkedinLocalWorker: {
+    enabled: boolean;
+    profileDir: string | null;
+    hosted: boolean;
+    remoteBrowser: boolean;
+    companionBrowser: boolean;
+    headless: boolean;
+  };
   /**
    * The self-hosted Reddit worker, on exactly the terms above.
    *
@@ -117,14 +125,18 @@ export interface RuntimeConfig {
  * between them and the one thing they are trying to do. ONE definition of the
  * gate, read from two places.
  */
-export function linkedInWorkerConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig['linkedinLocalWorker'] {
+export function linkedInWorkerConfig(
+  env: NodeJS.ProcessEnv = process.env
+): RuntimeConfig['linkedinLocalWorker'] {
   requireExplicitDeploymentMode(env);
-  const parsed = z.object({
-    TREVRA_LINKEDIN_LOCAL: booleanString.optional(),
-    TREVRA_LINKEDIN_HEADLESS: booleanString.optional(),
-    TREVRA_DEPLOYMENT_MODE: z.enum(['local', 'hosted']).default('local'),
-    TREVRA_LINKEDIN_PROFILE_DIR: z.string().optional()
-  }).parse(env);
+  const parsed = z
+    .object({
+      TREVRA_LINKEDIN_LOCAL: booleanString.optional(),
+      TREVRA_LINKEDIN_HEADLESS: booleanString.optional(),
+      TREVRA_DEPLOYMENT_MODE: z.enum(['local', 'hosted']).default('local'),
+      TREVRA_LINKEDIN_PROFILE_DIR: z.string().optional()
+    })
+    .parse(env);
   const hosted = parsed.TREVRA_DEPLOYMENT_MODE === 'hosted';
   // Browser HOME and deployment mode are separate facts. A hosted process may
   // not launch a tenant browser on its own disk, but it may attach to a cloud
@@ -139,7 +151,8 @@ export function linkedInWorkerConfig(env: NodeJS.ProcessEnv = process.env): Runt
     // (explicitly authorised per workspace) or the workspace member's paired
     // computer. The latter is still remote from this process, but LinkedIn
     // traffic and the persistent browser profile stay on the member's machine.
-    enabled: (!hosted || remoteBrowser || companionBrowser) && parsed.TREVRA_LINKEDIN_LOCAL !== 'false',
+    enabled:
+      (!hosted || remoteBrowser || companionBrowser) && parsed.TREVRA_LINKEDIN_LOCAL !== 'false',
     profileDir: parsed.TREVRA_LINKEDIN_PROFILE_DIR ?? null,
     hosted,
     remoteBrowser,
@@ -149,13 +162,17 @@ export function linkedInWorkerConfig(env: NodeJS.ProcessEnv = process.env): Runt
 }
 
 /** The Reddit worker remains local-only; the LinkedIn companion does not widen it. */
-export function redditWorkerConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig['redditLocalWorker'] {
+export function redditWorkerConfig(
+  env: NodeJS.ProcessEnv = process.env
+): RuntimeConfig['redditLocalWorker'] {
   requireExplicitDeploymentMode(env);
-  const parsed = z.object({
-    TREVRA_REDDIT_LOCAL: booleanString.optional(),
-    TREVRA_DEPLOYMENT_MODE: z.enum(['local', 'hosted']).default('local'),
-    TREVRA_REDDIT_PROFILE_DIR: z.string().optional()
-  }).parse(env);
+  const parsed = z
+    .object({
+      TREVRA_REDDIT_LOCAL: booleanString.optional(),
+      TREVRA_DEPLOYMENT_MODE: z.enum(['local', 'hosted']).default('local'),
+      TREVRA_REDDIT_PROFILE_DIR: z.string().optional()
+    })
+    .parse(env);
   return {
     // Hosted is the hard no. Otherwise on, unless explicitly switched off.
     enabled: parsed.TREVRA_DEPLOYMENT_MODE !== 'hosted' && parsed.TREVRA_REDDIT_LOCAL !== 'false',
@@ -166,109 +183,117 @@ export function redditWorkerConfig(env: NodeJS.ProcessEnv = process.env): Runtim
 
 export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
   const production = env.NODE_ENV === 'production';
-  const base = z.object({
-    PORT: z.coerce.number().int().min(1).max(65535).default(43887),
-    APP_ORIGIN: z.string().default('http://localhost:43173,http://localhost:43887'),
-    DATABASE_URL: z.string().min(1),
-    AUTOMATION_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
-    TREVRA_ORCHESTRATOR: z.enum(['postgres','temporal']).default('postgres'),
-    TEMPORAL_ADDRESS: z.string().optional(),
-    TEMPORAL_NAMESPACE: z.string().optional(),
-    TEMPORAL_TASK_QUEUE: z.string().optional(),
-    TEMPORAL_TLS: booleanString.optional(),
-    TEMPORAL_API_KEY: z.string().optional(),
-    PUBLIC_REGISTRY_API_URL: optionalUrl,
-    PUBLIC_REGISTRY_CORS_ORIGIN: z.string().optional(),
-    TREVRA_SANDBOX_GATEWAY_URL: optionalUrl,
-    TREVRA_SANDBOX_GATEWAY_TOKEN: z.string().optional(),
-    TREVRA_REMOTE_ACTION_ADAPTERS_JSON: z.string().optional(),
-    COOKIE_SECURE: booleanString.default(production ? 'true' : 'false'),
-    ALLOW_DEMO_AUTH: booleanString.optional(),
-    ALLOW_SIMULATED_EXECUTION: booleanString.optional(),
-    BETTER_AUTH_SECRET: z.string().optional(),
-    BETTER_AUTH_URL: optionalUrl,
-    GOOGLE_CLIENT_ID: z.string().optional(),
-    GOOGLE_CLIENT_SECRET: z.string().optional(),
-    PUBLIC_SITE_URL: optionalUrl,
-    PUBLIC_SUPPORT_EMAIL: z.string().email().optional(),
-    SECURITY_CONTACT_EMAIL: z.string().email().optional(),
-    MARKETING_HASH_SALT: z.string().optional(),
-    TRACTION_ADMIN_TOKEN: z.string().optional(),
-    TREVRA_AGENT_TOKEN_PEPPER: z.string().optional(),
-    TREVRA_SECRETS_KEY: z.string().optional(),
-    // Self-host escape hatch: lets the hosted agent dial a private/loopback model
-    // endpoint. Off by default because baseUrl is workspace-supplied.
-    TREVRA_ALLOW_PRIVATE_MODEL_HOSTS: booleanString.optional(),
-    // Run the hosted agent through a local subscription CLI instead of a BYOK
-    // model key. Self-hosted only -- see the gate below and src/server/agent/cli.ts.
-    TREVRA_AGENT_CLI: z.enum(['claude', 'codex']).optional(),
-    TREVRA_AGENT_CLI_BIN: z.string().optional(),
-    TREVRA_AGENT_CLI_MODEL: z.string().optional(),
-    TREVRA_AGENT_CLI_MCP_COMMAND: z.string().optional(),
-    // How the CLI gets its subscription inside a container: a token, or a
-    // mounted credential directory. Both optional -- on a host where the CLI is
-    // already signed in as the user running Trevra, neither is needed.
-    TREVRA_AGENT_CLI_OAUTH_TOKEN: z.string().optional(),
-    TREVRA_AGENT_CLI_HOME: z.string().optional(),
-    INDEXNOW_KEY: z.string().optional(),
-    NANGO_API_KEY: z.string().optional(),
-    NANGO_WEBHOOK_SIGNING_KEY: z.string().optional(),
-    STRIPE_SECRET_KEY: z.string().optional(),
-    STRIPE_WEBHOOK_SECRET: z.string().optional(),
-    // Opt-OUT for the local LinkedIn worker. Absent means on, except when this
-    // SAME process is a hosted deployment with no remote browser provider,
-    // where the gate below is unconditional -- see `linkedInWorkerConfig`.
-    TREVRA_LINKEDIN_LOCAL: booleanString.optional(),
-    // What kind of deployment this is. Defaults to 'local' because that is
-    // what a self-hoster running `npm start` has, and because the only thing
-    // this value can do is REMOVE a capability -- defaulting it wrong in the
-    // permissive direction is the mistake that matters.
-    //
-    // Which is exactly why the default is NOT allowed to stand in production:
-    // see DEPLOYMENT_MODE_REQUIRED at the top of this file. The default is for
-    // a developer and a self-hoster; a production deployment must say which it
-    // is, because 'local' is already multi-tenant in practice (one workspace
-    // and organization per email that signs in) and the guess only ever errs
-    // towards more capability.
-    TREVRA_DEPLOYMENT_MODE: z.enum(['local','hosted']).default('local'),
-    // Chrome profile the operator logged into LinkedIn with by hand. Absent
-    // means ~/.trevra/linkedin-profile, resolved by the worker rather than
-    // here: $HOME belongs to the process that launches the browser.
-    TREVRA_LINKEDIN_PROFILE_DIR: z.string().optional(),
-    // The Reddit pair, on the same terms as the LinkedIn pair above: opt-OUT,
-    // and a SEPARATE browser profile, because one persistent user-data-dir can
-    // hold one signed-in Chrome at a time.
-    TREVRA_REDDIT_LOCAL: booleanString.optional(),
-    TREVRA_REDDIT_PROFILE_DIR: z.string().optional(),
-    // WHERE THE BROWSERS ARE. 'local' is this machine's own Chromium at a
-    // persistent profile directory -- what every deployment did before hosted
-    // execution existed, and still the default. 'remote' attaches to a cloud
-    // browser over CDP, which is the only way a container with no display can
-    // drive one at all. Validated in `browser/provider.ts`, which owns the
-    // shape of every variable below; declared here so `npm start` fails on a
-    // typo rather than silently running local.
-    TREVRA_BROWSER_PROVIDER: z.enum(['local', 'remote']).optional(),
-    TREVRA_BROWSER_CDP_URL: z.string().optional(),
-    TREVRA_BROWSER_API_KEY: z.string().optional(),
-    TREVRA_BROWSER_CONNECT: z.enum(['cdp', 'playwright']).optional(),
-    TREVRA_BROWSER_HEADERS: z.string().optional(),
-    TREVRA_BROWSER_LABEL: z.string().optional()
-  }).parse(env);
+  const base = z
+    .object({
+      PORT: z.coerce.number().int().min(1).max(65535).default(43887),
+      APP_ORIGIN: z.string().default('http://localhost:43173,http://localhost:43887'),
+      DATABASE_URL: z.string().min(1),
+      AUTOMATION_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
+      TREVRA_ORCHESTRATOR: z.enum(['postgres', 'temporal']).default('postgres'),
+      TEMPORAL_ADDRESS: z.string().optional(),
+      TEMPORAL_NAMESPACE: z.string().optional(),
+      TEMPORAL_TASK_QUEUE: z.string().optional(),
+      TEMPORAL_TLS: booleanString.optional(),
+      TEMPORAL_API_KEY: z.string().optional(),
+      PUBLIC_REGISTRY_API_URL: optionalUrl,
+      PUBLIC_REGISTRY_CORS_ORIGIN: z.string().optional(),
+      TREVRA_SANDBOX_GATEWAY_URL: optionalUrl,
+      TREVRA_SANDBOX_GATEWAY_TOKEN: z.string().optional(),
+      TREVRA_REMOTE_ACTION_ADAPTERS_JSON: z.string().optional(),
+      COOKIE_SECURE: booleanString.default(production ? 'true' : 'false'),
+      ALLOW_DEMO_AUTH: booleanString.optional(),
+      ALLOW_SIMULATED_EXECUTION: booleanString.optional(),
+      BETTER_AUTH_SECRET: z.string().optional(),
+      BETTER_AUTH_URL: optionalUrl,
+      GOOGLE_CLIENT_ID: z.string().optional(),
+      GOOGLE_CLIENT_SECRET: z.string().optional(),
+      PUBLIC_SITE_URL: optionalUrl,
+      PUBLIC_SUPPORT_EMAIL: z.string().email().optional(),
+      SECURITY_CONTACT_EMAIL: z.string().email().optional(),
+      MARKETING_HASH_SALT: z.string().optional(),
+      TRACTION_ADMIN_TOKEN: z.string().optional(),
+      TREVRA_AGENT_TOKEN_PEPPER: z.string().optional(),
+      TREVRA_SECRETS_KEY: z.string().optional(),
+      // Self-host escape hatch: lets the hosted agent dial a private/loopback model
+      // endpoint. Off by default because baseUrl is workspace-supplied.
+      TREVRA_ALLOW_PRIVATE_MODEL_HOSTS: booleanString.optional(),
+      // Run the hosted agent through a local subscription CLI instead of a BYOK
+      // model key. Self-hosted only -- see the gate below and src/server/agent/cli.ts.
+      TREVRA_AGENT_CLI: z.enum(['claude', 'codex']).optional(),
+      TREVRA_AGENT_CLI_BIN: z.string().optional(),
+      TREVRA_AGENT_CLI_MODEL: z.string().optional(),
+      TREVRA_AGENT_CLI_MCP_COMMAND: z.string().optional(),
+      // How the CLI gets its subscription inside a container: a token, or a
+      // mounted credential directory. Both optional -- on a host where the CLI is
+      // already signed in as the user running Trevra, neither is needed.
+      TREVRA_AGENT_CLI_OAUTH_TOKEN: z.string().optional(),
+      TREVRA_AGENT_CLI_HOME: z.string().optional(),
+      INDEXNOW_KEY: z.string().optional(),
+      NANGO_API_KEY: z.string().optional(),
+      NANGO_WEBHOOK_SIGNING_KEY: z.string().optional(),
+      STRIPE_SECRET_KEY: z.string().optional(),
+      STRIPE_WEBHOOK_SECRET: z.string().optional(),
+      // Opt-OUT for the local LinkedIn worker. Absent means on, except when this
+      // SAME process is a hosted deployment with no remote browser provider,
+      // where the gate below is unconditional -- see `linkedInWorkerConfig`.
+      TREVRA_LINKEDIN_LOCAL: booleanString.optional(),
+      // What kind of deployment this is. Defaults to 'local' because that is
+      // what a self-hoster running `npm start` has, and because the only thing
+      // this value can do is REMOVE a capability -- defaulting it wrong in the
+      // permissive direction is the mistake that matters.
+      //
+      // Which is exactly why the default is NOT allowed to stand in production:
+      // see DEPLOYMENT_MODE_REQUIRED at the top of this file. The default is for
+      // a developer and a self-hoster; a production deployment must say which it
+      // is, because 'local' is already multi-tenant in practice (one workspace
+      // and organization per email that signs in) and the guess only ever errs
+      // towards more capability.
+      TREVRA_DEPLOYMENT_MODE: z.enum(['local', 'hosted']).default('local'),
+      // Chrome profile the operator logged into LinkedIn with by hand. Absent
+      // means ~/.trevra/linkedin-profile, resolved by the worker rather than
+      // here: $HOME belongs to the process that launches the browser.
+      TREVRA_LINKEDIN_PROFILE_DIR: z.string().optional(),
+      // The Reddit pair, on the same terms as the LinkedIn pair above: opt-OUT,
+      // and a SEPARATE browser profile, because one persistent user-data-dir can
+      // hold one signed-in Chrome at a time.
+      TREVRA_REDDIT_LOCAL: booleanString.optional(),
+      TREVRA_REDDIT_PROFILE_DIR: z.string().optional(),
+      // WHERE THE BROWSERS ARE. 'local' is this machine's own Chromium at a
+      // persistent profile directory -- what every deployment did before hosted
+      // execution existed, and still the default. 'remote' attaches to a cloud
+      // browser over CDP, which is the only way a container with no display can
+      // drive one at all. Validated in `browser/provider.ts`, which owns the
+      // shape of every variable below; declared here so `npm start` fails on a
+      // typo rather than silently running local.
+      TREVRA_BROWSER_PROVIDER: z.enum(['local', 'remote']).optional(),
+      TREVRA_BROWSER_CDP_URL: z.string().optional(),
+      TREVRA_BROWSER_API_KEY: z.string().optional(),
+      TREVRA_BROWSER_CONNECT: z.enum(['cdp', 'playwright']).optional(),
+      TREVRA_BROWSER_HEADERS: z.string().optional(),
+      TREVRA_BROWSER_LABEL: z.string().optional()
+    })
+    .parse(env);
 
-  if (!/^postgres(?:ql)?:\/\//i.test(base.DATABASE_URL)) throw new Error('DATABASE_URL must be a PostgreSQL connection string');
+  if (!/^postgres(?:ql)?:\/\//i.test(base.DATABASE_URL))
+    throw new Error('DATABASE_URL must be a PostgreSQL connection string');
   if (Boolean(base.GOOGLE_CLIENT_ID?.trim()) !== Boolean(base.GOOGLE_CLIENT_SECRET?.trim())) {
     throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured together');
   }
-  if (base.INDEXNOW_KEY && !/^[A-Za-z0-9._-]{8,128}$/.test(base.INDEXNOW_KEY)) throw new Error('INDEXNOW_KEY must contain 8-128 URL-safe characters');
+  if (base.INDEXNOW_KEY && !/^[A-Za-z0-9._-]{8,128}$/.test(base.INDEXNOW_KEY))
+    throw new Error('INDEXNOW_KEY must contain 8-128 URL-safe characters');
   // Unconditional, and checked in every mode rather than only in production:
   // the CLI is signed in as one human under a personal subscription, so a
   // hosted Trevra billing other tenants' agent runs to it breaches that
   // subscription. cli.ts refuses this combination too; failing at startup is
   // how an operator finds out before a run does.
   if (base.TREVRA_AGENT_CLI && base.TREVRA_DEPLOYMENT_MODE === 'hosted') {
-    throw new Error('TREVRA_AGENT_CLI cannot be set when TREVRA_DEPLOYMENT_MODE=hosted; a personal Claude or Codex subscription must not back other tenants\' agent runs. Use a BYOK model key instead');
+    throw new Error(
+      "TREVRA_AGENT_CLI cannot be set when TREVRA_DEPLOYMENT_MODE=hosted; a personal Claude or Codex subscription must not back other tenants' agent runs. Use a BYOK model key instead"
+    );
   }
-  const origins = base.APP_ORIGIN.split(',').map((item) => item.trim()).filter(Boolean);
+  const origins = base.APP_ORIGIN.split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
   for (const origin of origins) z.string().url().parse(origin);
   // Read once, before the production block, because three of the checks below
   // ask about it and `browserProviderSettings` reports rather than throws.
@@ -276,11 +301,12 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
 
   if (production) {
     const problems: string[] = [];
-    const localLoopback = base.TREVRA_DEPLOYMENT_MODE === 'local'
-      && isLoopbackHttpUrl(base.PUBLIC_SITE_URL)
-      && isLoopbackHttpUrl(base.BETTER_AUTH_URL)
-      && origins.length > 0
-      && origins.every((origin) => isLoopbackHttpUrl(origin));
+    const localLoopback =
+      base.TREVRA_DEPLOYMENT_MODE === 'local' &&
+      isLoopbackHttpUrl(base.PUBLIC_SITE_URL) &&
+      isLoopbackHttpUrl(base.BETTER_AUTH_URL) &&
+      origins.length > 0 &&
+      origins.every((origin) => isLoopbackHttpUrl(origin));
     // First, because it decides what the rest of this list even means: the
     // guards below fire on TREVRA_*_LOCAL === 'true' being EXPLICIT, which an
     // unset mode never is, so an operator who set nothing got the permissive
@@ -288,19 +314,55 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     // -- zod has already replaced the absence with the default -- so the raw
     // environment is what gets checked.
     if (!(env.TREVRA_DEPLOYMENT_MODE ?? '').trim()) problems.push(DEPLOYMENT_MODE_REQUIRED);
-    if (!base.BETTER_AUTH_SECRET || base.BETTER_AUTH_SECRET.length < 32) problems.push('BETTER_AUTH_SECRET must contain at least 32 characters');
+    if (!base.BETTER_AUTH_SECRET || base.BETTER_AUTH_SECRET.length < 32)
+      problems.push('BETTER_AUTH_SECRET must contain at least 32 characters');
     if (!base.BETTER_AUTH_URL) problems.push('BETTER_AUTH_URL is required');
-    if (base.TREVRA_DEPLOYMENT_MODE === 'hosted' && !(base.GOOGLE_CLIENT_ID && base.GOOGLE_CLIENT_SECRET)) {
-      problems.push('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted because hosted password signup is disabled until verified transactional email is configured');
+    if (
+      base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
+      !(base.GOOGLE_CLIENT_ID && base.GOOGLE_CLIENT_SECRET)
+    ) {
+      problems.push(
+        'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted because hosted password signup is disabled'
+      );
+    }
+    // Hosted operational alerts are a product dependency, not an optional
+    // decoration. Companion disconnects, provider re-auth and action failures
+    // all route through SMTP. Previously an absent SMTP config made those
+    // functions silently no-op while the caller could still mark an alert as
+    // delivered. Refuse that half-configured managed deployment at boot.
+    let smtpReady = false;
+    try {
+      smtpReady = smtpConfig(env) !== null;
+    } catch (error) {
+      problems.push(error instanceof Error ? error.message : String(error));
+    }
+    if (base.TREVRA_DEPLOYMENT_MODE === 'hosted' && !smtpReady) {
+      problems.push(
+        'SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD and EMAIL_FROM are required when TREVRA_DEPLOYMENT_MODE=hosted so operational disconnect/re-auth/failure alerts cannot be silently disabled'
+      );
+    }
+    if (
+      base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
+      companionBrowserConfigured(env) &&
+      !(env.TREVRA_COMPANION_RELEASE_VERSION ?? '').trim()
+    ) {
+      problems.push(
+        'TREVRA_COMPANION_RELEASE_VERSION is required on a hosted companion deployment so the relay never falls back to a stale package version'
+      );
     }
     if (!base.PUBLIC_SITE_URL || (!base.PUBLIC_SITE_URL.startsWith('https://') && !localLoopback)) {
-      problems.push('PUBLIC_SITE_URL is required and must use HTTPS, except for a TREVRA_DEPLOYMENT_MODE=local deployment whose APP_ORIGIN, BETTER_AUTH_URL and PUBLIC_SITE_URL are all loopback HTTP URLs');
+      problems.push(
+        'PUBLIC_SITE_URL is required and must use HTTPS, except for a TREVRA_DEPLOYMENT_MODE=local deployment whose APP_ORIGIN, BETTER_AUTH_URL and PUBLIC_SITE_URL are all loopback HTTP URLs'
+      );
     }
     if (!base.PUBLIC_SUPPORT_EMAIL) problems.push('PUBLIC_SUPPORT_EMAIL is required');
     if (!base.SECURITY_CONTACT_EMAIL) problems.push('SECURITY_CONTACT_EMAIL is required');
-    if (!base.MARKETING_HASH_SALT || base.MARKETING_HASH_SALT.length < 32) problems.push('MARKETING_HASH_SALT must contain at least 32 characters');
-    if (!base.TRACTION_ADMIN_TOKEN || base.TRACTION_ADMIN_TOKEN.length < 32) problems.push('TRACTION_ADMIN_TOKEN must contain at least 32 characters');
-    if (!base.TREVRA_AGENT_TOKEN_PEPPER || base.TREVRA_AGENT_TOKEN_PEPPER.length < 32) problems.push('TREVRA_AGENT_TOKEN_PEPPER must contain at least 32 characters');
+    if (!base.MARKETING_HASH_SALT || base.MARKETING_HASH_SALT.length < 32)
+      problems.push('MARKETING_HASH_SALT must contain at least 32 characters');
+    if (!base.TRACTION_ADMIN_TOKEN || base.TRACTION_ADMIN_TOKEN.length < 32)
+      problems.push('TRACTION_ADMIN_TOKEN must contain at least 32 characters');
+    if (!base.TREVRA_AGENT_TOKEN_PEPPER || base.TREVRA_AGENT_TOKEN_PEPPER.length < 32)
+      problems.push('TREVRA_AGENT_TOKEN_PEPPER must contain at least 32 characters');
     if (!base.INDEXNOW_KEY) problems.push('INDEXNOW_KEY is required');
     // REQUIRED ON HOSTED, optional otherwise -- two rules, deliberately, and
     // two separate failures so the message tells the operator which mistake
@@ -322,12 +384,23 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     // break every existing self-host install on upgrade to buy them nothing.
     // The comment below is the older half of the same rule.
     if (base.TREVRA_DEPLOYMENT_MODE === 'hosted' && !base.TREVRA_SECRETS_KEY) {
-      problems.push('TREVRA_SECRETS_KEY is required when TREVRA_DEPLOYMENT_MODE=hosted: without it no workspace can store a LinkedIn or Reddit credential or a BYOK model key, and every save fails at runtime while the setup screen still reads green. Generate one with `openssl rand -base64 32`');
+      problems.push(
+        'TREVRA_SECRETS_KEY is required when TREVRA_DEPLOYMENT_MODE=hosted: without it no workspace can store a LinkedIn or Reddit credential or a BYOK model key, and every save fails at runtime while the setup screen still reads green. Generate one with `openssl rand -base64 32`'
+      );
     }
     // Optional: absent means BYOK is off, which is a legitimate deployment. Present and malformed is not.
-    if (base.TREVRA_SECRETS_KEY && (!/^[A-Za-z0-9+/]+={0,2}$/.test(base.TREVRA_SECRETS_KEY) || Buffer.from(base.TREVRA_SECRETS_KEY, 'base64').byteLength !== 32)) problems.push('TREVRA_SECRETS_KEY must be 32 random bytes, base64 encoded (openssl rand -base64 32)');
+    if (
+      base.TREVRA_SECRETS_KEY &&
+      (!/^[A-Za-z0-9+/]+={0,2}$/.test(base.TREVRA_SECRETS_KEY) ||
+        Buffer.from(base.TREVRA_SECRETS_KEY, 'base64').byteLength !== 32)
+    )
+      problems.push(
+        'TREVRA_SECRETS_KEY must be 32 random bytes, base64 encoded (openssl rand -base64 32)'
+      );
     if (base.COOKIE_SECURE !== 'true' && !localLoopback) {
-      problems.push('COOKIE_SECURE must be true except for a loopback-only TREVRA_DEPLOYMENT_MODE=local deployment');
+      problems.push(
+        'COOKIE_SECURE must be true except for a loopback-only TREVRA_DEPLOYMENT_MODE=local deployment'
+      );
     }
     // Nango is a capability, not a prerequisite for a single-operator core
     // deployment. Hosted always requires signed integration traffic. Local may
@@ -336,15 +409,20 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     const nangoConfigured = Boolean(base.NANGO_API_KEY || base.NANGO_WEBHOOK_SIGNING_KEY);
     if (base.TREVRA_DEPLOYMENT_MODE === 'hosted' || nangoConfigured) {
       if (!base.NANGO_API_KEY) problems.push('NANGO_API_KEY is required for live integrations');
-      if (!base.NANGO_WEBHOOK_SIGNING_KEY) problems.push('NANGO_WEBHOOK_SIGNING_KEY is required for signed integration webhooks');
+      if (!base.NANGO_WEBHOOK_SIGNING_KEY)
+        problems.push('NANGO_WEBHOOK_SIGNING_KEY is required for signed integration webhooks');
     }
     if (base.ALLOW_DEMO_AUTH === 'true') problems.push('ALLOW_DEMO_AUTH cannot be true');
-    if (base.TREVRA_LINKEDIN_LOCAL === 'true' && base.TREVRA_DEPLOYMENT_MODE === 'hosted' && !browser.remote) {
+    if (
+      base.TREVRA_LINKEDIN_LOCAL === 'true' &&
+      base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
+      !browser.remote
+    ) {
       problems.push(
-        'TREVRA_LINKEDIN_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted and no remote browser is configured; '
-        + 'a hosted container has no display, no Chromium and no browser profile of its own, so there is nothing for it to drive. '
-        + 'Set TREVRA_BROWSER_PROVIDER=remote with TREVRA_BROWSER_CDP_URL to run seats server-side (docs/hosted-execution.md), or leave this unset and run `npm run linkedin:worker` on a machine with a display -- '
-        + 'a workspace\'s LinkedIn credential itself may still be stored and used there; only THIS process opening a browser of its own is what this refuses'
+        'TREVRA_LINKEDIN_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted and no remote browser is configured; ' +
+          'a hosted container has no display, no Chromium and no browser profile of its own, so there is nothing for it to drive. ' +
+          'Set TREVRA_BROWSER_PROVIDER=remote with TREVRA_BROWSER_CDP_URL to run seats server-side (docs/hosted-execution.md), or leave this unset and run `npm run linkedin:worker` on a machine with a display -- ' +
+          "a workspace's LinkedIn credential itself may still be stored and used there; only THIS process opening a browser of its own is what this refuses"
       );
     }
     // A REMOTE PROVIDER THAT WAS ASKED FOR AND DOES NOT HOLD TOGETHER stops the
@@ -357,30 +435,54 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     // provider API key, and on the `{proxyUrl}` form it carries the seat's proxy
     // password too; the socket then carries the member's own session cookies.
     if (browser.remote && /^(ws|http):\/\//i.test(browser.remote.endpointTemplate)) {
-      problems.push('TREVRA_BROWSER_CDP_URL must use wss:// or https:// in production: the connect URL carries the provider API key and the session carries LinkedIn cookies');
+      problems.push(
+        'TREVRA_BROWSER_CDP_URL must use wss:// or https:// in production: the connect URL carries the provider API key and the session carries LinkedIn cookies'
+      );
     }
     // A REMOTE BROWSER WITH NO KEY TO SEAL SESSIONS IS A REMOTE BROWSER THAT
     // CANNOT KEEP A SEAT SIGNED IN. There is no profile directory out there, so
     // the session round-trips through `linkedin_seat_sessions` encrypted, and
     // with no key every run would be a brand-new device sign-in.
     if (browser.remote && !base.TREVRA_SECRETS_KEY) {
-      problems.push('TREVRA_SECRETS_KEY is required when TREVRA_BROWSER_PROVIDER=remote: a browser attached over CDP has no profile directory, so each seat\'s signed-in session is stored encrypted and without a key every run would be a new-device sign-in. Generate one with `openssl rand -base64 32`');
+      problems.push(
+        "TREVRA_SECRETS_KEY is required when TREVRA_BROWSER_PROVIDER=remote: a browser attached over CDP has no profile directory, so each seat's signed-in session is stored encrypted and without a key every run would be a new-device sign-in. Generate one with `openssl rand -base64 32`"
+      );
     }
-    if (base.TREVRA_REDDIT_LOCAL === 'true' && base.TREVRA_DEPLOYMENT_MODE === 'hosted') problems.push('TREVRA_REDDIT_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted; the local Reddit worker drives a browser signed into one human account and is self-hosted only');
-    if (base.STRIPE_SECRET_KEY && !base.STRIPE_WEBHOOK_SECRET) problems.push('STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is configured');
-    if (base.TREVRA_ORCHESTRATOR === 'temporal' && !base.TEMPORAL_ADDRESS) problems.push('TEMPORAL_ADDRESS is required when TREVRA_ORCHESTRATOR=temporal');
-    if (base.TREVRA_SANDBOX_GATEWAY_URL && (!base.TREVRA_SANDBOX_GATEWAY_TOKEN || base.TREVRA_SANDBOX_GATEWAY_TOKEN.length < 32)) problems.push('TREVRA_SANDBOX_GATEWAY_TOKEN must contain at least 32 characters when a sandbox gateway is configured');
+    if (base.TREVRA_REDDIT_LOCAL === 'true' && base.TREVRA_DEPLOYMENT_MODE === 'hosted')
+      problems.push(
+        'TREVRA_REDDIT_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted; the local Reddit worker drives a browser signed into one human account and is self-hosted only'
+      );
+    if (base.STRIPE_SECRET_KEY && !base.STRIPE_WEBHOOK_SECRET)
+      problems.push('STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is configured');
+    if (base.TREVRA_ORCHESTRATOR === 'temporal' && !base.TEMPORAL_ADDRESS)
+      problems.push('TEMPORAL_ADDRESS is required when TREVRA_ORCHESTRATOR=temporal');
+    if (
+      base.TREVRA_SANDBOX_GATEWAY_URL &&
+      (!base.TREVRA_SANDBOX_GATEWAY_TOKEN || base.TREVRA_SANDBOX_GATEWAY_TOKEN.length < 32)
+    )
+      problems.push(
+        'TREVRA_SANDBOX_GATEWAY_TOKEN must contain at least 32 characters when a sandbox gateway is configured'
+      );
     if (base.TREVRA_REMOTE_ACTION_ADAPTERS_JSON) {
       try {
         const adapters = JSON.parse(base.TREVRA_REMOTE_ACTION_ADAPTERS_JSON) as unknown;
-        if (!Array.isArray(adapters)) problems.push('TREVRA_REMOTE_ACTION_ADAPTERS_JSON must be a JSON array');
-        else for (const adapter of adapters) {
-          const endpoint = typeof adapter === 'object' && adapter !== null ? String((adapter as Record<string, unknown>).endpoint ?? '') : '';
-          if (!endpoint.startsWith('https://')) problems.push('Every production remote action adapter endpoint must use HTTPS');
-        }
-      } catch { problems.push('TREVRA_REMOTE_ACTION_ADAPTERS_JSON must contain valid JSON'); }
+        if (!Array.isArray(adapters))
+          problems.push('TREVRA_REMOTE_ACTION_ADAPTERS_JSON must be a JSON array');
+        else
+          for (const adapter of adapters) {
+            const endpoint =
+              typeof adapter === 'object' && adapter !== null
+                ? String((adapter as Record<string, unknown>).endpoint ?? '')
+                : '';
+            if (!endpoint.startsWith('https://'))
+              problems.push('Every production remote action adapter endpoint must use HTTPS');
+          }
+      } catch {
+        problems.push('TREVRA_REMOTE_ACTION_ADAPTERS_JSON must contain valid JSON');
+      }
     }
-    if (problems.length > 0) throw new Error(`Invalid production configuration:\n- ${problems.join('\n- ')}`);
+    if (problems.length > 0)
+      throw new Error(`Invalid production configuration:\n- ${problems.join('\n- ')}`);
   }
 
   return {

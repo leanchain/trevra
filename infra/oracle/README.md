@@ -20,7 +20,7 @@ list opens only SSH.
 - **A1 capacity is frequently exhausted.** `Out of host capacity` on apply is
   normal; bump `availability_domain_index` and retry, or retry later.
 - **Idle reclamation.** Oracle may reclaim Always Free instances averaging
-  under 20% CPU, network, *and* memory across 7 days. The Trevra worker plus
+  under 20% CPU, network, _and_ memory across 7 days. The Trevra worker plus
   Postgres normally keeps memory above that, but it is not guaranteed.
 - **Nango has no arm64 image.** `nangohq/nango-server` publishes amd64 only,
   on every tag. Use Nango Cloud (free tier: 10 connections, 100k proxy
@@ -81,7 +81,7 @@ published. Prefer an immutable release/commit tag over `main` for production.
 `deploy.sh` / `deploy-micro.sh` then perform a hosted-safe rollout in this
 order:
 
-1. verify the instance-local secret file contains `TREVRA_SECRETS_KEY`;
+1. verify the instance-local environment contains every managed-production prerequisite, including custody, OAuth, Nango, transactional SMTP and the advertised companion release version, without printing secret values;
 2. create and validate a mode-0600 custom-format PostgreSQL backup;
 3. pull the requested image;
 4. run `dist-server/server/migrate-job.js` in the one-shot `migrate` service;

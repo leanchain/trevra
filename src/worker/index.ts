@@ -20,7 +20,10 @@ import {
   workerIdentity,
   workerShard
 } from '../server/linkedin/local-worker.js';
-import { notifyDisconnectedCompanionDevices } from '../server/linkedin/companion.js';
+import {
+  notifyCompanionSeatAttentionEmails,
+  notifyDisconnectedCompanionDevices
+} from '../server/linkedin/companion.js';
 import {
   runLinkedInCampaignTick,
   runLinkedInPostTick,
@@ -120,8 +123,7 @@ async function cycle(): Promise<void> {
       runAllAutomationCycles(db),
       runReadyPlaybooks(db),
       runDueAgentSchedules(db),
-      runDueResearchSources(db),
-      notifyDisconnectedCompanionDevices(db)
+      runDueResearchSources(db)
     ]);
   } catch (error) {
     console.error('Worker control-plane cycle failed', error);
@@ -260,14 +262,44 @@ timer.unref();
 const linkedinTimer = setInterval(() => void linkedinCycle(), runtime.automationIntervalMs);
 linkedinTimer.unref();
 
+// Presence alerting is operational monitoring, not business automation. It
+// must not inherit a deployment's five-minute automation cadence, otherwise a
+// five-minute disconnect grace can become almost ten minutes before the first
+// email attempt. Scan independently once a minute; the DB marker makes repeated
+// scans idempotent and notifyDisconnectedCompanionDevices isolates failures per
+// workspace.
+const COMPANION_PRESENCE_SCAN_MS = 60_000;
+let companionPresenceRunning = false;
+async function companionPresenceCycle(): Promise<void> {
+  if (companionPresenceRunning || draining) return;
+  companionPresenceRunning = true;
+  try {
+    await Promise.all([
+      notifyDisconnectedCompanionDevices(db),
+      notifyCompanionSeatAttentionEmails(db)
+    ]);
+  } catch (error) {
+    console.error('Worker companion-presence cycle failed', error);
+  } finally {
+    companionPresenceRunning = false;
+  }
+}
+await companionPresenceCycle();
+const companionPresenceTimer = setInterval(
+  () => void companionPresenceCycle(),
+  COMPANION_PRESENCE_SCAN_MS
+);
+companionPresenceTimer.unref();
+
 async function shutdown(signal: string) {
   if (draining) return;
   draining = true;
   console.log(`${signal} received; draining worker`);
   clearInterval(timer);
   clearInterval(linkedinTimer);
+  clearInterval(companionPresenceTimer);
   const deadline = Date.now() + DRAIN_TIMEOUT_MS;
-  while ((running || linkedinRunning) && Date.now() < deadline)
+  while ((running || linkedinRunning || companionPresenceRunning) && Date.now() < deadline)
     await new Promise((resolve) => setTimeout(resolve, 200));
   if (running)
     console.error(

@@ -56,7 +56,9 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 30_000);
+    // Reconnect is interactive; 30s made a correct server-side clear feel
+    // broken. Ten seconds stays light while making recovery visibly converge.
+    const timer = window.setInterval(() => void load(), 10_000);
     return () => window.clearInterval(timer);
   }, [load]);
   useOutreachRefresh(load);

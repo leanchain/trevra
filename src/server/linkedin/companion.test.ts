@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const notificationMock = vi.hoisted(() => ({
-  notifyCompanionDeviceDisconnected: vi.fn(async () => undefined),
-  notifyCompanionDeviceReconnected: vi.fn(async () => undefined)
+  notifyCompanionDeviceDisconnected: vi.fn(async () => true),
+  notifyCompanionDeviceReconnected: vi.fn(async () => true),
+  notifyLinkedInSeatNeedsAttention: vi.fn(async () => true),
+  notifyLinkedInSeatRecovered: vi.fn(async () => true)
 }));
 vi.mock('../notifications.js', () => notificationMock);
 
@@ -20,6 +22,9 @@ import {
   createCompanionPairing,
   exchangeCompanionPairing,
   listCompanionStatus,
+  markCompanionControlConnected,
+  markCompanionControlDisconnected,
+  notifyCompanionSeatAttentionEmails,
   notifyDisconnectedCompanionDevices,
   revokeCompanionDevice
 } from './companion.js';
@@ -48,6 +53,8 @@ beforeEach(async () => {
   await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
   notificationMock.notifyCompanionDeviceDisconnected.mockClear();
   notificationMock.notifyCompanionDeviceReconnected.mockClear();
+  notificationMock.notifyLinkedInSeatNeedsAttention.mockClear();
+  notificationMock.notifyLinkedInSeatRecovered.mockClear();
 });
 
 afterEach(async () => {
@@ -226,11 +233,13 @@ describe('LinkedIn companion pairing and presence', () => {
       now: NOW
     });
 
-    // Pairing alone is not presence. The device becomes online only when its
-    // bearer token actually authenticates a control connection.
+    // Pairing alone is not presence. The DB lease begins when the bearer
+    // authenticates; the UI's stronger online bit requires a live control
+    // WebSocket too.
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(false);
     await authenticateCompanionToken(db, paired.token, NOW);
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(true);
+    markCompanionControlConnected(paired.deviceId, 'test-control');
 
     // Readiness ages out once the device heartbeat goes stale.
     expect(
@@ -241,9 +250,15 @@ describe('LinkedIn companion pairing and presence', () => {
       )
     ).toBe(false);
 
-    const status = await listCompanionStatus(db, WORKSPACE_ID, NOW);
-    expect(status.devices).toEqual([
+    expect((await listCompanionStatus(db, WORKSPACE_ID, NOW)).devices).toEqual([
       expect.objectContaining({ id: paired.deviceId, online: true, label: 'Laptop' })
+    ]);
+
+    // A known socket close updates user-facing presence immediately rather
+    // than lying "online" for the remainder of the 90-second DB lease.
+    markCompanionControlDisconnected(paired.deviceId, 'test-control');
+    expect((await listCompanionStatus(db, WORKSPACE_ID, NOW)).devices).toEqual([
+      expect.objectContaining({ id: paired.deviceId, online: false, label: 'Laptop' })
     ]);
   });
 
@@ -297,6 +312,12 @@ describe('LinkedIn companion pairing and presence', () => {
       })
     ]);
 
+    await notifyCompanionSeatAttentionEmails(db, NOW);
+    expect(notificationMock.notifyLinkedInSeatNeedsAttention).toHaveBeenCalledTimes(1);
+    // A second scan sees the delivery marker and does not spam the same alert.
+    await notifyCompanionSeatAttentionEmails(db, new Date(NOW.getTime() + 500));
+    expect(notificationMock.notifyLinkedInSeatNeedsAttention).toHaveBeenCalledTimes(1);
+
     await recordSeatEvent(
       db,
       {
@@ -310,6 +331,10 @@ describe('LinkedIn companion pairing and presence', () => {
     expect(
       (await listCompanionStatus(db, WORKSPACE_ID, new Date(NOW.getTime() + 1000))).attention
     ).toEqual([]);
+    await notifyCompanionSeatAttentionEmails(db, new Date(NOW.getTime() + 1000));
+    expect(notificationMock.notifyLinkedInSeatRecovered).toHaveBeenCalledTimes(1);
+    await notifyCompanionSeatAttentionEmails(db, new Date(NOW.getTime() + 1500));
+    expect(notificationMock.notifyLinkedInSeatRecovered).toHaveBeenCalledTimes(1);
   });
 
   it('revocation invalidates the device token and immediately removes readiness', async () => {
@@ -382,6 +407,20 @@ describe('LinkedIn companion disconnect/reconnect notifications', () => {
       })
     );
     expect(await disconnectNotifiedAt(paired.deviceId)).not.toBeNull();
+  });
+
+  it('does not mark an outage notified when no email was actually delivered', async () => {
+    const paired = await pairedDevice();
+    await setLastSeen(paired.deviceId, NOW);
+    notificationMock.notifyCompanionDeviceDisconnected.mockResolvedValueOnce(false);
+
+    await notifyDisconnectedCompanionDevices(
+      db,
+      new Date(NOW.getTime() + COMPANION_DEVICE_DISCONNECT_GRACE_MS + 1)
+    );
+
+    expect(notificationMock.notifyCompanionDeviceDisconnected).toHaveBeenCalledTimes(1);
+    expect(await disconnectNotifiedAt(paired.deviceId)).toBeNull();
   });
 
   it('does not send a duplicate disconnect email on a later scan before the device reconnects', async () => {

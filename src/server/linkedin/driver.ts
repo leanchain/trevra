@@ -344,9 +344,14 @@ export const SELECTORS = {
     'text=/reached the weekly invitation limit|You.ve reached the limit|try again next week|invitation limit/i',
   /** A restriction notice, which is a limit wall wearing different words. */
   restrictionNotice: 'text=/temporarily restricted|unusual activity|account has been restricted/i',
-  /** Captcha, PIN entry, or any other "prove you are a human" interstitial. */
+  /**
+   * A visible CAPTCHA / verification surface. Keep this deliberately narrow:
+   * ordinary sign-in and OTP fields are handled by the login flow itself and
+   * must never manufacture a "human check" alert merely because a hidden copy
+   * exists in LinkedIn's DOM.
+   */
   challengeForm:
-    'form.challenge, input[name="pin"], #captcha-internal, iframe[title*="challenge" i]',
+    'form.challenge:visible, #captcha-internal:visible, iframe[title*="challenge" i]:visible',
   profileUnavailable: 'text=/This page doesn.t exist|Profile unavailable|page not found/i',
   /**
    * The display name on a profile page.
@@ -452,8 +457,15 @@ export const SELECTORS = {
     '#primaryNavLinksComponentRef, header a[href*="/mynetwork/"], nav a[href*="/mynetwork/"]'
 } as const;
 
-/** Where a checkpoint lands. URL-level, so it is caught before any selector is read. */
-const CHECKPOINT_PATH = /\/(checkpoint|uas\/login)\//i;
+/**
+ * URLs that are themselves positive evidence of a human checkpoint.
+ *
+ * `/uas/login/` is NOT one of them: LinkedIn still uses that as an ordinary
+ * legacy sign-in route. Treating the whole subtree as a checkpoint turned a
+ * plain expired session into a false "CAPTCHA / human check" alert.
+ */
+const CHECKPOINT_PATH =
+  /\/(?:checkpoint(?:\/|$)|uas\/login\/(?:challenge|captcha|verify|checkpoint)(?:\/|$))/i;
 
 /** LinkedIn hosts this driver may navigate to. Nothing else, ever. */
 const ALLOWED_HOSTS = new Set(['linkedin.com', 'www.linkedin.com']);

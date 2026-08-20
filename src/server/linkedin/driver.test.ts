@@ -7,6 +7,7 @@ import {
   parseConnectionsCount,
   readProfileDegree,
   readSeat,
+  sessionRecoveryReason,
   viewProfile,
   type LinkedInLocator,
   type LinkedInPage
@@ -69,7 +70,10 @@ function fakePage(options: { startAt: string; linkOnPage: boolean }): {
 }
 describe('reaching a profile', () => {
   it('clicks a link that is already on the page instead of loading the URL cold', async () => {
-    const { page, navigations, clicked } = fakePage({ startAt: 'https://www.linkedin.com/feed/', linkOnPage: true });
+    const { page, navigations, clicked } = fakePage({
+      startAt: 'https://www.linkedin.com/feed/',
+      linkOnPage: true
+    });
 
     const result = await viewProfile(page, TARGET);
 
@@ -81,7 +85,10 @@ describe('reaching a profile', () => {
   });
 
   it('falls back to the address bar when the page shows no link to the target', async () => {
-    const { page, navigations, clicked } = fakePage({ startAt: 'https://www.linkedin.com/feed/', linkOnPage: false });
+    const { page, navigations, clicked } = fakePage({
+      startAt: 'https://www.linkedin.com/feed/',
+      linkOnPage: false
+    });
 
     const result = await viewProfile(page, TARGET);
 
@@ -115,12 +122,14 @@ describe('isLoggedIn', () => {
 
   it('recognises the signed-in EU connect-services interstitial without choosing a privacy preference', async () => {
     const navigations: string[] = [];
-    let current = 'https://www.linkedin.com/connect-services/?session_redirect=https%3A%2F%2Fwww.linkedin.com%2Ffeed%2F';
+    let current =
+      'https://www.linkedin.com/connect-services/?session_redirect=https%3A%2F%2Fwww.linkedin.com%2Ffeed%2F';
     const page: LinkedInPage = {
       goto: async (url: string) => {
         navigations.push(url);
         if (url === 'https://www.linkedin.com/feed/') {
-          current = 'https://www.linkedin.com/connect-services/?session_redirect=https%3A%2F%2Fwww.linkedin.com%2Ffeed%2F';
+          current =
+            'https://www.linkedin.com/connect-services/?session_redirect=https%3A%2F%2Fwww.linkedin.com%2Ffeed%2F';
         } else if (url === 'https://www.linkedin.com/in/me/') {
           current = 'https://www.linkedin.com/in/david-hasan-b77a33429/?isSelfProfile=true';
         } else {
@@ -157,6 +166,26 @@ describe('isLoggedIn', () => {
     expect(await isLoggedIn(page)).toBe(true);
     expect(navigations).toEqual(['https://www.linkedin.com/feed/']);
     expect(navigations).not.toContain('https://www.linkedin.com/in/me/');
+  });
+
+  it('does not turn legacy /uas/login into a human-check alert', async () => {
+    const page: LinkedInPage = {
+      goto: async () => undefined,
+      url: () => 'https://www.linkedin.com/uas/login/',
+      locator: emptyLocator,
+      waitForTimeout: async () => {}
+    };
+    expect(await sessionRecoveryReason(page)).toBe('signed_out');
+  });
+
+  it('still recognises a specific legacy verification route as a challenge', async () => {
+    const page: LinkedInPage = {
+      goto: async () => undefined,
+      url: () => 'https://www.linkedin.com/uas/login/challenge/',
+      locator: emptyLocator,
+      waitForTimeout: async () => {}
+    };
+    expect(await sessionRecoveryReason(page)).toBe('challenge');
   });
 });
 
@@ -200,7 +229,7 @@ function degreePage(options: { badge?: string | null; pending?: boolean }): Link
       first: () => self,
       click: async () => {},
       fill: async () => {},
-      textContent: async () => (isBadge ? options.badge ?? null : null)
+      textContent: async () => (isBadge ? (options.badge ?? null) : null)
     };
     return self;
   };
@@ -237,7 +266,10 @@ describe('readProfileDegree', () => {
   });
 
   it('refuses a target that is not a LinkedIn profile rather than navigating to it', async () => {
-    const read = await readProfileDegree(degreePage({ badge: '1st' }), 'https://evil.example/steal');
+    const read = await readProfileDegree(
+      degreePage({ badge: '1st' }),
+      'https://evil.example/steal'
+    );
     expect(isDegreeRead(read)).toBe(false);
     expect(read).toMatchObject({ ok: false, failureKind: 'not_found' });
   });
@@ -260,16 +292,23 @@ describe('readProfileDegree', () => {
 describe('readSeat', () => {
   const PROFILE = 'https://www.linkedin.com/in/david-hasan-b77a33429/';
 
-  function seatPage(options: { heading?: string; title?: string; connectionsText?: string }): LinkedInPage {
+  function seatPage(options: {
+    heading?: string;
+    title?: string;
+    connectionsText?: string;
+  }): LinkedInPage {
     let current = 'https://www.linkedin.com/feed/';
 
     const matching = (selector: string): string | null => {
       const onConnections = current.includes('/connections');
-      if (selector === SELECTORS.profileHeading) return onConnections ? null : (options.heading ?? null);
+      if (selector === SELECTORS.profileHeading)
+        return onConnections ? null : (options.heading ?? null);
       if (selector === SELECTORS.connectionsCount) {
         // The English matcher, which is a text= selector: it only answers when
         // the words are there.
-        return onConnections && /connections?/i.test(options.connectionsText ?? '') ? options.connectionsText! : null;
+        return onConnections && /connections?/i.test(options.connectionsText ?? '')
+          ? options.connectionsText!
+          : null;
       }
       if (selector === SELECTORS.connectionsCountAny) {
         return onConnections && /^\s*[0-9][0-9.,   ]*\s+\S+\s*$/.test(options.connectionsText ?? '')
@@ -304,15 +343,24 @@ describe('readSeat', () => {
   }
 
   it('reads the name from the document title when the page has no heading', async () => {
-    const read = await readSeat(seatPage({ title: '(3) David hasan | LinkedIn', connectionsText: '1 Kontakt' }));
+    const read = await readSeat(
+      seatPage({ title: '(3) David hasan | LinkedIn', connectionsText: '1 Kontakt' })
+    );
 
-    expect(read).toMatchObject({ ok: true, profileUrl: PROFILE, name: 'David hasan', connectionsCount: 1 });
+    expect(read).toMatchObject({
+      ok: true,
+      profileUrl: PROFILE,
+      name: 'David hasan',
+      connectionsCount: 1
+    });
     // Nothing was missed, so nothing is reported as missing.
     expect(read).toMatchObject({ degraded: [] });
   });
 
   it('prefers the heading when there is one, and does not need a title at all', async () => {
-    const read = await readSeat(seatPage({ heading: 'David Hasan', connectionsText: '1,234 connections' }));
+    const read = await readSeat(
+      seatPage({ heading: 'David Hasan', connectionsText: '1,234 connections' })
+    );
     expect(read).toMatchObject({ ok: true, name: 'David Hasan', connectionsCount: 1234 });
   });
 
@@ -362,12 +410,24 @@ describe('isLoggedIn', () => {
   }
 
   it('recognises the current chrome, which carries no global-nav class at all', async () => {
-    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/feed/', markers: ['#primaryNavLinksComponentRef'] }))).toBe(true);
-    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/messaging/', markers: ['/mynetwork/'] }))).toBe(true);
+    expect(
+      await isLoggedIn(
+        page({ at: 'https://www.linkedin.com/feed/', markers: ['#primaryNavLinksComponentRef'] })
+      )
+    ).toBe(true);
+    expect(
+      await isLoggedIn(
+        page({ at: 'https://www.linkedin.com/messaging/', markers: ['/mynetwork/'] })
+      )
+    ).toBe(true);
   });
 
   it('still recognises the older chrome', async () => {
-    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/feed/', markers: ['header.global-nav'] }))).toBe(true);
+    expect(
+      await isLoggedIn(
+        page({ at: 'https://www.linkedin.com/feed/', markers: ['header.global-nav'] })
+      )
+    ).toBe(true);
   });
 
   /** The reskin-proof answer: where the feed lands is a fact about LinkedIn. */
@@ -376,14 +436,40 @@ describe('isLoggedIn', () => {
   });
 
   it('says no when the feed is bounced to the login page or the guest home', async () => {
-    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/messaging/', feedLandsAt: 'https://www.linkedin.com/login' }))).toBe(false);
-    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/messaging/', feedLandsAt: 'https://www.linkedin.com/' }))).toBe(false);
-    expect(await isLoggedIn(page({ at: 'https://www.linkedin.com/messaging/', feedLandsAt: 'https://www.linkedin.com/authwall?trk=x' }))).toBe(false);
+    expect(
+      await isLoggedIn(
+        page({
+          at: 'https://www.linkedin.com/messaging/',
+          feedLandsAt: 'https://www.linkedin.com/login'
+        })
+      )
+    ).toBe(false);
+    expect(
+      await isLoggedIn(
+        page({
+          at: 'https://www.linkedin.com/messaging/',
+          feedLandsAt: 'https://www.linkedin.com/'
+        })
+      )
+    ).toBe(false);
+    expect(
+      await isLoggedIn(
+        page({
+          at: 'https://www.linkedin.com/messaging/',
+          feedLandsAt: 'https://www.linkedin.com/authwall?trk=x'
+        })
+      )
+    ).toBe(false);
   });
 
   it('says no on a checkpoint, whatever else is on the page', async () => {
     expect(
-      await isLoggedIn(page({ at: 'https://www.linkedin.com/checkpoint/challenge/', markers: ['#primaryNavLinksComponentRef'] }))
+      await isLoggedIn(
+        page({
+          at: 'https://www.linkedin.com/checkpoint/challenge/',
+          markers: ['#primaryNavLinksComponentRef']
+        })
+      )
     ).toBe(false);
   });
 });

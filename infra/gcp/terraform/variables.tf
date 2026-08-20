@@ -97,13 +97,49 @@ variable "google_client_id" {
   type        = string
   sensitive   = true
 }
-
 variable "google_client_secret" {
   description = "Google OAuth web application client secret."
   type        = string
   sensitive   = true
 }
 
+variable "smtp_server" {
+  description = "SMTP server used for hosted operational and transactional email."
+  type        = string
+}
+
+variable "smtp_port" {
+  description = "SMTP port; 465 uses implicit TLS, other ports use STARTTLS."
+  type        = number
+  default     = 587
+}
+
+variable "smtp_username" {
+  description = "SMTP username."
+  type        = string
+  sensitive   = true
+}
+
+variable "smtp_password" {
+  description = "SMTP password."
+  type        = string
+  sensitive   = true
+}
+
+variable "email_from" {
+  description = "From address for Trevra transactional email."
+  type        = string
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.email_from))
+    error_message = "email_from must be a valid email address."
+  }
+}
+
+variable "email_from_name" {
+  description = "Display name for Trevra transactional email."
+  type        = string
+  default     = "Trevra"
+}
 variable "nango_host" {
   description = "Public HTTPS URL of the separately deployed self-hosted Nango API."
   type        = string

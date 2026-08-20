@@ -1,5 +1,6 @@
 import { id, type Db } from '../db.js';
 import { renderPostBody } from '../../shared/linkedin-post-format.js';
+import { companionSeatNeedsAttention } from './companion.js';
 import { ownerSeat, type SeatRef } from './actions.js';
 import {
   isSeatRead,
@@ -987,24 +988,29 @@ export async function runLinkedInSideTasks(
   // test-fixture workspaces that had leaked into the database and name no real
   // account at all.
   //
-  // A paused seat is a seat an operator or a safety rule has switched off, and
-  // "switched off" has to include the sign-in. Checking here rather than in
-  // `linkedinSeatRefs` keeps that listing honest -- it still returns every seat,
-  // because other callers need it to -- and puts the refusal at the one place
-  // that would otherwise pay for it in an open browser.
+  // A paused seat still opens NO browser for ordinary work. The one exception
+  // is an explicit companion recovery verification: the operator has just
+  // opened this exact profile by hand, and the only question we ask is whether
+  // that session is healthy now. No inbox, profile, lead source or send runs.
+  // Without this exception a paused seat can keep a stale reconnect banner
+  // forever even after the human check was completed successfully.
   const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
   const now = options.now ?? new Date();
   const seat = await getSeat(db, options.workspaceId, seatKey);
   if (!seat) return result;
-  if (effectivePosture(seat, now) === 'paused') return result;
+  const runs = await sideTaskRuns(db, options.workspaceId, seatKey);
+  const returnedAt = config.companionBrowser ? availabilityCatchUpPending(runs) : null;
+  const recoveryVerification =
+    Boolean(returnedAt) &&
+    config.companionBrowser &&
+    (await companionSeatNeedsAttention(db, options.workspaceId, seatKey));
+  if (effectivePosture(seat, now) === 'paused' && !recoveryVerification) return result;
 
   // A NORMAL VISIT follows the deterministic daily rhythm. A COMPANION RETURN
   // may additionally create one consolidated state catch-up after the laptop
   // or the signed-in Trevra tab was genuinely absent long enough for its lease
   // to expire. That catch-up is one visit NOW -- never replay of every visit
   // the machine slept through.
-  const runs = await sideTaskRuns(db, options.workspaceId, seatKey);
-  const returnedAt = config.companionBrowser ? availabilityCatchUpPending(runs) : null;
   const verdict = visitAt(
     seat,
     now,
@@ -1016,11 +1022,12 @@ export async function runLinkedInSideTasks(
   const startedAt = normalVisit ? verdict.startedAt! : now;
   const visitIndex = normalVisit ? verdict.visit!.index : -1;
 
-  // MID-SITTING-BREAK. A reconnect does not outrank a break set by a sitting
-  // that just used the account. The availability marker remains pending and is
-  // consumed later, so nothing is lost and the browser is not reopened early.
+  // A sitting break blocks ordinary LinkedIn work, not proof that the HUMAN
+  // recovery the operator just completed actually worked. Verification opens
+  // no inbox, profile, lead source or send surface; it only asks the existing
+  // session question once.
   const resting = await seatRestingUntil(db, options.workspaceId, seatKey);
-  if (resting && resting.getTime() > now.getTime()) {
+  if (resting && resting.getTime() > now.getTime() && !recoveryVerification) {
     return {
       ...result,
       skipped: `This seat is between sittings until ${resting.toISOString()}, so nothing was read.`
@@ -1044,7 +1051,7 @@ export async function runLinkedInSideTasks(
   const due = new Set(
     dueSideTasks(seat, runs, now, { limit: catchUp ? MAX_CATCHUP_TASKS_PER_VISIT : undefined })
   );
-  if (due.size === 0) {
+  if (due.size === 0 && !recoveryVerification) {
     if (catchUp)
       await markSideTaskRun(db, options.workspaceId, seatKey, AVAILABILITY_CATCHUP_MARKER, now);
     return {
@@ -1093,6 +1100,17 @@ export async function runLinkedInSideTasks(
       now
     );
     return { ...result, skipped: session.blocked };
+  }
+
+  // A reconnect is now a first-class health check. With no maintenance due,
+  // openLinkedInSession has already emitted `session_reused` or `login`, which
+  // is the durable proof that clears the attention event. Do not manufacture
+  // an inbox walk or other browsing merely to make the UI turn green.
+  if (due.size === 0) {
+    return {
+      ...result,
+      skipped: 'The LinkedIn session was verified healthy after companion recovery.'
+    };
   }
 
   // A VISIT STARTS ON THE FEED, because that is where a person lands when they

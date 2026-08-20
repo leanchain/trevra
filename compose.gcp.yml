@@ -3,17 +3,20 @@
 # APP_ORIGIN, BETTER_AUTH_URL, BETTER_AUTH_SECRET, GOOGLE_CLIENT_ID,
 # GOOGLE_CLIENT_SECRET, PUBLIC_LEGAL_NAME, PUBLIC_SUPPORT_EMAIL,
 # SECURITY_CONTACT_EMAIL, MARKETING_HASH_SALT, TRACTION_ADMIN_TOKEN,
-# INDEXNOW_KEY, NANGO_API_KEY, and NANGO_WEBHOOK_SIGNING_KEY.
+# TREVRA_AGENT_TOKEN_PEPPER, TREVRA_SECRETS_KEY, INDEXNOW_KEY,
+# NANGO_API_KEY, NANGO_WEBHOOK_SIGNING_KEY, SMTP_SERVER, SMTP_PORT,
+# SMTP_USERNAME, SMTP_PASSWORD, and EMAIL_FROM.
 name: trevra-cloud-run
 
 services:
   trevra:
     image: ${GCP_IMAGE}
     ports:
-      - "8080:8080"
+      - '8080:8080'
     environment:
       NODE_ENV: production
-      PORT: "8080"
+      TREVRA_DEPLOYMENT_MODE: hosted
+      PORT: '8080'
       DATABASE_URL: ${DATABASE_URL}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
       TREVRA_ORCHESTRATOR: ${TREVRA_ORCHESTRATOR:-postgres}
@@ -33,6 +36,12 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      SMTP_SERVER: ${SMTP_SERVER}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      EMAIL_FROM: ${EMAIL_FROM}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Trevra}
       PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-${APP_ORIGIN}}
       PUBLIC_LEGAL_NAME: ${PUBLIC_LEGAL_NAME}
       PUBLIC_SUPPORT_EMAIL: ${PUBLIC_SUPPORT_EMAIL}
@@ -42,8 +51,9 @@ services:
       MARKETING_HASH_SALT: ${MARKETING_HASH_SALT}
       TRACTION_ADMIN_TOKEN: ${TRACTION_ADMIN_TOKEN}
       TREVRA_AGENT_TOKEN_PEPPER: ${TREVRA_AGENT_TOKEN_PEPPER}
+      TREVRA_SECRETS_KEY: ${TREVRA_SECRETS_KEY}
       INDEXNOW_KEY: ${INDEXNOW_KEY}
-      COOKIE_SECURE: "true"
+      COOKIE_SECURE: 'true'
       NANGO_HOST: ${NANGO_HOST}
       NANGO_PUBLIC_SERVER_URL: ${NANGO_HOST}
       NANGO_API_KEY: ${NANGO_API_KEY}
@@ -52,8 +62,8 @@ services:
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       INGEST_API_KEY: ${INGEST_API_KEY}
-      ALLOW_DEMO_AUTH: "false"
-      ALLOW_SIMULATED_EXECUTION: "false"
+      ALLOW_DEMO_AUTH: 'false'
+      ALLOW_SIMULATED_EXECUTION: 'false'
     depends_on:
       - cloud-sql-proxy
     x-google-cloudrun:
@@ -63,10 +73,10 @@ services:
   cloud-sql-proxy:
     image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.18.2
     command:
-      - "--structured-logs"
-      - "--address=0.0.0.0"
-      - "--port=5432"
-      - "${CLOUD_SQL_INSTANCE}"
+      - '--structured-logs'
+      - '--address=0.0.0.0'
+      - '--port=5432'
+      - '${CLOUD_SQL_INSTANCE}'
     expose:
-      - "5432"
+      - '5432'
     cpus: 1

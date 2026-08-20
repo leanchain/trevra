@@ -44,8 +44,30 @@ if ! ssh "$REMOTE" "test -f ${APP_DIR}/.env.oracle"; then
   echo "Create it from infra/oracle/.env.oracle.example (see gen-secrets.sh), chmod 600." >&2
   exit 1
 fi
-if ! ssh "$REMOTE" "grep -Eq '^TREVRA_SECRETS_KEY=.+$' ${APP_DIR}/.env.oracle"; then
-  echo "${APP_DIR}/.env.oracle is missing TREVRA_SECRETS_KEY; hosted deployment refuses to proceed." >&2
+if ! ssh "$REMOTE" bash -s -- "${APP_DIR}/.env.oracle" <<'REMOTE_ENV'
+set -euo pipefail
+file="$1"
+required=(
+  TREVRA_DB_PASSWORD CLOUDFLARE_TUNNEL_TOKEN
+  APP_ORIGIN BETTER_AUTH_URL PUBLIC_SITE_URL
+  BETTER_AUTH_SECRET GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
+  PUBLIC_SUPPORT_EMAIL SECURITY_CONTACT_EMAIL
+  MARKETING_HASH_SALT TRACTION_ADMIN_TOKEN TREVRA_AGENT_TOKEN_PEPPER INDEXNOW_KEY
+  NANGO_API_KEY NANGO_WEBHOOK_SIGNING_KEY TREVRA_SECRETS_KEY
+  SMTP_SERVER SMTP_PORT SMTP_USERNAME SMTP_PASSWORD EMAIL_FROM
+  TREVRA_COMPANION_RELEASE_VERSION
+)
+missing=()
+for key in "${required[@]}"; do
+  grep -Eq "^${key}=.+$" "$file" || missing+=("$key")
+done
+if ((${#missing[@]})); then
+  printf 'missing managed environment: %s\n' "${missing[*]}" >&2
+  exit 1
+fi
+REMOTE_ENV
+then
+  echo "${APP_DIR}/.env.oracle is incomplete; hosted deployment refuses to proceed." >&2
   exit 1
 fi
 

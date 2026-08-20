@@ -19,6 +19,11 @@ locals {
     "indexnow-key"              = random_id.indexnow.hex
     "google-client-id"          = var.google_client_id
     "google-client-secret"      = var.google_client_secret
+    "smtp-server"               = var.smtp_server
+    "smtp-username"             = var.smtp_username
+    "smtp-password"             = var.smtp_password
+    "email-from"                = var.email_from
+    "trevra-secrets-key"        = random_id.trevra_secrets_key.b64_std
     "nango-api-key"             = var.nango_api_key
     "nango-webhook-signing-key" = var.nango_webhook_signing_key
     "ingest-api-key"            = random_password.ingest.result
@@ -123,6 +128,10 @@ resource "random_password" "agent_token_pepper" {
 
 resource "random_id" "indexnow" {
   byte_length = 16
+}
+
+resource "random_id" "trevra_secrets_key" {
+  byte_length = 32
 }
 
 resource "google_sql_database_instance" "trevra" {
@@ -261,6 +270,18 @@ resource "google_cloud_run_v2_service" "trevra" {
       env {
         name  = "NODE_ENV"
         value = "production"
+      }
+      env {
+        name  = "TREVRA_DEPLOYMENT_MODE"
+        value = "hosted"
+      }
+      env {
+        name  = "SMTP_PORT"
+        value = tostring(var.smtp_port)
+      }
+      env {
+        name  = "EMAIL_FROM_NAME"
+        value = var.email_from_name
       }
       env {
         name  = "PORT"
@@ -456,6 +477,9 @@ resource "google_cloud_run_v2_service" "trevra_worker" {
       dynamic "env" {
         for_each = {
           NODE_ENV                           = "production"
+          TREVRA_DEPLOYMENT_MODE             = "hosted"
+          SMTP_PORT                          = tostring(var.smtp_port)
+          EMAIL_FROM_NAME                    = var.email_from_name
           PORT                               = "8080"
           APP_ORIGIN                         = var.app_origin
           BETTER_AUTH_URL                    = var.better_auth_url

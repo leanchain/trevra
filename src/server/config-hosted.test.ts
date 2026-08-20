@@ -44,6 +44,12 @@ const production = {
   BETTER_AUTH_URL: 'https://app.example.com',
   GOOGLE_CLIENT_ID: 'hosted-test.apps.googleusercontent.com',
   GOOGLE_CLIENT_SECRET: 'hosted-test-secret',
+  SMTP_SERVER: 'smtp.example.com',
+  SMTP_PORT: '587',
+  SMTP_USERNAME: 'trevra',
+  SMTP_PASSWORD: 'smtp-secret',
+  EMAIL_FROM: 'alerts@example.com',
+  EMAIL_FROM_NAME: 'Trevra',
   PUBLIC_SITE_URL: 'https://example.com',
   PUBLIC_SUPPORT_EMAIL: 'support@example.com',
   SECURITY_CONTACT_EMAIL: 'security@example.com',
@@ -87,9 +93,16 @@ describe('the hosted LinkedIn worker gate', () => {
     expect(config.remoteBrowser).toBe(true);
   });
 
-  it('still honours the self-hoster\'s explicit off switch, on both providers', () => {
+  it("still honours the self-hoster's explicit off switch, on both providers", () => {
     expect(linkedInWorkerConfig({ ...base, TREVRA_LINKEDIN_LOCAL: 'false' }).enabled).toBe(false);
-    expect(linkedInWorkerConfig({ ...base, ...REMOTE, TREVRA_DEPLOYMENT_MODE: 'hosted', TREVRA_LINKEDIN_LOCAL: 'false' }).enabled).toBe(false);
+    expect(
+      linkedInWorkerConfig({
+        ...base,
+        ...REMOTE,
+        TREVRA_DEPLOYMENT_MODE: 'hosted',
+        TREVRA_LINKEDIN_LOCAL: 'false'
+      }).enabled
+    ).toBe(false);
   });
 
   it('leaves a self-hosted deployment exactly as it was', () => {
@@ -97,7 +110,10 @@ describe('the hosted LinkedIn worker gate', () => {
     expect(config.enabled).toBe(true);
     expect(config.hosted).toBe(false);
     expect(config.remoteBrowser).toBe(false);
-    expect(validateEnvironment({ ...base }).browserProvider).toEqual({ kind: 'local', provider: null });
+    expect(validateEnvironment({ ...base }).browserProvider).toEqual({
+      kind: 'local',
+      provider: null
+    });
   });
 
   it('reports which provider a deployment uses, by label and never by endpoint', () => {
@@ -111,79 +127,127 @@ describe('the hosted LinkedIn worker gate', () => {
 
 describe('booting a production deployment', () => {
   it('accepts hosted + companion relay with no cloud browser', () => {
-    expect(() => validateEnvironment({
-      ...production,
-      TREVRA_DEPLOYMENT_MODE: 'hosted',
-      TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080'
-    })).not.toThrow();
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_DEPLOYMENT_MODE: 'hosted',
+        TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080',
+        TREVRA_COMPANION_RELEASE_VERSION: '0.2.3'
+      })
+    ).not.toThrow();
   });
 
   it('accepts hosted + remote + an explicit TREVRA_LINKEDIN_LOCAL=true', () => {
-    expect(() => validateEnvironment({
-      ...production,
-      ...REMOTE,
-      TREVRA_DEPLOYMENT_MODE: 'hosted',
-      TREVRA_LINKEDIN_LOCAL: 'true'
-    })).not.toThrow();
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        ...REMOTE,
+        TREVRA_DEPLOYMENT_MODE: 'hosted',
+        TREVRA_LINKEDIN_LOCAL: 'true'
+      })
+    ).not.toThrow();
   });
 
   it('still refuses hosted + TREVRA_LINKEDIN_LOCAL=true with no browser to drive', () => {
-    expect(() => validateEnvironment({
-      ...production,
-      TREVRA_DEPLOYMENT_MODE: 'hosted',
-      TREVRA_LINKEDIN_LOCAL: 'true'
-    })).toThrow(/no remote browser is configured/);
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_DEPLOYMENT_MODE: 'hosted',
+        TREVRA_LINKEDIN_LOCAL: 'true'
+      })
+    ).toThrow(/no remote browser is configured/);
   });
 
   it('refuses to boot on a remote provider that does not hold together, rather than falling back', () => {
     // The silent fallback is the dangerous outcome: a hosted box that reverts
     // to a local browser it does not have looks healthy and sends nothing.
-    expect(() => validateEnvironment({
-      ...production,
-      TREVRA_DEPLOYMENT_MODE: 'hosted',
-      TREVRA_BROWSER_PROVIDER: 'remote'
-    })).toThrow(/TREVRA_BROWSER_CDP_URL/);
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_DEPLOYMENT_MODE: 'hosted',
+        TREVRA_BROWSER_PROVIDER: 'remote'
+      })
+    ).toThrow(/TREVRA_BROWSER_CDP_URL/);
 
-    expect(() => validateEnvironment({
-      ...production,
-      TREVRA_DEPLOYMENT_MODE: 'hosted',
-      TREVRA_BROWSER_PROVIDER: 'remote',
-      TREVRA_BROWSER_CDP_URL: 'wss://x/',
-      TREVRA_BROWSER_HEADERS: 'not json'
-    })).toThrow(/TREVRA_BROWSER_HEADERS/);
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_DEPLOYMENT_MODE: 'hosted',
+        TREVRA_BROWSER_PROVIDER: 'remote',
+        TREVRA_BROWSER_CDP_URL: 'wss://x/',
+        TREVRA_BROWSER_HEADERS: 'not json'
+      })
+    ).toThrow(/TREVRA_BROWSER_HEADERS/);
   });
 
   it('refuses a plaintext CDP endpoint, which carries the key and then the cookies', () => {
-    expect(() => validateEnvironment({
-      ...production,
-      TREVRA_DEPLOYMENT_MODE: 'hosted',
-      TREVRA_BROWSER_PROVIDER: 'remote',
-      TREVRA_BROWSER_CDP_URL: 'ws://connect.example.com/?apiKey={apiKey}&proxy={proxyUrl}'
-    })).toThrow(/wss:\/\/ or https:\/\//);
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_DEPLOYMENT_MODE: 'hosted',
+        TREVRA_BROWSER_PROVIDER: 'remote',
+        TREVRA_BROWSER_CDP_URL: 'ws://connect.example.com/?apiKey={apiKey}&proxy={proxyUrl}'
+      })
+    ).toThrow(/wss:\/\/ or https:\/\//);
   });
 
   it('refuses a remote provider with no key to seal sessions with', () => {
     const { TREVRA_SECRETS_KEY, ...noKey } = production;
-    expect(() => validateEnvironment({
-      ...noKey,
-      ...REMOTE,
-      // 'local' so the hosted-specific secrets-key rule is not what fires.
-      TREVRA_DEPLOYMENT_MODE: 'local'
-    })).toThrow(/TREVRA_SECRETS_KEY is required when TREVRA_BROWSER_PROVIDER=remote/);
+    expect(() =>
+      validateEnvironment({
+        ...noKey,
+        ...REMOTE,
+        // 'local' so the hosted-specific secrets-key rule is not what fires.
+        TREVRA_DEPLOYMENT_MODE: 'local'
+      })
+    ).toThrow(/TREVRA_SECRETS_KEY is required when TREVRA_BROWSER_PROVIDER=remote/);
   });
 
   it('still requires the deployment mode to be stated out loud', () => {
-    const { TREVRA_DEPLOYMENT_MODE, ...unstated } = { ...production, TREVRA_DEPLOYMENT_MODE: 'hosted' };
-    expect(() => validateEnvironment({ ...unstated, ...REMOTE })).toThrow(/TREVRA_DEPLOYMENT_MODE must be set explicitly/);
+    const { TREVRA_DEPLOYMENT_MODE, ...unstated } = {
+      ...production,
+      TREVRA_DEPLOYMENT_MODE: 'hosted'
+    };
+    expect(() => validateEnvironment({ ...unstated, ...REMOTE })).toThrow(
+      /TREVRA_DEPLOYMENT_MODE must be set explicitly/
+    );
   });
 
   it('requires a verified OAuth identity path on hosted production', () => {
     const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ...noGoogle } = production;
-    expect(() => validateEnvironment({ ...noGoogle, TREVRA_DEPLOYMENT_MODE: 'hosted' }))
-      .toThrow(/GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required/);
+    expect(() => validateEnvironment({ ...noGoogle, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
+      /GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required/
+    );
+  });
+
+  it('requires transactional SMTP on hosted production so operational alerts cannot disappear', () => {
+    const {
+      SMTP_SERVER,
+      SMTP_PORT,
+      SMTP_USERNAME,
+      SMTP_PASSWORD,
+      EMAIL_FROM,
+      EMAIL_FROM_NAME,
+      ...noSmtp
+    } = production;
+    expect(() => validateEnvironment({ ...noSmtp, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
+      /SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD and EMAIL_FROM are required/
+    );
+  });
+
+  it('requires an explicit companion release on hosted relay deployments', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_DEPLOYMENT_MODE: 'hosted',
+        TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080'
+      })
+    ).toThrow(/TREVRA_COMPANION_RELEASE_VERSION is required/);
   });
 
   it('boots a self-hosted production deployment with no browser variables at all', () => {
-    expect(() => validateEnvironment({ ...production, TREVRA_DEPLOYMENT_MODE: 'local' })).not.toThrow();
+    expect(() =>
+      validateEnvironment({ ...production, TREVRA_DEPLOYMENT_MODE: 'local' })
+    ).not.toThrow();
   });
 });

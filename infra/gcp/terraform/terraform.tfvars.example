@@ -14,5 +14,11 @@ bing_site_verification   = ""
 # Prefer TF_VAR_* environment variables instead of storing OAuth and provider secrets here.
 google_client_id          = "your-client-id.apps.googleusercontent.com"
 google_client_secret      = "replace-me"
-nango_api_key             = "replace-me"
+smtp_server               = "smtp.example.com"
+smtp_port                 = 587
+smtp_username              = "replace-me"
+smtp_password              = "replace-me"
+email_from                 = "alerts@example.com"
+email_from_name            = "Trevra"
+nango_api_key             = "replace-me"}]}
 nango_webhook_signing_key = "replace-me"

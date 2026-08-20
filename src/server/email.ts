@@ -9,7 +9,13 @@ export interface SmtpConfig {
   fromName: string;
 }
 
-const SMTP_KEYS = ['SMTP_SERVER', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'EMAIL_FROM'] as const;
+const SMTP_KEYS = [
+  'SMTP_SERVER',
+  'SMTP_PORT',
+  'SMTP_USERNAME',
+  'SMTP_PASSWORD',
+  'EMAIL_FROM'
+] as const;
 
 export function smtpConfig(env: NodeJS.ProcessEnv = process.env): SmtpConfig | null {
   const present = SMTP_KEYS.filter((key) => Boolean(env[key]?.trim()));
@@ -81,7 +87,9 @@ export async function sendOrganizationInvitationEmail(input: {
 }): Promise<void> {
   const role = Array.isArray(input.role) ? input.role.join(', ') : input.role;
   const subject = `${input.inviterName} invited you to ${input.organizationName} on Trevra`;
-  const expires = input.expiresAt ? `${new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(input.expiresAt))} UTC` : null;
+  const expires = input.expiresAt
+    ? `${new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(input.expiresAt))} UTC`
+    : null;
   const text = [
     `${input.inviterName} (${input.inviterEmail}) invited you to join ${input.organizationName} as ${role}.`,
     '',
@@ -91,7 +99,9 @@ export async function sendOrganizationInvitationEmail(input: {
     'You will need to sign in with the invited email address before accepting.',
     expires ? `Invitation expires: ${expires}` : '',
     'If you were not expecting this invitation, you can ignore this email.'
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
   const html = `
     <p><strong>${escapeHtml(input.inviterName)}</strong> (${escapeHtml(input.inviterEmail)}) invited you to join <strong>${escapeHtml(input.organizationName)}</strong> as ${escapeHtml(role)}.</p>
     <p><a href="${escapeHtml(input.inviteLink)}">Accept invitation</a></p>
@@ -141,7 +151,9 @@ export async function sendWorkspaceAccessRemovedEmail(input: {
     '',
     `Trevra: ${input.signInUrl}`,
     support ? `Questions? Contact ${support}.` : ''
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
   const html = `
     <p>Hi ${escapeHtml(input.memberName)},</p>
     <p>Your access to the <strong>${escapeHtml(input.organizationName)}</strong> workspace in Trevra was removed.</p>
@@ -227,6 +239,58 @@ export async function sendCompanionDeviceReconnectedEmail(input: {
   const html = `
     <p><strong>${escapeHtml(input.deviceLabel)}</strong> is back online for <strong>${escapeHtml(input.workspaceName)}</strong>.</p>
     <p>LinkedIn work has resumed. No action is needed.</p>
+  `.trim();
+  await sendTransactionalEmail({ to: input.to, subject, text, html });
+}
+
+export async function sendLinkedInSeatNeedsAttentionEmail(input: {
+  to: string;
+  workspaceName: string;
+  seatLabel: string;
+  challenge: boolean;
+  reconnectCommand: string;
+  reviewUrl: string;
+}): Promise<void> {
+  const subject = input.challenge
+    ? 'LinkedIn needs a human check'
+    : 'Your LinkedIn session needs to be reconnected';
+  const reason = input.challenge
+    ? 'LinkedIn is showing a CAPTCHA, verification, 2FA, or another human-check screen.'
+    : 'The paired browser is online, but its LinkedIn session is no longer confirmed signed in.';
+  const text = [
+    `${input.seatLabel} in ${input.workspaceName} needs your attention.`,
+    '',
+    reason,
+    '',
+    `On the paired computer run: ${input.reconnectCommand}`,
+    'Complete the LinkedIn check in the visible Trevra Chrome window, then close that window. Background mode resumes automatically.',
+    '',
+    `Review in Trevra: ${input.reviewUrl}`
+  ].join('\n');
+  const html = `
+    <p><strong>${escapeHtml(input.seatLabel)}</strong> in <strong>${escapeHtml(input.workspaceName)}</strong> needs your attention.</p>
+    <p>${escapeHtml(reason)}</p>
+    <p>On the paired computer run: <code>${escapeHtml(input.reconnectCommand)}</code></p>
+    <p>Complete the LinkedIn check in the visible Trevra Chrome window, then close it. Background mode resumes automatically.</p>
+    <p><a href="${escapeHtml(input.reviewUrl)}">Review in Trevra</a></p>
+  `.trim();
+  await sendTransactionalEmail({ to: input.to, subject, text, html });
+}
+
+export async function sendLinkedInSeatRecoveredEmail(input: {
+  to: string;
+  workspaceName: string;
+  seatLabel: string;
+}): Promise<void> {
+  const subject = 'LinkedIn session recovered';
+  const text = [
+    `${input.seatLabel} in ${input.workspaceName} is healthy again.`,
+    '',
+    'Trevra confirmed the paired LinkedIn session is signed in. Background work can resume normally.'
+  ].join('\n');
+  const html = `
+    <p><strong>${escapeHtml(input.seatLabel)}</strong> in <strong>${escapeHtml(input.workspaceName)}</strong> is healthy again.</p>
+    <p>Trevra confirmed the paired LinkedIn session is signed in. Background work can resume normally.</p>
   `.trim();
   await sendTransactionalEmail({ to: input.to, subject, text, html });
 }

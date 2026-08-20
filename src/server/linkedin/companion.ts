@@ -3,8 +3,11 @@ import { id, type Db } from '../db.js';
 import type { BrowserProviderSettings } from '../browser/provider.js';
 import {
   notifyCompanionDeviceDisconnected,
-  notifyCompanionDeviceReconnected
+  notifyCompanionDeviceReconnected,
+  notifyLinkedInSeatNeedsAttention,
+  notifyLinkedInSeatRecovered
 } from '../notifications.js';
+import { recordSeatEvent } from './seat-events.js';
 import { markWorkspaceAvailabilityReturn } from './side-tasks.js';
 
 const PAIRING_TTL_MS = 10 * 60_000;
@@ -12,10 +15,35 @@ export const COMPANION_DEVICE_ONLINE_MS = 90_000;
 // Separate and unrelated to COMPANION_DEVICE_ONLINE_MS above, which drives the
 // live "online" badge and companionWorkspaceReady. This one gates the
 // disconnect/reconnect EMAIL: a short network blip should never alert anyone,
-// so we wait far longer than the 90s online threshold before treating a quiet
-// device as a real outage worth emailing about.
-export const COMPANION_DEVICE_DISCONNECT_GRACE_MS = 10 * 60_000;
+// but ten minutes plus a five-minute worker cadence made a real outage capable
+// of staying silent for almost fifteen minutes. Five minutes is long enough to
+// absorb Wi-Fi handoffs/sleep transitions while still being operationally useful.
+export const COMPANION_DEVICE_DISCONNECT_GRACE_MS = 5 * 60_000;
 const TOKEN_PREFIX = 'trv_cmp_';
+
+// DB heartbeats answer "was this device seen recently?". The API process also
+// knows the stronger fact "is a control WebSocket alive right now?". Keep that
+// fact in memory because the relay itself is in-memory and this deployment is
+// intentionally single-API-instance. A set of connection ids makes a fast
+// reconnect safe when the old socket closes after its replacement opened.
+const liveCompanionControls = new Map<string, Set<string>>();
+
+export function markCompanionControlConnected(deviceId: string, connectionId: string): void {
+  const controls = liveCompanionControls.get(deviceId) ?? new Set<string>();
+  controls.add(connectionId);
+  liveCompanionControls.set(deviceId, controls);
+}
+
+export function markCompanionControlDisconnected(deviceId: string, connectionId: string): void {
+  const controls = liveCompanionControls.get(deviceId);
+  if (!controls) return;
+  controls.delete(connectionId);
+  if (controls.size === 0) liveCompanionControls.delete(deviceId);
+}
+
+function companionControlIsLive(deviceId: string): boolean {
+  return (liveCompanionControls.get(deviceId)?.size ?? 0) > 0;
+}
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -204,11 +232,11 @@ export async function authenticateCompanionToken(
   // waiting on a stale time-gap check here is why the reconnect alert used to
   // sit there until the next already-scheduled visit noticed on its own.
   await markWorkspaceAvailabilityReturn(db, row.workspace_id, now);
-  // Only a device that actually got a disconnect email earlier (a real,
-  // grace-period-cleared outage) gets a reconnect email now. A blip under the
-  // 10-minute grace never set disconnect_notified_at, so it stays silent on
-  // both ends -- no disconnect email, no reconnect email either. The guard on
-  // the UPDATE makes a concurrent heartbeat race resolve as at most one email.
+  // Only a device that ACTUALLY got a disconnect email earlier gets a matching
+  // reconnect email. Claim the send by clearing first (so two simultaneous new
+  // control sockets cannot double-send), but restore the marker if delivery is
+  // unavailable or fails so a later fresh connection can retry instead of
+  // recording a reconnect notification that never existed.
   if (row.was_disconnected) {
     const cleared = await db
       .prepare(
@@ -219,11 +247,24 @@ export async function authenticateCompanionToken(
       .run(row.id);
     if (cleared.changes > 0) {
       try {
-        await notifyCompanionDeviceReconnected(db, {
+        const delivered = await notifyCompanionDeviceReconnected(db, {
           workspaceId: row.workspace_id,
           deviceLabel: row.label
         });
+        if (!delivered) {
+          await db
+            .prepare(
+              'UPDATE linkedin_companion_devices SET disconnect_notified_at=? WHERE id=? AND disconnect_notified_at IS NULL'
+            )
+            .run(iso(now), row.id);
+        }
       } catch (notificationError) {
+        await db
+          .prepare(
+            'UPDATE linkedin_companion_devices SET disconnect_notified_at=? WHERE id=? AND disconnect_notified_at IS NULL'
+          )
+          .run(iso(now), row.id)
+          .catch(() => undefined);
         console.error(
           'Failed to deliver Trevra companion reconnect notification',
           notificationError
@@ -281,11 +322,15 @@ export async function notifyDisconnectedCompanionDevices(
   await Promise.all(
     devices.map(async (device) => {
       try {
-        await notifyCompanionDeviceDisconnected(db, {
+        const delivered = await notifyCompanionDeviceDisconnected(db, {
           workspaceId: device.workspace_id,
           deviceLabel: device.label,
           lastSeenAt: device.last_seen_at
         });
+        // `disconnect_notified_at` means exactly what its name says. Before
+        // this guard, SMTP being absent (or no owner recipient being resolved)
+        // returned successfully and we permanently marked an email as sent.
+        if (!delivered) return;
         await db
           .prepare(
             `
@@ -301,6 +346,129 @@ export async function notifyDisconnectedCompanionDevices(
       }
     })
   );
+}
+
+export async function notifyCompanionSeatAttentionEmails(
+  db: Db,
+  now: Date = new Date()
+): Promise<void> {
+  const attention = await db
+    .prepare(
+      `
+    WITH latest AS (
+      SELECT DISTINCT ON (workspace_id, seat_key)
+        id, workspace_id, seat_key, kind
+      FROM linkedin_seat_events
+      WHERE kind IN ('challenge','reconnect_required','session_reused','login')
+      ORDER BY workspace_id, seat_key, occurred_at DESC,
+               CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END DESC
+    )
+    SELECT id, workspace_id, seat_key, kind
+    FROM latest l
+    WHERE kind IN ('challenge','reconnect_required')
+      AND NOT EXISTS (
+        SELECT 1 FROM linkedin_seat_events n
+        WHERE n.workspace_id=l.workspace_id AND n.seat_key=l.seat_key
+          AND n.kind='attention_email_sent' AND n.detail=l.id
+      )
+    LIMIT 100
+  `
+    )
+    .all<{
+      id: string;
+      workspace_id: string;
+      seat_key: string;
+      kind: 'challenge' | 'reconnect_required';
+    }>();
+
+  for (const event of attention) {
+    try {
+      const delivered = await notifyLinkedInSeatNeedsAttention(db, {
+        workspaceId: event.workspace_id,
+        seatKey: event.seat_key,
+        kind: event.kind
+      });
+      if (delivered) {
+        await recordSeatEvent(
+          db,
+          {
+            workspaceId: event.workspace_id,
+            seatKey: event.seat_key,
+            kind: 'attention_email_sent',
+            detail: event.id
+          },
+          now
+        );
+      }
+    } catch (error) {
+      console.error('Failed to deliver LinkedIn seat attention email', error);
+    }
+  }
+
+  const recovered = await db
+    .prepare(
+      `
+    WITH ordered AS (
+      SELECT e.*,
+        lag(id) OVER (
+          PARTITION BY workspace_id, seat_key
+          ORDER BY occurred_at ASC,
+                   CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END ASC
+        ) AS previous_id,
+        lag(kind) OVER (
+          PARTITION BY workspace_id, seat_key
+          ORDER BY occurred_at ASC,
+                   CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END ASC
+        ) AS previous_kind,
+        row_number() OVER (
+          PARTITION BY workspace_id, seat_key
+          ORDER BY occurred_at DESC,
+                   CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END DESC
+        ) AS rn
+      FROM linkedin_seat_events e
+      WHERE kind IN ('challenge','reconnect_required','session_reused','login')
+    )
+    SELECT id, workspace_id, seat_key, previous_id
+    FROM ordered o
+    WHERE rn=1 AND kind IN ('session_reused','login')
+      AND previous_kind IN ('challenge','reconnect_required')
+      AND EXISTS (
+        SELECT 1 FROM linkedin_seat_events n
+        WHERE n.workspace_id=o.workspace_id AND n.seat_key=o.seat_key
+          AND n.kind='attention_email_sent' AND n.detail=o.previous_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM linkedin_seat_events n
+        WHERE n.workspace_id=o.workspace_id AND n.seat_key=o.seat_key
+          AND n.kind='attention_recovery_email_sent' AND n.detail=o.id
+      )
+    LIMIT 100
+  `
+    )
+    .all<{ id: string; workspace_id: string; seat_key: string; previous_id: string }>();
+
+  for (const event of recovered) {
+    try {
+      const delivered = await notifyLinkedInSeatRecovered(db, {
+        workspaceId: event.workspace_id,
+        seatKey: event.seat_key
+      });
+      if (delivered) {
+        await recordSeatEvent(
+          db,
+          {
+            workspaceId: event.workspace_id,
+            seatKey: event.seat_key,
+            kind: 'attention_recovery_email_sent',
+            detail: event.id
+          },
+          now
+        );
+      }
+    } catch (error) {
+      console.error('Failed to deliver LinkedIn seat recovery email', error);
+    }
+  }
 }
 
 export async function listCompanionStatus(
@@ -335,7 +503,8 @@ export async function listCompanionStatus(
     LEFT JOIN linkedin_seats s ON s.workspace_id=e.workspace_id AND s.seat_key=e.seat_key
     WHERE e.workspace_id=?
       AND e.kind IN ('challenge','reconnect_required','session_reused','login')
-    ORDER BY e.seat_key, e.occurred_at DESC
+    ORDER BY e.seat_key, e.occurred_at DESC,
+             CASE WHEN e.kind IN ('session_reused','login') THEN 1 ELSE 0 END DESC
   `
     )
     .all<{
@@ -353,7 +522,11 @@ export async function listCompanionStatus(
       label: device.label,
       createdAt: device.created_at,
       lastSeenAt: device.last_seen_at,
-      online: Boolean(device.last_seen_at && new Date(device.last_seen_at).getTime() >= threshold)
+      online: Boolean(
+        companionControlIsLive(device.id) &&
+        device.last_seen_at &&
+        new Date(device.last_seen_at).getTime() >= threshold
+      )
     })),
     attention: latestAuthEvents
       .filter(
@@ -370,6 +543,28 @@ export async function listCompanionStatus(
   };
 }
 
+/** Whether this seat still has an unresolved human-recovery event. */
+export async function companionSeatNeedsAttention(
+  db: Db,
+  workspaceId: string,
+  seatKey: string
+): Promise<boolean> {
+  const event = await db
+    .prepare(
+      `
+    SELECT kind
+    FROM linkedin_seat_events
+    WHERE workspace_id=? AND seat_key=?
+      AND kind IN ('challenge','reconnect_required','session_reused','login')
+    ORDER BY occurred_at DESC,
+             CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END DESC
+    LIMIT 1
+  `
+    )
+    .get<{ kind: string }>(workspaceId, seatKey);
+  return event?.kind === 'challenge' || event?.kind === 'reconnect_required';
+}
+
 export async function revokeCompanionDevice(
   db: Db,
   workspaceId: string,
@@ -383,6 +578,7 @@ export async function revokeCompanionDevice(
   `
     )
     .run(iso(now), workspaceId, deviceId);
+  if (result.changes > 0) liveCompanionControls.delete(deviceId);
   return result.changes > 0;
 }
 

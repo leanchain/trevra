@@ -13,7 +13,7 @@ import {
   type ProviderDriver
 } from '../browser/provider.js';
 import { readLinkedInCredentials } from '../secrets/linkedin.js';
-import { companionBrowserSettings } from './companion.js';
+import { companionBrowserSettings, companionSeatNeedsAttention } from './companion.js';
 import {
   clearSeatStorageState,
   readSeatStorageState,
@@ -4763,17 +4763,22 @@ export async function loginLinkedInSeat(
       until: now.getTime() + CHALLENGE_RETRY_COOLDOWN_MS,
       message
     });
-    await recordSeatEvent(
-      db,
-      {
-        workspaceId: options.workspaceId,
-        seatKey,
-        kind: recovery === 'challenge' ? 'challenge' : 'reconnect_required',
-        url: typeof page!.url === 'function' ? page!.url() : null,
-        detail: message
-      },
-      now
-    );
+    // One durable transition, not one row per worker tick. Besides keeping the
+    // timeline honest, this gives the email notifier one stable event id to
+    // retry until delivery succeeds without spamming a fresh alert each pass.
+    if (!(await companionSeatNeedsAttention(db, options.workspaceId, seatKey))) {
+      await recordSeatEvent(
+        db,
+        {
+          workspaceId: options.workspaceId,
+          seatKey,
+          kind: recovery === 'challenge' ? 'challenge' : 'reconnect_required',
+          url: typeof page!.url === 'function' ? page!.url() : null,
+          detail: message
+        },
+        now
+      );
+    }
     return { status: 'challenge', message };
   };
 

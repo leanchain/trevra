@@ -9,6 +9,8 @@ import {
   companionDeviceIsActive,
   companionRelaySecretMatches,
   companionWorkspaceReady,
+  markCompanionControlConnected,
+  markCompanionControlDisconnected,
   touchCompanionDevice
 } from './companion.js';
 
@@ -17,6 +19,7 @@ interface ControlConnection {
   deviceId: string;
   workspaceId: string;
   label: string;
+  connectionId: string;
   connectedAt: number;
   lastDbTouch: number;
 }
@@ -86,9 +89,33 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
     const connection: ControlConnection = {
       ws,
       ...identity,
+      connectionId: randomUUID(),
       connectedAt: Date.now(),
       lastDbTouch: Date.now()
     };
+    markCompanionControlConnected(connection.deviceId, connection.connectionId);
+
+    // Application pings update the DB lease, but are not a transport liveness
+    // check. A protocol ping/pong catches half-open sockets; the ws client
+    // answers these automatically. One missed heartbeat terminates the control.
+    let transportAlive = true;
+    ws.on('pong', () => {
+      transportAlive = true;
+    });
+    const heartbeat = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (!transportAlive) {
+        ws.terminate();
+        return;
+      }
+      transportAlive = false;
+      try {
+        ws.ping();
+      } catch {
+        ws.terminate();
+      }
+    }, 30_000);
+    heartbeat.unref();
 
     // Only one live control connection may own a workspace. A replacement or
     // restarted companion wins immediately and detaches every browser session
@@ -163,6 +190,8 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
     });
 
     ws.on('close', () => {
+      clearInterval(heartbeat);
+      markCompanionControlDisconnected(connection.deviceId, connection.connectionId);
       if (controls.get(connection.workspaceId) === connection)
         controls.delete(connection.workspaceId);
       for (const session of [...sessions.values()]) {
