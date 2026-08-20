@@ -136,6 +136,7 @@ export interface LinkedInSeat {
   safetyBandOverride: boolean;
   capabilities: {
     inmail: 'unknown' | 'available' | 'unavailable';
+    premium: boolean;
     salesNavigator: boolean;
     recruiter: boolean;
   };
@@ -348,6 +349,7 @@ function parsedCapabilities(value: unknown): LinkedInSeat['capabilities'] {
     object.inmail === 'available' || object.inmail === 'unavailable' ? object.inmail : 'unknown';
   return {
     inmail,
+    premium: object.premium === true,
     salesNavigator: object.salesNavigator === true,
     recruiter: object.recruiter === true
   };
@@ -908,6 +910,7 @@ export async function setSeatCapabilities(
   seatKey: string,
   input: {
     inmail: 'unknown' | 'available' | 'unavailable';
+    premium?: boolean;
     salesNavigator?: boolean;
     recruiter?: boolean;
     inmailMonthlyBudget?: number | null;
@@ -931,6 +934,7 @@ export async function setSeatCapabilities(
     .run(
       JSON.stringify({
         inmail: input.inmail,
+        premium: input.premium === true,
         salesNavigator: input.salesNavigator === true,
         recruiter: input.recruiter === true
       }),

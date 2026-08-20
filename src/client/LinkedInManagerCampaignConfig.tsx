@@ -16,6 +16,7 @@ import {
   getLinkedInManagerSeats,
   getLinkedInManagerWorkflows,
   startLinkedInManagedCampaign,
+  updateLinkedInCampaignMailbox,
   type CampaignMailbox,
   type LinkedInCeilingSource,
   type LinkedInLimitsReport
@@ -29,6 +30,7 @@ import type { LinkedInSeat } from '../server/linkedin/seats';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
 import type { CampaignLaunchPreview, ManagedCampaign } from '../server/linkedin/managed-campaigns';
 import { errorMessage } from './LinkedInSafety';
+import { useIsWorkspaceOwner } from './auth-client';
 
 /**
  * Creating a campaign, with the consequences shown before the button.
@@ -43,6 +45,80 @@ import { errorMessage } from './LinkedInSafety';
  */
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function zonedLocalToIso(value: string, timezone: string): string | null {
+  if (!value) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const requested = {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5])
+  };
+  const wallAsUtc = Date.UTC(
+    requested.year,
+    requested.month - 1,
+    requested.day,
+    requested.hour,
+    requested.minute
+  );
+  const partsOf = (instant: number) => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(new Date(instant));
+    const read = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((part) => part.type === type)?.value ?? 0);
+    return {
+      year: read('year'),
+      month: read('month'),
+      day: read('day'),
+      hour: read('hour'),
+      minute: read('minute'),
+      second: read('second')
+    };
+  };
+  let instant = wallAsUtc;
+  for (let pass = 0; pass < 3; pass += 1) {
+    const shown = partsOf(instant);
+    const shownAsUtc = Date.UTC(
+      shown.year,
+      shown.month - 1,
+      shown.day,
+      shown.hour,
+      shown.minute,
+      shown.second
+    );
+    instant += wallAsUtc - shownAsUtc;
+  }
+  const roundTrip = partsOf(instant);
+  if (
+    roundTrip.year !== requested.year ||
+    roundTrip.month !== requested.month ||
+    roundTrip.day !== requested.day ||
+    roundTrip.hour !== requested.hour ||
+    roundTrip.minute !== requested.minute
+  )
+    return null;
+  return new Date(instant).toISOString();
+}
+
+function minuteOfClock(value: string): number | null {
+  if (!value) return null;
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const hour = Number(match[1]),
+    minute = Number(match[2]);
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 ? hour * 60 + minute : null;
+}
 
 const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   profile_view: 'View their profile',
@@ -302,6 +378,7 @@ export function LinkedInManagerCampaignConfig({
 }) {
   /** The sending account is the universal Outreach selection made in Settings. */
   const [activeSeatKey] = useActiveSeatKey();
+  const isWorkspaceOwner = useIsWorkspaceOwner();
   const [seats, setSeats] = useState<LinkedInSeat[]>([]);
   const [lists, setLists] = useState<LinkedInLeadList[]>([]);
   const [workflows, setWorkflows] = useState<LinkedInWorkflow[]>([]);
@@ -327,6 +404,9 @@ export function LinkedInManagerCampaignConfig({
   const [waveIntervalMinutes, setWaveIntervalMinutes] = useState<number | ''>('');
   const [scheduledStart, setScheduledStart] = useState('');
   const [scheduledEnd, setScheduledEnd] = useState('');
+  const [campaignWorkingDays, setCampaignWorkingDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [campaignWorkStart, setCampaignWorkStart] = useState('');
+  const [campaignWorkEnd, setCampaignWorkEnd] = useState('');
   const [endBehavior, setEndBehavior] =
     useState<ManagedCampaign['schedule']['endBehavior']>('finish_waves');
   const [excludeExistingConversation, setExcludeExistingConversation] = useState(true);
@@ -417,8 +497,20 @@ export function LinkedInManagerCampaignConfig({
   const seat = seats.find((candidate) => candidate.seatKey === activeSeatKey) ?? null;
   const list = lists.find((candidate) => candidate.id === listId) ?? null;
   const workflow = workflows.find((candidate) => candidate.id === workflowId) ?? null;
+  const primarySender = seats.find((candidate) => candidate.seatKey === senderKeys[0]) ?? seat;
+  const campaignTimezone =
+    primarySender?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const workflowNeedsEmail = workflow?.steps.some((step) => step.action === 'email') ?? false;
   const workflowNeedsInmail = workflow?.steps.some((step) => step.action === 'inmail') ?? false;
+  useEffect(() => {
+    if (!workflowNeedsInmail) return;
+    const allowed = new Set(
+      seats
+        .filter((candidate) => candidate.capabilities.inmail === 'available')
+        .map((candidate) => candidate.seatKey)
+    );
+    setSenderKeys((current) => current.filter((key) => allowed.has(key)));
+  }, [workflowNeedsInmail, seats]);
   const workflowNeedsFindEmail =
     workflow?.steps.some((step) => step.action === 'find_email') ?? false;
 
@@ -537,6 +629,30 @@ export function LinkedInManagerCampaignConfig({
       `The Find Email stage is estimated to need ${launchPreview.enrichmentCredits.estimatedProviderLookups} provider credit(s), above the campaign cap of ${launchPreview.enrichmentCredits.cap ?? 0}. Leads beyond the cap will take the Email not found/failure path until the cap is raised while paused.`
     );
 
+  const patchMailbox = (id: string, patch: Partial<CampaignMailbox>) =>
+    setMailboxes((current) =>
+      current.map((mailbox) => (mailbox.id === id ? { ...mailbox, ...patch } : mailbox))
+    );
+  const saveMailbox = async (mailbox: CampaignMailbox) => {
+    setBusy(`mailbox:${mailbox.id}`);
+    setError('');
+    try {
+      await updateLinkedInCampaignMailbox(mailbox.id, {
+        dailyLimit: mailbox.dailyLimit,
+        timezone: mailbox.timezone,
+        workingDays: mailbox.workingDays,
+        workStartMinute: mailbox.workStartMinute,
+        workEndMinute: mailbox.workEndMinute
+      });
+      setToast(`Saved ${mailbox.provider} mailbox pacing.`);
+      await refreshOptions();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to save mailbox pacing.'));
+    } finally {
+      setBusy('');
+    }
+  };
+
   const create = async () => {
     if (!name.trim() || !listId || !workflowId) return;
     setBusy('create');
@@ -550,6 +666,20 @@ export function LinkedInManagerCampaignConfig({
             .filter(Boolean)
         )
       ];
+      if (scheduledStart && !zonedLocalToIso(scheduledStart, campaignTimezone))
+        throw new Error(
+          `That start time does not exist in ${campaignTimezone} because of a timezone/DST transition.`
+        );
+      if (scheduledEnd && !zonedLocalToIso(scheduledEnd, campaignTimezone))
+        throw new Error(
+          `That end time does not exist in ${campaignTimezone} because of a timezone/DST transition.`
+        );
+      const workStartMinute = minuteOfClock(campaignWorkStart);
+      const workEndMinute = minuteOfClock(campaignWorkEnd);
+      if (workStartMinute !== null && workEndMinute !== null && workEndMinute <= workStartMinute)
+        throw new Error('Campaign working hours need an end later than the start.');
+      if (campaignWorkingDays.length === 0)
+        throw new Error('Choose at least one campaign working day.');
       const result = await createLinkedInManagedCampaign({
         name: name.trim(),
         senderKeys,
@@ -570,8 +700,11 @@ export function LinkedInManagerCampaignConfig({
           suppressedDomains: csvValues(suppressedDomains)
         },
         schedule: {
-          startAt: scheduledStart ? new Date(scheduledStart).toISOString() : null,
-          endAt: scheduledEnd ? new Date(scheduledEnd).toISOString() : null,
+          startAt: scheduledStart ? zonedLocalToIso(scheduledStart, campaignTimezone) : null,
+          endAt: scheduledEnd ? zonedLocalToIso(scheduledEnd, campaignTimezone) : null,
+          workingDays: campaignWorkingDays,
+          workStartMinute: minuteOfClock(campaignWorkStart),
+          workEndMinute: minuteOfClock(campaignWorkEnd),
           endBehavior
         }
       });
@@ -759,6 +892,9 @@ export function LinkedInManagerCampaignConfig({
                         <input
                           type="checkbox"
                           checked={senderKeys.includes(candidate.seatKey)}
+                          disabled={
+                            workflowNeedsInmail && candidate.capabilities.inmail !== 'available'
+                          }
                           onChange={(event) =>
                             setSenderKeys((current) =>
                               event.target.checked
@@ -769,6 +905,9 @@ export function LinkedInManagerCampaignConfig({
                         />
                         <span>
                           <b>{candidate.label}</b> · {candidate.timezone}
+                          {workflowNeedsInmail && candidate.capabilities.inmail !== 'available'
+                            ? ' · InMail unavailable/not verified'
+                            : ''}
                         </span>
                       </label>
                     ))}
@@ -804,6 +943,121 @@ export function LinkedInManagerCampaignConfig({
                         </label>
                       ))}
                     </div>
+                    {mailboxes.length > 0 && (
+                      <div className="li-span-2">
+                        <p className="li-hint">
+                          Mailbox pacing is enforced independently from LinkedIn pacing.{' '}
+                          {isWorkspaceOwner
+                            ? 'You can edit it here.'
+                            : 'Only the workspace owner can change it.'}
+                        </p>
+                        {mailboxes.map((mailbox) => (
+                          <details className="mgr-advanced" key={`mailbox-settings-${mailbox.id}`}>
+                            <summary>
+                              {mailbox.provider} · {mailbox.dailyLimit}/day · {mailbox.timezone}
+                            </summary>
+                            <div className="li-form-grid">
+                              <label>
+                                Daily email cap
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={1000}
+                                  disabled={!isWorkspaceOwner || busy !== ''}
+                                  value={mailbox.dailyLimit}
+                                  onChange={(event) =>
+                                    patchMailbox(mailbox.id, {
+                                      dailyLimit: Math.max(
+                                        1,
+                                        Math.min(1000, Math.trunc(Number(event.target.value) || 1))
+                                      )
+                                    })
+                                  }
+                                />
+                              </label>
+                              <label>
+                                Mailbox timezone
+                                <input
+                                  disabled={!isWorkspaceOwner || busy !== ''}
+                                  value={mailbox.timezone}
+                                  onChange={(event) =>
+                                    patchMailbox(mailbox.id, { timezone: event.target.value })
+                                  }
+                                />
+                              </label>
+                              <label>
+                                Earliest email time
+                                <input
+                                  type="time"
+                                  disabled={!isWorkspaceOwner || busy !== ''}
+                                  value={clock(mailbox.workStartMinute)}
+                                  onChange={(event) => {
+                                    const minute = minuteOfClock(event.target.value);
+                                    if (minute !== null)
+                                      patchMailbox(mailbox.id, { workStartMinute: minute });
+                                  }}
+                                />
+                              </label>
+                              <label>
+                                Latest email time
+                                <input
+                                  type="time"
+                                  disabled={!isWorkspaceOwner || busy !== ''}
+                                  value={clock(mailbox.workEndMinute)}
+                                  onChange={(event) => {
+                                    const minute = minuteOfClock(event.target.value);
+                                    if (minute !== null)
+                                      patchMailbox(mailbox.id, { workEndMinute: minute });
+                                  }}
+                                />
+                              </label>
+                              <fieldset className="li-span-2">
+                                <legend>Email working days</legend>
+                                <div className="li-check-grid">
+                                  {WEEKDAYS.map((label, day) => (
+                                    <label className="li-check-row" key={`${mailbox.id}-${day}`}>
+                                      <input
+                                        type="checkbox"
+                                        disabled={!isWorkspaceOwner || busy !== ''}
+                                        checked={mailbox.workingDays.includes(day)}
+                                        onChange={(event) =>
+                                          patchMailbox(mailbox.id, {
+                                            workingDays: event.target.checked
+                                              ? [...new Set([...mailbox.workingDays, day])].sort(
+                                                  (a, b) => a - b
+                                                )
+                                              : mailbox.workingDays.filter((value) => value !== day)
+                                          })
+                                        }
+                                      />{' '}
+                                      {label}
+                                    </label>
+                                  ))}
+                                </div>
+                              </fieldset>
+                            </div>
+                            {isWorkspaceOwner && (
+                              <button
+                                className="secondary-button"
+                                type="button"
+                                disabled={
+                                  busy !== '' ||
+                                  mailbox.workingDays.length === 0 ||
+                                  mailbox.workEndMinute <= mailbox.workStartMinute ||
+                                  !mailbox.timezone.trim()
+                                }
+                                onClick={() => void saveMailbox(mailbox)}
+                              >
+                                {busy === `mailbox:${mailbox.id}` ? (
+                                  <LoaderCircle className="spin" size={14} />
+                                ) : null}{' '}
+                                Save mailbox pacing
+                              </button>
+                            )}
+                          </details>
+                        ))}
+                      </div>
+                    )}
                   </fieldset>
                 )}
                 {workflowNeedsInmail && (
@@ -950,6 +1204,49 @@ export function LinkedInManagerCampaignConfig({
                     onChange={(event) => setScheduledEnd(event.target.value)}
                   />
                 </label>
+                <fieldset className="li-span-2">
+                  <legend>Campaign working window</legend>
+                  <p className="li-hint">
+                    Start/end use {campaignTimezone}. Working hours narrow each sender's own local
+                    account window; they can never widen it.
+                  </p>
+                  <div className="li-check-grid">
+                    {WEEKDAYS.map((label, day) => (
+                      <label className="li-check-row" key={`campaign-day-${day}`}>
+                        <input
+                          type="checkbox"
+                          checked={campaignWorkingDays.includes(day)}
+                          onChange={(event) =>
+                            setCampaignWorkingDays((current) =>
+                              event.target.checked
+                                ? [...new Set([...current, day])].sort((a, b) => a - b)
+                                : current.filter((value) => value !== day)
+                            )
+                          }
+                        />{' '}
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="li-form-grid">
+                    <label>
+                      Earliest campaign time
+                      <input
+                        type="time"
+                        value={campaignWorkStart}
+                        onChange={(event) => setCampaignWorkStart(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Latest campaign time
+                      <input
+                        type="time"
+                        value={campaignWorkEnd}
+                        onChange={(event) => setCampaignWorkEnd(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                </fieldset>
                 <label>
                   At campaign end
                   <select

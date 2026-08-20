@@ -1591,8 +1591,18 @@ function CampaignMembers({
                                     key={`${event.kind}:${event.stepId ?? ''}:${event.at ?? ''}:${index}`}
                                   >
                                     <b>{event.label}</b>
+                                    {event.stepId
+                                      ? ` · ${event.stepLabel ?? event.stepId} (${event.stepId})`
+                                      : ''}
+                                    {event.senderKey ? ` · sender ${event.senderKey}` : ''}
+                                    {event.variantId ? ` · variant ${event.variantId}` : ''}
                                     {event.status ? ` · ${event.status}` : ''}
                                     {event.detail ? ` · ${event.detail}` : ''}
+                                    {event.approvedText ? (
+                                      <span className="mgr-step-name">
+                                        Approved: {event.approvedText}
+                                      </span>
+                                    ) : null}
                                     {event.at ? (
                                       <span> · {new Date(event.at).toLocaleString()}</span>
                                     ) : null}
@@ -3105,6 +3115,27 @@ export function OutreachManagerRead({
                                   </strong>
                                 </div>
                                 <div>
+                                  <span>InMail sent</span>
+                                  <strong>{operationalAnalytics.channels.inmailSent}</strong>
+                                </div>
+                                <div>
+                                  <span>InMail replies</span>
+                                  <strong>{operationalAnalytics.channels.inmailReplied}</strong>
+                                </div>
+                                <div>
+                                  <span>InMail failures</span>
+                                  <strong>{operationalAnalytics.channels.inmailFailed}</strong>
+                                </div>
+                                <div>
+                                  <span>Paid InMail credits</span>
+                                  <strong>
+                                    {operationalAnalytics.channels.inmailPaidCreditsUsed}
+                                    {operationalAnalytics.channels.inmailPaidCreditCap === null
+                                      ? ''
+                                      : ` / ${operationalAnalytics.channels.inmailPaidCreditCap}`}
+                                  </strong>
+                                </div>
+                                <div>
                                   <span>Enrichment credits</span>
                                   <strong>
                                     {operationalAnalytics.channels.enrichmentCreditsUsed}
@@ -3131,19 +3162,51 @@ export function OutreachManagerRead({
                                   {operationalAnalytics.steps
                                     .map(
                                       (row) =>
-                                        `${row.workflowStepId}: ${row.executed} done · ${row.overdue} overdue${row.slaMissRate === null ? '' : ` · SLA ${Math.round(row.slaMissRate * 100)}% missed (${row.slaMissed}/${row.slaMeasured})`}${row.medianQueueLatencyMinutes === null ? '' : ` · median ${Math.round(row.medianQueueLatencyMinutes)}m late`}`
+                                        `${row.workflowStepId}: ${row.executed} done · ${row.skipped} skipped · ${row.failed} failed · ${row.overdue} overdue${row.outcomeRate === null ? '' : ` · ${Math.round(row.outcomeRate * 100)}% settled`}${row.slaMissRate === null ? '' : ` · SLA ${Math.round(row.slaMissRate * 100)}% missed (${row.slaMissed}/${row.slaMeasured})`}${row.medianDelayVsIntendedMinutes === null ? '' : ` · median ${Math.round(row.medianDelayVsIntendedMinutes)}m vs intended`}`
                                     )
                                     .join(' | ')}
                                 </p>
                               )}
-                              {operationalAnalytics.senders.length > 1 && (
+                              {operationalAnalytics.variants.length > 0 && (
+                                <p className="li-hint">
+                                  Variant outcomes:{' '}
+                                  {operationalAnalytics.variants
+                                    .map((row) => {
+                                      const rates = [
+                                        row.acceptanceRate === null
+                                          ? ''
+                                          : `${Math.round(row.acceptanceRate * 100)}% accepted`,
+                                        row.replyRate === null
+                                          ? ''
+                                          : `${Math.round(row.replyRate * 100)}% replied`
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' · ');
+                                      return `${row.workflowStepId}/${row.variantId.toUpperCase()}: ${row.sent} sent${rates ? ` · ${rates}` : ''} · ${row.eligibleForWinner ? 'enough sample to compare' : 'learning (<20 sends)'}`;
+                                    })
+                                    .join(' | ')}
+                                </p>
+                              )}
+                              {operationalAnalytics.senders.length > 0 && (
                                 <p className="li-hint">
                                   Sender allocation:{' '}
                                   {operationalAnalytics.senders
-                                    .map(
-                                      (row) =>
-                                        `${seatLabel(row.seatKey)} ${row.executed} actions · ${row.accepted}/${row.invitesSent} accepted · ${row.replied} replies`
-                                    )
+                                    .map((row) => {
+                                      const rates = [
+                                        row.acceptanceRate === null
+                                          ? ''
+                                          : `${Math.round(row.acceptanceRate * 100)}% accepted`,
+                                        row.replyRate === null
+                                          ? ''
+                                          : `${Math.round(row.replyRate * 100)}% replied`,
+                                        row.allocationShare === null
+                                          ? ''
+                                          : `${Math.round(row.allocationShare * 100)}% of executed work`
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' · ');
+                                      return `${seatLabel(row.seatKey)} ${row.executed} actions · ${row.safetyBlocks} safety blocks${rates ? ` · ${rates}` : ''}`;
+                                    })
                                     .join(' | ')}
                                 </p>
                               )}

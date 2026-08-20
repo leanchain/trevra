@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
@@ -227,6 +227,137 @@ describe('LinkedIn manager HTTP surface', () => {
       )
       .get<{ total: number }>(A, result.campaign.id);
     expect(actions?.total ?? 0).toBe(0);
+  });
+
+  it('accepts only signed provider email events and applies reply stop exactly once', async () => {
+    const list = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/lead-lists')
+        .send({ name: 'Email event leads', sourceKind: 'csv' })
+        .expect(201)
+    ).body.list;
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: A,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Smith,Acme,maya@example.com,https://linkedin.com/in/maya-email-event\n'
+      },
+      NOW
+    );
+    const workflow = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/workflows')
+        .send({
+          name: 'Email event flow',
+          steps: [
+            {
+              id: 'email',
+              action: 'email',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: {
+                subject: 'Hello',
+                variants: [{ id: 'a', body: 'Hi {{first_name}}', weight: 100 }],
+                threaded: true,
+                tracking: 'off'
+              }
+            }
+          ]
+        })
+        .expect(201)
+    ).body.workflow;
+    const campaign = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/campaigns')
+        .send({ name: 'Email event campaign', leadListId: list.id, workflowId: workflow.id })
+        .expect(201)
+    ).body.campaign;
+    const member = await db
+      .prepare(
+        'SELECT id,contact_id FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=? LIMIT 1'
+      )
+      .get<{ id: string; contact_id: string }>(A, campaign.id);
+    expect(member).toBeDefined();
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaign_channel_actions
+         (id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,idempotency_key,completed_at,external_ref,provider,created_at,updated_at)
+         VALUES ('licha_signed',?,?,?,?,?,'email','sent',?::timestamptz,'{}'::jsonb,'signed-event-idem',?::timestamptz,'provider-message-42','gmail',?::timestamptz,?::timestamptz)`
+      )
+      .run(
+        A,
+        campaign.id,
+        member!.id,
+        member!.contact_id,
+        'email',
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `INSERT INTO linkedin_actions
+         (id,workspace_id,seat_key,kind,target_ref,status,planned_for,campaign_id,campaign_member_id,source,replay_scope,created_at)
+         VALUES ('lact_after_email',?,'owner','dm','https://linkedin.com/in/maya-email-event','planned',?::timestamptz,?,?,'campaign','after-email',?::timestamptz)`
+      )
+      .run(
+        A,
+        new Date(NOW.getTime() + 3_600_000).toISOString(),
+        campaign.id,
+        member!.id,
+        NOW.toISOString()
+      );
+
+    const oldSecret = process.env.LINKEDIN_CAMPAIGN_EMAIL_WEBHOOK_SECRET;
+    process.env.LINKEDIN_CAMPAIGN_EMAIL_WEBHOOK_SECRET = 'provider-test-secret';
+    const body = JSON.stringify({
+      workspaceId: A,
+      externalRef: 'provider-message-42',
+      eventKind: 'replied',
+      providerEventId: 'provider-event-42',
+      occurredAt: NOW.toISOString()
+    });
+    try {
+      await request(app)
+        .post('/api/webhooks/linkedin-campaign-email')
+        .set('Content-Type', 'application/json')
+        .set('x-trevra-signature', 'sha256=deadbeef')
+        .send(body)
+        .expect(401);
+      const signature = createHmac('sha256', 'provider-test-secret').update(body).digest('hex');
+      const first = await request(app)
+        .post('/api/webhooks/linkedin-campaign-email')
+        .set('Content-Type', 'application/json')
+        .set('x-trevra-signature', `sha256=${signature}`)
+        .send(body)
+        .expect(202);
+      expect(first.body).toMatchObject({ recorded: true, memberId: member!.id });
+      const replay = await request(app)
+        .post('/api/webhooks/linkedin-campaign-email')
+        .set('Content-Type', 'application/json')
+        .set('x-trevra-signature', `sha256=${signature}`)
+        .send(body)
+        .expect(200);
+      expect(replay.body).toMatchObject({ recorded: false, memberId: member!.id });
+    } finally {
+      if (oldSecret === undefined) delete process.env.LINKEDIN_CAMPAIGN_EMAIL_WEBHOOK_SECRET;
+      else process.env.LINKEDIN_CAMPAIGN_EMAIL_WEBHOOK_SECRET = oldSecret;
+    }
+    expect(
+      (
+        await db
+          .prepare('SELECT status FROM linkedin_campaign_members WHERE id=?')
+          .get<{ status: string }>(member!.id)
+      )?.status
+    ).toBe('replied');
+    expect(
+      (
+        await db
+          .prepare("SELECT status FROM linkedin_actions WHERE id='lact_after_email'")
+          .get<{ status: string }>()
+      )?.status
+    ).toBe('skipped');
   });
 
   it('reports the missing LinkedIn account as a 400, not a 500, when creating a campaign before one is connected', async () => {
@@ -477,6 +608,16 @@ describe('LinkedIn manager HTTP surface', () => {
       await as(tokenA).get(`/api/linkedin/manager/members/${member.id}/timeline`).expect(200)
     ).body;
     expect(timeline.events.some((event: { kind: string }) => event.kind === 'wave')).toBe(true);
+    expect(timeline.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'action',
+          stepId: 'view',
+          stepLabel: 'profile view',
+          senderKey: 'owner'
+        })
+      ])
+    );
     await as(tokenA).post(`/api/linkedin/manager/members/${member.id}/skip`).send({}).expect(200);
 
     const duplicate = (

@@ -3,11 +3,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { createLeadList, importLeadCsv } from './lead-lists.js';
 import {
+  campaignMemberTimeline,
   createManagedCampaign,
   listCampaignMembers,
   startManagedCampaign
 } from './managed-campaigns.js';
-import { recordCampaignEmailEvent, runCampaignChannelActions } from './campaign-channels.js';
+import {
+  assertSafeCampaignDestination,
+  recordCampaignEmailEvent,
+  runCampaignChannelActions
+} from './campaign-channels.js';
 import { runManagedCampaigns } from './runner.js';
 import { upsertSeat } from './seats.js';
 import { saveWorkflow } from './workflows.js';
@@ -79,6 +84,25 @@ async function campaignFor(
   return created.campaign.id;
 }
 
+describe('campaign destination safety', () => {
+  it('rejects insecure, credentialed, and private destinations outside the test-local exception', async () => {
+    await expect(
+      assertSafeCampaignDestination('http://example.com/hook', { allowLocalTest: false })
+    ).rejects.toThrow(/HTTPS/i);
+    await expect(
+      assertSafeCampaignDestination('https://user:pass@example.com/hook', { allowLocalTest: false })
+    ).rejects.toThrow(/credentials/i);
+    await expect(
+      assertSafeCampaignDestination('https://127.0.0.1/hook', { allowLocalTest: false })
+    ).rejects.toThrow(/private|reserved/i);
+    await expect(
+      assertSafeCampaignDestination('https://169.254.169.254/latest/meta-data', {
+        allowLocalTest: false
+      })
+    ).rejects.toThrow(/private|reserved/i);
+  });
+});
+
 describe('campaign channel executor', () => {
   it('uses an existing email without enrichment cost and advances the member exactly once', async () => {
     const campaignId = await campaignFor(
@@ -109,6 +133,18 @@ describe('campaign channel executor', () => {
     const member = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
     expect(member.stepIndex).toBe(1);
     expect(member.branchState['external:email_found']).toBe(true);
+    const timeline = await campaignMemberTimeline(db, WORKSPACE, member.id);
+    expect(timeline?.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'channel',
+          label: 'find email',
+          stepId: 'find',
+          stepLabel: 'find email',
+          status: 'sent'
+        })
+      ])
+    );
 
     await runManagedCampaigns(db, WORKSPACE, new Date(NOW.getTime() + 60_000));
     expect((await listCampaignMembers(db, WORKSPACE, campaignId))[0]?.status).toBe('completed');
@@ -253,6 +289,92 @@ describe('campaign channel executor', () => {
         .get<{ status: string }>(WORKSPACE, campaignId);
       expect(row?.status).toBe('sent');
     } finally {
+      if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    }
+  });
+
+  it('executes an approved remote handoff exactly once for CRM/list/sequencer actions', async () => {
+    let hits = 0;
+    let captured: Record<string, unknown> = {};
+    let idempotency = '';
+    let server: Server | null = null;
+    const port = await new Promise<number>((resolve) => {
+      server = createServer((req, res) => {
+        hits += 1;
+        idempotency = String(req.headers['x-trevra-idempotency-key'] ?? '');
+        let body = '';
+        req.on('data', (chunk) => (body += String(chunk)));
+        req.on('end', () => {
+          captured = JSON.parse(body) as Record<string, unknown>;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ provider: 'acme-crm', externalRef: 'contact_42' }));
+        });
+      }).listen(0, '127.0.0.1', () => {
+        const address = server!.address();
+        resolve(typeof address === 'object' && address ? address.port : 0);
+      });
+    });
+    const oldAdapters = process.env.TREVRA_REMOTE_ACTION_ADAPTERS_JSON;
+    const oldToken = process.env.TEST_CRM_ACTION_TOKEN;
+    process.env.TREVRA_REMOTE_ACTION_ADAPTERS_JSON = JSON.stringify([
+      {
+        actionType: 'acme.crm.update',
+        endpoint: `http://127.0.0.1:${port}/action`,
+        tokenEnv: 'TEST_CRM_ACTION_TOKEN',
+        provider: 'acme-crm'
+      }
+    ]);
+    process.env.TEST_CRM_ACTION_TOKEN = 'test-secret';
+    try {
+      const campaignId = await campaignFor(
+        [
+          {
+            id: 'handoff',
+            action: 'external_handoff',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {
+              provider: 'remote_action',
+              destination: 'acme.crm.update',
+              payloadTemplate: '{"stage":"qualified","lead":"{{first_name}}"}'
+            }
+          },
+          {
+            id: 'end',
+            action: 'end',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { outcome: 'completed' }
+          }
+        ],
+        'First Name,Last Name,Company,LinkedIn URL\nMaya,Smith,Acme,https://linkedin.com/in/maya-crm\n'
+      );
+      await runManagedCampaigns(db, WORKSPACE, NOW);
+      expect(hits).toBe(1);
+      expect(idempotency).toMatch(/^[a-f0-9]{64}$/);
+      expect(captured).toMatchObject({
+        actionType: 'acme.crm.update',
+        workspaceId: WORKSPACE,
+        payload: { stage: 'qualified', lead: 'Maya' }
+      });
+      const row = await db
+        .prepare(
+          `SELECT status,provider,external_ref FROM linkedin_campaign_channel_actions WHERE workspace_id=? AND campaign_id=? AND kind='external_handoff'`
+        )
+        .get<{ status: string; provider: string | null; external_ref: string | null }>(
+          WORKSPACE,
+          campaignId
+        );
+      expect(row).toMatchObject({
+        status: 'sent',
+        provider: 'acme-crm',
+        external_ref: 'contact_42'
+      });
+      await runManagedCampaigns(db, WORKSPACE, new Date(NOW.getTime() + 60_000));
+      expect(hits).toBe(1);
+    } finally {
+      if (oldAdapters === undefined) delete process.env.TREVRA_REMOTE_ACTION_ADAPTERS_JSON;
+      else process.env.TREVRA_REMOTE_ACTION_ADAPTERS_JSON = oldAdapters;
+      if (oldToken === undefined) delete process.env.TEST_CRM_ACTION_TOKEN;
+      else process.env.TEST_CRM_ACTION_TOKEN = oldToken;
       if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
     }
   });

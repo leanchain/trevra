@@ -6,6 +6,7 @@ import { createLeadList, importLeadCsv, ingestLeadSignal } from './lead-lists.js
 import {
   admitPendingCampaignMembers,
   campaignAdmissionForecast,
+  campaignOperationalAnalytics,
   campaignWorkflowSteps,
   createManagedCampaign,
   enrolNewContacts,
@@ -664,6 +665,102 @@ describe('capacity-weighted sender assignment', () => {
         member.assignedSeatKey
       ])
     ).toEqual(before);
+  });
+});
+
+describe('large-audience admission semantics', () => {
+  it('starts a 1,000-lead campaign with all leads pending rather than pretending all 1,000 are active', async () => {
+    const handles = Array.from({ length: 1000 }, (_, index) => `large-${index + 1}`);
+    const listId = await leadList('One thousand leads', handles);
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Large audience',
+        leadListId: listId,
+        workflowId: await workflow('Large audience flow'),
+        admissionPolicy: { maxWaveSize: 25 }
+      },
+      NOW
+    );
+    await startManagedCampaign(db, WORKSPACE, created.campaign.id, NOW);
+    const members = await listCampaignMembers(db, WORKSPACE, created.campaign.id);
+    expect(members).toHaveLength(1000);
+    expect(members.every((member) => member.status === 'pending')).toBe(true);
+    expect(members.every((member) => member.admittedAt === null && member.waveId === null)).toBe(
+      true
+    );
+  });
+});
+
+describe('channel analytics', () => {
+  it('reports InMail delivery, replies, failures, and paid-credit use under the campaign cap', async () => {
+    const listId = await leadList('InMail analytics leads', ['inmail-seed']);
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'InMail analytics',
+        leadListId: listId,
+        workflowId: await workflow('InMail analytics flow'),
+        inmailCreditCap: 5
+      },
+      NOW
+    );
+    const sent = await recordAction(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        campaignId: created.campaign.id,
+        kind: 'inmail',
+        targetRef: 'https://www.linkedin.com/in/inmail-sent/',
+        status: 'sent',
+        source: 'campaign',
+        plannedFor: NOW.toISOString()
+      },
+      NOW
+    );
+    await db
+      .prepare('UPDATE linkedin_actions SET paid_credit_used=TRUE WHERE workspace_id=? AND id=?')
+      .run(WORKSPACE, sent.id);
+    await recordAction(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        campaignId: created.campaign.id,
+        kind: 'inmail',
+        targetRef: 'https://www.linkedin.com/in/inmail-reply/',
+        status: 'replied',
+        source: 'campaign',
+        plannedFor: NOW.toISOString()
+      },
+      NOW
+    );
+    const failed = await recordAction(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        campaignId: created.campaign.id,
+        kind: 'inmail',
+        targetRef: 'https://www.linkedin.com/in/inmail-failed/',
+        status: 'skipped',
+        source: 'campaign',
+        plannedFor: NOW.toISOString()
+      },
+      NOW
+    );
+    await db
+      .prepare('UPDATE linkedin_actions SET failure_kind=? WHERE workspace_id=? AND id=?')
+      .run('compose_unavailable', WORKSPACE, failed.id);
+
+    const analytics = await campaignOperationalAnalytics(db, WORKSPACE, created.campaign.id, NOW);
+    expect(analytics.channels).toMatchObject({
+      inmailSent: 2,
+      inmailReplied: 1,
+      inmailFailed: 1,
+      inmailPaidCreditsUsed: 1,
+      inmailPaidCreditCap: 5
+    });
   });
 });
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  CircleAlert,
   Eye,
   GripVertical,
   LayoutTemplate,
@@ -19,7 +20,8 @@ import {
   createLinkedInManagerWorkflow,
   deleteLinkedInManagerWorkflow,
   getLinkedInManagerWorkflows,
-  updateLinkedInManagerWorkflow
+  updateLinkedInManagerWorkflow,
+  validateLinkedInManagerWorkflow
 } from './api';
 import type { LinkedInWorkflow, WorkflowDelay, WorkflowStep } from '../server/linkedin/workflows';
 import { errorMessage } from './LinkedInSafety';
@@ -1230,6 +1232,10 @@ export function LinkedInManagerWorkflowConfig({
   const [steps, setSteps] = useState<WorkflowStep[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [serverIssues, setServerIssues] = useState<
+    Array<{ path: Array<string | number>; message: string }>
+  >([]);
+  const [serverValidating, setServerValidating] = useState(false);
   /** The card whose grip is held down. Only that card is draggable, so a caret drag inside a textarea is not a reorder. */
   const [armedId, setArmedId] = useState<string | null>(null);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
@@ -1292,6 +1298,33 @@ export function LinkedInManagerWorkflowConfig({
     [steps]
   );
   const brokenCount = problems.filter((list) => list.length > 0).length;
+  useEffect(() => {
+    if (compact || steps.length === 0) {
+      setServerIssues([]);
+      setServerValidating(false);
+      return undefined;
+    }
+    let live = true;
+    setServerValidating(true);
+    const timer = window.setTimeout(() => {
+      void validateLinkedInManagerWorkflow(serializeSteps(steps))
+        .then((result) => {
+          if (!live) return;
+          setServerIssues(result.issues);
+        })
+        .catch((err) => {
+          if (!live) return;
+          setServerIssues([{ path: [], message: errorMessage(err, 'Server validation failed.') }]);
+        })
+        .finally(() => {
+          if (live) setServerValidating(false);
+        });
+    }, 250);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [compact, steps]);
   const cumulative = useMemo(() => {
     let total = 0;
     return steps.map((step) => {
@@ -1452,6 +1485,30 @@ export function LinkedInManagerWorkflowConfig({
       const next = [...current];
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved);
+      const indexById = new Map(next.map((step, index) => [step.id, index]));
+      const invalidReference = next.find((step, index) => {
+        if (step.action !== 'condition' && step.action !== 'monitor') return false;
+        const sourceId = step.config.condition.ofStepId;
+        return sourceId ? (indexById.get(sourceId) ?? Number.POSITIVE_INFINITY) >= index : false;
+      });
+      if (invalidReference) {
+        setError(
+          `That move would put “${invalidReference.id}” before the result-bearing step it reads. Branch references must point backward, so the move was not applied.`
+        );
+        return current;
+      }
+      const invalidWithdraw = next.findIndex(
+        (step, index) =>
+          step.action === 'withdraw_pending' &&
+          !next.slice(0, index).some((earlier) => earlier.action === 'connection_request')
+      );
+      if (invalidWithdraw >= 0) {
+        setError(
+          'That move would put Withdraw before its connection request, so the move was not applied.'
+        );
+        return current;
+      }
+      setError('');
       return next;
     });
 
@@ -1532,6 +1589,12 @@ export function LinkedInManagerWorkflowConfig({
     }
     if (brokenCount > 0) {
       setError('Some steps still have problems. They are marked below.');
+      return;
+    }
+    if (serverIssues.length > 0) {
+      setError(
+        `Server validation still reports ${serverIssues.length} issue${serverIssues.length === 1 ? '' : 's'}. Fix them before saving.`
+      );
       return;
     }
     setBusy(true);
@@ -1618,6 +1681,22 @@ export function LinkedInManagerWorkflowConfig({
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {serverIssues.length > 0 && (
+        <div className="li-warn-block">
+          <CircleAlert size={15} />
+          <div>
+            <strong>Server validation</strong>
+            <ul>
+              {serverIssues.map((issue, index) => (
+                <li key={`${issue.path.join('.')}-${index}`}>
+                  {issue.path.length ? `${issue.path.join('.')} — ` : ''}
+                  {issue.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
 
       <label className="li-block-label">
         Workflow name
@@ -1763,11 +1842,15 @@ export function LinkedInManagerWorkflowConfig({
         <span>
           {brokenCount > 0
             ? `${brokenCount} step${brokenCount === 1 ? '' : 's'} still ${brokenCount === 1 ? 'has' : 'have'} something the server would refuse. Each one says what, below.`
-            : steps.length === 0
-              ? 'A workflow needs at least one step. Pick the first one above.'
-              : !name.trim()
-                ? 'Give the workflow a name and it can be saved.'
-                : 'Saving stores this definition. It queues no LinkedIn action.'}
+            : serverValidating
+              ? 'Checking this graph against the server validator…'
+              : serverIssues.length > 0
+                ? `${serverIssues.length} server validation issue${serverIssues.length === 1 ? '' : 's'} remain.`
+                : steps.length === 0
+                  ? 'A workflow needs at least one step. Pick the first one above.'
+                  : !name.trim()
+                    ? 'Give the workflow a name and it can be saved.'
+                    : 'Saving stores this definition. It queues no LinkedIn action.'}
         </span>
         <button
           className="primary-button"
@@ -2692,6 +2775,12 @@ function WorkflowStepCard({
                     <option value="opens">Opens</option>
                     <option value="opens_clicks">Opens + clicks</option>
                   </select>
+                  <small className="li-acct-range">
+                    Trevra does not inject a tracking pixel or rewrite links here. Open/click
+                    conditions change only when a configured provider sends a signed event for this
+                    exact campaign email; use Off unless that provider behavior and your policy
+                    permit tracking.
+                  </small>
                 </label>
               </div>
             ) : (
@@ -2810,13 +2899,16 @@ function WorkflowStepCard({
           <div className="li-span-2 li-form-grid">
             <label>
               Provider
-              <input
+              <select
                 value={step.config.provider}
                 onChange={(event) =>
                   onChange({ ...step, config: { ...step.config, provider: event.target.value } })
                 }
-                placeholder="webhook / crm / sequencer"
-              />
+              >
+                <option value="webhook">Webhook URL</option>
+                <option value="remote_action">Approved remote action — CRM/list/sequencer</option>
+                <option value="crm_activity">Connected CRM activity note</option>
+              </select>
             </label>
             <label>
               Destination
@@ -2825,9 +2917,20 @@ function WorkflowStepCard({
                 onChange={(event) =>
                   onChange({ ...step, config: { ...step.config, destination: event.target.value } })
                 }
-                placeholder="https://… or configured destination"
+                placeholder={
+                  step.config.provider === 'webhook'
+                    ? 'https://…'
+                    : step.config.provider === 'remote_action'
+                      ? 'Configured action type, e.g. acme.crm.update'
+                      : 'crm.log-activity'
+                }
               />
             </label>
+            <p className="li-span-2 li-hint">
+              Remote actions use the approved adapter registry and can move a lead into a CRM
+              stage/list or external email sequence without exposing provider credentials to this
+              workflow. The payload must render as JSON.
+            </p>
             <label className="li-span-2">
               Payload template
               <textarea

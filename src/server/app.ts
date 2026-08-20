@@ -10,7 +10,7 @@ import rateLimit from 'express-rate-limit';
 import multer from 'multer';
 import pino from 'pino';
 import { pinoHttp } from 'pino-http';
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { APIError } from 'better-auth';
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node';
@@ -316,6 +316,7 @@ import {
   deleteLeadList,
   getLeadList,
   importLeadCsv,
+  importLeadProfileUrls,
   importLeadSourceContacts,
   ingestLeadSignal,
   listLeadContacts,
@@ -542,6 +543,66 @@ export function createApp(db: Db) {
         res
           .status(400)
           .json({ error: error instanceof Error ? error.message : 'Invalid Stripe webhook' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/webhooks/linkedin-campaign-email',
+    express.raw({ type: 'application/json', limit: '256kb' }),
+    async (req, res) => {
+      const secret = process.env.LINKEDIN_CAMPAIGN_EMAIL_WEBHOOK_SECRET?.trim();
+      if (!secret) {
+        res.status(503).json({ error: 'Campaign email event webhook is not configured' });
+        return;
+      }
+      const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body ?? '');
+      const provided = String(req.headers['x-trevra-signature'] ?? '').replace(/^sha256=/i, '');
+      const expected = createHmac('sha256', secret).update(raw).digest('hex');
+      const left = Buffer.from(provided, 'hex');
+      const right = Buffer.from(expected, 'hex');
+      if (left.length !== right.length || left.length === 0 || !timingSafeEqual(left, right)) {
+        res.status(401).json({ error: 'Invalid campaign email webhook signature' });
+        return;
+      }
+      try {
+        const input = z
+          .object({
+            workspaceId: z.string().trim().min(1).max(200),
+            channelActionId: z.string().trim().min(1).max(200).optional(),
+            externalRef: z.string().trim().min(1).max(500).optional(),
+            eventKind: z.enum(['opened', 'clicked', 'bounced', 'replied']),
+            providerEventId: z.string().trim().max(300).nullable().optional(),
+            metadata: z.record(z.unknown()).optional(),
+            occurredAt: z.string().datetime().optional()
+          })
+          .strict()
+          .refine((value) => Boolean(value.channelActionId || value.externalRef), {
+            message: 'channelActionId or externalRef is required'
+          })
+          .parse(JSON.parse(raw));
+        const recorded = await recordCampaignEmailEvent(
+          db,
+          input.workspaceId,
+          {
+            channelActionId: input.channelActionId,
+            externalRef: input.externalRef,
+            eventKind: input.eventKind,
+            providerEventId: input.providerEventId,
+            metadata: input.metadata,
+            occurredAt: input.occurredAt
+          },
+          new Date()
+        );
+        if (!recorded.memberId) {
+          res.status(404).json({ error: 'Campaign email action not found' });
+          return;
+        }
+        res.status(recorded.recorded ? 202 : 200).json(recorded);
+      } catch (error) {
+        res
+          .status(400)
+          .json({ error: error instanceof Error ? error.message : 'Invalid campaign email event' });
       }
     }
   );
@@ -3636,6 +3697,7 @@ export function createApp(db: Db) {
       const input = z
         .object({
           inmail: z.enum(['unknown', 'available', 'unavailable']),
+          premium: z.boolean().optional(),
           salesNavigator: z.boolean().optional(),
           recruiter: z.boolean().optional(),
           inmailMonthlyBudget: z.number().int().min(0).max(10000).nullable().optional(),
@@ -4649,6 +4711,37 @@ export function createApp(db: Db) {
           new Date()
         );
         res.status(201).json({ list });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/lead-lists/:id/profile-urls',
+    linkedinRoute(async (req, res) => {
+      const input = z
+        .object({
+          urls: z.string().trim().min(1).max(500_000),
+          seatKey: linkedinSeatKeySchema.optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      try {
+        const result = await importLeadProfileUrls(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            listId: String(req.params.id),
+            seatKey: input.seatKey,
+            urls: input.urls
+              .split(/[\s,;]+/g)
+              .map((value) => value.trim())
+              .filter(Boolean)
+          },
+          new Date()
+        );
+        res.status(201).json(result);
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
@@ -7168,6 +7261,7 @@ const linkedinLeadListCreateSchema = z
         'group_members',
         'event_attendees',
         'company_employees',
+        'profile_urls',
         'signal'
       ])
       .default('csv'),

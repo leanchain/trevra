@@ -1469,6 +1469,22 @@ export async function previewLinkedInManagerLeadCsv(
   return response.json();
 }
 
+export async function importLinkedInManagerProfileUrls(
+  listId: string,
+  urls: string,
+  seatKey?: string
+): Promise<{
+  inserted: number;
+  duplicates: number;
+  reused: number;
+  rejected: Array<{ value: string; reason: string }>;
+}> {
+  return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/profile-urls`, {
+    method: 'POST',
+    body: JSON.stringify({ urls, ...(seatKey ? { seatKey } : {}) })
+  });
+}
+
 /** The write half of the preview: parses through the same scrub + automatch, and persists. */
 export async function importLinkedInManagerLeadCsv(
   listId: string,
@@ -1553,6 +1569,15 @@ export async function deleteLinkedInManagerLeadContact(contactId: string): Promi
 export async function getLinkedInManagerWorkflows(): Promise<LinkedInWorkflow[]> {
   return (await request<{ workflows: LinkedInWorkflow[] }>('/api/linkedin/manager/workflows'))
     .workflows;
+}
+
+export async function validateLinkedInManagerWorkflow(
+  steps: WorkflowStep[]
+): Promise<{ valid: boolean; issues: Array<{ path: Array<string | number>; message: string }> }> {
+  return request('/api/linkedin/manager/workflows/validate', {
+    method: 'POST',
+    body: JSON.stringify({ steps })
+  });
 }
 
 export async function createLinkedInManagerWorkflow(input: {
@@ -1648,6 +1673,7 @@ export async function updateLinkedInSeatCapabilities(
   seatKey: string,
   input: {
     inmail: 'unknown' | 'available' | 'unavailable';
+    premium?: boolean;
     salesNavigator?: boolean;
     recruiter?: boolean;
     inmailMonthlyBudget?: number | null;

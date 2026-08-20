@@ -18,6 +18,7 @@ import {
   getLinkedInManagerLeadContacts,
   getLinkedInManagerLeadLists,
   importLinkedInManagerLeadCsv,
+  importLinkedInManagerProfileUrls,
   previewLinkedInManagerLeadCsv,
   updateLinkedInManagerLeadContact,
   type LinkedInLeadCsvPreview
@@ -235,6 +236,7 @@ export function LinkedInManagerLeadConfig({
     counts: ImportReport;
   } | null>(null);
   const [error, setError] = useState('');
+  const [profileUrls, setProfileUrls] = useState('');
   /** Last preview wins: changing two columns quickly must not race. */
   const previewToken = useRef(0);
 
@@ -522,6 +524,46 @@ export function LinkedInManagerLeadConfig({
     }
   };
 
+  const runProfileUrlImport = async () => {
+    if (!profileUrls.trim()) return;
+    if ((compact || destination === 'new') && !newName.trim()) {
+      setError('Name the new list before importing profile URLs.');
+      return;
+    }
+    setBusy('import');
+    setError('');
+    try {
+      const list =
+        destination === 'new'
+          ? await createLinkedInManagerLeadList({
+              seatKey: activeSeatKey,
+              name: newName.trim(),
+              sourceKind: 'profile_urls'
+            })
+          : destinationList!;
+      const counts = await importLinkedInManagerProfileUrls(list.id, profileUrls, activeSeatKey);
+      setToast(
+        counts.inserted > 0 || counts.reused > 0
+          ? `${plural(counts.inserted + counts.reused, 'profile')} added to “${list.name}”.${counts.rejected.length ? ` ${plural(counts.rejected.length, 'entry')} rejected.` : ''}`
+          : `Nothing new was added to “${list.name}”.`
+      );
+      setProfileUrls('');
+      setNewName('');
+      if (compact) {
+        onImported?.(list);
+      } else {
+        setDestination(list.id);
+        await loadLists();
+        await openList(list.id);
+      }
+      await onChanged();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to import those LinkedIn profile URLs.'));
+    } finally {
+      setBusy('');
+    }
+  };
+
   /* -- editing what is already in a list --------------------------------- */
 
   const startEdit = (contact: LinkedInLeadContact) => {
@@ -708,6 +750,37 @@ export function LinkedInManagerLeadConfig({
         </div>
 
         {error && <div className="error-banner">{error}</div>}
+
+        <details className="mgr-advanced">
+          <summary>Paste LinkedIn profile URLs instead</summary>
+          <p className="li-hint">
+            One /in/ profile per line. Trevra stores only canonical profile identity here; names and
+            company stay blank until you edit or enrich them, so no fake personalization data is
+            created.
+          </p>
+          <textarea
+            rows={5}
+            value={profileUrls}
+            disabled={busy !== ''}
+            placeholder={
+              'https://www.linkedin.com/in/ada-lovelace/\nhttps://www.linkedin.com/in/grace-hopper/'
+            }
+            onChange={(event) => setProfileUrls(event.target.value)}
+          />
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={
+              busy !== '' ||
+              !profileUrls.trim() ||
+              ((compact || destination === 'new') && !newName.trim())
+            }
+            onClick={() => void runProfileUrlImport()}
+          >
+            {busy === 'import' ? <LoaderCircle className="spin" size={14} /> : <Users size={14} />}{' '}
+            Add pasted profiles
+          </button>
+        </details>
 
         <div className="li-form-grid">
           {!compact && (

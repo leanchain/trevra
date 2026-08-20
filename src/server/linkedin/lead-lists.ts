@@ -586,6 +586,7 @@ export async function importLeadProfileUrls(
   now: Date = new Date()
 ): Promise<{
   inserted: number;
+  duplicates: number;
   reused: number;
   rejected: Array<{ value: string; reason: string }>;
 }> {
@@ -601,6 +602,10 @@ export async function importLeadProfileUrls(
     10_000
   );
   let inserted = 0;
+  let duplicates = Math.max(
+    0,
+    input.urls.map((value) => value.trim()).filter(Boolean).length - unique.length
+  );
   let reused = 0;
   const rejected: Array<{ value: string; reason: string }> = [];
   const timestamp = now.toISOString();
@@ -630,10 +635,13 @@ export async function importLeadProfileUrls(
         continue;
       }
       if (outcome.inserted) inserted += 1;
-      else if (outcome.reused) reused += 1;
+      else {
+        duplicates += 1;
+        if (outcome.reused) reused += 1;
+      }
     }
   });
-  return { inserted, reused, rejected };
+  return { inserted, duplicates, reused, rejected };
 }
 
 export async function importLeadCsv(

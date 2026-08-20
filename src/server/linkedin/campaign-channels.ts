@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { id, type Db } from '../db.js';
 import { executeConnectedAction } from '../integration-service.js';
+import { executePreparedPlaybookAction } from '../control-plane/execution.js';
 import { campaignSnapshotSteps } from './managed-campaigns.js';
 import { delayMilliseconds } from './workflows.js';
 
@@ -152,6 +155,24 @@ async function executeEmail(
   const body = String(payload.body ?? '').trim();
   if (!recipient || !subject || !body)
     throw new Error('Email action requires recipient, subject, and body.');
+  const threaded = payload.threaded === true;
+  const prior = threaded
+    ? await db
+        .prepare(
+          `SELECT external_ref,idempotency_key FROM linkedin_campaign_channel_actions
+           WHERE workspace_id=? AND member_id=? AND kind='email' AND status='sent'
+             AND external_ref IS NOT NULL
+             AND connection_id IS NOT DISTINCT FROM ?
+             AND id<>?
+           ORDER BY completed_at DESC,created_at DESC LIMIT 1`
+        )
+        .get<{ external_ref: string; idempotency_key: string }>(
+          row.workspace_id,
+          row.member_id,
+          row.connection_id,
+          row.id
+        )
+    : undefined;
   return executeConnectedAction(db, row.workspace_id, {
     type: 'email_draft',
     connection_id: row.connection_id ?? payload.connectionId ?? undefined,
@@ -159,7 +180,9 @@ async function executeEmail(
     subject,
     body,
     structured_payload_json: JSON.stringify({
-      threaded: payload.threaded === true,
+      threaded,
+      threadExternalRef: prior?.external_ref ?? null,
+      threadIdempotencyKey: prior?.idempotency_key ?? null,
       tracking: payload.tracking ?? 'off',
       campaignId: row.campaign_id,
       memberId: row.member_id,
@@ -289,12 +312,130 @@ async function executeFindEmail(
   }
 }
 
+function blockedAddress(address: string): boolean {
+  if (address.includes(':')) {
+    const normalized = address.toLowerCase();
+    if (normalized === '::' || normalized === '::1') return true;
+    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+    if (/^fe[89ab]/.test(normalized)) return true;
+    if (normalized.startsWith('2001:db8:')) return true;
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(normalized)?.[1];
+    return mapped ? blockedAddress(mapped) : false;
+  }
+  const octets = address.split('.').map(Number);
+  if (
+    octets.length !== 4 ||
+    octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)
+  )
+    return true;
+  const [a, b] = octets;
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0) ||
+    (a === 192 && b === 0 && octets[2] === 2) ||
+    (a === 198 && (b === 18 || b === 19 || b === 51)) ||
+    (a === 203 && b === 0 && octets[2] === 113) ||
+    a >= 224
+  );
+}
+
+export async function assertSafeCampaignDestination(
+  raw: string,
+  options: { allowLocalTest?: boolean } = {}
+): Promise<URL> {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('Destination URL is invalid.');
+  }
+  const allowLocalTest = options.allowLocalTest ?? process.env.NODE_ENV === 'test';
+  if (url.username || url.password) throw new Error('Destination URL credentials are not allowed.');
+  if (url.protocol !== 'https:' && !(allowLocalTest && url.protocol === 'http:'))
+    throw new Error('Destination URL must use HTTPS.');
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
+  if (
+    !hostname ||
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local')
+  ) {
+    if (!allowLocalTest) throw new Error('Destination hostname is blocked.');
+    return url;
+  }
+  if (isIP(hostname)) {
+    if (blockedAddress(hostname) && !allowLocalTest)
+      throw new Error('Destination resolves to a private or reserved address.');
+    return url;
+  }
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await lookup(hostname, { all: true, verbatim: true });
+  } catch {
+    throw new Error('Destination hostname could not be resolved.');
+  }
+  if (addresses.length === 0) throw new Error('Destination hostname could not be resolved.');
+  if (!allowLocalTest && addresses.some(({ address }) => blockedAddress(address)))
+    throw new Error('Destination resolves to a private or reserved address.');
+  return url;
+}
+
+function handoffPayload(value: unknown): unknown {
+  if (typeof value !== 'string') return value ?? {};
+  const text = value.trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error('External handoff payload must render as valid JSON.');
+  }
+}
+
+async function executeExternalHandoff(
+  db: Db,
+  row: ChannelRow,
+  payload: Record<string, unknown>
+): Promise<{ provider: string; externalRef: string }> {
+  const provider = String(payload.provider ?? 'webhook')
+    .trim()
+    .toLowerCase();
+  if (provider === 'webhook') return executeWebhook(row, payload);
+  if (provider === 'remote_action') {
+    const actionType = String(payload.destination ?? '').trim();
+    if (!actionType) throw new Error('External handoff has no configured remote action type.');
+    const outcome = await executePreparedPlaybookAction(db, {
+      workspaceId: row.workspace_id,
+      actionType,
+      payload: handoffPayload(payload.payload),
+      payloadHash: row.idempotency_key
+    });
+    return { provider: outcome.provider, externalRef: outcome.externalRef };
+  }
+  if (provider === 'crm_activity') {
+    const outcome = await executePreparedPlaybookAction(db, {
+      workspaceId: row.workspace_id,
+      actionType: 'crm.log-activity',
+      payload: handoffPayload(payload.payload),
+      payloadHash: row.idempotency_key
+    });
+    return { provider: outcome.provider, externalRef: outcome.externalRef };
+  }
+  throw new Error(`Cannot execute external handoff provider '${provider}'.`);
+}
+
 async function executeWebhook(
   row: ChannelRow,
   payload: Record<string, unknown>
 ): Promise<{ provider: string; externalRef: string }> {
-  const url = String(payload.url ?? payload.destination ?? '').trim();
-  if (!url) throw new Error('Webhook/handoff action has no destination URL.');
+  const rawUrl = String(payload.url ?? payload.destination ?? '').trim();
+  if (!rawUrl) throw new Error('Webhook/handoff action has no destination URL.');
+  const url = (await assertSafeCampaignDestination(rawUrl)).toString();
   const method = String(payload.method ?? 'POST').toUpperCase();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
@@ -325,7 +466,7 @@ async function executeWebhook(
 
 function definiteFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return /HTTP 4\d\d|requires recipient|no destination|no longer exists|Connect Gmail|Connect Microsoft|cannot execute|enrichment credit cap reached/i.test(
+  return /HTTP 4\d\d|requires recipient|no destination|no longer exists|Connect Gmail|Connect Microsoft|cannot execute|enrichment credit cap reached|external handoff payload|No approved action adapter|requires [A-Z_]+|failed validation|cannot execute|destination .*?(?:invalid|blocked|resolve|HTTPS|credentials|private|reserved)/i.test(
     error.message
   );
 }
@@ -496,7 +637,9 @@ export async function runCampaignChannelActions(
           ? await executeEmail(db, row, payload)
           : row.kind === 'find_email'
             ? await executeFindEmail(db, row, payload, now)
-            : await executeWebhook(row, payload);
+            : row.kind === 'external_handoff'
+              ? await executeExternalHandoff(db, row, payload)
+              : await executeWebhook(row, payload);
       await settleSuccess(db, row, outcome, now);
       result.sent += 1;
     } catch (error) {

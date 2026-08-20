@@ -6,6 +6,7 @@ import {
   deleteLeadList,
   getLeadList,
   importLeadCsv,
+  importLeadProfileUrls,
   importLeadSourceContacts,
   listLeadContacts,
   listLeadLists,
@@ -163,6 +164,40 @@ describe('account-scoped lead lists', () => {
     );
 
     expect(result.inserted).toBe(1);
+  });
+});
+
+describe('pasted LinkedIn profile URLs', () => {
+  it('canonicalises member URLs, deduplicates them, and never invents identity fields', async () => {
+    const list = await createLeadList(
+      db,
+      { workspaceId: WORKSPACE_ID, name: 'Pasted profiles', sourceKind: 'profile_urls' },
+      NOW
+    );
+    const result = await importLeadProfileUrls(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        listId: list.id,
+        urls: [
+          'https://www.linkedin.com/in/maya-chen/?trk=feed',
+          'https://linkedin.com/in/maya-chen/#about',
+          'https://www.linkedin.com/company/acme/'
+        ]
+      },
+      NOW
+    );
+    expect(result.inserted).toBe(1);
+    expect(result.duplicates).toBe(1);
+    expect(result.rejected).toHaveLength(1);
+    const contacts = await listLeadContacts(db, WORKSPACE_ID, list.id);
+    expect(contacts).toHaveLength(1);
+    expect(contacts[0]).toMatchObject({
+      profileUrl: 'https://www.linkedin.com/in/maya-chen/',
+      firstName: '',
+      lastName: '',
+      company: ''
+    });
   });
 });
 
