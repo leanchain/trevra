@@ -2,10 +2,15 @@ import { z } from 'zod';
 import { linkedInWorkerConfig } from '../config.js';
 import type { Db } from '../db.js';
 import { recordAction } from './actions.js';
-import { LinkedInApiError } from './campaigns.js';
+import { LinkedInApiError } from './errors.js';
 import { linkedinSequencePayloadSchema, type ExportContact } from './export.js';
 import { PACED_KIND_VALUES } from './limits.js';
-import { EXECUTABLE_KINDS, KINDS_REQUIRING_BODY, linkedInOffReason, type ExecutableKind } from './local-worker.js';
+import {
+  EXECUTABLE_KINDS,
+  KINDS_REQUIRING_BODY,
+  linkedInOffReason,
+  type ExecutableKind
+} from './local-worker.js';
 import type { PacingPlan } from './pacing.js';
 import { OWNER_SEAT_KEY, getSeat } from './seats.js';
 import { extractVariables, type LinkedInSequence, type SequenceStep } from './sequence.js';
@@ -99,7 +104,9 @@ export interface CampaignQueued {
  * failure `enqueueReply` refuses to create. `inbox.ts` is the only writer that
  * holds the missing column, so it stays the only writer of that kind.
  */
-const QUEUEABLE_KINDS: readonly ExecutableKind[] = EXECUTABLE_KINDS.filter((kind) => kind !== 'reply');
+const QUEUEABLE_KINDS: readonly ExecutableKind[] = EXECUTABLE_KINDS.filter(
+  (kind) => kind !== 'reply'
+);
 
 function isQueueable(kind: string): kind is ExecutableKind {
   return (QUEUEABLE_KINDS as readonly string[]).includes(kind);
@@ -121,11 +128,15 @@ function isQueueable(kind: string): kind is ExecutableKind {
  */
 function contactValue(contact: ExportContact | undefined, field: string): string | null {
   const pick =
-    field === 'firstName' ? contact?.firstName
-    : field === 'lastName' ? contact?.lastName
-    : field === 'company' ? contact?.company
-    : field === 'jobTitle' || field === 'role' ? contact?.role
-    : null;
+    field === 'firstName'
+      ? contact?.firstName
+      : field === 'lastName'
+        ? contact?.lastName
+        : field === 'company'
+          ? contact?.company
+          : field === 'jobTitle' || field === 'role'
+            ? contact?.role
+            : null;
   const value = pick?.trim();
   return value ? value : null;
 }
@@ -225,7 +236,11 @@ function namedTargets(entries: readonly string[]): string {
  * half-queued plan whose pacing arithmetic describes a campaign that does not
  * exist, and an operator with no way to tell which half went in.
  */
-export async function queueCampaign(db: Db, input: CampaignQueueInput, now: Date): Promise<CampaignQueued> {
+export async function queueCampaign(
+  db: Db,
+  input: CampaignQueueInput,
+  now: Date
+): Promise<CampaignQueued> {
   const seatKey = input.plan.seatKey || OWNER_SEAT_KEY;
 
   // --- Refusal 1: the deployment gate. Cheapest, and reads no database. ---
@@ -253,7 +268,9 @@ export async function queueCampaign(db: Db, input: CampaignQueueInput, now: Date
   // routine for either, so a queued row would sit under a claim forever
   // (local-worker.ts EXECUTABLE_KINDS). Refused by name, with the path that
   // does work for it.
-  const unqueueable = [...new Set(input.plan.slots.map((slot) => slot.kind).filter((kind) => !isQueueable(kind)))];
+  const unqueueable = [
+    ...new Set(input.plan.slots.map((slot) => slot.kind).filter((kind) => !isQueueable(kind)))
+  ];
   if (unqueueable.length > 0) {
     throw new LinkedInApiError(
       `This plan plans ${unqueueable.join(', ')}, which the local worker cannot send -- it executes ${QUEUEABLE_KINDS.join(', ')}. Export the campaign for a tool that can, or re-plan it for a kind the worker performs.`,
@@ -274,7 +291,9 @@ export async function queueCampaign(db: Db, input: CampaignQueueInput, now: Date
   // never a missing row, it is the wrong account.
   const seat = await getSeat(db, input.workspaceId, seatKey);
   if (!seat) {
-    throw new Error(`No LinkedIn seat '${seatKey}' is configured for this workspace; nothing can be queued for it.`);
+    throw new Error(
+      `No LinkedIn seat '${seatKey}' is configured for this workspace; nothing can be queued for it.`
+    );
   }
 
   const contacts = new Map<string, ExportContact>();
@@ -308,7 +327,9 @@ export async function queueCampaign(db: Db, input: CampaignQueueInput, now: Date
 
     const rendered = renderBody(template, contacts.get(slot.targetRef));
     if (rendered.missing.length > 0) {
-      unrenderable.push(`${slot.targetRef} needs ${rendered.missing.map((field) => `{{${field}}}`).join(', ')}`);
+      unrenderable.push(
+        `${slot.targetRef} needs ${rendered.missing.map((field) => `{{${field}}}`).join(', ')}`
+      );
       continue;
     }
     bodies.set(cacheKey, rendered.body.trim().length > 0 ? rendered.body : null);
@@ -369,7 +390,8 @@ export async function queueCampaign(db: Db, input: CampaignQueueInput, now: Date
       written += 1;
       const body = bodies.get(bodyKey(slot.kind, slot.targetRef)) ?? null;
       if (body !== null) {
-        await tx.prepare('UPDATE linkedin_actions SET body=? WHERE id=? AND workspace_id=?')
+        await tx
+          .prepare('UPDATE linkedin_actions SET body=? WHERE id=? AND workspace_id=?')
           .run(body, result.id, input.workspaceId);
       }
     }
@@ -379,7 +401,11 @@ export async function queueCampaign(db: Db, input: CampaignQueueInput, now: Date
   return {
     seatKey,
     kinds: [...new Set(input.plan.slots.map((slot) => slot.kind as ExecutableKind))],
-    recorded: { attempted: input.plan.slots.length, written: queued.written, duplicate: queued.duplicate }
+    recorded: {
+      attempted: input.plan.slots.length,
+      written: queued.written,
+      duplicate: queued.duplicate
+    }
   };
 }
 

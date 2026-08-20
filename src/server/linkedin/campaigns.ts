@@ -9,6 +9,7 @@ import { OWNER_SEAT_KEY } from './seats.js';
 // cycle -- and reimplementing zone arithmetic in a second place is exactly how
 // a chart comes to disagree with the ceiling it is charting.
 import { localDateOf, zonedToUtc, type LocalDate } from './pacing.js';
+import { LinkedInApiError } from './errors.js';
 
 /**
  * Campaigns, the action queue read model, and the one choke point through
@@ -34,14 +35,6 @@ import { localDateOf, zonedToUtc, type LocalDate } from './pacing.js';
  * each: the worker writes what it did, this file writes what a human reports.
  */
 
-/** A 4xx an operator caused. Routes map `status` straight onto the response. */
-export class LinkedInApiError extends Error {
-  constructor(message: string, public readonly status = 400) {
-    super(message);
-    this.name = 'LinkedInApiError';
-  }
-}
-
 /**
  * Statuses that assert something reached LinkedIn.
  *
@@ -50,7 +43,11 @@ export class LinkedInApiError extends Error {
  * about Trevra, not about LinkedIn, and `exportCampaign` is the sanctioned
  * writer of it. These three are claims about what a stranger's account did.
  */
-export const WORKER_ONLY_STATUSES = ['sent', 'accepted', 'replied'] as const satisfies readonly LinkedInActionStatus[];
+export const WORKER_ONLY_STATUSES = [
+  'sent',
+  'accepted',
+  'replied'
+] as const satisfies readonly LinkedInActionStatus[];
 
 export function isWorkerOnlyStatus(status: string): boolean {
   return (WORKER_ONLY_STATUSES as readonly string[]).includes(status);
@@ -106,7 +103,9 @@ export type AcceptanceSource = 'human' | 'detected';
  * entry is a decision somebody has to defend in review, which is the entire
  * point of the invariant living in code.
  */
-const WORKER_ONLY_WRITERS: Readonly<Record<(typeof WORKER_ONLY_STATUSES)[number], readonly StatusWriter[]>> = {
+const WORKER_ONLY_WRITERS: Readonly<
+  Record<(typeof WORKER_ONLY_STATUSES)[number], readonly StatusWriter[]>
+> = {
   sent: ['outcome-ingest'],
   accepted: ['outcome-ingest', 'acceptance-detector'],
   replied: ['outcome-ingest']
@@ -211,7 +210,11 @@ function toCampaign(row: CampaignRow): LinkedInCampaign {
 /** JSONB comes back parsed from pg; a string means somebody stored text. */
 function parseJson(value: unknown): unknown {
   if (typeof value !== 'string') return value ?? {};
-  try { return JSON.parse(value); } catch { return {}; }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
 }
 
 export interface CampaignInsert {
@@ -260,26 +263,34 @@ export interface CampaignInsert {
  * rather than silently created, because the usual cause is a double-clicked
  * button and the usual consequence is two invites to every target.
  */
-export async function createCampaign(db: Db, input: CampaignInsert, now: Date): Promise<LinkedInCampaign> {
+export async function createCampaign(
+  db: Db,
+  input: CampaignInsert,
+  now: Date
+): Promise<LinkedInCampaign> {
   const timestamp = now.toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     INSERT INTO linkedin_campaigns (
       id, workspace_id, name, status, sequence_json, brief_json, playbook_run_id, seat_key, created_at, updated_at
     ) VALUES (?,?,?,?,?::jsonb,?::jsonb,?,?,?,?)
     ON CONFLICT DO NOTHING
     RETURNING ${CAMPAIGN_COLUMNS}
-  `).get<CampaignRow>(
-    input.id,
-    input.workspaceId,
-    input.name,
-    input.status ?? 'draft',
-    JSON.stringify(input.sequence ?? {}),
-    JSON.stringify(input.brief ?? {}),
-    input.playbookRunId ?? null,
-    input.seatKey ?? OWNER_SEAT_KEY,
-    timestamp,
-    timestamp
-  );
+  `
+    )
+    .get<CampaignRow>(
+      input.id,
+      input.workspaceId,
+      input.name,
+      input.status ?? 'draft',
+      JSON.stringify(input.sequence ?? {}),
+      JSON.stringify(input.brief ?? {}),
+      input.playbookRunId ?? null,
+      input.seatKey ?? OWNER_SEAT_KEY,
+      timestamp,
+      timestamp
+    );
 
   if (!row) {
     throw new LinkedInApiError(
@@ -335,15 +346,26 @@ export async function listCampaigns(
   if (filters.seatKey) params.push(filters.seatKey);
   params.push(Math.max(1, Math.min(filters.limit ?? 100, 500)));
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT ${CAMPAIGN_COLUMNS} FROM linkedin_campaigns
     WHERE workspace_id=? ${LEGACY_CAMPAIGN_ONLY} ${seatClause} ORDER BY created_at DESC LIMIT ?
-  `).all<CampaignRow>(...params);
+  `
+    )
+    .all<CampaignRow>(...params);
   return rows.map(toCampaign);
 }
 
-export async function getCampaign(db: Db, workspaceId: string, campaignId: string): Promise<LinkedInCampaign | undefined> {
-  const row = await db.prepare(`SELECT ${CAMPAIGN_COLUMNS} FROM linkedin_campaigns WHERE id=? AND workspace_id=? ${LEGACY_CAMPAIGN_ONLY}`)
+export async function getCampaign(
+  db: Db,
+  workspaceId: string,
+  campaignId: string
+): Promise<LinkedInCampaign | undefined> {
+  const row = await db
+    .prepare(
+      `SELECT ${CAMPAIGN_COLUMNS} FROM linkedin_campaigns WHERE id=? AND workspace_id=? ${LEGACY_CAMPAIGN_ONLY}`
+    )
     .get<CampaignRow>(campaignId, workspaceId);
   return row ? toCampaign(row) : undefined;
 }
@@ -393,20 +415,28 @@ export async function stopCampaign(
   now: Date
 ): Promise<{ campaign: LinkedInCampaign; released: number } | undefined> {
   const timestamp = now.toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     UPDATE linkedin_campaigns
     SET status='stopped',
         stop_requested_at=COALESCE(stop_requested_at, ?::timestamptz),
         updated_at=?
     WHERE id=? AND workspace_id=?
     RETURNING ${CAMPAIGN_COLUMNS}
-  `).get<CampaignRow>(timestamp, timestamp, campaignId, workspaceId);
+  `
+    )
+    .get<CampaignRow>(timestamp, timestamp, campaignId, workspaceId);
   if (!row) return undefined;
 
-  const released = await db.prepare(`
+  const released = await db
+    .prepare(
+      `
     UPDATE linkedin_actions SET status='skipped', recorded_at=NULL, claimed_at=NULL
     WHERE workspace_id=? AND campaign_id=? AND status IN ('planned','held') AND claimed_at IS NULL
-  `).run(workspaceId, campaignId);
+  `
+    )
+    .run(workspaceId, campaignId);
 
   return { campaign: toCampaign(row), released: released.changes };
 }
@@ -418,8 +448,13 @@ export async function stopCampaign(
  * the campaign LIST route would otherwise ship every person in every campaign
  * to a screen that renders names and statuses.
  */
-export async function getCampaignBrief(db: Db, workspaceId: string, campaignId: string): Promise<unknown> {
-  const row = await db.prepare('SELECT brief_json FROM linkedin_campaigns WHERE id=? AND workspace_id=?')
+export async function getCampaignBrief(
+  db: Db,
+  workspaceId: string,
+  campaignId: string
+): Promise<unknown> {
+  const row = await db
+    .prepare('SELECT brief_json FROM linkedin_campaigns WHERE id=? AND workspace_id=?')
     .get<{ brief_json: unknown }>(campaignId, workspaceId);
   return row ? parseJson(row.brief_json) : undefined;
 }
@@ -442,11 +477,19 @@ export async function getCampaignBrief(db: Db, workspaceId: string, campaignId: 
  * a paused campaign be refused an edit on the grounds that it had already
  * sent -- which is precisely the state a pause exists to create.
  */
-export async function countDeliveredActions(db: Db, workspaceId: string, campaignId: string): Promise<number> {
-  const row = await db.prepare(`
+export async function countDeliveredActions(
+  db: Db,
+  workspaceId: string,
+  campaignId: string
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `
     SELECT COUNT(*)::int AS total FROM linkedin_actions
     WHERE workspace_id=? AND campaign_id=? AND status NOT IN ('planned','held','skipped')
-  `).get<{ total: number }>(workspaceId, campaignId);
+  `
+    )
+    .get<{ total: number }>(workspaceId, campaignId);
   return row?.total ?? 0;
 }
 /** Record the approved copy and the run behind it, once the playbook has produced them. */
@@ -457,7 +500,9 @@ export async function attachCampaignRun(
   patch: { playbookRunId?: string | null; sequence?: unknown; status?: CampaignStatus },
   now: Date
 ): Promise<LinkedInCampaign | undefined> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     UPDATE linkedin_campaigns SET
       playbook_run_id=COALESCE(?::text, playbook_run_id),
       sequence_json=COALESCE(?::jsonb, sequence_json),
@@ -465,14 +510,16 @@ export async function attachCampaignRun(
       updated_at=?
     WHERE id=? AND workspace_id=?
     RETURNING ${CAMPAIGN_COLUMNS}
-  `).get<CampaignRow>(
-    patch.playbookRunId ?? null,
-    patch.sequence === undefined ? null : JSON.stringify(patch.sequence),
-    patch.status ?? null,
-    now.toISOString(),
-    campaignId,
-    workspaceId
-  );
+  `
+    )
+    .get<CampaignRow>(
+      patch.playbookRunId ?? null,
+      patch.sequence === undefined ? null : JSON.stringify(patch.sequence),
+      patch.status ?? null,
+      now.toISOString(),
+      campaignId,
+      workspaceId
+    );
   return row ? toCampaign(row) : undefined;
 }
 
@@ -575,7 +622,10 @@ function toActionView(row: ActionRow): LinkedInActionView {
     claimedAt: row.claimed_at,
     createdAt: row.created_at,
     acceptedAt: row.accepted_at,
-    acceptedSource: row.accepted_source === 'human' || row.accepted_source === 'detected' ? row.accepted_source : null,
+    acceptedSource:
+      row.accepted_source === 'human' || row.accepted_source === 'detected'
+        ? row.accepted_source
+        : null,
     queuedByUserId: row.queued_by_user_id
   };
 }
@@ -599,28 +649,59 @@ export interface ActionFilters {
  * a row up by id alone would happily serve one workspace's outreach list to
  * another's session.
  */
-export async function listActions(db: Db, workspaceId: string, filters: ActionFilters = {}): Promise<LinkedInActionView[]> {
+export async function listActions(
+  db: Db,
+  workspaceId: string,
+  filters: ActionFilters = {}
+): Promise<LinkedInActionView[]> {
   const clauses = ['workspace_id=?'];
   const params: unknown[] = [workspaceId];
-  if (filters.status) { clauses.push('status=?'); params.push(filters.status); }
-  if (filters.kind) { clauses.push('kind=?'); params.push(filters.kind); }
-  if (filters.campaignId) { clauses.push('campaign_id=?'); params.push(filters.campaignId); }
-  if (filters.seatKey) { clauses.push('seat_key=?'); params.push(filters.seatKey); }
-  if (filters.from) { clauses.push('COALESCE(planned_for, recorded_at, created_at) >= ?'); params.push(filters.from); }
-  if (filters.to) { clauses.push('COALESCE(planned_for, recorded_at, created_at) <= ?'); params.push(filters.to); }
+  if (filters.status) {
+    clauses.push('status=?');
+    params.push(filters.status);
+  }
+  if (filters.kind) {
+    clauses.push('kind=?');
+    params.push(filters.kind);
+  }
+  if (filters.campaignId) {
+    clauses.push('campaign_id=?');
+    params.push(filters.campaignId);
+  }
+  if (filters.seatKey) {
+    clauses.push('seat_key=?');
+    params.push(filters.seatKey);
+  }
+  if (filters.from) {
+    clauses.push('COALESCE(planned_for, recorded_at, created_at) >= ?');
+    params.push(filters.from);
+  }
+  if (filters.to) {
+    clauses.push('COALESCE(planned_for, recorded_at, created_at) <= ?');
+    params.push(filters.to);
+  }
   params.push(Math.max(1, Math.min(filters.limit ?? 100, 500)));
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT ${ACTION_COLUMNS} FROM linkedin_actions
     WHERE ${clauses.join(' AND ')}
     ORDER BY COALESCE(planned_for, recorded_at, created_at) DESC, id DESC
     LIMIT ?
-  `).all<ActionRow>(...params);
+  `
+    )
+    .all<ActionRow>(...params);
   return rows.map(toActionView);
 }
 
-export async function getAction(db: Db, workspaceId: string, actionId: string): Promise<LinkedInActionView | undefined> {
-  const row = await db.prepare(`SELECT ${ACTION_COLUMNS} FROM linkedin_actions WHERE id=? AND workspace_id=?`)
+export async function getAction(
+  db: Db,
+  workspaceId: string,
+  actionId: string
+): Promise<LinkedInActionView | undefined> {
+  const row = await db
+    .prepare(`SELECT ${ACTION_COLUMNS} FROM linkedin_actions WHERE id=? AND workspace_id=?`)
     .get<ActionRow>(actionId, workspaceId);
   return row ? toActionView(row) : undefined;
 }
@@ -660,13 +741,17 @@ export interface StatusWrite {
  * window reads `recorded_at`, so an outcome reported today for a send that
  * happened on Tuesday must charge Tuesday's budget, not today's.
  */
-export async function writeActionStatus(db: Db, input: StatusWrite, now: Date): Promise<LinkedInActionView> {
+export async function writeActionStatus(
+  db: Db,
+  input: StatusWrite,
+  now: Date
+): Promise<LinkedInActionView> {
   if (isWorkerOnlyStatus(input.status)) {
     const permitted = WORKER_ONLY_WRITERS[input.status as keyof typeof WORKER_ONLY_WRITERS] ?? [];
     if (!permitted.includes(input.via)) {
       throw new LinkedInApiError(
-        `The API cannot mark a LinkedIn action '${input.status}'. Trevra plans and approves; it never sends. `
-          + 'A send is recorded by the local worker that performed it, or reported through POST /api/linkedin/actions/outcome.',
+        `The API cannot mark a LinkedIn action '${input.status}'. Trevra plans and approves; it never sends. ` +
+          'A send is recorded by the local worker that performed it, or reported through POST /api/linkedin/actions/outcome.',
         409
       );
     }
@@ -681,7 +766,9 @@ export async function writeActionStatus(db: Db, input: StatusWrite, now: Date): 
   const accepting = input.status === 'accepted';
   const acceptedAt = accepting ? (input.acceptedAt ?? now.toISOString()) : null;
   const acceptedSource: AcceptanceSource | null = accepting
-    ? (input.via === 'acceptance-detector' ? 'detected' : 'human')
+    ? input.via === 'acceptance-detector'
+      ? 'detected'
+      : 'human'
     : null;
 
   /*
@@ -707,11 +794,14 @@ export async function writeActionStatus(db: Db, input: StatusWrite, now: Date): 
    * a browser navigation between reading a row and deciding about it, and a
    * human can click "they replied" inside that window.
    */
-  const detectorGuard = input.via === 'acceptance-detector'
-    ? "AND kind='invite' AND status IN ('sent','exported') AND accepted_source IS DISTINCT FROM 'human'"
-    : '';
+  const detectorGuard =
+    input.via === 'acceptance-detector'
+      ? "AND kind='invite' AND status IN ('sent','exported') AND accepted_source IS DISTINCT FROM 'human'"
+      : '';
 
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     UPDATE linkedin_actions SET
       status=?,
       recorded_at=?,
@@ -721,15 +811,17 @@ export async function writeActionStatus(db: Db, input: StatusWrite, now: Date): 
       accepted_source = COALESCE(?::text, accepted_source)
     WHERE id=? AND workspace_id=? ${detectorGuard}
     RETURNING ${ACTION_COLUMNS}
-  `).get<ActionRow>(
-    input.status,
-    recordedAt,
-    acceptedAt,
-    acceptedAt,
-    acceptedSource,
-    input.actionId,
-    input.workspaceId
-  );
+  `
+    )
+    .get<ActionRow>(
+      input.status,
+      recordedAt,
+      acceptedAt,
+      acceptedAt,
+      acceptedSource,
+      input.actionId,
+      input.workspaceId
+    );
 
   if (!row) {
     throw new LinkedInApiError(
@@ -771,7 +863,8 @@ export async function recordDetectedAcceptance(
   now: Date
 ): Promise<DetectedAcceptance> {
   const existing = await getAction(db, input.workspaceId, input.actionId);
-  if (!existing) return { applied: false, reason: 'That action is no longer in the ledger.', action: undefined };
+  if (!existing)
+    return { applied: false, reason: 'That action is no longer in the ledger.', action: undefined };
 
   try {
     const action = await writeActionStatus(
@@ -789,14 +882,19 @@ export async function recordDetectedAcceptance(
       },
       now
     );
-    return { applied: true, reason: `LinkedIn shows a 1st-degree connection, so the invite is recorded as accepted.`, action };
+    return {
+      applied: true,
+      reason: `LinkedIn shows a 1st-degree connection, so the invite is recorded as accepted.`,
+      action
+    };
   } catch (cause) {
     if (cause instanceof LinkedInApiError && cause.status === 409) {
       return {
         applied: false,
-        reason: existing.acceptedSource === 'human'
-          ? 'A person has already ruled on this invite by hand, and a human mark outranks a detection.'
-          : `The invite is '${existing.status}' rather than awaiting an answer, so there was nothing left to decide.`,
+        reason:
+          existing.acceptedSource === 'human'
+            ? 'A person has already ruled on this invite by hand, and a human mark outranks a detection.'
+            : `The invite is '${existing.status}' rather than awaiting an answer, so there was nothing left to decide.`,
         action: existing
       };
     }
@@ -826,13 +924,18 @@ export async function recordDetectedAcceptance(
  */
 const SKIPPABLE: readonly string[] = ['planned', 'held', 'skipped'];
 
-export async function skipAction(db: Db, workspaceId: string, actionId: string, now: Date): Promise<LinkedInActionView> {
+export async function skipAction(
+  db: Db,
+  workspaceId: string,
+  actionId: string,
+  now: Date
+): Promise<LinkedInActionView> {
   const existing = await getAction(db, workspaceId, actionId);
   if (!existing) throw new LinkedInApiError('LinkedIn action not found', 404);
   if (!SKIPPABLE.includes(existing.status)) {
     throw new LinkedInApiError(
-      `This action is already '${existing.status}' and cannot be skipped. Skipping releases the target for a future campaign, `
-        + 'and a target that has already been contacted must not be released.',
+      `This action is already '${existing.status}' and cannot be skipped. Skipping releases the target for a future campaign, ` +
+        'and a target that has already been contacted must not be released.',
       409
     );
   }
@@ -861,7 +964,11 @@ export interface OutcomeIngest {
  * that the acceptance-rate throttle and the day-over-day arithmetic have a
  * real denominator instead of an empty one.
  */
-export async function ingestOutcome(db: Db, input: OutcomeIngest, now: Date): Promise<LinkedInActionView> {
+export async function ingestOutcome(
+  db: Db,
+  input: OutcomeIngest,
+  now: Date
+): Promise<LinkedInActionView> {
   const action = input.actionId
     ? await getAction(db, input.workspaceId, input.actionId)
     : await findActionByTarget(db, input);
@@ -897,18 +1004,31 @@ export async function ingestOutcome(db: Db, input: OutcomeIngest, now: Date): Pr
   );
 }
 
-async function findActionByTarget(db: Db, input: OutcomeIngest): Promise<LinkedInActionView | undefined> {
+async function findActionByTarget(
+  db: Db,
+  input: OutcomeIngest
+): Promise<LinkedInActionView | undefined> {
   if (!input.kind || !input.targetRef) {
-    throw new LinkedInApiError("Provide actionId, or both kind and targetRef, so the outcome has exactly one action to attach to.", 400);
+    throw new LinkedInApiError(
+      'Provide actionId, or both kind and targetRef, so the outcome has exactly one action to attach to.',
+      400
+    );
   }
   const clauses = ['workspace_id=?', 'kind=?', 'target_ref=?'];
   const params: unknown[] = [input.workspaceId, input.kind, input.targetRef];
-  if (input.seatKey) { clauses.push('seat_key=?'); params.push(input.seatKey); }
-  const row = await db.prepare(`
+  if (input.seatKey) {
+    clauses.push('seat_key=?');
+    params.push(input.seatKey);
+  }
+  const row = await db
+    .prepare(
+      `
     SELECT ${ACTION_COLUMNS} FROM linkedin_actions
     WHERE ${clauses.join(' AND ')}
     ORDER BY created_at DESC LIMIT 1
-  `).get<ActionRow>(...params);
+  `
+    )
+    .get<ActionRow>(...params);
   return row ? toActionView(row) : undefined;
 }
 
@@ -1003,7 +1123,10 @@ export interface CampaignFunnel extends LinkedInFunnel, InviteOutcomes {
   status: CampaignStatus | null;
 }
 
-export interface FunnelDay extends Pick<LinkedInFunnel, 'planned' | 'exported' | 'sent' | 'accepted' | 'replied'> {
+export interface FunnelDay extends Pick<
+  LinkedInFunnel,
+  'planned' | 'exported' | 'sent' | 'accepted' | 'replied'
+> {
   /**
    * 'YYYY-MM-DD' -- the calendar date IN `LinkedInAnalytics.timezone`, which
    * is not necessarily UTC and not necessarily the viewer's zone either.
@@ -1135,12 +1258,20 @@ function localDateKey(date: LocalDate): string {
  * validates on write, but a row written before it did, or restored from
  * elsewhere, must degrade to UTC rather than 500.
  */
-async function seriesTimezone(db: Db, workspaceId: string, requested?: string): Promise<{ timezone: string; spansSeats: boolean }> {
-  const rows = await db.prepare(`
+async function seriesTimezone(
+  db: Db,
+  workspaceId: string,
+  requested?: string
+): Promise<{ timezone: string; spansSeats: boolean }> {
+  const rows = await db
+    .prepare(
+      `
     SELECT timezone, COUNT(*)::int AS seats FROM linkedin_seats
     WHERE workspace_id=? AND COALESCE(timezone,'') <> ''
     GROUP BY timezone ORDER BY COUNT(*) DESC, timezone
-  `).all<{ timezone: string; seats: number }>(workspaceId);
+  `
+    )
+    .all<{ timezone: string; seats: number }>(workspaceId);
   const spansSeats = rows.length > 1;
   const chosen = requested?.trim() || rows[0]?.timezone || 'UTC';
   try {
@@ -1299,7 +1430,8 @@ export async function linkedinAnalytics(
   // labelled "All time" comes to mean "a year", which is the same class of lie
   // this function was fixed for once already when two of its three queries
   // took the window and then ignored it.
-  const requested = windowDays === null || !Number.isFinite(windowDays) ? 0 : Math.trunc(windowDays);
+  const requested =
+    windowDays === null || !Number.isFinite(windowDays) ? 0 : Math.trunc(windowDays);
   const days = requested <= 0 ? null : Math.min(requested, 365);
   const { timezone, spansSeats } = await seriesTimezone(db, workspaceId, options.timezone);
 
@@ -1326,19 +1458,30 @@ export async function linkedinAnalytics(
   // not a whole number of 24h days and the bound has to land on midnight
   // whichever side of it we are.
   const today: LocalDate = localDateOf(now, timezone);
-  const sinceIso = days === null ? null : zonedToUtc(shiftLocalDate(today, -(days - 1)), 0, timezone).toISOString();
+  const sinceIso =
+    days === null
+      ? null
+      : zonedToUtc(shiftLocalDate(today, -(days - 1)), 0, timezone).toISOString();
   // Absent rather than `>= '1970-01-01'`: an all-time read has no lower bound,
   // and inventing one would only be a bound that happens to be old enough.
-  const windowClause = sinceIso === null ? '' : 'AND COALESCE(recorded_at, planned_for, created_at) >= ?';
-  const windowClauseA = sinceIso === null ? '' : 'AND COALESCE(a.recorded_at, a.planned_for, a.created_at) >= ?';
+  const windowClause =
+    sinceIso === null ? '' : 'AND COALESCE(recorded_at, planned_for, created_at) >= ?';
+  const windowClauseA =
+    sinceIso === null ? '' : 'AND COALESCE(a.recorded_at, a.planned_for, a.created_at) >= ?';
   const windowParams: string[] = sinceIso === null ? [] : [sinceIso];
 
-  const total = await db.prepare(`
+  const total = await db
+    .prepare(
+      `
     SELECT ${funnelSelect()}, ${inviteSelect()} FROM linkedin_actions
     WHERE workspace_id=? ${windowClause} ${seatClause}
-  `).get<LinkedInFunnel & InviteCountRow>(workspaceId, ...windowParams, ...seatParams);
+  `
+    )
+    .get<LinkedInFunnel & InviteCountRow>(workspaceId, ...windowParams, ...seatParams);
 
-  const campaignRows = await db.prepare(`
+  const campaignRows = await db
+    .prepare(
+      `
     SELECT a.campaign_id AS campaign_id, c.name AS name, c.status AS campaign_status, ${funnelSelect('a.')}, ${inviteSelect('a.')}
     FROM linkedin_actions a
     LEFT JOIN linkedin_campaigns c ON c.id=a.campaign_id AND c.workspace_id=a.workspace_id
@@ -1347,7 +1490,9 @@ export async function linkedinAnalytics(
       ${options.seatKey ? 'AND a.seat_key=?' : ''}
     GROUP BY a.campaign_id, c.name, c.status
     ORDER BY a.campaign_id
-  `).all<CampaignFunnelRow>(workspaceId, ...windowParams, ...seatParams);
+  `
+    )
+    .all<CampaignFunnelRow>(workspaceId, ...windowParams, ...seatParams);
 
   // THE SERIES STAYS BOUNDED EVEN WHEN THE TOTALS ARE NOT, and that is the one
   // place "all" is not literal. A total over all time is a number; a chart over
@@ -1359,29 +1504,45 @@ export async function linkedinAnalytics(
   // chart never asks for all time.
   let seriesDays = days;
   if (seriesDays === null) {
-    const earliest = await db.prepare(`
+    const earliest = await db
+      .prepare(
+        `
       SELECT MIN(COALESCE(recorded_at, planned_for, created_at)) AS first_at FROM linkedin_actions
       WHERE workspace_id=? ${seatClause}
-    `).get<{ first_at: string | Date | null }>(workspaceId, ...seatParams);
+    `
+      )
+      .get<{ first_at: string | Date | null }>(workspaceId, ...seatParams);
     const firstAt = earliest?.first_at ? new Date(earliest.first_at) : null;
-    const firstLocal = firstAt && !Number.isNaN(firstAt.getTime()) ? localDateOf(firstAt, timezone) : today;
-    const span = Math.floor(
-      (Date.UTC(today.year, today.month - 1, today.day) - Date.UTC(firstLocal.year, firstLocal.month - 1, firstLocal.day)) / 86_400_000
-    ) + 1;
+    const firstLocal =
+      firstAt && !Number.isNaN(firstAt.getTime()) ? localDateOf(firstAt, timezone) : today;
+    const span =
+      Math.floor(
+        (Date.UTC(today.year, today.month - 1, today.day) -
+          Date.UTC(firstLocal.year, firstLocal.month - 1, firstLocal.day)) /
+          86_400_000
+      ) + 1;
     seriesDays = Math.max(1, Math.min(span, MAX_SERIES_DAYS));
   }
-  const seriesSinceIso = zonedToUtc(shiftLocalDate(today, -(seriesDays - 1)), 0, timezone).toISOString();
+  const seriesSinceIso = zonedToUtc(
+    shiftLocalDate(today, -(seriesDays - 1)),
+    0,
+    timezone
+  ).toISOString();
 
   // `AT TIME ZONE ?` -- the same zone the bound and the labels use. Postgres
   // reads a timestamptz into the zone's wall clock, DATE_TRUNC cuts the day on
   // that clock, and DST is the database's problem rather than ours.
-  const seriesRows = await db.prepare(`
+  const seriesRows = await db
+    .prepare(
+      `
     SELECT TO_CHAR(DATE_TRUNC('day', COALESCE(recorded_at, planned_for, created_at) AT TIME ZONE ?), 'YYYY-MM-DD') AS day,
       ${funnelSelect()}
     FROM linkedin_actions
     WHERE workspace_id=? AND COALESCE(recorded_at, planned_for, created_at) >= ? ${seatClause}
     GROUP BY 1
-  `).all<LinkedInFunnel & { day: string }>(timezone, workspaceId, seriesSinceIso, ...seatParams);
+  `
+    )
+    .all<LinkedInFunnel & { day: string }>(timezone, workspaceId, seriesSinceIso, ...seatParams);
 
   const byDay = new Map(seriesRows.map((row) => [row.day, row]));
   const series: FunnelDay[] = [];
@@ -1409,7 +1570,17 @@ export async function linkedinAnalytics(
     seatKey: options.seatKey ?? null,
     timezone,
     timezoneSpansSeats: spansSeats,
-    total: total ?? { planned: 0, held: 0, exported: 0, sent: 0, accepted: 0, replied: 0, declined: 0, skipped: 0, withdrawn: 0 },
+    total: total ?? {
+      planned: 0,
+      held: 0,
+      exported: 0,
+      sent: 0,
+      accepted: 0,
+      replied: 0,
+      declined: 0,
+      skipped: 0,
+      withdrawn: 0
+    },
     invites: inviteOutcomes(total),
     byCampaign: campaignRows.map((row) => ({
       campaignId: row.campaign_id,
@@ -1502,11 +1673,19 @@ function toExportRecord(row: ExportRow): LinkedInExportRecord {
   };
 }
 
-export async function listCampaignExports(db: Db, workspaceId: string, campaignId: string): Promise<LinkedInExportRecord[]> {
-  const rows = await db.prepare(`
+export async function listCampaignExports(
+  db: Db,
+  workspaceId: string,
+  campaignId: string
+): Promise<LinkedInExportRecord[]> {
+  const rows = await db
+    .prepare(
+      `
     SELECT ${EXPORT_COLUMNS} FROM linkedin_exports
     WHERE workspace_id=? AND campaign_id=? ORDER BY created_at DESC, id DESC
-  `).all<ExportRow>(workspaceId, campaignId);
+  `
+    )
+    .all<ExportRow>(workspaceId, campaignId);
   return rows.map(toExportRecord);
 }
 
@@ -1517,10 +1696,14 @@ export async function currentCampaignExport(
   campaignId: string,
   format: string
 ): Promise<LinkedInExportRecord | undefined> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT ${EXPORT_COLUMNS} FROM linkedin_exports
     WHERE workspace_id=? AND campaign_id=? AND format=? AND status <> 'superseded'
-  `).get<ExportRow>(workspaceId, campaignId, format);
+  `
+    )
+    .get<ExportRow>(workspaceId, campaignId, format);
   return row ? toExportRecord(row) : undefined;
 }
 
@@ -1535,10 +1718,14 @@ export async function readCampaignExport(
   campaignId: string,
   exportId: string
 ): Promise<(LinkedInExportRecord & { bytes: string }) | undefined> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT ${EXPORT_COLUMNS}, bytes FROM linkedin_exports
     WHERE id=? AND workspace_id=? AND campaign_id=?
-  `).get<ExportRow & { bytes: string }>(exportId, workspaceId, campaignId);
+  `
+    )
+    .get<ExportRow & { bytes: string }>(exportId, workspaceId, campaignId);
   return row ? { ...toExportRecord(row), bytes: row.bytes } : undefined;
 }
 
@@ -1560,27 +1747,40 @@ export interface ExportInsert {
  * that file in Dripify, and deleting the thing they are working from is not a
  * kindness. It simply stops being the answer to "the current export".
  */
-export async function supersedeCampaignExport(db: Db, workspaceId: string, exportId: string): Promise<void> {
-  await db.prepare("UPDATE linkedin_exports SET status='superseded' WHERE id=? AND workspace_id=?")
+export async function supersedeCampaignExport(
+  db: Db,
+  workspaceId: string,
+  exportId: string
+): Promise<void> {
+  await db
+    .prepare("UPDATE linkedin_exports SET status='superseded' WHERE id=? AND workspace_id=?")
     .run(exportId, workspaceId);
 }
 
-export async function storeCampaignExport(db: Db, input: ExportInsert, now: Date): Promise<LinkedInExportRecord> {
-  const row = await db.prepare(`
+export async function storeCampaignExport(
+  db: Db,
+  input: ExportInsert,
+  now: Date
+): Promise<LinkedInExportRecord> {
+  const row = await db
+    .prepare(
+      `
     INSERT INTO linkedin_exports (
       id, workspace_id, campaign_id, format, filename, content_type, bytes, payload_hash, status, created_at
     ) VALUES (?,?,?,?,?,?,?,?, 'current', ?)
     RETURNING ${EXPORT_COLUMNS}
-  `).get<ExportRow>(
-    id('lexp'),
-    input.workspaceId,
-    input.campaignId,
-    input.format,
-    input.filename,
-    input.contentType,
-    input.bytes,
-    input.payloadHash,
-    now.toISOString()
-  );
+  `
+    )
+    .get<ExportRow>(
+      id('lexp'),
+      input.workspaceId,
+      input.campaignId,
+      input.format,
+      input.filename,
+      input.contentType,
+      input.bytes,
+      input.payloadHash,
+      now.toISOString()
+    );
   return toExportRecord(row as ExportRow);
 }

@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
 import { recordAction } from './actions.js';
-import { LinkedInApiError, getAction, ingestOutcome, recordDetectedAcceptance, type LinkedInActionView } from './campaigns.js';
+import { LinkedInApiError } from './errors.js';
+import {
+  getAction,
+  ingestOutcome,
+  recordDetectedAcceptance,
+  type LinkedInActionView
+} from './campaigns.js';
 import { profileUrlFor } from './driver.js';
 import type { LinkedInInboxMessage, LinkedInThreadSummary } from './driver-inbox.js';
 import { filterExcluded } from './exclusions.js';
@@ -244,7 +250,12 @@ export function targetRefCandidates(profileUrl: string): string[] {
     candidates.add(path);
     candidates.add(`in/${path}`);
     candidates.add(`/in/${path}`);
-    for (const host of ['https://www.linkedin.com', 'https://linkedin.com', 'http://www.linkedin.com', 'http://linkedin.com']) {
+    for (const host of [
+      'https://www.linkedin.com',
+      'https://linkedin.com',
+      'http://www.linkedin.com',
+      'http://linkedin.com'
+    ]) {
       candidates.add(`${host}/in/${path}`);
       candidates.add(`${host}/in/${path}/`);
     }
@@ -299,14 +310,18 @@ async function pendingInvitesFor(
   if (!profileUrl) return [];
   const candidates = targetRefCandidates(profileUrl);
   if (candidates.length === 0) return [];
-  return db.prepare(`
+  return db
+    .prepare(
+      `
     SELECT id FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND kind='invite'
       AND LOWER(target_ref) = ANY(?::text[])
       AND status IN ('sent', 'exported')
     ORDER BY COALESCE(recorded_at, created_at) DESC, id DESC
     LIMIT 5
-  `).all<{ id: string }>(workspaceId, seatKey, candidates);
+  `
+    )
+    .all<{ id: string }>(workspaceId, seatKey, candidates);
 }
 
 async function ledgerMatches(
@@ -331,12 +346,16 @@ async function ledgerMatches(
   }
   params.push(Math.max(1, Math.trunc(limit)));
 
-  return db.prepare(`
+  return db
+    .prepare(
+      `
     SELECT id, kind, status, campaign_id FROM linkedin_actions
     WHERE ${clauses.join(' AND ')}
     ORDER BY (kind = 'invite') DESC, COALESCE(recorded_at, planned_for, created_at) DESC, id DESC
     LIMIT ?
-  `).all<LedgerMatch>(...params);
+  `
+    )
+    .all<LedgerMatch>(...params);
 }
 
 /**
@@ -382,11 +401,15 @@ async function campaignByProfileUrl(
   }
   if (owners.size === 0) return resolved;
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT LOWER(target_ref) AS ref, campaign_id FROM linkedin_actions
     WHERE workspace_id=? AND seat_key=? AND LOWER(target_ref) = ANY(?::text[]) AND status <> 'skipped'
     ORDER BY (kind = 'invite') DESC, COALESCE(recorded_at, planned_for, created_at) DESC, id DESC
-  `).all<{ ref: string; campaign_id: string | null }>(workspaceId, seatKey, [...owners.keys()]);
+  `
+    )
+    .all<{ ref: string; campaign_id: string | null }>(workspaceId, seatKey, [...owners.keys()]);
 
   for (const row of rows) {
     if (!row.campaign_id) continue;
@@ -462,7 +485,11 @@ export interface ThreadSyncResult {
  * statement, so the collapse happens here, explicitly, instead of as a
  * runtime error.
  */
-export async function syncThreads(db: Db, input: ThreadSyncInput, now: Date): Promise<ThreadSyncResult> {
+export async function syncThreads(
+  db: Db,
+  input: ThreadSyncInput,
+  now: Date
+): Promise<ThreadSyncResult> {
   const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
   const timestamp = now.toISOString();
   const result: ThreadSyncResult = { created: 0, updated: 0, linked: 0, threads: [] };
@@ -476,14 +503,19 @@ export async function syncThreads(db: Db, input: ThreadSyncInput, now: Date): Pr
   if (summaries.size === 0) return result;
   const urns = [...summaries.keys()];
 
-  const existingRows = await db.prepare(`
+  const existingRows = await db
+    .prepare(
+      `
     SELECT id, thread_urn, profile_url, campaign_id FROM linkedin_threads
     WHERE workspace_id=? AND seat_key=? AND thread_urn = ANY(?::text[])
-  `).all<{ id: string; thread_urn: string; profile_url: string | null; campaign_id: string | null }>(
-    input.workspaceId,
-    seatKey,
-    urns
-  );
+  `
+    )
+    .all<{
+      id: string;
+      thread_urn: string;
+      profile_url: string | null;
+      campaign_id: string | null;
+    }>(input.workspaceId, seatKey, urns);
   const existing = new Map(existingRows.map((row) => [row.thread_urn, row]));
 
   // The profile URL each conversation will be stored with: what the rail read
@@ -492,7 +524,10 @@ export async function syncThreads(db: Db, input: ThreadSyncInput, now: Date): Pr
   const profileUrls = new Map<string, string | null>();
   for (const [threadUrn, summary] of summaries) {
     const known = existing.get(threadUrn);
-    profileUrls.set(threadUrn, (summary.profileUrl ? profileUrlFor(summary.profileUrl) : null) ?? known?.profile_url ?? null);
+    profileUrls.set(
+      threadUrn,
+      (summary.profileUrl ? profileUrlFor(summary.profileUrl) : null) ?? known?.profile_url ?? null
+    );
   }
 
   // Resolved once and then left alone: the ledger's answer for a given target
@@ -542,7 +577,9 @@ export async function syncThreads(db: Db, input: ThreadSyncInput, now: Date): Pr
     else result.created += 1;
   }
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO linkedin_threads (
       id, workspace_id, seat_key, thread_urn, profile_url, name,
       last_message_at, unread, snippet, campaign_id, synced_at, created_at
@@ -559,18 +596,34 @@ export async function syncThreads(db: Db, input: ThreadSyncInput, now: Date): Pr
       snippet = excluded.snippet,
       campaign_id = COALESCE(excluded.campaign_id, linkedin_threads.campaign_id),
       synced_at = excluded.synced_at
-  `).run(
-    ids, workspaceIds, seatKeys, threadUrns, urlColumn, names,
-    lastMessageAts, unreads, snippets, campaignIds, timestamps, timestamps
-  );
+  `
+    )
+    .run(
+      ids,
+      workspaceIds,
+      seatKeys,
+      threadUrns,
+      urlColumn,
+      names,
+      lastMessageAts,
+      unreads,
+      snippets,
+      campaignIds,
+      timestamps,
+      timestamps
+    );
 
   // One read-back for the page, then put it in the order the rail listed the
   // conversations in -- which is what the per-thread re-read used to produce
   // as a side effect of doing it inside the loop.
-  const storedRows = await db.prepare(`
+  const storedRows = await db
+    .prepare(
+      `
     SELECT ${THREAD_COLUMNS} FROM linkedin_threads t
     WHERE t.workspace_id=? AND t.seat_key=? AND t.thread_urn = ANY(?::text[])
-  `).all<ThreadRow>(input.workspaceId, seatKey, urns);
+  `
+    )
+    .all<ThreadRow>(input.workspaceId, seatKey, urns);
   const stored = new Map(storedRows.map((row) => [row.thread_urn, toThread(row)]));
   for (const threadUrn of urns) {
     const record = stored.get(threadUrn);
@@ -659,9 +712,13 @@ export async function syncThreadMessages(
     );
   }
 
-  const highest = await db.prepare(`
+  const highest = await db
+    .prepare(
+      `
     SELECT COALESCE(MAX(position), -1)::int AS top FROM linkedin_messages WHERE workspace_id=? AND thread_id=?
-  `).get<{ top: number }>(input.workspaceId, thread.id);
+  `
+    )
+    .get<{ top: number }>(input.workspaceId, thread.id);
   let position = (highest?.top ?? -1) + 1;
 
   const timestamp = now.toISOString();
@@ -672,24 +729,28 @@ export async function syncThreadMessages(
 
   for (const message of input.messages) {
     if (!message.body?.trim()) continue;
-    const row = await db.prepare(`
+    const row = await db
+      .prepare(
+        `
       INSERT INTO linkedin_messages (
         id, workspace_id, thread_id, direction, body, sent_at, position, external_ref, action_id, created_at
       ) VALUES (?,?,?,?,?,?::timestamptz,?::int,?,?,?::timestamptz)
       ON CONFLICT (workspace_id, thread_id, external_ref) DO NOTHING
       RETURNING id
-    `).get<{ id: string }>(
-      id('lmsg'),
-      input.workspaceId,
-      thread.id,
-      message.direction === 'in' ? 'in' : 'out',
-      message.body,
-      message.at,
-      position,
-      messageRef(message),
-      null,
-      timestamp
-    );
+    `
+      )
+      .get<{ id: string }>(
+        id('lmsg'),
+        input.workspaceId,
+        thread.id,
+        message.direction === 'in' ? 'in' : 'out',
+        message.body,
+        message.at,
+        position,
+        messageRef(message),
+        null,
+        timestamp
+      );
 
     if (!row) {
       duplicates += 1;
@@ -769,10 +830,18 @@ export async function syncThreadMessages(
     // is there a row against this person already settled as replied. 'replied'
     // is not 'skipped', so the status filter selects from exactly the set the
     // unfiltered call used to return.
-    const alreadyReplied = await ledgerMatches(db, input.workspaceId, seatKey, thread.profileUrl, ['replied'], 1);
-    result.linkage = alreadyReplied.length > 0
-      ? `A reply arrived and ${thread.profileUrl} is already recorded as having replied, so nothing changed.`
-      : `A reply arrived from ${thread.profileUrl}, and this seat has no outreach action against them that a reply could be reported against. The conversation is stored; the funnel is unchanged.`;
+    const alreadyReplied = await ledgerMatches(
+      db,
+      input.workspaceId,
+      seatKey,
+      thread.profileUrl,
+      ['replied'],
+      1
+    );
+    result.linkage =
+      alreadyReplied.length > 0
+        ? `A reply arrived and ${thread.profileUrl} is already recorded as having replied, so nothing changed.`
+        : `A reply arrived from ${thread.profileUrl}, and this seat has no outreach action against them that a reply could be reported against. The conversation is stored; the funnel is unchanged.`;
     return result;
   }
 
@@ -790,16 +859,17 @@ export async function syncThreadMessages(
 
   result.repliedActionId = view.id;
   result.linkage =
-    `${thread.profileUrl} replied, so their ${target.kind} (${target.id}) moved from '${target.status}' to 'replied'`
-    + `${latestInboundAt === null ? ' and was dated at this sync, because the message carried no readable timestamp' : ''}.`
-    + (acceptedByReply.length === 0
+    `${thread.profileUrl} replied, so their ${target.kind} (${target.id}) moved from '${target.status}' to 'replied'` +
+    `${latestInboundAt === null ? ' and was dated at this sync, because the message carried no readable timestamp' : ''}.` +
+    (acceptedByReply.length === 0
       ? ''
       : ` Their pending invite is also recorded as accepted, on the reply as evidence: ${acceptedByReply.join(', ')}.`);
 
   // A conversation whose reply landed on a campaign action belongs to that
   // campaign, even if the thread was first synced before the pointer existed.
   if (!thread.campaignId && view.campaignId) {
-    await db.prepare('UPDATE linkedin_threads SET campaign_id=? WHERE id=? AND workspace_id=?')
+    await db
+      .prepare('UPDATE linkedin_threads SET campaign_id=? WHERE id=? AND workspace_id=?')
       .run(view.campaignId, thread.id, input.workspaceId);
   }
 
@@ -825,13 +895,21 @@ export async function syncThreadMessages(
  * actually sent.
  */
 export async function clearInboxForWorkspace(db: Db, workspaceId: string): Promise<number> {
-  const result = await db.prepare('DELETE FROM linkedin_threads WHERE workspace_id=?').run(workspaceId);
+  const result = await db
+    .prepare('DELETE FROM linkedin_threads WHERE workspace_id=?')
+    .run(workspaceId);
   return result.changes;
 }
 
 /** Clear only the read cache belonging to one LinkedIn account. */
-export async function clearInboxForSeat(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): Promise<number> {
-  const result = await db.prepare('DELETE FROM linkedin_threads WHERE workspace_id=? AND seat_key=?').run(workspaceId, seatKey);
+export async function clearInboxForSeat(
+  db: Db,
+  workspaceId: string,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<number> {
+  const result = await db
+    .prepare('DELETE FROM linkedin_threads WHERE workspace_id=? AND seat_key=?')
+    .run(workspaceId, seatKey);
   return result.changes;
 }
 
@@ -857,7 +935,11 @@ export interface ThreadFilters {
  * is a global identifier, so a handler that looked one up by id alone would
  * serve one workspace's private conversations to another's session.
  */
-export async function listThreads(db: Db, workspaceId: string, filters: ThreadFilters = {}): Promise<LinkedInThreadRecord[]> {
+export async function listThreads(
+  db: Db,
+  workspaceId: string,
+  filters: ThreadFilters = {}
+): Promise<LinkedInThreadRecord[]> {
   const clauses = ['t.workspace_id=?'];
   const params: unknown[] = [workspaceId];
   if (filters.seatKey) {
@@ -879,12 +961,16 @@ export async function listThreads(db: Db, workspaceId: string, filters: ThreadFi
   }
   params.push(Math.max(1, Math.min(filters.limit ?? 100, 500)));
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT ${THREAD_COLUMNS} FROM linkedin_threads t
     WHERE ${clauses.join(' AND ')}
     ORDER BY t.last_message_at DESC NULLS LAST, t.id DESC
     LIMIT ?
-  `).all<ThreadRow>(...params);
+  `
+    )
+    .all<ThreadRow>(...params);
   return rows.map(toThread);
 }
 // `threadById` lived here to re-read one conversation immediately after
@@ -900,7 +986,10 @@ export async function threadByUrn(
   threadUrn: string,
   seatKey: string = OWNER_SEAT_KEY
 ): Promise<LinkedInThreadRecord | undefined> {
-  const row = await db.prepare(`SELECT ${THREAD_COLUMNS} FROM linkedin_threads t WHERE t.thread_urn=? AND t.workspace_id=? AND t.seat_key=?`)
+  const row = await db
+    .prepare(
+      `SELECT ${THREAD_COLUMNS} FROM linkedin_threads t WHERE t.thread_urn=? AND t.workspace_id=? AND t.seat_key=?`
+    )
     .get<ThreadRow>(threadUrn, workspaceId, seatKey);
   return row ? toThread(row) : undefined;
 }
@@ -927,11 +1016,15 @@ export async function readThread(
 ): Promise<LinkedInConversation | undefined> {
   const thread = await threadByUrn(db, workspaceId, threadUrn, seatKey);
   if (!thread) return undefined;
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT ${MESSAGE_COLUMNS} FROM linkedin_messages
     WHERE workspace_id=? AND thread_id=?
     ORDER BY position ASC, id ASC
-  `).all<MessageRow>(workspaceId, thread.id);
+  `
+    )
+    .all<MessageRow>(workspaceId, thread.id);
   return { thread, messages: rows.map(toMessage) };
 }
 
@@ -1008,13 +1101,22 @@ export interface EnqueuedReply {
  * parse of display text and is frequently null, while `position` is the order
  * LinkedIn rendered them in.
  */
-async function replyReplayScope(db: Db, workspaceId: string, threadId: string, threadUrn: string): Promise<string> {
-  const last = await db.prepare(`
+async function replyReplayScope(
+  db: Db,
+  workspaceId: string,
+  threadId: string,
+  threadUrn: string
+): Promise<string> {
+  const last = await db
+    .prepare(
+      `
     SELECT external_ref FROM linkedin_messages
     WHERE workspace_id=? AND thread_id=?
     ORDER BY position DESC, id DESC
     LIMIT 1
-  `).get<{ external_ref: string }>(workspaceId, threadId);
+  `
+    )
+    .get<{ external_ref: string }>(workspaceId, threadId);
   return `thread:${threadUrn}:${last?.external_ref ?? 'thread-start'}`;
 }
 
@@ -1093,7 +1195,10 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
   const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
   const body = input.body ?? '';
   if (!body.trim()) {
-    throw new LinkedInApiError('A reply needs a body. Trevra sends approved bytes and does not compose them.', 400);
+    throw new LinkedInApiError(
+      'A reply needs a body. Trevra sends approved bytes and does not compose them.',
+      400
+    );
   }
 
   // PER SEAT, AND THIS ARGUMENT IS LOAD-BEARING. `threadByUrn` defaults its
@@ -1127,12 +1232,18 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
   // so no planned row or payload is ever created for an excluded target.
   const { kept } = await filterExcluded(db, input.workspaceId, [targetRef]);
   if (kept.length === 0) {
-    throw new LinkedInApiError('That person is on the workspace Never contact list, so no reply was queued.', 400);
+    throw new LinkedInApiError(
+      'That person is on the workspace Never contact list, so no reply was queued.',
+      400
+    );
   }
 
   const plannedFor = input.plannedFor ?? now.toISOString();
   if (Number.isNaN(new Date(plannedFor).getTime())) {
-    throw new LinkedInApiError(`'${plannedFor}' is not a parseable instant, so this reply has no slot to be paced into.`, 400);
+    throw new LinkedInApiError(
+      `'${plannedFor}' is not a parseable instant, so this reply has no slot to be paced into.`,
+      400
+    );
   }
 
   const replayScope = await replyReplayScope(db, input.workspaceId, thread.id, thread.threadUrn);
@@ -1176,7 +1287,10 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
     // anyway and let the worker refuse -- looks kinder and is not: the operator
     // watches a reply sit in a queue that will never drain, with no way to see
     // why from the screen they typed it on.
-    throw new LinkedInApiError(`This reply was refused by the LinkedIn safety gate -- ${verdict.reason}`, 409);
+    throw new LinkedInApiError(
+      `This reply was refused by the LinkedIn safety gate -- ${verdict.reason}`,
+      409
+    );
   }
 
   const filed = await db.transaction(async (tx) => {
@@ -1207,8 +1321,18 @@ export async function enqueueReply(db: Db, input: ReplyRequest, now: Date): Prom
     // decision: this row is an operator's answer to a person, sent under an
     // exception they chose. Migration 044's COMMENT names `enqueueReply` as the
     // only writer, and this is it.
-    await tx.prepare('UPDATE linkedin_actions SET body=?, thread_urn=?, override_warmup_ceiling=?, reply_to_inbound=? WHERE id=? AND workspace_id=?')
-      .run(body, thread.threadUrn, overrideWarmupCeiling, replyToInbound, record.id, input.workspaceId);
+    await tx
+      .prepare(
+        'UPDATE linkedin_actions SET body=?, thread_urn=?, override_warmup_ceiling=?, reply_to_inbound=? WHERE id=? AND workspace_id=?'
+      )
+      .run(
+        body,
+        thread.threadUrn,
+        overrideWarmupCeiling,
+        replyToInbound,
+        record.id,
+        input.workspaceId
+      );
     return record;
   });
 
@@ -1277,20 +1401,29 @@ export interface QueuedMessageEdit {
 
 const EDITABLE_KINDS = ['reply', 'dm'];
 
-export async function editQueuedMessage(db: Db, input: QueuedMessageEdit): Promise<LinkedInActionView> {
+export async function editQueuedMessage(
+  db: Db,
+  input: QueuedMessageEdit
+): Promise<LinkedInActionView> {
   const body = input.body ?? '';
   if (!body.trim()) {
-    throw new LinkedInApiError('A message needs a body. Trevra sends approved bytes and does not compose them, so an empty edit is refused rather than silently queued.', 400);
+    throw new LinkedInApiError(
+      'A message needs a body. Trevra sends approved bytes and does not compose them, so an empty edit is refused rather than silently queued.',
+      400
+    );
   }
 
   const existing = await getAction(db, input.workspaceId, input.actionId);
   if (!existing) throw new LinkedInApiError('LinkedIn action not found', 404);
   if (!EDITABLE_KINDS.includes(existing.kind)) {
-    throw new LinkedInApiError(`A ${existing.kind} carries no message, so there are no words to change.`, 400);
+    throw new LinkedInApiError(
+      `A ${existing.kind} carries no message, so there are no words to change.`,
+      400
+    );
   }
   if (existing.source !== 'manual') {
     throw new LinkedInApiError(
-      'This message was queued by a campaign, so its words are that campaign\'s approved copy. Change it in the campaign, or cancel this one and write a new message here.',
+      "This message was queued by a campaign, so its words are that campaign's approved copy. Change it in the campaign, or cancel this one and write a new message here.",
       409
     );
   }
@@ -1311,11 +1444,15 @@ export async function editQueuedMessage(db: Db, input: QueuedMessageEdit): Promi
     );
   }
 
-  const written = await db.prepare(`
+  const written = await db
+    .prepare(
+      `
     UPDATE linkedin_actions SET body=?
     WHERE id=? AND workspace_id=? AND status='planned' AND claimed_at IS NULL AND source='manual'
       AND kind IN ('reply','dm')
-  `).run(body, input.actionId, input.workspaceId);
+  `
+    )
+    .run(body, input.actionId, input.workspaceId);
   if (written.changes === 0) {
     // The row moved between the read and the write -- almost always the worker
     // claiming it. Reported rather than retried: the operator has to know their

@@ -247,8 +247,8 @@ import {
   resolveSeatProxy,
   type LinkedInLocalWorkerConfig
 } from './linkedin/local-worker.js';
+import { LinkedInApiError } from './linkedin/errors.js';
 import {
-  LinkedInApiError,
   attachCampaignRun,
   countDeliveredActions,
   createCampaign,
