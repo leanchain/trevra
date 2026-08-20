@@ -70,14 +70,6 @@ export const sourceNote = (confidence: LinkedInLimitConfidence) =>
     ? 'Published by LinkedIn, or a term of its own contract.'
     : 'Measured by people running LinkedIn outreach, not published by LinkedIn. Directionally right, never a guarantee.';
 
-/**
- * Why today's number is the number it is.
- *
- * The server names the rule that bound the ceiling -- `warmup-multiplier`,
- * `acceptance-rate`, `cooldown-band`. Those are this product's words for
- * itself. An operator asks "why can I only send 12 today", and every one of
- * these is an answer to that question in words they never had to learn.
- */
 /* -------------------------------------------------------------------------
  * `/setup/limits` -- the never-contact list.
  * ---------------------------------------------------------------------- */
