@@ -3580,8 +3580,9 @@ export function createApp(db: Db) {
       assertWorkspaceOwner(req, "change a LinkedIn account's limits");
       const input = linkedinManagerSeatCreateSchema.parse(req.body ?? {});
       const ownerUserId =
-        (await resolveWorkspaceMemberUserId(db, req, input.ownerUserId ?? req.auth!.userId)) ??
-        req.auth!.userId;
+        input.ownerUserId === undefined
+          ? req.auth!.userId
+          : ((await resolveWorkspaceMemberUserId(db, req, input.ownerUserId)) ?? req.auth!.userId);
       assertSeatProxyUsable(req.auth!.workspaceId, input.seatKey, input.proxyUrl);
       try {
         const seat = await upsertSeat(
@@ -4674,6 +4675,7 @@ export function createApp(db: Db) {
           lastName: z.string().trim().max(200).nullable().optional(),
           company: z.string().trim().max(300).nullable().optional(),
           email: z.string().trim().email().max(320).nullable().optional(),
+          emailProvenance: z.enum(['first_party', 'imported', 'manual', 'external']).optional(),
           phone: z.string().trim().max(100).nullable().optional(),
           country: z.string().trim().max(120).nullable().optional(),
           sourceRef: z.string().trim().max(2000).nullable().optional(),
@@ -7254,9 +7256,16 @@ const linkedinCampaignExclusionSchema = z
     contactedLookbackDays: z.number().int().min(0).max(3650).nullable().optional(),
     excludeSameSenderMessaged: z.boolean().optional(),
     suppressedCompanies: z.array(z.string().trim().min(1).max(300)).max(1000).optional(),
-    suppressedDomains: z.array(z.string().trim().min(1).max(255)).max(1000).optional()
+    suppressedDomains: z.array(z.string().trim().min(1).max(255)).max(1000).optional(),
+    excludedLeadListIds: z.array(z.string().trim().min(1).max(120)).max(1000).optional(),
+    excludeDuplicateProfiles: z.boolean().optional(),
+    excludeKnownConnected: z.boolean().optional(),
+    requireKnownConnected: z.boolean().optional()
   })
-  .strict();
+  .strict()
+  .refine((value) => !(value.excludeKnownConnected && value.requireKnownConnected), {
+    message: 'A campaign cannot both require and exclude known LinkedIn connections.'
+  });
 
 const linkedinManagedCampaignCreateSchema = z
   .object({
@@ -7265,6 +7274,7 @@ const linkedinManagedCampaignCreateSchema = z
     senderKeys: z.array(linkedinSeatKeySchema).min(1).max(100).optional(),
     mailboxAssignments: z.record(z.string().trim().min(1).max(200)).optional(),
     inmailCreditCap: z.number().int().min(0).max(10000).nullable().optional(),
+    enrichmentCreditCap: z.number().int().min(0).max(100000).nullable().optional(),
     leadListId: z.string().trim().min(1).max(120),
     workflowId: z.string().trim().min(1).max(120),
     priority: z.enum(['low', 'normal', 'high']).optional(),
@@ -7284,9 +7294,11 @@ const linkedinManagedCampaignControlsSchema = z
   .object({
     priority: z.enum(['low', 'normal', 'high']).optional(),
     admissionPolicy: linkedinAdmissionPolicySchema.optional(),
+    exclusionPolicy: linkedinCampaignExclusionSchema.optional(),
     senderKeys: z.array(linkedinSeatKeySchema).min(1).max(100).optional(),
     mailboxAssignments: z.record(z.string().trim().min(1).max(200)).optional(),
     inmailCreditCap: z.number().int().min(0).max(10000).nullable().optional(),
+    enrichmentCreditCap: z.number().int().min(0).max(100000).nullable().optional(),
     schedule: linkedinCampaignScheduleSchema.optional()
   })
   .strict()

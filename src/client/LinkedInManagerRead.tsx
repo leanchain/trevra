@@ -583,6 +583,180 @@ function MemberRecoveryControls({
 
 type MemberSort = 'next' | 'name' | 'status' | 'step';
 
+function CampaignExclusionEditor({
+  campaign,
+  lists,
+  busy,
+  onSave
+}: {
+  campaign: ManagedCampaign;
+  lists: readonly LinkedInLeadList[];
+  busy: boolean;
+  onSave: (policy: ManagedCampaign['exclusionPolicy']) => Promise<void>;
+}) {
+  const policy = campaign.exclusionPolicy;
+  const [companies, setCompanies] = useState((policy.suppressedCompanies ?? []).join(', '));
+  const [domains, setDomains] = useState((policy.suppressedDomains ?? []).join(', '));
+  const [excludedLists, setExcludedLists] = useState<string[]>(policy.excludedLeadListIds ?? []);
+  const [lookback, setLookback] = useState(policy.contactedLookbackDays ?? 0);
+  const [existingConversation, setExistingConversation] = useState(
+    policy.excludeExistingConversation === true
+  );
+  const [sameSender, setSameSender] = useState(policy.excludeSameSenderMessaged === true);
+  const [duplicateProfiles, setDuplicateProfiles] = useState(
+    policy.excludeDuplicateProfiles !== false
+  );
+  const [excludeKnownConnected, setExcludeKnownConnected] = useState(
+    policy.excludeKnownConnected === true
+  );
+  const [requireKnownConnected, setRequireKnownConnected] = useState(
+    policy.requireKnownConnected === true
+  );
+
+  useEffect(() => {
+    setCompanies((campaign.exclusionPolicy.suppressedCompanies ?? []).join(', '));
+    setDomains((campaign.exclusionPolicy.suppressedDomains ?? []).join(', '));
+    setExcludedLists(campaign.exclusionPolicy.excludedLeadListIds ?? []);
+    setLookback(campaign.exclusionPolicy.contactedLookbackDays ?? 0);
+    setExistingConversation(campaign.exclusionPolicy.excludeExistingConversation === true);
+    setSameSender(campaign.exclusionPolicy.excludeSameSenderMessaged === true);
+    setDuplicateProfiles(campaign.exclusionPolicy.excludeDuplicateProfiles !== false);
+    setExcludeKnownConnected(campaign.exclusionPolicy.excludeKnownConnected === true);
+    setRequireKnownConnected(campaign.exclusionPolicy.requireKnownConnected === true);
+  }, [campaign.id, campaign.exclusionPolicy]);
+
+  const values = (raw: string) => [
+    ...new Set(
+      raw
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  ];
+  return (
+    <details className="mgr-advanced" open={campaign.status === 'paused'}>
+      <summary>Exclusions and suppression</summary>
+      <p className="li-hint">
+        Pause the campaign before changing eligibility. Saving re-evaluates only unadmitted leads;
+        existing waves keep running exactly as admitted.
+      </p>
+      <div className="li-form-grid">
+        <label>
+          Suppressed companies
+          <input
+            value={companies}
+            onChange={(event) => setCompanies(event.target.value)}
+            placeholder="Acme, Example Inc"
+          />
+        </label>
+        <label>
+          Suppressed email domains
+          <input
+            value={domains}
+            onChange={(event) => setDomains(event.target.value)}
+            placeholder="competitor.com, agency.example"
+          />
+        </label>
+        <label>
+          Contacted lookback days
+          <input
+            type="number"
+            min={0}
+            max={3650}
+            value={lookback}
+            onChange={(event) =>
+              setLookback(Math.max(0, Math.trunc(Number(event.target.value) || 0)))
+            }
+          />
+        </label>
+        <label>
+          Excluded lead lists
+          <select
+            multiple
+            value={excludedLists}
+            onChange={(event) =>
+              setExcludedLists(
+                Array.from(event.currentTarget.selectedOptions, (option) => option.value)
+              )
+            }
+          >
+            {lists
+              .filter((list) => list.id !== campaign.leadListId)
+              .map((list) => (
+                <option key={list.id} value={list.id}>
+                  {list.name}
+                </option>
+              ))}
+          </select>
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={existingConversation}
+            onChange={(event) => setExistingConversation(event.target.checked)}
+          />
+          Exclude existing conversations
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={sameSender}
+            onChange={(event) => setSameSender(event.target.checked)}
+          />
+          Exclude leads already messaged by an assigned sender
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={duplicateProfiles}
+            onChange={(event) => setDuplicateProfiles(event.target.checked)}
+          />
+          Exclude normalized duplicate LinkedIn profiles
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={excludeKnownConnected}
+            disabled={requireKnownConnected}
+            onChange={(event) => setExcludeKnownConnected(event.target.checked)}
+          />
+          Exclude known 1st-degree connections
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={requireKnownConnected}
+            disabled={excludeKnownConnected}
+            onChange={(event) => setRequireKnownConnected(event.target.checked)}
+          />
+          Require known 1st-degree connection evidence
+        </label>
+      </div>
+      <button
+        type="button"
+        className="secondary-button"
+        disabled={busy || campaign.status !== 'paused'}
+        onClick={() =>
+          void onSave({
+            ...campaign.exclusionPolicy,
+            suppressedCompanies: values(companies),
+            suppressedDomains: values(domains),
+            excludedLeadListIds: excludedLists,
+            contactedLookbackDays: lookback,
+            excludeExistingConversation: existingConversation,
+            excludeSameSenderMessaged: sameSender,
+            excludeDuplicateProfiles: duplicateProfiles,
+            excludeKnownConnected,
+            requireKnownConnected
+          })
+        }
+      >
+        Save exclusions and re-evaluate pending
+      </button>
+    </details>
+  );
+}
+
 function CampaignMembers({
   members,
   steps,
@@ -1589,6 +1763,20 @@ export function OutreachManagerRead({
       'Unable to change campaign priority.'
     );
 
+  const saveCampaignExclusions = (
+    campaign: ManagedCampaign,
+    exclusionPolicy: ManagedCampaign['exclusionPolicy']
+  ) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        await updateLinkedInCampaignControls(campaign.id, { exclusionPolicy });
+        setToast(`Re-evaluated pending leads for “${campaign.name}” with the updated exclusions.`);
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to update campaign exclusions.'
+    );
+
   const duplicateCampaign = (campaign: ManagedCampaign) =>
     guard(
       `campaign:${campaign.id}`,
@@ -1619,7 +1807,9 @@ export function OutreachManagerRead({
   const copyBody = async (task: ManualTaskView) => {
     try {
       await navigator.clipboard.writeText(task.suggestedBody ?? '');
-      setToast('Suggested message copied.');
+      setToast(
+        task.taskKind === 'comment' ? 'Suggested comment copied.' : 'Suggested message copied.'
+      );
     } catch {
       setError('Your browser blocked the copy. Select the text and copy it by hand.');
     }
@@ -2190,6 +2380,12 @@ export function OutreachManagerRead({
                           ceiling.
                         </p>
                       </div>
+                      <CampaignExclusionEditor
+                        campaign={campaign}
+                        lists={lists}
+                        busy={busy !== ''}
+                        onSave={(policy) => saveCampaignExclusions(campaign, policy)}
+                      />
                       {operations ? (
                         <>
                           <h4>Queue and backlog</h4>
@@ -2294,6 +2490,26 @@ export function OutreachManagerRead({
                                     )}
                                     %
                                   </strong>
+                                </div>
+                                <div>
+                                  <span>Enrichment credits</span>
+                                  <strong>
+                                    {operationalAnalytics.channels.enrichmentCreditsUsed}
+                                    {operationalAnalytics.channels.enrichmentCreditCap === null
+                                      ? ''
+                                      : ` / ${operationalAnalytics.channels.enrichmentCreditCap}`}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>Emails found</span>
+                                  <strong>
+                                    {operationalAnalytics.channels.enrichmentFound} /{' '}
+                                    {operationalAnalytics.channels.enrichmentAttempts}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>Email replies</span>
+                                  <strong>{operationalAnalytics.channels.emailReplied}</strong>
                                 </div>
                               </div>
                               {operationalAnalytics.steps.length > 0 && (
@@ -2701,12 +2917,26 @@ export function OutreachManagerRead({
                                           type="button"
                                           onClick={() => void copyBody(task)}
                                         >
-                                          <Copy size={14} /> Copy message
+                                          <Copy size={14} />{' '}
+                                          {task.taskKind === 'comment'
+                                            ? 'Copy comment'
+                                            : 'Copy message'}
                                         </button>
                                       )}
-                                      <a className="secondary-button" href="/outreach/inbox">
-                                        <Inbox size={14} /> Send it in the inbox
-                                      </a>
+                                      {task.taskKind === 'comment' && task.postUrl ? (
+                                        <a
+                                          className="secondary-button"
+                                          href={task.postUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        >
+                                          Open post to comment
+                                        </a>
+                                      ) : (
+                                        <a className="secondary-button" href="/outreach/inbox">
+                                          <Inbox size={14} /> Send it in the inbox
+                                        </a>
+                                      )}
                                       {task.profileUrl && (
                                         <a
                                           className="li-link"

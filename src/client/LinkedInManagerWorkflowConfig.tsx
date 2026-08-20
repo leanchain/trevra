@@ -1314,6 +1314,91 @@ export function LinkedInManagerWorkflowConfig({
             })
           ]
     );
+  const addOutcomeScaffold = (index: number) => {
+    setSteps((current) => {
+      const source = current[index];
+      if (!source || (source.action !== 'connection_request' && source.action !== 'message'))
+        return current;
+      const expected = source.action === 'connection_request' ? 'accepted' : 'replied';
+      if (
+        current.some(
+          (step) =>
+            step.action === 'monitor' &&
+            step.config.condition.kind === expected &&
+            step.config.condition.ofStepId === source.id
+        )
+      )
+        return current;
+      const existingNext = current[index + 1]?.id ?? null;
+      const required = existingNext ? 2 : 3;
+      if (current.length + required > MAX_STEPS) {
+        setError(
+          `Outcome paths need ${required} more steps, but this workflow is already near the ${MAX_STEPS}-step limit.`
+        );
+        return current;
+      }
+      const monitorId = mintId();
+      const yesEndId = mintId();
+      const noEndId = existingNext ? null : mintId();
+      const monitor: WorkflowStep =
+        source.action === 'connection_request'
+          ? {
+              id: monitorId,
+              action: 'monitor',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: {
+                condition: { kind: 'accepted', ofStepId: source.id },
+                timeout: { amount: 10, unit: 'days' },
+                pollEveryMinutes: 60,
+                yesStepId: existingNext ?? yesEndId,
+                noStepId: noEndId ?? yesEndId
+              }
+            }
+          : {
+              id: monitorId,
+              action: 'monitor',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: {
+                condition: { kind: 'replied', ofStepId: source.id },
+                timeout: { amount: 7, unit: 'days' },
+                pollEveryMinutes: 60,
+                yesStepId: yesEndId,
+                noStepId: existingNext ?? (noEndId as string)
+              }
+            };
+      const yesEnd: WorkflowStep = {
+        id: yesEndId,
+        action: 'end',
+        delayBefore: { amount: 0, unit: 'hours' },
+        config: { outcome: source.action === 'message' ? 'replied' : 'completed' }
+      };
+      const additions: WorkflowStep[] = [monitor];
+      if (existingNext) {
+        if (source.action === 'connection_request')
+          additions.push({
+            id: yesEndId,
+            action: 'end',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { outcome: 'not_accepted' }
+          });
+        else additions.push(yesEnd);
+      } else {
+        additions.push(yesEnd);
+        additions.push({
+          id: noEndId as string,
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: source.action === 'connection_request' ? 'not_accepted' : 'completed' }
+        });
+      }
+      const next = [...current];
+      next[index] = { ...source, nextStepId: monitorId } as WorkflowStep;
+      next.splice(index + 1, 0, ...additions);
+      setError('');
+      return next;
+    });
+  };
+
   const removeStep = (index: number) =>
     setSteps((current) => current.filter((_, at) => at !== index));
   const moveStep = (from: number, to: number) =>
@@ -1579,6 +1664,7 @@ export function LinkedInManagerWorkflowConfig({
                 onChangeAction={(action) =>
                   replaceStep(index, blankStep(action, step.id, step.delayBefore))
                 }
+                onAddOutcomeScaffold={() => addOutcomeScaffold(index)}
                 onMove={(direction) => moveStep(index, index + direction)}
                 onRemove={() => removeStep(index)}
                 onDragStart={() => setDragFrom(index)}
@@ -1707,6 +1793,7 @@ function WorkflowStepCard({
   onArm,
   onChange,
   onChangeAction,
+  onAddOutcomeScaffold,
   onMove,
   onRemove,
   onDragStart,
@@ -1725,6 +1812,7 @@ function WorkflowStepCard({
   onArm: () => void;
   onChange: (next: WorkflowStep) => void;
   onChangeAction: (action: Action) => void;
+  onAddOutcomeScaffold: () => void;
   onMove: (direction: -1 | 1) => void;
   onRemove: () => void;
   onDragStart: () => void;
@@ -1995,6 +2083,30 @@ function WorkflowStepCard({
             <strong>Destructive action.</strong> Trevra verifies the lead is a 1st-degree connection
             before exposing LinkedIn’s Remove connection control. Unknown relationship state stops
             the batch; it never guesses.
+          </div>
+        )}
+
+        {(step.action === 'connection_request' || step.action === 'message') && (
+          <div className="li-span-2 mgr-preview-note">
+            <b>{step.action === 'connection_request' ? 'Simple outcome lanes' : 'Reply lanes'}.</b>{' '}
+            Add the canonical Monitor + YES/NO paths with one click; you can edit the timeout and
+            destinations afterward.
+            <button
+              className="li-mini-button"
+              type="button"
+              onClick={onAddOutcomeScaffold}
+              disabled={steps.some(
+                (candidate) =>
+                  candidate.action === 'monitor' &&
+                  candidate.config.condition.ofStepId === step.id &&
+                  candidate.config.condition.kind ===
+                    (step.action === 'connection_request' ? 'accepted' : 'replied')
+              )}
+            >
+              {step.action === 'connection_request'
+                ? 'Add Accepted / Not Accepted paths'
+                : 'Add Replied / No Reply paths'}
+            </button>
           </div>
         )}
 

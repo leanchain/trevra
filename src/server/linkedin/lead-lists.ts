@@ -87,6 +87,10 @@ export interface LinkedInLeadContact {
   lastName: string;
   company: string;
   email: string | null;
+  emailSource: string | null;
+  emailProvenance: string | null;
+  emailConfidence: number | null;
+  emailVerificationStatus: string | null;
   phone: string | null;
   country: string | null;
   profileUrl: string | null;
@@ -115,6 +119,10 @@ interface ContactRow {
   last_name: string;
   company: string;
   email: string | null;
+  email_source: string | null;
+  email_provenance: string | null;
+  email_confidence: number | null;
+  email_verification_status: string | null;
   phone: string | null;
   country: string | null;
   profile_url: string | null;
@@ -129,9 +137,9 @@ interface ContactRow {
 // being one contact row, and the column only records the list they first
 // landed in.
 const LIST_SELECT = `l.id,l.workspace_id,l.seat_key,l.name,l.source_kind,l.source_ref,l.created_at,l.updated_at,(SELECT COUNT(*)::int FROM linkedin_lead_list_members m WHERE m.list_id=l.id) AS lead_count`;
-const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,do_not_contact,custom_fields_json,created_at,updated_at`;
+const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,email_source,email_provenance,email_confidence,email_verification_status,phone,country,profile_url,do_not_contact,custom_fields_json,created_at,updated_at`;
 /** The same columns through the membership join, where `list_id` is the list asked for. */
-const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.phone,c.country,c.profile_url,c.do_not_contact,c.custom_fields_json,c.created_at,c.updated_at`;
+const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.email_source,c.email_provenance,c.email_confidence,c.email_verification_status,c.phone,c.country,c.profile_url,c.do_not_contact,c.custom_fields_json,c.created_at,c.updated_at`;
 
 function toList(row: ListRow): LinkedInLeadList {
   return {
@@ -174,6 +182,10 @@ function toContact(row: ContactRow): LinkedInLeadContact {
     lastName: row.last_name,
     company: row.company,
     email: row.email,
+    emailSource: row.email_source,
+    emailProvenance: row.email_provenance,
+    emailConfidence: row.email_confidence === null ? null : Number(row.email_confidence),
+    emailVerificationStatus: row.email_verification_status,
     phone: row.phone,
     country: row.country,
     profileUrl: row.profile_url,
@@ -384,7 +396,7 @@ async function insertLead(
 ): Promise<LeadInsertOutcome> {
   const row = await db
     .prepare(
-      `INSERT INTO linkedin_lead_contacts (id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,dedupe_key,original_json,custom_fields_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?) ON CONFLICT DO NOTHING RETURNING id`
+      `INSERT INTO linkedin_lead_contacts (id,workspace_id,list_id,first_name,last_name,company,email,email_source,email_provenance,phone,country,profile_url,dedupe_key,original_json,custom_fields_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?) ON CONFLICT DO NOTHING RETURNING id`
     )
     .get<{ id: string }>(
       id('lilead'),
@@ -394,6 +406,8 @@ async function insertLead(
       lead.lastName,
       lead.company,
       lead.email,
+      lead.email ? 'imported' : null,
+      lead.email ? 'imported' : null,
       lead.phone,
       lead.country,
       lead.profileUrl,
@@ -461,6 +475,7 @@ export async function ingestLeadSignal(
     lastName?: string | null;
     company?: string | null;
     email?: string | null;
+    emailProvenance?: 'first_party' | 'imported' | 'manual' | 'external';
     phone?: string | null;
     country?: string | null;
     sourceRef?: string | null;
@@ -522,6 +537,14 @@ export async function ingestLeadSignal(
 
     const lead = await insertLead(tx, input.workspaceId, input.listId, normalized, timestamp);
     if (!lead.contactId) throw new Error('Signal lead could not be stored.');
+    if (normalized.email) {
+      const provenance = input.emailProvenance ?? 'external';
+      await tx
+        .prepare(
+          `UPDATE linkedin_lead_contacts SET email_source=?,email_provenance=?,updated_at=? WHERE workspace_id=? AND id=?`
+        )
+        .run(provenance, provenance, timestamp, input.workspaceId, lead.contactId);
+    }
     const signalId = id('lisig');
     await tx
       .prepare(
@@ -793,13 +816,15 @@ export async function updateLeadContact(
     throw new Error(leadClashMessage(normalized, `${clash.first_name} ${clash.last_name}`.trim()));
   const row = await db
     .prepare(
-      `UPDATE linkedin_lead_contacts SET first_name=?,last_name=?,company=?,email=?,phone=?,country=?,profile_url=?,dedupe_key=?,do_not_contact=COALESCE(?,do_not_contact),updated_at=? WHERE workspace_id=? AND id=? RETURNING ${CONTACT_SELECT}`
+      `UPDATE linkedin_lead_contacts SET first_name=?,last_name=?,company=?,email=?,email_source=CASE WHEN ?::boolean THEN 'manual' ELSE email_source END,email_provenance=CASE WHEN ?::boolean THEN 'manual' ELSE email_provenance END,phone=?,country=?,profile_url=?,dedupe_key=?,do_not_contact=COALESCE(?,do_not_contact),updated_at=? WHERE workspace_id=? AND id=? RETURNING ${CONTACT_SELECT}`
     )
     .get<ContactRow>(
       normalized.firstName,
       normalized.lastName,
       normalized.company,
       normalized.email,
+      input.email !== undefined,
+      input.email !== undefined,
       normalized.phone,
       normalized.country,
       normalized.profileUrl,

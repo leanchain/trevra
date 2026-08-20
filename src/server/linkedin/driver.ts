@@ -81,6 +81,7 @@ import { hoverClick, readPage, settle, typeLike } from './human.js';
 export type LinkedInFailureKind =
   | 'not_found'
   | 'already_connected'
+  | 'already_pending'
   | 'limit_wall'
   | 'challenge'
   | 'selector_drift'
@@ -749,7 +750,7 @@ export async function sendInvite(
 
   if (await present(page, SELECTORS.pendingInvite)) {
     return fail(
-      'already_connected',
+      'already_pending',
       `An invite to ${url} is already pending; a second one is not a thing to send.`
     );
   }

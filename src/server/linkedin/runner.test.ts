@@ -938,6 +938,44 @@ describe('managed campaign runner', () => {
    * wait 3 days -> follow-up" fired the follow-up on the very next tick, on top
    * of the message the operator had just sent by hand.
    */
+  it('preserves manual comment task type and post destination', async () => {
+    const listId = await seededList('Comment task', [
+      { first: 'Maya', last: 'Comment', company: 'Acme', slug: 'maya-comment' }
+    ]);
+    const workflowId = (
+      await saveWorkflow(
+        db,
+        {
+          workspaceId: WORKSPACE,
+          name: 'Manual comment metadata',
+          steps: [
+            {
+              id: 'comment',
+              action: 'manual_comment',
+              delayBefore: { amount: 0, unit: 'hours' },
+              config: {
+                suggestedTemplate: 'Thoughtful note for {{first_name}}',
+                postUrl: 'https://www.linkedin.com/posts/maya-comment-example/'
+              }
+            }
+          ]
+        },
+        NOW
+      )
+    ).id;
+    const campaignId = await runningCampaign(listId, workflowId, 'Manual comment');
+    const tick = await runManagedCampaigns(db, WORKSPACE, NOW);
+    expect(tick.manualTasksCreated).toBe(1);
+    const task = (await listManualTasks(db, WORKSPACE)).find(
+      (row) => row.campaignId === campaignId
+    );
+    expect(task).toMatchObject({
+      taskKind: 'comment',
+      postUrl: 'https://www.linkedin.com/posts/maya-comment-example/',
+      suggestedBody: 'Thoughtful note for Maya'
+    });
+  });
+
   it("applies the next step's delay when a manual task is completed", async () => {
     const listId = await seededList('Manual delay', [
       { first: 'Hand', last: 'Sent', company: 'Acme', slug: 'hand-sent' }

@@ -80,6 +80,8 @@ export interface ManagedCampaign {
   schedule: CampaignSchedule;
   /** Maximum paid InMail credits this campaign may consume. Null means no paid credits are approved campaign-wide. */
   inmailCreditCap: number | null;
+  /** Maximum external email-enrichment credits this campaign may consume. Null means no provider credits are approved. */
+  enrichmentCreditCap: number | null;
   lastAdmissionAt: string | null;
   startedAt: string | null;
   pausedAt: string | null;
@@ -108,6 +110,14 @@ export interface CampaignExclusionPolicy {
   excludeSameSenderMessaged?: boolean;
   suppressedCompanies?: string[];
   suppressedDomains?: string[];
+  /** Exclude contacts who are members of any of these workspace lead lists. */
+  excludedLeadListIds?: string[];
+  /** Normalized duplicate profile URLs are excluded by default. */
+  excludeDuplicateProfiles?: boolean;
+  /** Only positive ledger evidence counts as connected; absence is never guessed. */
+  excludeKnownConnected?: boolean;
+  /** Require positive connection evidence; unknown/non-connected contacts stay excluded. */
+  requireKnownConnected?: boolean;
 }
 
 export interface ManagedCampaignMember {
@@ -125,6 +135,15 @@ export interface ManagedCampaignMember {
   assignedVariants: Record<string, string>;
   branchState: Record<string, unknown>;
   lastActionId: string | null;
+  lastAction: {
+    id: string;
+    kind: string;
+    status: string;
+    plannedFor: string | null;
+    claimedAt: string | null;
+    settlementHoldAt: string | null;
+    failureKind: string | null;
+  } | null;
   exclusionReason: string | null;
   lastFailureReason: string | null;
   firstName: string;
@@ -189,6 +208,7 @@ interface CampaignRow {
   schedule_end_minute: number | null;
   end_behavior: string;
   inmail_credit_cap: number | null;
+  enrichment_credit_cap: number | null;
   last_admission_at: string | null;
   started_at: string | null;
   paused_at: string | null;
@@ -223,6 +243,12 @@ interface MemberRow {
   assigned_variants: unknown;
   branch_state_json: unknown;
   last_action_id: string | null;
+  last_action_kind: string | null;
+  last_action_status: string | null;
+  last_action_planned_for: string | null;
+  last_action_claimed_at: string | null;
+  last_action_settlement_hold_at: string | null;
+  last_action_failure_kind: string | null;
   exclusion_reason: string | null;
   last_failure_reason: string | null;
   first_name: string;
@@ -237,7 +263,7 @@ const ACTIVE_MEMBER_STATUSES = ['pending', 'active', 'waiting', 'manual', 'pause
 const CAMPAIGN_SELECT = `
   c.id,c.workspace_id,c.owner_user_id,(SELECT COALESCE(u.name,u.email) FROM users u WHERE u.id=c.owner_user_id) AS owner_name,c.name,c.status,c.seat_key,c.lead_list_id,c.workflow_id,c.sequence_json,
   c.priority,c.admission_policy_json,c.exclusion_policy_json,c.sender_keys_json,c.mailbox_assignments_json,
-  c.scheduled_start_at,c.scheduled_end_at,c.schedule_days_json,c.schedule_start_minute,c.schedule_end_minute,c.end_behavior,c.inmail_credit_cap,c.last_admission_at,
+  c.scheduled_start_at,c.scheduled_end_at,c.schedule_days_json,c.schedule_start_minute,c.schedule_end_minute,c.end_behavior,c.inmail_credit_cap,c.enrichment_credit_cap,c.last_admission_at,
   c.started_at,c.paused_at,c.created_at,c.updated_at,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id) AS member_count,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status = ANY(ARRAY['pending','active','waiting','manual','paused'])) AS active_count,
@@ -379,6 +405,8 @@ function toCampaign(row: CampaignRow): ManagedCampaign {
         : 'finish_waves') as CampaignEndBehavior
     },
     inmailCreditCap: row.inmail_credit_cap === null ? null : Number(row.inmail_credit_cap),
+    enrichmentCreditCap:
+      row.enrichment_credit_cap === null ? null : Number(row.enrichment_credit_cap),
     lastAdmissionAt: row.last_admission_at,
     startedAt: row.started_at,
     pausedAt: row.paused_at,
@@ -433,6 +461,18 @@ function toMember(row: MemberRow): ManagedCampaignMember {
     assignedVariants: parseVariants(row.assigned_variants),
     branchState: parseJsonObject(row.branch_state_json),
     lastActionId: row.last_action_id,
+    lastAction:
+      row.last_action_id && row.last_action_kind && row.last_action_status
+        ? {
+            id: row.last_action_id,
+            kind: row.last_action_kind,
+            status: row.last_action_status,
+            plannedFor: row.last_action_planned_for,
+            claimedAt: row.last_action_claimed_at,
+            settlementHoldAt: row.last_action_settlement_hold_at,
+            failureKind: row.last_action_failure_kind
+          }
+        : null,
     exclusionReason: row.exclusion_reason,
     lastFailureReason: row.last_failure_reason,
     firstName: row.first_name,
@@ -496,10 +536,13 @@ export async function listCampaignMembers(
       `
     SELECT m.id,m.campaign_id,m.contact_id,m.status,m.step_index,m.next_eligible_at,m.admitted_at,m.wave_id,w.ordinal AS wave_ordinal,
            m.assigned_seat_key,m.workflow_snapshot_json,m.workflow_version,m.assigned_variants,m.branch_state_json,m.last_action_id,m.exclusion_reason,m.last_failure_reason,
+           a.kind AS last_action_kind,a.status AS last_action_status,a.planned_for AS last_action_planned_for,
+           a.claimed_at AS last_action_claimed_at,a.settlement_hold_at AS last_action_settlement_hold_at,a.failure_kind AS last_action_failure_kind,
            l.first_name,l.last_name,l.company,l.email,l.profile_url,l.custom_fields_json
     FROM linkedin_campaign_members m
     JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
     LEFT JOIN linkedin_campaign_waves w ON w.id=m.wave_id AND w.workspace_id=m.workspace_id
+    LEFT JOIN linkedin_actions a ON a.id=m.last_action_id AND a.workspace_id=m.workspace_id
     WHERE m.workspace_id=? AND m.campaign_id=? ORDER BY m.created_at,m.id
   `
     )
@@ -523,6 +566,7 @@ export async function createManagedCampaign(
     exclusionPolicy?: CampaignExclusionPolicy;
     schedule?: Partial<CampaignSchedule>;
     inmailCreditCap?: number | null;
+    enrichmentCreditCap?: number | null;
   },
   now: Date = new Date()
 ): Promise<{
@@ -539,6 +583,13 @@ export async function createManagedCampaign(
       input.inmailCreditCap > 10000)
   )
     throw new Error('Campaign InMail credit cap must be a whole number from 0 to 10000.');
+  if (
+    input.enrichmentCreditCap != null &&
+    (!Number.isInteger(input.enrichmentCreditCap) ||
+      input.enrichmentCreditCap < 0 ||
+      input.enrichmentCreditCap > 100000)
+  )
+    throw new Error('Campaign enrichment credit cap must be a whole number from 0 to 100000.');
   if (!name) throw new Error('Campaign name is required.');
   const requestedSenders = [
     ...new Set(
@@ -568,9 +619,9 @@ export async function createManagedCampaign(
       INSERT INTO linkedin_campaigns (
         id,workspace_id,owner_user_id,name,status,sequence_json,playbook_run_id,seat_key,sender_keys_json,mailbox_assignments_json,lead_list_id,workflow_id,
         priority,admission_policy_json,exclusion_policy_json,scheduled_start_at,scheduled_end_at,schedule_days_json,
-        schedule_start_minute,schedule_end_minute,end_behavior,inmail_credit_cap,created_at,updated_at
+        schedule_start_minute,schedule_end_minute,end_behavior,inmail_credit_cap,enrichment_credit_cap,created_at,updated_at
       )
-      VALUES (?,?,?,?,'draft',?::jsonb,NULL,?,?::jsonb,?::jsonb,?,?,?,?::jsonb,?::jsonb,?,?,?::jsonb,?,?,?,?, ?,?)
+      VALUES (?,?,?,?,'draft',?::jsonb,NULL,?,?::jsonb,?::jsonb,?,?,?,?::jsonb,?::jsonb,?,?,?::jsonb,?,?,?,?, ?,?,?)
     `
       )
       .run(
@@ -599,6 +650,7 @@ export async function createManagedCampaign(
         input.schedule?.workEndMinute ?? null,
         input.schedule?.endBehavior ?? 'finish_waves',
         input.inmailCreditCap ?? null,
+        input.enrichmentCreditCap ?? null,
         timestamp,
         timestamp
       );
@@ -634,76 +686,9 @@ export async function createManagedCampaign(
         input.workspaceId,
         list.id
       );
-
-    const policy = input.exclusionPolicy ?? {};
-    const suppressedCompanies = (policy.suppressedCompanies ?? [])
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean);
-    const lookback = Math.max(0, Math.trunc(policy.contactedLookbackDays ?? 0));
-    const promoted = await tx
-      .prepare(
-        `
-      UPDATE linkedin_campaign_members m
-      SET status='pending', exclusion_reason=NULL, updated_at=?
-      FROM linkedin_lead_contacts c
-      WHERE m.workspace_id=? AND m.campaign_id=? AND m.contact_id=c.id AND c.workspace_id=m.workspace_id
-        AND m.status='excluded' AND m.exclusion_reason='__eligibility__'
-        AND (?::boolean = false OR c.do_not_contact=false)
-        AND (?::boolean = false OR (c.profile_url IS NOT NULL AND BTRIM(c.profile_url)<>''))
-        AND (COALESCE(array_length(?::text[],1),0)=0 OR LOWER(c.company) <> ALL(?::text[]))
-        AND NOT EXISTS (
-          SELECT 1 FROM linkedin_campaign_members other
-          WHERE other.workspace_id=m.workspace_id AND other.contact_id=m.contact_id AND other.campaign_id<>m.campaign_id
-            AND other.status IN ('pending','active','waiting','manual','paused')
-        )
-        AND (?::boolean=false OR NOT EXISTS (
-          SELECT 1 FROM linkedin_threads t JOIN linkedin_messages msg ON msg.thread_id=t.id AND msg.workspace_id=t.workspace_id
-          WHERE t.workspace_id=m.workspace_id AND c.profile_url IS NOT NULL AND LOWER(t.profile_url)=LOWER(c.profile_url) AND msg.direction='in'
-        ))
-        AND (?::int=0 OR NOT EXISTS (
-          SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND c.profile_url IS NOT NULL
-            AND LOWER(a.target_ref)=LOWER(c.profile_url) AND a.status<>'skipped'
-            AND a.created_at >= (?::timestamptz - (?::int * INTERVAL '1 day'))
-        ))
-        AND (?::boolean=false OR NOT EXISTS (
-          SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.seat_key = ANY(?::text[])
-            AND c.profile_url IS NOT NULL AND LOWER(a.target_ref)=LOWER(c.profile_url)
-            AND a.kind IN ('dm','reply','inmail','group_message','event_message') AND a.status IN ('sent','replied')
-        ))
-      RETURNING m.id
-    `
-      )
-      .all<{ id: string }>(
-        timestamp,
-        input.workspaceId,
-        campaignId,
-        policy.excludeDoNotContact !== false,
-        policy.excludeMissingProfile !== false,
-        suppressedCompanies,
-        suppressedCompanies,
-        policy.excludeExistingConversation === true,
-        lookback,
-        now.toISOString(),
-        lookback,
-        policy.excludeSameSenderMessaged === true,
-        requestedSenders
-      );
-    enrolled = promoted.length;
-
-    await tx
-      .prepare(
-        `
-      UPDATE linkedin_campaign_members m SET exclusion_reason = CASE
-        WHEN EXISTS (SELECT 1 FROM linkedin_lead_contacts c WHERE c.id=m.contact_id AND c.workspace_id=m.workspace_id AND c.do_not_contact) THEN 'Do not contact'
-        WHEN EXISTS (SELECT 1 FROM linkedin_lead_contacts c WHERE c.id=m.contact_id AND c.workspace_id=m.workspace_id AND (c.profile_url IS NULL OR BTRIM(c.profile_url)='')) THEN 'Missing LinkedIn profile URL'
-        WHEN EXISTS (SELECT 1 FROM linkedin_campaign_members other WHERE other.workspace_id=m.workspace_id AND other.contact_id=m.contact_id AND other.campaign_id<>m.campaign_id AND other.status IN ('pending','active','waiting','manual','paused')) THEN 'Already in another live campaign'
-        ELSE 'Excluded by campaign eligibility policy'
-      END
-      WHERE m.workspace_id=? AND m.campaign_id=? AND m.status='excluded' AND m.exclusion_reason='__eligibility__'
-    `
-      )
-      .run(input.workspaceId, campaignId);
   });
+  const eligibility = await reevaluateCampaignExclusions(db, input.workspaceId, campaignId, now);
+  enrolled = eligibility.pending;
   const campaign = await getManagedCampaign(db, input.workspaceId, campaignId);
   if (!campaign) throw new Error('Campaign could not be created.');
   const excluded = Math.max(0, total - enrolled);
@@ -717,6 +702,193 @@ export async function createManagedCampaign(
     )?.total ?? 0;
   return { campaign, enrolled, skippedAlreadyActive, excluded };
 }
+const ELIGIBILITY_EXCLUSION_REASONS = new Set([
+  '__eligibility__',
+  'Do not contact',
+  'Missing LinkedIn profile URL',
+  'Suppressed company',
+  'Suppressed email domain',
+  'Member of an excluded lead list',
+  'Duplicate LinkedIn profile URL',
+  'Already in another live campaign',
+  'Existing conversation',
+  'Contacted inside campaign lookback window',
+  'Already messaged by an assigned sender',
+  'Known LinkedIn connection excluded',
+  'Known LinkedIn connection required',
+  'Excluded by campaign eligibility policy'
+]);
+
+function normalizedSuppressedDomains(values: readonly string[] | undefined): string[] {
+  return [
+    ...new Set(
+      (values ?? []).map((value) => value.trim().toLowerCase().replace(/^@/, '')).filter(Boolean)
+    )
+  ];
+}
+
+function emailMatchesSuppressedDomain(email: string | null, domains: readonly string[]): boolean {
+  const at = email?.lastIndexOf('@') ?? -1;
+  if (at < 0 || domains.length === 0) return false;
+  const domain = email!
+    .slice(at + 1)
+    .trim()
+    .toLowerCase();
+  return domains.some((blocked) => domain === blocked || domain.endsWith(`.${blocked}`));
+}
+
+/**
+ * Recompute explainable eligibility for every UNADMITTED member of one campaign.
+ * Creation, dynamic-list enrolment and paused campaign edits all call this exact
+ * function so an exclusion cannot mean one thing on day zero and another thing
+ * when the list grows later.
+ */
+export async function reevaluateCampaignExclusions(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  now: Date = new Date()
+): Promise<{ pending: number; excluded: number }> {
+  const campaign = await getManagedCampaign(db, workspaceId, campaignId);
+  if (!campaign) throw new Error('Campaign not found.');
+  const policy = campaign.exclusionPolicy ?? {};
+  if (policy.excludeKnownConnected && policy.requireKnownConnected)
+    throw new Error('A campaign cannot both require and exclude known LinkedIn connections.');
+  const senders = campaign.senderKeys.length > 0 ? campaign.senderKeys : [campaign.seatKey];
+  const excludedLists = [
+    ...new Set((policy.excludedLeadListIds ?? []).map((v) => v.trim()).filter(Boolean))
+  ];
+  const lookback = Math.max(0, Math.trunc(policy.contactedLookbackDays ?? 0));
+  const rows = await db
+    .prepare(
+      `SELECT m.id,m.status,m.exclusion_reason,c.email,c.company,c.profile_url,c.do_not_contact,
+              EXISTS (
+                SELECT 1 FROM linkedin_campaign_members other
+                WHERE other.workspace_id=m.workspace_id AND other.contact_id=m.contact_id
+                  AND other.campaign_id<>m.campaign_id
+                  AND other.status IN ('pending','active','waiting','manual','paused')
+              ) AS other_live,
+              EXISTS (
+                SELECT 1 FROM linkedin_threads t
+                JOIN linkedin_messages msg ON msg.thread_id=t.id AND msg.workspace_id=t.workspace_id
+                WHERE t.workspace_id=m.workspace_id AND pk.profile_key IS NOT NULL
+                  AND LOWER(RTRIM(SPLIT_PART(SPLIT_PART(t.profile_url, chr(63),1),'#',1),'/'))=pk.profile_key
+                  AND msg.direction='in'
+              ) AS existing_conversation,
+              EXISTS (
+                SELECT 1 FROM linkedin_actions a
+                WHERE a.workspace_id=m.workspace_id AND pk.profile_key IS NOT NULL
+                  AND LOWER(RTRIM(SPLIT_PART(SPLIT_PART(a.target_ref, chr(63),1),'#',1),'/'))=pk.profile_key
+                  AND a.status<>'skipped'
+                  AND a.created_at >= (?::timestamptz - (?::int * INTERVAL '1 day'))
+              ) AS recent_contact,
+              EXISTS (
+                SELECT 1 FROM linkedin_actions a
+                WHERE a.workspace_id=m.workspace_id AND a.seat_key = ANY(?::text[])
+                  AND pk.profile_key IS NOT NULL
+                  AND LOWER(RTRIM(SPLIT_PART(SPLIT_PART(a.target_ref, chr(63),1),'#',1),'/'))=pk.profile_key
+                  AND a.kind IN ('dm','reply','inmail','group_message','event_message')
+                  AND a.status IN ('sent','replied')
+              ) AS same_sender_messaged,
+              EXISTS (
+                SELECT 1 FROM linkedin_lead_list_members lm
+                WHERE lm.workspace_id=m.workspace_id AND lm.contact_id=m.contact_id
+                  AND lm.list_id = ANY(?::text[])
+              ) AS excluded_list,
+              EXISTS (
+                SELECT 1 FROM linkedin_actions a
+                WHERE a.workspace_id=m.workspace_id AND pk.profile_key IS NOT NULL
+                  AND LOWER(RTRIM(SPLIT_PART(SPLIT_PART(a.target_ref, chr(63),1),'#',1),'/'))=pk.profile_key
+                  AND ((a.kind='invite' AND a.status IN ('accepted','replied'))
+                    OR (a.kind IN ('dm','reply') AND a.status IN ('sent','accepted','replied')))
+              ) AS known_connected,
+              ROW_NUMBER() OVER (
+                PARTITION BY COALESCE(pk.profile_key, c.id)
+                ORDER BY c.created_at,c.id
+              )::int AS profile_rank
+       FROM linkedin_campaign_members m
+       JOIN linkedin_lead_contacts c ON c.id=m.contact_id AND c.workspace_id=m.workspace_id
+       CROSS JOIN LATERAL (
+         SELECT CASE WHEN c.profile_url IS NULL OR BTRIM(c.profile_url)='' THEN NULL
+                     ELSE LOWER(RTRIM(SPLIT_PART(SPLIT_PART(c.profile_url, chr(63),1),'#',1),'/')) END AS profile_key
+       ) pk
+       WHERE m.workspace_id=? AND m.campaign_id=? AND m.admitted_at IS NULL
+         AND m.status IN ('pending','excluded')
+       ORDER BY m.created_at,m.id`
+    )
+    .all<{
+      id: string;
+      status: string;
+      exclusion_reason: string | null;
+      email: string | null;
+      company: string;
+      profile_url: string | null;
+      do_not_contact: boolean;
+      other_live: boolean;
+      existing_conversation: boolean;
+      recent_contact: boolean;
+      same_sender_messaged: boolean;
+      excluded_list: boolean;
+      known_connected: boolean;
+      profile_rank: number;
+    }>(now.toISOString(), lookback, senders, excludedLists, workspaceId, campaignId);
+
+  const companies = new Set(
+    (policy.suppressedCompanies ?? []).map((v) => v.trim().toLowerCase()).filter(Boolean)
+  );
+  const domains = normalizedSuppressedDomains(policy.suppressedDomains);
+  const ids: string[] = [];
+  const statuses: string[] = [];
+  const reasons: string[] = [];
+  let pending = 0;
+  let excluded = 0;
+  for (const row of rows) {
+    if (
+      row.status === 'excluded' &&
+      row.exclusion_reason &&
+      !ELIGIBILITY_EXCLUSION_REASONS.has(row.exclusion_reason)
+    )
+      continue;
+    let reason: string | null = null;
+    if (policy.excludeDoNotContact !== false && row.do_not_contact) reason = 'Do not contact';
+    else if (policy.excludeMissingProfile !== false && !row.profile_url?.trim())
+      reason = 'Missing LinkedIn profile URL';
+    else if (companies.has(row.company.trim().toLowerCase())) reason = 'Suppressed company';
+    else if (emailMatchesSuppressedDomain(row.email, domains)) reason = 'Suppressed email domain';
+    else if (row.excluded_list) reason = 'Member of an excluded lead list';
+    else if (policy.excludeDuplicateProfiles !== false && row.profile_rank > 1)
+      reason = 'Duplicate LinkedIn profile URL';
+    else if (row.other_live) reason = 'Already in another live campaign';
+    else if (policy.excludeExistingConversation === true && row.existing_conversation)
+      reason = 'Existing conversation';
+    else if (lookback > 0 && row.recent_contact)
+      reason = 'Contacted inside campaign lookback window';
+    else if (policy.excludeSameSenderMessaged === true && row.same_sender_messaged)
+      reason = 'Already messaged by an assigned sender';
+    else if (policy.excludeKnownConnected === true && row.known_connected)
+      reason = 'Known LinkedIn connection excluded';
+    else if (policy.requireKnownConnected === true && !row.known_connected)
+      reason = 'Known LinkedIn connection required';
+
+    ids.push(row.id);
+    statuses.push(reason ? 'excluded' : 'pending');
+    reasons.push(reason ?? '');
+    if (reason) excluded += 1;
+    else pending += 1;
+  }
+  if (ids.length > 0) {
+    await db
+      .prepare(
+        `UPDATE linkedin_campaign_members m
+         SET status=x.status, exclusion_reason=NULLIF(x.reason,''), updated_at=?::timestamptz
+         FROM unnest(?::text[],?::text[],?::text[]) AS x(id,status,reason)
+         WHERE m.workspace_id=? AND m.campaign_id=? AND m.id=x.id AND m.admitted_at IS NULL`
+      )
+      .run(now.toISOString(), ids, statuses, reasons, workspaceId, campaignId);
+  }
+  return { pending, excluded };
+}
+
 /**
  * The campaign-member primary key, DERIVED rather than minted -- and derived
  * over the WORKSPACE as well as the campaign.
@@ -804,22 +976,17 @@ export async function enrolNewContacts(
 ): Promise<number> {
   if (campaign.steps.length === 0) return 0;
   const timestamp = now.toISOString();
-  // Live-list additions join the pending pool. Admission, not enrolment, decides when their
-  // first action can exist. Removed members keep their derived id and therefore never re-enter.
+  // Record every newly seen audience member first, including exclusions. This
+  // keeps dynamic-list growth explainable and lets the exact same eligibility
+  // engine used at campaign creation decide whether the new member is Pending.
   const inserted = await db
     .prepare(
       `
-    INSERT INTO linkedin_campaign_members (id,workspace_id,campaign_id,contact_id,status,step_index,next_eligible_at,assigned_variants,created_at,updated_at)
-    SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'pending', 0, NULL, '{}'::jsonb, ?, ?
+    INSERT INTO linkedin_campaign_members
+      (id,workspace_id,campaign_id,contact_id,status,step_index,next_eligible_at,assigned_variants,exclusion_reason,created_at,updated_at)
+    SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'excluded', 0, NULL, '{}'::jsonb, '__eligibility__', ?, ?
     FROM linkedin_lead_list_members m
-    JOIN linkedin_lead_contacts c ON c.id=m.contact_id AND c.workspace_id=m.workspace_id
     WHERE m.workspace_id=? AND m.list_id=?
-      AND c.do_not_contact=false AND c.profile_url IS NOT NULL AND BTRIM(c.profile_url)<>''
-      AND NOT EXISTS (
-        SELECT 1 FROM linkedin_campaign_members other
-        WHERE other.workspace_id=? AND other.contact_id=m.contact_id AND other.campaign_id<>?
-          AND other.status IN ('pending','active','waiting','manual','paused')
-      )
     ON CONFLICT DO NOTHING RETURNING id
   `
     )
@@ -831,11 +998,21 @@ export async function enrolNewContacts(
       timestamp,
       timestamp,
       workspaceId,
-      campaign.leadListId,
-      workspaceId,
-      campaign.id
+      campaign.leadListId
     );
-  return inserted.length;
+  if (inserted.length === 0) return 0;
+  await reevaluateCampaignExclusions(db, workspaceId, campaign.id, now);
+  const promoted = await db
+    .prepare(
+      `SELECT COUNT(*)::int AS total FROM linkedin_campaign_members
+       WHERE workspace_id=? AND campaign_id=? AND id = ANY(?::text[]) AND status='pending'`
+    )
+    .get<{ total: number }>(
+      workspaceId,
+      campaign.id,
+      inserted.map((row) => row.id)
+    );
+  return Number(promoted?.total ?? 0);
 }
 
 export async function listCampaignWaves(
@@ -1401,6 +1578,8 @@ export interface ManualTaskView {
   seatKey: string;
   workflowStepId: string;
   suggestedBody: string | null;
+  taskKind: 'message' | 'comment';
+  postUrl: string | null;
   status: string;
   createdAt: string;
   completedAt: string | null;
@@ -1428,7 +1607,7 @@ export async function listManualTasks(
   const rows = await db
     .prepare(
       `
-    SELECT t.id,t.campaign_id,t.member_id,t.contact_id,t.seat_key,t.workflow_step_id,t.suggested_body,t.status,t.created_at,t.completed_at,
+    SELECT t.id,t.campaign_id,t.member_id,t.contact_id,t.seat_key,t.workflow_step_id,t.suggested_body,t.task_kind,t.post_url,t.status,t.created_at,t.completed_at,
            l.first_name,l.last_name,l.company,l.profile_url
     FROM linkedin_manual_tasks t JOIN linkedin_lead_contacts l ON l.id=t.contact_id AND l.workspace_id=t.workspace_id
     WHERE ${clauses.join(' AND ')} ORDER BY t.created_at DESC
@@ -1443,6 +1622,8 @@ export async function listManualTasks(
     seatKey: String(r.seat_key),
     workflowStepId: String(r.workflow_step_id),
     suggestedBody: r.suggested_body == null ? null : String(r.suggested_body),
+    taskKind: r.task_kind === 'comment' ? 'comment' : 'message',
+    postUrl: r.post_url == null ? null : String(r.post_url),
     status: String(r.status),
     createdAt: String(r.created_at),
     completedAt: r.completed_at == null ? null : String(r.completed_at),
@@ -1636,6 +1817,13 @@ export interface CampaignLaunchPreview {
   reasons: string[];
   variableCoverage: Record<string, WorkflowVariableCoverage>;
   diagnostics: WorkflowDiagnostic[];
+  enrichmentCredits: {
+    required: number;
+    alreadyAvailable: number;
+    estimatedProviderLookups: number;
+    cap: number | null;
+    capped: boolean;
+  };
 }
 
 async function leadListVariableCoverage(
@@ -1709,6 +1897,7 @@ export async function previewManagedCampaignLaunch(
     senderKeys?: string[];
     seatKey?: string;
     admissionPolicy?: AdmissionPolicy;
+    enrichmentCreditCap?: number | null;
   },
   now: Date = new Date()
 ): Promise<CampaignLaunchPreview> {
@@ -1768,6 +1957,20 @@ export async function previewManagedCampaignLaunch(
     now,
     hasUsableFutureSlot: eligibleSenders.length > 0
   });
+  const findEmailSteps = workflow.steps.filter((step) => step.action === 'find_email').length;
+  const emailRows = await db
+    .prepare(
+      `SELECT COUNT(*)::int AS total,COUNT(*) FILTER (WHERE NULLIF(BTRIM(COALESCE(c.email,'')),'') IS NOT NULL)::int AS available
+      FROM linkedin_lead_list_members m JOIN linkedin_lead_contacts c ON c.workspace_id=m.workspace_id AND c.id=m.contact_id
+      WHERE m.workspace_id=? AND m.list_id=?`
+    )
+    .get<{ total: number; available: number }>(input.workspaceId, list.id);
+  const alreadyAvailable = Number(emailRows?.available ?? 0);
+  const estimatedProviderLookups =
+    findEmailSteps > 0
+      ? Math.max(0, Number(emailRows?.total ?? list.leadCount) - alreadyAvailable)
+      : 0;
+  const enrichmentCap = input.enrichmentCreditCap ?? null;
   return {
     audience: list.leadCount,
     eligibleSenders,
@@ -1778,7 +1981,14 @@ export async function previewManagedCampaignLaunch(
     demand,
     reasons: decision.reasons,
     variableCoverage,
-    diagnostics
+    diagnostics,
+    enrichmentCredits: {
+      required: estimatedProviderLookups,
+      alreadyAvailable,
+      estimatedProviderLookups,
+      cap: enrichmentCap,
+      capped: enrichmentCap !== null && estimatedProviderLookups > enrichmentCap
+    }
   };
 }
 
@@ -1903,21 +2113,27 @@ export async function updateManagedCampaignControls(
   input: {
     priority?: CampaignPriority;
     admissionPolicy?: AdmissionPolicy;
+    exclusionPolicy?: CampaignExclusionPolicy;
     schedule?: Partial<CampaignSchedule>;
     senderKeys?: string[];
     mailboxAssignments?: Record<string, string>;
     inmailCreditCap?: number | null;
+    enrichmentCreditCap?: number | null;
   },
   now: Date = new Date()
 ): Promise<ManagedCampaign> {
   const campaign = await getManagedCampaign(db, workspaceId, campaignId);
   if (!campaign) throw new Error('Campaign not found.');
   if (
-    (input.admissionPolicy || input.schedule || input.senderKeys || input.mailboxAssignments) &&
+    (input.admissionPolicy ||
+      input.exclusionPolicy ||
+      input.schedule ||
+      input.senderKeys ||
+      input.mailboxAssignments) &&
     campaign.status === 'running'
   ) {
     throw new Error(
-      'Pause the campaign before changing admission, schedule, or sender settings. Priority may be changed while running.'
+      'Pause the campaign before changing admission, exclusions, schedule, or sender settings. Priority may be changed while running.'
     );
   }
   const senderKeys = input.senderKeys
@@ -1936,12 +2152,20 @@ export async function updateManagedCampaignControls(
       input.inmailCreditCap > 10000)
   )
     throw new Error('Campaign InMail credit cap must be a whole number from 0 to 10000.');
+  if (
+    input.enrichmentCreditCap != null &&
+    (!Number.isInteger(input.enrichmentCreditCap) ||
+      input.enrichmentCreditCap < 0 ||
+      input.enrichmentCreditCap > 100000)
+  )
+    throw new Error('Campaign enrichment credit cap must be a whole number from 0 to 100000.');
   const timestamp = now.toISOString();
   await db
     .prepare(
       `UPDATE linkedin_campaigns SET
        priority=COALESCE(?,priority),
        admission_policy_json=COALESCE(?::jsonb,admission_policy_json),
+       exclusion_policy_json=COALESCE(?::jsonb,exclusion_policy_json),
        sender_keys_json=COALESCE(?::jsonb,sender_keys_json),
        mailbox_assignments_json=COALESCE(?::jsonb,mailbox_assignments_json),
        seat_key=COALESCE(?,seat_key),
@@ -1951,7 +2175,8 @@ export async function updateManagedCampaignControls(
        schedule_start_minute=CASE WHEN ?::boolean THEN ? ELSE schedule_start_minute END,
        schedule_end_minute=CASE WHEN ?::boolean THEN ? ELSE schedule_end_minute END,
        end_behavior=COALESCE(?,end_behavior),
-       inmail_credit_cap=CASE WHEN ?::boolean THEN ? ELSE inmail_credit_cap END,updated_at=?
+       inmail_credit_cap=CASE WHEN ?::boolean THEN ? ELSE inmail_credit_cap END,
+       enrichment_credit_cap=CASE WHEN ?::boolean THEN ? ELSE enrichment_credit_cap END,updated_at=?
      WHERE workspace_id=? AND id=?`
     )
     .run(
@@ -1963,6 +2188,7 @@ export async function updateManagedCampaignControls(
             ? -1
             : 0,
       input.admissionPolicy === undefined ? null : JSON.stringify(input.admissionPolicy),
+      input.exclusionPolicy === undefined ? null : JSON.stringify(input.exclusionPolicy),
       senderKeys === null ? null : JSON.stringify(senderKeys),
       input.mailboxAssignments === undefined ? null : JSON.stringify(input.mailboxAssignments),
       senderKeys?.[0] ?? null,
@@ -1979,10 +2205,14 @@ export async function updateManagedCampaignControls(
       input.schedule?.endBehavior ?? null,
       input.inmailCreditCap !== undefined,
       input.inmailCreditCap ?? null,
+      input.enrichmentCreditCap !== undefined,
+      input.enrichmentCreditCap ?? null,
       timestamp,
       workspaceId,
       campaignId
     );
+  if (input.exclusionPolicy !== undefined)
+    await reevaluateCampaignExclusions(db, workspaceId, campaignId, now);
   return (await getManagedCampaign(db, workspaceId, campaignId)) as ManagedCampaign;
 }
 
@@ -2028,7 +2258,9 @@ export async function duplicateManagedCampaign(
       priority: campaign.priority,
       admissionPolicy: campaign.admissionPolicy,
       exclusionPolicy: campaign.exclusionPolicy,
-      schedule: campaign.schedule
+      schedule: campaign.schedule,
+      inmailCreditCap: campaign.inmailCreditCap,
+      enrichmentCreditCap: campaign.enrichmentCreditCap
     },
     now
   );
@@ -3017,6 +3249,14 @@ export interface CampaignOperationalAnalytics {
     limitingKind: string | null;
     reason: string;
   };
+  channels: {
+    emailSent: number;
+    emailReplied: number;
+    enrichmentAttempts: number;
+    enrichmentFound: number;
+    enrichmentCreditsUsed: number;
+    enrichmentCreditCap: number | null;
+  };
   admissionForecast: CampaignAdmissionForecast;
 }
 
@@ -3169,6 +3409,24 @@ export async function campaignOperationalAnalytics(
     )
     .all<Record<string, string | number>>(workspaceId, campaignId);
 
+  const channelStats = await db
+    .prepare(
+      `SELECT
+      COUNT(*) FILTER (WHERE kind='email' AND status='sent')::int AS email_sent,
+      COUNT(*) FILTER (WHERE kind='find_email' AND status IN ('sent','failed','unknown'))::int AS enrichment_attempts,
+      COUNT(*) FILTER (WHERE kind='find_email' AND status='sent' AND external_ref LIKE 'email:%' AND external_ref<>'email:not-found')::int AS enrichment_found,
+      COALESCE(SUM(credits_used) FILTER (WHERE kind='find_email'),0)::int AS enrichment_credits_used
+      FROM linkedin_campaign_channel_actions WHERE workspace_id=? AND campaign_id=?`
+    )
+    .get<Record<string, number>>(workspaceId, campaignId);
+  const emailReplyStats = await db
+    .prepare(
+      `SELECT COUNT(DISTINCT ca.id)::int AS total FROM linkedin_campaign_channel_actions ca
+      JOIN linkedin_campaign_email_events ee ON ee.workspace_id=ca.workspace_id AND ee.channel_action_id=ca.id
+      WHERE ca.workspace_id=? AND ca.campaign_id=? AND ca.kind='email' AND ee.event_kind='replied'`
+    )
+    .get<{ total: number }>(workspaceId, campaignId);
+
   const queues = await campaignQueueSummary(db, workspaceId, campaignId, now);
   const latestWave = waveRows[0] ?? null;
   const capacity = latestWave?.capacitySnapshot ?? {};
@@ -3267,6 +3525,14 @@ export async function campaignOperationalAnalytics(
       failedMembers: queues.failed,
       limitingKind,
       reason
+    },
+    channels: {
+      emailSent: Number(channelStats?.email_sent ?? 0),
+      emailReplied: Number(emailReplyStats?.total ?? 0),
+      enrichmentAttempts: Number(channelStats?.enrichment_attempts ?? 0),
+      enrichmentFound: Number(channelStats?.enrichment_found ?? 0),
+      enrichmentCreditsUsed: Number(channelStats?.enrichment_credits_used ?? 0),
+      enrichmentCreditCap: campaign.enrichmentCreditCap
     },
     admissionForecast
   };

@@ -1672,6 +1672,7 @@ export async function previewLinkedInManagedCampaign(input: {
   senderKeys?: string[];
   mailboxAssignments?: Record<string, string>;
   inmailCreditCap?: number | null;
+  enrichmentCreditCap?: number | null;
   leadListId: string;
   workflowId: string;
   admissionPolicy?: ManagedCampaign['admissionPolicy'];
@@ -1690,6 +1691,7 @@ export async function createLinkedInManagedCampaign(input: {
   senderKeys?: string[];
   mailboxAssignments?: Record<string, string>;
   inmailCreditCap?: number | null;
+  enrichmentCreditCap?: number | null;
   leadListId: string;
   workflowId: string;
   priority?: ManagedCampaign['priority'];
@@ -1727,9 +1729,11 @@ export async function updateLinkedInCampaignControls(
   input: {
     priority?: ManagedCampaign['priority'];
     admissionPolicy?: ManagedCampaign['admissionPolicy'];
+    exclusionPolicy?: ManagedCampaign['exclusionPolicy'];
     senderKeys?: string[];
     mailboxAssignments?: Record<string, string>;
     inmailCreditCap?: number | null;
+    enrichmentCreditCap?: number | null;
     schedule?: Partial<ManagedCampaign['schedule']>;
   }
 ): Promise<ManagedCampaign> {

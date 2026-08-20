@@ -11,9 +11,11 @@ import {
   enrolNewContacts,
   listCampaignMembers,
   managedAnalytics,
+  pauseManagedCampaign,
   previewManagedCampaignLaunch,
   releaseSeatWork,
-  startManagedCampaign
+  startManagedCampaign,
+  updateManagedCampaignControls
 } from './managed-campaigns.js';
 import { upsertSeat } from './seats.js';
 import { saveWorkflow } from './workflows.js';
@@ -454,6 +456,151 @@ describe('signal-backed live audiences', () => {
   });
 });
 
+describe('shared campaign exclusion re-evaluation', () => {
+  it('uses the same explainable policy for creation, dynamic arrivals, and paused edits', async () => {
+    const blockedList = await createLeadList(
+      db,
+      { workspaceId: WORKSPACE, name: 'Blocked list' },
+      NOW
+    );
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        listId: blockedList.id,
+        csv: [
+          'First Name,Last Name,Company,Email,LinkedIn URL',
+          'Blocked,List,Acme,blocked@ok.test,https://www.linkedin.com/in/blocked-list/'
+        ].join('\n')
+      },
+      NOW
+    );
+    const main = await createLeadList(
+      db,
+      { workspaceId: WORKSPACE, name: 'Main exclusion audience' },
+      NOW
+    );
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        listId: main.id,
+        csv: [
+          'First Name,Last Name,Company,Email,LinkedIn URL',
+          'Blocked,List,Acme,blocked@ok.test,https://www.linkedin.com/in/blocked-list/',
+          'Domain,Blocked,Acme,domain@blocked.test,https://www.linkedin.com/in/domain-blocked/',
+          'Duplicate,One,Acme,dup1@ok.test,https://www.linkedin.com/in/duplicate-person/?trk=one',
+          'Duplicate,Two,Acme,dup2@ok.test,https://www.linkedin.com/in/other-duplicate/',
+          'Connected,Known,Acme,connected@ok.test,https://www.linkedin.com/in/known-connected/',
+          'Good,Lead,Acme,good@ok.test,https://www.linkedin.com/in/good-lead/'
+        ].join('\n')
+      },
+      NOW
+    );
+    await db
+      .prepare(
+        `UPDATE linkedin_lead_contacts
+         SET profile_url=?
+         WHERE workspace_id=? AND email='dup2@ok.test'`
+      )
+      .run('https://www.linkedin.com/in/duplicate-person/?trk=two', WORKSPACE);
+    await recordAction(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/known-connected/?trk=history',
+        status: 'accepted',
+        source: 'export'
+      },
+      NOW
+    );
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Exclusion campaign',
+        leadListId: main.id,
+        workflowId: await workflow('Exclusion flow'),
+        exclusionPolicy: {
+          suppressedDomains: ['blocked.test'],
+          excludedLeadListIds: [blockedList.id],
+          excludeDuplicateProfiles: true,
+          excludeKnownConnected: true
+        }
+      },
+      NOW
+    );
+    const members = await listCampaignMembers(db, WORKSPACE, created.campaign.id);
+    const byProfile = new Map(members.map((member) => [member.profileUrl ?? '', member]));
+    expect(byProfile.get('https://www.linkedin.com/in/blocked-list/')?.exclusionReason).toBe(
+      'Member of an excluded lead list'
+    );
+    expect(byProfile.get('https://www.linkedin.com/in/domain-blocked/')?.exclusionReason).toBe(
+      'Suppressed email domain'
+    );
+    expect(
+      members.filter((member) => member.exclusionReason === 'Duplicate LinkedIn profile URL')
+    ).toHaveLength(1);
+    expect(byProfile.get('https://www.linkedin.com/in/known-connected/')?.exclusionReason).toBe(
+      'Known LinkedIn connection excluded'
+    );
+    expect(byProfile.get('https://www.linkedin.com/in/good-lead/')?.status).toBe('pending');
+
+    await startManagedCampaign(db, WORKSPACE, created.campaign.id, NOW);
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        listId: main.id,
+        csv: [
+          'First Name,Last Name,Company,Email,LinkedIn URL',
+          'Dynamic,Blocked,Acme,new@blocked.test,https://www.linkedin.com/in/dynamic-blocked/'
+        ].join('\n')
+      },
+      NOW
+    );
+    expect(
+      await enrolNewContacts(
+        db,
+        WORKSPACE,
+        {
+          id: created.campaign.id,
+          leadListId: main.id,
+          steps: await campaignWorkflowSteps(db, WORKSPACE, created.campaign.id)
+        },
+        NOW
+      )
+    ).toBe(0);
+    expect(
+      (await listCampaignMembers(db, WORKSPACE, created.campaign.id)).find((member) =>
+        member.profileUrl?.includes('/dynamic-blocked/')
+      )?.exclusionReason
+    ).toBe('Suppressed email domain');
+
+    await pauseManagedCampaign(db, WORKSPACE, created.campaign.id, NOW);
+    await updateManagedCampaignControls(
+      db,
+      WORKSPACE,
+      created.campaign.id,
+      {
+        exclusionPolicy: {
+          suppressedDomains: ['blocked.test', 'ok.test'],
+          excludedLeadListIds: [blockedList.id],
+          excludeDuplicateProfiles: true,
+          excludeKnownConnected: true
+        }
+      },
+      NOW
+    );
+    expect(
+      (await listCampaignMembers(db, WORKSPACE, created.campaign.id)).find((member) =>
+        member.profileUrl?.includes('/good-lead/')
+      )?.exclusionReason
+    ).toBe('Suppressed email domain');
+  });
+});
+
 describe('capacity-weighted sender assignment', () => {
   it('assigns a new wave proportionally to sender capacity and persists the choice', async () => {
     await upsertSeat(
@@ -589,6 +736,57 @@ describe('campaign admission forecasting', () => {
     expect(forecast.failureRate).toBeCloseTo(0.15);
     expect(forecast.throttle).toBe(0.5);
     expect(forecast.reasons.join(' ')).toContain('recent execution outcomes');
+  });
+
+  it('previews provider enrichment credits separately from emails already on the list', async () => {
+    const list = await createLeadList(
+      db,
+      { workspaceId: WORKSPACE, name: 'Enrichment preview' },
+      NOW
+    );
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,One,Acme,maya@example.com,https://linkedin.com/in/maya-preview\nJon,Two,Acme,,https://linkedin.com/in/jon-preview\n'
+      },
+      NOW
+    );
+    const wf = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Find email preview',
+        steps: [
+          {
+            id: 'find',
+            action: 'find_email',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { providerId: 'provider', refresh: false }
+          },
+          {
+            id: 'end',
+            action: 'end',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { outcome: 'completed' }
+          }
+        ]
+      },
+      NOW
+    );
+    const preview = await previewManagedCampaignLaunch(
+      db,
+      { workspaceId: WORKSPACE, leadListId: list.id, workflowId: wf.id, enrichmentCreditCap: 0 },
+      NOW
+    );
+    expect(preview.enrichmentCredits).toEqual({
+      required: 1,
+      alreadyAvailable: 1,
+      estimatedProviderLookups: 1,
+      cap: 0,
+      capped: true
+    });
   });
 
   it('warns before launch when selected-list merge coverage is materially incomplete', async () => {

@@ -159,6 +159,7 @@ interface StoreHarness {
   claimed: string[];
   released: Array<{ id: string; failureKind: string | null }>;
   sent: string[];
+  inviteStates: Array<{ id: string; state: 'accepted' | 'pending' }>;
   skipped: Array<{ id: string; failureKind: string }>;
   branchSkipped: Array<{ id: string; reason: string }>;
   held: Array<{ id: string; failureKind: string }>;
@@ -199,6 +200,7 @@ function fakeStore(
     claimed: [],
     released: [],
     sent: [],
+    inviteStates: [],
     skipped: [],
     branchSkipped: [],
     held: [],
@@ -244,6 +246,9 @@ function fakeStore(
       hasUnacceptedInvite: async () => options.unacceptedInvite === true,
       settleSent: async (id) => {
         harness.sent.push(id);
+      },
+      settleExistingInvite: async (id, state) => {
+        harness.inviteStates.push({ id, state });
       },
       settleSkipped: async (id, failureKind) => {
         harness.skipped.push({ id, failureKind });
@@ -1045,6 +1050,26 @@ describe('what LinkedIn says stops the batch', () => {
 
     expect(calls).toHaveLength(0);
     expect(result.haltReason).toMatch(/no LinkedIn seat/i);
+  });
+
+  it('maps existing invite state without taking the wrong branch', async () => {
+    for (const [failureKind, state] of [
+      ['already_connected', 'accepted'],
+      ['already_pending', 'pending']
+    ] as const) {
+      const harness = fakeStore([action({ id: `lact_${state}`, kind: 'invite' })]);
+      const { driver } = fakeDriver(() => ({ ok: false, failureKind }));
+      const result = await runLinkedInLocalBatch(harness.store, {
+        driver,
+        page,
+        sleep: noSleep,
+        log: () => {},
+        evaluate: async () => verdict()
+      });
+      expect(result.failed).toBe(1);
+      expect(harness.inviteStates).toEqual([{ id: `lact_${state}`, state }]);
+      expect(harness.skipped).toEqual([]);
+    }
   });
 
   it('settles a definite failure and carries on', async () => {

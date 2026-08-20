@@ -554,6 +554,8 @@ export interface LocalWorkerStore {
     now: Date,
     metadata?: Record<string, unknown>
   ): Promise<void>;
+  /** Record positive invite state discovered before any send attempt. */
+  settleExistingInvite(actionId: string, state: 'accepted' | 'pending', now: Date): Promise<void>;
   /**
    * File a reply's own words into its conversation the moment it lands, off
    * the SAME re-read `runLinkedInLocalBatch` just took, so the thread shows
@@ -1405,7 +1407,27 @@ export async function runLinkedInLocalBatch(
       break;
     }
 
-    if (failureKind === 'not_found' || failureKind === 'already_connected') {
+    if (action.kind === 'invite' && failureKind === 'already_connected') {
+      // Positive 1st-degree evidence. No invite was sent, but the condition an
+      // invite step is trying to establish is already true, so file the step as
+      // accepted and let Accepted branches read the correct fact.
+      await store.settleExistingInvite(action.id, 'accepted', at);
+      continue;
+    }
+
+    if (action.kind === 'invite' && failureKind === 'already_pending') {
+      // An existing pending invite is "not yet", never "no". Keep the action
+      // result in a sent-like state so acceptance monitors wait rather than
+      // taking the Not Accepted path immediately.
+      await store.settleExistingInvite(action.id, 'pending', at);
+      continue;
+    }
+
+    if (
+      failureKind === 'not_found' ||
+      failureKind === 'already_connected' ||
+      failureKind === 'already_pending'
+    ) {
       // Definite, and no retry will change it. 'skipped' keeps it out of every
       // rolling window (it never happened) and releases the target, which is
       // what the ledger's replay guard treats 'skipped' as meaning.
@@ -2002,6 +2024,28 @@ export function postgresLocalWorkerStore(
           externalRef,
           metadata?.paidCreditConsumed === true,
           JSON.stringify(metadata ?? {}),
+          actionId,
+          workspaceId
+        );
+    },
+
+    async settleExistingInvite(actionId, state, now) {
+      await db
+        .prepare(
+          `UPDATE linkedin_actions
+           SET status=?, recorded_at=COALESCE(recorded_at,?::timestamptz), failure_kind=NULL,
+               channel_metadata_json=channel_metadata_json || ?::jsonb,
+               claimed_at=NULL,claimed_by=NULL,lease_expires_at=NULL
+           WHERE id=? AND workspace_id=? AND kind='invite'`
+        )
+        .run(
+          state === 'accepted' ? 'accepted' : 'sent',
+          now.toISOString(),
+          JSON.stringify(
+            state === 'accepted'
+              ? { preexistingConnection: true }
+              : { preexistingPendingInvite: true }
+          ),
           actionId,
           workspaceId
         );

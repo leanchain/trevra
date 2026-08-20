@@ -319,6 +319,7 @@ export function LinkedInManagerCampaignConfig({
   const [senderKeys, setSenderKeys] = useState<string[]>(activeSeatKey ? [activeSeatKey] : []);
   const [mailboxAssignments, setMailboxAssignments] = useState<Record<string, string>>({});
   const [inmailCreditCap, setInmailCreditCap] = useState<number | ''>('');
+  const [enrichmentCreditCap, setEnrichmentCreditCap] = useState<number | ''>('');
   const [priority, setPriority] = useState<ManagedCampaign['priority']>('normal');
   const [maxWaveSize, setMaxWaveSize] = useState<number | ''>('');
   const [maxNewLeadsPerDay, setMaxNewLeadsPerDay] = useState<number | ''>('');
@@ -418,6 +419,8 @@ export function LinkedInManagerCampaignConfig({
   const workflow = workflows.find((candidate) => candidate.id === workflowId) ?? null;
   const workflowNeedsEmail = workflow?.steps.some((step) => step.action === 'email') ?? false;
   const workflowNeedsInmail = workflow?.steps.some((step) => step.action === 'inmail') ?? false;
+  const workflowNeedsFindEmail =
+    workflow?.steps.some((step) => step.action === 'find_email') ?? false;
 
   useEffect(() => {
     if (nameTouched || !list || !workflow) return;
@@ -463,7 +466,8 @@ export function LinkedInManagerCampaignConfig({
         leadListId: listId,
         workflowId,
         senderKeys,
-        admissionPolicy
+        admissionPolicy,
+        enrichmentCreditCap: enrichmentCreditCap === '' ? null : enrichmentCreditCap
       })
         .then((preview) => {
           if (live) setLaunchPreview(preview);
@@ -528,6 +532,10 @@ export function LinkedInManagerCampaignConfig({
     warnings.push(
       'This workflow contains InMail, but one or more selected LinkedIn accounts are not marked InMail-capable.'
     );
+  if (workflowNeedsFindEmail && launchPreview?.enrichmentCredits.capped)
+    warnings.push(
+      `The Find Email stage is estimated to need ${launchPreview.enrichmentCredits.estimatedProviderLookups} provider credit(s), above the campaign cap of ${launchPreview.enrichmentCredits.cap ?? 0}. Leads beyond the cap will take the Email not found/failure path until the cap is raised while paused.`
+    );
 
   const create = async () => {
     if (!name.trim() || !listId || !workflowId) return;
@@ -547,6 +555,7 @@ export function LinkedInManagerCampaignConfig({
         senderKeys,
         mailboxAssignments,
         inmailCreditCap: inmailCreditCap === '' ? null : inmailCreditCap,
+        enrichmentCreditCap: enrichmentCreditCap === '' ? null : enrichmentCreditCap,
         leadListId: listId,
         workflowId,
         priority,
@@ -820,6 +829,30 @@ export function LinkedInManagerCampaignConfig({
                     </span>
                   </label>
                 )}
+                {workflowNeedsFindEmail && (
+                  <label>
+                    Enrichment credit cap
+                    <input
+                      type="number"
+                      min={0}
+                      max={100000}
+                      value={enrichmentCreditCap}
+                      placeholder="0 — no provider credits"
+                      onChange={(event) =>
+                        setEnrichmentCreditCap(
+                          event.target.value === ''
+                            ? ''
+                            : Math.max(0, Math.trunc(Number(event.target.value) || 0))
+                        )
+                      }
+                    />
+                    <span className="li-hint">
+                      One credit is reserved only when Trevra actually calls the configured
+                      enrichment provider. Existing/imported emails cost zero.
+                    </span>
+                  </label>
+                )}
+
                 <label>
                   Campaign priority
                   <select
@@ -1046,6 +1079,26 @@ export function LinkedInManagerCampaignConfig({
                     </>
                   )}
                 </div>
+                {launchPreview && workflowNeedsFindEmail && (
+                  <div className="mgr-preview-note">
+                    <b>Email enrichment:</b> {launchPreview.enrichmentCredits.alreadyAvailable}{' '}
+                    lead(s) already have email;{' '}
+                    {launchPreview.enrichmentCredits.estimatedProviderLookups} provider lookup(s)
+                    are estimated.
+                    {launchPreview.enrichmentCredits.cap !== null && (
+                      <>
+                        {' '}
+                        Campaign cap: <b>{launchPreview.enrichmentCredits.cap}</b>.
+                      </>
+                    )}
+                    {launchPreview.enrichmentCredits.capped && (
+                      <>
+                        {' '}
+                        <b>The current cap is below the estimated demand.</b>
+                      </>
+                    )}
+                  </div>
+                )}
                 {launchPreview && launchPreview.diagnostics.length > 0 && (
                   <div className="mgr-preview-note">
                     <b>Review before launch</b>

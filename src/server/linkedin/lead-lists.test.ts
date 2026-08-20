@@ -297,6 +297,37 @@ describe('one person, one contact row, per workspace', () => {
     expect((await listLeadContacts(db, WORKSPACE_ID, second.id))[0].listId).toBe(second.id);
   });
 
+  it('records imported and manual email provenance explicitly', async () => {
+    const list = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'Provenance' }, NOW);
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Chen,Acme,imported@example.com,https://www.linkedin.com/in/maya-provenance/'
+      },
+      NOW
+    );
+    let contact = (await listLeadContacts(db, WORKSPACE_ID, list.id))[0]!;
+    expect(contact.emailProvenance).toBe('imported');
+    expect(contact.emailSource).toBe('imported');
+    contact = await updateLeadContact(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        contactId: contact.id,
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        company: contact.company,
+        email: 'manual@example.com',
+        profileUrl: contact.profileUrl
+      },
+      NOW
+    );
+    expect(contact.emailProvenance).toBe('manual');
+    expect(contact.emailSource).toBe('manual');
+  });
+
   it('deduplicates a lead that has only an email, across lists as well as inside one', async () => {
     const first = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'Emails one' }, NOW);
     const second = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'Emails two' }, NOW);

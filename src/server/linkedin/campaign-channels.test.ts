@@ -51,7 +51,11 @@ beforeEach(async () => {
 
 afterEach(async () => db?.close());
 
-async function campaignFor(steps: Parameters<typeof saveWorkflow>[1]['steps'], csv: string) {
+async function campaignFor(
+  steps: Parameters<typeof saveWorkflow>[1]['steps'],
+  csv: string,
+  options: { enrichmentCreditCap?: number | null } = {}
+) {
   const list = await createLeadList(db, { workspaceId: WORKSPACE, name: 'Leads' }, NOW);
   await importLeadCsv(db, { workspaceId: WORKSPACE, listId: list.id, csv }, NOW);
   const workflow = await saveWorkflow(
@@ -66,7 +70,8 @@ async function campaignFor(steps: Parameters<typeof saveWorkflow>[1]['steps'], c
       name: 'Channel campaign',
       leadListId: list.id,
       workflowId: workflow.id,
-      admissionPolicy: { maxWaveSize: 10 }
+      admissionPolicy: { maxWaveSize: 10 },
+      enrichmentCreditCap: options.enrichmentCreditCap
     },
     NOW
   );
@@ -113,6 +118,89 @@ describe('campaign channel executor', () => {
       )
       .get<{ total: number }>(WORKSPACE, campaignId);
     expect(count?.total).toBe(1);
+  });
+
+  it('reserves enrichment credits exactly once and blocks before the provider when the campaign cap is exhausted', async () => {
+    let hits = 0;
+    let server: Server | null = null;
+    const port = await new Promise<number>((resolve) => {
+      server = createServer((req, res) => {
+        hits += 1;
+        req.resume();
+        res.setHeader('content-type', 'application/json');
+        res.end(
+          JSON.stringify({
+            email: `found${hits}@example.com`,
+            confidence: 0.91,
+            verificationStatus: 'verified'
+          })
+        );
+      }).listen(0, '127.0.0.1', () => {
+        const address = server!.address();
+        resolve(typeof address === 'object' && address ? address.port : 0);
+      });
+    });
+    const previousUrl = process.env.TREVRA_EMAIL_ENRICHMENT_URL;
+    process.env.TREVRA_EMAIL_ENRICHMENT_URL = `http://127.0.0.1:${port}/enrich`;
+    try {
+      const campaignId = await campaignFor(
+        [
+          {
+            id: 'find',
+            action: 'find_email',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { providerId: 'test', refresh: false }
+          },
+          {
+            id: 'end',
+            action: 'end',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { outcome: 'completed' }
+          }
+        ],
+        'First Name,Last Name,Company,LinkedIn URL\nMaya,One,Acme,https://linkedin.com/in/maya-one\nJon,Two,Acme,https://linkedin.com/in/jon-two\n',
+        { enrichmentCreditCap: 1 }
+      );
+      await runManagedCampaigns(db, WORKSPACE, NOW);
+      expect(hits).toBe(1);
+      const run = await runCampaignChannelActions(db, WORKSPACE, NOW);
+      expect(run.sent).toBe(0);
+      expect(run.failed).toBe(0);
+      const rows = await db
+        .prepare(
+          `SELECT status,credits_used,last_error FROM linkedin_campaign_channel_actions WHERE workspace_id=? AND campaign_id=? AND kind='find_email' ORDER BY id`
+        )
+        .all<{ status: string; credits_used: number; last_error: string | null }>(
+          WORKSPACE,
+          campaignId
+        );
+      expect(rows.map((row) => Number(row.credits_used)).sort()).toEqual([0, 1]);
+      expect(
+        rows.some(
+          (row) => row.status === 'failed' && /credit cap reached/i.test(row.last_error ?? '')
+        )
+      ).toBe(true);
+      const enriched = await db
+        .prepare(
+          `SELECT email,email_provenance,email_confidence,email_verification_status FROM linkedin_lead_contacts WHERE workspace_id=? AND email IS NOT NULL`
+        )
+        .all<{
+          email: string;
+          email_provenance: string | null;
+          email_confidence: number | null;
+          email_verification_status: string | null;
+        }>(WORKSPACE);
+      expect(enriched).toHaveLength(1);
+      expect(enriched[0].email_provenance).toBe('enriched');
+      expect(Number(enriched[0].email_confidence)).toBeCloseTo(0.91);
+      expect(enriched[0].email_verification_status).toBe('verified');
+      await runCampaignChannelActions(db, WORKSPACE, new Date(NOW.getTime() + 60_000));
+      expect(hits).toBe(1);
+    } finally {
+      if (previousUrl === undefined) delete process.env.TREVRA_EMAIL_ENRICHMENT_URL;
+      else process.env.TREVRA_EMAIL_ENRICHMENT_URL = previousUrl;
+      await new Promise<void>((resolve) => server?.close(() => resolve()));
+    }
   });
 
   it('sends a webhook once with a stable idempotency key', async () => {

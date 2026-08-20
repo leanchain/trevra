@@ -28,6 +28,7 @@ interface ChannelRow {
   idempotency_key: string;
   connection_id: string | null;
   attempt_count: number;
+  credits_used: number;
 }
 
 function objectOf(value: unknown): Record<string, unknown> {
@@ -61,7 +62,7 @@ async function claimNext(db: Db, workspaceId: string, now: Date): Promise<Channe
            ORDER BY planned_for ASC,created_at ASC,id ASC
            FOR UPDATE SKIP LOCKED LIMIT 1
          )
-         RETURNING id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,payload_json,variant_id,idempotency_key,connection_id,attempt_count`
+         RETURNING id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,payload_json,variant_id,idempotency_key,connection_id,attempt_count,credits_used`
       )
       .get<ChannelRow>(now.toISOString(), now.toISOString(), workspaceId, now.toISOString())) ??
     null
@@ -168,6 +169,37 @@ async function executeEmail(
   });
 }
 
+async function reserveEnrichmentCredit(db: Db, row: ChannelRow, now: Date): Promise<void> {
+  if (row.credits_used > 0) return;
+  await db.transaction(async (tx) => {
+    const campaign = await tx
+      .prepare(
+        `SELECT enrichment_credit_cap FROM linkedin_campaigns WHERE workspace_id=? AND id=? FOR UPDATE`
+      )
+      .get<{ enrichment_credit_cap: number | null }>(row.workspace_id, row.campaign_id);
+    if (!campaign) throw new Error('Campaign no longer exists.');
+    const cap =
+      campaign.enrichment_credit_cap === null
+        ? 0
+        : Math.max(0, Number(campaign.enrichment_credit_cap));
+    const used = await tx
+      .prepare(
+        `SELECT COALESCE(SUM(credits_used),0)::int AS total FROM linkedin_campaign_channel_actions
+        WHERE workspace_id=? AND campaign_id=? AND kind='find_email'`
+      )
+      .get<{ total: number }>(row.workspace_id, row.campaign_id);
+    if (Number(used?.total ?? 0) >= cap)
+      throw new Error('Campaign enrichment credit cap reached; no provider lookup was attempted.');
+    const reserved = await tx
+      .prepare(
+        `UPDATE linkedin_campaign_channel_actions SET credits_used=1,updated_at=?::timestamptz
+        WHERE workspace_id=? AND id=? AND credits_used=0 RETURNING id`
+      )
+      .get<{ id: string }>(now.toISOString(), row.workspace_id, row.id);
+    if (reserved) row.credits_used = 1;
+  });
+}
+
 async function executeFindEmail(
   db: Db,
   row: ChannelRow,
@@ -176,12 +208,13 @@ async function executeFindEmail(
 ): Promise<{ provider: string; externalRef: string }> {
   const contact = await db
     .prepare(
-      `SELECT email,email_source,email_confidence,email_verification_status,first_name,last_name,company,profile_url
+      `SELECT email,email_source,email_provenance,email_confidence,email_verification_status,first_name,last_name,company,profile_url
        FROM linkedin_lead_contacts WHERE workspace_id=? AND id=?`
     )
     .get<{
       email: string | null;
       email_source: string | null;
+      email_provenance: string | null;
       email_confidence: number | null;
       email_verification_status: string | null;
       first_name: string;
@@ -191,7 +224,10 @@ async function executeFindEmail(
     }>(row.workspace_id, row.contact_id);
   if (!contact) throw new Error('Campaign contact no longer exists.');
   if (contact.email && payload.refresh !== true) {
-    return { provider: contact.email_source ?? 'existing', externalRef: `email:${contact.email}` };
+    return {
+      provider: contact.email_source ?? contact.email_provenance ?? 'existing',
+      externalRef: `email:${contact.email}`
+    };
   }
 
   const providerId = String(
@@ -202,6 +238,7 @@ async function executeFindEmail(
     // A definite no-provider result is not an unknown external side effect. It can branch cleanly.
     return { provider: providerId, externalRef: 'email:not-found' };
   }
+  await reserveEnrichmentCredit(db, row, now);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
@@ -234,7 +271,7 @@ async function executeFindEmail(
       typeof data.verificationStatus === 'string' ? data.verificationStatus.slice(0, 80) : null;
     await db
       .prepare(
-        `UPDATE linkedin_lead_contacts SET email=?,email_source=?,email_confidence=?,email_verification_status=?,updated_at=?
+        `UPDATE linkedin_lead_contacts SET email=?,email_source=?,email_provenance='enriched',email_confidence=?,email_verification_status=?,updated_at=?
          WHERE workspace_id=? AND id=?`
       )
       .run(
@@ -288,7 +325,7 @@ async function executeWebhook(
 
 function definiteFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return /HTTP 4\d\d|requires recipient|no destination|no longer exists|Connect Gmail|Connect Microsoft|cannot execute/i.test(
+  return /HTTP 4\d\d|requires recipient|no destination|no longer exists|Connect Gmail|Connect Microsoft|cannot execute|enrichment credit cap reached/i.test(
     error.message
   );
 }

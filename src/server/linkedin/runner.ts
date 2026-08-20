@@ -1348,6 +1348,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
     const manualTaskContactIds: string[] = [];
     const manualTaskStepIds: string[] = [];
     const manualTaskBodies: Array<string | null> = [];
+    const manualTaskKinds: Array<'message' | 'comment'> = [];
+    const manualTaskPostUrls: Array<string | null> = [];
     const manualTaskSeatKeys: string[] = [];
     const memberWrites = new Map<string, MemberWrite>();
 
@@ -1680,6 +1682,10 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           manualTaskContactIds.push(member.contact_id);
           manualTaskStepIds.push(step.id);
           manualTaskBodies.push(suggested);
+          manualTaskKinds.push(step.action === 'manual_comment' ? 'comment' : 'message');
+          manualTaskPostUrls.push(
+            step.action === 'manual_comment' ? (step.config.postUrl ?? null) : null
+          );
           manualTaskSeatKeys.push(senderKey);
           memberWrites.set(member.id, {
             stepIndex,
@@ -2023,9 +2029,9 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         const inserted = await tx
           .prepare(
             `INSERT INTO linkedin_manual_tasks (
-             id,workspace_id,campaign_id,member_id,contact_id,seat_key,workflow_step_id,suggested_body,status,created_at
+             id,workspace_id,campaign_id,member_id,contact_id,seat_key,workflow_step_id,suggested_body,task_kind,post_url,status,created_at
            ) SELECT * FROM unnest(
-             ?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::timestamptz[]
+             ?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::timestamptz[]
            ) ON CONFLICT DO NOTHING RETURNING id`
           )
           .all<{ id: string }>(
@@ -2037,6 +2043,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             manualTaskSeatKeys,
             manualTaskStepIds,
             manualTaskBodies,
+            manualTaskKinds,
+            manualTaskPostUrls,
             manualTaskIds.map(() => 'pending'),
             manualTaskIds.map(() => now.toISOString())
           );
