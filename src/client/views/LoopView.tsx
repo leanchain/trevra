@@ -139,7 +139,7 @@ export function LoopView({
       label: 'Find',
       value: 'Build a lead list',
       unit: 'CSV or search',
-      href: '/outreach/manager'
+      href: '/outreach'
     },
     {
       id: 'reach',
@@ -158,7 +158,7 @@ export function LoopView({
         : seatError
           ? 'unavailable'
           : 'loading',
-      href: limits ? (seat?.configured ? '/outreach/manager' : '/outreach') : null,
+      href: limits ? (seat?.configured ? '/outreach' : '/outreach/settings') : null,
       unavailable: !limits
     },
     {
@@ -202,7 +202,7 @@ export function LoopView({
         stage: 'find',
         sentence: 'Nothing is queued.',
         action: 'Start a campaign',
-        href: '/outreach/manager'
+        href: '/outreach'
       };
     return null;
   }, [limits, seat, queued, waitingCount]);
@@ -444,21 +444,21 @@ function OnboardingChecklist({
       title: 'Build one lead list',
       detail: 'Import leads or build a list from LinkedIn search.',
       cta: 'Build lead list',
-      href: '/outreach/manager'
+      href: '/outreach'
     },
     {
       done: (outreachSetup?.workflows ?? 0) > 0,
       title: 'Build one workflow',
       detail: 'Choose the outreach steps and timing.',
       cta: 'Build workflow',
-      href: '/outreach/manager'
+      href: '/outreach'
     },
     {
       done: (outreachSetup?.campaigns ?? 0) > 0,
       title: 'Create your first campaign',
       detail: 'Choose the account, lead list, and workflow.',
       cta: 'Create campaign',
-      href: '/outreach/manager'
+      href: '/outreach'
     }
   ];
   const progressReady = outreachSetup !== null;

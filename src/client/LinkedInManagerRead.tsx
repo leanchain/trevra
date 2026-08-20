@@ -1143,7 +1143,7 @@ export function OutreachManagerRead({
       leadListId: campaign.leadListId,
       workflowId: campaign.workflowId
     });
-    onNavigate('/outreach/manager/new');
+    onNavigate('/outreach/new');
   };
 
   const pendingTasks = tasks.filter((task) => task.status === 'pending');
@@ -1210,7 +1210,7 @@ export function OutreachManagerRead({
             <button
               className="primary-button"
               type="button"
-              onClick={() => onNavigate('/outreach/manager/new')}
+              onClick={() => onNavigate('/outreach/new')}
             >
               <Plus size={14} /> New campaign
             </button>
@@ -1283,7 +1283,7 @@ export function OutreachManagerRead({
               <button
                 className="primary-button"
                 type="button"
-                onClick={() => onNavigate('/outreach/manager/new')}
+                onClick={() => onNavigate('/outreach/new')}
               >
                 <Plus size={14} /> Build your first campaign
               </button>
