@@ -1,4 +1,6 @@
+import { directoryProvider } from './providers/directory.js';
 import { exaProvider } from './providers/exa.js';
+import { configuredHttpSourceProviders } from './providers/http.js';
 import { seedProvider } from './providers/seed.js';
 import type { ResearchProvider, WithheldProvider } from './types.js';
 
@@ -7,10 +9,11 @@ import type { ResearchProvider, WithheldProvider } from './types.js';
  * an in-memory map keyed by provider key, first registration wins, listings
  * sorted so they are stable.
  *
- * No table and no seed function, unlike the channel registry. Providers carry
- * no operator-tunable state -- availability is derived from a credential being
- * present, which is environment, not configuration -- so a `providers` table
- * would be a row per deploy that nobody ever writes to.
+ * Built-ins carry no operator-tunable persisted state. Deployment-owned HTTP
+ * adapters are loaded from TREVRA_SOURCE_HTTP_PROVIDERS_JSON: the workspace may
+ * select their registered key, but never supplies their endpoint or credential
+ * name. That preserves a generic provider seam without giving a tenant an SSRF
+ * or environment-secret primitive.
  */
 
 const providers = new Map<string, ResearchProvider>();
@@ -33,7 +36,12 @@ export function listProviders(): ResearchProvider[] {
 /** The always-works default, so sourcing never depends on a vendor relationship. */
 export const DEFAULT_PROVIDER_KEY = 'seed';
 
-for (const provider of [seedProvider, exaProvider]) {
+for (const provider of [
+  seedProvider,
+  directoryProvider,
+  exaProvider,
+  ...configuredHttpSourceProviders()
+]) {
   registerProvider(provider);
 }
 

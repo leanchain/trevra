@@ -10,17 +10,22 @@ import {
   ThumbsDown
 } from 'lucide-react';
 import {
+  getAccountSourceProviders,
   getRankedAccounts,
   importAccounts,
   rescoreAccounts,
   sendAccountFeedback,
+  sourceAccounts,
   type AccountImportResult,
   type AccountScore,
   type AccountSource,
+  type AccountSourceProvider,
+  type AccountSourceRunResult,
   type RankedAccount
 } from './api';
 import { errorMessage } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
+import { prepareAccountFiles } from './account-file-import';
 
 /**
  * A fold on `/outreach` ("Target accounts") -- the ranked target-company list,
@@ -116,6 +121,13 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
   const [importing, setImporting] = useState(false);
   /** The last import, kept on screen until the next one replaces it. */
   const [result, setResult] = useState<AccountImportResult | null>(null);
+  const [fileSummary, setFileSummary] = useState('');
+  const [sourceProviders, setSourceProviders] = useState<AccountSourceProvider[]>([]);
+  const [sourceProvider, setSourceProvider] = useState('directory');
+  const [sourceKeywords, setSourceKeywords] = useState('');
+  const [sourceUrls, setSourceUrls] = useState('');
+  const [sourcing, setSourcing] = useState(false);
+  const [sourceRun, setSourceRun] = useState<AccountSourceRunResult | null>(null);
 
   /** The row whose reasoning is open. One at a time; the panel is long. */
   const [openId, setOpenId] = useState<string | null>(null);
@@ -144,9 +156,26 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     void load();
   }, [load]);
 
+  useEffect(() => {
+    void getAccountSourceProviders()
+      .then((providers) => {
+        const discoveryProviders = providers.filter((provider) => provider.key !== 'seed');
+        setSourceProviders(discoveryProviders);
+        const preferred =
+          discoveryProviders.find(
+            (provider) => provider.key === 'directory' && provider.availability.mode === 'ready'
+          ) ??
+          discoveryProviders.find(
+            (provider) => provider.retention === 'default' && provider.availability.mode === 'ready'
+          );
+        if (preferred) setSourceProvider(preferred.key);
+      })
+      .catch(() => undefined);
+  }, []);
+
   const runImport = async () => {
     if (!text.trim()) {
-      setError('Paste at least one domain, one per line.');
+      setError('Paste a company list or choose a file/folder first.');
       return;
     }
     setImporting(true);
@@ -157,7 +186,10 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       setShowAddMore(true);
       // The paste is cleared only when something came of it. A list that was
       // entirely rejected is the operator's data and their next edit.
-      if (imported.created > 0) setText('');
+      if (imported.created > 0) {
+        setText('');
+        setFileSummary('');
+      }
       setToast(
         imported.created > 0
           ? `${imported.created} account(s) added.`
@@ -172,21 +204,75 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
   };
 
   /**
-   * A dropped file is read HERE and lands in the textarea, unparsed.
+   * Files are prepared in the browser before the account-import request.
    *
-   * The operator sees the exact text that is about to be sent, which is the
-   * same contract the paste has -- a file that silently became 500 rows the
-   * moment it touched the page would be the one import nobody could check.
+   * A single file stays transparent in the textarea. A folder is reduced to
+   * compact company manifests locally, so product/catalog artifacts never leave
+   * the browser just because they live beside `domain_summary.json`.
    */
-  const onDrop = async (event: React.DragEvent<HTMLTextAreaElement>) => {
-    const file = event.dataTransfer.files?.[0];
-    if (!file) return;
-    event.preventDefault();
+  const readImportFiles = async (files: readonly File[], mode: 'file' | 'folder') => {
     try {
-      setText(await file.text());
+      const prepared = await prepareAccountFiles(files, mode);
+      setText(prepared.text);
+      setFileSummary(prepared.summary);
       setSource('csv');
-    } catch {
-      setError('Could not read that file. Paste its contents instead.');
+      setError('');
+    } catch (err) {
+      setFileSummary('');
+      setError(errorMessage(err, 'Could not read that upload.'));
+    }
+  };
+
+  const onDrop = async (event: React.DragEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.dataTransfer.files ?? []);
+    if (files.length === 0) return;
+    event.preventDefault();
+    await readImportFiles(files, files.length === 1 ? 'file' : 'folder');
+  };
+
+  const runSource = async () => {
+    const provider = sourceProviders.find((item) => item.key === sourceProvider);
+    if (!provider) {
+      setError('Choose an available source provider.');
+      return;
+    }
+    if (provider.availability.mode !== 'ready') {
+      setError(provider.availability.reason);
+      return;
+    }
+    if (provider.retention === 'none') {
+      setError(
+        `${provider.name} results cannot be persisted into Trevra under this provider's retention rule.`
+      );
+      return;
+    }
+    const urls = sourceUrls
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const keywords = sourceKeywords
+      .split(/[\n,]/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (provider.key === 'directory' && urls.length === 0) {
+      setError('Add at least one public directory URL.');
+      return;
+    }
+    setSourcing(true);
+    setError('');
+    try {
+      const sourced = await sourceAccounts({ provider: provider.key, urls, keywords, limit: 100 });
+      setSourceRun(sourced);
+      setToast(
+        sourced.import.created > 0
+          ? `${sourced.import.created} sourced account(s) added.`
+          : `${sourced.found} candidate(s) found; all usable accounts were already present.`
+      );
+      await load();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to source accounts'));
+    } finally {
+      setSourcing(false);
     }
   };
 
@@ -279,14 +365,19 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
             <div className="page-panel">
               <AddAccountsForm
                 text={text}
-                setText={setText}
+                setText={(value) => {
+                  setText(value);
+                  setFileSummary('');
+                }}
                 importing={importing}
                 source={source}
                 setSource={setSource}
                 onDrop={onDrop}
+                onFiles={(files, mode) => void readImportFiles(files, mode)}
+                fileSummary={fileSummary}
                 runImport={runImport}
                 heading="Add more accounts"
-                subheading="One domain per line. Existing accounts are skipped."
+                subheading="Paste a list, choose a file, or choose a folder. Existing accounts are skipped."
               />
               {result && <ImportReport result={result} />}
             </div>
@@ -296,24 +387,51 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
         <section className="page-panel">
           <AddAccountsForm
             text={text}
-            setText={setText}
+            setText={(value) => {
+              setText(value);
+              setFileSummary('');
+            }}
             importing={importing}
             source={source}
             setSource={setSource}
             onDrop={onDrop}
+            onFiles={(files, mode) => void readImportFiles(files, mode)}
+            fileSummary={fileSummary}
             runImport={runImport}
             heading="Start with the list you already have"
-            subheading="One domain per line. Accounts are scored after their sites are read."
+            subheading="Paste a list, choose a file, or choose a folder. Accounts are scored after their sites are read."
           />
           {result && <ImportReport result={result} />}
           {!loading && !result && (
             <div className="empty-state">
               <Building2 size={26} />
               <h4 aria-level={3}>No accounts yet</h4>
-              <p>Imported accounts will appear here.</p>
+              <p>Imported or sourced accounts will appear here.</p>
             </div>
           )}
         </section>
+      )}
+
+      {sourceProviders.length > 0 && (
+        <details className="mgr-inputs acc-source-panel">
+          <summary>Find accounts from a source</summary>
+          <div className="mgr-inputs-body">
+            <section className="page-panel">
+              <SourceAccountsForm
+                providers={sourceProviders}
+                providerKey={sourceProvider}
+                setProviderKey={setSourceProvider}
+                keywords={sourceKeywords}
+                setKeywords={setSourceKeywords}
+                urls={sourceUrls}
+                setUrls={setSourceUrls}
+                sourcing={sourcing}
+                runSource={runSource}
+                result={sourceRun}
+              />
+            </section>
+          </div>
+        </details>
       )}
     </div>
   );
@@ -332,6 +450,8 @@ function AddAccountsForm({
   source,
   setSource,
   onDrop,
+  onFiles,
+  fileSummary,
   runImport,
   heading,
   subheading
@@ -342,6 +462,8 @@ function AddAccountsForm({
   source: AccountSource;
   setSource: (value: AccountSource) => void;
   onDrop: (event: React.DragEvent<HTMLTextAreaElement>) => void;
+  onFiles: (files: File[], mode: 'file' | 'folder') => void;
+  fileSummary: string;
   runImport: () => void;
   heading: string;
   subheading: string;
@@ -357,7 +479,7 @@ function AddAccountsForm({
       </div>
 
       <label className="li-block-label acc-paste">
-        Paste domains, one per line — or drop a CSV
+        Paste domains, CSV, or JSON — or drop a file
         <textarea
           rows={7}
           value={text}
@@ -368,7 +490,45 @@ function AddAccountsForm({
           placeholder={'kestrel.dev\nacme.io\nhttps://www.northwind.co.uk/pricing'}
         />
       </label>
-      <p className="li-hint">URLs are normalized to the domain.</p>
+      <div className="acc-file-row">
+        <label className="secondary-button acc-file-button">
+          <FileUp size={14} /> Choose file
+          <input
+            type="file"
+            accept=".csv,.json,.txt,text/csv,application/json,text/plain"
+            disabled={importing}
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              if (files.length > 0) onFiles(files, 'file');
+              event.currentTarget.value = '';
+            }}
+          />
+        </label>
+        <label className="secondary-button acc-file-button">
+          <FileUp size={14} /> Choose folder
+          <input
+            type="file"
+            multiple
+            disabled={importing}
+            ref={(node) => {
+              if (node) {
+                node.setAttribute('webkitdirectory', '');
+                node.setAttribute('directory', '');
+              }
+            }}
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              if (files.length > 0) onFiles(files, 'folder');
+              event.currentTarget.value = '';
+            }}
+          />
+        </label>
+        <span className="li-hint">
+          File: CSV, JSON, TXT · Folder: company JSON manifests are detected locally
+        </span>
+      </div>
+      {fileSummary && <p className="li-hint acc-file-summary">{fileSummary}</p>}
+      <p className="li-hint">URLs are normalized to the domain. Existing accounts are skipped.</p>
 
       <div className="li-form-grid acc-import-grid">
         <label>
@@ -402,6 +562,129 @@ function AddAccountsForm({
         >
           {importing ? <LoaderCircle className="spin" size={15} /> : <Building2 size={15} />} Import
           this list
+        </button>
+      </div>
+    </>
+  );
+}
+
+function SourceAccountsForm({
+  providers,
+  providerKey,
+  setProviderKey,
+  keywords,
+  setKeywords,
+  urls,
+  setUrls,
+  sourcing,
+  runSource,
+  result
+}: {
+  providers: AccountSourceProvider[];
+  providerKey: string;
+  setProviderKey: (value: string) => void;
+  keywords: string;
+  setKeywords: (value: string) => void;
+  urls: string;
+  setUrls: (value: string) => void;
+  sourcing: boolean;
+  runSource: () => void;
+  result: AccountSourceRunResult | null;
+}) {
+  const selected = providers.find((provider) => provider.key === providerKey) ?? providers[0];
+  const canPersist = Boolean(
+    selected && selected.availability.mode === 'ready' && selected.retention === 'default'
+  );
+  return (
+    <>
+      <div className="section-heading">
+        <div>
+          <h3 aria-level={2}>Source candidate companies</h3>
+          <p>
+            Every provider returns the same company shape. Nothing downstream knows which source
+            found it.
+          </p>
+        </div>
+      </div>
+
+      <div className="li-form-grid acc-source-grid">
+        <label>
+          Provider
+          <select
+            value={providerKey}
+            disabled={sourcing}
+            onChange={(event) => setProviderKey(event.target.value)}
+          >
+            {providers.map((provider) => (
+              <option key={provider.key} value={provider.key}>
+                {provider.name}
+                {provider.retention === 'none' ? ' · memory only' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Keywords
+          <input
+            value={keywords}
+            disabled={sourcing}
+            onChange={(event) => setKeywords(event.target.value)}
+            placeholder="AI visibility, ecommerce, Switzerland"
+          />
+          <small className="li-hint">
+            Comma or newline separated. Providers may ignore fields they do not need.
+          </small>
+        </label>
+      </div>
+
+      <label className="li-block-label acc-paste">
+        Public source URLs{' '}
+        {selected?.key === 'directory' ? '(required for directory crawl)' : '(optional)'}
+        <textarea
+          rows={4}
+          value={urls}
+          disabled={sourcing}
+          onChange={(event) => setUrls(event.target.value)}
+          placeholder={'https://example.com/best-companies\nhttps://example.org/directory'}
+        />
+      </label>
+
+      {selected && (
+        <p className={`li-hint${canPersist ? '' : ' acc-source-warning'}`}>
+          {selected.availability.reason}
+          {selected.retention === 'none'
+            ? ' Trevra will not persist candidates from this provider.'
+            : ''}
+        </p>
+      )}
+
+      {result && (
+        <div className="acc-source-result">
+          <p className="li-hint">
+            Run <code>{result.runId}</code> found {result.found} candidate(s) through{' '}
+            {result.providerKey}.
+          </p>
+          {result.warnings.map((warning, index) => (
+            <p className="li-hint" key={`${warning}-${index}`}>
+              {warning}
+            </p>
+          ))}
+          <ImportReport result={result.import} />
+        </div>
+      )}
+
+      <div className="panel-footer">
+        <span>
+          Source reads public/provider data and adds accounts. It never contacts a prospect.
+        </span>
+        <button
+          className="primary-button"
+          type="button"
+          disabled={sourcing || !canPersist}
+          onClick={() => void runSource()}
+        >
+          {sourcing ? <LoaderCircle className="spin" size={15} /> : <Building2 size={15} />} Find
+          accounts
         </button>
       </div>
     </>

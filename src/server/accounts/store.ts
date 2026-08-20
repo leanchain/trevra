@@ -219,7 +219,10 @@ function toScore(workspaceId: string, accountId: string, row: ScoreRow): Account
   if (row.score === null || row.computed_at === null) return null;
   let rationale = EMPTY_RATIONALE;
   try {
-    rationale = { ...EMPTY_RATIONALE, ...(JSON.parse(row.rationale_json ?? '{}') as Partial<ScoreRationale>) };
+    rationale = {
+      ...EMPTY_RATIONALE,
+      ...(JSON.parse(row.rationale_json ?? '{}') as Partial<ScoreRationale>)
+    };
   } catch {
     /* Keep the empty rationale; the number and the tier are still true. */
   }
@@ -248,7 +251,16 @@ function toScore(workspaceId: string, accountId: string, row: ScoreRow): Account
  * than stored and marked broken later, because the operator who pasted a
  * staging hostname wants to be told now, in the import summary, not in a week.
  */
-const NON_PUBLIC_SUFFIXES = new Set(['localhost', 'local', 'internal', 'lan', 'home', 'test', 'invalid', 'localdomain']);
+const NON_PUBLIC_SUFFIXES = new Set([
+  'localhost',
+  'local',
+  'internal',
+  'lan',
+  'home',
+  'test',
+  'invalid',
+  'localdomain'
+]);
 
 /**
  * A host that survived permissive parsing: dot-separated labels of ASCII
@@ -439,7 +451,10 @@ function headerTokens(cell: string): string[] {
 function isHeaderCell(cell: string): boolean {
   const tokens = headerTokens(cell);
   if (tokens.length === 0) return false;
-  return tokens.every((token) => HEADER_VOCABULARY.has(token)) && tokens.some((token) => HEADER_KEYWORDS.includes(token));
+  return (
+    tokens.every((token) => HEADER_VOCABULARY.has(token)) &&
+    tokens.some((token) => HEADER_KEYWORDS.includes(token))
+  );
 }
 
 /** Which column holds what. `-1` means "not named", which is the common case. */
@@ -466,7 +481,9 @@ function mapColumns(cells: string[]): ColumnMap {
   const claimed = new Set<number>();
   const claim = (...words: string[]): number => {
     for (const word of words) {
-      const index = tokens.findIndex((cell, position) => !claimed.has(position) && cell.includes(word));
+      const index = tokens.findIndex(
+        (cell, position) => !claimed.has(position) && cell.includes(word)
+      );
       if (index >= 0) {
         claimed.add(index);
         return index;
@@ -518,7 +535,10 @@ function looksLikeLinkedIn(value: string): boolean {
  * dialog.
  */
 function rowFrom(fields: string[], columns: ColumnMap): AccountImportRow | null {
-  const linkedinIndex = columns.linkedin >= 0 ? columns.linkedin : fields.findIndex((field) => looksLikeLinkedIn(field));
+  const linkedinIndex =
+    columns.linkedin >= 0
+      ? columns.linkedin
+      : fields.findIndex((field) => looksLikeLinkedIn(field));
 
   let domainIndex = -1;
   let domain: string | null = null;
@@ -553,7 +573,13 @@ function rowFrom(fields: string[], columns: ColumnMap): AccountImportRow | null 
   let name = columns.name >= 0 ? (fields[columns.name] ?? '').trim() : '';
   if (!name) {
     name = fields
-      .filter((_, index) => index !== domainIndex && index !== linkedinIndex && index !== columns.tags && index !== columns.name)
+      .filter(
+        (_, index) =>
+          index !== domainIndex &&
+          index !== linkedinIndex &&
+          index !== columns.tags &&
+          index !== columns.name
+      )
       .map((field) => field.trim())
       .filter(Boolean)
       .join(' ')
@@ -568,6 +594,111 @@ function rowFrom(fields: string[], columns: ColumnMap): AccountImportRow | null 
     linkedinUrl,
     tags: dedupeTags(splitTags(columns.tags >= 0 ? fields[columns.tags] : undefined))
   };
+}
+
+function parseJsonAccountImport(
+  raw: string
+): { rows: AccountImportRow[]; rejected: { line: string; reason: string }[] } | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (cause) {
+    return {
+      rows: [],
+      rejected: [
+        {
+          line: 'JSON input',
+          reason: `Could not parse JSON: ${cause instanceof Error ? cause.message : String(cause)}`
+        }
+      ]
+    };
+  }
+  const root =
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(root?.accounts)
+      ? root.accounts
+      : Array.isArray(root?.candidates)
+        ? root.candidates
+        : root
+          ? [root]
+          : [];
+  const rows: AccountImportRow[] = [];
+  const rejected: { line: string; reason: string }[] = [];
+  const seen = new Set<string>();
+  const stringField = (record: Record<string, unknown>, keys: string[]): string => {
+    for (const key of keys)
+      if (typeof record[key] === 'string' && String(record[key]).trim())
+        return String(record[key]).trim();
+    return '';
+  };
+  for (let index = 0; index < entries.length; index += 1) {
+    if (rows.length >= MAX_IMPORT_ROWS) {
+      rejected.push({
+        line: `JSON item ${index + 1}`,
+        reason: `An import is capped at ${MAX_IMPORT_ROWS} accounts. This item and ${entries.length - index - 1} after it were not read -- import the rest separately.`
+      });
+      break;
+    }
+    const entry = entries[index];
+    const record =
+      entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>)
+        : null;
+    const rawDomain =
+      typeof entry === 'string'
+        ? entry
+        : record
+          ? stringField(record, ['domain', 'website', 'url', 'site'])
+          : '';
+    const domain = looksLikeLinkedIn(rawDomain) ? null : normalizeAccountDomain(rawDomain);
+    if (!domain) {
+      const line =
+        typeof entry === 'string'
+          ? entry
+          : (() => {
+              try {
+                return JSON.stringify(entry).slice(0, 500);
+              } catch {
+                return `JSON item ${index + 1}`;
+              }
+            })();
+      rejected.push({
+        line: line || `JSON item ${index + 1}`,
+        reason: 'No public company domain was present in this JSON item.'
+      });
+      continue;
+    }
+    if (seen.has(domain)) continue;
+    seen.add(domain);
+    const rawTags = record?.tags ?? record?.labels;
+    const tags = Array.isArray(rawTags)
+      ? dedupeTags(
+          rawTags
+            .filter((value): value is string => typeof value === 'string')
+            .map((value) => value.trim())
+            .filter(Boolean)
+        )
+      : typeof rawTags === 'string'
+        ? dedupeTags(splitTags(rawTags))
+        : [];
+    const platform = record ? stringField(record, ['platform']) : '';
+    if (platform) tags.push(`platform:${platform.toLowerCase()}`);
+    const linkedinUrl = record
+      ? stringField(record, ['linkedinUrl', 'linkedin_url', 'linkedin']) || null
+      : null;
+    const name = record
+      ? stringField(record, ['name', 'company', 'account', 'organisation', 'organization']) ||
+        domain
+      : domain;
+    rows.push({ name, domain, linkedinUrl, tags });
+  }
+  return { rows, rejected };
 }
 
 /**
@@ -586,7 +717,12 @@ function rowFrom(fields: string[], columns: ColumnMap): AccountImportRow | null 
  * nothing was lost, and telling somebody their list had the same company twice
  * is noise in a summary that exists to surface the lines that DID lose data.
  */
-export function parseAccountImport(raw: string): { rows: AccountImportRow[]; rejected: { line: string; reason: string }[] } {
+export function parseAccountImport(raw: string): {
+  rows: AccountImportRow[];
+  rejected: { line: string; reason: string }[];
+} {
+  const json = parseJsonAccountImport(raw);
+  if (json) return json;
   const rejected: { line: string; reason: string }[] = [];
   const rows: AccountImportRow[] = [];
   if (typeof raw !== 'string' || !raw.trim()) return { rows, rejected };
@@ -697,7 +833,9 @@ export async function importAccounts(
     tags: dedupeTags([...row.tags, ...batchTags])
   }));
 
-  const created = await db.prepare(`
+  const created = await db
+    .prepare(
+      `
     INSERT INTO accounts
       (id, workspace_id, name, domain, linkedin_url, source, tags, status, icp_note,
        next_sweep_at, created_at, updated_at)
@@ -707,25 +845,34 @@ export async function importAccounts(
       AS r(id text, name text, domain text, linkedin_url text, tags text[])
     ON CONFLICT (workspace_id, LOWER(domain)) DO NOTHING
     RETURNING ${ACCOUNT_COLUMNS}
-  `).all<AccountRow>(
-    workspaceId,
-    opts.source,
-    opts.icpNote ?? null,
-    iso,
-    iso,
-    iso,
-    JSON.stringify(payload)
-  );
+  `
+    )
+    .all<AccountRow>(
+      workspaceId,
+      opts.source,
+      opts.icpNote ?? null,
+      iso,
+      iso,
+      iso,
+      JSON.stringify(payload)
+    );
 
   // The second and last query. `accounts` is the whole batch as it now stands,
   // new rows and the ones that were already there, because the question the
   // operator asks after an import is "what have I got", not "what did you
   // write" -- and the counts above already answer the second one.
-  const accounts = await db.prepare(`
+  const accounts = await db
+    .prepare(
+      `
     SELECT ${ACCOUNT_COLUMNS} FROM accounts
     WHERE workspace_id=? AND LOWER(domain) = ANY(?::text[])
     ORDER BY created_at DESC, id DESC
-  `).all<AccountRow>(workspaceId, rows.map((row) => row.domain));
+  `
+    )
+    .all<AccountRow>(
+      workspaceId,
+      rows.map((row) => row.domain)
+    );
 
   return {
     created: created.length,
@@ -772,33 +919,44 @@ export async function createAccount(
   }
 
   const iso = now.toISOString();
-  const inserted = await db.prepare(`
+  const inserted = await db
+    .prepare(
+      `
     INSERT INTO accounts
       (id, workspace_id, name, domain, linkedin_url, source, tags, status, icp_note,
        next_sweep_at, created_at, updated_at)
     VALUES (?,?,?,?,?,?,?::text[],'active',?,?::timestamptz,?::timestamptz,?::timestamptz)
     ON CONFLICT (workspace_id, LOWER(domain)) DO NOTHING
     RETURNING ${ACCOUNT_COLUMNS}
-  `).get<AccountRow>(
-    id('acc'),
-    workspaceId,
-    input.name?.trim() || domain,
-    domain,
-    input.linkedinUrl?.trim() || null,
-    input.source,
-    dedupeTags(input.tags ?? []),
-    input.icpNote ?? null,
-    iso,
-    iso,
-    iso
-  );
+  `
+    )
+    .get<AccountRow>(
+      id('acc'),
+      workspaceId,
+      input.name?.trim() || domain,
+      domain,
+      input.linkedinUrl?.trim() || null,
+      input.source,
+      dedupeTags(input.tags ?? []),
+      input.icpNote ?? null,
+      iso,
+      iso,
+      iso
+    );
   if (inserted) return toAccount(inserted);
 
   // The index fired. There is exactly one row it could have fired on.
-  const existing = await db.prepare(`
+  const existing = await db
+    .prepare(
+      `
     SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE workspace_id=? AND LOWER(domain)=?
-  `).get<AccountRow>(workspaceId, domain);
-  if (!existing) throw new Error(`The account for '${domain}' could not be created and no existing account claims that domain.`);
+  `
+    )
+    .get<AccountRow>(workspaceId, domain);
+  if (!existing)
+    throw new Error(
+      `The account for '${domain}' could not be created and no existing account claims that domain.`
+    );
   return toAccount(existing);
 }
 
@@ -806,10 +964,18 @@ export async function createAccount(
  * Reading accounts.
  * ------------------------------------------------------------------------ */
 
-export async function getAccount(db: Db, workspaceId: string, accountId: string): Promise<Account | null> {
-  const row = await db.prepare(`
+export async function getAccount(
+  db: Db,
+  workspaceId: string,
+  accountId: string
+): Promise<Account | null> {
+  const row = await db
+    .prepare(
+      `
     SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE workspace_id=? AND id=?
-  `).get<AccountRow>(workspaceId, accountId);
+  `
+    )
+    .get<AccountRow>(workspaceId, accountId);
   return row ? toAccount(row) : null;
 }
 
@@ -827,15 +993,23 @@ export interface ListAccountsOptions {
  * non-deterministic between two reads of the same page -- which is a paginated
  * list that drops and repeats rows as the operator scrolls.
  */
-export async function listAccounts(db: Db, workspaceId: string, opts: ListAccountsOptions = {}): Promise<Account[]> {
+export async function listAccounts(
+  db: Db,
+  workspaceId: string,
+  opts: ListAccountsOptions = {}
+): Promise<Account[]> {
   const limit = Math.max(1, Math.min(500, Math.trunc(opts.limit ?? 100)));
   const offset = Math.max(0, Math.trunc(opts.offset ?? 0));
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT ${ACCOUNT_COLUMNS} FROM accounts
     WHERE workspace_id=? AND (?::text IS NULL OR status = ?)
     ORDER BY created_at DESC, id DESC
     LIMIT ? OFFSET ?
-  `).all<AccountRow>(workspaceId, opts.status ?? null, opts.status ?? null, limit, offset);
+  `
+    )
+    .all<AccountRow>(workspaceId, opts.status ?? null, opts.status ?? null, limit, offset);
   return rows.map(toAccount);
 }
 
@@ -862,11 +1036,15 @@ export async function setAccountStatus(
   now: Date = new Date()
 ): Promise<Account | null> {
   const iso = now.toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     UPDATE accounts SET status=?, next_sweep_at=?::timestamptz, updated_at=?::timestamptz
     WHERE workspace_id=? AND id=?
     RETURNING ${ACCOUNT_COLUMNS}
-  `).get<AccountRow>(status, status === 'active' ? iso : null, iso, workspaceId, accountId);
+  `
+    )
+    .get<AccountRow>(status, status === 'active' ? iso : null, iso, workspaceId, accountId);
   return row ? toAccount(row) : null;
 }
 
@@ -923,15 +1101,24 @@ export async function recordAccountFeedback(
   now: Date = new Date()
 ): Promise<AccountFeedback> {
   const account = await getAccount(db, workspaceId, accountId);
-  if (!account) throw new Error(`No account '${accountId}' in this workspace, so there is nothing to give a verdict on.`);
+  if (!account)
+    throw new Error(
+      `No account '${accountId}' in this workspace, so there is nothing to give a verdict on.`
+    );
 
   const cutoff = new Date(now.getTime() - FEEDBACK_SHAPE_WINDOW_DAYS * 86_400_000).toISOString();
   const [kindRows, scoreRow] = await Promise.all([
-    db.prepare(`
+    db
+      .prepare(
+        `
       SELECT DISTINCT kind FROM account_signals
       WHERE workspace_id=? AND account_id=? AND observed_at >= ?::timestamptz
-    `).all<{ kind: string }>(workspaceId, accountId, cutoff),
-    db.prepare('SELECT score FROM account_scores WHERE workspace_id=? AND account_id=?').get<{ score: number }>(workspaceId, accountId)
+    `
+      )
+      .all<{ kind: string }>(workspaceId, accountId, cutoff),
+    db
+      .prepare('SELECT score FROM account_scores WHERE workspace_id=? AND account_id=?')
+      .get<{ score: number }>(workspaceId, accountId)
   ]);
 
   const signalShape = kindRows
@@ -940,24 +1127,29 @@ export async function recordAccountFeedback(
     .join(',');
 
   const iso = now.toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     INSERT INTO account_feedback
       (id, workspace_id, account_id, verdict, reason, signal_shape, score_at_verdict, created_at)
     VALUES (?,?,?,?,?,?,?,?::timestamptz)
     RETURNING id, workspace_id, account_id, verdict, reason, signal_shape, score_at_verdict, created_at
-  `).get<FeedbackRow>(
-    id('afb'),
-    workspaceId,
-    accountId,
-    input.verdict,
-    input.reason ?? null,
-    signalShape,
-    scoreRow?.score ?? null,
-    iso
-  );
+  `
+    )
+    .get<FeedbackRow>(
+      id('afb'),
+      workspaceId,
+      accountId,
+      input.verdict,
+      input.reason ?? null,
+      signalShape,
+      scoreRow?.score ?? null,
+      iso
+    );
   if (!row) throw new Error('The verdict could not be recorded.');
 
-  if (input.verdict === 'not_a_fit') await setAccountStatus(db, workspaceId, accountId, 'not_a_fit', now);
+  if (input.verdict === 'not_a_fit')
+    await setAccountStatus(db, workspaceId, accountId, 'not_a_fit', now);
   return toFeedback(row);
 }
 
@@ -983,15 +1175,23 @@ export async function recordAccountFeedback(
  * Sorted in JavaScript, for the same collation reason the shapes are built that
  * way: the scorer compares these strings, and determinism is the contract.
  */
-export async function rejectedSignalShapes(db: Db, workspaceId: string, opts: { minCount?: number } = {}): Promise<string[]> {
+export async function rejectedSignalShapes(
+  db: Db,
+  workspaceId: string,
+  opts: { minCount?: number } = {}
+): Promise<string[]> {
   const minCount = Math.max(1, Math.trunc(opts.minCount ?? 2));
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT signal_shape FROM account_feedback
     WHERE workspace_id=? AND signal_shape <> ''
     GROUP BY signal_shape
     HAVING COUNT(*) FILTER (WHERE verdict='not_a_fit') >= ?
        AND COUNT(*) FILTER (WHERE verdict='good_fit') = 0
-  `).all<{ signal_shape: string }>(workspaceId, minCount);
+  `
+    )
+    .all<{ signal_shape: string }>(workspaceId, minCount);
   return rows.map((row) => row.signal_shape).sort();
 }
 
@@ -1041,7 +1241,9 @@ export async function listRankedAccounts(
   const limit = Math.max(1, Math.min(500, Math.trunc(opts.limit ?? 50)));
   const signalLimit = Math.max(0, Math.min(50, Math.trunc(opts.signalLimit ?? 5)));
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT ${ACCOUNT_COLUMNS_QUALIFIED},
            s.score, s.tier, s.distinct_kinds, s.newest_signal_at, s.rationale_json, s.computed_at
     FROM accounts a
@@ -1051,14 +1253,24 @@ export async function listRankedAccounts(
       AND (?::bool IS TRUE OR a.status = 'active')
     ORDER BY s.score DESC NULLS LAST, a.created_at DESC, a.id DESC
     LIMIT ?
-  `).all<AccountRow & ScoreRow>(workspaceId, opts.tier ?? null, opts.tier ?? null, opts.includeRejected ?? false, limit);
+  `
+    )
+    .all<AccountRow & ScoreRow>(
+      workspaceId,
+      opts.tier ?? null,
+      opts.tier ?? null,
+      opts.includeRejected ?? false,
+      limit
+    );
   if (rows.length === 0) return [];
 
   const accountIds = rows.map((row) => row.id);
   const signalRows =
     signalLimit === 0
       ? []
-      : await db.prepare(`
+      : await db
+          .prepare(
+            `
           SELECT ${SIGNAL_COLUMNS} FROM (
             SELECT ${SIGNAL_COLUMNS},
                    ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY observed_at DESC, id DESC) AS rn
@@ -1066,7 +1278,9 @@ export async function listRankedAccounts(
             WHERE workspace_id=? AND account_id = ANY(?::text[])
           ) ranked
           WHERE rn <= ?
-        `).all<SignalRow>(workspaceId, accountIds, signalLimit);
+        `
+          )
+          .all<SignalRow>(workspaceId, accountIds, signalLimit);
 
   const byAccount = new Map<string, AccountSignal[]>();
   for (const row of signalRows) {

@@ -361,6 +361,8 @@ import {
 } from './accounts/store.js';
 import { rescoreAccounts, rescoreWorkspace } from './accounts/score.js';
 import type { Account, AccountScore, AccountSignal, RankedAccount } from './accounts/types.js';
+import { listProviders as listLeadSourceProviders } from './research/registry.js';
+import { envCredentials as leadSourceCredentials } from './research/types.js';
 
 const SESSION_COOKIE = 'trevra_session';
 const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -4795,8 +4797,9 @@ export function createApp(db: Db) {
   /* ---------------------------------------------------------------------
    * Accounts (039), the noun everything else was missing.
    *
-   * FIVE ROUTES AND NO POLICY. The import parses, the sweep reads, the scorer
-   * weighs; this layer authenticates, validates, and hands the workspace id
+   * ONE ACCOUNT SPINE, MANY DOORS. File imports and source providers converge
+   * here before the sweep/scorer take over; this layer authenticates, validates,
+   * enforces provider retention before persistence, and hands the workspace id
    * over. Every number these routes return was produced by `accounts/score.ts`
    * against signals that carry the URL they were read from -- so there is
    * nothing here that could invent one, which is the point.
@@ -4817,13 +4820,89 @@ export function createApp(db: Db) {
     }
   });
 
+  app.get('/api/accounts/source-providers', async (_req: AuthedRequest, res, next) => {
+    try {
+      res.json({
+        providers: listLeadSourceProviders().map((provider) => ({
+          key: provider.key,
+          name: provider.name,
+          docsUrl: provider.docsUrl,
+          retention: provider.retention,
+          availability: provider.availability(leadSourceCredentials)
+        }))
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/accounts/source', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = accountSourceSchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const skillResult = await executeWorkspaceSkill(db, {
+        workspaceId,
+        skillId: 'gtm.source-leads',
+        payload: {
+          provider: input.provider,
+          keywords: input.keywords,
+          domains: input.domains,
+          urls: input.urls,
+          countries: input.countries,
+          vertical: input.vertical,
+          limit: input.limit
+        },
+        actorType: 'user',
+        actorId: req.auth!.userId
+      });
+      if (skillResult.run.status !== 'ok') {
+        return res.status(502).json({
+          error: skillResult.run.error ?? 'Lead sourcing failed',
+          runId: skillResult.run.id
+        });
+      }
+      const sourced = accountSourceRunOutputSchema.parse(skillResult.run.output);
+      if (sourced.retention === 'none' && sourced.candidates.length > 0) {
+        return res.status(409).json({
+          error: `Provider ${sourced.providerKey} does not permit Trevra to persist its result payload.`,
+          runId: skillResult.run.id,
+          providerKey: sourced.providerKey,
+          found: sourced.candidates.length,
+          warnings: sourced.warnings
+        });
+      }
+
+      const imported = await importAccounts(
+        db,
+        workspaceId,
+        JSON.stringify({ candidates: sourced.candidates }),
+        { source: 'sourced', tags: input.tags }
+      );
+      const rejectedShapes = await rejectedSignalShapes(db, workspaceId);
+      await rescoreAccounts(
+        db,
+        workspaceId,
+        imported.accounts.map((account) => account.id),
+        { rejectedShapes }
+      );
+      res.status(imported.created > 0 ? 201 : 200).json({
+        runId: skillResult.run.id,
+        providerKey: sourced.providerKey,
+        availability: sourced.availability,
+        found: sourced.candidates.length,
+        warnings: sourced.warnings,
+        import: imported
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   /**
    * Paste or drop a list. Door B of `docs/first-run.md` step 1.
    *
-   * The imported rows are scored immediately rather than left for the sweep,
-   * because a row with no score row at all is the screen's honest "the sweep
-   * has not run yet" -- and that sentence must be about the SWEEP, not about
-   * this request having skipped a step it could have taken.
+   * The same endpoint accepts newline text, CSV, or JSON. File bytes are read by
+   * the browser and sent as text, so the parser and persistence path stay one.
    */
   app.post('/api/accounts/import', async (req: AuthedRequest, res, next) => {
     try {
@@ -6729,6 +6808,41 @@ const accountImportSchema = z
     tags: z.array(z.string().trim().min(1).max(60)).max(20).default([])
   })
   .strict();
+
+const accountSourceSchema = z
+  .object({
+    provider: z.string().trim().min(1).max(64),
+    keywords: z.array(z.string().trim().min(1).max(200)).max(50).default([]),
+    domains: z.array(z.string().trim().min(1).max(500)).max(2000).default([]),
+    urls: z.array(z.string().url()).max(50).default([]),
+    countries: z.array(z.string().trim().min(1).max(100)).max(50).default([]),
+    vertical: z.string().trim().max(200).nullable().default(null),
+    limit: z.number().int().min(1).max(100).default(25),
+    tags: z.array(z.string().trim().min(1).max(60)).max(20).default([])
+  })
+  .strict();
+
+const accountSourceRunOutputSchema = z
+  .object({
+    providerKey: z.string(),
+    availability: z.object({
+      mode: z.enum(['ready', 'needs-credential', 'disabled']),
+      reason: z.string(),
+      docsUrl: z.string().optional()
+    }),
+    candidates: z.array(
+      z.object({
+        domain: z.string(),
+        name: z.string().nullable(),
+        description: z.string().nullable(),
+        providerKey: z.string(),
+        sourceUrl: z.string().nullable()
+      })
+    ),
+    warnings: z.array(z.string()),
+    retention: z.enum(['default', 'none'])
+  })
+  .passthrough();
 
 const accountFeedbackSchema = z
   .object({

@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import type { FetchLike } from '../skills/guard.js';
 import type { Skill, SkillEvidence, SkillRetention } from '../skills/types.js';
-import { DEFAULT_PROVIDER_KEY, WITHHELD_PROVIDERS, getProvider, listProviders } from './registry.js';
+import {
+  DEFAULT_PROVIDER_KEY,
+  WITHHELD_PROVIDERS,
+  getProvider,
+  listProviders
+} from './registry.js';
 import {
   envCredentials,
   type CandidateCompany,
@@ -16,28 +21,22 @@ import {
  *
  * The skill owns none of the sourcing logic; it picks a provider, asks it
  * whether it can honestly run, and reports what came back. That split is what
- * lets the default path (`seed`) work with no vendor at all while a credentialed
- * provider slots in without the caller changing anything.
+ * lets the default path (`seed`) work with no vendor at all while directory
+ * crawls and deployment-configured HTTP adapters slot in behind the same
+ * contract.
  *
- * Two behaviours worth knowing before calling it:
+ * An unknown provider throws: silently falling back would make one source look
+ * like another. An unavailable provider returns an explicit availability state
+ * and zero candidates, so "not configured" never masquerades as "no matches".
  *
- * An UNKNOWN provider key throws -- that is a caller error, and a run that
- * silently fell back to `seed` would look like a vendor returning nothing.
- * An UNAVAILABLE provider does NOT throw: it returns zero candidates with its
- * own `availability` attached, so "you have not set EXA_API_KEY" reads
- * differently from "Exa found nobody".
- *
- * `retention` is copied from the chosen provider onto the output, where
- * `runner.ts` reads it. A provider whose licence forbids storage produces a
- * ledger row with the payload dropped.
+ * `retention` is copied from the provider onto the output. The skill runner uses
+ * that flag to prevent licensed third-party payloads from reaching the ledger.
  */
-
 export interface SourceLeadsResult {
   providerKey: string;
   availability: ProviderAvailability;
   candidates: CandidateCompany[];
   warnings: string[];
-  /** Providers deliberately not shipped, with the clause that says why. */
   withheld: readonly WithheldProvider[];
   retention: SkillRetention;
   generatedAt: string;
@@ -46,7 +45,7 @@ export interface SourceLeadsResult {
 
 export interface SourceLeadsOptions {
   credentials?: CredentialAccessor;
-  /** Injection seam for tests; supplying it also disables DNS resolution in the guard. */
+  /** Injection seam for tests; supplying it also disables DNS resolution in guarded providers. */
   fetchImpl?: FetchLike;
 }
 
@@ -54,25 +53,33 @@ export interface SourceLeadsRequest {
   provider?: string;
   keywords?: string[];
   domains?: string[];
+  urls?: string[];
   countries?: string[];
   vertical?: string | null;
   limit?: number;
 }
 
-export async function sourceLeads(request: SourceLeadsRequest, options: SourceLeadsOptions = {}): Promise<SourceLeadsResult> {
+export async function sourceLeads(
+  request: SourceLeadsRequest,
+  options: SourceLeadsOptions = {}
+): Promise<SourceLeadsResult> {
   const key = request.provider ?? DEFAULT_PROVIDER_KEY;
   const provider = getProvider(key);
   if (!provider) {
-    throw new Error(`Unknown research provider: ${key}. Registered: ${listProviders().map((item) => item.key).join(', ')}.`);
+    throw new Error(
+      `Unknown research provider: ${key}. Registered: ${listProviders()
+        .map((item) => item.key)
+        .join(', ')}.`
+    );
   }
 
   const credentials = options.credentials ?? envCredentials;
   const availability = provider.availability(credentials);
   const generatedAt = new Date().toISOString();
-
   const query: SourceQuery = {
     keywords: request.keywords ?? [],
     domains: request.domains ?? [],
+    urls: request.urls ?? [],
     countries: request.countries ?? [],
     vertical: request.vertical ?? null,
     limit: Math.min(Math.max(request.limit ?? 25, 1), 100)
@@ -106,9 +113,10 @@ export async function sourceLeads(request: SourceLeadsRequest, options: SourceLe
 
 const inputSchema = z.object({
   provider: z.string().min(1).optional(),
-  keywords: z.array(z.string()).optional(),
-  domains: z.array(z.string()).optional(),
-  countries: z.array(z.string()).optional(),
+  keywords: z.array(z.string()).max(50).optional(),
+  domains: z.array(z.string()).max(2000).optional(),
+  urls: z.array(z.string().url()).max(50).optional(),
+  countries: z.array(z.string()).max(50).optional(),
   vertical: z.string().nullable().optional(),
   limit: z.number().int().positive().max(100).optional()
 });
@@ -142,7 +150,13 @@ const outputSchema = z.object({
   ),
   retention: z.enum(['default', 'none']),
   generatedAt: z.string(),
-  evidence: z.array(z.object({ label: z.string(), detail: z.string(), sourceUrl: z.string().nullable().optional() }))
+  evidence: z.array(
+    z.object({
+      label: z.string(),
+      detail: z.string(),
+      sourceUrl: z.string().nullable().optional()
+    })
+  )
 });
 
 type SourceLeadsInput = z.infer<typeof inputSchema>;
@@ -151,9 +165,9 @@ export const sourceLeadsSkill: Skill<SourceLeadsInput, SourceLeadsResult> = {
   manifest: {
     id: 'gtm.source-leads',
     name: 'Source candidate companies',
-    version: '1.0.0',
+    version: '1.1.0',
     description:
-      'Turn an ICP description into candidate company domains through a pluggable provider registry. Defaults to the credential-free seed provider.',
+      'Turn an ICP description, seed list, directory pages, or configured provider into candidate company domains through a pluggable provider registry.',
     sideEffect: 'network-read',
     requiresApproval: false,
     inputSchema,

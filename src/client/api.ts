@@ -2187,6 +2187,48 @@ export type {
   ScoreRationale
 };
 
+/** A source Trevra can run through the generic company-sourcing contract. */
+export interface AccountSourceProvider {
+  key: string;
+  name: string;
+  docsUrl: string;
+  retention: 'default' | 'none';
+  availability: {
+    mode: 'ready' | 'needs-credential' | 'disabled';
+    reason: string;
+    docsUrl?: string;
+  };
+}
+
+export interface AccountSourceRunResult {
+  runId: string;
+  providerKey: string;
+  availability: AccountSourceProvider['availability'];
+  found: number;
+  warnings: string[];
+  import: AccountImportResult;
+}
+
+export async function getAccountSourceProviders(): Promise<AccountSourceProvider[]> {
+  const result = await request<{ providers?: AccountSourceProvider[] }>(
+    '/api/accounts/source-providers'
+  );
+  return Array.isArray(result.providers) ? result.providers : [];
+}
+
+export async function sourceAccounts(input: {
+  provider: string;
+  keywords?: string[];
+  domains?: string[];
+  urls?: string[];
+  countries?: string[];
+  vertical?: string | null;
+  limit?: number;
+  tags?: string[];
+}): Promise<AccountSourceRunResult> {
+  return request('/api/accounts/source', { method: 'POST', body: JSON.stringify(input) });
+}
+
 /** Hot first, then by score. The server owns the order; the screen renders it. */
 export async function getRankedAccounts(
   filters: { tier?: AccountTier; limit?: number } = {}
@@ -2202,11 +2244,7 @@ export async function getRankedAccounts(
 }
 
 /**
- * One paste, or one dropped CSV read into a string.
- *
- * `rejected` comes back with the LINE and the reason, and the screen shows
- * both: a line the parser could not use is the operator's data, and silently
- * dropping it is how an import of 500 quietly becomes a list of 480.
+ * One paste, dropped file, or chosen CSV/JSON/TXT file read into a string.
  */
 export async function importAccounts(input: {
   text: string;

@@ -1,13 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PROVIDER_KEY, WITHHELD_PROVIDERS, getProvider, listProviders, registerProvider } from './registry.js';
+import {
+  DEFAULT_PROVIDER_KEY,
+  WITHHELD_PROVIDERS,
+  getProvider,
+  listProviders,
+  registerProvider
+} from './registry.js';
 import type { CredentialAccessor, ResearchProvider } from './types.js';
 
 const noCredentials: CredentialAccessor = { get: () => undefined };
-const withExa: CredentialAccessor = { get: (name) => (name === 'EXA_API_KEY' ? 'exa-key-123' : undefined) };
+const withExa: CredentialAccessor = {
+  get: (name) => (name === 'EXA_API_KEY' ? 'exa-key-123' : undefined)
+};
 
 describe('research provider registry', () => {
   it('registers every shipped provider under a stable key', () => {
-    expect(listProviders().map((provider) => provider.key)).toEqual(['exa', 'seed']);
+    expect(listProviders().map((provider) => provider.key)).toEqual(['directory', 'exa', 'seed']);
     expect(getProvider('nope')).toBeUndefined();
   });
 

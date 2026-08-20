@@ -35,46 +35,62 @@ function daysBefore(days: number): Date {
 }
 
 async function signal(accountId: string, kind: string, observedAt: Date = NOW): Promise<void> {
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO account_signals
       (id, workspace_id, account_id, kind, detail, previous, current, evidence_url, observed_at, fingerprint, created_at)
     VALUES (?,?,?,?,?,?,?,?,?::timestamptz,?,?::timestamptz)
-  `).run(
-    id('asig'),
-    WORKSPACE_ID,
-    accountId,
-    kind,
-    `${kind} on ${observedAt.toISOString().slice(0, 10)}`,
-    null,
-    null,
-    'https://example.com/careers',
-    observedAt.toISOString(),
-    `${kind}-${observedAt.toISOString()}`,
-    NOW.toISOString()
-  );
+  `
+    )
+    .run(
+      id('asig'),
+      WORKSPACE_ID,
+      accountId,
+      kind,
+      `${kind} on ${observedAt.toISOString().slice(0, 10)}`,
+      null,
+      null,
+      'https://example.com/careers',
+      observedAt.toISOString(),
+      `${kind}-${observedAt.toISOString()}`,
+      NOW.toISOString()
+    );
 }
 
 async function score(accountId: string, value: number, tier: AccountTier): Promise<void> {
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO account_scores
       (workspace_id, account_id, score, tier, distinct_kinds, newest_signal_at, rationale_json, computed_at)
     VALUES (?,?,?,?,?,?::timestamptz,?,?::timestamptz)
-  `).run(
-    WORKSPACE_ID,
-    accountId,
-    value,
-    tier,
-    2,
-    NOW.toISOString(),
-    JSON.stringify({ components: [], combinations: [], penalties: [], windowDays: 30, summary: 'test' }),
-    NOW.toISOString()
-  );
+  `
+    )
+    .run(
+      WORKSPACE_ID,
+      accountId,
+      value,
+      tier,
+      2,
+      NOW.toISOString(),
+      JSON.stringify({
+        components: [],
+        combinations: [],
+        penalties: [],
+        windowDays: 30,
+        summary: 'test'
+      }),
+      NOW.toISOString()
+    );
 }
 
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db
-    .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE_ID, 'Accounts Store Test', NOW.toISOString());
   for (const table of ['account_feedback', 'account_scores', 'account_signals', 'accounts']) {
     await db.prepare(`DELETE FROM ${table} WHERE workspace_id=?`).run(WORKSPACE_ID);
@@ -126,7 +142,12 @@ describe('the domain is the identity', () => {
   });
 
   it('collapses the spellings an operator would otherwise store twice', () => {
-    const spellings = ['https://www.acme.com/pricing?utm=x', 'ACME.com.', 'acme.com', 'hi@acme.com'];
+    const spellings = [
+      'https://www.acme.com/pricing?utm=x',
+      'ACME.com.',
+      'acme.com',
+      'hi@acme.com'
+    ];
     expect(new Set(spellings.map(normalizeAccountDomain)).size).toBe(1);
   });
 });
@@ -155,12 +176,23 @@ describe('parsing a paste', () => {
   it('never lets a LinkedIn column be mistaken for the domain column', () => {
     // The failure this guards is total: every row would key on linkedin.com and
     // the whole list would collapse into one account.
-    const { rows } = parseAccountImport('linkedin,url\nhttps://www.linkedin.com/company/acme,acme.com');
-    expect(rows).toEqual([{ name: 'acme.com', domain: 'acme.com', linkedinUrl: 'https://www.linkedin.com/company/acme', tags: [] }]);
+    const { rows } = parseAccountImport(
+      'linkedin,url\nhttps://www.linkedin.com/company/acme,acme.com'
+    );
+    expect(rows).toEqual([
+      {
+        name: 'acme.com',
+        domain: 'acme.com',
+        linkedinUrl: 'https://www.linkedin.com/company/acme',
+        tags: []
+      }
+    ]);
   });
 
   it('reads a CSV with no header at all, first field as the domain', () => {
-    const { rows, rejected } = parseAccountImport(['acme.com,Acme Labs', 'orbit.health,Orbit Health'].join('\n'));
+    const { rows, rejected } = parseAccountImport(
+      ['acme.com,Acme Labs', 'orbit.health,Orbit Health'].join('\n')
+    );
     expect(rejected).toEqual([]);
     expect(rows.map((row) => [row.domain, row.name])).toEqual([
       ['acme.com', 'Acme Labs'],
@@ -174,10 +206,54 @@ describe('parsing a paste', () => {
   });
 
   it('reads a plain pasted list, and names each row after its domain', () => {
-    const { rows, rejected } = parseAccountImport('  acme.com \n\nhttps://www.orbit.health/pricing\nluma.works\n');
+    const { rows, rejected } = parseAccountImport(
+      '  acme.com \n\nhttps://www.orbit.health/pricing\nluma.works\n'
+    );
     expect(rejected).toEqual([]);
     expect(rows.map((row) => row.domain)).toEqual(['acme.com', 'orbit.health', 'luma.works']);
     expect(rows.map((row) => row.name)).toEqual(['acme.com', 'orbit.health', 'luma.works']);
+  });
+
+  it('reads JSON arrays and candidate envelopes through the same account parser', () => {
+    const array = parseAccountImport(
+      JSON.stringify([
+        'acme.com',
+        {
+          domain: 'https://www.orbit.health/pricing',
+          name: 'Orbit Health',
+          tags: ['health', 'dach']
+        },
+        { website: 'luma.works', company: 'Luma' }
+      ])
+    );
+    expect(array.rejected).toEqual([]);
+    expect(array.rows).toEqual([
+      { name: 'acme.com', domain: 'acme.com', linkedinUrl: null, tags: [] },
+      { name: 'Orbit Health', domain: 'orbit.health', linkedinUrl: null, tags: ['health', 'dach'] },
+      { name: 'Luma', domain: 'luma.works', linkedinUrl: null, tags: [] }
+    ]);
+    expect(
+      parseAccountImport(
+        JSON.stringify({ candidates: [{ domain: 'northwind.com', name: 'Northwind' }] })
+      ).rows[0].domain
+    ).toBe('northwind.com');
+  });
+
+  it('keeps a generic platform hint as an account tag when a JSON manifest provides it', () => {
+    const { rows, rejected } = parseAccountImport(
+      JSON.stringify({ domain: 'cocotan.ch', platform: 'shopify' })
+    );
+    expect(rejected).toEqual([]);
+    expect(rows).toEqual([
+      { name: 'cocotan.ch', domain: 'cocotan.ch', linkedinUrl: null, tags: ['platform:shopify'] }
+    ]);
+  });
+
+  it('reports malformed JSON instead of treating it as CSV noise', () => {
+    const result = parseAccountImport('[{"domain":"acme.com"}');
+    expect(result.rows).toEqual([]);
+    expect(result.rejected[0].line).toBe('JSON input');
+    expect(result.rejected[0].reason).toContain('Could not parse JSON');
   });
 
   it('does not eat the first company of a headerless list', () => {
@@ -188,14 +264,20 @@ describe('parsing a paste', () => {
   });
 
   it('refuses a line that is only a LinkedIn URL, because every one of them keys on linkedin.com', () => {
-    const { rows, rejected } = parseAccountImport('https://www.linkedin.com/company/acme\nacme.com,Acme Labs');
+    const { rows, rejected } = parseAccountImport(
+      'https://www.linkedin.com/company/acme\nacme.com,Acme Labs'
+    );
     expect(rows.map((row) => row.domain)).toEqual(['acme.com']);
     expect(rejected[0].reason).toContain('linkedin.com');
   });
 
   it('dedupes inside the batch on the normalised domain, first spelling wins', () => {
     const { rows, rejected } = parseAccountImport(
-      ['acme.com,Acme Labs', 'https://www.ACME.com/pricing,Acme Labs GmbH', 'hi@acme.com,Acme'].join('\n')
+      [
+        'acme.com,Acme Labs',
+        'https://www.ACME.com/pricing,Acme Labs GmbH',
+        'hi@acme.com,Acme'
+      ].join('\n')
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe('Acme Labs');
@@ -204,7 +286,9 @@ describe('parsing a paste', () => {
   });
 
   it('says which lines held no company, and why', () => {
-    const { rows, rejected } = parseAccountImport(['acme.com', 'Acme Corp', 'localhost', '192.168.0.1'].join('\n'));
+    const { rows, rejected } = parseAccountImport(
+      ['acme.com', 'Acme Corp', 'localhost', '192.168.0.1'].join('\n')
+    );
     expect(rows.map((row) => row.domain)).toEqual(['acme.com']);
     expect(rejected.map((entry) => entry.line)).toEqual(['Acme Corp', 'localhost', '192.168.0.1']);
     expect(rejected[0].reason).toContain('domain');
@@ -257,7 +341,13 @@ describe('importing', () => {
     const first = await importAccounts(db, WORKSPACE_ID, paste, { source: 'csv' }, NOW);
     expect(first.created).toBe(2);
 
-    const again = await importAccounts(db, WORKSPACE_ID, `${paste}\nluma.works,Luma`, { source: 'csv' }, NOW);
+    const again = await importAccounts(
+      db,
+      WORKSPACE_ID,
+      `${paste}\nluma.works,Luma`,
+      { source: 'csv' },
+      NOW
+    );
     expect(again.created).toBe(1);
     expect(again.duplicate).toBe(2);
     // The batch is reported as it now stands, not as what was written.
@@ -267,20 +357,38 @@ describe('importing', () => {
 
   it('re-imports a differently spelled duplicate as a duplicate, not a second company', async () => {
     await importAccounts(db, WORKSPACE_ID, 'acme.com', { source: 'csv' }, NOW);
-    const again = await importAccounts(db, WORKSPACE_ID, 'https://www.ACME.com/pricing?x=1', { source: 'csv' }, NOW);
+    const again = await importAccounts(
+      db,
+      WORKSPACE_ID,
+      'https://www.ACME.com/pricing?x=1',
+      { source: 'csv' },
+      NOW
+    );
     expect(again.created).toBe(0);
     expect(again.duplicate).toBe(1);
     expect(await listAccounts(db, WORKSPACE_ID)).toHaveLength(1);
   });
 
   it('reports the unusable lines without losing the usable ones', async () => {
-    const result = await importAccounts(db, WORKSPACE_ID, 'acme.com\nnot a domain\nlocalhost', { source: 'csv' }, NOW);
+    const result = await importAccounts(
+      db,
+      WORKSPACE_ID,
+      'acme.com\nnot a domain\nlocalhost',
+      { source: 'csv' },
+      NOW
+    );
     expect(result.created).toBe(1);
     expect(result.rejected).toHaveLength(2);
   });
 
   it('writes nothing at all when the paste held no company', async () => {
-    const result = await importAccounts(db, WORKSPACE_ID, 'Acme Corp\nlocalhost', { source: 'csv' }, NOW);
+    const result = await importAccounts(
+      db,
+      WORKSPACE_ID,
+      'Acme Corp\nlocalhost',
+      { source: 'csv' },
+      NOW
+    );
     expect(result).toMatchObject({ created: 0, duplicate: 0, accounts: [] });
     expect(result.rejected).toHaveLength(2);
   });
@@ -301,36 +409,77 @@ describe('a single account', () => {
   });
 
   it('returns the existing row rather than a second one, and does not overwrite it', async () => {
-    const first = await createAccount(db, WORKSPACE_ID, { domain: 'acme.com', name: 'Acme Labs', source: 'manual' }, NOW);
-    const again = await createAccount(db, WORKSPACE_ID, { domain: 'www.acme.com', name: 'Typed It Twice', source: 'manual' }, NOW);
+    const first = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'acme.com', name: 'Acme Labs', source: 'manual' },
+      NOW
+    );
+    const again = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'www.acme.com', name: 'Typed It Twice', source: 'manual' },
+      NOW
+    );
     expect(again.id).toBe(first.id);
     expect(again.name).toBe('Acme Labs');
   });
 
   it('falls back to the domain for a name, because no screen may render an unnamed row', async () => {
-    const created = await createAccount(db, WORKSPACE_ID, { domain: 'acme.com', name: '   ', source: 'manual' }, NOW);
+    const created = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'acme.com', name: '   ', source: 'manual' },
+      NOW
+    );
     expect(created.name).toBe('acme.com');
   });
 
   it('refuses a domain that is not one', async () => {
-    await expect(createAccount(db, WORKSPACE_ID, { domain: 'Acme Corp', source: 'manual' }, NOW)).rejects.toThrow(/not a company domain/);
-    await expect(createAccount(db, WORKSPACE_ID, { domain: 'localhost', source: 'manual' }, NOW)).rejects.toThrow();
+    await expect(
+      createAccount(db, WORKSPACE_ID, { domain: 'Acme Corp', source: 'manual' }, NOW)
+    ).rejects.toThrow(/not a company domain/);
+    await expect(
+      createAccount(db, WORKSPACE_ID, { domain: 'localhost', source: 'manual' }, NOW)
+    ).rejects.toThrow();
   });
 
   it('lists newest first and filters on status', async () => {
-    const old = await createAccount(db, WORKSPACE_ID, { domain: 'old.com', source: 'manual' }, daysBefore(2));
-    const fresh = await createAccount(db, WORKSPACE_ID, { domain: 'fresh.com', source: 'manual' }, NOW);
-    expect((await listAccounts(db, WORKSPACE_ID)).map((account) => account.id)).toEqual([fresh.id, old.id]);
+    const old = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'old.com', source: 'manual' },
+      daysBefore(2)
+    );
+    const fresh = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'fresh.com', source: 'manual' },
+      NOW
+    );
+    expect((await listAccounts(db, WORKSPACE_ID)).map((account) => account.id)).toEqual([
+      fresh.id,
+      old.id
+    ]);
 
     await setAccountStatus(db, WORKSPACE_ID, old.id, 'archived', NOW);
-    expect((await listAccounts(db, WORKSPACE_ID, { status: 'active' })).map((account) => account.id)).toEqual([fresh.id]);
-    expect((await listAccounts(db, WORKSPACE_ID, { limit: 1, offset: 1 })).map((account) => account.id)).toEqual([old.id]);
+    expect(
+      (await listAccounts(db, WORKSPACE_ID, { status: 'active' })).map((account) => account.id)
+    ).toEqual([fresh.id]);
+    expect(
+      (await listAccounts(db, WORKSPACE_ID, { limit: 1, offset: 1 })).map((account) => account.id)
+    ).toEqual([old.id]);
   });
 });
 
 describe('a rejection costs nothing twice', () => {
   it('clears next_sweep_at for not_a_fit and archived, and restores it on reactivation', async () => {
-    const account = await createAccount(db, WORKSPACE_ID, { domain: 'acme.com', source: 'manual' }, NOW);
+    const account = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'acme.com', source: 'manual' },
+      NOW
+    );
     expect(account.nextSweepAt).toBe(NOW.toISOString());
 
     const rejectedAccount = await setAccountStatus(db, WORKSPACE_ID, account.id, 'not_a_fit', NOW);
@@ -349,7 +498,12 @@ describe('a rejection costs nothing twice', () => {
 
 describe('feedback', () => {
   it('snapshots the sorted, distinct shape inside the window and the score at the time', async () => {
-    const account = await createAccount(db, WORKSPACE_ID, { domain: 'acme.com', source: 'manual' }, NOW);
+    const account = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'acme.com', source: 'manual' },
+      NOW
+    );
     await score(account.id, 84, 'hot');
     await signal(account.id, 'pricing-changed', daysBefore(1));
     await signal(account.id, 'hiring-up', daysBefore(3));
@@ -358,7 +512,13 @@ describe('feedback', () => {
     // Outside thirty days: not what was on the screen.
     await signal(account.id, 'tech-added', daysBefore(45));
 
-    const feedback = await recordAccountFeedback(db, WORKSPACE_ID, account.id, { verdict: 'not_a_fit', reason: 'Too small' }, NOW);
+    const feedback = await recordAccountFeedback(
+      db,
+      WORKSPACE_ID,
+      account.id,
+      { verdict: 'not_a_fit', reason: 'Too small' },
+      NOW
+    );
     expect(feedback.signalShape).toBe('hiring-up,pricing-changed');
     expect(feedback.scoreAtVerdict).toBe(84);
     expect(feedback.reason).toBe('Too small');
@@ -371,8 +531,19 @@ describe('feedback', () => {
   });
 
   it('records a good_fit without touching the sweep, and with no score when none was computed', async () => {
-    const account = await createAccount(db, WORKSPACE_ID, { domain: 'orbit.health', source: 'manual' }, NOW);
-    const feedback = await recordAccountFeedback(db, WORKSPACE_ID, account.id, { verdict: 'good_fit' }, NOW);
+    const account = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'orbit.health', source: 'manual' },
+      NOW
+    );
+    const feedback = await recordAccountFeedback(
+      db,
+      WORKSPACE_ID,
+      account.id,
+      { verdict: 'good_fit' },
+      NOW
+    );
     expect(feedback.signalShape).toBe('');
     expect(feedback.scoreAtVerdict).toBeNull();
     expect(feedback.reason).toBeNull();
@@ -383,12 +554,18 @@ describe('feedback', () => {
   });
 
   it('refuses a verdict on an account this workspace does not have', async () => {
-    await expect(recordAccountFeedback(db, WORKSPACE_ID, 'acc_missing', { verdict: 'good_fit' }, NOW)).rejects.toThrow();
+    await expect(
+      recordAccountFeedback(db, WORKSPACE_ID, 'acc_missing', { verdict: 'good_fit' }, NOW)
+    ).rejects.toThrow();
   });
 });
 
 describe('rejected shapes', () => {
-  async function reject(domain: string, kinds: string[], verdict: 'not_a_fit' | 'good_fit' = 'not_a_fit'): Promise<void> {
+  async function reject(
+    domain: string,
+    kinds: string[],
+    verdict: 'not_a_fit' | 'good_fit' = 'not_a_fit'
+  ): Promise<void> {
     const account = await createAccount(db, WORKSPACE_ID, { domain, source: 'manual' }, NOW);
     for (const kind of kinds) await signal(account.id, kind, daysBefore(2));
     await recordAccountFeedback(db, WORKSPACE_ID, account.id, { verdict }, NOW);
@@ -422,16 +599,39 @@ describe('rejected shapes', () => {
     await reject('a-two.com', ['pricing-changed']);
     await reject('b-one.com', ['hiring-up', 'tech-added']);
     await reject('b-two.com', ['hiring-up', 'tech-added']);
-    expect(await rejectedSignalShapes(db, WORKSPACE_ID)).toEqual(['hiring-up,tech-added', 'pricing-changed']);
+    expect(await rejectedSignalShapes(db, WORKSPACE_ID)).toEqual([
+      'hiring-up,tech-added',
+      'pricing-changed'
+    ]);
   });
 });
 
 describe('the ranked list', () => {
   it('orders by score, keeps unscored accounts below rather than above, and carries the newest signals', async () => {
-    const hot = await createAccount(db, WORKSPACE_ID, { domain: 'hot.com', source: 'manual' }, daysBefore(9));
-    const warm = await createAccount(db, WORKSPACE_ID, { domain: 'warm.com', source: 'manual' }, daysBefore(8));
-    const oldUnscored = await createAccount(db, WORKSPACE_ID, { domain: 'old-unscored.com', source: 'manual' }, daysBefore(7));
-    const newUnscored = await createAccount(db, WORKSPACE_ID, { domain: 'new-unscored.com', source: 'manual' }, daysBefore(1));
+    const hot = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'hot.com', source: 'manual' },
+      daysBefore(9)
+    );
+    const warm = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'warm.com', source: 'manual' },
+      daysBefore(8)
+    );
+    const oldUnscored = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'old-unscored.com', source: 'manual' },
+      daysBefore(7)
+    );
+    const newUnscored = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'new-unscored.com', source: 'manual' },
+      daysBefore(1)
+    );
 
     await score(hot.id, 91, 'hot');
     await score(warm.id, 40, 'warm');
@@ -440,12 +640,21 @@ describe('the ranked list', () => {
     await signal(hot.id, 'tech-added', daysBefore(3));
 
     const ranked = await listRankedAccounts(db, WORKSPACE_ID);
-    expect(ranked.map((row) => row.account.id)).toEqual([hot.id, warm.id, newUnscored.id, oldUnscored.id]);
+    expect(ranked.map((row) => row.account.id)).toEqual([
+      hot.id,
+      warm.id,
+      newUnscored.id,
+      oldUnscored.id
+    ]);
 
     expect(ranked[0].score?.score).toBe(91);
     expect(ranked[0].score?.tier).toBe('hot');
     expect(ranked[0].score?.rationale.windowDays).toBe(30);
-    expect(ranked[0].signals.map((entry) => entry.kind)).toEqual(['hiring-up', 'pricing-changed', 'tech-added']);
+    expect(ranked[0].signals.map((entry) => entry.kind)).toEqual([
+      'hiring-up',
+      'pricing-changed',
+      'tech-added'
+    ]);
     expect(ranked[0].signals[0].evidenceUrl).toBe('https://example.com/careers');
     expect(ranked[0].signals[0].observedAt).toBe(daysBefore(1).toISOString());
 
@@ -455,10 +664,22 @@ describe('the ranked list', () => {
   });
 
   it('caps the signals per row without a query per account', async () => {
-    const account = await createAccount(db, WORKSPACE_ID, { domain: 'acme.com', source: 'manual' }, NOW);
-    const other = await createAccount(db, WORKSPACE_ID, { domain: 'orbit.health', source: 'manual' }, daysBefore(1));
-    for (let index = 1; index <= 8; index += 1) await signal(account.id, `kind-${index}`, daysBefore(index));
-    for (let index = 1; index <= 8; index += 1) await signal(other.id, `other-${index}`, daysBefore(index));
+    const account = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'acme.com', source: 'manual' },
+      NOW
+    );
+    const other = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'orbit.health', source: 'manual' },
+      daysBefore(1)
+    );
+    for (let index = 1; index <= 8; index += 1)
+      await signal(account.id, `kind-${index}`, daysBefore(index));
+    for (let index = 1; index <= 8; index += 1)
+      await signal(other.id, `other-${index}`, daysBefore(index));
 
     const ranked = await listRankedAccounts(db, WORKSPACE_ID, { signalLimit: 2 });
     expect(ranked.map((row) => row.signals.map((entry) => entry.kind))).toEqual([
@@ -471,18 +692,32 @@ describe('the ranked list', () => {
   });
 
   it('leaves rejected accounts off the list a founder acts on', async () => {
-    const keep = await createAccount(db, WORKSPACE_ID, { domain: 'keep.com', source: 'manual' }, NOW);
-    const drop = await createAccount(db, WORKSPACE_ID, { domain: 'drop.com', source: 'manual' }, daysBefore(1));
+    const keep = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'keep.com', source: 'manual' },
+      NOW
+    );
+    const drop = await createAccount(
+      db,
+      WORKSPACE_ID,
+      { domain: 'drop.com', source: 'manual' },
+      daysBefore(1)
+    );
     await score(drop.id, 99, 'hot');
     await setAccountStatus(db, WORKSPACE_ID, drop.id, 'not_a_fit', NOW);
 
-    expect((await listRankedAccounts(db, WORKSPACE_ID)).map((row) => row.account.id)).toEqual([keep.id]);
+    expect((await listRankedAccounts(db, WORKSPACE_ID)).map((row) => row.account.id)).toEqual([
+      keep.id
+    ]);
     // A score outlives the rejection that followed it, so asking for the hot
     // rows must NOT resurrect a rejected account at the top of the list.
     expect(await listRankedAccounts(db, WORKSPACE_ID, { tier: 'hot' })).toEqual([]);
     // The audit question has to be asked for by name.
     expect(
-      (await listRankedAccounts(db, WORKSPACE_ID, { tier: 'hot', includeRejected: true })).map((row) => row.account.id)
+      (await listRankedAccounts(db, WORKSPACE_ID, { tier: 'hot', includeRejected: true })).map(
+        (row) => row.account.id
+      )
     ).toEqual([drop.id]);
   });
 

@@ -7335,6 +7335,38 @@ button:disabled {
   grid-template-columns: minmax(0, 320px);
   margin: 13px 0 0;
 }
+.acc-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.acc-file-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.acc-file-button input {
+  display: none;
+}
+.acc-source-panel {
+  margin-top: 0;
+}
+.acc-source-grid {
+  grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+  margin-bottom: 13px;
+}
+.acc-source-warning {
+  color: var(--amber);
+}
+.acc-source-result {
+  margin-top: 12px;
+}
+.acc-source-result > .li-hint {
+  margin: 4px 0;
+}
 .acc-import-report {
   margin-top: 14px;
   border: 1px solid var(--line);
@@ -7399,7 +7431,8 @@ button:disabled {
     grid-template-columns: minmax(0, 1fr);
     gap: 2px;
   }
-  .acc-import-grid {
+  .acc-import-grid,
+  .acc-source-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

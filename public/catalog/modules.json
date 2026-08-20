@@ -6,11 +6,7 @@
   "contract": {
     "inputs": "Zod-validated input schema",
     "outputs": "Zod-validated output schema",
-    "sideEffects": [
-      "none",
-      "network-read",
-      "external-write"
-    ],
+    "sideEffects": ["none", "network-read", "external-write"],
     "approvals": "Declared per module and enforced by the runner"
   },
   "modules": [
@@ -513,8 +509,8 @@
     {
       "id": "gtm.source-leads",
       "name": "Source candidate companies",
-      "version": "1.0.0",
-      "description": "Turn an ICP description into candidate company domains through a pluggable provider registry. Defaults to the credential-free seed provider.",
+      "version": "1.1.0",
+      "description": "Turn an ICP description, seed list, directory pages, or configured provider into candidate company domains through a pluggable provider registry.",
       "sideEffect": "network-read",
       "requiresApproval": false,
       "runtime": "builtin",

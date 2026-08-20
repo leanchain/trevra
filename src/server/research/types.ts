@@ -47,6 +47,8 @@ export interface SourceQuery {
   keywords: string[];
   /** Caller-supplied domains. The `seed` provider sources from these alone. */
   domains: string[];
+  /** Public pages a provider may crawl for candidate-company links. */
+  urls: string[];
   countries: string[];
   vertical: string | null;
   limit: number;
