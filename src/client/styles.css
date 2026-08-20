@@ -9204,12 +9204,25 @@ button:disabled {
 }
 
 /* Outreach simple mode: campaigns + messages + settings, with specialist
-   surfaces under More and only the high-signal campaign data in the main path. */
+   surfaces under More and only the high-signal campaign data in the main path.
+
+   `.mgr-simple-hide` rather than the bare `.mgr-inputs` idiom it is built on:
+   this file used to write `.outreach-simple .mgr-inputs`, back when every
+   `.mgr-inputs` disclosure under `.outreach-simple` was manager-screen
+   overflow this rule was meant to bury. The Find people and Target accounts
+   folds (`#leads`, `#accounts`) were absorbed into this same `.outreach-simple`
+   tree later and happen to reuse `.mgr-inputs` for their OWN disclosures --
+   "Add more accounts", "Daily lead limit" -- which the blanket selector then
+   buried right along with the manager screen's overflow, on a rule that had
+   no idea a second, unrelated meaning of the class had moved in underneath
+   it. `.mgr-simple-hide` is the opt-in: only the two disclosures that still
+   mean "manager screen overflow" (`LinkedInManagerRead.tsx`'s "More results"
+   and "Campaign inputs") carry it. */
 .outreach-simple .section-heading > div > p,
 .outreach-simple .onboarding-head p,
 .outreach-simple .onboarding-steps small,
 .outreach-simple .mgr-preview,
-.outreach-simple .mgr-inputs,
+.outreach-simple .mgr-simple-hide,
 .outreach-simple .mgr-manual-tasks,
 .outreach-simple .li-subhead,
 .outreach-simple .mgr-ab {
@@ -9226,6 +9239,21 @@ button:disabled {
 }
 .outreach-simple .panel-footer > span {
   display: none;
+}
+/* The other two rules above are structural (`.section-heading > div > p`,
+   `.panel-footer > span`) rather than a class this codebase can opt in or out
+   of -- they were written to bury subtitle copy and disabled-button captions
+   across the manager/builder screens, and both patterns are common enough
+   that giving every OTHER instance an opt-in class would be the riskier
+   change. #leads and #accounts are the two islands absorbed into this tree
+   that still need their own copy, so they are named back in instead. */
+.outreach-simple #leads .section-heading > div > p,
+.outreach-simple #accounts .section-heading > div > p {
+  display: block;
+}
+.outreach-simple #leads .panel-footer > span,
+.outreach-simple #accounts .panel-footer > span {
+  display: inline;
 }
 
 /* Post composer: formatting toolbar + contenteditable body + live preview.

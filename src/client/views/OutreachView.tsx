@@ -99,7 +99,7 @@ export function OutreachView({
         <>
           <OutreachManagerRead setToast={setToast} onNavigate={onNavigate} />
           <details
-            className="li-manual-fields"
+            className="mgr-inputs"
             id="leads"
             onToggle={(event) =>
               setOpenFolds((current) => ({
@@ -114,7 +114,7 @@ export function OutreachView({
             </div>
           </details>
           <details
-            className="li-manual-fields"
+            className="mgr-inputs"
             id="accounts"
             onToggle={(event) =>
               setOpenFolds((current) => ({

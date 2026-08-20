@@ -1656,7 +1656,7 @@ export function OutreachManagerRead({
               </div>
             </div>
 
-            <details className="mgr-inputs">
+            <details className="mgr-inputs mgr-simple-hide">
               <summary>
                 More results
                 <span>{plural(visiblePendingTasks.length, 'task')} waiting · message versions</span>
@@ -1903,7 +1903,7 @@ export function OutreachManagerRead({
         </>
       )}
 
-      <details className="mgr-inputs">
+      <details className="mgr-inputs mgr-simple-hide">
         <summary>
           Campaign inputs{' '}
           <span>

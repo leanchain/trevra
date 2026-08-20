@@ -738,10 +738,11 @@ function AccountPanel({
           </span>
         </div>
 
-        {/* `.li-manual-fields`, not `.mgr-inputs`: this screen runs inside
-          `.outreach-simple`, which hides `.mgr-inputs` outright (see
-          styles.css and PendingInviteWithdrawalsSection below), so that class
-          would have shipped a toggle nobody could ever open. */}
+        {/* `.li-manual-fields`, matching the disclosure style the rest of
+          Outreach settled on. Not a `.mgr-inputs` workaround any more --
+          `.outreach-simple` used to blanket-hide `.mgr-inputs`, but that rule
+          is now scoped to the opt-in `.mgr-simple-hide` (see styles.css and
+          PendingInviteWithdrawalsSection below). */}
         <details className="li-manual-fields" open={needsAttention}>
           <summary>Details</summary>
 
@@ -1705,10 +1706,11 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
  *
  * Nothing above fetches until this is opened: `PendingInviteWithdrawals`
  * mounts only once `open` is true, so an account you never expand never
- * spends a request on its withdrawal backlog. `.li-manual-fields` rather than
- * the manager screen's `.mgr-inputs` -- this page runs inside `.outreach-simple`,
- * which hides `.mgr-inputs` outright (see styles.css), so that idiom would
- * have shipped a toggle nobody could ever open.
+ * spends a request on its withdrawal backlog. `.li-manual-fields`, matching
+ * the disclosure style the rest of Outreach settled on -- not a `.mgr-inputs`
+ * workaround any more; `.outreach-simple` used to blanket-hide `.mgr-inputs`,
+ * but that rule is now scoped to the opt-in `.mgr-simple-hide` (see
+ * styles.css).
  */
 function PendingInviteWithdrawalsSection({ setToast }: { setToast: (message: string) => void }) {
   const [open, setOpen] = useState(false);

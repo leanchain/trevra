@@ -138,7 +138,7 @@ export function LinkedInFunnel({
 }) {
   const total = analytics?.total;
   const invites = analytics?.invites;
-  const anything = total ? total.planned + total.exported + total.sent + total.skipped > 0 : false;
+  const anything = total ? total.planned + total.sent + total.skipped > 0 : false;
 
   return (
     <section className="page-panel li-viz">
