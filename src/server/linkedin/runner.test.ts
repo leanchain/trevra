@@ -71,6 +71,7 @@ interface ActionRow {
   replay_scope: string;
   source: string;
   planned_for: string | null;
+  sla_deadline_at: string | null;
 }
 
 interface MemberRow {
@@ -87,7 +88,8 @@ async function actions(): Promise<ActionRow[]> {
     .prepare(
       `
     SELECT id,kind,status,body,target_ref,workflow_step_id,variant_id,campaign_member_id,replay_scope,source,
-           TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO}) AS planned_for
+           TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO}) AS planned_for,
+           TO_CHAR(sla_deadline_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS sla_deadline_at
     FROM linkedin_actions WHERE workspace_id=? ORDER BY planned_for ASC NULLS LAST, id ASC
   `
     )
@@ -1506,5 +1508,37 @@ describe('one tick, several members, several branches', () => {
       (await members(campaignId)).find((member) => member.id === pendingInvite!.campaign_member_id)
         ?.status
     ).toBe('completed');
+  });
+
+  it('persists a workflow SLA as a ledger deadline without changing the planned slot', async () => {
+    const listId = await seededList('SLA leads', [
+      { first: 'Maya', last: 'SLA', company: 'Acme', slug: 'maya-sla' }
+    ]);
+    const wf = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'SLA workflow',
+        steps: [
+          {
+            id: 'view',
+            action: 'profile_view',
+            delayBefore: { amount: 0, unit: 'hours' },
+            sla: { amount: 2, unit: 'hours' },
+            config: {}
+          }
+        ]
+      },
+      NOW
+    );
+    await runningCampaign(listId, wf.id, 'SLA campaign');
+    const tick = await runManagedCampaigns(db, WORKSPACE, NOW);
+    expect(tick.actionsPlanned).toBe(1);
+    const row = (await actions()).find((action) => action.workflow_step_id === 'view');
+    expect(row?.planned_for).toBeTruthy();
+    expect(row?.sla_deadline_at).toBeTruthy();
+    expect(new Date(row!.sla_deadline_at!).getTime() - new Date(row!.planned_for!).getTime()).toBe(
+      2 * HOUR
+    );
   });
 });

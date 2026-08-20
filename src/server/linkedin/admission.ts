@@ -33,8 +33,14 @@ export interface AdmissionInput {
   now: Date;
   /** Conservative expected fraction of invites that later demand a DM. */
   acceptanceRate?: number | null;
+  acceptanceSampleSize?: number | null;
   /** Conservative expected fraction of DMs that later demand another DM. */
   noReplyRate?: number | null;
+  replySampleSize?: number | null;
+  /** Outcome-based throttle may only reduce admission, never increase it. */
+  outcomeThrottle?: number | null;
+  outcomeSampleSize?: number | null;
+  outcomeThrottleReason?: string | null;
   hasUsableFutureSlot?: boolean;
 }
 
@@ -44,6 +50,9 @@ export interface AdmissionDecision {
   reasons: string[];
   capacitySnapshot: Record<string, number>;
 }
+
+/** Enough independent outcomes to let observed rates replace conservative defaults. */
+export const ADMISSION_FORECAST_MIN_SAMPLE = 20;
 
 export function workflowAdmissionDemand(
   steps: readonly WorkflowStep[]
@@ -146,10 +155,31 @@ export function decideAdmission(input: AdmissionInput): AdmissionDecision {
     };
 
   const demand = workflowAdmissionDemand(input.steps);
-  // Unknown history is deliberately conservative. Accepted-connection DMs are forecast at 35%;
-  // repeated no-reply follow-ups at 60%. Observed values, once supplied, replace these defaults.
-  const acceptance = Math.min(1, Math.max(0.05, input.acceptanceRate ?? 0.35));
-  const noReply = Math.min(1, Math.max(0.05, input.noReplyRate ?? 0.6));
+  // Unknown/thin history is deliberately conservative. Observed outcomes replace these
+  // defaults only after enough independent sends exist to avoid steering a wave from noise.
+  const acceptanceSample = Math.max(0, Math.trunc(input.acceptanceSampleSize ?? 0));
+  const replySample = Math.max(0, Math.trunc(input.replySampleSize ?? 0));
+  const observedAcceptance =
+    input.acceptanceRate != null && acceptanceSample >= ADMISSION_FORECAST_MIN_SAMPLE;
+  const observedReply = input.noReplyRate != null && replySample >= ADMISSION_FORECAST_MIN_SAMPLE;
+  const acceptance = Math.min(1, Math.max(0.05, observedAcceptance ? input.acceptanceRate! : 0.35));
+  const noReply = Math.min(1, Math.max(0.05, observedReply ? input.noReplyRate! : 0.6));
+  snapshot.forecast_acceptance_bps = Math.round(acceptance * 10_000);
+  snapshot.forecast_no_reply_bps = Math.round(noReply * 10_000);
+  snapshot.acceptance_sample = acceptanceSample;
+  snapshot.reply_sample = replySample;
+  if (observedAcceptance)
+    reasons.push(
+      `Observed invite acceptance (${Math.round(acceptance * 100)}% across ${acceptanceSample}) is used for downstream forecasting.`
+    );
+  else if (acceptanceSample > 0)
+    reasons.push(
+      `Invite history is still thin (${acceptanceSample}/${ADMISSION_FORECAST_MIN_SAMPLE}); conservative acceptance forecasting remains in use.`
+    );
+  if (observedReply)
+    reasons.push(
+      `Observed no-reply rate (${Math.round(noReply * 100)}% across ${replySample}) is used for follow-up forecasting.`
+    );
 
   let limit = pending;
   let limitingKind: AdmissionKind | null = null;
@@ -163,10 +193,16 @@ export function decideAdmission(input: AdmissionInput): AdmissionDecision {
     snapshot[`demand_${kind}`] = occurrences;
     let effectiveDemand = occurrences;
     if (kind === 'dm' && demand.invite > 0) {
-      effectiveDemand = Math.max(
-        acceptance,
-        1 + Math.max(0, occurrences - 1) * acceptance * noReply
-      );
+      const gatedMessages = input.steps.filter(
+        (step) => step.action === 'message' && step.config.requiresAcceptedConnection === true
+      ).length;
+      const unconditionalMessages = Math.max(0, occurrences - gatedMessages);
+      // Only an explicitly acceptance-gated message is forecast probabilistically.
+      // Unconditional DMs remain one full unit each. For multiple gated follow-ups,
+      // the first follows acceptance and later ones additionally depend on no reply.
+      const gatedDemand =
+        gatedMessages <= 0 ? 0 : acceptance * (1 + Math.max(0, gatedMessages - 1) * noReply);
+      effectiveDemand = unconditionalMessages + gatedDemand;
     }
     const free = Math.max(0, available - backlog);
     const byKind = Math.floor(free / Math.max(0.05, effectiveDemand));
@@ -184,6 +220,17 @@ export function decideAdmission(input: AdmissionInput): AdmissionDecision {
       Math.max(0, policy.maxNewLeadsPerDay - Math.max(0, input.admittedToday ?? 0))
     );
   if (policy.maxWaveSize != null) limit = Math.min(limit, Math.max(0, policy.maxWaveSize));
+  const outcomeSample = Math.max(0, Math.trunc(input.outcomeSampleSize ?? 0));
+  const throttle = Math.min(1, Math.max(0, input.outcomeThrottle ?? 1));
+  snapshot.outcome_sample = outcomeSample;
+  snapshot.outcome_throttle_bps = Math.round(throttle * 10_000);
+  if (throttle < 1) {
+    limit = Math.floor(limit * throttle);
+    reasons.push(
+      input.outcomeThrottleReason?.trim() ||
+        `Recent verified outcomes reduce new admissions to ${Math.round(throttle * 100)}% of available capacity.`
+    );
+  }
   // Automatic waves should remain bounded even when the first step is passive and has a very large ceiling.
   limit = Math.min(limit, 250);
   limit = Math.max(0, Math.trunc(limit));

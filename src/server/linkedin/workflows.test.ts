@@ -3,6 +3,7 @@ import {
   MESSAGE_VARIANT_MAX,
   chooseMessageVariant,
   delayMilliseconds,
+  diagnoseWorkflow,
   parseWorkflowSteps,
   renderWorkflowTemplate,
   unsupportedVariables,
@@ -364,5 +365,60 @@ describe('LinkedIn manager workflows', () => {
     }
     expect(a / 1000).toBeGreaterThan(0.65);
     expect(a / 1000).toBeLessThan(0.75);
+  });
+
+  it('accepts a positive per-step SLA and rejects a zero SLA', () => {
+    const parsed = workflowStepsSchema.parse([
+      {
+        id: 'follow-up',
+        action: 'message',
+        delayBefore: { amount: 1, unit: 'days' },
+        sla: { amount: 6, unit: 'hours' },
+        config: { variants: [{ id: 'a', body: 'Hi', weight: 100 }] }
+      }
+    ]);
+    expect(parsed[0]?.sla).toEqual({ amount: 6, unit: 'hours' });
+    expect(() =>
+      workflowStepsSchema.parse([
+        {
+          id: 'bad-sla',
+          action: 'profile_view',
+          delayBefore: { amount: 0, unit: 'hours' },
+          sla: { amount: 0, unit: 'hours' },
+          config: {}
+        }
+      ])
+    ).toThrow(/SLA/i);
+  });
+
+  it('suggests sequence fixes without invalidating or rewriting the workflow', () => {
+    const diagnosticSteps = workflowStepsSchema.parse([
+      {
+        id: 'invite',
+        action: 'connection_request',
+        delayBefore: { amount: 0, unit: 'hours' },
+        config: { message: 'Hi {{first_name}}' }
+      },
+      ...['m1', 'm2', 'm3', 'm4'].map((id, index) => ({
+        id,
+        action: 'message' as const,
+        delayBefore: { amount: index + 1, unit: 'days' as const },
+        config: { variants: [{ id: 'a', body: 'Reach me at {{email}}', weight: 100 }] }
+      }))
+    ]);
+    const diagnostics = diagnoseWorkflow(diagnosticSteps, {
+      email: { present: 7, total: 10 }
+    });
+    expect(diagnostics.map((item) => item.code)).toEqual(
+      expect.arrayContaining([
+        'repeated_action_bottleneck',
+        'missing_reply_monitor',
+        'missing_invite_cleanup',
+        'missing_variable_coverage'
+      ])
+    );
+    // Diagnostics are advisory: the already-parsed input is unchanged.
+    expect(diagnosticSteps).toHaveLength(5);
+    expect(diagnosticSteps[1]?.action).toBe('message');
   });
 });

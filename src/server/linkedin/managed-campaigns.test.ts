@@ -4,11 +4,13 @@ import { id, openDatabase, type Db } from '../db.js';
 import { recordAction } from './actions.js';
 import { createLeadList, importLeadCsv, ingestLeadSignal } from './lead-lists.js';
 import {
+  campaignAdmissionForecast,
   campaignWorkflowSteps,
   createManagedCampaign,
   enrolNewContacts,
   listCampaignMembers,
   managedAnalytics,
+  previewManagedCampaignLaunch,
   releaseSeatWork,
   startManagedCampaign
 } from './managed-campaigns.js';
@@ -448,5 +450,106 @@ describe('signal-backed live audiences', () => {
       )
       .get<{ total: number }>(WORKSPACE, 'job-change:maya:2026-08-06');
     expect(signals?.total).toBe(1);
+  });
+});
+
+describe('campaign admission forecasting', () => {
+  it('uses campaign outcome samples and throttles only downward after enough evidence', async () => {
+    const listId = await leadList('Forecast leads', ['forecast-seed']);
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Forecast campaign',
+        leadListId: listId,
+        workflowId: await workflow('Forecast flow')
+      },
+      NOW
+    );
+    for (let index = 0; index < 20; index += 1) {
+      await recordAction(
+        db,
+        {
+          workspaceId: WORKSPACE,
+          campaignId: created.campaign.id,
+          kind: 'invite',
+          targetRef: `https://www.linkedin.com/in/forecast-invite-${index}/`,
+          status: index < 4 ? 'accepted' : 'declined',
+          source: 'campaign',
+          plannedFor: NOW.toISOString()
+        },
+        NOW
+      );
+      await recordAction(
+        db,
+        {
+          workspaceId: WORKSPACE,
+          campaignId: created.campaign.id,
+          kind: 'dm',
+          targetRef: `https://www.linkedin.com/in/forecast-message-${index}/`,
+          status: index < 2 ? 'replied' : 'sent',
+          source: 'campaign',
+          plannedFor: NOW.toISOString()
+        },
+        NOW
+      );
+      const health = await recordAction(
+        db,
+        {
+          workspaceId: WORKSPACE,
+          campaignId: created.campaign.id,
+          kind: 'profile_view',
+          targetRef: `https://www.linkedin.com/in/forecast-health-${index}/`,
+          status: 'sent',
+          source: 'campaign',
+          plannedFor: NOW.toISOString()
+        },
+        NOW
+      );
+      if (index < 9) {
+        await db
+          .prepare('UPDATE linkedin_actions SET failure_kind=? WHERE workspace_id=? AND id=?')
+          .run('selector_drift', WORKSPACE, health.id);
+      }
+    }
+
+    const forecast = await campaignAdmissionForecast(db, WORKSPACE, created.campaign.id, NOW);
+    expect(forecast.acceptanceSampleSize).toBe(20);
+    expect(forecast.acceptanceRate).toBeCloseTo(0.2);
+    expect(forecast.replySampleSize).toBe(20);
+    expect(forecast.noReplyRate).toBeCloseTo(0.9);
+    // 9 problematic outcomes among 60 measured action outcomes = 15%.
+    expect(forecast.failureRate).toBeCloseTo(0.15);
+    expect(forecast.throttle).toBe(0.5);
+    expect(forecast.reasons.join(' ')).toContain('recent execution outcomes');
+  });
+
+  it('warns before launch when selected-list merge coverage is materially incomplete', async () => {
+    const listId = await leadList('Coverage leads', ['coverage-a', 'coverage-b', 'coverage-c']);
+    const wf = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Coverage workflow',
+        steps: [
+          {
+            id: 'message',
+            action: 'message',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { variants: [{ id: 'a', body: 'Email on file: {{email}}', weight: 100 }] }
+          }
+        ]
+      },
+      NOW
+    );
+    const preview = await previewManagedCampaignLaunch(
+      db,
+      { workspaceId: WORKSPACE, leadListId: listId, workflowId: wf.id },
+      NOW
+    );
+    expect(preview.variableCoverage.email).toEqual({ present: 0, total: 3 });
+    expect(preview.diagnostics.some((item) => item.code === 'missing_variable_coverage')).toBe(
+      true
+    );
   });
 });

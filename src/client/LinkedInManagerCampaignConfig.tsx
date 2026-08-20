@@ -1026,6 +1026,19 @@ export function LinkedInManagerCampaignConfig({
                     </>
                   )}
                 </div>
+                {launchPreview && launchPreview.diagnostics.length > 0 && (
+                  <div className="mgr-preview-note">
+                    <b>Review before launch</b>
+                    <ul>
+                      {launchPreview.diagnostics.map((diagnostic, index) => (
+                        <li key={`${diagnostic.code}-${index}`}>{diagnostic.message}</li>
+                      ))}
+                    </ul>
+                    <span className="li-hint">
+                      Suggestions only — Trevra never rewrites your workflow automatically.
+                    </span>
+                  </div>
+                )}
                 <ol className="mgr-preview-steps">
                   {schedule.steps.map(({ step, day }) => (
                     <li key={step.id}>

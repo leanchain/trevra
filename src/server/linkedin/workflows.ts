@@ -64,6 +64,11 @@ export const workflowDelaySchema = z
   .strict();
 export type WorkflowDelay = z.infer<typeof workflowDelaySchema>;
 
+export const workflowSlaSchema = workflowDelaySchema.refine((value) => value.amount > 0, {
+  path: ['amount'],
+  message: 'SLA must be at least one hour or day.'
+});
+
 /**
  * How many message versions ONE A/B step may carry.
  *
@@ -122,6 +127,8 @@ const stepId = z.string().trim().min(1).max(64);
 const common = {
   id: stepId,
   delayBefore: workflowDelaySchema.default({ amount: 0, unit: 'hours' as const }),
+  /** Optional target time after this step becomes due. It changes priority, never safety capacity. */
+  sla: workflowSlaSchema.optional(),
   /** Explicit graph edge. Omitted preserves the legacy next-array-item behavior. */
   nextStepId: stepId.nullable().optional()
 };
@@ -498,6 +505,149 @@ function templatesOf(step: WorkflowStep): string[] {
  * that is neither a canonical field nor an alias is still reported here, and
  * `workflowStepsSchema` still rejects the save.
  */
+export interface WorkflowDiagnostic {
+  code:
+    | 'too_many_touches'
+    | 'repeated_action_bottleneck'
+    | 'missing_reply_monitor'
+    | 'missing_invite_cleanup'
+    | 'missing_variable_coverage';
+  severity: 'warning' | 'info';
+  message: string;
+  stepIds: string[];
+}
+
+export interface WorkflowVariableCoverage {
+  present: number;
+  total: number;
+}
+
+/** Canonical built-in/custom merge variables used anywhere in a workflow. */
+export function workflowMergeVariables(steps: readonly WorkflowStep[]): string[] {
+  const found = new Set<string>();
+  for (const step of steps) {
+    for (const template of templatesOf(step)) {
+      for (const match of template.matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9_.-]*)\s*\}\}/g)) {
+        const raw = match[1];
+        if (raw.startsWith('custom.') && raw.length > 7) found.add(raw);
+        else {
+          const canonical = resolveManagerVariable(raw);
+          if (canonical) found.add(canonical);
+        }
+      }
+    }
+  }
+  return [...found].sort();
+}
+
+/**
+ * Advisory sequence diagnostics. They never rewrite a workflow and never make
+ * an otherwise-valid graph invalid; they exist to surface operational debt
+ * before a large audience is admitted into it.
+ */
+export function diagnoseWorkflow(
+  steps: readonly WorkflowStep[],
+  variableCoverage: Readonly<Record<string, WorkflowVariableCoverage>> = {}
+): WorkflowDiagnostic[] {
+  const diagnostics: WorkflowDiagnostic[] = [];
+  const touchActions = new Set<WorkflowStep['action']>([
+    'profile_view',
+    'connection_request',
+    'message',
+    'manual_message',
+    'follow',
+    'like_post',
+    'endorse_skills',
+    'inmail',
+    'email',
+    'manual_comment'
+  ]);
+  const touchSteps = steps.filter((step) => touchActions.has(step.action));
+  if (touchSteps.length > 8) {
+    diagnostics.push({
+      code: 'too_many_touches',
+      severity: 'warning',
+      message: `This workflow contains ${touchSteps.length} outreach touches. Long sequences consume downstream capacity and can feel repetitive; consider whether every touch earns its place.`,
+      stepIds: touchSteps.map((step) => step.id)
+    });
+  }
+
+  const repeated: Array<{ label: string; actions: WorkflowStep['action'][]; threshold: number }> = [
+    { label: 'message', actions: ['message', 'inmail', 'email'], threshold: 4 },
+    { label: 'Like', actions: ['like_post'], threshold: 2 },
+    { label: 'endorsement', actions: ['endorse_skills'], threshold: 2 },
+    { label: 'connection request', actions: ['connection_request'], threshold: 2 }
+  ];
+  for (const spec of repeated) {
+    const matches = steps.filter((step) => spec.actions.includes(step.action));
+    if (matches.length >= spec.threshold) {
+      diagnostics.push({
+        code: 'repeated_action_bottleneck',
+        severity: 'warning',
+        message: `${matches.length} ${spec.label}${matches.length === 1 ? '' : ' touches'} share the same scarce action capacity. Later stages may lag even when the first touch fits today's ceiling.`,
+        stepIds: matches.map((step) => step.id)
+      });
+    }
+  }
+
+  const messages = steps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => ['message', 'inmail', 'email'].includes(step.action));
+  for (let at = 1; at < messages.length; at += 1) {
+    const previous = messages[at - 1];
+    const current = messages[at];
+    const hasReplyMonitor = steps
+      .slice(previous.index + 1, current.index)
+      .some(
+        (step) =>
+          step.action === 'monitor' &&
+          (step.config.condition.kind === 'replied' ||
+            step.config.condition.kind === 'email_replied')
+      );
+    if (!hasReplyMonitor) {
+      diagnostics.push({
+        code: 'missing_reply_monitor',
+        severity: 'warning',
+        message: `There is another outbound message at “${current.step.id}” without a reply monitor after “${previous.step.id}”. Add an outcome check so a reply can stop follow-ups immediately.`,
+        stepIds: [previous.step.id, current.step.id]
+      });
+      break;
+    }
+  }
+
+  const inviteSteps = steps.filter((step) => step.action === 'connection_request');
+  if (inviteSteps.length > 0 && !steps.some((step) => step.action === 'withdraw_pending')) {
+    diagnostics.push({
+      code: 'missing_invite_cleanup',
+      severity: 'info',
+      message:
+        'This workflow sends a connection request but has no stale-pending withdrawal step. Consider an explicit cleanup path for invitations that remain unanswered for weeks.',
+      stepIds: inviteSteps.map((step) => step.id)
+    });
+  }
+
+  for (const variable of workflowMergeVariables(steps)) {
+    const coverage = variableCoverage[variable];
+    if (!coverage || coverage.total <= 0) continue;
+    const missing = Math.max(0, coverage.total - coverage.present);
+    const missingShare = missing / coverage.total;
+    if (missingShare >= 0.1 && missing >= 2) {
+      diagnostics.push({
+        code: 'missing_variable_coverage',
+        severity: 'warning',
+        message: `{{${variable}}} is missing for ${missing} of ${coverage.total} selected leads (${Math.round(missingShare * 100)}%). Missing values render as blank; add a fallback/branch or enrich the list before launch.`,
+        stepIds: steps
+          .filter((step) =>
+            templatesOf(step).some((template) => template.includes(`{{${variable}}}`))
+          )
+          .map((step) => step.id)
+      });
+    }
+  }
+
+  return diagnostics;
+}
+
 export function unsupportedVariables(template: string): string[] {
   const found = new Set<string>();
   for (const match of template.matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9_.-]*)\s*\}\}/g)) {

@@ -1639,7 +1639,10 @@ export function postgresLocalWorkerStore(
             -- yet. Excluded by id so the loop moves on instead of re-claiming
             -- the same undecided row until the pass is exhausted.
             AND NOT (id = ANY(?::text[]))
-          ORDER BY queue_priority DESC, planned_for ASC
+          ORDER BY
+            (CASE WHEN sla_deadline_at IS NOT NULL AND sla_deadline_at <= ?::timestamptz THEN 1 ELSE 0 END) DESC,
+            queue_priority DESC,
+            planned_for ASC
           FOR UPDATE SKIP LOCKED
           LIMIT 1
         )
@@ -1669,7 +1672,8 @@ export function postgresLocalWorkerStore(
           workspaceId,
           seatKey,
           now.toISOString(),
-          [...exclude]
+          [...exclude],
+          now.toISOString()
         );
       if (!row) return null;
       return {

@@ -2,6 +2,7 @@ import { id, type Db } from '../db.js';
 import { COUNTED_MESSAGE_KINDS, recordAction } from './actions.js';
 import type { CampaignStatus } from './action-ledger.js';
 import {
+  ADMISSION_FORECAST_MIN_SAMPLE,
   decideAdmission,
   workflowAdmissionDemand,
   type AdmissionDecision,
@@ -12,9 +13,13 @@ import { effectivePosture, getSeat, OWNER_SEAT_KEY } from './seats.js';
 import { bandFor, effectiveDailyCeiling, seatOperatorLimit, type PacedKind } from './limits.js';
 import {
   delayMilliseconds,
+  diagnoseWorkflow,
   getWorkflow,
   parseWorkflowSteps,
-  type WorkflowStep
+  workflowMergeVariables,
+  type WorkflowDiagnostic,
+  type WorkflowStep,
+  type WorkflowVariableCoverage
 } from './workflows.js';
 
 /**
@@ -1593,6 +1598,60 @@ export interface CampaignLaunchPreview {
   bottleneck: string | null;
   demand: ReturnType<typeof workflowAdmissionDemand>;
   reasons: string[];
+  variableCoverage: Record<string, WorkflowVariableCoverage>;
+  diagnostics: WorkflowDiagnostic[];
+}
+
+async function leadListVariableCoverage(
+  db: Db,
+  workspaceId: string,
+  listId: string,
+  variables: readonly string[]
+): Promise<Record<string, WorkflowVariableCoverage>> {
+  const totalRow = await db
+    .prepare(
+      'SELECT COUNT(*)::int AS total FROM linkedin_lead_list_members WHERE workspace_id=? AND list_id=?'
+    )
+    .get<{ total: number }>(workspaceId, listId);
+  const total = Number(totalRow?.total ?? 0);
+  const coverage: Record<string, WorkflowVariableCoverage> = {};
+  const columns: Record<string, string> = {
+    first_name: 'first_name',
+    last_name: 'last_name',
+    company: 'company',
+    email: 'email',
+    phone: 'phone',
+    country: 'country'
+  };
+  for (const variable of variables) {
+    if (variable.startsWith('custom.')) {
+      const key = variable.slice(7);
+      const row = await db
+        .prepare(
+          `SELECT COUNT(*) FILTER (
+             WHERE NULLIF(BTRIM(COALESCE(jsonb_extract_path_text(c.custom_fields_json, ?),'')),'') IS NOT NULL
+           )::int AS present
+           FROM linkedin_lead_list_members m
+           JOIN linkedin_lead_contacts c ON c.workspace_id=m.workspace_id AND c.id=m.contact_id
+           WHERE m.workspace_id=? AND m.list_id=?`
+        )
+        .get<{ present: number }>(key, workspaceId, listId);
+      coverage[variable] = { present: Number(row?.present ?? 0), total };
+      continue;
+    }
+    const column = columns[variable];
+    if (!column) continue;
+    const row = await db
+      .prepare(
+        `SELECT COUNT(*) FILTER (WHERE NULLIF(BTRIM(COALESCE(c.${column},'')),'') IS NOT NULL)::int AS present
+         FROM linkedin_lead_list_members m
+         JOIN linkedin_lead_contacts c ON c.workspace_id=m.workspace_id AND c.id=m.contact_id
+         WHERE m.workspace_id=? AND m.list_id=?`
+      )
+      .get<{ present: number }>(workspaceId, listId);
+    coverage[variable] = { present: Number(row?.present ?? 0), total };
+  }
+  return coverage;
 }
 
 function workflowKindToPaced(kind: keyof ReturnType<typeof workflowAdmissionDemand>): PacedKind {
@@ -1633,6 +1692,13 @@ export async function previewManagedCampaignLaunch(
     senders[0] ?? OWNER_SEAT_KEY
   );
   if (!list) throw new Error('Lead list not found.');
+  const variableCoverage = await leadListVariableCoverage(
+    db,
+    input.workspaceId,
+    list.id,
+    workflowMergeVariables(workflow.steps)
+  );
+  const diagnostics = diagnoseWorkflow(workflow.steps, variableCoverage);
   const demand = workflowAdmissionDemand(workflow.steps);
   const capacity: CampaignLaunchPreview['dayOneCapacity'] = {};
   const eligibleSenders: string[] = [];
@@ -1674,7 +1740,9 @@ export async function previewManagedCampaignLaunch(
     firstWaveSize: decision.admit,
     bottleneck: decision.limitingKind,
     demand,
-    reasons: decision.reasons
+    reasons: decision.reasons,
+    variableCoverage,
+    diagnostics
   };
 }
 
@@ -2751,6 +2819,102 @@ export async function managedAnalytics(
   };
 }
 
+export interface CampaignAdmissionForecast {
+  acceptanceRate: number | null;
+  acceptanceSampleSize: number;
+  noReplyRate: number | null;
+  replySampleSize: number;
+  failureRate: number | null;
+  outcomeSampleSize: number;
+  throttle: number;
+  reasons: string[];
+}
+
+/**
+ * Recent campaign outcomes that are safe to feed back into admission.
+ *
+ * Forecasting is deliberately one-way: it may shrink a wave, never manufacture
+ * capacity. Rates stay null until the minimum sample is present. Challenge,
+ * limit-wall, selector-drift and unknown outcomes count as execution-health
+ * failures; ordinary no-result/already-done skips do not.
+ */
+export async function campaignAdmissionForecast(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  now: Date = new Date()
+): Promise<CampaignAdmissionForecast> {
+  const messageKinds = COUNTED_MESSAGE_KINDS.map((kind) => `'${kind}'`).join(', ');
+  const row = await db
+    .prepare(
+      `SELECT
+         COUNT(*) FILTER (WHERE kind='invite' AND status IN ('sent','accepted','replied','declined'))::int AS invite_sample,
+         COUNT(*) FILTER (WHERE kind='invite' AND status IN ('accepted','replied'))::int AS invite_accepted,
+         COUNT(*) FILTER (WHERE kind IN (${messageKinds}) AND status IN ('sent','accepted','replied'))::int AS message_sample,
+         COUNT(*) FILTER (WHERE kind IN (${messageKinds}) AND status='replied')::int AS message_replied,
+         COUNT(*) FILTER (WHERE (recorded_at IS NOT NULL OR failure_kind IS NOT NULL)
+            AND created_at >= (?::timestamptz - INTERVAL '30 days'))::int AS outcome_sample,
+         COUNT(*) FILTER (WHERE failure_kind IN ('challenge','limit_wall','selector_drift','unknown','compose_unavailable')
+            AND created_at >= (?::timestamptz - INTERVAL '30 days'))::int AS bad_outcomes
+       FROM linkedin_actions WHERE workspace_id=? AND campaign_id=?`
+    )
+    .get<Record<string, number>>(now.toISOString(), now.toISOString(), workspaceId, campaignId);
+  const acceptanceSampleSize = Number(row?.invite_sample ?? 0);
+  const accepted = Number(row?.invite_accepted ?? 0);
+  const replySampleSize = Number(row?.message_sample ?? 0);
+  const replied = Number(row?.message_replied ?? 0);
+  const outcomeSampleSize = Number(row?.outcome_sample ?? 0);
+  const badOutcomes = Number(row?.bad_outcomes ?? 0);
+  const acceptanceRate =
+    acceptanceSampleSize >= ADMISSION_FORECAST_MIN_SAMPLE
+      ? accepted / Math.max(1, acceptanceSampleSize)
+      : null;
+  const replyRate =
+    replySampleSize >= ADMISSION_FORECAST_MIN_SAMPLE
+      ? replied / Math.max(1, replySampleSize)
+      : null;
+  const failureRate =
+    outcomeSampleSize >= ADMISSION_FORECAST_MIN_SAMPLE
+      ? badOutcomes / Math.max(1, outcomeSampleSize)
+      : null;
+
+  let throttle = 1;
+  const reasons: string[] = [];
+  if (acceptanceRate !== null && acceptanceRate < 0.1) {
+    throttle = Math.min(throttle, 0.25);
+    reasons.push(
+      `Invite acceptance is ${Math.round(acceptanceRate * 100)}% across ${acceptanceSampleSize} decided sends, so new admission is reduced to protect downstream quality.`
+    );
+  } else if (acceptanceRate !== null && acceptanceRate < 0.2) {
+    throttle = Math.min(throttle, 0.5);
+    reasons.push(
+      `Invite acceptance is ${Math.round(acceptanceRate * 100)}% across ${acceptanceSampleSize} decided sends, so new admission is reduced.`
+    );
+  }
+  if (failureRate !== null && failureRate >= 0.3) {
+    throttle = 0;
+    reasons.push(
+      `${Math.round(failureRate * 100)}% of ${outcomeSampleSize} recent execution outcomes are challenge/limit/drift/unknown failures; new admissions are stopped until execution health recovers.`
+    );
+  } else if (failureRate !== null && failureRate >= 0.12) {
+    throttle = Math.min(throttle, 0.5);
+    reasons.push(
+      `${Math.round(failureRate * 100)}% of ${outcomeSampleSize} recent execution outcomes are challenge/limit/drift/unknown failures; new admissions are reduced.`
+    );
+  }
+
+  return {
+    acceptanceRate,
+    acceptanceSampleSize,
+    noReplyRate: replyRate === null ? null : 1 - replyRate,
+    replySampleSize,
+    failureRate,
+    outcomeSampleSize,
+    throttle,
+    reasons
+  };
+}
+
 export interface CampaignOperationalAnalytics {
   funnel: {
     totalAudience: number;
@@ -2781,6 +2945,9 @@ export interface CampaignOperationalAnalytics {
     skipped: number;
     failed: number;
     overdue: number;
+    slaMeasured: number;
+    slaMissed: number;
+    slaMissRate: number | null;
     medianQueueLatencyMinutes: number | null;
   }>;
   variants: Array<{
@@ -2814,6 +2981,7 @@ export interface CampaignOperationalAnalytics {
     limitingKind: string | null;
     reason: string;
   };
+  admissionForecast: CampaignAdmissionForecast;
 }
 
 /**
@@ -2830,6 +2998,7 @@ export async function campaignOperationalAnalytics(
 ): Promise<CampaignOperationalAnalytics> {
   const campaign = await getManagedCampaign(db, workspaceId, campaignId);
   if (!campaign) throw new Error('Campaign not found.');
+  const admissionForecast = await campaignAdmissionForecast(db, workspaceId, campaignId, now);
   const messageKinds = COUNTED_MESSAGE_KINDS.map((kind) => `'${kind}'`).join(', ');
   const funnel = await db
     .prepare(
@@ -2905,6 +3074,11 @@ export async function campaignOperationalAnalytics(
          COUNT(*) FILTER (WHERE a.status='skipped')::int AS skipped,
          COUNT(*) FILTER (WHERE a.failure_kind IS NOT NULL AND a.status NOT IN ('sent','accepted','replied'))::int AS failed,
          COUNT(*) FILTER (WHERE a.status IN ('planned','held') AND a.planned_for<?::timestamptz)::int AS overdue,
+         COUNT(*) FILTER (WHERE a.sla_deadline_at IS NOT NULL AND (a.recorded_at IS NOT NULL OR a.sla_deadline_at<=?::timestamptz))::int AS sla_measured,
+         COUNT(*) FILTER (WHERE a.sla_deadline_at IS NOT NULL AND (
+           (a.recorded_at IS NOT NULL AND a.recorded_at>a.sla_deadline_at) OR
+           (a.recorded_at IS NULL AND a.status IN ('planned','held') AND a.sla_deadline_at<=?::timestamptz)
+         ))::int AS sla_missed,
          percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (a.recorded_at-a.planned_for))/60.0)
            FILTER (WHERE a.recorded_at IS NOT NULL AND a.planned_for IS NOT NULL) AS median_latency
        FROM linkedin_actions a
@@ -2918,8 +3092,10 @@ export async function campaignOperationalAnalytics(
       skipped: number;
       failed: number;
       overdue: number;
+      sla_measured: number;
+      sla_missed: number;
       median_latency: number | null;
-    }>(now.toISOString(), workspaceId, campaignId);
+    }>(now.toISOString(), now.toISOString(), now.toISOString(), workspaceId, campaignId);
   const stepById = new Map(campaign.steps.map((step) => [step.id, step]));
 
   const variantRows = await db
@@ -3013,6 +3189,10 @@ export async function campaignOperationalAnalytics(
       skipped: Number(row.skipped),
       failed: Number(row.failed),
       overdue: Number(row.overdue),
+      slaMeasured: Number(row.sla_measured),
+      slaMissed: Number(row.sla_missed),
+      slaMissRate:
+        Number(row.sla_measured) > 0 ? Number(row.sla_missed) / Number(row.sla_measured) : null,
       medianQueueLatencyMinutes: row.median_latency === null ? null : Number(row.median_latency)
     })),
     variants: variantRows.map((row) => {
@@ -3051,6 +3231,7 @@ export async function campaignOperationalAnalytics(
       failedMembers: queues.failed,
       limitingKind,
       reason
-    }
+    },
+    admissionForecast
   };
 }

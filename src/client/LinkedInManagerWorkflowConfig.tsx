@@ -419,6 +419,12 @@ function stepProblems(step: WorkflowStep, index: number, steps: readonly Workflo
   if (!Number.isInteger(amount) || amount < 0 || amount > DELAY_MAX) {
     problems.push(`The wait has to be a whole number between 0 and ${DELAY_MAX}.`);
   }
+  if (
+    step.sla &&
+    (!Number.isInteger(step.sla.amount) || step.sla.amount < 1 || step.sla.amount > DELAY_MAX)
+  ) {
+    problems.push(`The target SLA has to be a whole number between 1 and ${DELAY_MAX}.`);
+  }
 
   if (step.action === 'withdraw_pending') {
     const invited = steps
@@ -1635,6 +1641,15 @@ function WorkflowStepCard({
 
   const setDelay = (patch: Partial<WorkflowDelay>) =>
     onChange({ ...step, delayBefore: { ...step.delayBefore, ...patch } } as WorkflowStep);
+  const setSla = (patch: Partial<WorkflowDelay> | null) =>
+    onChange(
+      patch === null
+        ? ({ ...step, sla: undefined } as WorkflowStep)
+        : ({
+            ...step,
+            sla: { ...(step.sla ?? { amount: 24, unit: 'hours' as const }), ...patch }
+          } as WorkflowStep)
+    );
   const laterTargets = steps.slice(index + 1);
   const earlierResultTargets = steps
     .slice(0, index)
@@ -1759,6 +1774,43 @@ function WorkflowStepCard({
           {index === 0
             ? `Runs ${waitLabel(step.delayBefore)} after the campaign starts the lead — ${when.toLowerCase()}.`
             : `Runs ${waitLabel(step.delayBefore)} after step ${index} — ${when.toLowerCase()}.`}
+        </p>
+
+        <div className="li-wf-wait li-span-2">
+          <label>
+            Target SLA after due
+            <input
+              type="number"
+              min={1}
+              max={DELAY_MAX}
+              placeholder="none"
+              value={step.sla?.amount ?? ''}
+              onChange={(event) => {
+                const raw = event.target.value.trim();
+                if (!raw) setSla(null);
+                else
+                  setSla({
+                    amount: Math.min(DELAY_MAX, Math.max(1, Math.trunc(Number(raw) || 1)))
+                  });
+              }}
+            />
+          </label>
+          <label>
+            SLA unit
+            <select
+              disabled={!step.sla}
+              value={step.sla?.unit ?? 'hours'}
+              onChange={(event) => setSla({ unit: event.target.value as 'hours' | 'days' })}
+            >
+              <option value="hours">hours</option>
+              <option value="days">days</option>
+            </select>
+          </label>
+        </div>
+        <p className="li-hint li-span-2">
+          {step.sla
+            ? `If this step is still waiting ${step.sla.amount} ${step.sla.unit} after it becomes due, Trevra escalates it ahead of newer continuation work. This never raises LinkedIn limits.`
+            : 'Optional: set a follow-up SLA to escalate this step if it waits too long. It changes priority, not LinkedIn limits.'}
         </p>
 
         {step.action === 'connection_request' && (

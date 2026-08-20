@@ -2230,6 +2230,12 @@ export function OutreachManagerRead({
                             <>
                               <h4>Why this campaign is moving at this speed</h4>
                               <p className="li-hint">{operationalAnalytics.bottlenecks.reason}</p>
+                              {operationalAnalytics.admissionForecast.reasons.length > 0 && (
+                                <p className="li-hint">
+                                  Admission throttle:{' '}
+                                  {operationalAnalytics.admissionForecast.reasons.join(' ')}
+                                </p>
+                              )}
                               <div className="li-stat-grid">
                                 <div>
                                   <span>Audience</span>
@@ -2263,6 +2269,23 @@ export function OutreachManagerRead({
                                   <span>Overdue actions</span>
                                   <strong>{operationalAnalytics.bottlenecks.overdueActions}</strong>
                                 </div>
+                                <div>
+                                  <span>Forecast acceptance</span>
+                                  <strong>
+                                    {operationalAnalytics.admissionForecast.acceptanceRate === null
+                                      ? `learning (${operationalAnalytics.admissionForecast.acceptanceSampleSize}/20)`
+                                      : `${Math.round(operationalAnalytics.admissionForecast.acceptanceRate * 100)}%`}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>New-admission multiplier</span>
+                                  <strong>
+                                    {Math.round(
+                                      operationalAnalytics.admissionForecast.throttle * 100
+                                    )}
+                                    %
+                                  </strong>
+                                </div>
                               </div>
                               {operationalAnalytics.steps.length > 0 && (
                                 <p className="li-hint">
@@ -2270,7 +2293,7 @@ export function OutreachManagerRead({
                                   {operationalAnalytics.steps
                                     .map(
                                       (row) =>
-                                        `${row.workflowStepId}: ${row.executed} done · ${row.overdue} overdue${row.medianQueueLatencyMinutes === null ? '' : ` · median ${Math.round(row.medianQueueLatencyMinutes)}m late`}`
+                                        `${row.workflowStepId}: ${row.executed} done · ${row.overdue} overdue${row.slaMissRate === null ? '' : ` · SLA ${Math.round(row.slaMissRate * 100)}% missed (${row.slaMissed}/${row.slaMeasured})`}${row.medianQueueLatencyMinutes === null ? '' : ` · median ${Math.round(row.medianQueueLatencyMinutes)}m late`}`
                                     )
                                     .join(' | ')}
                                 </p>

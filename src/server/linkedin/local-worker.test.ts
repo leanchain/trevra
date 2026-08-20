@@ -3,9 +3,24 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase, type Db } from '../db.js';
-import { SELECTORS, type LinkedInDriver, type LinkedInDriverResult, type LinkedInPage, type LinkedInSeatRead } from './driver.js';
-import type { LinkedInInboxMessage, LinkedInThreadListing, LinkedInThreadSummary, LinkedInThreadTranscript } from './driver-inbox.js';
-import { evaluateLinkedInSafety, type LinkedInSafetyCheck, type LinkedInSafetyVerdict } from './guard.js';
+import {
+  SELECTORS,
+  type LinkedInDriver,
+  type LinkedInDriverResult,
+  type LinkedInPage,
+  type LinkedInSeatRead
+} from './driver.js';
+import type {
+  LinkedInInboxMessage,
+  LinkedInThreadListing,
+  LinkedInThreadSummary,
+  LinkedInThreadTranscript
+} from './driver-inbox.js';
+import {
+  evaluateLinkedInSafety,
+  type LinkedInSafetyCheck,
+  type LinkedInSafetyVerdict
+} from './guard.js';
 import { ACTION_GAP_SECONDS } from './limits.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
 import { getSeat, upsertSeat, type SeatPosture } from './seats.js';
@@ -58,8 +73,16 @@ import {
 
 describe('seatConcurrencyForConfig', () => {
   it('serializes every LinkedIn account behind one paired companion', () => {
-    expect(seatConcurrencyForConfig({ enabled: true, companionBrowser: true }, true, { TREVRA_LINKEDIN_SEAT_CONCURRENCY: '9' })).toBe(1);
-    expect(seatConcurrencyForConfig({ enabled: true, companionBrowser: false }, true, { TREVRA_LINKEDIN_SEAT_CONCURRENCY: '4' })).toBe(4);
+    expect(
+      seatConcurrencyForConfig({ enabled: true, companionBrowser: true }, true, {
+        TREVRA_LINKEDIN_SEAT_CONCURRENCY: '9'
+      })
+    ).toBe(1);
+    expect(
+      seatConcurrencyForConfig({ enabled: true, companionBrowser: false }, true, {
+        TREVRA_LINKEDIN_SEAT_CONCURRENCY: '4'
+      })
+    ).toBe(4);
   });
 });
 import type { LinkedInLocator } from './driver.js';
@@ -85,7 +108,11 @@ import { randomBytes } from 'node:crypto';
 
 const page = {} as LinkedInPage;
 
-const ok: LinkedInDriverResult = { ok: true, externalRef: 'https://www.linkedin.com/in/x/', failureKind: null };
+const ok: LinkedInDriverResult = {
+  ok: true,
+  externalRef: 'https://www.linkedin.com/in/x/',
+  failureKind: null
+};
 
 function verdict(overrides: Partial<LinkedInSafetyVerdict> = {}): LinkedInSafetyVerdict {
   return {
@@ -105,7 +132,11 @@ function soleDuplicateRefusal(): LinkedInSafetyVerdict {
     reason: 'duplicate-target: already logged',
     checks: [
       { check: 'seat-paused', passed: true, detail: 'ok' },
-      { check: 'duplicate-target', passed: false, detail: 'This seat already has an invite logged against it.' }
+      {
+        check: 'duplicate-target',
+        passed: false,
+        detail: 'This seat already has an invite logged against it.'
+      }
     ]
   });
 }
@@ -353,7 +384,13 @@ describe('dispatch is exhaustive', () => {
     const harness = fakeStore([
       action({ id: 'lact_invite', kind: 'invite', targetRef: 'in/a' }),
       action({ id: 'lact_dm', kind: 'dm', targetRef: 'in/b', body: 'approved' }),
-      action({ id: 'lact_reply', kind: 'reply', targetRef: 'in/c', body: 'answered', threadUrn: '2-thread==' }),
+      action({
+        id: 'lact_reply',
+        kind: 'reply',
+        targetRef: 'in/c',
+        body: 'answered',
+        threadUrn: '2-thread=='
+      }),
       action({ id: 'lact_view', kind: 'profile_view', targetRef: 'in/d', body: null }),
       action({ id: 'lact_follow', kind: 'follow', targetRef: 'in/e', body: null }),
       action({ id: 'lact_like', kind: 'like', targetRef: 'in/f', body: null }),
@@ -385,10 +422,18 @@ describe('dispatch is exhaustive', () => {
   });
 
   it('threads the batch-scoped seed into the routines that pause between clicks', async () => {
-    const harness = fakeStore([action({ id: 'lact_like', kind: 'like', targetRef: 'in/f', body: null })]);
+    const harness = fakeStore([
+      action({ id: 'lact_like', kind: 'like', targetRef: 'in/f', body: null })
+    ]);
     const { driver, calls } = fakeDriver();
 
-    await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     // The SAME seed the inter-action gap is drawn from, so a batch's whole
     // timing -- between actions and within one -- is reproducible from two ids
@@ -402,7 +447,9 @@ describe('dispatch is exhaustive', () => {
     // Unreachable through the real claim, which requires a thread_urn. Asserted
     // because the alternative implementation -- falling back to `sendDm` -- is
     // exactly the silent substitution the exhaustive switch exists to stop.
-    const harness = fakeStore([action({ id: 'lact_orphan', kind: 'reply', body: 'answered', threadUrn: null })]);
+    const harness = fakeStore([
+      action({ id: 'lact_orphan', kind: 'reply', body: 'answered', threadUrn: null })
+    ]);
     const { driver, calls } = fakeDriver();
 
     const result = await runLinkedInLocalBatch(harness.store, {
@@ -422,7 +469,13 @@ describe('dispatch is exhaustive', () => {
 describe('sync after send', () => {
   it('re-reads the conversation right after a reply lands, so the transcript catches up without a manual sync', async () => {
     const harness = fakeStore([
-      action({ id: 'lact_reply', kind: 'reply', targetRef: 'https://www.linkedin.com/in/c/', body: 'thanks', threadUrn: '2-thread==' })
+      action({
+        id: 'lact_reply',
+        kind: 'reply',
+        targetRef: 'https://www.linkedin.com/in/c/',
+        body: 'thanks',
+        threadUrn: '2-thread=='
+      })
     ]);
     const { driver } = fakeDriver();
     const transcript: LinkedInThreadTranscript = {
@@ -450,12 +503,20 @@ describe('sync after send', () => {
 
     expect(result.executed).toBe(1);
     expect(readThreadCalls).toEqual(['2-thread==']);
-    expect(harness.recordedReplyMessages).toEqual([{ threadUrn: '2-thread==', messages: transcript.messages }]);
+    expect(harness.recordedReplyMessages).toEqual([
+      { threadUrn: '2-thread==', messages: transcript.messages }
+    ]);
   });
 
   it('does not let a failed re-sync undo the settled send', async () => {
     const harness = fakeStore([
-      action({ id: 'lact_reply', kind: 'reply', targetRef: 'https://www.linkedin.com/in/c/', body: 'thanks', threadUrn: '2-thread==' })
+      action({
+        id: 'lact_reply',
+        kind: 'reply',
+        targetRef: 'https://www.linkedin.com/in/c/',
+        body: 'thanks',
+        threadUrn: '2-thread=='
+      })
     ]);
     const { driver } = fakeDriver();
     const testDriver: LinkedInDriver = {
@@ -482,7 +543,12 @@ describe('sync after send', () => {
 
   it('finds and files the conversation a first message just opened', async () => {
     const harness = fakeStore([
-      action({ id: 'lact_dm', kind: 'dm', targetRef: 'https://www.linkedin.com/in/new-person/', body: 'hi there' })
+      action({
+        id: 'lact_dm',
+        kind: 'dm',
+        targetRef: 'https://www.linkedin.com/in/new-person/',
+        body: 'hi there'
+      })
     ]);
     const { driver } = fakeDriver();
     const summary: LinkedInThreadSummary = {
@@ -516,12 +582,19 @@ describe('sync after send', () => {
 
     expect(result.executed).toBe(1);
     expect(harness.recordedNewThreads).toEqual([summary]);
-    expect(harness.recordedReplyMessages).toEqual([{ threadUrn: 'new-thread==', messages: transcript.messages }]);
+    expect(harness.recordedReplyMessages).toEqual([
+      { threadUrn: 'new-thread==', messages: transcript.messages }
+    ]);
   });
 
   it('leaves a dm alone when the new conversation is not among the newest few, same as before this existed', async () => {
     const harness = fakeStore([
-      action({ id: 'lact_dm', kind: 'dm', targetRef: 'https://www.linkedin.com/in/new-person/', body: 'hi there' })
+      action({
+        id: 'lact_dm',
+        kind: 'dm',
+        targetRef: 'https://www.linkedin.com/in/new-person/',
+        body: 'hi there'
+      })
     ]);
     const { driver } = fakeDriver();
     const testDriver: LinkedInDriver = {
@@ -547,7 +620,9 @@ describe('sync after send', () => {
   });
 
   it('does not reach for the rail at all on kinds that are not a dm or a reply', async () => {
-    const harness = fakeStore([action({ id: 'lact_invite', kind: 'invite', targetRef: 'https://www.linkedin.com/in/z/' })]);
+    const harness = fakeStore([
+      action({ id: 'lact_invite', kind: 'invite', targetRef: 'https://www.linkedin.com/in/z/' })
+    ]);
     const { driver } = fakeDriver();
     let listCalls = 0;
     const testDriver: LinkedInDriver = {
@@ -558,7 +633,13 @@ describe('sync after send', () => {
       }
     };
 
-    await runLinkedInLocalBatch(harness.store, { driver: testDriver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    await runLinkedInLocalBatch(harness.store, {
+      driver: testDriver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(listCalls).toBe(0);
   });
@@ -569,7 +650,10 @@ describe('the branch gate runs in the loop', () => {
     const harness = fakeStore(threeActions, {
       branch: async (candidate) =>
         candidate.id === 'lact_2'
-          ? { outcome: 'skipped', reason: "Step 'message-1' is skipped: step 'invite' was not accepted." }
+          ? {
+              outcome: 'skipped',
+              reason: "Step 'message-1' is skipped: step 'invite' was not accepted."
+            }
           : null
     });
     const { driver, calls } = fakeDriver();
@@ -582,7 +666,10 @@ describe('the branch gate runs in the loop', () => {
       evaluate: async () => verdict()
     });
 
-    expect(calls.map((entry) => entry.target)).toEqual(['https://www.linkedin.com/in/a/', 'https://www.linkedin.com/in/c/']);
+    expect(calls.map((entry) => entry.target)).toEqual([
+      'https://www.linkedin.com/in/a/',
+      'https://www.linkedin.com/in/c/'
+    ]);
     expect(result.branchSkipped).toBe(1);
     expect(result.executed).toBe(2);
     expect(harness.branchSkipped.map((entry) => entry.id)).toEqual(['lact_2']);
@@ -598,7 +685,10 @@ describe('the branch gate runs in the loop', () => {
     const harness = fakeStore(threeActions, {
       branch: async (candidate) =>
         candidate.id === 'lact_1'
-          ? { outcome: 'pending', reason: "Step 'message-1' is waiting: nobody has accepted step 'invite' yet." }
+          ? {
+              outcome: 'pending',
+              reason: "Step 'message-1' is waiting: nobody has accepted step 'invite' yet."
+            }
           : null
     });
     const { driver, calls } = fakeDriver();
@@ -615,7 +705,10 @@ describe('the branch gate runs in the loop', () => {
     expect(result.executed).toBe(2);
     expect(harness.released).toEqual([{ id: 'lact_1', failureKind: null }]);
     expect(harness.claimed).toEqual(['lact_1', 'lact_2', 'lact_3']);
-    expect(calls.map((entry) => entry.target)).toEqual(['https://www.linkedin.com/in/b/', 'https://www.linkedin.com/in/c/']);
+    expect(calls.map((entry) => entry.target)).toEqual([
+      'https://www.linkedin.com/in/b/',
+      'https://www.linkedin.com/in/c/'
+    ]);
   });
 
   it('fails closed and halts when the branch cannot be evaluated at all', async () => {
@@ -678,11 +771,18 @@ describe('the safety gate runs per action', () => {
       log: () => {},
       evaluate: async (candidate) =>
         candidate.id === 'lact_2'
-          ? verdict({ allowed: false, reason: 'rolling-24h: 18 of 18 invites used', checks: [{ check: 'rolling-24h', passed: false, detail: 'full' }] })
+          ? verdict({
+              allowed: false,
+              reason: 'rolling-24h: 18 of 18 invites used',
+              checks: [{ check: 'rolling-24h', passed: false, detail: 'full' }]
+            })
           : verdict()
     });
 
-    expect(calls.map((entry) => entry.target)).toEqual(['https://www.linkedin.com/in/a/', 'https://www.linkedin.com/in/c/']);
+    expect(calls.map((entry) => entry.target)).toEqual([
+      'https://www.linkedin.com/in/a/',
+      'https://www.linkedin.com/in/c/'
+    ]);
     expect(result.blocked).toBe(1);
     expect(result.executed).toBe(2);
     // Nothing was sent, so the claim goes back with no failure kind against it.
@@ -705,7 +805,11 @@ describe('the safety gate runs per action', () => {
       log: () => {},
       evaluate: async (candidate) =>
         candidate.id === 'lact_1'
-          ? verdict({ allowed: false, reason: 'rolling-24h: 18 of 18 invites used', checks: [{ check: 'rolling-24h', passed: false, detail: 'full' }] })
+          ? verdict({
+              allowed: false,
+              reason: 'rolling-24h: 18 of 18 invites used',
+              checks: [{ check: 'rolling-24h', passed: false, detail: 'full' }]
+            })
           : verdict()
     });
 
@@ -713,7 +817,10 @@ describe('the safety gate runs per action', () => {
     expect(harness.claimed).toEqual(['lact_1', 'lact_2', 'lact_3']);
     expect(result.blocked).toBe(1);
     expect(result.executed).toBe(2);
-    expect(calls.map((entry) => entry.target)).toEqual(['https://www.linkedin.com/in/b/', 'https://www.linkedin.com/in/c/']);
+    expect(calls.map((entry) => entry.target)).toEqual([
+      'https://www.linkedin.com/in/b/',
+      'https://www.linkedin.com/in/c/'
+    ]);
     // Released with no failure kind: nothing was attempted, let alone failed.
     expect(harness.released).toEqual([{ id: 'lact_1', failureKind: null }]);
   });
@@ -789,14 +896,22 @@ describe('what LinkedIn says stops the batch', () => {
     expect(harness.released).toEqual([{ id: 'lact_1', failureKind: 'limit_wall' }]);
     expect(harness.claimed).toEqual(['lact_1']);
     expect(harness.remaining()).toBe(3);
-    expect(harness.closed).toEqual([{ status: 'halted', haltReason: result.haltReason, executed: 0 }]);
+    expect(harness.closed).toEqual([
+      { status: 'halted', haltReason: result.haltReason, executed: 0 }
+    ]);
   });
 
   it('puts the seat in cooldown and halts on a challenge', async () => {
     const harness = fakeStore(threeActions);
     const { driver, calls } = fakeDriver(() => ({ ok: false, failureKind: 'challenge' }));
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(calls).toHaveLength(1);
     expect(harness.cooldowns).toBe(1);
@@ -807,7 +922,13 @@ describe('what LinkedIn says stops the batch', () => {
     const harness = fakeStore(threeActions, { posture: 'cooldown' });
     const { driver, calls } = fakeDriver();
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(calls).toHaveLength(0);
     expect(result.batchId).toBeNull();
@@ -818,7 +939,13 @@ describe('what LinkedIn says stops the batch', () => {
     const harness = fakeStore(threeActions, { posture: null });
     const { driver, calls } = fakeDriver();
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(calls).toHaveLength(0);
     expect(result.haltReason).toMatch(/no LinkedIn seat/i);
@@ -830,7 +957,13 @@ describe('what LinkedIn says stops the batch', () => {
       index === 0 ? { ok: false, failureKind: 'not_found' } : ok
     );
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(calls).toHaveLength(3);
     expect(harness.skipped).toEqual([{ id: 'lact_1', failureKind: 'not_found' }]);
@@ -842,7 +975,13 @@ describe('what LinkedIn says stops the batch', () => {
     const harness = fakeStore(threeActions);
     const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'unknown' }));
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     // HELD, not released: a retry could put a second invite in front of the
     // same person, and that cannot be undone.
@@ -855,7 +994,13 @@ describe('what LinkedIn says stops the batch', () => {
     const harness = fakeStore(threeActions);
     const { driver, calls } = fakeDriver(() => ({ ok: false, failureKind: 'selector_drift' }));
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(calls).toHaveLength(1);
     expect(harness.released).toEqual([{ id: 'lact_1', failureKind: 'selector_drift' }]);
@@ -869,17 +1014,37 @@ describe('what LinkedIn says stops the batch', () => {
     // is still pending. Halting the whole seat's batch for one unanswered
     // invite is what this classification stops.
     const messages = [
-      action({ id: 'lact_1', kind: 'dm', targetRef: 'https://www.linkedin.com/in/a/', body: 'hello' }),
-      action({ id: 'lact_2', kind: 'dm', targetRef: 'https://www.linkedin.com/in/b/', body: 'hello' })
+      action({
+        id: 'lact_1',
+        kind: 'dm',
+        targetRef: 'https://www.linkedin.com/in/a/',
+        body: 'hello'
+      }),
+      action({
+        id: 'lact_2',
+        kind: 'dm',
+        targetRef: 'https://www.linkedin.com/in/b/',
+        body: 'hello'
+      })
     ];
     const harness = fakeStore(messages, { unacceptedInvite: true });
     const { driver, calls } = fakeDriver((target) =>
       target === 'https://www.linkedin.com/in/a/'
-        ? { ok: false, failureKind: 'selector_drift', detail: `${SELECTORS.messageButton} did not match on https://www.linkedin.com/in/a/. Nothing was clicked.` }
+        ? {
+            ok: false,
+            failureKind: 'selector_drift',
+            detail: `${SELECTORS.messageButton} did not match on https://www.linkedin.com/in/a/. Nothing was clicked.`
+          }
         : ok
     );
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(result.halted).toBe(false);
     expect(result.failed).toBe(0);
@@ -887,7 +1052,10 @@ describe('what LinkedIn says stops the batch', () => {
     expect(result.executed).toBe(1);
     // Released untouched, and not re-handed on this pass.
     expect(harness.released).toEqual([{ id: 'lact_1', failureKind: null }]);
-    expect(calls.map((entry) => entry.target)).toEqual(['https://www.linkedin.com/in/a/', 'https://www.linkedin.com/in/b/']);
+    expect(calls.map((entry) => entry.target)).toEqual([
+      'https://www.linkedin.com/in/a/',
+      'https://www.linkedin.com/in/b/'
+    ]);
   });
 
   it('still halts on a missing Message control when no unaccepted invite explains it', async () => {
@@ -901,7 +1069,13 @@ describe('what LinkedIn says stops the batch', () => {
       detail: `${SELECTORS.messageButton} did not match on https://www.linkedin.com/in/maya/. Nothing was clicked.`
     }));
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(result.halted).toBe(true);
     expect(result.failed).toBe(1);
@@ -913,10 +1087,17 @@ describe('what LinkedIn says stops the batch', () => {
     const { driver } = fakeDriver(() => ({
       ok: false,
       failureKind: 'selector_drift',
-      detail: 'button.artdeco-button--connect did not match on https://www.linkedin.com/in/maya/. Nothing was clicked.'
+      detail:
+        'button.artdeco-button--connect did not match on https://www.linkedin.com/in/maya/. Nothing was clicked.'
     }));
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(result.halted).toBe(true);
     expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
@@ -932,7 +1113,13 @@ describe('the kill switch', () => {
       return ok;
     });
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(calls).toHaveLength(1);
     expect(result.executed).toBe(1);
@@ -950,7 +1137,13 @@ describe('the kill switch', () => {
       return ok;
     });
 
-    const result = await runLinkedInLocalBatch(harness.store, { driver, page, sleep: noSleep, log: () => {}, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
 
     expect(calls).toHaveLength(1);
     expect(result.haltReason).toMatch(/stop was requested/i);
@@ -1037,13 +1230,17 @@ describe('the optional dependency', () => {
     // Enabled, and still must not throw: a browser this machine cannot open
     // must not take down the worker process and everything else it runs. The
     // work is not lost either -- it stays due for a worker that can.
-    await expect(runDueLinkedInActions(forbidden, { enabled: true }, { log: () => {} })).resolves.toEqual([]);
+    await expect(
+      runDueLinkedInActions(forbidden, { enabled: true }, { log: () => {} })
+    ).resolves.toEqual([]);
   });
 
   it('defaults the profile directory under the operator home, not the repo, suffixed per workspace', () => {
     expect(resolveProfileDir(undefined, 'ws_a')).toMatch(/\.trevra\/linkedin-ws_a-profile$/);
     expect(resolveProfileDir('  ', 'ws_a')).toMatch(/\.trevra\/linkedin-ws_a-profile$/);
-    expect(resolveProfileDir('/opt/profiles/linkedin', 'ws_a')).toBe('/opt/profiles/linkedin-ws_a-profile');
+    expect(resolveProfileDir('/opt/profiles/linkedin', 'ws_a')).toBe(
+      '/opt/profiles/linkedin-ws_a-profile'
+    );
   });
 
   it('gives two different workspaces two different profile directories -- the whole point', () => {
@@ -1085,9 +1282,14 @@ describe('linkedInBrowserReadiness', () => {
   const equipped = { PLAYWRIGHT_BROWSERS_PATH: registry, DISPLAY: ':0' } as NodeJS.ProcessEnv;
 
   it('refuses before anything else when the deployment says no', () => {
-    const hosted = linkedInBrowserReadiness({ enabled: false, hosted: true }, { env: equipped, ...served });
+    const hosted = linkedInBrowserReadiness(
+      { enabled: false, hosted: true },
+      { env: equipped, ...served }
+    );
     expect(hosted.canLaunchHeaded).toBe(false);
-    expect(hosted.reasons).toEqual(['This deployment is hosted, so LinkedIn automation is off and cannot be enabled.']);
+    expect(hosted.reasons).toEqual([
+      'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
+    ]);
 
     const off = linkedInBrowserReadiness({ enabled: false }, { env: equipped, ...served });
     expect(off.reasons).toEqual(['LinkedIn automation is switched off on this server.']);
@@ -1104,41 +1306,59 @@ describe('linkedInBrowserReadiness', () => {
    * from a GPU-less container whose WebGL reports SwiftShader while the headed
    * worker sat idle.
    */
-  it.skipIf(!playwrightInstalled)('lets a machine with no display decline the work instead of racing for it', () => {
-    const blindButEquipped = { PLAYWRIGHT_BROWSERS_PATH: registry } as NodeJS.ProcessEnv;
+  it.skipIf(!playwrightInstalled)(
+    'lets a machine with no display decline the work instead of racing for it',
+    () => {
+      const blindButEquipped = { PLAYWRIGHT_BROWSERS_PATH: registry } as NodeJS.ProcessEnv;
 
-    // Left alone, a container with a browser and no display still says yes to
-    // headless -- which is correct where it is the only worker there is.
-    expect(
-      linkedInHeadlessReadiness({ enabled: true }, { env: blindButEquipped, platform: 'linux' }).canLaunchHeadless
-    ).toBe(true);
+      // Left alone, a container with a browser and no display still says yes to
+      // headless -- which is correct where it is the only worker there is.
+      expect(
+        linkedInHeadlessReadiness({ enabled: true }, { env: blindButEquipped, platform: 'linux' })
+          .canLaunchHeadless
+      ).toBe(true);
 
-    const declined = linkedInHeadlessReadiness({ enabled: true, headless: false }, { env: blindButEquipped, platform: 'linux' });
-    expect(declined.canLaunchHeadless).toBe(false);
-    expect(declined.reasons[0]).toContain('TREVRA_LINKEDIN_HEADLESS=false');
+      const declined = linkedInHeadlessReadiness(
+        { enabled: true, headless: false },
+        { env: blindButEquipped, platform: 'linux' }
+      );
+      expect(declined.canLaunchHeadless).toBe(false);
+      expect(declined.reasons[0]).toContain('TREVRA_LINKEDIN_HEADLESS=false');
 
-    // AND IT IS NOT AN OFF SWITCH. `enabled` stays true, so the feature, the
-    // queue and the API's "run the worker on your machine" 202 are untouched --
-    // which is the whole difference between this and TREVRA_LINKEDIN_LOCAL.
-    expect(linkedInOffReason({ hosted: false })).not.toContain('HEADLESS');
-    expect(
-      linkedInHeadlessReadiness({ enabled: false, headless: false }, { env: blindButEquipped, platform: 'linux' }).reasons
-    ).toEqual(['LinkedIn automation is switched off on this server.']);
-  });
+      // AND IT IS NOT AN OFF SWITCH. `enabled` stays true, so the feature, the
+      // queue and the API's "run the worker on your machine" 202 are untouched --
+      // which is the whole difference between this and TREVRA_LINKEDIN_LOCAL.
+      expect(linkedInOffReason({ hosted: false })).not.toContain('HEADLESS');
+      expect(
+        linkedInHeadlessReadiness(
+          { enabled: false, headless: false },
+          { env: blindButEquipped, platform: 'linux' }
+        ).reasons
+      ).toEqual(['LinkedIn automation is switched off on this server.']);
+    }
+  );
 
-  it.skipIf(!playwrightInstalled)('says yes on a host with a display and an installed browser', () => {
-    const ready = linkedInBrowserReadiness({ enabled: true }, { env: equipped, ...served });
-    expect(ready).toEqual({ canLaunchHeaded: true, reasons: [] });
+  it.skipIf(!playwrightInstalled)(
+    'says yes on a host with a display and an installed browser',
+    () => {
+      const ready = linkedInBrowserReadiness({ enabled: true }, { env: equipped, ...served });
+      expect(ready).toEqual({ canLaunchHeaded: true, reasons: [] });
 
-    // Wayland counts too; the question is whether anything can be drawn.
-    expect(
-      linkedInBrowserReadiness({ enabled: true }, { env: { PLAYWRIGHT_BROWSERS_PATH: registry, WAYLAND_DISPLAY: 'wayland-0' }, ...served })
-        .canLaunchHeaded
-    ).toBe(true);
-  });
+      // Wayland counts too; the question is whether anything can be drawn.
+      expect(
+        linkedInBrowserReadiness(
+          { enabled: true },
+          { env: { PLAYWRIGHT_BROWSERS_PATH: registry, WAYLAND_DISPLAY: 'wayland-0' }, ...served }
+        ).canLaunchHeaded
+      ).toBe(true);
+    }
+  );
 
   it.skipIf(!playwrightInstalled)('treats a missing display on linux as decisive', () => {
-    const blind = linkedInBrowserReadiness({ enabled: true }, { env: { PLAYWRIGHT_BROWSERS_PATH: registry }, ...served });
+    const blind = linkedInBrowserReadiness(
+      { enabled: true },
+      { env: { PLAYWRIGHT_BROWSERS_PATH: registry }, ...served }
+    );
     expect(blind.canLaunchHeaded).toBe(false);
     expect(blind.reasons.some((reason) => reason.includes('No display'))).toBe(true);
   });
@@ -1160,16 +1380,29 @@ describe('linkedInBrowserReadiness', () => {
     // Served, and the same probe says yes -- so the blocker is about the X
     // server, not about the number in the variable.
     writeFileSync(join(sockets, 'X99'), '');
-    expect(linkedInBrowserReadiness({ enabled: true }, { env: dead, ...served }).canLaunchHeaded).toBe(true);
+    expect(
+      linkedInBrowserReadiness({ enabled: true }, { env: dead, ...served }).canLaunchHeaded
+    ).toBe(true);
 
     // A remote X server over TCP has no socket on this machine to look for,
     // and must not be blocked for the lack of one.
-    const forwarded = { PLAYWRIGHT_BROWSERS_PATH: registry, DISPLAY: 'host.docker.internal:0' } as NodeJS.ProcessEnv;
-    expect(linkedInBrowserReadiness({ enabled: true }, { env: forwarded, ...served }).canLaunchHeaded).toBe(true);
+    const forwarded = {
+      PLAYWRIGHT_BROWSERS_PATH: registry,
+      DISPLAY: 'host.docker.internal:0'
+    } as NodeJS.ProcessEnv;
+    expect(
+      linkedInBrowserReadiness({ enabled: true }, { env: forwarded, ...served }).canLaunchHeaded
+    ).toBe(true);
   });
 
   it('names the install command when the browser registry is not there', () => {
-    const bare = linkedInBrowserReadiness({ enabled: true }, { env: { PLAYWRIGHT_BROWSERS_PATH: '/nonexistent/ms-playwright', DISPLAY: ':0' }, platform: 'linux' });
+    const bare = linkedInBrowserReadiness(
+      { enabled: true },
+      {
+        env: { PLAYWRIGHT_BROWSERS_PATH: '/nonexistent/ms-playwright', DISPLAY: ':0' },
+        platform: 'linux'
+      }
+    );
     expect(bare.canLaunchHeaded).toBe(false);
     expect(bare.reasons.join(' ')).toContain('npx playwright install chromium');
   });
@@ -1181,18 +1414,23 @@ describe('linkedInBrowserReadiness', () => {
    */
   it('tells the operator what the browser actually said, or admits it does not know', () => {
     const xserver = describeBrowserOpenFailure(
-      new Error('browserType.launchPersistentContext: Target closed\nBrowser logs:\n Looks like you launched a headed browser without having a XServer running.')
+      new Error(
+        'browserType.launchPersistentContext: Target closed\nBrowser logs:\n Looks like you launched a headed browser without having a XServer running.'
+      )
     );
     expect(xserver).toContain('no X server is serving it');
     expect(xserver).not.toContain('Chromium build is missing');
 
-    expect(describeBrowserOpenFailure(new Error("Executable doesn't exist at /root/.cache/ms-playwright/chromium-1228/chrome")))
-      .toContain('npx playwright install chromium');
+    expect(
+      describeBrowserOpenFailure(
+        new Error("Executable doesn't exist at /root/.cache/ms-playwright/chromium-1228/chrome")
+      )
+    ).toContain('npx playwright install chromium');
 
     // Unknown stays unknown: it points at the log rather than inventing a
     // next action, which is exactly what the old constant did.
     const vague = describeBrowserOpenFailure(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'));
-    expect(vague).toContain("log for this attempt");
+    expect(vague).toContain('log for this attempt');
     expect(vague).not.toMatch(/Chromium|X server/);
   });
 
@@ -1265,13 +1503,23 @@ describe.skipIf(!databaseUrl)('the gate stays authoritative about duplicates', (
   beforeEach(async () => {
     db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
     await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+    await db
+      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
       .run(WORKSPACE_ID, 'LinkedIn local worker test', NOW.toISOString());
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, new Date('2025-01-01T10:00:00.000Z'));
-    await db.prepare(`
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Pankaj (founder)', timezone: 'UTC' },
+      new Date('2025-01-01T10:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
       VALUES (?,?,'owner','invite',?,'planned',?,'export',?)
-    `).run(LEDGER_ROW_ID, WORKSPACE_ID, TARGET, NOW.toISOString(), NOW.toISOString());
+    `
+      )
+      .run(LEDGER_ROW_ID, WORKSPACE_ID, TARGET, NOW.toISOString(), NOW.toISOString());
   });
 
   afterEach(async () => {
@@ -1280,7 +1528,9 @@ describe.skipIf(!databaseUrl)('the gate stays authoritative about duplicates', (
   });
 
   it('clears duplicate-target for the very row being evaluated', async () => {
-    const verdict = await evaluateLinkedInSafety(db, input, NOW, { excludeActionId: LEDGER_ROW_ID });
+    const verdict = await evaluateLinkedInSafety(db, input, NOW, {
+      excludeActionId: LEDGER_ROW_ID
+    });
     expect(duplicateCheck(verdict).passed).toBe(true);
   });
 
@@ -1288,18 +1538,24 @@ describe.skipIf(!databaseUrl)('the gate stays authoritative about duplicates', (
     // The exclusion is by primary key. A different claimed row still sees the
     // ledger's existing action against this person and is refused -- which is
     // the whole point of the check surviving the exclusion.
-    const verdict = await evaluateLinkedInSafety(db, input, NOW, { excludeActionId: 'lact_a_different_pending_row' });
+    const verdict = await evaluateLinkedInSafety(db, input, NOW, {
+      excludeActionId: 'lact_a_different_pending_row'
+    });
     expect(duplicateCheck(verdict).passed).toBe(false);
     expect(verdict.allowed).toBe(false);
   });
 
   it('reproduces export semantics byte for byte when no exclusion is named', async () => {
     expect(duplicateCheck(await evaluateLinkedInSafety(db, input, NOW)).passed).toBe(false);
-    expect(duplicateCheck(await evaluateLinkedInSafety(db, input, NOW, { excludeActionId: null })).passed).toBe(false);
+    expect(
+      duplicateCheck(await evaluateLinkedInSafety(db, input, NOW, { excludeActionId: null })).passed
+    ).toBe(false);
   });
 
   it('stops the worker on a real duplicate, with the real gate in the loop', async () => {
-    const harness = fakeStore([action({ id: 'lact_a_second_pending_row', targetRef: TARGET, plannedFor: NOW.toISOString() })]);
+    const harness = fakeStore([
+      action({ id: 'lact_a_second_pending_row', targetRef: TARGET, plannedFor: NOW.toISOString() })
+    ]);
     const { driver, calls } = fakeDriver();
     const verdicts: LinkedInSafetyVerdict[] = [];
 
@@ -1358,9 +1614,15 @@ describe.skipIf(!databaseUrl)('the gate judges the real send instant, not a stal
   beforeEach(async () => {
     db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
     await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+    await db
+      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
       .run(WORKSPACE_ID, 'LinkedIn stale plannedFor test', STALE_PLANNED_FOR.toISOString());
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, new Date('2025-01-01T10:00:00.000Z'));
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Pankaj (founder)', timezone: 'UTC' },
+      new Date('2025-01-01T10:00:00.000Z')
+    );
   });
 
   afterEach(async () => {
@@ -1370,7 +1632,12 @@ describe.skipIf(!databaseUrl)('the gate judges the real send instant, not a stal
 
   it('blocks a claimed action whose stale plannedFor reads as business hours when it is actually being sent at night', async () => {
     const harness = fakeStore([
-      action({ id: 'lact_stale_slot', workspaceId: WORKSPACE_ID, targetRef: TARGET, plannedFor: STALE_PLANNED_FOR.toISOString() })
+      action({
+        id: 'lact_stale_slot',
+        workspaceId: WORKSPACE_ID,
+        targetRef: TARGET,
+        plannedFor: STALE_PLANNED_FOR.toISOString()
+      })
     ]);
     const { driver, calls } = fakeDriver();
     const verdicts: LinkedInSafetyVerdict[] = [];
@@ -1401,7 +1668,9 @@ describe.skipIf(!databaseUrl)('the gate judges the real send instant, not a stal
       }
     });
 
-    const businessHoursCheck = verdicts[0]!.checks.find((entry) => entry.check === 'business-hours');
+    const businessHoursCheck = verdicts[0]!.checks.find(
+      (entry) => entry.check === 'business-hours'
+    );
     expect(businessHoursCheck?.passed).toBe(false);
     expect(verdicts[0]!.allowed).toBe(false);
     expect(calls).toHaveLength(0);
@@ -1415,7 +1684,12 @@ describe.skipIf(!databaseUrl)('the gate judges the real send instant, not a stal
     // above guards against -- if this assertion ever starts failing, the two
     // tests together have stopped proving anything.
     const harness = fakeStore([
-      action({ id: 'lact_stale_slot_prefix', workspaceId: WORKSPACE_ID, targetRef: TARGET, plannedFor: STALE_PLANNED_FOR.toISOString() })
+      action({
+        id: 'lact_stale_slot_prefix',
+        workspaceId: WORKSPACE_ID,
+        targetRef: TARGET,
+        plannedFor: STALE_PLANNED_FOR.toISOString()
+      })
     ]);
     const { driver, calls } = fakeDriver();
 
@@ -1468,7 +1742,8 @@ describe.skipIf(!databaseUrl)('detectLinkedInSeat', () => {
   beforeEach(async () => {
     db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
     await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+    await db
+      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
       .run(WORKSPACE_ID, 'LinkedIn detect test', NOW.toISOString());
   });
 
@@ -1483,7 +1758,11 @@ describe.skipIf(!databaseUrl)('detectLinkedInSeat', () => {
   ) {
     return detectLinkedInSeat(
       db,
-      { enabled: options.enabled ?? true, hosted: options.hosted ?? false, profileDir: PROFILE_DIR },
+      {
+        enabled: options.enabled ?? true,
+        hosted: options.hosted ?? false,
+        profileDir: PROFILE_DIR
+      },
       {
         workspaceId: WORKSPACE_ID,
         timezone: options.timezone ?? 'Europe/Zurich',
@@ -1507,7 +1786,11 @@ describe.skipIf(!databaseUrl)('detectLinkedInSeat', () => {
     expect(calls.map((call) => call.method)).toEqual(['isLoggedIn', 'readSeat']);
     expect(first.blocked).toBeNull();
     expect(first.degraded).toEqual([]);
-    expect(first.detected).toEqual({ profileUrl: 'https://www.linkedin.com/in/pankaj/', name: 'Pankaj Sharma', connectionsCount: 1234 });
+    expect(first.detected).toEqual({
+      profileUrl: 'https://www.linkedin.com/in/pankaj/',
+      name: 'Pankaj Sharma',
+      connectionsCount: 1234
+    });
     expect(first.seat?.profileUrl).toBe('https://www.linkedin.com/in/pankaj/');
     expect(first.seat?.connectionsCount).toBe(1234);
     expect(first.seat?.timezone).toBe('Europe/Zurich');
@@ -1535,7 +1818,9 @@ describe.skipIf(!databaseUrl)('detectLinkedInSeat', () => {
       profileUrl: 'https://www.linkedin.com/in/pankaj/',
       name: null,
       connectionsCount: null,
-      degraded: ['The connections page shows no "N connections" header, so the connection count is unknown.']
+      degraded: [
+        'The connections page shows no "N connections" header, so the connection count is unknown.'
+      ]
     }));
     const result = await detect(partial.driver);
 
@@ -1560,7 +1845,9 @@ describe.skipIf(!databaseUrl)('detectLinkedInSeat', () => {
     // find, so naming one would send the operator looking for it -- and the
     // profile directory this process would have used is inside a container the
     // operator cannot reach, which is worse than saying nothing.
-    expect(off.blocked).toBe('This deployment is hosted, so LinkedIn automation is off and cannot be enabled.');
+    expect(off.blocked).toBe(
+      'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
+    );
     expect(off.blocked).not.toContain('TREVRA_LINKEDIN_LOCAL');
     expect(off.blocked).not.toContain('TREVRA_DEPLOYMENT_MODE');
     expect(off.blocked).not.toContain(PROFILE_DIR);
@@ -1586,7 +1873,9 @@ describe.skipIf(!databaseUrl)('detectLinkedInSeat', () => {
     expect(result.failureKind).toBe('challenge');
     // The ONE next action, and above all not a container path the operator
     // cannot reach.
-    expect(result.blocked).toBe('LinkedIn did not return a readable profile page; run `npm run linkedin:worker` on a machine with a display to see why.');
+    expect(result.blocked).toBe(
+      'LinkedIn did not return a readable profile page; run `npm run linkedin:worker` on a machine with a display to see why.'
+    );
     expect(result.blocked).not.toContain(PROFILE_DIR);
     expect(result.blocked?.split('. ')).toHaveLength(1);
     expect(await getSeat(db, WORKSPACE_ID)).toBeUndefined();
@@ -1620,7 +1909,8 @@ describe.skipIf(!databaseUrl)('the seat detect queue', () => {
   beforeEach(async () => {
     db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
     await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+    await db
+      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
       .run(WORKSPACE_ID, 'LinkedIn detect queue test', NOW.toISOString());
   });
 
@@ -1630,20 +1920,33 @@ describe.skipIf(!databaseUrl)('the seat detect queue', () => {
   });
 
   it('keeps one outstanding request however many times Connect is pressed', async () => {
-    const first = await requestSeatDetect(db, { workspaceId: WORKSPACE_ID, timezone: 'Europe/Zurich' }, NOW);
+    const first = await requestSeatDetect(
+      db,
+      { workspaceId: WORKSPACE_ID, timezone: 'Europe/Zurich' },
+      NOW
+    );
     expect(first.status).toBe('pending');
 
-    const again = await requestSeatDetect(db, { workspaceId: WORKSPACE_ID, timezone: 'Europe/Zurich' }, new Date(NOW.getTime() + 1_000));
+    const again = await requestSeatDetect(
+      db,
+      { workspaceId: WORKSPACE_ID, timezone: 'Europe/Zurich' },
+      new Date(NOW.getTime() + 1_000)
+    );
     expect(again.id).toBe(first.id);
     expect(again.requestedAt).toBe(first.requestedAt);
 
-    const rows = await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_seat_detect_requests WHERE workspace_id=?')
+    const rows = await db
+      .prepare(
+        'SELECT COUNT(*)::int AS total FROM linkedin_seat_detect_requests WHERE workspace_id=?'
+      )
       .get<{ total: number }>(WORKSPACE_ID);
     expect(rows?.total).toBe(1);
   });
 
   it('refuses a timezone the runtime does not know, here rather than on another machine', async () => {
-    await expect(requestSeatDetect(db, { workspaceId: WORKSPACE_ID, timezone: 'Mars/Olympus' }, NOW)).rejects.toThrow(/IANA/);
+    await expect(
+      requestSeatDetect(db, { workspaceId: WORKSPACE_ID, timezone: 'Mars/Olympus' }, NOW)
+    ).rejects.toThrow(/IANA/);
     expect(await latestSeatDetectRequest(db, WORKSPACE_ID)).toBeNull();
   });
 
@@ -1653,7 +1956,11 @@ describe.skipIf(!databaseUrl)('the seat detect queue', () => {
 
     // No page handed in, so the readiness probe decides -- and the suite's
     // setup file guarantees it says no, exactly as it does in a container.
-    const settled = await runPendingSeatDetectRequests(db, { enabled: true }, { driver, now: NOW, log: () => {} });
+    const settled = await runPendingSeatDetectRequests(
+      db,
+      { enabled: true },
+      { driver, now: NOW, log: () => {} }
+    );
 
     expect(settled).toEqual([]);
     expect(calls).toHaveLength(0);
@@ -1664,7 +1971,11 @@ describe.skipIf(!databaseUrl)('the seat detect queue', () => {
     await requestSeatDetect(db, { workspaceId: WORKSPACE_ID, timezone: 'Europe/Zurich' }, NOW);
     const { driver, calls } = fakeDriver();
 
-    const settled = await runPendingSeatDetectRequests(db, { enabled: true }, { driver, page, now: NOW, log: () => {} });
+    const settled = await runPendingSeatDetectRequests(
+      db,
+      { enabled: true },
+      { driver, page, now: NOW, log: () => {} }
+    );
 
     expect(settled).toHaveLength(1);
     expect(settled[0].status).toBe('completed');
@@ -1679,7 +1990,13 @@ describe.skipIf(!databaseUrl)('the seat detect queue', () => {
 
     // Nothing is left to claim, so a second pass is a no-op rather than a
     // second read of the same session.
-    expect(await runPendingSeatDetectRequests(db, { enabled: true }, { driver, page, now: NOW, log: () => {} })).toEqual([]);
+    expect(
+      await runPendingSeatDetectRequests(
+        db,
+        { enabled: true },
+        { driver, page, now: NOW, log: () => {} }
+      )
+    ).toEqual([]);
   });
 
   it('records a refusal as failed with the one thing to do, instead of retrying forever', async () => {
@@ -1690,17 +2007,33 @@ describe.skipIf(!databaseUrl)('the seat detect queue', () => {
       detail: 'LinkedIn is showing a challenge or a login page instead of your profile.'
     }));
 
-    const settled = await runPendingSeatDetectRequests(db, { enabled: true }, { driver, page, now: NOW, log: () => {} });
+    const settled = await runPendingSeatDetectRequests(
+      db,
+      { enabled: true },
+      { driver, page, now: NOW, log: () => {} }
+    );
 
     expect(settled).toHaveLength(1);
     expect(settled[0].status).toBe('failed');
-    expect(settled[0].failureReason).toBe('LinkedIn did not return a readable profile page; run `npm run linkedin:worker` on a machine with a display to see why.');
+    expect(settled[0].failureReason).toBe(
+      'LinkedIn did not return a readable profile page; run `npm run linkedin:worker` on a machine with a display to see why.'
+    );
     expect(await getSeat(db, WORKSPACE_ID)).toBeUndefined();
 
     // A failed request is terminal, and the operator can ask again: the
     // uniqueness predicate covers pending rows only.
-    expect(await runPendingSeatDetectRequests(db, { enabled: true }, { driver, page, now: NOW, log: () => {} })).toEqual([]);
-    const retry = await requestSeatDetect(db, { workspaceId: WORKSPACE_ID, timezone: 'Europe/Zurich' }, new Date(NOW.getTime() + 60_000));
+    expect(
+      await runPendingSeatDetectRequests(
+        db,
+        { enabled: true },
+        { driver, page, now: NOW, log: () => {} }
+      )
+    ).toEqual([]);
+    const retry = await requestSeatDetect(
+      db,
+      { workspaceId: WORKSPACE_ID, timezone: 'Europe/Zurich' },
+      new Date(NOW.getTime() + 60_000)
+    );
     expect(retry.status).toBe('pending');
   });
 
@@ -1709,22 +2042,37 @@ describe.skipIf(!databaseUrl)('the seat detect queue', () => {
     const { driver, calls } = fakeDriver();
 
     expect(
-      await runPendingSeatDetectRequests(db, { enabled: false, hosted: true }, { driver, page, now: NOW, log: () => {} })
+      await runPendingSeatDetectRequests(
+        db,
+        { enabled: false, hosted: true },
+        { driver, page, now: NOW, log: () => {} }
+      )
     ).toEqual([]);
     expect(calls).toHaveLength(0);
-    expect(linkedInOffReason({ hosted: true })).toBe('This deployment is hosted, so LinkedIn automation is off and cannot be enabled.');
+    expect(linkedInOffReason({ hosted: true })).toBe(
+      'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
+    );
   });
 
   it('lets a second worker reclaim a request the first one died holding', async () => {
-    const queued = await requestSeatDetect(db, { workspaceId: WORKSPACE_ID, timezone: 'Europe/Zurich' }, NOW);
+    const queued = await requestSeatDetect(
+      db,
+      { workspaceId: WORKSPACE_ID, timezone: 'Europe/Zurich' },
+      NOW
+    );
     // A worker claimed it and never came back. A detect SENDS NOTHING, so
     // re-running it duplicates nothing -- the only thing a permanent claim
     // would achieve here is a setup screen wedged forever.
-    await db.prepare('UPDATE linkedin_seat_detect_requests SET claimed_at=? WHERE id=?')
+    await db
+      .prepare('UPDATE linkedin_seat_detect_requests SET claimed_at=? WHERE id=?')
       .run(new Date(NOW.getTime() - 30 * 60_000).toISOString(), queued.id);
 
     const { driver } = fakeDriver();
-    const settled = await runPendingSeatDetectRequests(db, { enabled: true }, { driver, page, now: NOW, log: () => {} });
+    const settled = await runPendingSeatDetectRequests(
+      db,
+      { enabled: true },
+      { driver, page, now: NOW, log: () => {} }
+    );
 
     expect(settled).toHaveLength(1);
     expect(settled[0].id).toBe(queued.id);
@@ -1751,9 +2099,15 @@ describe('per-seat profile directories and browser identity', () => {
   it('leaves the owner seat on the exact path it already has', () => {
     // An existing install must not wake up on an empty profile directory and
     // need a fresh sign-in on the account it was already signed into.
-    expect(resolveProfileDir(undefined, 'ws_a', 'owner')).toBe(resolveProfileDir(undefined, 'ws_a'));
-    expect(resolveProfileDir(undefined, 'ws_a', 'owner')).toMatch(/\.trevra\/linkedin-ws_a-profile$/);
-    expect(resolveProfileDir('/opt/profiles/linkedin', 'ws_a', 'owner')).toBe('/opt/profiles/linkedin-ws_a-profile');
+    expect(resolveProfileDir(undefined, 'ws_a', 'owner')).toBe(
+      resolveProfileDir(undefined, 'ws_a')
+    );
+    expect(resolveProfileDir(undefined, 'ws_a', 'owner')).toMatch(
+      /\.trevra\/linkedin-ws_a-profile$/
+    );
+    expect(resolveProfileDir('/opt/profiles/linkedin', 'ws_a', 'owner')).toBe(
+      '/opt/profiles/linkedin-ws_a-profile'
+    );
   });
 
   it('gives every other seat a directory of its own', () => {
@@ -1786,8 +2140,9 @@ describe('per-seat profile directories and browser identity', () => {
     // sessions is a far stronger signal than any one wrong value.
     expect(again).toEqual(first);
     // DISTINCT. Two accounts from one machine must not be one fingerprint.
-    expect(`${other.userAgent}|${other.locale}|${other.timezoneId}`)
-      .not.toBe(`${first.userAgent}|${first.locale}|${first.timezoneId}`);
+    expect(`${other.userAgent}|${other.locale}|${other.timezoneId}`).not.toBe(
+      `${first.userAgent}|${first.locale}|${first.timezoneId}`
+    );
     // NON-DEFAULT. Playwright's own default announces the automation outright.
     for (const seat of [first, other]) {
       expect(seat.userAgent).not.toContain('HeadlessChrome');
@@ -1862,12 +2217,16 @@ describe('per-seat outbound proxy', () => {
     expect(resolveSeatProxy(env, 'ws_a', 'sales')?.server).toBe('http://tenant-a.example:3128');
     expect(resolveSeatProxy(env, 'ws', 'a_sales')?.server).toBe('http://tenant-b.example:3128');
     // Most specific wins, and the wildcards are compared whole too.
-    expect(resolveSeatProxy(env, 'ws_a', 'owner')?.server).toBe('http://tenant-a-default.example:3128');
-    expect(resolveSeatProxy(env, 'ws_z', 'support')?.server).toBe('http://support-anywhere.example:3128');
+    expect(resolveSeatProxy(env, 'ws_a', 'owner')?.server).toBe(
+      'http://tenant-a-default.example:3128'
+    );
+    expect(resolveSeatProxy(env, 'ws_z', 'support')?.server).toBe(
+      'http://support-anywhere.example:3128'
+    );
     expect(resolveSeatProxy(env, 'ws_z', 'owner')).toBeNull();
   });
 
-  it('prefers the ACCOUNT\'S OWN stored proxy over every environment variable', () => {
+  it("prefers the ACCOUNT'S OWN stored proxy over every environment variable", () => {
     // Migration 062: the proxy is a fact about the account, and the column is
     // what a second operator can actually reach. The environment stays as the
     // fallback for seats without one, so an existing deployment is untouched.
@@ -1875,14 +2234,18 @@ describe('per-seat outbound proxy', () => {
       TREVRA_LINKEDIN_PROXIES: '{"ws_a/sales": "http://map.example:3128"}',
       TREVRA_LINKEDIN_PROXY: 'http://everything.example:3128'
     };
-    expect(resolveSeatProxy(env, 'ws_a', 'sales', 'http://seat.example:3128')?.server).toBe('http://seat.example:3128');
+    expect(resolveSeatProxy(env, 'ws_a', 'sales', 'http://seat.example:3128')?.server).toBe(
+      'http://seat.example:3128'
+    );
     expect(resolveSeatProxy(env, 'ws_a', 'sales', '   ')?.server).toBe('http://map.example:3128');
     expect(resolveSeatProxy(env, 'ws_a', 'sales', null)?.server).toBe('http://map.example:3128');
     expect(resolveSeatProxy({}, 'ws_a', 'sales', null)).toBeNull();
   });
 
-  it('carries a stored proxy\'s credentials through, without putting them in the server field', () => {
-    expect(resolveSeatProxy({}, 'ws_a', 'owner', 'http://relay:hunter2@proxy.example:3128')).toEqual({
+  it("carries a stored proxy's credentials through, without putting them in the server field", () => {
+    expect(
+      resolveSeatProxy({}, 'ws_a', 'owner', 'http://relay:hunter2@proxy.example:3128')
+    ).toEqual({
       server: 'http://proxy.example:3128',
       username: 'relay',
       password: 'hunter2'
@@ -1894,16 +2257,22 @@ describe('per-seat outbound proxy', () => {
     // returning null: null means "connect directly", from the very machine this
     // account was configured not to be seen from.
     expect(() => resolveSeatProxy({}, 'ws_a', 'owner', 'not a url')).toThrow(/is not a URL/);
-    expect(() => resolveSeatProxy({}, 'ws_a', 'owner', 'ftp://proxy.example:21')).toThrow(/unsupported proxy scheme/);
-    expect(() => resolveSeatProxy({}, 'ws_a', 'owner', 'socks5://relay:hunter2@proxy.example:1080')).toThrow(/SOCKS/);
+    expect(() => resolveSeatProxy({}, 'ws_a', 'owner', 'ftp://proxy.example:21')).toThrow(
+      /unsupported proxy scheme/
+    );
+    expect(() =>
+      resolveSeatProxy({}, 'ws_a', 'owner', 'socks5://relay:hunter2@proxy.example:1080')
+    ).toThrow(/SOCKS/);
     // Nor does it fall through to an environment proxy that WOULD have worked:
     // "we could not honour what you configured" is never "use something else".
-    expect(() => resolveSeatProxy(
-      { TREVRA_LINKEDIN_PROXY: 'http://everything.example:3128' },
-      'ws_a',
-      'owner',
-      'not a url'
-    )).toThrow(/is not a URL/);
+    expect(() =>
+      resolveSeatProxy(
+        { TREVRA_LINKEDIN_PROXY: 'http://everything.example:3128' },
+        'ws_a',
+        'owner',
+        'not a url'
+      )
+    ).toThrow(/is not a URL/);
   });
 
   it('never quotes a stored proxy value back, because it carries a password', () => {
@@ -1919,14 +2288,25 @@ describe('per-seat outbound proxy', () => {
     // Set, and unmatchable to one pair. Ignoring it would fall through to null,
     // and null means "connect directly" -- from the machine this seat was
     // configured never to be seen from.
-    expect(() => resolveSeatProxy({ TREVRA_LINKEDIN_PROXY_WS_A_SALES: 'http://exact.example:3128' }, 'ws_a', 'sales'))
-      .toThrow(/TREVRA_LINKEDIN_PROXIES/);
+    expect(() =>
+      resolveSeatProxy(
+        { TREVRA_LINKEDIN_PROXY_WS_A_SALES: 'http://exact.example:3128' },
+        'ws_a',
+        'sales'
+      )
+    ).toThrow(/TREVRA_LINKEDIN_PROXIES/);
     // A seat key that flattens losslessly is still served the old way.
-    expect(resolveSeatProxy({ TREVRA_LINKEDIN_PROXY_SALES: 'http://seat.example:3128' }, 'ws_a', 'sales')?.server)
-      .toBe('http://seat.example:3128');
+    expect(
+      resolveSeatProxy({ TREVRA_LINKEDIN_PROXY_SALES: 'http://seat.example:3128' }, 'ws_a', 'sales')
+        ?.server
+    ).toBe('http://seat.example:3128');
     // A map that will not parse is a refusal too, and never quotes the value.
     try {
-      resolveSeatProxy({ TREVRA_LINKEDIN_PROXIES: '{"ws_a/sales": "http://user:hunter2@proxy.example:3128"' }, 'ws_a', 'sales');
+      resolveSeatProxy(
+        { TREVRA_LINKEDIN_PROXIES: '{"ws_a/sales": "http://user:hunter2@proxy.example:3128"' },
+        'ws_a',
+        'sales'
+      );
       throw new Error('a malformed proxy map must not resolve');
     } catch (error) {
       expect((error as Error).message).not.toContain('hunter2');
@@ -1936,7 +2316,11 @@ describe('per-seat outbound proxy', () => {
   it('REFUSES rather than falling back to a direct connection', () => {
     // Every one of these is a configured proxy that cannot be honoured. None
     // of them may resolve to null, because null means "connect directly".
-    for (const value of ['not-a-url', 'ftp://proxy.example:21', 'socks5://user:pw@proxy.example:1080']) {
+    for (const value of [
+      'not-a-url',
+      'ftp://proxy.example:21',
+      'socks5://user:pw@proxy.example:1080'
+    ]) {
       expect(() => resolveSeatProxy({ TREVRA_LINKEDIN_PROXY: value }, 'ws_a', 'owner')).toThrow();
     }
     // And the refusal never quotes the value back: a proxy URL routinely
@@ -1970,7 +2354,13 @@ describe('human-cadence typing on the sign-in form', () => {
       fill: async (text) => {
         filled.push(text);
       },
-      ...(options.canPress === false ? {} : { press: async (key: string) => { pressed.push(key); } })
+      ...(options.canPress === false
+        ? {}
+        : {
+            press: async (key: string) => {
+              pressed.push(key);
+            }
+          })
     };
     return { locator, filled, pressed };
   }
@@ -2060,22 +2450,33 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
   let db: Db;
 
   async function plan(seatKey: string, actionId: string, target: string): Promise<void> {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
       VALUES (?,?,?,'profile_view',?,'planned',?,'export',?)
-    `).run(actionId, WORKSPACE_ID, seatKey, target, NOW.toISOString(), NOW.toISOString());
+    `
+      )
+      .run(actionId, WORKSPACE_ID, seatKey, target, NOW.toISOString(), NOW.toISOString());
   }
 
   beforeEach(async () => {
     db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
     for (const workspaceId of [WORKSPACE_ID, OTHER_WORKSPACE_ID]) {
       await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
-      await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+      await db
+        .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
         .run(workspaceId, 'LinkedIn multi-seat test', NOW.toISOString());
     }
     // Two accounts in one workspace, both long past their warm-up ramp.
     await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, LONG_AGO);
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'Europe/Zurich' }, LONG_AGO, 'sales');
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Sales seat', timezone: 'Europe/Zurich' },
+      LONG_AGO,
+      'sales'
+    );
   });
 
   afterEach(async () => {
@@ -2118,7 +2519,14 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
 
     const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'ghost');
     const { driver, calls } = fakeDriver();
-    const result = await runLinkedInLocalBatch(store, { driver, page, sleep: noSleep, log: () => {}, now: () => NOW, evaluate: async () => verdict() });
+    const result = await runLinkedInLocalBatch(store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      now: () => NOW,
+      evaluate: async () => verdict()
+    });
     expect(result.haltReason).toMatch(/No LinkedIn seat is configured/);
     expect(calls).toHaveLength(0);
   });
@@ -2155,7 +2563,14 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
     expect((await getSeat(db, WORKSPACE_ID))?.posture).not.toBe('cooldown');
 
     const { driver, calls } = fakeDriver();
-    const halted = await runLinkedInLocalBatch(salesStore, { driver, page, sleep: noSleep, log: () => {}, now: () => NOW, evaluate: async () => verdict() });
+    const halted = await runLinkedInLocalBatch(salesStore, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      now: () => NOW,
+      evaluate: async () => verdict()
+    });
     expect(halted.seatKey).toBe('sales');
     expect(halted.halted).toBe(true);
     expect(halted.haltReason).toMatch(/cooldown/);
@@ -2176,14 +2591,16 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
     expect(calls.map((call) => call.target)).toEqual(['https://www.linkedin.com/in/owner-target/']);
   });
 
-  it('stops one seat\'s batches by name, and every seat\'s when none is named', async () => {
+  it("stops one seat's batches by name, and every seat's when none is named", async () => {
     const ownerBatch = await postgresLocalWorkerStore(db, WORKSPACE_ID).openBatch(NOW);
     const salesBatch = await postgresLocalWorkerStore(db, WORKSPACE_ID, 'sales').openBatch(NOW);
 
     // Naming a seat stops that account and leaves the other running.
     expect(await stopLinkedInBatches(db, WORKSPACE_ID, 'sales')).toBe(1);
     const stopped = await db
-      .prepare('SELECT id, seat_key, stop_requested_at FROM linkedin_batches WHERE workspace_id=? ORDER BY seat_key')
+      .prepare(
+        'SELECT id, seat_key, stop_requested_at FROM linkedin_batches WHERE workspace_id=? ORDER BY seat_key'
+      )
       .all<{ id: string; seat_key: string; stop_requested_at: string | null }>(WORKSPACE_ID);
     expect(stopped.find((row) => row.id === ownerBatch)?.stop_requested_at).toBeNull();
     expect(stopped.find((row) => row.id === salesBatch)?.stop_requested_at).not.toBeNull();
@@ -2196,16 +2613,23 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
 
   it('a limit wall on one seat cools that seat and no other', async () => {
     await plan('sales', 'lact_sales_1', 'https://www.linkedin.com/in/sales-target/');
-    const { driver } = fakeDriver(() => ({ ok: false, failureKind: 'limit_wall', detail: 'weekly invitation limit' }));
+    const { driver } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'limit_wall',
+      detail: 'weekly invitation limit'
+    }));
 
-    const result = await runLinkedInLocalBatch(postgresLocalWorkerStore(db, WORKSPACE_ID, 'sales'), {
-      driver,
-      page,
-      sleep: noSleep,
-      log: () => {},
-      now: () => NOW,
-      evaluate: async () => verdict()
-    });
+    const result = await runLinkedInLocalBatch(
+      postgresLocalWorkerStore(db, WORKSPACE_ID, 'sales'),
+      {
+        driver,
+        page,
+        sleep: noSleep,
+        log: () => {},
+        now: () => NOW,
+        evaluate: async () => verdict()
+      }
+    );
 
     expect(result.halted).toBe(true);
     expect((await getSeat(db, WORKSPACE_ID, 'sales'))?.posture).toBe('cooldown');
@@ -2241,7 +2665,11 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
 
     it('keeps owner credentials written before this change resolving, out of the same table', async () => {
       // Written exactly as every pre-multi-seat caller wrote them: no seat key.
-      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      await putLinkedInCredentials(db, {
+        workspaceId: WORKSPACE_ID,
+        email: OWNER_EMAIL,
+        password: OWNER_PASSWORD
+      });
 
       const rows = await db
         .prepare('SELECT kind FROM workspace_secrets WHERE workspace_id=? ORDER BY kind')
@@ -2250,18 +2678,29 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
       // Nothing was copied into the seat table, so there is no migration that
       // could have half-run and no second copy of the owner's password.
       const copied = await db
-        .prepare('SELECT COUNT(*)::int AS total FROM linkedin_seat_credentials WHERE workspace_id=?')
+        .prepare(
+          'SELECT COUNT(*)::int AS total FROM linkedin_seat_credentials WHERE workspace_id=?'
+        )
         .get<{ total: number }>(WORKSPACE_ID);
       expect(copied?.total).toBe(0);
 
-      expect(await readLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID)).toEqual({
+        email: OWNER_EMAIL,
+        password: OWNER_PASSWORD
+      });
       // And the seat-aware call resolves the same pair for the same seat.
-      expect(await readLinkedInCredentials(db, WORKSPACE_ID, process.env, 'owner'))
-        .toEqual({ email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID, process.env, 'owner')).toEqual({
+        email: OWNER_EMAIL,
+        password: OWNER_PASSWORD
+      });
     });
 
     it('gives a second seat its own sign-in, sealed the same way', async () => {
-      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      await putLinkedInCredentials(db, {
+        workspaceId: WORKSPACE_ID,
+        email: OWNER_EMAIL,
+        password: OWNER_PASSWORD
+      });
       const stored = await putLinkedInCredentials(db, {
         workspaceId: WORKSPACE_ID,
         email: SALES_EMAIL,
@@ -2272,19 +2711,29 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
 
       // Each seat opens its OWN pair. Before this change there was one pair per
       // workspace, so a second account could not sign in at all.
-      expect(await readLinkedInCredentials(db, WORKSPACE_ID, process.env, 'sales'))
-        .toEqual({ email: SALES_EMAIL, password: SALES_PASSWORD });
-      expect(await readLinkedInCredentials(db, WORKSPACE_ID))
-        .toEqual({ email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID, process.env, 'sales')).toEqual({
+        email: SALES_EMAIL,
+        password: SALES_PASSWORD
+      });
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID)).toEqual({
+        email: OWNER_EMAIL,
+        password: OWNER_PASSWORD
+      });
 
-      expect(await describeLinkedInCredentials(db, WORKSPACE_ID, 'sales'))
-        .toEqual({ hasCredentials: true, maskedEmail: 's•••@example.com' });
-      expect(await describeLinkedInCredentials(db, WORKSPACE_ID, 'support'))
-        .toEqual({ hasCredentials: false, maskedEmail: null });
+      expect(await describeLinkedInCredentials(db, WORKSPACE_ID, 'sales')).toEqual({
+        hasCredentials: true,
+        maskedEmail: 's•••@example.com'
+      });
+      expect(await describeLinkedInCredentials(db, WORKSPACE_ID, 'support')).toEqual({
+        hasCredentials: false,
+        maskedEmail: null
+      });
 
       // Same envelope, same key, and nothing plaintext-derived in the clear.
       const rows = await db
-        .prepare('SELECT kind, label, ciphertext FROM linkedin_seat_credentials WHERE workspace_id=? AND seat_key=? ORDER BY kind')
+        .prepare(
+          'SELECT kind, label, ciphertext FROM linkedin_seat_credentials WHERE workspace_id=? AND seat_key=? ORDER BY kind'
+        )
         .all<{ kind: string; label: string | null; ciphertext: Buffer }>(WORKSPACE_ID, 'sales');
       expect(rows.map((row) => row.kind)).toEqual(['linkedin.email', 'linkedin.password']);
       expect(rows[0].label).toBe('s•••@example.com');
@@ -2296,29 +2745,50 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
       // The owner's rows did not move, and there is no owner row in the seat
       // table for a delete to miss.
       const ownerInSeatTable = await db
-        .prepare("SELECT COUNT(*)::int AS total FROM linkedin_seat_credentials WHERE workspace_id=? AND seat_key='owner'")
+        .prepare(
+          "SELECT COUNT(*)::int AS total FROM linkedin_seat_credentials WHERE workspace_id=? AND seat_key='owner'"
+        )
         .get<{ total: number }>(WORKSPACE_ID);
       expect(ownerInSeatTable?.total).toBe(0);
     });
 
     it('wipes one seat without touching the other', async () => {
-      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: OWNER_EMAIL, password: OWNER_PASSWORD });
-      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales' });
+      await putLinkedInCredentials(db, {
+        workspaceId: WORKSPACE_ID,
+        email: OWNER_EMAIL,
+        password: OWNER_PASSWORD
+      });
+      await putLinkedInCredentials(db, {
+        workspaceId: WORKSPACE_ID,
+        email: SALES_EMAIL,
+        password: SALES_PASSWORD,
+        seatKey: 'sales'
+      });
 
       expect(await deleteLinkedInCredentials(db, WORKSPACE_ID, null, 'sales')).toBe(true);
       expect(await readLinkedInCredentials(db, WORKSPACE_ID, process.env, 'sales')).toBeNull();
-      expect(await readLinkedInCredentials(db, WORKSPACE_ID)).toEqual({ email: OWNER_EMAIL, password: OWNER_PASSWORD });
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID)).toEqual({
+        email: OWNER_EMAIL,
+        password: OWNER_PASSWORD
+      });
       expect(await deleteLinkedInCredentials(db, WORKSPACE_ID, null, 'sales')).toBe(false);
     });
 
     it('takes hosted custody with no remote browser for EVERY seat, not just the owner', async () => {
       const hosted = { ...process.env, TREVRA_DEPLOYMENT_MODE: 'hosted' } as NodeJS.ProcessEnv;
 
-      const saved = await putLinkedInCredentials(
-        db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales', env: hosted }
-      );
+      const saved = await putLinkedInCredentials(db, {
+        workspaceId: WORKSPACE_ID,
+        email: SALES_EMAIL,
+        password: SALES_PASSWORD,
+        seatKey: 'sales',
+        env: hosted
+      });
       expect(saved.hasCredentials).toBe(true);
-      expect(await readLinkedInCredentials(db, WORKSPACE_ID, hosted, 'sales')).toEqual({ email: SALES_EMAIL, password: SALES_PASSWORD });
+      expect(await readLinkedInCredentials(db, WORKSPACE_ID, hosted, 'sales')).toEqual({
+        email: SALES_EMAIL,
+        password: SALES_PASSWORD
+      });
     });
 
     it('still refuses hosted custody WITH a remote browser and no written authorisation, for EVERY seat', async () => {
@@ -2331,18 +2801,38 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
       } as NodeJS.ProcessEnv;
 
       await expect(
-        putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales', env: hostedWithBrowser })
+        putLinkedInCredentials(db, {
+          workspaceId: WORKSPACE_ID,
+          email: SALES_EMAIL,
+          password: SALES_PASSWORD,
+          seatKey: 'sales',
+          env: hostedWithBrowser
+        })
       ).rejects.toThrow(/authorised Trevra to act on its LinkedIn account/);
 
       // And a hosted instance that inherited rows from a self-hosted dump still
       // does not open them, for any seat.
-      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales' });
-      expect(await readLinkedInCredentials(db, WORKSPACE_ID, hostedWithBrowser, 'sales')).toBeNull();
+      await putLinkedInCredentials(db, {
+        workspaceId: WORKSPACE_ID,
+        email: SALES_EMAIL,
+        password: SALES_PASSWORD,
+        seatKey: 'sales'
+      });
+      expect(
+        await readLinkedInCredentials(db, WORKSPACE_ID, hostedWithBrowser, 'sales')
+      ).toBeNull();
     });
 
     it('scopes a seat key to its workspace', async () => {
-      await putLinkedInCredentials(db, { workspaceId: WORKSPACE_ID, email: SALES_EMAIL, password: SALES_PASSWORD, seatKey: 'sales' });
-      expect(await readLinkedInCredentials(db, OTHER_WORKSPACE_ID, process.env, 'sales')).toBeNull();
+      await putLinkedInCredentials(db, {
+        workspaceId: WORKSPACE_ID,
+        email: SALES_EMAIL,
+        password: SALES_PASSWORD,
+        seatKey: 'sales'
+      });
+      expect(
+        await readLinkedInCredentials(db, OTHER_WORKSPACE_ID, process.env, 'sales')
+      ).toBeNull();
     });
   });
 });
@@ -2364,7 +2854,9 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
   beforeEach(async () => {
     db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
     await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(WORKSPACE_ID, 'claim facts', NOW.toISOString());
+    await db
+      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+      .run(WORKSPACE_ID, 'claim facts', NOW.toISOString());
     await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, LONG_AGO);
   });
 
@@ -2374,17 +2866,40 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
   });
 
   it('returns the campaign, the replay scope and the warm-up override off the row', async () => {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,started_at,created_at,updated_at)
       VALUES (?,?,?,'running',?::jsonb,'owner',?,?,?)
-    `).run('licmp_claim', WORKSPACE_ID, 'Claim facts', JSON.stringify({ steps: [] }), NOW.toISOString(), NOW.toISOString(), NOW.toISOString());
-    await db.prepare(`
+    `
+      )
+      .run(
+        'licmp_claim',
+        WORKSPACE_ID,
+        'Claim facts',
+        JSON.stringify({ steps: [] }),
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,status,planned_for,source,replay_scope,override_warmup_ceiling,reply_to_inbound,body,thread_urn,created_at)
       VALUES (?,?,'owner','reply',?,?,'planned',?,'manual',?,true,true,?,?,?)
-    `).run(
-      'lact_claimfacts', WORKSPACE_ID, 'https://www.linkedin.com/in/maya/', 'licmp_claim',
-      NOW.toISOString(), 'thread:2-maya==:sha256:abc', 'Happy to.', '2-maya==', NOW.toISOString()
-    );
+    `
+      )
+      .run(
+        'lact_claimfacts',
+        WORKSPACE_ID,
+        'https://www.linkedin.com/in/maya/',
+        'licmp_claim',
+        NOW.toISOString(),
+        'thread:2-maya==:sha256:abc',
+        'Happy to.',
+        '2-maya==',
+        NOW.toISOString()
+      );
 
     const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
     const batchId = await store.openBatch(NOW);
@@ -2422,11 +2937,29 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
    */
   it('sees work a person asked for, and nothing else', async () => {
     const due = async (): Promise<boolean> => dueManualWork(db, WORKSPACE_ID, 'owner', NOW);
-    const insert = async (id: string, source: string, columns: string, values: string, ...binds: unknown[]): Promise<void> => {
-      await db.prepare(`
+    const insert = async (
+      id: string,
+      source: string,
+      columns: string,
+      values: string,
+      ...binds: unknown[]
+    ): Promise<void> => {
+      await db
+        .prepare(
+          `
         INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at${columns})
         VALUES (?,?,'owner','reply',?,'planned',?,?,?${values})
-      `).run(id, WORKSPACE_ID, `https://www.linkedin.com/in/${id}/`, NOW.toISOString(), source, NOW.toISOString(), ...binds);
+      `
+        )
+        .run(
+          id,
+          WORKSPACE_ID,
+          `https://www.linkedin.com/in/${id}/`,
+          NOW.toISOString(),
+          source,
+          NOW.toISOString(),
+          ...binds
+        );
     };
 
     expect(await due()).toBe(false);
@@ -2452,20 +2985,32 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
     expect(await due()).toBe(false);
 
     // Queued for later, which is a plan rather than work waiting now.
-    await db.prepare("UPDATE linkedin_actions SET status='planned', planned_for=? WHERE id=?")
+    await db
+      .prepare("UPDATE linkedin_actions SET status='planned', planned_for=? WHERE id=?")
       .run(new Date(NOW.getTime() + 3_600_000).toISOString(), 'lact_manual');
     expect(await due()).toBe(false);
 
     // Another seat's queue is another account's business.
-    await db.prepare("UPDATE linkedin_actions SET planned_for=?, seat_key='sales' WHERE id=?")
+    await db
+      .prepare("UPDATE linkedin_actions SET planned_for=?, seat_key='sales' WHERE id=?")
       .run(NOW.toISOString(), 'lact_manual');
     expect(await due()).toBe(false);
   });
   it('reports an ordinary row as unscoped, uncampaigned and un-overridden', async () => {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
       VALUES (?,?,'owner','profile_view',?,'planned',?,'export',?)
-    `).run('lact_plain', WORKSPACE_ID, 'https://www.linkedin.com/in/plain/', NOW.toISOString(), NOW.toISOString());
+    `
+      )
+      .run(
+        'lact_plain',
+        WORKSPACE_ID,
+        'https://www.linkedin.com/in/plain/',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
 
     const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
     const claimed = await store.claimNextDueAction(await store.openBatch(NOW), NOW);
@@ -2492,10 +3037,20 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
     // missing Message control.
     expect(await store.hasUnacceptedInvite(dm)).toBe(false);
 
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,recorded_at,source,created_at)
       VALUES (?,?,'owner','invite',?,'sent',?,'campaign',?)
-    `).run('lact_inv', WORKSPACE_ID, 'https://www.linkedin.com/in/maya/', NOW.toISOString(), NOW.toISOString());
+    `
+      )
+      .run(
+        'lact_inv',
+        WORKSPACE_ID,
+        'https://www.linkedin.com/in/maya/',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
     // Case-folded, like every other target lookup in this subsystem.
     expect(await store.hasUnacceptedInvite(dm)).toBe(true);
 
@@ -2508,25 +3063,68 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
     // campaign parsed to zero steps, `hasBranching` answered false, and the
     // message step ran against a lead who had never accepted the invite.
     const steps = [
-      { id: 'step-1', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: null } },
-      { id: 'step-2', action: 'message', delayBefore: { amount: 2, unit: 'days' }, config: { variants: [{ id: 'a', body: 'hi', weight: 100 }] } }
+      {
+        id: 'step-1',
+        action: 'connection_request',
+        delayBefore: { amount: 0, unit: 'hours' },
+        config: { message: null }
+      },
+      {
+        id: 'step-2',
+        action: 'message',
+        delayBefore: { amount: 2, unit: 'days' },
+        config: { variants: [{ id: 'a', body: 'hi', weight: 100 }] }
+      }
     ];
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,started_at,created_at,updated_at)
       VALUES (?,?,?,'running',?::jsonb,'owner',?,?,?)
-    `).run(
-      'licmp_mgr', WORKSPACE_ID, 'Manager campaign',
-      JSON.stringify({ manager: true, workflowId: 'liwf_1', workflowVersion: 1, steps }),
-      LONG_AGO.toISOString(), LONG_AGO.toISOString(), NOW.toISOString()
-    );
-    await db.prepare(`
+    `
+      )
+      .run(
+        'licmp_mgr',
+        WORKSPACE_ID,
+        'Manager campaign',
+        JSON.stringify({ manager: true, workflowId: 'liwf_1', workflowVersion: 1, steps }),
+        LONG_AGO.toISOString(),
+        LONG_AGO.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,status,recorded_at,source,replay_scope,created_at)
       VALUES (?,?,'owner','invite',?,?,'sent',?,'campaign',?,?)
-    `).run('lact_mgr_inv', WORKSPACE_ID, 'https://www.linkedin.com/in/lead/', 'licmp_mgr', NOW.toISOString(), 'limem_1:step-1', NOW.toISOString());
-    await db.prepare(`
+    `
+      )
+      .run(
+        'lact_mgr_inv',
+        WORKSPACE_ID,
+        'https://www.linkedin.com/in/lead/',
+        'licmp_mgr',
+        NOW.toISOString(),
+        'limem_1:step-1',
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,status,planned_for,source,replay_scope,body,created_at)
       VALUES (?,?,'owner','dm',?,?,'planned',?,'campaign',?,?,?)
-    `).run('lact_mgr_dm', WORKSPACE_ID, 'https://www.linkedin.com/in/lead/', 'licmp_mgr', NOW.toISOString(), 'limem_1:step-2', 'hi', NOW.toISOString());
+    `
+      )
+      .run(
+        'lact_mgr_dm',
+        WORKSPACE_ID,
+        'https://www.linkedin.com/in/lead/',
+        'licmp_mgr',
+        NOW.toISOString(),
+        'limem_1:step-2',
+        'hi',
+        NOW.toISOString()
+      );
 
     const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
     const claimed = await store.claimNextDueAction(await store.openBatch(NOW), NOW);
@@ -2537,11 +3135,15 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
     const pending = await store.branchDecision(claimed as DueLinkedInAction, NOW);
     expect(pending?.outcome).toBe('pending');
 
-    await db.prepare("UPDATE linkedin_actions SET status='accepted' WHERE id=?").run('lact_mgr_inv');
+    await db
+      .prepare("UPDATE linkedin_actions SET status='accepted' WHERE id=?")
+      .run('lact_mgr_inv');
     const due = await store.branchDecision(claimed as DueLinkedInAction, NOW);
     expect(due?.outcome).toBe('due');
 
-    await db.prepare("UPDATE linkedin_actions SET status='declined' WHERE id=?").run('lact_mgr_inv');
+    await db
+      .prepare("UPDATE linkedin_actions SET status='declined' WHERE id=?")
+      .run('lact_mgr_inv');
     const dead = await store.branchDecision(claimed as DueLinkedInAction, NOW);
     expect(dead?.outcome).toBe('skipped');
   });
@@ -2566,6 +3168,7 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
  *     first -- an action that may already have reached somebody's
  *     notifications, which is the one thing this subsystem must never do.
  */
+
 describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
   const WORKSPACE_ID = 'ws_linkedin_lease_test';
   const NOW = new Date('2026-08-04T10:00:00.000Z');
@@ -2573,25 +3176,42 @@ describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
   let db: Db;
 
   const planned = async (id: string, target: string, plannedFor: Date = NOW) => {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
       VALUES (?,?,'owner','profile_view',?,'planned',?,'export',?)
-    `).run(id, WORKSPACE_ID, target, plannedFor.toISOString(), LONG_AGO.toISOString());
+    `
+      )
+      .run(id, WORKSPACE_ID, target, plannedFor.toISOString(), LONG_AGO.toISOString());
   };
 
   const row = async (id: string) =>
-    db.prepare(`
+    db
+      .prepare(
+        `
       SELECT status, claimed_by, batch_id,
              claimed_at IS NULL AS unclaimed,
              lease_expires_at IS NULL AS unleased,
              settlement_hold_at IS NULL AS unheld
       FROM linkedin_actions WHERE id=?
-    `).get<{ status: string; claimed_by: string | null; batch_id: string | null; unclaimed: boolean; unleased: boolean; unheld: boolean }>(id);
+    `
+      )
+      .get<{
+        status: string;
+        claimed_by: string | null;
+        batch_id: string | null;
+        unclaimed: boolean;
+        unleased: boolean;
+        unheld: boolean;
+      }>(id);
 
   beforeEach(async () => {
     db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
     await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(WORKSPACE_ID, 'lease test', LONG_AGO.toISOString());
+    await db
+      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+      .run(WORKSPACE_ID, 'lease test', LONG_AGO.toISOString());
     await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, LONG_AGO);
   });
 
@@ -2600,9 +3220,39 @@ describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
     await db?.close();
   });
 
+  it('claims a breached SLA before a newer higher queue-priority action', async () => {
+    const due = new Date(NOW.getTime() - 60_000).toISOString();
+    await db
+      .prepare(
+        `
+      INSERT INTO linkedin_actions
+        (id,workspace_id,seat_key,kind,target_ref,status,planned_for,queue_priority,sla_deadline_at,source,created_at)
+      VALUES
+        ('lact_high_priority',?,'owner','profile_view','https://www.linkedin.com/in/high-priority/','planned',?,2000,NULL,'campaign',?),
+        ('lact_sla_breached',?,'owner','profile_view','https://www.linkedin.com/in/sla-breached/','planned',?,0,?,'campaign',?)
+    `
+      )
+      .run(
+        WORKSPACE_ID,
+        due,
+        NOW.toISOString(),
+        WORKSPACE_ID,
+        due,
+        new Date(NOW.getTime() - 3_600_000).toISOString(),
+        NOW.toISOString()
+      );
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
+    const batchId = await store.openBatch(NOW);
+    const claimed = await store.claimNextDueAction(batchId, NOW);
+    expect(claimed?.id).toBe('lact_sla_breached');
+  });
+
   it('writes the worker and the deadline onto the row it claims', async () => {
     await planned('lact_lease_1', 'https://www.linkedin.com/in/one/');
-    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-a', leaseMs: 60_000 });
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', {
+      workerId: 'worker-a',
+      leaseMs: 60_000
+    });
     const batchId = await store.openBatch(NOW);
 
     expect((await store.claimNextDueAction(batchId, NOW))?.id).toBe('lact_lease_1');
@@ -2615,7 +3265,10 @@ describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
 
   it('leaves a live lease alone and releases an expired one', async () => {
     await planned('lact_lease_2', 'https://www.linkedin.com/in/two/');
-    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-a', leaseMs: 60_000 });
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', {
+      workerId: 'worker-a',
+      leaseMs: 60_000
+    });
     await store.claimNextDueAction(await store.openBatch(NOW), NOW);
 
     // Still inside the term: the worker is alive, and stealing the row here is
@@ -2633,13 +3286,18 @@ describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
     // And it is due again, which is the entire point of releasing it.
     // Filtered to this workspace: every test file in this suite shares one
     // database, and what is being asserted is about this seat.
-    const due = (await seatsWithDueActions(db, NOW)).filter((seat) => seat.workspaceId === WORKSPACE_ID);
+    const due = (await seatsWithDueActions(db, NOW)).filter(
+      (seat) => seat.workspaceId === WORKSPACE_ID
+    );
     expect(due.map((seat) => seat.seatKey)).toEqual(['owner']);
   });
 
   it('a heartbeat pushes the deadline out, and only the holder may send one', async () => {
     await planned('lact_lease_3', 'https://www.linkedin.com/in/three/');
-    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-a', leaseMs: 60_000 });
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', {
+      workerId: 'worker-a',
+      leaseMs: 60_000
+    });
     const batchId = await store.openBatch(NOW);
     await store.claimNextDueAction(batchId, NOW);
 
@@ -2650,14 +3308,20 @@ describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
     // An impostor cannot renew what it does not hold: `claimed_by` is in the
     // predicate, so a worker whose claim was already reaped cannot extend it
     // back into existence.
-    const impostor = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-b', leaseMs: 3_600_000 });
+    const impostor = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', {
+      workerId: 'worker-b',
+      leaseMs: 3_600_000
+    });
     await impostor.heartbeat(batchId, 'lact_lease_3', new Date(NOW.getTime() + 90_000));
     expect(await reapExpiredActionLeases(db, { now: new Date(NOW.getTime() + 200_000) })).toBe(1);
   });
 
   it('NEVER touches the deliberate hold, however long it has been held', async () => {
     await planned('lact_lease_4', 'https://www.linkedin.com/in/four/');
-    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', { workerId: 'worker-a', leaseMs: 60_000 });
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'owner', {
+      workerId: 'worker-a',
+      leaseMs: 60_000
+    });
     await store.claimNextDueAction(await store.openBatch(NOW), NOW);
     // We clicked and lost the thread. A retry could put a second invite in
     // somebody's notifications and that cannot be withdrawn.
@@ -2667,10 +3331,14 @@ describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
     expect(held?.unheld).toBe(false);
     expect(held?.unleased).toBe(true);
 
-    expect(await reapExpiredActionLeases(db, { now: new Date(NOW.getTime() + 30 * 86_400_000) })).toBe(0);
+    expect(
+      await reapExpiredActionLeases(db, { now: new Date(NOW.getTime() + 30 * 86_400_000) })
+    ).toBe(0);
     expect((await row('lact_lease_4'))?.unclaimed).toBe(false);
     // And it is not offered to a worker either.
-    expect((await seatsWithDueActions(db, NOW)).filter((seat) => seat.workspaceId === WORKSPACE_ID)).toEqual([]);
+    expect(
+      (await seatsWithDueActions(db, NOW)).filter((seat) => seat.workspaceId === WORKSPACE_ID)
+    ).toEqual([]);
   });
 
   it('recovers a pre-lease strand but not a pre-lease hold', async () => {
@@ -2679,8 +3347,12 @@ describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
     // hold path always recorded a `failure_kind` and the claim path never did.
     await planned('lact_legacy_strand', 'https://www.linkedin.com/in/strand/');
     await planned('lact_legacy_hold', 'https://www.linkedin.com/in/legacyhold/');
-    await db.prepare('UPDATE linkedin_actions SET claimed_at=? WHERE id=?').run(LONG_AGO.toISOString(), 'lact_legacy_strand');
-    await db.prepare("UPDATE linkedin_actions SET claimed_at=?, failure_kind='unknown' WHERE id=?").run(LONG_AGO.toISOString(), 'lact_legacy_hold');
+    await db
+      .prepare('UPDATE linkedin_actions SET claimed_at=? WHERE id=?')
+      .run(LONG_AGO.toISOString(), 'lact_legacy_strand');
+    await db
+      .prepare("UPDATE linkedin_actions SET claimed_at=?, failure_kind='unknown' WHERE id=?")
+      .run(LONG_AGO.toISOString(), 'lact_legacy_hold');
 
     expect(await reapExpiredActionLeases(db, { now: NOW })).toBe(1);
     expect((await row('lact_legacy_strand'))?.unclaimed).toBe(true);
@@ -2688,22 +3360,37 @@ describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
   });
 
   it('closes a batch whose worker is gone, and leaves a running one alone', async () => {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_batches (id, workspace_id, seat_key, status, started_at)
       VALUES (?,?,'owner','running',?), (?,?,'owner','running',?)
-    `).run(
-      'lbatch_abandoned', WORKSPACE_ID, new Date(NOW.getTime() - 4 * 3_600_000).toISOString(),
-      'lbatch_live', WORKSPACE_ID, NOW.toISOString()
-    );
+    `
+      )
+      .run(
+        'lbatch_abandoned',
+        WORKSPACE_ID,
+        new Date(NOW.getTime() - 4 * 3_600_000).toISOString(),
+        'lbatch_live',
+        WORKSPACE_ID,
+        NOW.toISOString()
+      );
 
     expect(await reapStaleLinkedInBatches(db, { now: NOW })).toBe(1);
-    const abandoned = await db.prepare('SELECT status, halt_reason FROM linkedin_batches WHERE id=?')
+    const abandoned = await db
+      .prepare('SELECT status, halt_reason FROM linkedin_batches WHERE id=?')
       .get<{ status: string; halt_reason: string | null }>('lbatch_abandoned');
     expect(abandoned?.status).toBe('halted');
     // The batch was ABANDONED, not failed. Saying otherwise would invent a
     // cause, the same rule `reapStaleAgentRuns` follows.
     expect(abandoned?.halt_reason).toContain('stopped without closing it');
-    expect((await db.prepare('SELECT status FROM linkedin_batches WHERE id=?').get<{ status: string }>('lbatch_live'))?.status).toBe('running');
+    expect(
+      (
+        await db
+          .prepare('SELECT status FROM linkedin_batches WHERE id=?')
+          .get<{ status: string }>('lbatch_live')
+      )?.status
+    ).toBe('running');
   });
 });
 
@@ -2719,17 +3406,30 @@ describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () =>
   let db: Db;
 
   const plan = async (workspaceId: string, seatKey: string, id: string, plannedFor: Date) => {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,status,planned_for,source,created_at)
       VALUES (?,?,?,'profile_view',?,'planned',?,'export',?)
-    `).run(id, workspaceId, seatKey, `https://www.linkedin.com/in/${id}/`, plannedFor.toISOString(), LONG_AGO.toISOString());
+    `
+      )
+      .run(
+        id,
+        workspaceId,
+        seatKey,
+        `https://www.linkedin.com/in/${id}/`,
+        plannedFor.toISOString(),
+        LONG_AGO.toISOString()
+      );
   };
 
   beforeEach(async () => {
     db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
     for (const workspaceId of [BUSY, QUIET]) {
       await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
-      await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(workspaceId, workspaceId, LONG_AGO.toISOString());
+      await db
+        .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+        .run(workspaceId, workspaceId, LONG_AGO.toISOString());
     }
     // The noisy tenant: four seats, all with work, none of it old.
     for (const seatKey of ['owner', 'sales', 'support', 'growth']) {
@@ -2742,7 +3442,8 @@ describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () =>
   });
 
   afterEach(async () => {
-    for (const workspaceId of [BUSY, QUIET]) await db?.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
+    for (const workspaceId of [BUSY, QUIET])
+      await db?.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
     await db?.close();
   });
 
@@ -2750,7 +3451,9 @@ describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () =>
     // Before: `ORDER BY workspace_id, seat_key` with no limit, so the busy
     // tenant was served first, to completion, on every tick -- and a tenant
     // whose id sorted last was never reached at all.
-    const seats = (await dueSeatsForWorker(db, NOW)).filter((seat) => seat.workspaceId === BUSY || seat.workspaceId === QUIET);
+    const seats = (await dueSeatsForWorker(db, NOW)).filter(
+      (seat) => seat.workspaceId === BUSY || seat.workspaceId === QUIET
+    );
     expect(seats[0]).toMatchObject({ workspaceId: QUIET, seatKey: 'owner' });
   });
 
@@ -2765,7 +3468,8 @@ describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () =>
     const all = await dueSeatsForWorker(db, NOW);
     const first = await dueSeatsForWorker(db, NOW, { shard: { index: 0, total: 2 } });
     const second = await dueSeatsForWorker(db, NOW, { shard: { index: 1, total: 2 } });
-    const key = (seat: { workspaceId: string; seatKey: string }) => `${seat.workspaceId}/${seat.seatKey}`;
+    const key = (seat: { workspaceId: string; seatKey: string }) =>
+      `${seat.workspaceId}/${seat.seatKey}`;
 
     // Before: every worker ran the identical query in the identical order, so
     // they all reached for the same seat and Chromium's profile lock decided
@@ -2806,7 +3510,8 @@ describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () =>
   });
 
   it('shards the periodic per-seat and per-workspace work the same way', async () => {
-    const key = (seat: { workspaceId: string; seatKey: string }) => `${seat.workspaceId}/${seat.seatKey}`;
+    const key = (seat: { workspaceId: string; seatKey: string }) =>
+      `${seat.workspaceId}/${seat.seatKey}`;
     const shardedSeats = [
       ...(await seatRefsForShard(db, { shard: { index: 0, total: 2 }, limit: 500 })),
       ...(await seatRefsForShard(db, { shard: { index: 1, total: 2 }, limit: 500 }))
@@ -2817,7 +3522,10 @@ describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () =>
     // The cursor is what stops a bounded tick from meaning "the first N
     // forever": page two starts where page one stopped.
     const firstPage = await seatRefsForShard(db, { limit: 2 });
-    const secondPage = await seatRefsForShard(db, { limit: 2, after: firstPage[firstPage.length - 1] });
+    const secondPage = await seatRefsForShard(db, {
+      limit: 2,
+      after: firstPage[firstPage.length - 1]
+    });
     // COMPARED AS THE PAIR, because the pair is the unit and the seat key alone
     // is not unique: 'owner' is the key every single-seat workspace has, and
     // other test files share this database. Projecting the workspace away made
@@ -2843,7 +3551,13 @@ describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () =>
     // -- used to be swallowed into `[]`, byte-for-byte identical to "nothing is
     // due", so an entire deployment's LinkedIn queue could stop with nothing to
     // alert on. It has to reach the caller.
-    const broken = { prepare: () => ({ all: async () => { throw new Error('canceling statement due to statement timeout'); } }) } as unknown as Db;
+    const broken = {
+      prepare: () => ({
+        all: async () => {
+          throw new Error('canceling statement due to statement timeout');
+        }
+      })
+    } as unknown as Db;
     await expect(dueSeatsForWorker(broken, NOW)).rejects.toThrow('statement timeout');
     // And the worker can be asked, from outside, whether the queue is moving.
     expect(linkedInWorkerHealth()).toMatchObject({ discoveryHealthy: expect.any(Boolean) });
@@ -2859,88 +3573,136 @@ describe.skipIf(!databaseUrl)('who this worker serves, and in what order', () =>
  * signs in from scratch: a new device, on an account LinkedIn already trusts a
  * specific browser for, which is the loudest challenge signal available to us.
  */
-describe.skipIf(!databaseUrl)('a seat is driven by one worker, on the host that has its session', () => {
-  const WORKSPACE_ID = 'ws_linkedin_seat_lease_test';
-  const NOW = new Date('2026-08-04T10:00:00.000Z');
-  const LONG_AGO = new Date('2025-01-01T10:00:00.000Z');
-  let db: Db;
-  let profileDir: string;
+describe.skipIf(!databaseUrl)(
+  'a seat is driven by one worker, on the host that has its session',
+  () => {
+    const WORKSPACE_ID = 'ws_linkedin_seat_lease_test';
+    const NOW = new Date('2026-08-04T10:00:00.000Z');
+    const LONG_AGO = new Date('2025-01-01T10:00:00.000Z');
+    let db: Db;
+    let profileDir: string;
 
-  const lease = (over: { workerId: string; host: string; profileDir?: string; leaseMs?: number }, at: Date) =>
-    claimSeatLease(
-      db,
-      { workspaceId: WORKSPACE_ID, seatKey: 'owner', profileDir: over.profileDir ?? profileDir, leaseMs: 60_000, ...over },
-      at
-    );
+    const lease = (
+      over: { workerId: string; host: string; profileDir?: string; leaseMs?: number },
+      at: Date
+    ) =>
+      claimSeatLease(
+        db,
+        {
+          workspaceId: WORKSPACE_ID,
+          seatKey: 'owner',
+          profileDir: over.profileDir ?? profileDir,
+          leaseMs: 60_000,
+          ...over
+        },
+        at
+      );
 
-  beforeEach(async () => {
-    db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
-    await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(WORKSPACE_ID, 'seat lease', LONG_AGO.toISOString());
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, LONG_AGO);
-    profileDir = mkdtempSync(join(tmpdir(), 'trevra-seat-lease-'));
-    mkdirSync(join(profileDir, 'Default'), { recursive: true });
-  });
+    beforeEach(async () => {
+      db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
+      await db.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+      await db
+        .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+        .run(WORKSPACE_ID, 'seat lease', LONG_AGO.toISOString());
+      await upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'UTC' }, LONG_AGO);
+      profileDir = mkdtempSync(join(tmpdir(), 'trevra-seat-lease-'));
+      mkdirSync(join(profileDir, 'Default'), { recursive: true });
+    });
 
-  afterEach(async () => {
-    await db?.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
-    await db?.close();
-  });
+    afterEach(async () => {
+      await db?.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
+      await db?.close();
+    });
 
-  it('refuses a second worker while the first is driving, and hands over once the term lapses', async () => {
-    expect((await lease({ workerId: 'worker-a', host: 'host-1' }, NOW)).ok).toBe(true);
+    it('refuses a second worker while the first is driving, and hands over once the term lapses', async () => {
+      expect((await lease({ workerId: 'worker-a', host: 'host-1' }, NOW)).ok).toBe(true);
 
-    const contested = await lease({ workerId: 'worker-b', host: 'host-1' }, new Date(NOW.getTime() + 30_000));
-    expect(contested.ok).toBe(false);
-    expect(contested.ok === false && contested.reason).toContain('already being driven');
+      const contested = await lease(
+        { workerId: 'worker-b', host: 'host-1' },
+        new Date(NOW.getTime() + 30_000)
+      );
+      expect(contested.ok).toBe(false);
+      expect(contested.ok === false && contested.reason).toContain('already being driven');
 
-    // Same host, expired term: a restarted worker is a new pid on the same
-    // disk, and that disk still has the seat's session.
-    expect((await lease({ workerId: 'worker-b', host: 'host-1' }, new Date(NOW.getTime() + 120_000))).ok).toBe(true);
-  });
+      // Same host, expired term: a restarted worker is a new pid on the same
+      // disk, and that disk still has the seat's session.
+      expect(
+        (await lease({ workerId: 'worker-b', host: 'host-1' }, new Date(NOW.getTime() + 120_000)))
+          .ok
+      ).toBe(true);
+    });
 
-  it('will not let another host take a seat whose profile it does not have', async () => {
-    await lease({ workerId: 'worker-a', host: 'host-1' }, NOW);
+    it('will not let another host take a seat whose profile it does not have', async () => {
+      await lease({ workerId: 'worker-a', host: 'host-1' }, NOW);
 
-    const elsewhere = await lease(
-      { workerId: 'worker-c', host: 'host-2', profileDir: join(tmpdir(), 'trevra-not-here-at-all') },
-      new Date(NOW.getTime() + 86_400_000)
-    );
-    expect(elsewhere.ok).toBe(false);
-    // Refusing is the point: running it here means a brand-new device sign-in
-    // on that account, which is worse than the seat waiting.
-    expect(elsewhere.ok === false && elsewhere.reason).toContain('pinned to host');
-  });
+      const elsewhere = await lease(
+        {
+          workerId: 'worker-c',
+          host: 'host-2',
+          profileDir: join(tmpdir(), 'trevra-not-here-at-all')
+        },
+        new Date(NOW.getTime() + 86_400_000)
+      );
+      expect(elsewhere.ok).toBe(false);
+      // Refusing is the point: running it here means a brand-new device sign-in
+      // on that account, which is worse than the seat waiting.
+      expect(elsewhere.ok === false && elsewhere.reason).toContain('pinned to host');
+    });
 
-  it('lets another host take it once the profile is actually there', async () => {
-    await lease({ workerId: 'worker-a', host: 'host-1' }, NOW);
-    const moved = mkdtempSync(join(tmpdir(), 'trevra-moved-profile-'));
-    mkdirSync(join(moved, 'Default'), { recursive: true });
+    it('lets another host take it once the profile is actually there', async () => {
+      await lease({ workerId: 'worker-a', host: 'host-1' }, NOW);
+      const moved = mkdtempSync(join(tmpdir(), 'trevra-moved-profile-'));
+      mkdirSync(join(moved, 'Default'), { recursive: true });
 
-    expect(seatProfilePresent(moved)).toBe(true);
-    // An operator who copied the profile here has said, by doing so, that this
-    // host is a home for this seat.
-    const taken = await lease({ workerId: 'worker-c', host: 'host-2', profileDir: moved }, new Date(NOW.getTime() + 86_400_000));
-    expect(taken.ok).toBe(true);
-  });
+      expect(seatProfilePresent(moved)).toBe(true);
+      // An operator who copied the profile here has said, by doing so, that this
+      // host is a home for this seat.
+      const taken = await lease(
+        { workerId: 'worker-c', host: 'host-2', profileDir: moved },
+        new Date(NOW.getTime() + 86_400_000)
+      );
+      expect(taken.ok).toBe(true);
+    });
 
-  it('only the holder may heartbeat, and releasing keeps the affinity', async () => {
-    await lease({ workerId: 'worker-a', host: 'host-1' }, NOW);
+    it('only the holder may heartbeat, and releasing keeps the affinity', async () => {
+      await lease({ workerId: 'worker-a', host: 'host-1' }, NOW);
 
-    expect(await heartbeatSeatLease(db, { workspaceId: WORKSPACE_ID, seatKey: 'owner', workerId: 'worker-b' }, NOW)).toBe(false);
-    expect(await heartbeatSeatLease(db, { workspaceId: WORKSPACE_ID, seatKey: 'owner', workerId: 'worker-a' }, NOW)).toBe(true);
+      expect(
+        await heartbeatSeatLease(
+          db,
+          { workspaceId: WORKSPACE_ID, seatKey: 'owner', workerId: 'worker-b' },
+          NOW
+        )
+      ).toBe(false);
+      expect(
+        await heartbeatSeatLease(
+          db,
+          { workspaceId: WORKSPACE_ID, seatKey: 'owner', workerId: 'worker-a' },
+          NOW
+        )
+      ).toBe(true);
 
-    await releaseSeatLease(db, { workspaceId: WORKSPACE_ID, seatKey: 'owner', workerId: 'worker-a' }, NOW);
-    // The row STAYS: it is also the record of which host holds this seat's
-    // session, and that outlives the pass that took it.
-    const kept = await db.prepare('SELECT host, released_at IS NOT NULL AS released FROM linkedin_seat_leases WHERE workspace_id=? AND seat_key=?')
-      .get<{ host: string; released: boolean }>(WORKSPACE_ID, 'owner');
-    expect(kept).toMatchObject({ host: 'host-1', released: true });
+      await releaseSeatLease(
+        db,
+        { workspaceId: WORKSPACE_ID, seatKey: 'owner', workerId: 'worker-a' },
+        NOW
+      );
+      // The row STAYS: it is also the record of which host holds this seat's
+      // session, and that outlives the pass that took it.
+      const kept = await db
+        .prepare(
+          'SELECT host, released_at IS NOT NULL AS released FROM linkedin_seat_leases WHERE workspace_id=? AND seat_key=?'
+        )
+        .get<{ host: string; released: boolean }>(WORKSPACE_ID, 'owner');
+      expect(kept).toMatchObject({ host: 'host-1', released: true });
 
-    // And a released seat is immediately available on that host again.
-    expect((await lease({ workerId: 'worker-d', host: 'host-1' }, new Date(NOW.getTime() + 1_000))).ok).toBe(true);
-  });
-});
+      // And a released seat is immediately available on that host again.
+      expect(
+        (await lease({ workerId: 'worker-d', host: 'host-1' }, new Date(NOW.getTime() + 1_000))).ok
+      ).toBe(true);
+    });
+  }
+);
 
 /**
  * The detect queue was a single GLOBAL FIFO with no tenant bound, so one
@@ -2957,23 +3719,42 @@ describe.skipIf(!databaseUrl)('the Connect queue is fair across tenants', () => 
     db = await openDatabase({ connectionString: databaseUrl, seedDemo: false });
     for (const workspaceId of [FIRST, SECOND]) {
       await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
-      await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(workspaceId, workspaceId, NOW.toISOString());
+      await db
+        .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+        .run(workspaceId, workspaceId, NOW.toISOString());
     }
     // The tenant onboarding in bulk asked first, twice.
-    await requestSeatDetect(db, { workspaceId: FIRST, timezone: 'UTC', seatKey: 'owner' }, new Date(NOW.getTime() - 60_000));
-    await requestSeatDetect(db, { workspaceId: FIRST, timezone: 'UTC', seatKey: 'sales' }, new Date(NOW.getTime() - 59_000));
+    await requestSeatDetect(
+      db,
+      { workspaceId: FIRST, timezone: 'UTC', seatKey: 'owner' },
+      new Date(NOW.getTime() - 60_000)
+    );
+    await requestSeatDetect(
+      db,
+      { workspaceId: FIRST, timezone: 'UTC', seatKey: 'sales' },
+      new Date(NOW.getTime() - 59_000)
+    );
     // Somebody else pressed Connect once, later.
-    await requestSeatDetect(db, { workspaceId: SECOND, timezone: 'UTC', seatKey: 'owner' }, new Date(NOW.getTime() - 10_000));
+    await requestSeatDetect(
+      db,
+      { workspaceId: SECOND, timezone: 'UTC', seatKey: 'owner' },
+      new Date(NOW.getTime() - 10_000)
+    );
   });
 
   afterEach(async () => {
-    for (const workspaceId of [FIRST, SECOND]) await db?.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
+    for (const workspaceId of [FIRST, SECOND])
+      await db?.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
     await db?.close();
   });
 
   it('serves two tenants before it serves one tenant twice', async () => {
     const { driver } = fakeDriver();
-    const settled = await runPendingSeatDetectRequests(db, { enabled: true }, { driver, page, now: NOW, log: () => {}, maxRequests: 2 });
+    const settled = await runPendingSeatDetectRequests(
+      db,
+      { enabled: true },
+      { driver, page, now: NOW, log: () => {}, maxRequests: 2 }
+    );
 
     expect(settled).toHaveLength(2);
     // THE PROPERTY IS THE NON-DUPLICATION. Before, the queue was a global FIFO
@@ -2982,7 +3763,9 @@ describe.skipIf(!databaseUrl)('the Connect queue is fair across tenants', () => 
     expect(new Set(settled.map((request) => request.workspaceId)).size).toBe(2);
     // Specifically: the bulk onboarding got ONE of its two, not both, however
     // far in front of everybody else it queued.
-    expect(settled.filter((request) => request.workspaceId === FIRST).length).toBeLessThanOrEqual(1);
+    expect(settled.filter((request) => request.workspaceId === FIRST).length).toBeLessThanOrEqual(
+      1
+    );
   });
 });
 
@@ -3023,7 +3806,14 @@ describe('open browsers are bounded, and a failed open leaks nothing', () => {
 
   const config = { enabled: true, hosted: false, profileDir: '/tmp/trevra-browser-cap-test' };
   const open = (playwright: PlaywrightLike, seatKey: string) =>
-    openBrowser(config, () => {}, { db: null, workspaceId: 'ws_cap', seatKey, headless: true, env: {}, playwright });
+    openBrowser(config, () => {}, {
+      db: null,
+      workspaceId: 'ws_cap',
+      seatKey,
+      headless: true,
+      env: {},
+      playwright
+    });
 
   afterEach(async () => {
     await closeLinkedInBrowser();
@@ -3132,10 +3922,16 @@ describe('workerShard', () => {
   });
 
   it('refuses a value that is not a partition, rather than serving the wrong slice', () => {
-    expect(() => workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '3', TREVRA_LINKEDIN_WORKER_INDEX: '3' })).toThrow(/between 0 and 2/);
+    expect(() =>
+      workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '3', TREVRA_LINKEDIN_WORKER_INDEX: '3' })
+    ).toThrow(/between 0 and 2/);
     expect(() => workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '0' })).toThrow(/1 or more/);
-    expect(() => workerShard({ TREVRA_LINKEDIN_WORKER_INDEX: '-1', TREVRA_LINKEDIN_WORKER_COUNT: '2' })).toThrow();
-    expect(workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '4', TREVRA_LINKEDIN_WORKER_INDEX: '2' })).toEqual({ index: 2, total: 4 });
+    expect(() =>
+      workerShard({ TREVRA_LINKEDIN_WORKER_INDEX: '-1', TREVRA_LINKEDIN_WORKER_COUNT: '2' })
+    ).toThrow();
+    expect(
+      workerShard({ TREVRA_LINKEDIN_WORKER_COUNT: '4', TREVRA_LINKEDIN_WORKER_INDEX: '2' })
+    ).toEqual({ index: 2, total: 4 });
   });
 });
 
@@ -3153,7 +3949,9 @@ describe('the session rhythm', () => {
       expect(Number.isInteger(budget)).toBe(true);
     }
     expect(sessionActionBudget('same')).toBe(sessionActionBudget('same'));
-    const drawn = new Set(Array.from({ length: 24 }, (_, index) => sessionActionBudget(`s${index}`)));
+    const drawn = new Set(
+      Array.from({ length: 24 }, (_, index) => sessionActionBudget(`s${index}`))
+    );
     expect(drawn.size).toBeGreaterThan(1);
   });
 
@@ -3169,7 +3967,9 @@ describe('the session rhythm', () => {
   });
 
   it('gives consecutive sittings different lengths', () => {
-    const lengths = Array.from({ length: 6 }, (_, index) => sessionActionBudget(`ws_x:owner:session:${index + 1}`));
+    const lengths = Array.from({ length: 6 }, (_, index) =>
+      sessionActionBudget(`ws_x:owner:session:${index + 1}`)
+    );
     expect(new Set(lengths).size).toBeGreaterThan(1);
   });
 });
@@ -3237,7 +4037,9 @@ describe('reaching a target from its source page', () => {
   });
 
   it('says nothing and changes nothing when the lead has no known source', async () => {
-    const harness = fakeStore([action({ id: 'lact_src_3', targetRef: 'https://www.linkedin.com/in/unsourced/' })]);
+    const harness = fakeStore([
+      action({ id: 'lact_src_3', targetRef: 'https://www.linkedin.com/in/unsourced/' })
+    ]);
     harness.store.sourcePageFor = async () => null;
     const { driver, calls } = fakeDriver();
     const { page, navigations } = navigatingPage();
@@ -3255,7 +4057,9 @@ describe('reaching a target from its source page', () => {
   });
 
   it('never navigates off LinkedIn, whatever the source row says', async () => {
-    const harness = fakeStore([action({ id: 'lact_src_4', targetRef: 'https://www.linkedin.com/in/offsite/' })]);
+    const harness = fakeStore([
+      action({ id: 'lact_src_4', targetRef: 'https://www.linkedin.com/in/offsite/' })
+    ]);
     harness.store.sourcePageFor = async () => 'https://example.test/leads.csv';
     const { driver, calls } = fakeDriver();
     const { page, navigations } = navigatingPage();

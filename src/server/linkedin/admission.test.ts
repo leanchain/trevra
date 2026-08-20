@@ -75,4 +75,69 @@ describe('campaign wave admission', () => {
       }).admit
     ).toBe(0);
   });
+
+  it('uses observed acceptance only after the minimum sample and only for acceptance-gated messages', () => {
+    const gated: WorkflowStep[] = [
+      steps[0]!,
+      steps[1]!,
+      {
+        id: 'message',
+        action: 'message',
+        delayBefore: { amount: 1, unit: 'days' },
+        config: {
+          variants: [{ id: 'a', body: 'Hi', weight: 100 }],
+          requiresAcceptedConnection: true
+        }
+      }
+    ];
+    const thin = decideAdmission({
+      steps: gated,
+      pending: 100,
+      inSequence: 0,
+      available: { profile_view: 100, invite: 100, dm: 10 },
+      backlog: {},
+      acceptanceRate: 0.1,
+      acceptanceSampleSize: 10,
+      now: new Date('2026-08-20T09:00:00Z')
+    });
+    const observed = decideAdmission({
+      steps: gated,
+      pending: 100,
+      inSequence: 0,
+      available: { profile_view: 100, invite: 100, dm: 10 },
+      backlog: {},
+      acceptanceRate: 0.1,
+      acceptanceSampleSize: 20,
+      now: new Date('2026-08-20T09:00:00Z')
+    });
+    expect(thin.admit).toBe(28); // conservative 35% forecast
+    expect(observed.admit).toBe(100); // 10 DM slots / 10% expected acceptance
+    expect(thin.reasons.join(' ')).toContain('history is still thin');
+    expect(observed.reasons.join(' ')).toContain('Observed invite acceptance');
+  });
+
+  it('lets outcome health only reduce admission and explains the throttle', () => {
+    const baseline = decideAdmission({
+      steps,
+      pending: 100,
+      inSequence: 0,
+      available: { profile_view: 100, invite: 100, dm: 100 },
+      backlog: {},
+      now: new Date('2026-08-20T09:00:00Z')
+    });
+    const throttled = decideAdmission({
+      steps,
+      pending: 100,
+      inSequence: 0,
+      available: { profile_view: 100, invite: 100, dm: 100 },
+      backlog: {},
+      outcomeThrottle: 0.5,
+      outcomeSampleSize: 30,
+      outcomeThrottleReason: 'Execution health reduced this campaign.',
+      now: new Date('2026-08-20T09:00:00Z')
+    });
+    expect(throttled.admit).toBe(Math.floor(baseline.admit * 0.5));
+    expect(throttled.admit).toBeLessThanOrEqual(baseline.admit);
+    expect(throttled.reasons).toContain('Execution health reduced this campaign.');
+  });
 });

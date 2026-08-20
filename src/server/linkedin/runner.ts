@@ -13,6 +13,7 @@ import {
 import {
   admitPendingCampaignMembers,
   campaignActionLimit,
+  campaignAdmissionForecast,
   campaignSnapshotSteps,
   enrolNewContacts
 } from './managed-campaigns.js';
@@ -134,6 +135,7 @@ interface DueMemberRow {
   id: string;
   contact_id: string;
   step_index: number;
+  next_eligible_at: string | null;
   admitted_at: string | null;
   assigned_seat_key: string | null;
   workflow_snapshot_json: unknown;
@@ -698,8 +700,17 @@ function queuePriorityForStep(
     score += 50;
   if (dueAt) {
     const due = Date.parse(dueAt);
-    if (Number.isFinite(due) && due < now.getTime())
-      score += Math.min(500, Math.floor((now.getTime() - due) / 3_600_000));
+    if (Number.isFinite(due) && due < now.getTime()) {
+      const overdueMs = now.getTime() - due;
+      score += Math.min(500, Math.floor(overdueMs / 3_600_000));
+      if (step.sla) {
+        const slaMs = delayMilliseconds(step.sla);
+        if (slaMs > 0 && overdueMs >= slaMs) {
+          // A breached continuation SLA outranks ordinary continuation age.
+          score += 1_000 + Math.min(1_000, Math.floor((overdueMs - slaMs) / 3_600_000));
+        }
+      }
+    }
   }
   return score;
 }
@@ -932,6 +943,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         );
       }
       const policy = parseJsonObject(campaign.admission_policy_json) as AdmissionPolicy;
+      const forecast = await campaignAdmissionForecast(db, workspaceId, campaign.id, now);
       const decision = decideAdmission({
         steps,
         pending: counts?.pending ?? 0,
@@ -942,6 +954,13 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         policy,
         lastAdmissionAt: campaign.last_admission_at,
         now,
+        acceptanceRate: forecast.acceptanceRate,
+        acceptanceSampleSize: forecast.acceptanceSampleSize,
+        noReplyRate: forecast.noReplyRate,
+        replySampleSize: forecast.replySampleSize,
+        outcomeThrottle: forecast.throttle,
+        outcomeSampleSize: forecast.outcomeSampleSize,
+        outcomeThrottleReason: forecast.reasons.join(' '),
         hasUsableFutureSlot: usableSenders.some(({ seat }) => nextOpenInstant(seat, now) !== null)
       });
       if (decision.admit > 0) {
@@ -961,7 +980,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
 
     const members = await db
       .prepare(
-        `SELECT m.id,m.contact_id,m.step_index,m.admitted_at,m.assigned_seat_key,m.workflow_snapshot_json,m.workflow_version,m.assigned_variants,m.branch_state_json,
+        `SELECT m.id,m.contact_id,m.step_index,m.next_eligible_at,m.admitted_at,m.assigned_seat_key,m.workflow_snapshot_json,m.workflow_version,m.assigned_variants,m.branch_state_json,
               l.first_name,l.last_name,l.company,l.email,l.phone,l.country,l.profile_url,l.custom_fields_json
        FROM linkedin_campaign_members m
        JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
@@ -979,8 +998,12 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
       const rightSteps = workflowStepsForMember(right, steps);
       const a = leftSteps[Number(left.step_index)];
       const b = rightSteps[Number(right.step_index)];
-      const aScore = a ? queuePriorityForStep(a, Number(left.step_index), now, null) : 0;
-      const bScore = b ? queuePriorityForStep(b, Number(right.step_index), now, null) : 0;
+      const aScore = a
+        ? queuePriorityForStep(a, Number(left.step_index), now, left.next_eligible_at)
+        : 0;
+      const bScore = b
+        ? queuePriorityForStep(b, Number(right.step_index), now, right.next_eligible_at)
+        : 0;
       return bScore - aScore;
     });
 
@@ -1188,13 +1211,16 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             if (!written.duplicate) {
               await tx
                 .prepare(
-                  `UPDATE linkedin_actions SET campaign_member_id=?,workflow_step_id=?,queue_priority=?,channel_metadata_json=?::jsonb
+                  `UPDATE linkedin_actions SET campaign_member_id=?,workflow_step_id=?,queue_priority=?,sla_deadline_at=?::timestamptz,channel_metadata_json=?::jsonb
                  WHERE id=? AND workspace_id=?`
                 )
                 .run(
                   member.id,
                   step.id,
                   queuePriorityForStep(step, stepIndex, now, nowIso),
+                  step.sla
+                    ? new Date(now.getTime() + delayMilliseconds(step.sla)).toISOString()
+                    : null,
                   JSON.stringify(
                     step.config.condition.kind === 'connected'
                       ? { connectionProbe: true }
@@ -1601,7 +1627,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         if (!written.duplicate) {
           await tx
             .prepare(
-              `UPDATE linkedin_actions SET body=?,subject=?,campaign_member_id=?,workflow_step_id=?,variant_id=?,queue_priority=?,attachment_json=?::jsonb,channel_metadata_json=?::jsonb
+              `UPDATE linkedin_actions SET body=?,subject=?,campaign_member_id=?,workflow_step_id=?,variant_id=?,queue_priority=?,sla_deadline_at=?::timestamptz,attachment_json=?::jsonb,channel_metadata_json=?::jsonb
              WHERE id=? AND workspace_id=?`
             )
             .run(
@@ -1611,6 +1637,9 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
               step.id,
               variantId,
               queuePriorityForStep(step, stepIndex, now, plannedFor.toISOString()),
+              step.sla
+                ? new Date(plannedFor.getTime() + delayMilliseconds(step.sla)).toISOString()
+                : null,
               attachment ? JSON.stringify(attachment) : null,
               JSON.stringify(
                 step.action === 'endorse_skills'
