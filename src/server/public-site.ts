@@ -8,7 +8,11 @@ import { listPublicModulePopularity, listPublicRegistryModules } from './registr
 import {
   buildStructuredData,
   buildWebPageStructuredData,
-  PUBLIC_PATHS,
+  renderHumansText,
+  renderLlmsText,
+  renderPublicAgents,
+  renderSecurityText,
+  renderSitemap,
   SITE_DESCRIPTION,
   SITE_TITLE,
   SOCIAL_IMAGE
@@ -232,12 +236,7 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
     res
       .type('application/xml')
       .set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
-    const urls = PUBLIC_PATHS.map(
-      (path) => `  <url><loc>${escapeXml(`${config.origin}${path}`)}</loc></url>`
-    ).join('\n');
-    res.send(
-      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`
-    );
+    res.send(renderSitemap(config.origin, new Date().toISOString()));
   });
 
   app.get('/llms.txt', (_req, res) => {
@@ -259,26 +258,13 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
 
   app.get('/humans.txt', (_req, res) => {
     setTextResponse(res, 3600);
-    res.send(
-      `/* TEAM */\nProduct: Trevra\nContact: ${config.supportEmail}\n\n/* PRODUCT */\nTrevra is the open-source ledger and control plane founders point their agents at. The agent does the work; Trevra records the evidence and holds the approval gate.\n\n/* STANDARDS */\nHTML5, accessibility-minded React, PostgreSQL, robots.txt, sitemap.xml, llms.txt, and RFC 9116 security.txt.\n`
-    );
+    res.send(renderHumansText(config));
   });
 
   app.get('/.well-known/security.txt', (_req, res) => {
     setTextResponse(res, 86400);
     const expires = new Date(Date.now() + 365 * 86_400_000).toISOString().replace('.000Z', 'Z');
-    const secureOrigin = config.origin.startsWith('https://');
-    const lines = [
-      `Contact: mailto:${config.securityEmail}`,
-      `Expires: ${expires}`,
-      'Preferred-Languages: en'
-    ];
-    if (secureOrigin)
-      lines.push(
-        `Canonical: ${config.origin}/.well-known/security.txt`,
-        `Policy: ${config.origin}/security`
-      );
-    res.send(`${lines.join('\n')}\n`);
+    res.send(renderSecurityText(config, expires));
   });
 
   app.get('/security.txt', (_req, res) => res.redirect(308, '/.well-known/security.txt'));
@@ -651,16 +637,6 @@ const THEME_ICONS =
   '<svg class="icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
 
-function renderLlmsText(config: SiteConfig, full: boolean): string {
-  const base = `# Trevra\n\n> ${config.description}\n\n## Primary pages\n- [Trevra](${config.origin}/): Product overview and workspace access.\n- [How Trevra works](${config.origin}/how-it-works): Product workflow, evidence model, integrations, and automation boundaries.\n- [Security](${config.origin}/security): Security architecture and responsible disclosure.\n- [Privacy](${config.origin}/privacy): Data categories, purposes, analytics, retention, and requests.\n- [Terms](${config.origin}/terms): Baseline service terms.\n\n## Machine-readable resources\n- [Sitemap](${config.origin}/sitemap.xml)\n- [Robots](${config.origin}/robots.txt)\n- [Full LLM context](${config.origin}/llms-full.txt)\n- [Agent guidance](${config.origin}/agents.md)\n- [Security contact](${config.origin}/.well-known/security.txt)\n\n## Contact\n- Product support: ${config.supportEmail}\n- Security reports: ${config.securityEmail}\n`;
-  if (!full) return base;
-  return `${base}\n## Product model\nTrevra is built for founders and small teams running their own go-to-market. It is not a generic chatbot and not a replacement accounting ledger. Claude Code is the intended operator: the agent calls skills, and Trevra is the ledger and control plane that stores what was sourced, qualified, proposed, agreed, delivered, invoiced, and paid, and that gates what the agent is allowed to execute. The web application is where a founder watches and approves, not a workflow tool to click through.\n\n## Skills catalog\nA skill is a small deterministic unit of go-to-market work with a typed input, a typed output, and recorded evidence. The catalog spans source, enrich, score, audit, draft, send, reply, ladder, guard, position, publish, measure, close, and collect. Close and collect are shipped inside Trevra today. Sourcing and outreach skills are in progress and should not be described as shipped product surface.\n\n## Core detections\n1. Stale proposal: a proposal or buying conversation needs a timely follow-up.\n2. Scope creep: a client request appears outside the accepted scope or revision allowance.\n3. Unbilled milestone: delivery evidence exists but a corresponding invoice does not.\n4. Overdue invoice: a payment obligation is past due and needs an appropriate follow-up.\n\n## Revenue Proof Pack\nThe evidence pack behind any agent action. It can include agreement clauses, included and excluded scope, client requests, delivery evidence, invoice terms, payment state, confidence, estimated financial impact, and the proposed action. Evidence is shown before execution.\n\n## Automation boundaries\nTrevra can suggest, prepare, schedule, or execute actions. Scope changes always require manual approval. Other action types can be delegated only through explicit workspace rules containing action type, minimum confidence, maximum amount, and delay. The exact approved payload is hashed before execution and a modified payload is rejected.\n\n## Ownership\nTrevra is open source and self-hostable. It runs on your own PostgreSQL, skills are modular and forkable, and workspace data can be exported or deleted. The ledger, the evidence, and the approval gates are not cloud-only.\n\n## Integrations\nIntegration plumbing is delegated to Nango or official provider SDKs. Supported product patterns include Gmail, Microsoft 365, Google Calendar, Stripe, QuickBooks, Xero, HoneyBook, and Bonsai. Marketplace and generic CSV exports can be normalized when direct APIs are unavailable.\n\n## Important limitations\nTrevra provides operational assistance, not legal, tax, accounting, investment, medical, or other regulated professional advice. It does not expose private workspace records through public discovery files. Public agents must not attempt to access authenticated API routes or infer customer data.\n`;
-}
-
-function renderPublicAgents(config: SiteConfig): string {
-  return `# Trevra public agent guidance\n\nCanonical site: ${config.origin}\n\n## Allowed public retrieval\nAgents may read the public pages, sitemap, robots.txt, llms.txt, llms-full.txt, security.txt, and public image assets. Use canonical URLs when citing Trevra.\n\n## Restricted areas\nDo not attempt to access /api routes without an authenticated user request and valid authorization. Do not probe connected providers, enumerate workspaces, submit fabricated marketing events, or treat public product descriptions as permission to execute commercial actions.\n\n## Product description\n${config.description}\n\n## Preferred sources\n1. ${config.origin}/how-it-works\n2. ${config.origin}/security\n3. ${config.origin}/privacy\n4. ${config.origin}/terms\n5. ${config.origin}/llms-full.txt\n\n## Contact\nProduct: ${config.supportEmail}\nSecurity: ${config.securityEmail}\n`;
-}
-
 /**
  * The landing page's own footer shape (`.footer-brand`, three link columns,
  * `.footer-note`). `.launch-footer > div > a` is the only footer-link rule
@@ -726,8 +702,5 @@ function escapeHtml(value: string): string {
 }
 
 function escapeAttr(value: string): string {
-  return escapeHtml(value);
-}
-function escapeXml(value: string): string {
   return escapeHtml(value);
 }
