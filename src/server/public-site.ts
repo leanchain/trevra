@@ -504,8 +504,9 @@ export function renderNotFoundPage(nonce: string): string {
       path: '/404',
       title: 'Page not found | Trevra',
       description: 'The requested Trevra page could not be found.',
-      heading: 'That page is not part of the revenue brief.',
-      intro: 'Return to Trevra to create a workspace or continue your commercial work.',
+      heading: "This page doesn't exist.",
+      intro:
+        'Return to Trevra to open a workspace or point Claude Code or Codex at the module catalog.',
       body: '<p><a class="launch-button" href="/">Return to Trevra</a></p>',
       noindex: true
     },

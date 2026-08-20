@@ -27,6 +27,7 @@
     "db:migrate-sqlite": "tsx scripts/migrate-sqlite-to-postgres.ts",
     "traction:report": "tsx scripts/traction-report.ts",
     "seo:submit": "tsx scripts/submit-indexnow.ts",
+    "og:build": "tsx scripts/render-og-image.ts",
     "catalog:build": "tsx scripts/build-public-catalog.ts && npm run sbom:build",
     "build:marketing": "npm run catalog:build && npm run typecheck && vite build --mode marketing && tsx scripts/prerender-marketing.tsx dist/index.html && tsx scripts/build-marketing-seo.ts dist && tsx scripts/build-marketing-headers.ts dist/_headers dist/index.html",
     "deploy:cloudflare": "npm run build:marketing && npx wrangler pages deploy dist",
