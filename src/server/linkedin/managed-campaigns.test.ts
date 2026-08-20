@@ -730,10 +730,16 @@ describe('campaign admission forecasting', () => {
     const forecast = await campaignAdmissionForecast(db, WORKSPACE, created.campaign.id, NOW);
     expect(forecast.acceptanceSampleSize).toBe(20);
     expect(forecast.acceptanceRate).toBeCloseTo(0.2);
+    expect(forecast.acceptanceConfidence95?.low).toBeLessThan(0.2);
+    expect(forecast.acceptanceConfidence95?.high).toBeGreaterThan(0.2);
     expect(forecast.replySampleSize).toBe(20);
     expect(forecast.noReplyRate).toBeCloseTo(0.9);
+    expect(forecast.noReplyConfidence95?.low).toBeLessThan(0.9);
+    expect(forecast.noReplyConfidence95?.high).toBeGreaterThan(0.9);
     // 9 problematic outcomes among 60 measured action outcomes = 15%.
     expect(forecast.failureRate).toBeCloseTo(0.15);
+    expect(forecast.failureConfidence95?.low).toBeLessThan(0.15);
+    expect(forecast.failureConfidence95?.high).toBeGreaterThan(0.15);
     expect(forecast.throttle).toBe(0.5);
     expect(forecast.reasons.join(' ')).toContain('recent execution outcomes');
   });

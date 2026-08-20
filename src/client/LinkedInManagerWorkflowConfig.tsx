@@ -1317,8 +1317,53 @@ export function LinkedInManagerWorkflowConfig({
   const addOutcomeScaffold = (index: number) => {
     setSteps((current) => {
       const source = current[index];
-      if (!source || (source.action !== 'connection_request' && source.action !== 'message'))
+      if (!source || !['connection_request', 'message', 'inmail'].includes(source.action))
         return current;
+      if (source.action === 'inmail') {
+        const alreadyWrapped = current.some(
+          (candidate) =>
+            candidate.action === 'condition' &&
+            candidate.config.condition.kind === 'open_profile' &&
+            candidate.config.yesStepId === source.id
+        );
+        if (alreadyWrapped) return current;
+        if (current.length + 2 > MAX_STEPS) {
+          setError(
+            `Open Profile eligibility needs 2 more steps, but this workflow is already near the ${MAX_STEPS}-step limit.`
+          );
+          return current;
+        }
+        const inmailId = mintId();
+        const noEndId = mintId();
+        const existingNext =
+          source.nextStepId === undefined ? (current[index + 1]?.id ?? null) : source.nextStepId;
+        const wrappedInmail: WorkflowStep = {
+          ...source,
+          id: inmailId,
+          nextStepId: existingNext
+        };
+        const gate: WorkflowStep = {
+          id: source.id,
+          action: 'condition',
+          delayBefore: source.delayBefore,
+          config: {
+            condition: { kind: 'open_profile' },
+            yesStepId: inmailId,
+            noStepId: noEndId
+          }
+        };
+        const noEnd: WorkflowStep = {
+          id: noEndId,
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'excluded' }
+        };
+        const next = [...current];
+        next[index] = gate;
+        next.splice(index + 1, 0, wrappedInmail, noEnd);
+        setError('');
+        return next;
+      }
       const expected = source.action === 'connection_request' ? 'accepted' : 'replied';
       if (
         current.some(
@@ -2086,26 +2131,47 @@ function WorkflowStepCard({
           </div>
         )}
 
-        {(step.action === 'connection_request' || step.action === 'message') && (
+        {(step.action === 'connection_request' ||
+          step.action === 'message' ||
+          step.action === 'inmail') && (
           <div className="li-span-2 mgr-preview-note">
-            <b>{step.action === 'connection_request' ? 'Simple outcome lanes' : 'Reply lanes'}.</b>{' '}
-            Add the canonical Monitor + YES/NO paths with one click; you can edit the timeout and
-            destinations afterward.
+            <b>
+              {step.action === 'connection_request'
+                ? 'Simple outcome lanes'
+                : step.action === 'message'
+                  ? 'Reply lanes'
+                  : 'Open Profile eligibility'}
+              .
+            </b>{' '}
+            {step.action === 'inmail'
+              ? 'Wrap this step in If Open Profile → InMail / No → End. Paid credits stay off unless you explicitly enable them.'
+              : 'Add the canonical Monitor + YES/NO paths with one click; you can edit the timeout and destinations afterward.'}
             <button
               className="li-mini-button"
               type="button"
               onClick={onAddOutcomeScaffold}
-              disabled={steps.some(
-                (candidate) =>
-                  candidate.action === 'monitor' &&
-                  candidate.config.condition.ofStepId === step.id &&
-                  candidate.config.condition.kind ===
-                    (step.action === 'connection_request' ? 'accepted' : 'replied')
-              )}
+              disabled={
+                step.action === 'inmail'
+                  ? steps.some(
+                      (candidate) =>
+                        candidate.action === 'condition' &&
+                        candidate.config.condition.kind === 'open_profile' &&
+                        candidate.config.yesStepId === step.id
+                    )
+                  : steps.some(
+                      (candidate) =>
+                        candidate.action === 'monitor' &&
+                        candidate.config.condition.ofStepId === step.id &&
+                        candidate.config.condition.kind ===
+                          (step.action === 'connection_request' ? 'accepted' : 'replied')
+                    )
+              }
             >
               {step.action === 'connection_request'
                 ? 'Add Accepted / Not Accepted paths'
-                : 'Add Replied / No Reply paths'}
+                : step.action === 'message'
+                  ? 'Add Replied / No Reply paths'
+                  : 'Wrap with Open Profile check'}
             </button>
           </div>
         )}

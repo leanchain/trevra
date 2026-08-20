@@ -16,8 +16,10 @@ import {
   diagnoseWorkflow,
   getWorkflow,
   parseWorkflowSteps,
+  renderWorkflowTemplate,
   workflowMergeVariables,
   type WorkflowDiagnostic,
+  type WorkflowMergeLead,
   type WorkflowStep,
   type WorkflowVariableCoverage
 } from './workflows.js';
@@ -169,13 +171,29 @@ export interface ManagedCampaignWave {
     accepted: number;
     replied: number;
     failed: number;
+    medianMinutesFromAdmission: number | null;
+    medianQueueLatencyMinutes: number | null;
   }>;
+  acceptanceRate?: number | null;
+  replyRate?: number | null;
+  failureRate?: number | null;
+  backlog?: number;
 }
 
 export interface CampaignQueueSummary {
   pending: number;
+  /** Sequence-eligible members whose nextEligibleAt has passed. This is NOT a promise of executable capacity. */
   dueNow: number;
+  /** Planned actions whose scheduled slot is in the next 24 hours. */
   scheduledToday: number;
+  /** Planned and due, but not yet claimed by an executor. */
+  queuedReady: number;
+  /** Planned for a future slot. */
+  scheduledFuture: number;
+  /** Currently leased by a browser worker. */
+  executing: number;
+  /** Claimed with an ambiguous outcome or explicitly parked for review. */
+  heldForReview: number;
   waitingForConnection: number;
   waitingForReply: number;
   waitingOther: number;
@@ -183,6 +201,8 @@ export interface CampaignQueueSummary {
   held: number;
   blocked: number;
   failed: number;
+  /** Actions already allocated inside the campaign's current 24h ramp day, by the four headline safety buckets. */
+  allocatedCampaignDay: Record<'invite' | 'dm' | 'profile_view' | 'follow', number>;
   backlogByStep: Array<{ stepId: string; count: number; due: number }>;
 }
 interface CampaignRow {
@@ -1044,7 +1064,11 @@ export async function listCampaignWaves(
             COUNT(*) FILTER (WHERE a.status IN ('sent','accepted','replied'))::int AS sent,
             COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('accepted','replied'))::int AS accepted,
             COUNT(*) FILTER (WHERE a.status='replied')::int AS replied,
-            COUNT(*) FILTER (WHERE a.failure_kind IS NOT NULL AND a.status NOT IN ('sent','accepted','replied'))::int AS failed
+            COUNT(*) FILTER (WHERE a.failure_kind IS NOT NULL AND a.status NOT IN ('sent','accepted','replied'))::int AS failed,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (COALESCE(a.recorded_at,a.planned_for)-m.admitted_at))/60.0)
+              FILTER (WHERE m.admitted_at IS NOT NULL AND COALESCE(a.recorded_at,a.planned_for) IS NOT NULL) AS median_from_admission,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (a.recorded_at-a.planned_for))/60.0)
+              FILTER (WHERE a.recorded_at IS NOT NULL AND a.planned_for IS NOT NULL) AS median_queue_latency
      FROM linkedin_actions a JOIN linkedin_campaign_members m ON m.id=a.campaign_member_id AND m.workspace_id=a.workspace_id
      WHERE a.workspace_id=? AND a.campaign_id=? AND m.wave_id IS NOT NULL AND a.workflow_step_id IS NOT NULL
      GROUP BY m.wave_id,a.workflow_step_id`
@@ -1057,6 +1081,8 @@ export async function listCampaignWaves(
       accepted: number;
       replied: number;
       failed: number;
+      median_from_admission: number | null;
+      median_queue_latency: number | null;
     }>(workspaceId, campaignId);
   const byWave = new Map<string, ManagedCampaignWave['stepFunnel']>();
   for (const row of funnels) {
@@ -1067,10 +1093,33 @@ export async function listCampaignWaves(
       sent: Number(row.sent),
       accepted: Number(row.accepted),
       replied: Number(row.replied),
-      failed: Number(row.failed)
+      failed: Number(row.failed),
+      medianMinutesFromAdmission:
+        row.median_from_admission === null ? null : Number(row.median_from_admission),
+      medianQueueLatencyMinutes:
+        row.median_queue_latency === null ? null : Number(row.median_queue_latency)
     });
     byWave.set(row.wave_id, list);
   }
+  const waveSummary = await db
+    .prepare(
+      `SELECT m.wave_id,
+      COUNT(*) FILTER (WHERE m.status IN ('active','waiting','manual','paused'))::int AS backlog,
+      COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id AND a.kind='invite' AND a.status IN ('accepted','replied')))::int AS accepted_members,
+      COUNT(*) FILTER (WHERE m.status='replied' OR EXISTS (SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id AND a.status='replied'))::int AS replied_members,
+      COUNT(*) FILTER (WHERE m.status='failed' OR EXISTS (SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id AND a.failure_kind IS NOT NULL AND a.status NOT IN ('sent','accepted','replied')))::int AS failed_members
+      FROM linkedin_campaign_members m WHERE m.workspace_id=? AND m.campaign_id=? AND m.wave_id IS NOT NULL
+      GROUP BY m.wave_id`
+    )
+    .all<{
+      wave_id: string;
+      backlog: number;
+      accepted_members: number;
+      replied_members: number;
+      failed_members: number;
+    }>(workspaceId, campaignId);
+  const summaryByWave = new Map(waveSummary.map((item) => [item.wave_id, item]));
+
   return rows.map((row) => ({
     id: row.id,
     campaignId: row.campaign_id,
@@ -1083,7 +1132,20 @@ export async function listCampaignWaves(
         ([, value]) => typeof value === 'number'
       )
     ) as Record<string, number>,
-    stepFunnel: byWave.get(row.id) ?? []
+    stepFunnel: byWave.get(row.id) ?? [],
+    acceptanceRate:
+      row.member_count > 0
+        ? Number(summaryByWave.get(row.id)?.accepted_members ?? 0) / Number(row.member_count)
+        : null,
+    replyRate:
+      row.member_count > 0
+        ? Number(summaryByWave.get(row.id)?.replied_members ?? 0) / Number(row.member_count)
+        : null,
+    failureRate:
+      row.member_count > 0
+        ? Number(summaryByWave.get(row.id)?.failed_members ?? 0) / Number(row.member_count)
+        : null,
+    backlog: Number(summaryByWave.get(row.id)?.backlog ?? 0)
   }));
 }
 
@@ -1824,6 +1886,11 @@ export interface CampaignLaunchPreview {
     cap: number | null;
     capped: boolean;
   };
+  personalizationSamples: Array<{
+    contactId: string;
+    label: string;
+    rendered: Array<{ stepId: string; text: string }>;
+  }>;
 }
 
 async function leadListVariableCoverage(
@@ -1888,6 +1955,25 @@ function workflowKindToPaced(kind: keyof ReturnType<typeof workflowAdmissionDema
   return 'endorse';
 }
 
+function previewTextForStep(step: WorkflowStep, lead: WorkflowMergeLead): string | null {
+  let template: string | null = null;
+  if (step.action === 'connection_request')
+    template = step.config.variants?.[0]?.body ?? step.config.message ?? null;
+  else if (
+    step.action === 'message' ||
+    step.action === 'group_message' ||
+    step.action === 'event_message'
+  )
+    template = step.config.variants[0]?.body ?? null;
+  else if (step.action === 'inmail' || step.action === 'email') {
+    const body = step.config.variants[0]?.body ?? '';
+    template = `${step.config.subject}${body ? `\n${body}` : ''}`;
+  } else if (step.action === 'manual_message' || step.action === 'manual_comment')
+    template = step.config.suggestedTemplate ?? null;
+  if (!template?.trim()) return null;
+  return renderWorkflowTemplate(template, lead);
+}
+
 export async function previewManagedCampaignLaunch(
   db: Db,
   input: {
@@ -1924,6 +2010,44 @@ export async function previewManagedCampaignLaunch(
     workflowMergeVariables(workflow.steps)
   );
   const diagnostics = diagnoseWorkflow(workflow.steps, variableCoverage);
+  const sampleRows = await db
+    .prepare(
+      `SELECT c.id,c.first_name,c.last_name,c.company,c.email,c.phone,c.country,c.custom_fields_json
+      FROM linkedin_lead_list_members m JOIN linkedin_lead_contacts c ON c.workspace_id=m.workspace_id AND c.id=m.contact_id
+      WHERE m.workspace_id=? AND m.list_id=? ORDER BY m.created_at,c.id LIMIT 3`
+    )
+    .all<{
+      id: string;
+      first_name: string;
+      last_name: string;
+      company: string;
+      email: string | null;
+      phone: string | null;
+      country: string | null;
+      custom_fields_json: unknown;
+    }>(input.workspaceId, list.id);
+  const personalizationSamples = sampleRows.map((row) => {
+    const lead: WorkflowMergeLead = {
+      firstName: row.first_name,
+      lastName: row.last_name,
+      company: row.company,
+      email: row.email,
+      phone: row.phone,
+      country: row.country,
+      customFields: parseJsonObject(row.custom_fields_json) as Record<
+        string,
+        string | number | boolean | null | undefined
+      >
+    };
+    return {
+      contactId: row.id,
+      label: `${row.first_name} ${row.last_name}`.trim() || row.company || row.id,
+      rendered: workflow.steps.flatMap((step) => {
+        const text = previewTextForStep(step, lead);
+        return text === null ? [] : [{ stepId: step.id, text }];
+      })
+    };
+  });
   const demand = workflowAdmissionDemand(workflow.steps);
   const capacity: CampaignLaunchPreview['dayOneCapacity'] = {};
   const eligibleSenders: string[] = [];
@@ -1988,7 +2112,8 @@ export async function previewManagedCampaignLaunch(
       estimatedProviderLookups,
       cap: enrichmentCap,
       capped: enrichmentCap !== null && estimatedProviderLookups > enrichmentCap
-    }
+    },
+    personalizationSamples
   };
 }
 
@@ -2051,14 +2176,52 @@ export async function campaignQueueSummary(
     .prepare(
       `SELECT
        COUNT(*) FILTER (WHERE status='planned' AND planned_for>=?::timestamptz AND planned_for<?::timestamptz)::int AS scheduled,
+       COUNT(*) FILTER (WHERE status='planned' AND planned_for<=?::timestamptz AND claimed_at IS NULL)::int AS queued_ready,
+       COUNT(*) FILTER (WHERE status='planned' AND planned_for>?::timestamptz AND claimed_at IS NULL)::int AS scheduled_future,
+       COUNT(*) FILTER (WHERE status='planned' AND claimed_at IS NOT NULL AND settlement_hold_at IS NULL)::int AS executing,
+       COUNT(*) FILTER (WHERE status='held' OR settlement_hold_at IS NOT NULL)::int AS held_for_review,
        COUNT(*) FILTER (WHERE status='held')::int AS held
      FROM linkedin_actions WHERE workspace_id=? AND campaign_id=?`
     )
-    .get<{ scheduled: number; held: number }>(
+    .get<{
+      scheduled: number;
+      queued_ready: number;
+      scheduled_future: number;
+      executing: number;
+      held_for_review: number;
+      held: number;
+    }>(
       now.toISOString(),
       new Date(now.getTime() + 86_400_000).toISOString(),
+      now.toISOString(),
+      now.toISOString(),
       workspaceId,
       campaignId
+    );
+
+  const campaignStart = campaign.startedAt ? Date.parse(campaign.startedAt) : Number.NaN;
+  const dayStartMs = Number.isFinite(campaignStart)
+    ? campaignStart +
+      Math.max(0, Math.floor((now.getTime() - campaignStart) / 86_400_000)) * 86_400_000
+    : now.getTime();
+  const dayStart = new Date(dayStartMs).toISOString();
+  const dayEnd = new Date(dayStartMs + 86_400_000).toISOString();
+  const allocations = await db
+    .prepare(
+      `SELECT
+       COUNT(*) FILTER (WHERE kind IN ('invite','group_invite','event_invite','company_invite'))::int AS invite,
+       COUNT(*) FILTER (WHERE kind IN ('dm','reply','inmail','group_message','event_message'))::int AS dm,
+       COUNT(*) FILTER (WHERE kind='profile_view')::int AS profile_view,
+       COUNT(*) FILTER (WHERE kind IN ('follow','unfollow','disconnect','company_follow'))::int AS follow
+     FROM linkedin_actions
+     WHERE workspace_id=? AND campaign_id=? AND status<>'skipped'
+       AND planned_for IS NOT NULL AND planned_for>=?::timestamptz AND planned_for<?::timestamptz`
+    )
+    .get<Record<'invite' | 'dm' | 'profile_view' | 'follow', number>>(
+      workspaceId,
+      campaignId,
+      dayStart,
+      dayEnd
     );
   const blocked =
     (
@@ -2073,6 +2236,10 @@ export async function campaignQueueSummary(
     pending,
     dueNow,
     scheduledToday: Number(actionCounts?.scheduled ?? 0),
+    queuedReady: Number(actionCounts?.queued_ready ?? 0),
+    scheduledFuture: Number(actionCounts?.scheduled_future ?? 0),
+    executing: Number(actionCounts?.executing ?? 0),
+    heldForReview: Number(actionCounts?.held_for_review ?? 0),
     waitingForConnection,
     waitingForReply,
     waitingOther,
@@ -2080,6 +2247,12 @@ export async function campaignQueueSummary(
     held: Number(actionCounts?.held ?? 0),
     blocked: Number(blocked),
     failed,
+    allocatedCampaignDay: {
+      invite: Number(allocations?.invite ?? 0),
+      dm: Number(allocations?.dm ?? 0),
+      profile_view: Number(allocations?.profile_view ?? 0),
+      follow: Number(allocations?.follow ?? 0)
+    },
     backlogByStep: [...backlog.entries()].map(([index, value]) => ({
       stepId: campaign.steps[index]?.id ?? `step-${index + 1}`,
       ...value
@@ -3090,12 +3263,26 @@ export async function managedAnalytics(
 export interface CampaignAdmissionForecast {
   acceptanceRate: number | null;
   acceptanceSampleSize: number;
+  acceptanceConfidence95: { low: number; high: number } | null;
   noReplyRate: number | null;
   replySampleSize: number;
+  noReplyConfidence95: { low: number; high: number } | null;
   failureRate: number | null;
   outcomeSampleSize: number;
+  failureConfidence95: { low: number; high: number } | null;
   throttle: number;
   reasons: string[];
+}
+
+function wilson95(successes: number, total: number): { low: number; high: number } | null {
+  if (total < ADMISSION_FORECAST_MIN_SAMPLE || total <= 0) return null;
+  const p = Math.max(0, Math.min(1, successes / total));
+  const z = 1.959963984540054;
+  const z2 = z * z;
+  const denominator = 1 + z2 / total;
+  const center = (p + z2 / (2 * total)) / denominator;
+  const margin = (z / denominator) * Math.sqrt((p * (1 - p) + z2 / (4 * total)) / total);
+  return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
 }
 
 /**
@@ -3145,6 +3332,12 @@ export async function campaignAdmissionForecast(
     outcomeSampleSize >= ADMISSION_FORECAST_MIN_SAMPLE
       ? badOutcomes / Math.max(1, outcomeSampleSize)
       : null;
+  const acceptanceConfidence95 = wilson95(accepted, acceptanceSampleSize);
+  const replyConfidence95 = wilson95(replied, replySampleSize);
+  const noReplyConfidence95 = replyConfidence95
+    ? { low: 1 - replyConfidence95.high, high: 1 - replyConfidence95.low }
+    : null;
+  const failureConfidence95 = wilson95(badOutcomes, outcomeSampleSize);
 
   let throttle = 1;
   const reasons: string[] = [];
@@ -3174,13 +3367,46 @@ export async function campaignAdmissionForecast(
   return {
     acceptanceRate,
     acceptanceSampleSize,
+    acceptanceConfidence95,
     noReplyRate: replyRate === null ? null : 1 - replyRate,
     replySampleSize,
+    noReplyConfidence95,
     failureRate,
     outcomeSampleSize,
+    failureConfidence95,
     throttle,
     reasons
   };
+}
+
+function seatWindowOpenNow(
+  seat: Awaited<ReturnType<typeof getSeat>>,
+  campaign: ManagedCampaign,
+  now: Date
+): boolean {
+  if (!seat) return false;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: seat.timezone,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(now);
+  const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(
+    parts.find((part) => part.type === 'weekday')?.value ?? 'Mon'
+  );
+  const localMinute =
+    Number(parts.find((part) => part.type === 'hour')?.value ?? 0) * 60 +
+    Number(parts.find((part) => part.type === 'minute')?.value ?? 0);
+  const days = campaign.schedule.workingDays
+    ? seat.workingDays.filter((day) => campaign.schedule.workingDays!.includes(day))
+    : seat.workingDays;
+  const start = Math.max(
+    seat.workStartMinute,
+    campaign.schedule.workStartMinute ?? seat.workStartMinute
+  );
+  const end = Math.min(seat.workEndMinute, campaign.schedule.workEndMinute ?? seat.workEndMinute);
+  return days.includes(weekday) && localMinute >= start && localMinute < end && end > start;
 }
 
 export interface CampaignOperationalAnalytics {
@@ -3427,6 +3653,21 @@ export async function campaignOperationalAnalytics(
     )
     .get<{ total: number }>(workspaceId, campaignId);
 
+  const assignedSeats = (
+    await Promise.all(campaign.senderKeys.map((seatKey) => getSeat(db, workspaceId, seatKey)))
+  ).filter((seat): seat is NonNullable<typeof seat> => seat !== undefined && seat !== null);
+  const seatPostures = assignedSeats.map((seat) => effectivePosture(seat, now));
+  const anySenderWindowOpen = assignedSeats.some((seat) => seatWindowOpenNow(seat, campaign, now));
+  const latestBatch = await db
+    .prepare(
+      `SELECT seat_key,status,halt_reason,started_at FROM linkedin_batches
+      WHERE workspace_id=? AND seat_key = ANY(?::text[]) ORDER BY started_at DESC LIMIT 1`
+    )
+    .get<{ seat_key: string; status: string; halt_reason: string | null; started_at: string }>(
+      workspaceId,
+      campaign.senderKeys
+    );
+
   const queues = await campaignQueueSummary(db, workspaceId, campaignId, now);
   const latestWave = waveRows[0] ?? null;
   const capacity = latestWave?.capacitySnapshot ?? {};
@@ -3434,18 +3675,32 @@ export async function campaignOperationalAnalytics(
     .filter(([, value]) => Number.isFinite(value))
     .sort((left, right) => left[1] - right[1])[0];
   const limitingKind = limitingEntry?.[0] ?? null;
+  const recentBatchHalt =
+    latestBatch?.status === 'halted' &&
+    now.getTime() - new Date(latestBatch.started_at).getTime() <= 24 * 60 * 60_000
+      ? latestBatch.halt_reason
+      : null;
+  const allSendersPaused =
+    seatPostures.length > 0 &&
+    seatPostures.every((posture) => posture === 'paused' || posture === 'cooldown');
   const reason =
     queues.held > 0
       ? `${queues.held} action(s) are held for operator review.`
       : queues.failed > 0
         ? `${queues.failed} lead(s) have failed and need operator action.`
-        : queues.waitingForConnection + queues.waitingForReply > 0
-          ? `${queues.waitingForConnection + queues.waitingForReply} lead(s) are waiting on an outcome.`
-          : queues.pending > 0 && limitingKind
-            ? `New admission is constrained by ${limitingKind} capacity.`
-            : queues.pending > 0
-              ? `${queues.pending} lead(s) remain in the pending pool until downstream capacity clears.`
-              : 'No material campaign bottleneck is currently detected.';
+        : queues.dueNow > 0 && allSendersPaused
+          ? 'All assigned LinkedIn senders are paused or cooling down; no browser work can execute until a sender recovers.'
+          : queues.dueNow > 0 && !anySenderWindowOpen
+            ? `Due work is waiting for an assigned sender's allowed working window (${assignedSeats.map((seat) => `${seat.label}: ${seat.timezone}`).join(', ') || 'no usable sender'}).`
+            : queues.dueNow > 0 && recentBatchHalt
+              ? `The latest browser batch halted: ${recentBatchHalt}`
+              : queues.waitingForConnection + queues.waitingForReply > 0
+                ? `${queues.waitingForConnection + queues.waitingForReply} lead(s) are waiting on an outcome.`
+                : queues.pending > 0 && limitingKind
+                  ? `New admission is constrained by ${limitingKind} capacity.`
+                  : queues.pending > 0
+                    ? `${queues.pending} lead(s) remain in the pending pool until downstream capacity clears.`
+                    : 'No material campaign bottleneck is currently detected.';
 
   const n = (key: string) => Number(funnel?.[key] ?? 0);
   return {

@@ -7,6 +7,8 @@ import { id, type Db } from '../db.js';
 // cycle.
 import { LinkedInApiError } from './errors.js';
 import {
+  canonicalProfileUrl,
+  leadDedupeKey,
   normalizeLeadRow,
   normalizeScrapedLead,
   parseLeadCsv,
@@ -31,6 +33,7 @@ export const LEAD_CONTACT_READ_LIMIT = 5_000;
 
 export type LeadListSourceKind =
   | 'csv'
+  | 'profile_urls'
   | 'linkedin_search'
   | 'sales_navigator'
   | 'post_keyword'
@@ -575,6 +578,62 @@ export async function ingestLeadSignal(
   });
   if (!result) throw new Error('Signal could not be stored.');
   return result;
+}
+
+export async function importLeadProfileUrls(
+  db: Db,
+  input: { workspaceId: string; seatKey?: string; listId: string; urls: readonly string[] },
+  now: Date = new Date()
+): Promise<{
+  inserted: number;
+  reused: number;
+  rejected: Array<{ value: string; reason: string }>;
+}> {
+  const list = await getLeadList(
+    db,
+    input.workspaceId,
+    input.listId,
+    input.seatKey ?? OWNER_SEAT_KEY
+  );
+  if (!list) throw new Error('Lead list not found.');
+  const unique = [...new Set(input.urls.map((value) => value.trim()).filter(Boolean))].slice(
+    0,
+    10_000
+  );
+  let inserted = 0;
+  let reused = 0;
+  const rejected: Array<{ value: string; reason: string }> = [];
+  const timestamp = now.toISOString();
+  await db.transaction(async (tx) => {
+    for (const raw of unique) {
+      const profileUrl = canonicalProfileUrl(raw);
+      if (!profileUrl) {
+        rejected.push({ value: raw, reason: 'Not a valid LinkedIn /in/ profile URL.' });
+        continue;
+      }
+      const lead: NormalizedLeadInput = {
+        firstName: '',
+        lastName: '',
+        company: '',
+        email: null,
+        phone: null,
+        country: null,
+        profileUrl,
+        dedupeKey: '',
+        customFields: {},
+        original: { profileUrl, source: 'pasted_profile_url' }
+      };
+      lead.dedupeKey = leadDedupeKey(lead);
+      const outcome = await insertLead(tx, input.workspaceId, input.listId, lead, timestamp);
+      if (!outcome.contactId) {
+        rejected.push({ value: raw, reason: 'Could not store this profile.' });
+        continue;
+      }
+      if (outcome.inserted) inserted += 1;
+      else if (outcome.reused) reused += 1;
+    }
+  });
+  return { inserted, reused, rejected };
 }
 
 export async function importLeadCsv(

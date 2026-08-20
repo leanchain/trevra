@@ -374,7 +374,7 @@ function normalizeEmail(value: unknown): string | null {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
 }
 
-function canonicalProfileUrl(value: unknown): string | null {
+export function canonicalProfileUrl(value: unknown): string | null {
   const raw = nullable(value);
   if (!raw) return null;
   const safe = profileUrlFor(raw);

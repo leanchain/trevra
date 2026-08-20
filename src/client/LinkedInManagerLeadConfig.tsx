@@ -78,6 +78,7 @@ const SOURCE_LABELS: Record<LeadListSourceKind, string> = {
   group_members: 'LinkedIn group',
   event_attendees: 'LinkedIn event',
   company_employees: 'LinkedIn company people',
+  profile_urls: 'LinkedIn profile URLs',
   signal: 'External signal'
 };
 

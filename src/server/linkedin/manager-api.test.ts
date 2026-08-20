@@ -431,6 +431,17 @@ describe('LinkedIn manager HTTP surface', () => {
       await as(tokenA).get(`/api/linkedin/manager/campaigns/${campaignId}/operations`).expect(200)
     ).body;
     expect(operations.queues.pending).toBe(1);
+    expect(operations.queues.allocatedCampaignDay.profile_view).toBe(1);
+    expect(
+      operations.queues.queuedReady +
+        operations.queues.scheduledFuture +
+        operations.queues.executing
+    ).toBe(1);
+    const activeMember = (
+      await as(tokenA).get(`/api/linkedin/manager/campaigns/${campaignId}`).expect(200)
+    ).body.members.find((value: { waveId: string | null }) => value.waveId);
+    expect(activeMember.lastAction).toMatchObject({ kind: 'profile_view', status: 'planned' });
+    expect(activeMember.lastAction.plannedFor).toEqual(expect.any(String));
     expect(operations.waves).toHaveLength(1);
     expect(operations.waves[0]).toMatchObject({ ordinal: 1, memberCount: 1 });
     expect(operations.waves[0].stepFunnel[0]).toMatchObject({ stepId: 'view', planned: 1 });

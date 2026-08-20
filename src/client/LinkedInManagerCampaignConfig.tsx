@@ -1099,6 +1099,27 @@ export function LinkedInManagerCampaignConfig({
                     )}
                   </div>
                 )}
+                {launchPreview && launchPreview.personalizationSamples.length > 0 && (
+                  <div className="mgr-preview-note">
+                    <b>Rendered for real leads</b>
+                    {launchPreview.personalizationSamples.map((sample) => (
+                      <details key={sample.contactId}>
+                        <summary>{sample.label}</summary>
+                        {sample.rendered.length > 0 ? (
+                          sample.rendered.map((row) => (
+                            <p className="li-template" key={`${sample.contactId}-${row.stepId}`}>
+                              <span className="li-hint">{row.stepId}</span>
+                              <br />
+                              {row.text}
+                            </p>
+                          ))
+                        ) : (
+                          <p className="li-hint">No message-bearing step to preview.</p>
+                        )}
+                      </details>
+                    ))}
+                  </div>
+                )}
                 {launchPreview && launchPreview.diagnostics.length > 0 && (
                   <div className="mgr-preview-note">
                     <b>Review before launch</b>

@@ -9514,6 +9514,28 @@ button:disabled {
   margin: 2px 0 0;
   font-size: var(--t-text-sm);
 }
+.mgr-callout {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--t-line-strong);
+  border-radius: var(--t-r-sm);
+  background: var(--surface);
+}
+.mgr-callout > strong {
+  font-size: var(--t-text-sm);
+}
+.mgr-callout p,
+.mgr-callout ul {
+  margin: 0;
+}
+.mgr-callout ul {
+  display: grid;
+  gap: 5px;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
 .li-stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));

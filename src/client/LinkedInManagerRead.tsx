@@ -33,6 +33,8 @@ import {
   getLinkedInManagedCampaign,
   getLinkedInManagedCampaigns,
   getLinkedInManagedMemberTimeline,
+  getLinkedInWorkerStatus,
+  getLinkedInCompanionStatus,
   getLinkedInManagerLeadLists,
   getLinkedInManagerSeats,
   getLinkedInManagerWorkflows,
@@ -51,6 +53,8 @@ import {
   tickLinkedInManagedCampaigns,
   updateLinkedInCampaignControls,
   type LinkedInLimitsReport,
+  type LinkedInWorkerStatus,
+  type LinkedInCompanionStatus,
   type ManagedCampaignTickResult
 } from './api';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
@@ -120,6 +124,7 @@ const SOURCE_LABELS: Record<LinkedInLeadList['sourceKind'], string> = {
   group_members: 'LinkedIn group',
   event_attendees: 'LinkedIn event',
   company_employees: 'LinkedIn company people',
+  profile_urls: 'LinkedIn profile URLs',
   signal: 'External signal'
 };
 
@@ -225,7 +230,104 @@ function dueIn(iso: string | null, now: number): string {
   if (!iso) return '—';
   const at = Date.parse(iso);
   if (Number.isNaN(at)) return '—';
-  return at <= now ? 'due now' : `in ${span(at - now)}`;
+  return at <= now ? 'now' : `in ${span(at - now)}`;
+}
+
+function executionStateForMember(
+  member: ManagedCampaignMember,
+  steps: readonly WorkflowStep[],
+  now: number
+): { label: string; detail: string } {
+  if (member.status === 'pending')
+    return {
+      label: 'Pending admission',
+      detail:
+        'This lead has not entered a wave yet. Capacity and exclusions are checked before admission.'
+    };
+  if (member.status === 'manual')
+    return {
+      label: 'Needs you',
+      detail: 'This workflow step is manual and will not be executed by the LinkedIn worker.'
+    };
+  if (member.status === 'paused')
+    return { label: 'Paused', detail: 'This lead is explicitly paused.' };
+  if (member.status === 'failed')
+    return {
+      label: 'Failed',
+      detail: member.lastFailureReason ?? 'This lead stopped after an execution failure.'
+    };
+  if (member.status === 'excluded')
+    return {
+      label: 'Excluded',
+      detail: member.exclusionReason ?? 'This lead is excluded by campaign policy.'
+    };
+  if (member.status === 'replied')
+    return { label: 'Stopped — replied', detail: 'Automation stopped because the lead replied.' };
+  if (member.status === 'completed')
+    return { label: 'Completed', detail: 'The workflow finished for this lead.' };
+  if (member.status === 'removed')
+    return { label: 'Removed', detail: 'This lead was removed from the campaign.' };
+
+  const action = member.lastAction;
+  if (action?.settlementHoldAt)
+    return {
+      label: 'Held for review',
+      detail:
+        'The worker cannot prove whether the last LinkedIn action happened, so Trevra will not retry it automatically.'
+    };
+  if (action?.status === 'held')
+    return {
+      label: 'Held',
+      detail: 'The planned action is parked and cannot execute until it is released.'
+    };
+  if (action?.status === 'planned' && action.claimedAt)
+    return { label: 'Executing', detail: 'A LinkedIn browser worker has claimed this action.' };
+  if (action?.status === 'planned' && action.plannedFor) {
+    const planned = Date.parse(action.plannedFor);
+    if (!Number.isNaN(planned) && planned > now)
+      return {
+        label: 'Scheduled',
+        detail: `A LinkedIn action is allocated for ${new Date(planned).toLocaleString()}.`
+      };
+    return {
+      label: 'Queued for executor',
+      detail:
+        'The planner allocated this action and its scheduled time has arrived. A LinkedIn browser worker must claim it.'
+    };
+  }
+
+  const step = steps[member.stepIndex];
+  if (step?.action === 'monitor' || step?.action === 'condition') {
+    const kind = step.config.condition.kind;
+    if (kind === 'accepted' || kind === 'connected')
+      return {
+        label: 'Waiting for connection',
+        detail: 'The workflow is waiting for connection evidence or the monitor timeout.'
+      };
+    if (kind === 'replied')
+      return {
+        label: 'Waiting for reply',
+        detail: 'The workflow is waiting for a reply or the monitor timeout.'
+      };
+    return {
+      label: 'Waiting for condition',
+      detail: `The workflow is waiting for the “${kind.replaceAll('_', ' ')}” condition.`
+    };
+  }
+
+  if (member.nextEligibleAt) {
+    const eligible = Date.parse(member.nextEligibleAt);
+    if (!Number.isNaN(eligible) && eligible > now)
+      return {
+        label: 'Waiting for next step',
+        detail: `Sequence timing makes this lead eligible ${dueIn(member.nextEligibleAt, now)}.`
+      };
+  }
+  return {
+    label: 'Eligible — not allocated',
+    detail:
+      'The sequence says this lead may advance now, but the planner has not allocated an execution slot yet. Check campaign capacity and blockers above.'
+  };
 }
 
 function ago(iso: string, now: number): string {
@@ -390,6 +492,165 @@ function Allowance({
   );
 }
 
+const CAPACITY_LABEL: Record<ManagedKind, string> = {
+  invite: 'Invites',
+  dm: 'Messages',
+  profile_view: 'Profile views',
+  follow: 'Relationship actions'
+};
+
+function CapacityBreakdown({
+  ceilings,
+  allocated
+}: {
+  ceilings: Record<ManagedKind, EnforcedCeiling>;
+  allocated: CampaignQueueSummary['allocatedCampaignDay'];
+}) {
+  return (
+    <div className="mgr-summary">
+      {(['profile_view', 'invite', 'dm', 'follow'] as const).map((kind) => {
+        const limit = ceilings[kind].today;
+        const used = allocated[kind];
+        const remaining = Math.max(0, limit - used);
+        return (
+          <span key={kind}>
+            <b>{CAPACITY_LABEL[kind]}</b>: limit {limit} · {used} allocated · {remaining} remaining
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function capacityKindForStep(step: WorkflowStep | undefined): ManagedKind | null {
+  if (!step) return null;
+  if (step.action === 'profile_view') return 'profile_view';
+  if (
+    step.action === 'connection_request' ||
+    step.action === 'invite_to_group' ||
+    step.action === 'invite_to_event' ||
+    step.action === 'invite_to_follow_company'
+  )
+    return 'invite';
+  if (
+    step.action === 'message' ||
+    step.action === 'inmail' ||
+    step.action === 'group_message' ||
+    step.action === 'event_message'
+  )
+    return 'dm';
+  if (
+    step.action === 'follow' ||
+    step.action === 'unfollow' ||
+    step.action === 'disconnect' ||
+    step.action === 'follow_company'
+  )
+    return 'follow';
+  return null;
+}
+
+function campaignBlockers({
+  campaign,
+  steps,
+  operations,
+  analytics,
+  ceilings,
+  report,
+  workerStatus,
+  companionStatus
+}: {
+  campaign: ManagedCampaign;
+  steps: readonly WorkflowStep[];
+  operations: { queues: CampaignQueueSummary; waves: ManagedCampaignWave[] } | null;
+  analytics: CampaignOperationalAnalytics | null;
+  ceilings: Record<ManagedKind, EnforcedCeiling> | null;
+  report: LinkedInLimitsReport | null;
+  workerStatus: LinkedInWorkerStatus | null;
+  companionStatus: LinkedInCompanionStatus | null;
+}): Array<{ title: string; detail: string }> {
+  const out: Array<{ title: string; detail: string }> = [];
+  if (campaign.status === 'draft')
+    return [
+      {
+        title: 'Campaign not started',
+        detail: 'No lead is admitted or planned until you start the campaign.'
+      }
+    ];
+  if (campaign.status === 'paused')
+    out.push({
+      title: 'Campaign paused',
+      detail:
+        'New planning is paused. Already-started browser work is not created while the campaign is paused.'
+    });
+  if (report?.seat.pausedReason)
+    out.push({ title: 'LinkedIn account paused', detail: report.seat.pausedReason });
+
+  if (operations && ceilings) {
+    const seen = new Set<ManagedKind>();
+    for (const backlog of operations.queues.backlogByStep) {
+      if (backlog.due <= 0) continue;
+      const step = steps.find((candidate) => candidate.id === backlog.stepId);
+      const kind = capacityKindForStep(step);
+      if (!kind || seen.has(kind)) continue;
+      seen.add(kind);
+      const allocated = operations.queues.allocatedCampaignDay[kind];
+      const limit = ceilings[kind].today;
+      if (allocated >= limit)
+        out.push({
+          title: `${CAPACITY_LABEL[kind]} capacity fully allocated`,
+          detail: `${backlog.due} lead(s) are sequence-eligible at this step, but this campaign's current ramp limit is ${limit} and ${allocated} are already allocated. Remaining planner capacity is 0.`
+        });
+    }
+  }
+
+  const queues = operations?.queues;
+  if (queues?.queuedReady) {
+    const onlineCompanion = Boolean(companionStatus?.devices.some((device) => device.online));
+    if (!workerStatus)
+      out.push({
+        title: 'Executor status unavailable',
+        detail: `${queues.queuedReady} planned action(s) are due, but Trevra could not read browser-worker status.`
+      });
+    else if (!workerStatus.ready)
+      out.push({
+        title: 'LinkedIn executor not ready',
+        detail: `${queues.queuedReady} planned action(s) are due. ${workerStatus.blockers.join(' ') || 'The browser worker is not ready.'}`
+      });
+    else if (workerStatus.companionBrowser && !onlineCompanion)
+      out.push({
+        title: 'Paired computer / companion offline',
+        detail: `${queues.queuedReady} planned action(s) are due, but the paired computer is not currently connected to Trevra, so no browser can claim them.`
+      });
+    else
+      out.push({
+        title: 'Waiting for browser worker',
+        detail: `${queues.queuedReady} planned action(s) have reached their scheduled time and are waiting for the LinkedIn executor to claim them.`
+      });
+  }
+  if (queues?.scheduledFuture)
+    out.push({
+      title: 'Waiting for scheduled slots',
+      detail: `${queues.scheduledFuture} action(s) are already allocated but intentionally scheduled for a later time.`
+    });
+  if (queues?.heldForReview)
+    out.push({
+      title: 'Actions held for review',
+      detail: `${queues.heldForReview} action(s) are held because Trevra cannot safely infer or repeat their outcome.`
+    });
+  if ((queues?.waitingForConnection ?? 0) + (queues?.waitingForReply ?? 0) > 0)
+    out.push({
+      title: 'Waiting on prospect outcomes',
+      detail: `${queues?.waitingForConnection ?? 0} lead(s) are waiting for connection evidence and ${queues?.waitingForReply ?? 0} are waiting for a reply or timeout.`
+    });
+  if (
+    analytics?.bottlenecks.reason &&
+    analytics.bottlenecks.reason !== 'No material campaign bottleneck is currently detected.'
+  )
+    out.push({ title: 'Planner diagnosis', detail: analytics.bottlenecks.reason });
+
+  return out;
+}
+
 function stepCopy(
   step: WorkflowStep,
   variantId: string | null
@@ -505,7 +766,7 @@ function MemberTimeline({
                   (member.status === 'pending' ||
                     member.status === 'active' ||
                     member.status === 'waiting') &&
-                  `Next up — ${dueIn(member.nextEligibleAt, now)}`}
+                  executionStateForMember(member, steps, now).label}
                 {current &&
                   (member.status === 'replied' ||
                     member.status === 'completed' ||
@@ -757,6 +1018,229 @@ function CampaignExclusionEditor({
   );
 }
 
+function CampaignScheduleEditor({
+  campaign,
+  timezone,
+  busy,
+  onSave
+}: {
+  campaign: ManagedCampaign;
+  timezone: string;
+  busy: boolean;
+  onSave: (schedule: Partial<ManagedCampaign['schedule']>) => Promise<void>;
+}) {
+  const zonedParts = (date: Date) => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(date);
+    const read = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((part) => part.type === type)?.value ?? 0);
+    return {
+      year: read('year'),
+      month: read('month'),
+      day: read('day'),
+      hour: read('hour'),
+      minute: read('minute'),
+      second: read('second')
+    };
+  };
+  const toLocal = (iso: string | null) => {
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    const part = zonedParts(date);
+    return `${part.year.toString().padStart(4, '0')}-${part.month.toString().padStart(2, '0')}-${part.day.toString().padStart(2, '0')}T${part.hour.toString().padStart(2, '0')}:${part.minute.toString().padStart(2, '0')}`;
+  };
+  const zonedLocalToIso = (value: string): string | null => {
+    if (!value) return null;
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+    if (!match) return null;
+    const requested = {
+      year: Number(match[1]),
+      month: Number(match[2]),
+      day: Number(match[3]),
+      hour: Number(match[4]),
+      minute: Number(match[5])
+    };
+    const wallAsUtc = Date.UTC(
+      requested.year,
+      requested.month - 1,
+      requested.day,
+      requested.hour,
+      requested.minute
+    );
+    let instant = wallAsUtc;
+    // Two passes converge across ordinary offsets and DST boundaries because the
+    // timezone offset is derived from the candidate instant, never from the browser timezone.
+    for (let pass = 0; pass < 3; pass += 1) {
+      const shown = zonedParts(new Date(instant));
+      const shownAsUtc = Date.UTC(
+        shown.year,
+        shown.month - 1,
+        shown.day,
+        shown.hour,
+        shown.minute,
+        shown.second
+      );
+      instant += wallAsUtc - shownAsUtc;
+    }
+    const roundTrip = zonedParts(new Date(instant));
+    if (
+      roundTrip.year !== requested.year ||
+      roundTrip.month !== requested.month ||
+      roundTrip.day !== requested.day ||
+      roundTrip.hour !== requested.hour ||
+      roundTrip.minute !== requested.minute
+    )
+      return null;
+    return new Date(instant).toISOString();
+  };
+  const toTime = (minute: number | null) => {
+    if (minute === null) return '';
+    const h = Math.floor(minute / 60)
+      .toString()
+      .padStart(2, '0');
+    const m = (minute % 60).toString().padStart(2, '0');
+    return `${h}:${m}`;
+  };
+  const minuteOf = (value: string): number | null => {
+    if (!value) return null;
+    const [h, m] = value.split(':').map(Number);
+    return Number.isInteger(h) && Number.isInteger(m) ? h * 60 + m : null;
+  };
+  const [startAt, setStartAt] = useState(toLocal(campaign.schedule.startAt));
+  const [endAt, setEndAt] = useState(toLocal(campaign.schedule.endAt));
+  const [days, setDays] = useState<number[]>(campaign.schedule.workingDays ?? [1, 2, 3, 4, 5]);
+  const [startTime, setStartTime] = useState(toTime(campaign.schedule.workStartMinute));
+  const [endTime, setEndTime] = useState(toTime(campaign.schedule.workEndMinute));
+  const [endBehavior, setEndBehavior] = useState(campaign.schedule.endBehavior);
+  const [scheduleError, setScheduleError] = useState('');
+  useEffect(() => {
+    setStartAt(toLocal(campaign.schedule.startAt));
+    setEndAt(toLocal(campaign.schedule.endAt));
+    setDays(campaign.schedule.workingDays ?? [1, 2, 3, 4, 5]);
+    setStartTime(toTime(campaign.schedule.workStartMinute));
+    setEndTime(toTime(campaign.schedule.workEndMinute));
+    setEndBehavior(campaign.schedule.endBehavior);
+    setScheduleError('');
+  }, [campaign.id, campaign.schedule]);
+  const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return (
+    <details className="mgr-advanced" open={false}>
+      <summary>Campaign schedule</summary>
+      <p className="li-hint">
+        Uses {timezone}. Campaign hours can only narrow the LinkedIn account's working window; they
+        never widen it. Pause before editing.
+      </p>
+      <div className="li-form-grid">
+        <label>
+          Start date/time
+          <input
+            type="datetime-local"
+            value={startAt}
+            onChange={(event) => setStartAt(event.target.value)}
+          />
+        </label>
+        <label>
+          End date/time
+          <input
+            type="datetime-local"
+            value={endAt}
+            onChange={(event) => setEndAt(event.target.value)}
+          />
+        </label>
+        <label>
+          Earliest campaign time
+          <input
+            type="time"
+            value={startTime}
+            onChange={(event) => setStartTime(event.target.value)}
+          />
+        </label>
+        <label>
+          Latest campaign time
+          <input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} />
+        </label>
+        <fieldset className="li-span-2">
+          <legend>Working days</legend>
+          <div className="mgr-pick-grid">
+            {dayLabels.map((label, day) => (
+              <label className="li-check-row" key={label}>
+                <input
+                  type="checkbox"
+                  checked={days.includes(day)}
+                  onChange={(event) =>
+                    setDays((current) =>
+                      event.target.checked
+                        ? [...new Set([...current, day])].sort((a, b) => a - b)
+                        : current.filter((value) => value !== day)
+                    )
+                  }
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <label>
+          At campaign end
+          <select
+            value={endBehavior}
+            onChange={(event) =>
+              setEndBehavior(event.target.value as ManagedCampaign['schedule']['endBehavior'])
+            }
+          >
+            <option value="finish_waves">Stop new admission; finish admitted waves</option>
+            <option value="pause_all">Pause all campaign work</option>
+            <option value="stop_immediately">Stop immediately</option>
+          </select>
+        </label>
+      </div>
+      {scheduleError && <p className="error-banner">{scheduleError}</p>}
+      <button
+        type="button"
+        className="secondary-button"
+        disabled={
+          busy ||
+          campaign.status !== 'paused' ||
+          days.length === 0 ||
+          (startTime !== '' &&
+            endTime !== '' &&
+            (minuteOf(endTime) ?? 0) <= (minuteOf(startTime) ?? 0))
+        }
+        onClick={() => {
+          const resolvedStart = startAt ? zonedLocalToIso(startAt) : null;
+          const resolvedEnd = endAt ? zonedLocalToIso(endAt) : null;
+          if ((startAt && !resolvedStart) || (endAt && !resolvedEnd)) {
+            setScheduleError(
+              `That local date/time does not exist or is ambiguous in ${timezone}. Choose another time around the daylight-saving transition.`
+            );
+            return;
+          }
+          setScheduleError('');
+          void onSave({
+            startAt: resolvedStart,
+            endAt: resolvedEnd,
+            workingDays: days,
+            workStartMinute: minuteOf(startTime),
+            workEndMinute: minuteOf(endTime),
+            endBehavior
+          });
+        }}
+      >
+        Save campaign schedule
+      </button>
+    </details>
+  );
+}
+
 function CampaignMembers({
   members,
   steps,
@@ -952,7 +1436,7 @@ function CampaignMembers({
                   <th>Company</th>
                   <th>Status</th>
                   <th>Step</th>
-                  <th>Next action</th>
+                  <th>Execution state</th>
                   <th>
                     <span className="mgr-sr">Controls</span>
                   </th>
@@ -962,6 +1446,7 @@ function CampaignMembers({
                 {shown.slice(0, limit).map((member) => {
                   const open = openId === member.id;
                   const rowBusy = busy.startsWith(`member:${member.id}`);
+                  const execution = executionStateForMember(member, steps, now);
                   return [
                     <tr key={member.id} className={open ? 'mgr-row-open' : undefined}>
                       <td>
@@ -1011,9 +1496,10 @@ function CampaignMembers({
                         )}
                       </td>
                       <td>
-                        {LIVE_STATUSES.includes(member.status)
-                          ? dueIn(member.nextEligibleAt, now)
-                          : '—'}
+                        <strong>{execution.label}</strong>
+                        <span className="mgr-step-name" title={execution.detail}>
+                          {execution.detail}
+                        </span>
                       </td>
                       <td>
                         <div className="li-row-actions">
@@ -1333,7 +1819,12 @@ export function OutreachManagerRead({
   const [limitsBySeat, setLimitsBySeat] = useState<Record<string, LinkedInLimitsReport>>({});
   const [tasks, setTasks] = useState<ManualTaskView[]>([]);
   const [analytics, setAnalytics] = useState<ManagedAnalytics | null>(null);
+  const [workerStatus, setWorkerStatus] = useState<LinkedInWorkerStatus | null>(null);
+  const [companionStatus, setCompanionStatus] = useState<LinkedInCompanionStatus | null>(null);
   const [openCampaignId, setOpenCampaignId] = useState('');
+  const [waveFilterByCampaign, setWaveFilterByCampaign] = useState<Record<string, number | null>>(
+    {}
+  );
   const [openTaskId, setOpenTaskId] = useState('');
   const [loading, setLoading] = useState(true);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
@@ -1372,18 +1863,30 @@ export function OutreachManagerRead({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextSeats, nextLists, nextWorkflows, nextCampaigns, nextTasks] = await Promise.all([
+      const [
+        nextSeats,
+        nextLists,
+        nextWorkflows,
+        nextCampaigns,
+        nextTasks,
+        nextWorkerStatus,
+        nextCompanionStatus
+      ] = await Promise.all([
         getLinkedInManagerSeats(),
         getLinkedInManagerLeadLists(),
         getLinkedInManagerWorkflows(),
         getLinkedInManagedCampaigns(),
-        getLinkedInManualTasks()
+        getLinkedInManualTasks(),
+        getLinkedInWorkerStatus().catch(() => null),
+        getLinkedInCompanionStatus().catch(() => null)
       ]);
       setSeats(nextSeats);
       setLists(nextLists);
       setWorkflows(nextWorkflows);
       setCampaigns(nextCampaigns);
       setTasks(nextTasks);
+      setWorkerStatus(nextWorkerStatus);
+      setCompanionStatus(nextCompanionStatus);
       // Campaign rows already carry the operational status histogram. Member lists are loaded only
       // when a campaign is opened, so this screen stays one aggregate read regardless of campaign count.
       setMembersByCampaign((current) =>
@@ -1763,6 +2266,22 @@ export function OutreachManagerRead({
       'Unable to change campaign priority.'
     );
 
+  const saveCampaignSchedule = (
+    campaign: ManagedCampaign,
+    schedule: Partial<ManagedCampaign['schedule']>
+  ) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        await updateLinkedInCampaignControls(campaign.id, { schedule });
+        setToast(
+          `Updated the schedule for “${campaign.name}”. Seat-level working hours remain authoritative.`
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to update campaign schedule.'
+    );
+
   const saveCampaignExclusions = (
     campaign: ManagedCampaign,
     exclusionPolicy: ManagedCampaign['exclusionPolicy']
@@ -1922,10 +2441,11 @@ export function OutreachManagerRead({
               className="secondary-button"
               type="button"
               disabled={busy !== '' || runningCount === 0}
+              title="Runs the campaign planner only. Browser execution happens separately."
               onClick={() => void runNow()}
             >
               {busy === 'tick' ? <LoaderCircle className="spin" size={14} /> : <Zap size={14} />}{' '}
-              Run now
+              Plan now
             </button>
             <button
               className="secondary-button"
@@ -1950,21 +2470,31 @@ export function OutreachManagerRead({
           </span>
         </p>
         {runningCount === 0 && campaigns.length > 0 && (
-          <p className="li-hint">Run now becomes available once a campaign is running.</p>
+          <p className="li-hint">
+            Plan now becomes available once a campaign is running. It advances the planner only;
+            LinkedIn execution is handled by the browser worker.
+          </p>
+        )}
+        {runningCount > 0 && (
+          <p className="li-hint">
+            <b>Plan now does not open LinkedIn.</b> It allocates eligible work into paced browser
+            slots. The executor/companion performs those planned actions separately.
+          </p>
         )}
 
         {tick && (
           <div className="li-dryrun">
             <Zap size={18} />
             <div>
-              <strong>Run now finished</strong>
+              <strong>Planning finished</strong>
               <p>
-                Advanced {plural(tick.campaignsTicked, 'campaign')}:{' '}
-                {plural(tick.actionsPlanned, 'action')} queued,{' '}
+                Advanced the planner for {plural(tick.campaignsTicked, 'campaign')}:{' '}
+                {plural(tick.actionsPlanned, 'browser action')} allocated,{' '}
                 {plural(tick.manualTasksCreated, 'message')} for you to write,{' '}
                 {plural(tick.membersCompleted, 'lead')} finished.
                 {tick.membersBlocked > 0 &&
-                  ` ${plural(tick.membersBlocked, 'lead')} could not move yet — no profile link, or today's limit for that account is already used.`}
+                  ` ${plural(tick.membersBlocked, 'lead')} could not be allocated yet; expand the campaign to see the exact blocker.`}{' '}
+                Plan now does not open LinkedIn or execute browser actions.
               </p>
             </div>
           </div>
@@ -2026,6 +2556,16 @@ export function OutreachManagerRead({
               const busyHere = busy === `campaign:${campaign.id}`;
               const operations = operationsByCampaign[campaign.id] ?? null;
               const operationalAnalytics = operationalAnalyticsByCampaign[campaign.id] ?? null;
+              const blockers = campaignBlockers({
+                campaign,
+                steps: campaignSteps,
+                operations,
+                analytics: operationalAnalytics,
+                ceilings,
+                report,
+                workerStatus,
+                companionStatus
+              });
               return (
                 <article className={`mgr-campaign${open ? ' is-open' : ''}`} key={campaign.id}>
                   <div className="mgr-campaign-head">
@@ -2293,28 +2833,93 @@ export function OutreachManagerRead({
                         warmup &&
                         warmup.fraction < 1 &&
                         ceilings && (
-                          <p className="mgr-warmup mgr-warmup-detail">
-                            Allowed today
-                            <Allowance ceilings={ceilings} of="today" />. The invite ceiling is{' '}
-                            {ceilingSourceNote(ceilings.invite)}.
-                          </p>
+                          <>
+                            <p className="mgr-warmup mgr-warmup-detail">
+                              Campaign-day limits
+                              <Allowance ceilings={ceilings} of="today" />. The invite ceiling is{' '}
+                              {ceilingSourceNote(ceilings.invite)}. “Limit” is the ramp ceiling; it
+                              is not remaining capacity.
+                            </p>
+                            {operations && (
+                              <CapacityBreakdown
+                                ceilings={ceilings}
+                                allocated={operations.queues.allocatedCampaignDay}
+                              />
+                            )}
+                          </>
                         )}
                       {open &&
                         campaign.status !== 'draft' &&
                         warmup &&
                         warmup.fraction >= 1 &&
                         ceilings && (
-                          <p className="mgr-warmup mgr-warmup-detail">
-                            At full speed
-                            <Allowance ceilings={ceilings} of="full" />. The invite ceiling is{' '}
-                            {ceilingSourceNote(ceilings.invite)}.
-                          </p>
+                          <>
+                            <p className="mgr-warmup mgr-warmup-detail">
+                              At full speed
+                              <Allowance ceilings={ceilings} of="full" />. The invite ceiling is{' '}
+                              {ceilingSourceNote(ceilings.invite)}. “Limit” is the campaign ceiling;
+                              it is not remaining capacity.
+                            </p>
+                            {operations && (
+                              <CapacityBreakdown
+                                ceilings={ceilings}
+                                allocated={operations.queues.allocatedCampaignDay}
+                              />
+                            )}
+                          </>
                         )}
                     </>
                   )}
 
                   {open && (
                     <div className="mgr-operations">
+                      <h4>Execution pipeline</h4>
+                      <p className="li-hint">
+                        Sequence eligibility, planner allocation, scheduling and browser execution
+                        are separate states.
+                      </p>
+                      <div className="li-stat-grid">
+                        <div>
+                          <span>Eligible · not allocated</span>
+                          <strong>{operations?.queues.dueNow ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Queued · due for executor</span>
+                          <strong>{operations?.queues.queuedReady ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Scheduled later</span>
+                          <strong>{operations?.queues.scheduledFuture ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Executing now</span>
+                          <strong>{operations?.queues.executing ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Held for review</span>
+                          <strong>{operations?.queues.heldForReview ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Completed</span>
+                          <strong>{campaign.completedCount}</strong>
+                        </div>
+                      </div>
+
+                      <div className="mgr-callout">
+                        <strong>What is preventing progress right now?</strong>
+                        {blockers.length === 0 ? (
+                          <p className="li-hint">No blocking condition is currently detected.</p>
+                        ) : (
+                          <ul>
+                            {blockers.map((blocker, index) => (
+                              <li key={`${blocker.title}-${index}`}>
+                                <b>{blocker.title}:</b> {blocker.detail}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+
                       <div className="li-stat-grid">
                         <div>
                           <span>Total audience</span>
@@ -2385,6 +2990,14 @@ export function OutreachManagerRead({
                         lists={lists}
                         busy={busy !== ''}
                         onSave={(policy) => saveCampaignExclusions(campaign, policy)}
+                      />
+                      <CampaignScheduleEditor
+                        campaign={campaign}
+                        timezone={
+                          seats.find((seat) => seat.seatKey === campaign.seatKey)?.timezone ?? 'UTC'
+                        }
+                        busy={busy !== ''}
+                        onSave={(schedule) => saveCampaignSchedule(campaign, schedule)}
                       />
                       {operations ? (
                         <>
@@ -2479,7 +3092,7 @@ export function OutreachManagerRead({
                                   <strong>
                                     {operationalAnalytics.admissionForecast.acceptanceRate === null
                                       ? `learning (${operationalAnalytics.admissionForecast.acceptanceSampleSize}/20)`
-                                      : `${Math.round(operationalAnalytics.admissionForecast.acceptanceRate * 100)}%`}
+                                      : `${Math.round(operationalAnalytics.admissionForecast.acceptanceRate * 100)}%${operationalAnalytics.admissionForecast.acceptanceConfidence95 ? ` (95% ${Math.round(operationalAnalytics.admissionForecast.acceptanceConfidence95.low * 100)}–${Math.round(operationalAnalytics.admissionForecast.acceptanceConfidence95.high * 100)}%)` : ''}`}
                                   </strong>
                                 </div>
                                 <div>
@@ -2549,6 +3162,39 @@ export function OutreachManagerRead({
                                   <strong>Wave {wave.ordinal}</strong> ·{' '}
                                   {plural(wave.memberCount, 'lead')} ·{' '}
                                   {new Date(wave.admittedAt).toLocaleString()}
+                                  {' · '}
+                                  <button
+                                    type="button"
+                                    className="li-mini-button"
+                                    onClick={() =>
+                                      setWaveFilterByCampaign((current) => ({
+                                        ...current,
+                                        [campaign.id]:
+                                          current[campaign.id] === wave.ordinal
+                                            ? null
+                                            : wave.ordinal
+                                      }))
+                                    }
+                                  >
+                                    {waveFilterByCampaign[campaign.id] === wave.ordinal
+                                      ? 'Show all leads'
+                                      : 'Filter leads to wave'}
+                                  </button>
+                                  <p className="li-hint">
+                                    Backlog {wave.backlog ?? 0} · accepted{' '}
+                                    {wave.acceptanceRate === null ||
+                                    wave.acceptanceRate === undefined
+                                      ? '—'
+                                      : `${Math.round(wave.acceptanceRate * 100)}%`}{' '}
+                                    · replies{' '}
+                                    {wave.replyRate === null || wave.replyRate === undefined
+                                      ? '—'
+                                      : `${Math.round(wave.replyRate * 100)}%`}{' '}
+                                    · failures{' '}
+                                    {wave.failureRate === null || wave.failureRate === undefined
+                                      ? '—'
+                                      : `${Math.round(wave.failureRate * 100)}%`}
+                                  </p>
                                   {wave.admissionReason && (
                                     <p className="li-hint">{wave.admissionReason}</p>
                                   )}
@@ -2557,7 +3203,7 @@ export function OutreachManagerRead({
                                       {wave.stepFunnel
                                         .map(
                                           (row) =>
-                                            `${row.stepId}: ${row.sent}/${row.planned} sent${row.accepted ? ` · ${row.accepted} accepted` : ''}${row.replied ? ` · ${row.replied} replied` : ''}`
+                                            `${row.stepId}: ${row.sent}/${row.planned} sent${row.accepted ? ` · ${row.accepted} accepted` : ''}${row.replied ? ` · ${row.replied} replied` : ''}${row.failed ? ` · ${row.failed} failed` : ''}${row.medianMinutesFromAdmission === null ? '' : ` · median ${Math.round(row.medianMinutesFromAdmission)}m from admission`}${row.medianQueueLatencyMinutes === null ? '' : ` · ${Math.round(row.medianQueueLatencyMinutes)}m queue latency`}`
                                         )
                                         .join(' | ')}
                                     </p>
@@ -2575,7 +3221,13 @@ export function OutreachManagerRead({
 
                   {open && (
                     <CampaignMembers
-                      members={members}
+                      members={
+                        waveFilterByCampaign[campaign.id]
+                          ? members.filter(
+                              (member) => member.waveOrdinal === waveFilterByCampaign[campaign.id]
+                            )
+                          : members
+                      }
                       steps={campaignSteps}
                       now={now}
                       busy={busy}
