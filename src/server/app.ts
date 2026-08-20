@@ -331,20 +331,29 @@ import {
 } from './linkedin/workflows.js';
 import { runManagedCampaigns } from './linkedin/runner.js';
 import {
+  campaignAdmissionSummary,
+  campaignMemberTimeline,
+  campaignQueueSummary,
   campaignWarmupFraction,
   completeManualTask,
   createManagedCampaign,
+  duplicateManagedCampaign,
+  endManagedCampaignMember,
   getManagedCampaign,
   listCampaignMembers,
+  listCampaignWaves,
   listManagedCampaigns,
   listManualTasks,
   managedAnalytics,
   pauseManagedCampaign,
+  previewManagedCampaignLaunch,
   releaseSeatWork,
   removeCampaignMember,
   setCampaignMemberPaused,
+  skipManagedCampaignMemberStep,
   startManagedCampaign,
-  stopManagedCampaign
+  stopManagedCampaign,
+  updateManagedCampaignControls
 } from './linkedin/managed-campaigns.js';
 // The account spine (migration 039). `accounts/types.ts` is the contract these
 // three modules and this file are written against; nothing here reaches past
@@ -3634,6 +3643,24 @@ export function createApp(db: Db) {
   );
 
   app.post(
+    '/api/linkedin/manager/campaigns/preview',
+    linkedinRoute(async (req, res) => {
+      const input = linkedinManagedCampaignPreviewSchema.parse(req.body ?? {});
+      try {
+        res.json({
+          preview: await previewManagedCampaignLaunch(
+            db,
+            { workspaceId: req.auth!.workspaceId, ...input },
+            new Date()
+          )
+        });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
+  app.post(
     '/api/linkedin/manager/campaigns',
     linkedinRoute(async (req, res) => {
       const input = linkedinManagedCampaignCreateSchema.parse(req.body ?? {});
@@ -3660,6 +3687,99 @@ export function createApp(db: Db) {
         campaign,
         members: await listCampaignMembers(db, req.auth!.workspaceId, campaignId)
       });
+    })
+  );
+
+  app.get(
+    '/api/linkedin/manager/campaigns/:id/operations',
+    linkedinRoute(async (req, res) => {
+      try {
+        res.json(
+          await campaignAdmissionSummary(
+            db,
+            req.auth!.workspaceId,
+            String(req.params.id),
+            new Date()
+          )
+        );
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
+  app.get(
+    '/api/linkedin/manager/campaigns/:id/waves',
+    linkedinRoute(async (req, res) => {
+      const campaignId = String(req.params.id);
+      if (!(await getManagedCampaign(db, req.auth!.workspaceId, campaignId)))
+        throw new LinkedInApiError('Managed campaign not found', 404);
+      res.json({ waves: await listCampaignWaves(db, req.auth!.workspaceId, campaignId) });
+    })
+  );
+
+  app.get(
+    '/api/linkedin/manager/campaigns/:id/queue',
+    linkedinRoute(async (req, res) => {
+      try {
+        res.json({
+          queue: await campaignQueueSummary(
+            db,
+            req.auth!.workspaceId,
+            String(req.params.id),
+            new Date()
+          )
+        });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
+  app.patch(
+    '/api/linkedin/manager/campaigns/:id/controls',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'change managed campaign controls');
+      const input = linkedinManagedCampaignControlsSchema.parse(req.body ?? {});
+      try {
+        res.json({
+          campaign: await updateManagedCampaignControls(
+            db,
+            req.auth!.workspaceId,
+            String(req.params.id),
+            input,
+            new Date()
+          )
+        });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/campaigns/:id/duplicate',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'duplicate a managed campaign');
+      const input = z
+        .object({ name: z.string().trim().min(1).max(200).optional() })
+        .strict()
+        .parse(req.body ?? {});
+      try {
+        res
+          .status(201)
+          .json(
+            await duplicateManagedCampaign(
+              db,
+              req.auth!.workspaceId,
+              String(req.params.id),
+              input.name,
+              new Date()
+            )
+          );
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
     })
   );
 
@@ -3738,6 +3858,55 @@ export function createApp(db: Db) {
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
+    })
+  );
+
+  app.get(
+    '/api/linkedin/manager/members/:id/timeline',
+    linkedinRoute(async (req, res) => {
+      const timeline = await campaignMemberTimeline(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id)
+      );
+      if (!timeline) throw new LinkedInApiError('Campaign member not found', 404);
+      res.json(timeline);
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/members/:id/end',
+    linkedinRoute(async (req, res) => {
+      const input = z
+        .object({ outcome: z.enum(['completed', 'excluded', 'removed']).default('completed') })
+        .strict()
+        .parse(req.body ?? {});
+      const ended = await endManagedCampaignMember(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        input.outcome,
+        new Date()
+      );
+      if (!ended) throw new LinkedInApiError('Active campaign member not found', 404);
+      res.json({ ended: true, outcome: input.outcome });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/members/:id/skip',
+    linkedinRoute(async (req, res) => {
+      z.object({})
+        .strict()
+        .parse(req.body ?? {});
+      const skipped = await skipManagedCampaignMemberStep(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        new Date()
+      );
+      if (!skipped) throw new LinkedInApiError('Skippable campaign member step not found', 404);
+      res.json({ skipped: true });
     })
   );
 
@@ -4033,6 +4202,24 @@ export function createApp(db: Db) {
       res.json({
         deleted: await removeLeadContact(db, req.auth!.workspaceId, String(req.params.id))
       });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/workflows/validate',
+    linkedinRoute(async (req, res) => {
+      const parsed = workflowStepsSchema.safeParse((req.body ?? {}).steps);
+      res.json(
+        parsed.success
+          ? { valid: true, steps: parsed.data, issues: [] }
+          : {
+              valid: false,
+              issues: parsed.error.issues.map((issue) => ({
+                path: issue.path,
+                message: issue.message
+              }))
+            }
+      );
     })
   );
 
@@ -5860,7 +6047,11 @@ function rethrowLinkedInManagerError(error: unknown): never {
   // and it used to be a 500 -- the manager module throws these as plain Errors
   // and nothing here recognised the shape, so pausing an already-paused
   // campaign told the operator the server had faulted.
-  if (error instanceof Error && /^Only an? .+ can be /i.test(error.message))
+  if (
+    error instanceof Error &&
+    (/^Only an? .+ can be /i.test(error.message) ||
+      /Pause the campaign before changing/i.test(error.message))
+  )
     throw new LinkedInApiError(error.message, 409);
   if (
     error instanceof Error &&
@@ -6334,14 +6525,89 @@ const linkedinWorkflowWriteSchema = z
   })
   .strict();
 
+const linkedinAdmissionPolicySchema = z
+  .object({
+    mode: z.enum(['automatic', 'manual']).optional(),
+    maxNewLeadsPerDay: z.number().int().min(0).max(10000).nullable().optional(),
+    maxWaveSize: z.number().int().min(0).max(10000).nullable().optional(),
+    minWaveIntervalMinutes: z.number().int().min(0).max(10080).nullable().optional(),
+    stopAdmittingAt: z.string().datetime().nullable().optional(),
+    maxInSequence: z.number().int().min(0).max(100000).nullable().optional()
+  })
+  .strict();
+
+const linkedinCampaignScheduleSchema = z
+  .object({
+    startAt: z.string().datetime().nullable().optional(),
+    endAt: z.string().datetime().nullable().optional(),
+    workingDays: z.array(z.number().int().min(0).max(6)).max(7).nullable().optional(),
+    workStartMinute: z.number().int().min(0).max(1439).nullable().optional(),
+    workEndMinute: z.number().int().min(1).max(1440).nullable().optional(),
+    endBehavior: z.enum(['finish_waves', 'pause_all', 'stop_immediately']).optional()
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.workStartMinute != null &&
+      value.workEndMinute != null &&
+      value.workEndMinute <= value.workStartMinute
+    )
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['workEndMinute'],
+        message: 'Campaign working hours must end after they start.'
+      });
+    if (value.startAt && value.endAt && Date.parse(value.endAt) <= Date.parse(value.startAt))
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['endAt'],
+        message: 'Campaign end date must be after the start date.'
+      });
+  });
+
+const linkedinCampaignExclusionSchema = z
+  .object({
+    excludeMissingProfile: z.boolean().optional(),
+    excludeDoNotContact: z.boolean().optional(),
+    excludeExistingConversation: z.boolean().optional(),
+    contactedLookbackDays: z.number().int().min(0).max(3650).nullable().optional(),
+    excludeSameSenderMessaged: z.boolean().optional(),
+    suppressedCompanies: z.array(z.string().trim().min(1).max(300)).max(1000).optional(),
+    suppressedDomains: z.array(z.string().trim().min(1).max(255)).max(1000).optional()
+  })
+  .strict();
+
 const linkedinManagedCampaignCreateSchema = z
   .object({
     name: z.string().trim().min(1).max(200),
-    seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
+    seatKey: linkedinSeatKeySchema.optional(),
+    senderKeys: z.array(linkedinSeatKeySchema).min(1).max(100).optional(),
     leadListId: z.string().trim().min(1).max(120),
-    workflowId: z.string().trim().min(1).max(120)
+    workflowId: z.string().trim().min(1).max(120),
+    priority: z.enum(['low', 'normal', 'high']).optional(),
+    admissionPolicy: linkedinAdmissionPolicySchema.optional(),
+    exclusionPolicy: linkedinCampaignExclusionSchema.optional(),
+    schedule: linkedinCampaignScheduleSchema.optional()
   })
   .strict();
+
+const linkedinManagedCampaignPreviewSchema = linkedinManagedCampaignCreateSchema.omit({
+  name: true,
+  exclusionPolicy: true,
+  priority: true,
+  schedule: true
+});
+const linkedinManagedCampaignControlsSchema = z
+  .object({
+    priority: z.enum(['low', 'normal', 'high']).optional(),
+    admissionPolicy: linkedinAdmissionPolicySchema.optional(),
+    senderKeys: z.array(linkedinSeatKeySchema).min(1).max(100).optional(),
+    schedule: linkedinCampaignScheduleSchema.optional()
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'At least one campaign control is required.'
+  });
 
 const linkedinManagedAnalyticsSchema = z.object({
   campaignId: z.string().trim().min(1).max(120).optional(),

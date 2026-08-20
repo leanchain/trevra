@@ -21,10 +21,14 @@ import {
 } from 'lucide-react';
 import {
   completeLinkedInManualTask,
+  duplicateLinkedInManagedCampaign,
+  endLinkedInManagedMember,
+  getLinkedInCampaignOperations,
   getLinkedInLimits,
   getLinkedInManagedAnalytics,
   getLinkedInManagedCampaign,
   getLinkedInManagedCampaigns,
+  getLinkedInManagedMemberTimeline,
   getLinkedInManagerLeadLists,
   getLinkedInManagerSeats,
   getLinkedInManagerWorkflows,
@@ -32,9 +36,11 @@ import {
   pauseLinkedInManagedCampaign,
   removeLinkedInManagedMember,
   setLinkedInManagedMemberPaused,
+  skipLinkedInManagedMemberStep,
   startLinkedInManagedCampaign,
   stopLinkedInManagedCampaign,
   tickLinkedInManagedCampaigns,
+  updateLinkedInCampaignControls,
   type LinkedInLimitsReport,
   type ManagedCampaignTickResult
 } from './api';
@@ -42,9 +48,12 @@ import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
 import type { LinkedInSeat } from '../server/linkedin/seats';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
 import type {
+  CampaignMemberTimeline,
+  CampaignQueueSummary,
   ManagedAnalytics,
   ManagedCampaign,
   ManagedCampaignMember,
+  ManagedCampaignWave,
   ManualTaskView
 } from '../server/linkedin/managed-campaigns';
 import { errorMessage, useOutreachRefresh } from './LinkedInSafety';
@@ -209,10 +218,29 @@ function countByStatus(members: readonly ManagedCampaignMember[]): Record<Member
     replied: 0,
     completed: 0,
     removed: 0,
+    excluded: 0,
     failed: 0
   } as Record<MemberStatus, number>;
   for (const member of members) counts[member.status] += 1;
   return counts;
+}
+
+function campaignCountByStatus(campaign: ManagedCampaign): Record<MemberStatus, number> {
+  return {
+    pending: campaign.pendingCount,
+    active: Math.max(
+      0,
+      campaign.inSequenceCount - campaign.waitingCount - campaign.manualCount - campaign.pausedCount
+    ),
+    waiting: campaign.waitingCount,
+    manual: campaign.manualCount,
+    paused: campaign.pausedCount,
+    replied: campaign.repliedCount,
+    completed: campaign.completedCount,
+    removed: campaign.removedCount,
+    excluded: campaign.excludedCount,
+    failed: campaign.failedCount
+  };
 }
 
 /**
@@ -482,7 +510,11 @@ function CampaignMembers({
   busy,
   onPause,
   onResume,
-  onRemove
+  onRemove,
+  timelines,
+  onLoadTimeline,
+  onSkip,
+  onEnd
 }: {
   members: readonly ManagedCampaignMember[];
   steps: readonly WorkflowStep[];
@@ -491,6 +523,10 @@ function CampaignMembers({
   onPause: (member: ManagedCampaignMember) => void;
   onResume: (member: ManagedCampaignMember) => void;
   onRemove: (member: ManagedCampaignMember) => void;
+  timelines: Readonly<Record<string, CampaignMemberTimeline>>;
+  onLoadTimeline: (member: ManagedCampaignMember) => void;
+  onSkip: (member: ManagedCampaignMember) => void;
+  onEnd: (member: ManagedCampaignMember) => void;
 }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<'all' | MemberStatus>('all');
@@ -597,7 +633,10 @@ function CampaignMembers({
                           className="mgr-linkish"
                           type="button"
                           aria-expanded={open}
-                          onClick={() => setOpenId(open ? '' : member.id)}
+                          onClick={() => {
+                            setOpenId(open ? '' : member.id);
+                            if (!open) onLoadTimeline(member);
+                          }}
                         >
                           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                           {member.firstName} {member.lastName}
@@ -658,6 +697,30 @@ function CampaignMembers({
                               Resume
                             </button>
                           )}
+                          {(member.status === 'active' ||
+                            member.status === 'waiting' ||
+                            member.status === 'manual' ||
+                            member.status === 'paused') && (
+                            <button
+                              className="li-mini-button"
+                              type="button"
+                              disabled={busy !== ''}
+                              onClick={() => onSkip(member)}
+                            >
+                              Skip step
+                            </button>
+                          )}
+                          {(LIVE_STATUSES.includes(member.status) ||
+                            member.status === 'paused') && (
+                            <button
+                              className="li-mini-button"
+                              type="button"
+                              disabled={busy !== ''}
+                              onClick={() => onEnd(member)}
+                            >
+                              End automation
+                            </button>
+                          )}
                           {(LIVE_STATUSES.includes(member.status) ||
                             member.status === 'paused') && (
                             <button
@@ -676,6 +739,25 @@ function CampaignMembers({
                       <tr key={`${member.id}:detail`} className="mgr-row-detail">
                         <td colSpan={6}>
                           <MemberTimeline steps={steps} member={member} now={now} />
+                          {timelines[member.id] && (
+                            <div className="mgr-timeline-events">
+                              <h5>Recorded history</h5>
+                              <ul>
+                                {timelines[member.id].events.map((event, index) => (
+                                  <li
+                                    key={`${event.kind}:${event.stepId ?? ''}:${event.at ?? ''}:${index}`}
+                                  >
+                                    <b>{event.label}</b>
+                                    {event.status ? ` · ${event.status}` : ''}
+                                    {event.detail ? ` · ${event.detail}` : ''}
+                                    {event.at ? (
+                                      <span> · {new Date(event.at).toLocaleString()}</span>
+                                    ) : null}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ) : null
@@ -879,6 +961,12 @@ export function OutreachManagerRead({
   const [membersByCampaign, setMembersByCampaign] = useState<
     Record<string, ManagedCampaignMember[]>
   >({});
+  const [operationsByCampaign, setOperationsByCampaign] = useState<
+    Record<string, { queues: CampaignQueueSummary; waves: ManagedCampaignWave[] }>
+  >({});
+  const [timelinesByMember, setTimelinesByMember] = useState<
+    Record<string, CampaignMemberTimeline>
+  >({});
   /** One effective-limits report per account, keyed by account. */
   const [limitsBySeat, setLimitsBySeat] = useState<Record<string, LinkedInLimitsReport>>({});
   const [tasks, setTasks] = useState<ManualTaskView[]>([]);
@@ -934,18 +1022,22 @@ export function OutreachManagerRead({
       setWorkflows(nextWorkflows);
       setCampaigns(nextCampaigns);
       setTasks(nextTasks);
-      // lc-debt: one read per campaign to get its per-status counts; upgrade path:
-      // return the status histogram alongside member_count on GET /manager/campaigns.
-      const details = await Promise.all(
-        nextCampaigns.map(async (campaign) => {
-          try {
-            return [campaign.id, (await getLinkedInManagedCampaign(campaign.id)).members] as const;
-          } catch {
-            return [campaign.id, [] as ManagedCampaignMember[]] as const;
-          }
-        })
+      // Campaign rows already carry the operational status histogram. Member lists are loaded only
+      // when a campaign is opened, so this screen stays one aggregate read regardless of campaign count.
+      setMembersByCampaign((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([id]) =>
+            nextCampaigns.some((campaign) => campaign.id === id)
+          )
+        )
       );
-      setMembersByCampaign(Object.fromEntries(details));
+      setOperationsByCampaign((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([id]) =>
+            nextCampaigns.some((campaign) => campaign.id === id)
+          )
+        )
+      );
       // lc-debt: one limits read per account, so the ceilings this screen prints
       // are the gate's own numbers instead of a second opinion about them;
       // upgrade path: return the effective per-kind ceilings alongside the
@@ -1019,12 +1111,26 @@ export function OutreachManagerRead({
   );
 
   const refreshCampaign = async (campaignId: string) => {
-    const detail = await getLinkedInManagedCampaign(campaignId);
+    const [detail, operations] = await Promise.all([
+      getLinkedInManagedCampaign(campaignId),
+      getLinkedInCampaignOperations(campaignId)
+    ]);
     setMembersByCampaign((current) => ({ ...current, [campaignId]: detail.members }));
+    setOperationsByCampaign((current) => ({
+      ...current,
+      [campaignId]: { queues: operations.queues, waves: operations.waves }
+    }));
     setCampaigns((current) =>
       current.map((campaign) => (campaign.id === campaignId ? detail.campaign : campaign))
     );
   };
+
+  useEffect(() => {
+    if (!openCampaignId) return;
+    void refreshCampaign(openCampaignId).catch((err) =>
+      setError(errorMessage(err, 'Unable to read that campaign.'))
+    );
+  }, [openCampaignId]);
 
   const guard = async (key: string, work: () => Promise<void>, fallback: string) => {
     setBusy(key);
@@ -1103,6 +1209,74 @@ export function OutreachManagerRead({
         await refreshCampaign(member.campaignId);
       },
       'Unable to remove that lead.'
+    );
+
+  const loadMemberTimeline = (member: ManagedCampaignMember) => {
+    if (timelinesByMember[member.id]) return;
+    void getLinkedInManagedMemberTimeline(member.id)
+      .then((timeline) =>
+        setTimelinesByMember((current) => ({ ...current, [member.id]: timeline }))
+      )
+      .catch((err) => setError(errorMessage(err, 'Unable to read that lead history.')));
+  };
+
+  const skipMember = (member: ManagedCampaignMember) =>
+    guard(
+      `member:${member.id}`,
+      async () => {
+        await skipLinkedInManagedMemberStep(member.id);
+        setToast(`${member.firstName} ${member.lastName} skipped the current step.`);
+        setTimelinesByMember((current) => {
+          const next = { ...current };
+          delete next[member.id];
+          return next;
+        });
+        await refreshCampaign(member.campaignId);
+      },
+      'Unable to skip that step.'
+    );
+
+  const endMember = (member: ManagedCampaignMember) =>
+    guard(
+      `member:${member.id}`,
+      async () => {
+        await endLinkedInManagedMember(member.id, 'completed');
+        setToast(
+          `${member.firstName} ${member.lastName} ended here. No later campaign action will run.`
+        );
+        setTimelinesByMember((current) => {
+          const next = { ...current };
+          delete next[member.id];
+          return next;
+        });
+        await refreshCampaign(member.campaignId);
+      },
+      'Unable to end automation for that lead.'
+    );
+
+  const setCampaignPriority = (campaign: ManagedCampaign, priority: ManagedCampaign['priority']) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        await updateLinkedInCampaignControls(campaign.id, { priority });
+        setToast(`“${campaign.name}” priority is now ${priority}. Safety ceilings are unchanged.`);
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to change campaign priority.'
+    );
+
+  const duplicateCampaign = (campaign: ManagedCampaign) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await duplicateLinkedInManagedCampaign(campaign.id);
+        setToast(
+          `Created draft “${result.campaign.name}” with the same audience, workflow, senders, exclusions, and wave controls.`
+        );
+        await refreshAll();
+        setOpenCampaignId(result.campaign.id);
+      },
+      'Unable to duplicate that campaign.'
     );
 
   const completeTask = (task: ManualTaskView) =>
@@ -1309,7 +1483,7 @@ export function OutreachManagerRead({
           <div className="mgr-list">
             {campaigns.map((campaign) => {
               const members = membersByCampaign[campaign.id] ?? [];
-              const counts = countByStatus(members);
+              const counts = campaignCountByStatus(campaign);
               const workflow = workflowOf(campaign);
               const report = limitsBySeat[campaign.seatKey] ?? null;
               const warmup = warmupOf(campaign, now, report);
@@ -1333,6 +1507,7 @@ export function OutreachManagerRead({
               const rebuildable = Boolean(listOf(campaign) && workflowOf(campaign));
               const open = openCampaignId === campaign.id;
               const busyHere = busy === `campaign:${campaign.id}`;
+              const operations = operationsByCampaign[campaign.id] ?? null;
               return (
                 <article className={`mgr-campaign${open ? ' is-open' : ''}`} key={campaign.id}>
                   <div className="mgr-campaign-head">
@@ -1410,12 +1585,20 @@ export function OutreachManagerRead({
                           <Copy size={14} /> Build it again
                         </button>
                       )}
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={busy !== ''}
+                        onClick={() => void duplicateCampaign(campaign)}
+                      >
+                        <Copy size={14} /> Duplicate draft
+                      </button>
                     </div>
                   </div>
 
                   <p className="mgr-meta">
                     <span>
-                      Sends from <b>{seatLabel(campaign.seatKey)}</b>
+                      Sends from <b>{campaign.senderKeys.map(seatLabel).join(', ')}</b>
                     </span>
                     <span>
                       {plural(campaign.memberCount, 'lead')} from{' '}
@@ -1437,8 +1620,8 @@ export function OutreachManagerRead({
                     {campaign.startedAt && <span>Started {ago(campaign.startedAt, now)}</span>}
                   </p>
 
-                  <StatusBar counts={counts} total={members.length} />
-                  <StatusLegend counts={counts} total={members.length} />
+                  <StatusBar counts={counts} total={campaign.memberCount} />
+                  <StatusLegend counts={counts} total={campaign.memberCount} />
 
                   {/*
                   A TERMINAL CAMPAIGN GETS AN EXPLANATION, NOT A WARM-UP LINE.
@@ -1561,6 +1744,155 @@ export function OutreachManagerRead({
                   )}
 
                   {open && (
+                    <div className="mgr-operations">
+                      <div className="li-stat-grid">
+                        <div>
+                          <span>Total audience</span>
+                          <strong>{campaign.memberCount}</strong>
+                        </div>
+                        <div>
+                          <span>Pending / not admitted</span>
+                          <strong>{campaign.pendingCount}</strong>
+                        </div>
+                        <div>
+                          <span>In sequence</span>
+                          <strong>{campaign.inSequenceCount}</strong>
+                        </div>
+                        <div>
+                          <span>Waiting on condition</span>
+                          <strong>{campaign.waitingCount}</strong>
+                        </div>
+                        <div>
+                          <span>Manual checkpoint</span>
+                          <strong>{campaign.manualCount}</strong>
+                        </div>
+                        <div>
+                          <span>Replied</span>
+                          <strong>{campaign.repliedCount}</strong>
+                        </div>
+                        <div>
+                          <span>Completed</span>
+                          <strong>{campaign.completedCount}</strong>
+                        </div>
+                        <div>
+                          <span>Failed</span>
+                          <strong>{campaign.failedCount}</strong>
+                        </div>
+                        <div>
+                          <span>Excluded</span>
+                          <strong>{campaign.excludedCount}</strong>
+                        </div>
+                        <div>
+                          <span>Paused leads</span>
+                          <strong>{campaign.pausedCount}</strong>
+                        </div>
+                      </div>
+                      <div className="li-filter-row">
+                        <label>
+                          Campaign priority
+                          <select
+                            value={campaign.priority}
+                            disabled={busy !== ''}
+                            onChange={(event) =>
+                              void setCampaignPriority(
+                                campaign,
+                                event.target.value as ManagedCampaign['priority']
+                              )
+                            }
+                          >
+                            <option value="low">Low</option>
+                            <option value="normal">Normal</option>
+                            <option value="high">High</option>
+                          </select>
+                        </label>
+                        <p className="li-hint">
+                          Priority allocates remaining sender capacity; it never raises a safety
+                          ceiling.
+                        </p>
+                      </div>
+                      {operations ? (
+                        <>
+                          <h4>Queue and backlog</h4>
+                          <div className="li-stat-grid">
+                            <div>
+                              <span>Due now</span>
+                              <strong>{operations.queues.dueNow}</strong>
+                            </div>
+                            <div>
+                              <span>Scheduled next 24h</span>
+                              <strong>{operations.queues.scheduledToday}</strong>
+                            </div>
+                            <div>
+                              <span>Waiting for connection</span>
+                              <strong>{operations.queues.waitingForConnection}</strong>
+                            </div>
+                            <div>
+                              <span>Waiting for reply</span>
+                              <strong>{operations.queues.waitingForReply}</strong>
+                            </div>
+                            <div>
+                              <span>Other waits</span>
+                              <strong>{operations.queues.waitingOther}</strong>
+                            </div>
+                            <div>
+                              <span>Held by pause</span>
+                              <strong>{operations.queues.held}</strong>
+                            </div>
+                            <div>
+                              <span>Blocked</span>
+                              <strong>{operations.queues.blocked}</strong>
+                            </div>
+                            <div>
+                              <span>Failed</span>
+                              <strong>{operations.queues.failed}</strong>
+                            </div>
+                          </div>
+                          {operations.queues.backlogByStep.length > 0 && (
+                            <p className="li-hint">
+                              Backlog by node:{' '}
+                              {operations.queues.backlogByStep
+                                .map((row) => `${row.stepId} ${row.due}/${row.count} due`)
+                                .join(' · ')}
+                            </p>
+                          )}
+                          <h4>Admission waves</h4>
+                          {operations.waves.length === 0 ? (
+                            <p className="empty-copy">
+                              No wave has been admitted yet. Pending leads remain untouched until
+                              capacity is available.
+                            </p>
+                          ) : (
+                            <div className="mgr-wave-list">
+                              {operations.waves.map((wave) => (
+                                <article className="mgr-wave" key={wave.id}>
+                                  <strong>Wave {wave.ordinal}</strong> ·{' '}
+                                  {plural(wave.memberCount, 'lead')} ·{' '}
+                                  {new Date(wave.admittedAt).toLocaleString()}
+                                  {wave.admissionReason && (
+                                    <p className="li-hint">{wave.admissionReason}</p>
+                                  )}
+                                  {wave.stepFunnel && wave.stepFunnel.length > 0 && (
+                                    <p className="li-hint">
+                                      {wave.stepFunnel
+                                        .map(
+                                          (row) =>
+                                            `${row.stepId}: ${row.sent}/${row.planned} sent${row.accepted ? ` · ${row.accepted} accepted` : ''}${row.replied ? ` · ${row.replied} replied` : ''}`
+                                        )
+                                        .join(' | ')}
+                                    </p>
+                                  )}
+                                </article>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <p className="empty-copy">Loading queue and wave details…</p>
+                      )}
+                    </div>
+                  )}
+
+                  {open && (
                     <CampaignMembers
                       members={members}
                       steps={campaignSteps}
@@ -1569,6 +1901,10 @@ export function OutreachManagerRead({
                       onPause={(member) => void setMemberPaused(member, true)}
                       onResume={(member) => void setMemberPaused(member, false)}
                       onRemove={(member) => void removeMember(member)}
+                      timelines={timelinesByMember}
+                      onLoadTimeline={loadMemberTimeline}
+                      onSkip={(member) => void skipMember(member)}
+                      onEnd={(member) => void endMember(member)}
                     />
                   )}
                 </article>

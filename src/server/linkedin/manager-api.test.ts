@@ -304,7 +304,11 @@ describe('LinkedIn manager HTTP surface', () => {
     ).body.list;
     await importLeadCsv(
       db,
-      { workspaceId: A, listId: list.id, csv: 'First Name,Last Name,Company\nMaya,Smith,Acme\n' },
+      {
+        workspaceId: A,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company,LinkedIn URL\nMaya,Smith,Acme,https://linkedin.com/in/safe-maya\n'
+      },
       NOW
     );
     const workflow = (
@@ -343,5 +347,134 @@ describe('LinkedIn manager HTTP surface', () => {
       await as(tokenA).get(`/api/linkedin/manager/campaigns/${campaign.id}`).expect(200)
     ).body.members[0];
     expect(removed.status).toBe('removed');
+  });
+
+  it('previews launch capacity and exposes wave, queue, control, duplicate, and member timeline operations', async () => {
+    const list = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/lead-lists')
+        .send({ name: 'Wave controls', sourceKind: 'csv' })
+        .expect(201)
+    ).body.list;
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: A,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company,LinkedIn URL\nMaya,Smith,Acme,https://linkedin.com/in/wave-maya\nNoah,Jones,Beta,https://linkedin.com/in/wave-noah\n'
+      },
+      NOW
+    );
+    const flow = {
+      name: 'Wave graph',
+      steps: [
+        {
+          id: 'view',
+          action: 'profile_view',
+          delayBefore: { amount: 0, unit: 'hours' },
+          nextStepId: 'end',
+          config: {}
+        },
+        {
+          id: 'end',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        }
+      ]
+    };
+    const validation = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/workflows/validate')
+        .send({ steps: flow.steps })
+        .expect(200)
+    ).body;
+    expect(validation).toMatchObject({ valid: true, issues: [] });
+    const workflow = (
+      await as(tokenA).post('/api/linkedin/manager/workflows').send(flow).expect(201)
+    ).body.workflow;
+    const preview = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/campaigns/preview')
+        .send({
+          leadListId: list.id,
+          workflowId: workflow.id,
+          admissionPolicy: { maxWaveSize: 1 }
+        })
+        .expect(200)
+    ).body.preview;
+    expect(preview.audience).toBe(2);
+    expect(preview.firstWaveSize).toBe(1);
+    expect(preview.dayOneCapacity.profile_view).toBeGreaterThan(0);
+
+    const created = (
+      await as(tokenA)
+        .post('/api/linkedin/manager/campaigns')
+        .send({
+          name: 'Wave operations',
+          leadListId: list.id,
+          workflowId: workflow.id,
+          priority: 'high',
+          admissionPolicy: { maxWaveSize: 1 }
+        })
+        .expect(201)
+    ).body;
+    expect(created.campaign.pendingCount).toBe(2);
+    const campaignId = created.campaign.id as string;
+    await as(tokenA)
+      .post(`/api/linkedin/manager/campaigns/${campaignId}/start`)
+      .send({})
+      .expect(200);
+    await as(tokenA).post('/api/linkedin/manager/tick').send({}).expect(200);
+
+    const operations = (
+      await as(tokenA).get(`/api/linkedin/manager/campaigns/${campaignId}/operations`).expect(200)
+    ).body;
+    expect(operations.queues.pending).toBe(1);
+    expect(operations.waves).toHaveLength(1);
+    expect(operations.waves[0]).toMatchObject({ ordinal: 1, memberCount: 1 });
+    expect(operations.waves[0].stepFunnel[0]).toMatchObject({ stepId: 'view', planned: 1 });
+
+    await as(tokenA)
+      .patch(`/api/linkedin/manager/campaigns/${campaignId}/controls`)
+      .send({ priority: 'low' })
+      .expect(200);
+    await as(tokenA)
+      .patch(`/api/linkedin/manager/campaigns/${campaignId}/controls`)
+      .send({ admissionPolicy: { maxWaveSize: 2 } })
+      .expect(409);
+    await as(tokenA)
+      .post(`/api/linkedin/manager/campaigns/${campaignId}/pause`)
+      .send({})
+      .expect(200);
+    const controls = (
+      await as(tokenA)
+        .patch(`/api/linkedin/manager/campaigns/${campaignId}/controls`)
+        .send({
+          admissionPolicy: { maxWaveSize: 2, minWaveIntervalMinutes: 30 },
+          schedule: { workingDays: [1, 2, 3, 4, 5], workStartMinute: 540, workEndMinute: 1020 }
+        })
+        .expect(200)
+    ).body.campaign;
+    expect(controls.admissionPolicy.maxWaveSize).toBe(2);
+    expect(controls.schedule.workingDays).toEqual([1, 2, 3, 4, 5]);
+
+    const member = (
+      await as(tokenA).get(`/api/linkedin/manager/campaigns/${campaignId}`).expect(200)
+    ).body.members.find((value: { waveId: string | null }) => value.waveId);
+    const timeline = (
+      await as(tokenA).get(`/api/linkedin/manager/members/${member.id}/timeline`).expect(200)
+    ).body;
+    expect(timeline.events.some((event: { kind: string }) => event.kind === 'wave')).toBe(true);
+    await as(tokenA).post(`/api/linkedin/manager/members/${member.id}/skip`).send({}).expect(200);
+
+    const duplicate = (
+      await as(tokenA)
+        .post(`/api/linkedin/manager/campaigns/${campaignId}/duplicate`)
+        .send({ name: 'Wave copy' })
+        .expect(201)
+    ).body;
+    expect(duplicate.campaign).toMatchObject({ name: 'Wave copy', status: 'draft' });
+    expect(duplicate.campaign.id).not.toBe(campaignId);
   });
 });

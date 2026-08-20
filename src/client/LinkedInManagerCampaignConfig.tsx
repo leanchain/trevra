@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import {
   createLinkedInManagedCampaign,
+  previewLinkedInManagedCampaign,
   getLinkedInLimits,
   getLinkedInManagerLeadLists,
   getLinkedInManagerSeats,
@@ -24,7 +25,7 @@ import { LinkedInManagerWorkflowConfig } from './LinkedInManagerWorkflowConfig';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
 import type { LinkedInSeat } from '../server/linkedin/seats';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
-import type { ManagedCampaign } from '../server/linkedin/managed-campaigns';
+import type { CampaignLaunchPreview, ManagedCampaign } from '../server/linkedin/managed-campaigns';
 import { errorMessage } from './LinkedInSafety';
 
 /**
@@ -92,6 +93,15 @@ const ACTION_SHORT_LABEL: Record<WorkflowStep['action'], string> = {
   remove_tag: '-Tag',
   external_handoff: 'Handoff',
   manual_comment: 'Manual comment'
+};
+
+const BOTTLENECK_LABEL: Readonly<Record<string, string>> = {
+  profile_view: 'Profile view',
+  invite: 'Connection request',
+  dm: 'Message',
+  follow: 'Follow',
+  like: 'Like',
+  endorse: 'Endorse'
 };
 
 /** A workflow's steps as a compact trail for the card picker: "View → Invite → wait 3d → Message". */
@@ -282,6 +292,24 @@ export function LinkedInManagerCampaignConfig({
   const [showListUploader, setShowListUploader] = useState(false);
   const [showWorkflowStarters, setShowWorkflowStarters] = useState(false);
   const [showSendingDetails, setShowSendingDetails] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [senderKeys, setSenderKeys] = useState<string[]>(activeSeatKey ? [activeSeatKey] : []);
+  const [priority, setPriority] = useState<ManagedCampaign['priority']>('normal');
+  const [maxWaveSize, setMaxWaveSize] = useState<number | ''>('');
+  const [maxNewLeadsPerDay, setMaxNewLeadsPerDay] = useState<number | ''>('');
+  const [maxInSequence, setMaxInSequence] = useState<number | ''>('');
+  const [waveIntervalMinutes, setWaveIntervalMinutes] = useState<number | ''>('');
+  const [scheduledStart, setScheduledStart] = useState('');
+  const [scheduledEnd, setScheduledEnd] = useState('');
+  const [endBehavior, setEndBehavior] =
+    useState<ManagedCampaign['schedule']['endBehavior']>('finish_waves');
+  const [excludeExistingConversation, setExcludeExistingConversation] = useState(true);
+  const [excludeSameSenderMessaged, setExcludeSameSenderMessaged] = useState(true);
+  const [contactedLookbackDays, setContactedLookbackDays] = useState<number | ''>(30);
+  const [suppressedCompanies, setSuppressedCompanies] = useState('');
+  const [suppressedDomains, setSuppressedDomains] = useState('');
+  const [launchPreview, setLaunchPreview] = useState<CampaignLaunchPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [limits, setLimits] = useState<LinkedInLimitsReport | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -289,6 +317,7 @@ export function LinkedInManagerCampaignConfig({
     campaign: ManagedCampaign;
     enrolled: number;
     skippedAlreadyActive: number;
+    excluded: number;
   } | null>(null);
 
   const refreshOptions = async () => {
@@ -306,6 +335,13 @@ export function LinkedInManagerCampaignConfig({
     setWorkflowId((current) => current || nextWorkflows[0]?.id || '');
   };
   useEffect(() => {
+    setSenderKeys((current) =>
+      current.length > 0 && current.includes(activeSeatKey)
+        ? current
+        : activeSeatKey
+          ? [activeSeatKey]
+          : []
+    );
     void refreshOptions().catch(() => undefined);
   }, [activeSeatKey]);
 
@@ -376,6 +412,54 @@ export function LinkedInManagerCampaignConfig({
     return { steps, days: Math.max(1, Math.ceil(elapsed / 24)) };
   }, [workflow]);
 
+  const admissionPolicy = useMemo<ManagedCampaign['admissionPolicy']>(
+    () => ({
+      ...(maxWaveSize === '' ? {} : { maxWaveSize }),
+      ...(maxNewLeadsPerDay === '' ? {} : { maxNewLeadsPerDay }),
+      ...(maxInSequence === '' ? {} : { maxInSequence }),
+      ...(waveIntervalMinutes === '' ? {} : { minWaveIntervalMinutes: waveIntervalMinutes })
+    }),
+    [maxWaveSize, maxNewLeadsPerDay, maxInSequence, waveIntervalMinutes]
+  );
+
+  useEffect(() => {
+    if (!listId || !workflowId || senderKeys.length === 0) {
+      setLaunchPreview(null);
+      return undefined;
+    }
+    let live = true;
+    setPreviewLoading(true);
+    const timer = window.setTimeout(() => {
+      void previewLinkedInManagedCampaign({
+        leadListId: listId,
+        workflowId,
+        senderKeys,
+        admissionPolicy
+      })
+        .then((preview) => {
+          if (live) setLaunchPreview(preview);
+        })
+        .catch(() => {
+          if (live) setLaunchPreview(null);
+        })
+        .finally(() => {
+          if (live) setPreviewLoading(false);
+        });
+    }, 120);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [
+    listId,
+    workflowId,
+    senderKeys.join('|'),
+    admissionPolicy.maxWaveSize,
+    admissionPolicy.maxNewLeadsPerDay,
+    admissionPolicy.maxInSequence,
+    admissionPolicy.minWaveIntervalMinutes
+  ]);
+
   const warnings: string[] = [];
   if (list && list.leadCount === 0)
     warnings.push(
@@ -399,11 +483,35 @@ export function LinkedInManagerCampaignConfig({
     setBusy('create');
     setError('');
     try {
+      const csvValues = (value: string) => [
+        ...new Set(
+          value
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean)
+        )
+      ];
       const result = await createLinkedInManagedCampaign({
         name: name.trim(),
-        seatKey: activeSeatKey,
+        senderKeys,
         leadListId: listId,
-        workflowId
+        workflowId,
+        priority,
+        admissionPolicy,
+        exclusionPolicy: {
+          excludeMissingProfile: true,
+          excludeDoNotContact: true,
+          excludeExistingConversation,
+          excludeSameSenderMessaged,
+          contactedLookbackDays: contactedLookbackDays === '' ? null : contactedLookbackDays,
+          suppressedCompanies: csvValues(suppressedCompanies),
+          suppressedDomains: csvValues(suppressedDomains)
+        },
+        schedule: {
+          startAt: scheduledStart ? new Date(scheduledStart).toISOString() : null,
+          endAt: scheduledEnd ? new Date(scheduledEnd).toISOString() : null,
+          endBehavior
+        }
       });
       setCreated(result);
       setName('');
@@ -447,7 +555,9 @@ export function LinkedInManagerCampaignConfig({
           ? 'Choose or upload a lead list.'
           : !workflowId
             ? 'Choose or create a workflow.'
-            : '';
+            : senderKeys.length === 0
+              ? 'Choose at least one sending account.'
+              : '';
 
   return (
     <section className="page-panel">
@@ -569,9 +679,208 @@ export function LinkedInManagerCampaignConfig({
               )}
             </div>
 
+            <details
+              className="mgr-advanced"
+              open={showAdvanced}
+              onToggle={(event) => setShowAdvanced(event.currentTarget.open)}
+            >
+              <summary>Advanced campaign controls</summary>
+              <div className="li-form-grid mgr-fields">
+                <fieldset className="li-span-2">
+                  <legend>Sending accounts</legend>
+                  <p className="li-hint">
+                    Each admitted lead is assigned one sender permanently for this campaign.
+                  </p>
+                  <div className="li-check-grid">
+                    {seats.map((candidate) => (
+                      <label key={candidate.seatKey} className="li-check-row">
+                        <input
+                          type="checkbox"
+                          checked={senderKeys.includes(candidate.seatKey)}
+                          onChange={(event) =>
+                            setSenderKeys((current) =>
+                              event.target.checked
+                                ? [...new Set([...current, candidate.seatKey])]
+                                : current.filter((key) => key !== candidate.seatKey)
+                            )
+                          }
+                        />
+                        <span>
+                          <b>{candidate.label}</b> · {candidate.timezone}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                <label>
+                  Campaign priority
+                  <select
+                    value={priority}
+                    onChange={(event) =>
+                      setPriority(event.target.value as ManagedCampaign['priority'])
+                    }
+                  >
+                    <option value="low">Low</option>
+                    <option value="normal">Normal</option>
+                    <option value="high">High</option>
+                  </select>
+                </label>
+                <label>
+                  Maximum wave size
+                  <input
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={maxWaveSize}
+                    placeholder="Automatic"
+                    onChange={(event) =>
+                      setMaxWaveSize(
+                        event.target.value === ''
+                          ? ''
+                          : Math.max(1, Math.trunc(Number(event.target.value) || 1))
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Maximum new leads / day
+                  <input
+                    type="number"
+                    min={0}
+                    max={10000}
+                    value={maxNewLeadsPerDay}
+                    placeholder="Automatic"
+                    onChange={(event) =>
+                      setMaxNewLeadsPerDay(
+                        event.target.value === ''
+                          ? ''
+                          : Math.max(0, Math.trunc(Number(event.target.value) || 0))
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Maximum leads in sequence
+                  <input
+                    type="number"
+                    min={1}
+                    max={100000}
+                    value={maxInSequence}
+                    placeholder="Automatic"
+                    onChange={(event) =>
+                      setMaxInSequence(
+                        event.target.value === ''
+                          ? ''
+                          : Math.max(1, Math.trunc(Number(event.target.value) || 1))
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Minimum minutes between waves
+                  <input
+                    type="number"
+                    min={0}
+                    max={10080}
+                    value={waveIntervalMinutes}
+                    placeholder="No extra delay"
+                    onChange={(event) =>
+                      setWaveIntervalMinutes(
+                        event.target.value === ''
+                          ? ''
+                          : Math.max(0, Math.trunc(Number(event.target.value) || 0))
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Optional campaign start
+                  <input
+                    type="datetime-local"
+                    value={scheduledStart}
+                    onChange={(event) => setScheduledStart(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Optional campaign end
+                  <input
+                    type="datetime-local"
+                    value={scheduledEnd}
+                    onChange={(event) => setScheduledEnd(event.target.value)}
+                  />
+                </label>
+                <label>
+                  At campaign end
+                  <select
+                    value={endBehavior}
+                    onChange={(event) =>
+                      setEndBehavior(
+                        event.target.value as ManagedCampaign['schedule']['endBehavior']
+                      )
+                    }
+                  >
+                    <option value="finish_waves">Finish admitted waves; admit nobody new</option>
+                    <option value="pause_all">Pause campaign and hold queued work</option>
+                    <option value="stop_immediately">Stop and release remaining leads</option>
+                  </select>
+                </label>
+                <fieldset className="li-span-2">
+                  <legend>Exclusions</legend>
+                  <label className="li-check-row">
+                    <input
+                      type="checkbox"
+                      checked={excludeExistingConversation}
+                      onChange={(event) => setExcludeExistingConversation(event.target.checked)}
+                    />{' '}
+                    Exclude leads with an existing conversation
+                  </label>
+                  <label className="li-check-row">
+                    <input
+                      type="checkbox"
+                      checked={excludeSameSenderMessaged}
+                      onChange={(event) => setExcludeSameSenderMessaged(event.target.checked)}
+                    />{' '}
+                    Exclude leads already messaged by the assigned sender
+                  </label>
+                </fieldset>
+                <label>
+                  Contacted lookback (days)
+                  <input
+                    type="number"
+                    min={0}
+                    max={3650}
+                    value={contactedLookbackDays}
+                    onChange={(event) =>
+                      setContactedLookbackDays(
+                        event.target.value === ''
+                          ? ''
+                          : Math.max(0, Math.trunc(Number(event.target.value) || 0))
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  Suppressed companies
+                  <input
+                    value={suppressedCompanies}
+                    onChange={(event) => setSuppressedCompanies(event.target.value)}
+                    placeholder="Acme, Contoso"
+                  />
+                </label>
+                <label>
+                  Suppressed email domains
+                  <input
+                    value={suppressedDomains}
+                    onChange={(event) => setSuppressedDomains(event.target.value)}
+                    placeholder="example.com, competitor.com"
+                  />
+                </label>
+              </div>
+            </details>
+
             <p className="li-hint">
               A lead can only be in one active campaign at a time. Anyone already in another one is
-              left where they are.
+              left where they are, and every exclusion is retained with a reason.
             </p>
           </div>
 
@@ -581,9 +890,54 @@ export function LinkedInManagerCampaignConfig({
               <>
                 <p className="mgr-preview-lede">
                   <b>{plural(list.leadCount, 'lead')}</b> from {list.name} will be worked through{' '}
-                  <b>{workflow.name}</b> by <b>{seat.label}</b>, over about{' '}
-                  <b>{plural(schedule.days, 'day')}</b> each.
+                  <b>{workflow.name}</b> by{' '}
+                  <b>
+                    {senderKeys
+                      .map(
+                        (key) => seats.find((candidate) => candidate.seatKey === key)?.label ?? key
+                      )
+                      .join(', ') || seat.label}
+                  </b>
+                  , over about <b>{plural(schedule.days, 'day')}</b> each.
                 </p>
+                <div className="mgr-preview-note">
+                  {previewLoading ? (
+                    <>
+                      <LoaderCircle className="spin" size={13} /> Recalculating sustainable
+                      admission…
+                    </>
+                  ) : launchPreview ? (
+                    <>
+                      <b>{plural(launchPreview.firstWaveSize, 'lead')}</b> in the estimated first
+                      wave; about{' '}
+                      <b>{plural(launchPreview.sustainableNewLeadsPerDay, 'new lead')}</b> can be
+                      admitted per day under current downstream capacity.
+                      {launchPreview.bottleneck && (
+                        <>
+                          {' '}
+                          The limiting stage is{' '}
+                          <b>
+                            {BOTTLENECK_LABEL[launchPreview.bottleneck] ?? launchPreview.bottleneck}
+                          </b>
+                          .
+                        </>
+                      )}
+                      {list.leadCount > launchPreview.firstWaveSize && (
+                        <>
+                          {' '}
+                          The remaining{' '}
+                          {plural(list.leadCount - launchPreview.firstWaveSize, 'lead')} stay
+                          pending until earlier waves clear.
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      Admission is calculated from the full workflow's bottleneck before any first
+                      action is queued.
+                    </>
+                  )}
+                </div>
                 <ol className="mgr-preview-steps">
                   {schedule.steps.map(({ step, day }) => (
                     <li key={step.id}>

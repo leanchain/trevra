@@ -1,9 +1,15 @@
 import { id, type Db } from '../db.js';
 import { COUNTED_MESSAGE_KINDS, recordAction } from './actions.js';
 import type { CampaignStatus } from './action-ledger.js';
-import type { AdmissionDecision, AdmissionPolicy } from './admission.js';
+import {
+  decideAdmission,
+  workflowAdmissionDemand,
+  type AdmissionDecision,
+  type AdmissionPolicy
+} from './admission.js';
 import { getLeadList } from './lead-lists.js';
-import { getSeat, OWNER_SEAT_KEY } from './seats.js';
+import { effectivePosture, getSeat, OWNER_SEAT_KEY } from './seats.js';
+import { bandFor, effectiveDailyCeiling, seatOperatorLimit, type PacedKind } from './limits.js';
 import {
   delayMilliseconds,
   getWorkflow,
@@ -73,10 +79,12 @@ export interface ManagedCampaign {
   inSequenceCount: number;
   waitingCount: number;
   manualCount: number;
+  pausedCount: number;
   repliedCount: number;
   completedCount: number;
   failedCount: number;
   excludedCount: number;
+  removedCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -123,6 +131,14 @@ export interface ManagedCampaignWave {
   memberCount: number;
   admissionReason: string | null;
   capacitySnapshot: Record<string, number>;
+  stepFunnel?: Array<{
+    stepId: string;
+    planned: number;
+    sent: number;
+    accepted: number;
+    replied: number;
+    failed: number;
+  }>;
 }
 
 export interface CampaignQueueSummary {
@@ -166,10 +182,12 @@ interface CampaignRow {
   in_sequence_count: number;
   waiting_count: number;
   manual_count: number;
+  paused_count: number;
   replied_count: number;
   completed_count: number;
   failed_count: number;
   excluded_count: number;
+  removed_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -209,10 +227,12 @@ const CAMPAIGN_SELECT = `
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.admitted_at IS NOT NULL AND m.status = ANY(ARRAY['active','waiting','manual','paused'])) AS in_sequence_count,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='waiting') AS waiting_count,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='manual') AS manual_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='paused') AS paused_count,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='replied') AS replied_count,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='completed') AS completed_count,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='failed') AS failed_count,
-  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='excluded') AS excluded_count
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='excluded') AS excluded_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='removed') AS removed_count
 `;
 
 /**
@@ -341,10 +361,12 @@ function toCampaign(row: CampaignRow): ManagedCampaign {
     inSequenceCount: Number(row.in_sequence_count),
     waitingCount: Number(row.waiting_count),
     manualCount: Number(row.manual_count),
+    pausedCount: Number(row.paused_count),
     repliedCount: Number(row.replied_count),
     completedCount: Number(row.completed_count),
     failedCount: Number(row.failed_count),
     excludedCount: Number(row.excluded_count),
+    removedCount: Number(row.removed_count),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -797,6 +819,40 @@ export async function listCampaignWaves(
       admission_reason: string | null;
       capacity_snapshot: unknown;
     }>(workspaceId, campaignId);
+  const funnels = await db
+    .prepare(
+      `SELECT m.wave_id,a.workflow_step_id,
+            COUNT(*)::int AS planned,
+            COUNT(*) FILTER (WHERE a.status IN ('sent','accepted','replied'))::int AS sent,
+            COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('accepted','replied'))::int AS accepted,
+            COUNT(*) FILTER (WHERE a.status='replied')::int AS replied,
+            COUNT(*) FILTER (WHERE a.failure_kind IS NOT NULL AND a.status NOT IN ('sent','accepted','replied'))::int AS failed
+     FROM linkedin_actions a JOIN linkedin_campaign_members m ON m.id=a.campaign_member_id AND m.workspace_id=a.workspace_id
+     WHERE a.workspace_id=? AND a.campaign_id=? AND m.wave_id IS NOT NULL AND a.workflow_step_id IS NOT NULL
+     GROUP BY m.wave_id,a.workflow_step_id`
+    )
+    .all<{
+      wave_id: string;
+      workflow_step_id: string;
+      planned: number;
+      sent: number;
+      accepted: number;
+      replied: number;
+      failed: number;
+    }>(workspaceId, campaignId);
+  const byWave = new Map<string, ManagedCampaignWave['stepFunnel']>();
+  for (const row of funnels) {
+    const list = byWave.get(row.wave_id) ?? [];
+    list.push({
+      stepId: row.workflow_step_id,
+      planned: Number(row.planned),
+      sent: Number(row.sent),
+      accepted: Number(row.accepted),
+      replied: Number(row.replied),
+      failed: Number(row.failed)
+    });
+    byWave.set(row.wave_id, list);
+  }
   return rows.map((row) => ({
     id: row.id,
     campaignId: row.campaign_id,
@@ -808,7 +864,8 @@ export async function listCampaignWaves(
       Object.entries(parseJsonObject(row.capacity_snapshot)).filter(
         ([, value]) => typeof value === 'number'
       )
-    ) as Record<string, number>
+    ) as Record<string, number>,
+    stepFunnel: byWave.get(row.id) ?? []
   }));
 }
 
@@ -1486,6 +1543,501 @@ async function recordManualMessageAction(
   `
     )
     .run(task.suggested_body, task.member_id, task.workflow_step_id, written.id, workspaceId);
+}
+
+export interface CampaignLaunchPreview {
+  audience: number;
+  eligibleSenders: string[];
+  dayOneCapacity: Partial<
+    Record<'profile_view' | 'invite' | 'dm' | 'follow' | 'like' | 'endorse', number>
+  >;
+  sustainableNewLeadsPerDay: number;
+  firstWaveSize: number;
+  bottleneck: string | null;
+  demand: ReturnType<typeof workflowAdmissionDemand>;
+  reasons: string[];
+}
+
+function workflowKindToPaced(kind: keyof ReturnType<typeof workflowAdmissionDemand>): PacedKind {
+  if (kind === 'invite') return 'invite';
+  if (kind === 'dm') return 'dm';
+  if (kind === 'profile_view') return 'profile_view';
+  if (kind === 'follow') return 'follow';
+  if (kind === 'like') return 'like';
+  return 'endorse';
+}
+
+export async function previewManagedCampaignLaunch(
+  db: Db,
+  input: {
+    workspaceId: string;
+    leadListId: string;
+    workflowId: string;
+    senderKeys?: string[];
+    seatKey?: string;
+    admissionPolicy?: AdmissionPolicy;
+  },
+  now: Date = new Date()
+): Promise<CampaignLaunchPreview> {
+  const senders = [
+    ...new Set(
+      (input.senderKeys?.length ? input.senderKeys : [input.seatKey ?? OWNER_SEAT_KEY]).filter(
+        Boolean
+      )
+    )
+  ];
+  const workflow = await getWorkflow(db, input.workspaceId, input.workflowId);
+  if (!workflow) throw new Error('Workflow not found.');
+  const list = await getLeadList(
+    db,
+    input.workspaceId,
+    input.leadListId,
+    senders[0] ?? OWNER_SEAT_KEY
+  );
+  if (!list) throw new Error('Lead list not found.');
+  const demand = workflowAdmissionDemand(workflow.steps);
+  const capacity: CampaignLaunchPreview['dayOneCapacity'] = {};
+  const eligibleSenders: string[] = [];
+  for (const key of senders) {
+    const seat = await getSeat(db, input.workspaceId, key);
+    if (!seat) continue;
+    const posture = effectivePosture(seat, now);
+    if (posture === 'paused' || posture === 'cooldown' || seat.workingDays.length === 0) continue;
+    eligibleSenders.push(key);
+    for (const kind of Object.keys(demand) as Array<keyof typeof demand>) {
+      if (demand[kind] <= 0) continue;
+      const paced = workflowKindToPaced(kind);
+      const band = bandFor(paced, posture === 'steady' ? 'steady' : 'warmup');
+      const ceiling = effectiveDailyCeiling(
+        band.perDay,
+        seatOperatorLimit(seat, paced),
+        seat.safetyBandOverride
+      );
+      const dayOne = campaignActionLimit(ceiling, null, now);
+      capacity[kind] = (capacity[kind] ?? 0) + dayOne;
+    }
+  }
+  const decision = decideAdmission({
+    steps: workflow.steps,
+    pending: list.leadCount,
+    inSequence: 0,
+    admittedToday: 0,
+    available: capacity,
+    backlog: {},
+    policy: input.admissionPolicy,
+    now,
+    hasUsableFutureSlot: eligibleSenders.length > 0
+  });
+  return {
+    audience: list.leadCount,
+    eligibleSenders,
+    dayOneCapacity: capacity,
+    sustainableNewLeadsPerDay: decision.admit,
+    firstWaveSize: decision.admit,
+    bottleneck: decision.limitingKind,
+    demand,
+    reasons: decision.reasons
+  };
+}
+
+export async function campaignQueueSummary(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  now: Date = new Date()
+): Promise<CampaignQueueSummary> {
+  const campaign = await getManagedCampaign(db, workspaceId, campaignId);
+  if (!campaign) throw new Error('Campaign not found.');
+  const rows = await db
+    .prepare(
+      `SELECT step_index,status,COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE next_eligible_at IS NULL OR next_eligible_at<=?::timestamptz)::int AS due
+     FROM linkedin_campaign_members
+     WHERE workspace_id=? AND campaign_id=?
+     GROUP BY step_index,status ORDER BY step_index,status`
+    )
+    .all<{ step_index: number; status: string; total: number; due: number }>(
+      now.toISOString(),
+      workspaceId,
+      campaignId
+    );
+  const backlog = new Map<number, { count: number; due: number }>();
+  let pending = 0,
+    dueNow = 0,
+    manual = 0,
+    failed = 0,
+    waitingForConnection = 0,
+    waitingForReply = 0,
+    waitingOther = 0;
+  for (const row of rows) {
+    const count = Number(row.total),
+      due = Number(row.due);
+    if (row.status === 'pending') pending += count;
+    if (row.status === 'manual') manual += count;
+    if (row.status === 'failed') failed += count;
+    if (['active', 'waiting'].includes(row.status)) {
+      dueNow += due;
+      const current = backlog.get(Number(row.step_index)) ?? { count: 0, due: 0 };
+      current.count += count;
+      current.due += due;
+      backlog.set(Number(row.step_index), current);
+      const step = campaign.steps[Number(row.step_index)];
+      if (
+        (step?.action === 'monitor' || step?.action === 'condition') &&
+        ['connected', 'accepted'].includes(step.config.condition.kind)
+      )
+        waitingForConnection += count;
+      else if (
+        (step?.action === 'monitor' || step?.action === 'condition') &&
+        step.config.condition.kind === 'replied'
+      )
+        waitingForReply += count;
+      else if (row.status === 'waiting') waitingOther += count;
+    }
+  }
+  const actionCounts = await db
+    .prepare(
+      `SELECT
+       COUNT(*) FILTER (WHERE status='planned' AND planned_for>=?::timestamptz AND planned_for<?::timestamptz)::int AS scheduled,
+       COUNT(*) FILTER (WHERE status='held')::int AS held
+     FROM linkedin_actions WHERE workspace_id=? AND campaign_id=?`
+    )
+    .get<{ scheduled: number; held: number }>(
+      now.toISOString(),
+      new Date(now.getTime() + 86_400_000).toISOString(),
+      workspaceId,
+      campaignId
+    );
+  const blocked =
+    (
+      await db
+        .prepare(
+          `SELECT COUNT(*)::int AS total FROM linkedin_campaign_members
+     WHERE workspace_id=? AND campaign_id=? AND status IN ('active','waiting') AND last_failure_reason IS NOT NULL`
+        )
+        .get<{ total: number }>(workspaceId, campaignId)
+    )?.total ?? 0;
+  return {
+    pending,
+    dueNow,
+    scheduledToday: Number(actionCounts?.scheduled ?? 0),
+    waitingForConnection,
+    waitingForReply,
+    waitingOther,
+    manual,
+    held: Number(actionCounts?.held ?? 0),
+    blocked: Number(blocked),
+    failed,
+    backlogByStep: [...backlog.entries()].map(([index, value]) => ({
+      stepId: campaign.steps[index]?.id ?? `step-${index + 1}`,
+      ...value
+    }))
+  };
+}
+
+export async function campaignAdmissionSummary(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  now: Date = new Date()
+): Promise<{
+  campaign: ManagedCampaign;
+  queues: CampaignQueueSummary;
+  waves: ManagedCampaignWave[];
+}> {
+  const campaign = await getManagedCampaign(db, workspaceId, campaignId);
+  if (!campaign) throw new Error('Campaign not found.');
+  const [queues, waves] = await Promise.all([
+    campaignQueueSummary(db, workspaceId, campaignId, now),
+    listCampaignWaves(db, workspaceId, campaignId)
+  ]);
+  return { campaign, queues, waves };
+}
+
+export async function updateManagedCampaignControls(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  input: {
+    priority?: CampaignPriority;
+    admissionPolicy?: AdmissionPolicy;
+    schedule?: Partial<CampaignSchedule>;
+    senderKeys?: string[];
+  },
+  now: Date = new Date()
+): Promise<ManagedCampaign> {
+  const campaign = await getManagedCampaign(db, workspaceId, campaignId);
+  if (!campaign) throw new Error('Campaign not found.');
+  if (
+    (input.admissionPolicy || input.schedule || input.senderKeys) &&
+    campaign.status === 'running'
+  ) {
+    throw new Error(
+      'Pause the campaign before changing admission, schedule, or sender settings. Priority may be changed while running.'
+    );
+  }
+  const senderKeys = input.senderKeys
+    ? [...new Set(input.senderKeys.map((v) => v.trim()).filter(Boolean))]
+    : null;
+  if (senderKeys) {
+    if (senderKeys.length === 0) throw new Error('A campaign needs at least one sender.');
+    for (const key of senderKeys)
+      if (!(await getSeat(db, workspaceId, key)))
+        throw new Error(`LinkedIn account '${key}' is not configured.`);
+  }
+  const timestamp = now.toISOString();
+  await db
+    .prepare(
+      `UPDATE linkedin_campaigns SET
+       priority=COALESCE(?,priority),
+       admission_policy_json=COALESCE(?::jsonb,admission_policy_json),
+       sender_keys_json=COALESCE(?::jsonb,sender_keys_json),
+       seat_key=COALESCE(?,seat_key),
+       scheduled_start_at=CASE WHEN ?::boolean THEN ?::timestamptz ELSE scheduled_start_at END,
+       scheduled_end_at=CASE WHEN ?::boolean THEN ?::timestamptz ELSE scheduled_end_at END,
+       schedule_days_json=CASE WHEN ?::boolean THEN ?::jsonb ELSE schedule_days_json END,
+       schedule_start_minute=CASE WHEN ?::boolean THEN ? ELSE schedule_start_minute END,
+       schedule_end_minute=CASE WHEN ?::boolean THEN ? ELSE schedule_end_minute END,
+       end_behavior=COALESCE(?,end_behavior),updated_at=?
+     WHERE workspace_id=? AND id=?`
+    )
+    .run(
+      input.priority === undefined
+        ? null
+        : input.priority === 'high'
+          ? 1
+          : input.priority === 'low'
+            ? -1
+            : 0,
+      input.admissionPolicy === undefined ? null : JSON.stringify(input.admissionPolicy),
+      senderKeys === null ? null : JSON.stringify(senderKeys),
+      senderKeys?.[0] ?? null,
+      input.schedule?.startAt !== undefined,
+      input.schedule?.startAt ?? null,
+      input.schedule?.endAt !== undefined,
+      input.schedule?.endAt ?? null,
+      input.schedule?.workingDays !== undefined,
+      input.schedule?.workingDays === undefined ? null : JSON.stringify(input.schedule.workingDays),
+      input.schedule?.workStartMinute !== undefined,
+      input.schedule?.workStartMinute ?? null,
+      input.schedule?.workEndMinute !== undefined,
+      input.schedule?.workEndMinute ?? null,
+      input.schedule?.endBehavior ?? null,
+      timestamp,
+      workspaceId,
+      campaignId
+    );
+  return (await getManagedCampaign(db, workspaceId, campaignId)) as ManagedCampaign;
+}
+
+export async function duplicateManagedCampaign(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  name?: string,
+  now: Date = new Date()
+): Promise<{
+  campaign: ManagedCampaign;
+  enrolled: number;
+  skippedAlreadyActive: number;
+  excluded: number;
+}> {
+  const campaign = await getManagedCampaign(db, workspaceId, campaignId);
+  if (!campaign) throw new Error('Campaign not found.');
+  return createManagedCampaign(
+    db,
+    {
+      workspaceId,
+      name: (name?.trim() || `${campaign.name} copy`).slice(0, 120),
+      senderKeys: campaign.senderKeys,
+      leadListId: campaign.leadListId,
+      workflowId: campaign.workflowId,
+      priority: campaign.priority,
+      admissionPolicy: campaign.admissionPolicy,
+      exclusionPolicy: campaign.exclusionPolicy,
+      schedule: campaign.schedule
+    },
+    now
+  );
+}
+
+export interface CampaignMemberTimeline {
+  member: ManagedCampaignMember;
+  events: Array<{
+    at: string | null;
+    kind: 'wave' | 'action' | 'manual' | 'branch' | 'state';
+    label: string;
+    status?: string;
+    stepId?: string | null;
+    detail?: string | null;
+  }>;
+}
+
+export async function campaignMemberTimeline(
+  db: Db,
+  workspaceId: string,
+  memberId: string
+): Promise<CampaignMemberTimeline | null> {
+  const memberRow = await db
+    .prepare(
+      `SELECT m.id,m.campaign_id,m.contact_id,m.status,m.step_index,m.next_eligible_at,m.admitted_at,m.wave_id,w.ordinal AS wave_ordinal,
+            m.assigned_seat_key,m.assigned_variants,m.branch_state_json,m.last_action_id,m.exclusion_reason,m.last_failure_reason,
+            l.first_name,l.last_name,l.company,l.email,l.profile_url,l.custom_fields_json
+     FROM linkedin_campaign_members m JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
+     LEFT JOIN linkedin_campaign_waves w ON w.id=m.wave_id AND w.workspace_id=m.workspace_id
+     WHERE m.workspace_id=? AND m.id=?`
+    )
+    .get<MemberRow>(workspaceId, memberId);
+  if (!memberRow) return null;
+  const member = toMember(memberRow);
+  const events: CampaignMemberTimeline['events'] = [];
+  if (member.admittedAt)
+    events.push({
+      at: member.admittedAt,
+      kind: 'wave',
+      label: `Admitted${member.waveOrdinal ? ` in wave ${member.waveOrdinal}` : ''}`
+    });
+  const actions = await db
+    .prepare(
+      `SELECT kind,status,workflow_step_id,planned_for,recorded_at,failure_kind,external_ref
+     FROM linkedin_actions WHERE workspace_id=? AND campaign_member_id=? ORDER BY COALESCE(recorded_at,planned_for,created_at),created_at`
+    )
+    .all<{
+      kind: string;
+      status: string;
+      workflow_step_id: string | null;
+      planned_for: string | null;
+      recorded_at: string | null;
+      failure_kind: string | null;
+      external_ref: string | null;
+    }>(workspaceId, memberId);
+  for (const action of actions)
+    events.push({
+      at: action.recorded_at ?? action.planned_for,
+      kind: 'action',
+      label: action.kind.replaceAll('_', ' '),
+      status: action.status,
+      stepId: action.workflow_step_id,
+      detail: action.failure_kind ?? action.external_ref
+    });
+  const manuals = await db
+    .prepare(
+      `SELECT status,workflow_step_id,created_at,completed_at FROM linkedin_manual_tasks WHERE workspace_id=? AND member_id=? ORDER BY created_at`
+    )
+    .all<{
+      status: string;
+      workflow_step_id: string;
+      created_at: string;
+      completed_at: string | null;
+    }>(workspaceId, memberId);
+  for (const task of manuals)
+    events.push({
+      at: task.created_at,
+      kind: 'manual',
+      label: 'Manual checkpoint',
+      status: task.status,
+      stepId: task.workflow_step_id
+    });
+  for (const [key, value] of Object.entries(member.branchState)) {
+    if (!key.startsWith('branch:')) continue;
+    const obj =
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    events.push({
+      at: typeof obj.at === 'string' ? obj.at : null,
+      kind: 'branch',
+      label: `Branch ${String(obj.outcome ?? 'evaluated')}`,
+      stepId: key.slice(7),
+      detail: typeof obj.reason === 'string' ? obj.reason : null
+    });
+  }
+  if (member.exclusionReason)
+    events.push({
+      at: null,
+      kind: 'state',
+      label: 'Excluded',
+      status: 'excluded',
+      detail: member.exclusionReason
+    });
+  events.sort((a, b) => (a.at ?? '').localeCompare(b.at ?? ''));
+  return { member, events };
+}
+
+export async function endManagedCampaignMember(
+  db: Db,
+  workspaceId: string,
+  memberId: string,
+  outcome: 'completed' | 'excluded' | 'removed' = 'completed',
+  now: Date = new Date()
+): Promise<boolean> {
+  const timestamp = now.toISOString();
+  let changed = 0;
+  await db.transaction(async (tx) => {
+    const result = await tx
+      .prepare(
+        `UPDATE linkedin_campaign_members SET status=?,next_eligible_at=NULL,ended_at=?::timestamptz,updated_at=?::timestamptz
+       WHERE workspace_id=? AND id=? AND status IN ('pending','active','waiting','manual','paused')`
+      )
+      .run(outcome, timestamp, timestamp, workspaceId, memberId);
+    changed = result.changes;
+    if (changed > 0) {
+      await tx
+        .prepare(
+          `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL WHERE workspace_id=? AND campaign_member_id=? AND status IN ('planned','held') AND claimed_at IS NULL`
+        )
+        .run(workspaceId, memberId);
+      await tx
+        .prepare(
+          `UPDATE linkedin_manual_tasks SET status='cancelled' WHERE workspace_id=? AND member_id=? AND status='pending'`
+        )
+        .run(workspaceId, memberId);
+    }
+  });
+  return changed > 0;
+}
+
+export async function skipManagedCampaignMemberStep(
+  db: Db,
+  workspaceId: string,
+  memberId: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT campaign_id,step_index,status FROM linkedin_campaign_members WHERE workspace_id=? AND id=?`
+    )
+    .get<{ campaign_id: string; step_index: number; status: string }>(workspaceId, memberId);
+  if (!row || !['active', 'waiting', 'manual', 'paused'].includes(row.status)) return false;
+  const steps = await campaignWorkflowSteps(db, workspaceId, row.campaign_id);
+  const step = steps[Number(row.step_index)];
+  if (!step) return false;
+  const targetId = step.nextStepId === null ? null : step.nextStepId;
+  const nextIndex = targetId
+    ? steps.findIndex((s) => s.id === targetId)
+    : Number(row.step_index) + 1;
+  const next = nextIndex >= 0 && nextIndex < steps.length ? steps[nextIndex] : null;
+  const timestamp = now.toISOString();
+  await db.transaction(async (tx) => {
+    await tx
+      .prepare(
+        `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL WHERE workspace_id=? AND campaign_member_id=? AND workflow_step_id=? AND status IN ('planned','held') AND claimed_at IS NULL`
+      )
+      .run(workspaceId, memberId, step.id);
+    await tx
+      .prepare(
+        `UPDATE linkedin_campaign_members SET step_index=?,status=?,next_eligible_at=?::timestamptz,updated_at=?::timestamptz WHERE workspace_id=? AND id=?`
+      )
+      .run(
+        next ? nextIndex : steps.length,
+        next ? 'waiting' : 'completed',
+        next ? new Date(now.getTime() + delayMilliseconds(next.delayBefore)).toISOString() : null,
+        timestamp,
+        workspaceId,
+        memberId
+      );
+  });
+  return true;
 }
 
 export interface ManagedAnalytics {
