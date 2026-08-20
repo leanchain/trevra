@@ -17,6 +17,7 @@ import {
 import moduleCatalog from '../generated/public-modules.json';
 import { getPublicConfig } from './api';
 import { trackEvent } from './analytics';
+import { FAQ_ITEMS } from '../shared/site-metadata';
 
 const REPO_URL = 'https://github.com/leanchain/trevra';
 const FOUNDER_FALLBACK = 'founder@usetrevra.com';
@@ -643,6 +644,17 @@ docker compose --env-file .env.dev \\
               <ModuleRow module={module} key={module.id} />
             ))}
           </ul>
+        </details>
+        <details className="deploy-faq">
+          <summary>Questions</summary>
+          <div className="deploy-faq-list">
+            {FAQ_ITEMS.map(({ question, answer }) => (
+              <div className="deploy-faq-item" key={question}>
+                <h4>{question}</h4>
+                <p>{answer}</p>
+              </div>
+            ))}
+          </div>
         </details>
         <div className="deploy-close">
           <div className="launch-actions">

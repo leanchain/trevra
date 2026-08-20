@@ -1465,6 +1465,53 @@ html:has(.static-launch) {
 .deploy-modules .module-list {
   margin-top: 16px;
 }
+
+.deploy-faq {
+  margin-top: 10px;
+}
+.deploy-faq > summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--t-tap);
+  padding: 0 18px;
+  border: 1px solid var(--launch-line);
+  border-radius: var(--t-r-sm);
+  background: color-mix(in srgb, var(--launch-surface) 75%, transparent);
+  color: var(--launch-muted);
+  list-style: none;
+  cursor: pointer;
+  font-size: var(--t-text-sm);
+  font-weight: var(--t-w-strong);
+}
+.deploy-faq > summary::-webkit-details-marker {
+  display: none;
+}
+.deploy-faq > summary:hover {
+  border-color: var(--launch-line-strong);
+  color: var(--launch-ink);
+}
+.deploy-faq[open] > summary {
+  border-color: var(--launch-green);
+  color: var(--launch-green);
+}
+.deploy-faq-list {
+  margin-top: 16px;
+  display: grid;
+  gap: 20px;
+}
+.deploy-faq-item h4 {
+  margin-bottom: 6px;
+  color: var(--launch-ink);
+  font-size: var(--t-text-md);
+  font-weight: var(--t-w-strong);
+}
+.deploy-faq-item p {
+  max-width: var(--t-measure);
+  margin: 0;
+  color: var(--launch-muted);
+  font-size: var(--t-text-sm);
+  line-height: 1.7;
+}
 .deploy-close {
   display: flex;
   justify-content: center;
