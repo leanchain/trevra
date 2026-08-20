@@ -491,7 +491,13 @@ export function renderAppIndex(template: string, nonce: string): string {
  */
 function reinjectMarketingHead(html: string, verification: string, jsonLdScript: string): string {
   const injected = /<script\s+type="application\/ld\+json"[^>]*>[\s\S]*?<\/script>/;
-  if (!injected.test(html)) return html;
+  // Neither a marker nor a prior block: a template that lost both. Append
+  // rather than return unchanged, so no shape of index.html can reach a
+  // reader without structured data.
+  if (!injected.test(html)) {
+    const head = verification ? `${verification}\n    ${jsonLdScript}` : jsonLdScript;
+    return html.replace('</head>', `${head}\n  </head>`);
+  }
   return html
     .replace(/[ \t]*<meta\s+name="google-site-verification"[^>]*>\n?/gi, '')
     .replace(/[ \t]*<meta\s+name="msvalidate\.01"[^>]*>\n?/gi, '')

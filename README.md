@@ -162,7 +162,7 @@ After Nango starts, configure its provider integrations and copy the Nango envir
 docker compose --env-file .env.dev -f compose.dev.yml up -d --force-recreate trevra
 ```
 
-Until those Nango keys are configured, the core Trevra demo, document import, marketplace import, recommendations, Proof Packs, and simulated development execution still work; live OAuth connections do not.
+Until those Nango keys are configured, the core Trevra demo, document import, marketplace import, recommendations, and simulated development execution still work; live OAuth connections do not.
 
 Stop the stack without deleting data:
 
