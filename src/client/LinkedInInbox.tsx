@@ -39,7 +39,7 @@ import {
   type LinkedInThreadRecord
 } from './api';
 import type { ManagedCampaign, ManualTaskView } from '../server/linkedin/managed-campaigns';
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { errorMessage, reloadOutreach, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 import { DELAY_CHOICES, plannedForFrom, queueWaitCopy, type ScheduleMode } from './LinkedInTiming';

@@ -65,7 +65,7 @@ import {
   type WorkspaceErasurePreview
 } from './api';
 import { authClient, useIsWorkspaceOwner } from './auth-client';
-import { ActiveLinkedInAccountName } from './LinkedInAccounts';
+import { ActiveLinkedInAccountName } from './LinkedInActiveAccount';
 import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions, relativeTime } from './LinkedInScreen';
 import { TeamSettingsView } from './TeamScreen';

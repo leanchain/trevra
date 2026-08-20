@@ -28,7 +28,7 @@ import {
   type LinkedInLead,
   type LinkedInLeadSource
 } from './api';
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { errorMessage, stageTargets, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 import { formatVisitWindow, queueWaitCopy } from './LinkedInTiming';

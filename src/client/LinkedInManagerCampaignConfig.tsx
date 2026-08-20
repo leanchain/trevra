@@ -18,7 +18,7 @@ import {
   type LinkedInLimitsReport
 } from './api';
 import { effectiveDailyCeiling } from '../server/linkedin/limits';
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { LinkedInManagerLeadConfig } from './LinkedInManagerLeadConfig';
 import { LinkedInManagerWorkflowConfig } from './LinkedInManagerWorkflowConfig';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';

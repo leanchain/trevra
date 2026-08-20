@@ -58,7 +58,7 @@ import {
   type ManagedKind
 } from './LinkedInManagerCampaignConfig';
 import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
-import { useActiveSeatKey } from './LinkedInAccounts';
+import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { ConfirmDrawer } from './ui/dialog';
 
 /**
