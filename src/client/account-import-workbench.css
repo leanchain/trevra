@@ -1,0 +1,200 @@
+.acc-import-workbench {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  overflow: hidden;
+  background: var(--panel);
+}
+.acc-import-workbench-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.acc-import-workbench-head h4 {
+  margin: 0 0 4px;
+  font-size: var(--t-text-md);
+}
+.acc-import-workbench-head p {
+  margin: 0;
+}
+.acc-import-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.acc-import-stats span {
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-pill);
+  padding: 4px 9px;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  white-space: nowrap;
+}
+.acc-import-stats strong {
+  color: var(--ink);
+}
+.acc-import-notice {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--amber-bg);
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  line-height: 1.5;
+}
+.acc-import-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--t-surface-2);
+}
+.acc-import-filters,
+.acc-import-bulk {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.acc-import-filters button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-pill);
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: var(--t-text-chip);
+  cursor: pointer;
+}
+.acc-import-filters button.is-active {
+  border-color: var(--green);
+  background: var(--green-3);
+  color: var(--green);
+}
+.acc-import-bulk .ghost-button {
+  min-height: 30px;
+  padding: 0 9px;
+}
+.acc-import-table {
+  max-height: 560px;
+  overflow: auto;
+}
+.acc-import-table-head,
+.acc-import-review-row {
+  display: grid;
+  grid-template-columns: 72px minmax(170px, 1.2fr) minmax(150px, 1fr) minmax(180px, 1.15fr) minmax(
+      200px,
+      1.35fr
+    );
+  gap: 10px;
+  align-items: start;
+  min-width: 960px;
+}
+.acc-import-table-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.acc-import-review-row {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.acc-import-review-row:last-child {
+  border-bottom: 0;
+}
+.acc-import-review-row.has-issue {
+  background: var(--amber-bg);
+}
+.acc-import-review-row label,
+.acc-import-stack-fields {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.acc-import-review-row input[type='text'],
+.acc-import-review-row input:not([type]),
+.acc-import-stack-fields input {
+  width: 100%;
+  min-width: 0;
+}
+.acc-import-check {
+  align-content: start;
+  justify-items: start;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+}
+.acc-import-check input {
+  margin: 2px 0 0;
+}
+.acc-import-field-meta {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  line-height: 1.35;
+}
+.acc-import-issue {
+  color: var(--amber);
+  font-size: var(--t-text-chip);
+  line-height: 1.35;
+}
+.acc-import-evidence {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--t-text-chip);
+}
+.acc-import-evidence > code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.acc-import-evidence details summary {
+  cursor: pointer;
+  color: var(--green);
+}
+.acc-import-evidence details p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.acc-import-evidence .li-link {
+  justify-self: start;
+  padding: 0;
+}
+.acc-import-raw {
+  border-top: 1px solid var(--line);
+  padding: 10px 14px 14px;
+}
+.acc-import-raw > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.acc-import-raw textarea {
+  width: 100%;
+  margin-top: 10px;
+  font-family: var(--t-mono);
+  font-size: var(--t-text-chip);
+}
+@media (max-width: 760px) {
+  .acc-import-workbench-head,
+  .acc-import-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .acc-import-stats {
+    justify-content: flex-start;
+  }
+}

@@ -32,7 +32,11 @@ No downstream GTM code should need to know whether an account came from a CSV, a
 
 The browser accepts `.csv`, `.json`, and `.txt` files up to 5 MB. A chosen or dropped file is read into the visible text area before import; Trevra does not silently turn a file into rows behind the operator's back.
 
-The account screen also has **Choose folder**. Folder import is intentionally client-side: Trevra scans small JSON manifests locally, extracts only objects with a top-level `domain`, `website`, `url`, or `site`, deduplicates them, and places the compact account JSON in the same visible text area. Product/catalog artifacts beside those manifests are ignored and never uploaded.
+The account screen also has **Choose folder**. Folder import is intentionally client-side: Trevra scans small JSON manifests locally and opens an **Import Review** workbench before anything is written. The operator can edit domain, name, platform, and tags; include or exclude rows; filter rows that need review; inspect the exact source file/field for detected values; reset edits; and inspect the exact JSON payload that will be submitted.
+
+Duplicate or invalid domains are not silently discarded. They remain visible in the review and are excluded by default until corrected. Product/catalog artifacts beside company manifests are ignored and never uploaded. Values are either exact source fields or explicit operator edits; the workbench does not invent company names or other missing values.
+
+If a manifest contains contact names, emails, or phones, the review shows that evidence and its source. The current account import does not persist contacts yet, so the UI says so explicitly rather than implying those fields were written.
 
 This is the preferred migration path for an existing artifact tree such as `e-commerce/shops/`. In that tree, `shops/domains/<domain>/domain_summary.json` already carries a top-level `domain`, so selecting the whole `shops` folder is enough. Trevra does **not** need a Beseam candidates API and does not copy the `shops/` storage model into its core.
 

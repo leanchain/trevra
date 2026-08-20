@@ -23,9 +23,16 @@ import {
   type AccountSourceRunResult,
   type RankedAccount
 } from './api';
+import './account-import-workbench.css';
 import { errorMessage } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
-import { prepareAccountFiles } from './account-file-import';
+import {
+  prepareAccountFiles,
+  reviewPreparedRows,
+  serializePreparedAccountRows,
+  type PreparedAccountFiles,
+  type PreparedAccountRow
+} from './account-file-import';
 
 /**
  * A fold on `/outreach` ("Target accounts") -- the ranked target-company list,
@@ -122,6 +129,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
   /** The last import, kept on screen until the next one replaces it. */
   const [result, setResult] = useState<AccountImportResult | null>(null);
   const [fileSummary, setFileSummary] = useState('');
+  const [preparedFiles, setPreparedFiles] = useState<PreparedAccountFiles | null>(null);
   const [sourceProviders, setSourceProviders] = useState<AccountSourceProvider[]>([]);
   const [sourceProvider, setSourceProvider] = useState('directory');
   const [sourceKeywords, setSourceKeywords] = useState('');
@@ -174,14 +182,20 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
   }, []);
 
   const runImport = async () => {
-    if (!text.trim()) {
-      setError('Paste a company list or choose a file/folder first.');
+    const importText = preparedFiles?.rows.length
+      ? serializePreparedAccountRows(preparedFiles.rows)
+      : text;
+    if (
+      !importText.trim() ||
+      (preparedFiles?.rows.length && !preparedFiles.rows.some((row) => row.included))
+    ) {
+      setError('Include at least one valid account before importing.');
       return;
     }
     setImporting(true);
     setError('');
     try {
-      const imported = await importAccounts({ text, source });
+      const imported = await importAccounts({ text: importText, source });
       setResult(imported);
       setShowAddMore(true);
       // The paste is cleared only when something came of it. A list that was
@@ -189,6 +203,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       if (imported.created > 0) {
         setText('');
         setFileSummary('');
+        setPreparedFiles(null);
       }
       setToast(
         imported.created > 0
@@ -215,10 +230,12 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       const prepared = await prepareAccountFiles(files, mode);
       setText(prepared.text);
       setFileSummary(prepared.summary);
+      setPreparedFiles(prepared.rows.length > 0 ? prepared : null);
       setSource('csv');
       setError('');
     } catch (err) {
       setFileSummary('');
+      setPreparedFiles(null);
       setError(errorMessage(err, 'Could not read that upload.'));
     }
   };
@@ -368,6 +385,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
                 setText={(value) => {
                   setText(value);
                   setFileSummary('');
+                  setPreparedFiles(null);
                 }}
                 importing={importing}
                 source={source}
@@ -375,6 +393,11 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
                 onDrop={onDrop}
                 onFiles={(files, mode) => void readImportFiles(files, mode)}
                 fileSummary={fileSummary}
+                preparedFiles={preparedFiles}
+                onPreparedChange={(prepared) => {
+                  setPreparedFiles(prepared);
+                  setText(serializePreparedAccountRows(prepared.rows));
+                }}
                 runImport={runImport}
                 heading="Add more accounts"
                 subheading="Paste a list, choose a file, or choose a folder. Existing accounts are skipped."
@@ -390,6 +413,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
             setText={(value) => {
               setText(value);
               setFileSummary('');
+              setPreparedFiles(null);
             }}
             importing={importing}
             source={source}
@@ -397,6 +421,11 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
             onDrop={onDrop}
             onFiles={(files, mode) => void readImportFiles(files, mode)}
             fileSummary={fileSummary}
+            preparedFiles={preparedFiles}
+            onPreparedChange={(prepared) => {
+              setPreparedFiles(prepared);
+              setText(serializePreparedAccountRows(prepared.rows));
+            }}
             runImport={runImport}
             heading="Start with the list you already have"
             subheading="Paste a list, choose a file, or choose a folder. Accounts are scored after their sites are read."
@@ -437,12 +466,6 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
   );
 }
 
-/**
- * The paste-a-list-of-domains form itself, shared by the always-open empty
- * state ("start with the list you already have") and the collapsed "Add more
- * accounts" toggle once there is already a ranked list on screen -- same
- * inputs, same import call, only the surrounding chrome differs.
- */
 function AddAccountsForm({
   text,
   setText,
@@ -452,6 +475,8 @@ function AddAccountsForm({
   onDrop,
   onFiles,
   fileSummary,
+  preparedFiles,
+  onPreparedChange,
   runImport,
   heading,
   subheading
@@ -464,10 +489,14 @@ function AddAccountsForm({
   onDrop: (event: React.DragEvent<HTMLTextAreaElement>) => void;
   onFiles: (files: File[], mode: 'file' | 'folder') => void;
   fileSummary: string;
+  preparedFiles: PreparedAccountFiles | null;
+  onPreparedChange: (prepared: PreparedAccountFiles) => void;
   runImport: () => void;
   heading: string;
   subheading: string;
 }) {
+  const hasWorkbench = Boolean(preparedFiles?.rows.length);
+  const included = preparedFiles?.rows.filter((row) => row.included).length ?? 0;
   return (
     <>
       <div className="section-heading">
@@ -478,18 +507,21 @@ function AddAccountsForm({
         <FileUp size={20} className="li-heading-icon" />
       </div>
 
-      <label className="li-block-label acc-paste">
-        Paste domains, CSV, or JSON — or drop a file
-        <textarea
-          rows={7}
-          value={text}
-          disabled={importing}
-          onChange={(event) => setText(event.target.value)}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => void onDrop(event)}
-          placeholder={'kestrel.dev\nacme.io\nhttps://www.northwind.co.uk/pricing'}
-        />
-      </label>
+      {!hasWorkbench && (
+        <label className="li-block-label acc-paste">
+          Paste domains, CSV, or JSON — or drop a file
+          <textarea
+            rows={7}
+            value={text}
+            disabled={importing}
+            onChange={(event) => setText(event.target.value)}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => void onDrop(event)}
+            placeholder={'kestrel.dev\nacme.io\nhttps://www.northwind.co.uk/pricing'}
+          />
+        </label>
+      )}
+
       <div className="acc-file-row">
         <label className="secondary-button acc-file-button">
           <FileUp size={14} /> Choose file
@@ -524,11 +556,24 @@ function AddAccountsForm({
           />
         </label>
         <span className="li-hint">
-          File: CSV, JSON, TXT · Folder: company JSON manifests are detected locally
+          File: CSV, JSON, TXT · Folder: company manifests are reviewed locally before import
         </span>
       </div>
-      {fileSummary && <p className="li-hint acc-file-summary">{fileSummary}</p>}
-      <p className="li-hint">URLs are normalized to the domain. Existing accounts are skipped.</p>
+
+      {preparedFiles?.rows.length ? (
+        <ImportWorkbench
+          prepared={preparedFiles}
+          disabled={importing}
+          onChange={onPreparedChange}
+        />
+      ) : (
+        <>
+          {fileSummary && <p className="li-hint acc-file-summary">{fileSummary}</p>}
+          <p className="li-hint">
+            URLs are normalized to the domain. Existing accounts are skipped.
+          </p>
+        </>
+      )}
 
       <div className="li-form-grid acc-import-grid">
         <label>
@@ -550,21 +595,349 @@ function AddAccountsForm({
 
       <div className="panel-footer">
         <span>
-          {!text.trim()
-            ? 'Paste at least one domain to enable import.'
-            : 'Import adds accounts. It does not contact anyone.'}
+          {hasWorkbench
+            ? `${included} reviewed account(s) will be imported. Nothing is contacted.`
+            : !text.trim()
+              ? 'Paste at least one domain to enable import.'
+              : 'Import adds accounts. It does not contact anyone.'}
         </span>
         <button
           className="primary-button"
           type="button"
-          disabled={importing || !text.trim()}
+          disabled={importing || (hasWorkbench ? included === 0 : !text.trim())}
           onClick={() => void runImport()}
         >
-          {importing ? <LoaderCircle className="spin" size={15} /> : <Building2 size={15} />} Import
-          this list
+          {importing ? <LoaderCircle className="spin" size={15} /> : <Building2 size={15} />} Import{' '}
+          {hasWorkbench ? `${included} reviewed` : 'this list'}
         </button>
       </div>
     </>
+  );
+}
+
+function ImportWorkbench({
+  prepared,
+  disabled,
+  onChange
+}: {
+  prepared: PreparedAccountFiles;
+  disabled: boolean;
+  onChange: (prepared: PreparedAccountFiles) => void;
+}) {
+  const [filter, setFilter] = useState<'all' | 'issues' | 'excluded'>('all');
+  const rows = prepared.rows;
+  const issueCount = rows.filter((row) => row.issues.length > 0).length;
+  const excludedCount = rows.filter((row) => !row.included).length;
+  const includedCount = rows.length - excludedCount;
+  const contactRows = rows.filter(
+    (row) =>
+      row.contactEvidence.names.length +
+        row.contactEvidence.emails.length +
+        row.contactEvidence.phones.length >
+      0
+  ).length;
+  const visibleRows = rows.filter((row) => {
+    if (filter === 'issues') return row.issues.length > 0;
+    if (filter === 'excluded') return !row.included;
+    return true;
+  });
+
+  const commitRows = (nextRows: PreparedAccountRow[]) => {
+    const reviewed = reviewPreparedRows(nextRows);
+    onChange({
+      ...prepared,
+      rows: reviewed,
+      accountCount: reviewed.filter((row) => row.included).length,
+      text: serializePreparedAccountRows(reviewed)
+    });
+  };
+
+  const editRow = (
+    row: PreparedAccountRow,
+    field: 'domain' | 'name' | 'platform' | 'linkedinUrl' | 'tags',
+    value: string
+  ) => {
+    const nextRows = rows.map((current) => {
+      if (current.id !== row.id) return current;
+      const editedFields = current.editedFields.includes(field)
+        ? current.editedFields
+        : [...current.editedFields, field];
+      const patch =
+        field === 'tags'
+          ? {
+              tags: value
+                .split(',')
+                .map((tag) => tag.trim())
+                .filter(Boolean)
+            }
+          : { [field]: value };
+      return {
+        ...current,
+        ...patch,
+        editedFields,
+        ...(field === 'domain' && current.issues.length > 0 ? { included: true } : {})
+      } as PreparedAccountRow;
+    });
+    commitRows(nextRows);
+  };
+
+  const resetRow = (row: PreparedAccountRow) => {
+    commitRows(
+      rows.map((current) =>
+        current.id === row.id
+          ? {
+              ...current,
+              ...current.original,
+              tags: [...current.original.tags],
+              included: true,
+              editedFields: []
+            }
+          : current
+      )
+    );
+  };
+
+  const setVisibleIncluded = (included: boolean) => {
+    const visible = new Set(visibleRows.map((row) => row.id));
+    commitRows(rows.map((row) => (visible.has(row.id) ? { ...row, included } : row)));
+  };
+
+  return (
+    <section className="acc-import-workbench" aria-label="Import review">
+      <div className="acc-import-workbench-head">
+        <div>
+          <h4>Review import</h4>
+          <p className="li-hint">{prepared.summary}</p>
+        </div>
+        <div className="acc-import-stats" aria-label="Import counts">
+          <span>
+            <strong>{includedCount}</strong> included
+          </span>
+          <span>
+            <strong>{issueCount}</strong> need review
+          </span>
+          <span>
+            <strong>{excludedCount}</strong> excluded
+          </span>
+        </div>
+      </div>
+
+      {contactRows > 0 && (
+        <div className="acc-import-notice">
+          <strong>Contact evidence detected in {contactRows} row(s).</strong> Names, emails, and
+          phones are shown with their source, but this account import does not write contacts yet.
+        </div>
+      )}
+
+      <div className="acc-import-toolbar">
+        <div className="acc-import-filters" role="group" aria-label="Review filter">
+          <button
+            type="button"
+            className={filter === 'all' ? 'is-active' : ''}
+            onClick={() => setFilter('all')}
+          >
+            All {rows.length}
+          </button>
+          <button
+            type="button"
+            className={filter === 'issues' ? 'is-active' : ''}
+            onClick={() => setFilter('issues')}
+          >
+            Needs review {issueCount}
+          </button>
+          <button
+            type="button"
+            className={filter === 'excluded' ? 'is-active' : ''}
+            onClick={() => setFilter('excluded')}
+          >
+            Excluded {excludedCount}
+          </button>
+        </div>
+        <div className="acc-import-bulk">
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={disabled || visibleRows.length === 0}
+            onClick={() => setVisibleIncluded(true)}
+          >
+            Include shown
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={disabled || visibleRows.length === 0}
+            onClick={() => setVisibleIncluded(false)}
+          >
+            Exclude shown
+          </button>
+        </div>
+      </div>
+
+      <div className="acc-import-table" role="table" aria-label="Detected accounts">
+        <div className="acc-import-table-head" role="row">
+          <span>Use</span>
+          <span>Domain</span>
+          <span>Name</span>
+          <span>Platform / tags</span>
+          <span>Evidence</span>
+        </div>
+        {visibleRows.map((row) => {
+          const contactBits = [
+            row.contactEvidence.names.length ? `${row.contactEvidence.names.length} name(s)` : '',
+            row.contactEvidence.emails.length
+              ? `${row.contactEvidence.emails.length} email(s)`
+              : '',
+            row.contactEvidence.phones.length ? `${row.contactEvidence.phones.length} phone(s)` : ''
+          ].filter(Boolean);
+          return (
+            <div
+              className={`acc-import-review-row${row.issues.length ? ' has-issue' : ''}`}
+              role="row"
+              key={row.id}
+            >
+              <label className="acc-import-check">
+                <input
+                  type="checkbox"
+                  checked={row.included}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    commitRows(
+                      rows.map((current) =>
+                        current.id === row.id
+                          ? { ...current, included: event.target.checked }
+                          : current
+                      )
+                    )
+                  }
+                />
+                <span>{row.included ? 'Include' : 'Skip'}</span>
+              </label>
+              <label>
+                <span className="acc-import-field-meta">
+                  Domain ·{' '}
+                  {row.editedFields.includes('domain')
+                    ? `Edited · was ${row.original.domain}`
+                    : `Exact: ${row.sourceFields.domain}`}
+                </span>
+                <input
+                  value={row.domain}
+                  disabled={disabled}
+                  onChange={(event) => editRow(row, 'domain', event.target.value)}
+                />
+                {row.issues.map((issue) => (
+                  <small className="acc-import-issue" key={issue}>
+                    {issue}
+                  </small>
+                ))}
+              </label>
+              <label>
+                <span className="acc-import-field-meta">
+                  Name ·{' '}
+                  {row.editedFields.includes('name')
+                    ? `Edited · was ${row.original.name || 'empty'}`
+                    : row.sourceFields.name
+                      ? `Exact: ${row.sourceFields.name}`
+                      : 'Optional'}
+                </span>
+                <input
+                  value={row.name}
+                  disabled={disabled}
+                  placeholder="Optional"
+                  onChange={(event) => editRow(row, 'name', event.target.value)}
+                />
+              </label>
+              <div className="acc-import-stack-fields">
+                <label>
+                  <span className="acc-import-field-meta">
+                    Platform ·{' '}
+                    {row.editedFields.includes('platform')
+                      ? `Edited · was ${row.original.platform || 'empty'}`
+                      : row.sourceFields.platform
+                        ? `Exact: ${row.sourceFields.platform}`
+                        : 'Optional'}
+                  </span>
+                  <input
+                    value={row.platform}
+                    disabled={disabled}
+                    placeholder="Optional"
+                    onChange={(event) => editRow(row, 'platform', event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span className="acc-import-field-meta">
+                    Tags ·{' '}
+                    {row.editedFields.includes('tags')
+                      ? `Edited · was ${row.original.tags.join(', ') || 'empty'}`
+                      : row.sourceFields.tags
+                        ? `Exact: ${row.sourceFields.tags}`
+                        : 'Optional'}
+                  </span>
+                  <input
+                    value={row.tags.join(', ')}
+                    disabled={disabled}
+                    placeholder="comma, separated"
+                    onChange={(event) => editRow(row, 'tags', event.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="acc-import-evidence">
+                <code title={row.sourcePath}>{row.sourcePath}</code>
+                {(row.linkedinUrl || row.sourceFields.linkedinUrl) && (
+                  <label>
+                    <span className="acc-import-field-meta">
+                      LinkedIn ·{' '}
+                      {row.editedFields.includes('linkedinUrl')
+                        ? `Edited · was ${row.original.linkedinUrl || 'empty'}`
+                        : `Exact: ${row.sourceFields.linkedinUrl}`}
+                    </span>
+                    <input
+                      value={row.linkedinUrl}
+                      disabled={disabled}
+                      onChange={(event) => editRow(row, 'linkedinUrl', event.target.value)}
+                    />
+                  </label>
+                )}
+                {contactBits.length > 0 && (
+                  <details>
+                    <summary>{contactBits.join(' · ')}</summary>
+                    {row.contactEvidence.names.length > 0 && (
+                      <p>
+                        <strong>Names:</strong> {row.contactEvidence.names.join(', ')}
+                      </p>
+                    )}
+                    {row.contactEvidence.emails.length > 0 && (
+                      <p>
+                        <strong>Emails:</strong> {row.contactEvidence.emails.join(', ')}
+                      </p>
+                    )}
+                    {row.contactEvidence.phones.length > 0 && (
+                      <p>
+                        <strong>Phones:</strong> {row.contactEvidence.phones.join(', ')}
+                      </p>
+                    )}
+                  </details>
+                )}
+                {row.editedFields.length > 0 && (
+                  <button
+                    type="button"
+                    className="li-link"
+                    disabled={disabled}
+                    onClick={() => resetRow(row)}
+                  >
+                    Reset row
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <details className="acc-import-raw">
+        <summary>View exact import payload</summary>
+        <textarea readOnly rows={10} value={serializePreparedAccountRows(rows)} />
+      </details>
+    </section>
   );
 }
 

@@ -306,12 +306,13 @@ Target migration path:
 e-commerce/shops/
   -> browser Choose folder
   -> local manifest scan
-  -> compact { accounts: [...] } preview
+  -> editable Import Review with provenance
+  -> confirmed compact { accounts: [...] } payload
   -> POST /api/accounts/import
   -> accounts
 ```
 
-The browser does not upload every product, collection, page, or crawl artifact. It reads likely small JSON manifests locally, extracts only top-level company identities, ignores unrelated artifacts, and submits the compact account list through Trevra's normal import path.
+The browser does not upload every product, collection, page, or crawl artifact. It reads likely small JSON manifests locally, extracts only top-level company identities, ignores unrelated artifacts, and opens a review table before import. Invalid/duplicate domains remain visible, exact source file/field provenance is shown, operator edits are explicit and resettable, and only included rows are serialized through Trevra's normal account import path.
 
 This keeps Trevra generic: the importer recognizes company-shaped JSON rather than a Beseam directory schema. `domain_summary.json` works because it already satisfies that generic contract, not because Trevra knows what a Beseam shop is.
 
