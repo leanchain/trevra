@@ -1,9 +1,11 @@
 # AGENTS.md — Trevra repository guidance
 
 ## Product
+
 Trevra is the evidence-backed ledger and control plane for agent-operated go-to-market, aimed at founders. Preserve the core boundary: models interpret commercial content, deterministic software controls money, permissions, state transitions, approvals, and external execution.
 
 ## Architecture
+
 - `src/client`: React work console and public conversion surface.
 - `src/server`: Express API, Better Auth, PostgreSQL data access, commercial intelligence, integrations, durable playbooks, policy evaluation, append-only events, automation, and public discovery routes.
 - `migrations`: forward-only PostgreSQL migrations. Never add a SQLite runtime path.
@@ -17,16 +19,19 @@ Trevra is the evidence-backed ledger and control plane for agent-operated go-to-
 - `infra/gcp`: Cloud Run, Cloud SQL, Secret Manager, and self-hosted Nango deployment material.
 
 ## Client routing
+
 - **Screens are addressed by PATH, never by hash.** `/outreach/inbox`, not `#/outreach/inbox`. `src/client/ui/route.ts` is the only router; it reads `location.pathname` and moves with `history.pushState`.
-- **`#` means one thing: scroll to an element on the page you are already on.** The marketing page in `index.html` owns those anchors (`#hosted`, `#approval`, `#modules`). No screen may read or write `location.hash`.
+- **`#` means one thing: scroll to an element on the page you are already on.** The marketing page in `index.html` owns those anchors (`#hosted`, `#approval`, `#deploy`). No screen may read or write `location.hash`.
 - In-app links are plain `<a href="/outreach/inbox">`. A document-level interceptor in `ui/route.ts` catches them; there is no `<Link>` component and none is needed.
 - Adding a route means adding it in three places that must agree: `SECTIONS`/`SUB_ROUTES`/`SHELL_PATHS` in `src/client/ui/route.ts`, and `APP_PATH_HEADS` in `src/server/index.ts` so a reload of that URL serves the app instead of a 404.
 - `src/client/ui/route.test.ts` fails the suite on any `#/` route literal or `location.hash` use in `src/client`. If it fires, the fix is the code, not the test.
 
 ## Required checks
+
 Run `npm run check` before committing. Tests use a real PostgreSQL Testcontainer. Also run `npm audit --omit=dev`, `docker compose config`, and `terraform validate` when touching dependencies or infrastructure.
 
 ## Data safety
+
 - Scope every commercial query by workspace.
 - Use PostgreSQL transactions for multi-step writes and row locks for competing executions.
 - Keep provider credentials in Nango or Secret Manager, never application tables or source control.
@@ -35,6 +40,7 @@ Run `npm run check` before committing. Tests use a real PostgreSQL Testcontainer
 - Analytics must not contain client content, email bodies, document text, invoice details, or IP addresses.
 
 ## Public discoverability
+
 - Canonical public copy and machine resources are implemented in `src/server/public-site.ts`.
 - The crawlable initial HTML is `index.html`; keep its visible FAQ consistent with JSON-LD.
 - Keep `/robots.txt`, `/sitemap.xml`, `/llms.txt`, `/llms-full.txt`, `/agents.md`, and `/.well-known/security.txt` public.
@@ -42,4 +48,5 @@ Run `npm run check` before committing. Tests use a real PostgreSQL Testcontainer
 - Add meaningful pages to the sitemap only when they contain distinct public value.
 
 ## Integrations
+
 Do not rebuild OAuth, token rotation, rate-limit handling, or sync storage. Use Nango or official provider SDKs. Trevra owns normalization, source provenance, proof packs, policy, and outcomes.

@@ -610,8 +610,7 @@ ${siteFooter(config)}
  * same nav works on the static deploy target, where these sections are the
  * only place `/how-it-works` and `/security` exist.
  */
-const SITE_LINKS =
-  '<a href="/#how-it-works">How it runs</a><a href="/#approval">The gate</a><a href="/#modules">Catalog</a><a href="/#deploy">Deploy</a>';
+const SITE_LINKS = '<a href="/#approval">The gate</a><a href="/#deploy">Deploy</a>';
 
 /** Below 1050px `.launch-nav > nav` is hidden, so the links live here instead. */
 const MENU_ICON =
