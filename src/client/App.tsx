@@ -677,7 +677,7 @@ function AuthScreen({
       window.history.replaceState(
         null,
         '',
-        `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`
+        `${window.location.pathname}${query ? `?${query}` : ''}`
       );
     }
   }, []);

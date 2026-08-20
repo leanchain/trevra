@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Check,
   CheckCircle2,
@@ -9,7 +10,8 @@ import {
   LoaderCircle,
   RefreshCw,
   ShieldCheck,
-  Workflow
+  Workflow,
+  X
 } from 'lucide-react';
 import type { AgentRunSummary, PlaybookRun } from '../../shared/types';
 import {
@@ -23,6 +25,7 @@ import {
   type LedgerExportRecord,
   type LedgerExportSection
 } from '../api';
+import { useDialog } from '../ui/dialog';
 import {
   FieldList,
   RunInspector,
@@ -36,14 +39,8 @@ import {
 /* --------------------------------------------------------------------------
  * `/ledger` -- the thing the landing page sells.
  *
- * "Complete run ledger" and "Exportable ledger and evidence" are two of the
- * headline claims on the marketing site, and until now the app had no screen
- * by that name: the run list lived at the bottom of a screen called Activity,
- * under a marketing sentence about autopilot, behind a playbook launcher that
- * `docs/app-spec.md` §4 had already ruled was not the front door.
- *
- * The launcher is gone. The hero went too. What is left is the list, its
- * inspector, and the control that earns the export claim.
+ * "Complete run ledger" and "Exportable ledger and evidence" are headline claims
+ * on the marketing site.
  * -------------------------------------------------------------------------- */
 
 type ActivityRow =
@@ -167,81 +164,64 @@ export function LedgerView({
 
   return (
     <div className="page-stack">
-      {/* Closed on first render: exporting is not what most visits to the ledger
-      are for, and mounting the panel only once opened means its own history
-      fetch does not fire until someone asks for it. */}
-      <details
-        className="mgr-inputs"
-        open={exportOpen}
-        onToggle={(event) => setExportOpen(event.currentTarget.open)}
-      >
-        <summary>
-          <FileDown size={13} /> Export ledger{' '}
-          <span>{(runs.length + agentRuns.length).toLocaleString('en-US')} runs available</span>
-        </summary>
-        <div className="mgr-inputs-body">
-          {exportOpen && (
-            <LedgerExportPanel
-              counts={{ jobs: runs.length, agent: agentRuns.length }}
-              setToast={setToast}
-            />
-          )}
-        </div>
-      </details>
-
-      {/* ONE ROW FOR ALL OF IT. The title, the sentence under it and three
-          filter groups each on a line of their own pushed the first run about
-          two hundred pixels down the page, on the screen whose entire content
-          is that list. The groups keep their labels and their own
-          `role="group"`, so what a screen reader hears is unchanged. */}
+      {/* Control bar: Title, filter dropdowns, Refresh, and Export modal trigger */}
       <section className="page-panel ledger-bar">
-        <h3 aria-level={2}>Every run</h3>
-        <div className="li-filter-row" role="group" aria-label="Which runs to show">
-          <span className="li-filter-label">Status</span>
-          {STATUS_FILTERS.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              className={`li-range ${status === entry.id ? 'is-active' : ''}`}
-              aria-pressed={status === entry.id}
-              onClick={() => setStatus(entry.id)}
-            >
-              {entry.label}
-            </button>
-          ))}
+        <div className="ledger-title-group">
+          <h3 aria-level={2}>Every run</h3>
+          <span className="ledger-count-pill">{shown.length} shown</span>
         </div>
-        <div className="li-filter-row" role="group" aria-label="Who ran it">
-          <span className="li-filter-label">Who</span>
-          {ACTOR_FILTERS.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              className={`li-range ${actor === entry.id ? 'is-active' : ''}`}
-              aria-pressed={actor === entry.id}
-              onClick={() => setActor(entry.id)}
-            >
-              {entry.label}
-            </button>
-          ))}
+        <div className="ledger-filters">
+          <label className="ledger-select">
+            <span className="li-filter-label">Status</span>
+            <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
+              {STATUS_FILTERS.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="ledger-select">
+            <span className="li-filter-label">Who</span>
+            <select value={actor} onChange={(e) => setActor(e.target.value as ActorFilter)}>
+              {ACTOR_FILTERS.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="ledger-select">
+            <span className="li-filter-label">Since</span>
+            <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+              {DAY_FILTERS.map((entry) => (
+                <option key={entry} value={entry}>
+                  {entry} days
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
-        <div className="li-filter-row" role="group" aria-label="How far back">
-          <span className="li-filter-label">Since</span>
-          {DAY_FILTERS.map((entry) => (
-            <button
-              key={entry}
-              type="button"
-              className={`li-range ${days === entry ? 'is-active' : ''}`}
-              aria-pressed={days === entry}
-              onClick={() => setDays(entry)}
-            >
-              {entry} days
-            </button>
-          ))}
+        <div className="ledger-actions">
+          <button className="secondary-button ledger-refresh" onClick={() => void reload()}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button
+            className="secondary-button ledger-export-trigger"
+            onClick={() => setExportOpen(true)}
+          >
+            <FileDown size={14} /> Export ledger
+          </button>
         </div>
-        <button className="secondary-button ledger-refresh" onClick={() => void reload()}>
-          <RefreshCw size={15} /> Refresh
-        </button>
       </section>
+
+      {exportOpen && (
+        <LedgerExportModal
+          counts={{ jobs: runs.length, agent: agentRuns.length }}
+          setToast={setToast}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
 
       <section className="page-panel">
         <div className="playbook-run-list">
@@ -407,6 +387,56 @@ export function LedgerView({
  * than merely computed.
  * -------------------------------------------------------------------------- */
 
+function LedgerExportModal({
+  counts,
+  setToast,
+  onClose
+}: {
+  counts: { jobs: number; agent: number };
+  setToast: (message: string) => void;
+  onClose: () => void;
+}) {
+  const dialog = useRef<HTMLElement>(null);
+  const titleId = useId();
+  useDialog(dialog, onClose);
+
+  return createPortal(
+    <div className="ledger-modal-backdrop" role="presentation" onClick={onClose}>
+      <section
+        ref={dialog}
+        className="ledger-modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="ledger-modal-header">
+          <div>
+            <h3 id={titleId}>
+              <FileDown size={18} /> Export ledger
+            </h3>
+            <span className="status-pill">
+              {(counts.jobs + counts.agent).toLocaleString('en-US')} runs available
+            </span>
+          </div>
+          <button className="icon-button" aria-label="Close export dialog" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </header>
+        <div className="ledger-modal-body">
+          <LedgerExportPanel counts={counts} setToast={setToast} />
+        </div>
+        <footer className="ledger-modal-footer">
+          <button className="secondary-button" onClick={onClose}>
+            Close
+          </button>
+        </footer>
+      </section>
+    </div>,
+    document.body
+  );
+}
+
 const SECTION_COPY: Record<LedgerExportSection, string> = {
   runs: 'Run status, timing, and result.',
   steps: 'Inputs and outputs for each step.',
@@ -459,8 +489,6 @@ function LedgerExportPanel({
       setHistory(await getLedgerExports().catch(() => history));
       const rows = Object.values(created.counts).reduce((sum, count) => sum + count, 0);
       setToast(`Ledger export ready · ${rows.toLocaleString('en-US')} rows.`);
-      // The caret lands on the thing that appeared (see the effect on `fresh`),
-      // not back at the button that made it appear.
     } catch (error) {
       setProblem(
         error instanceof Error ? error.message : 'Could not create the export. Try again.'
@@ -473,20 +501,10 @@ function LedgerExportPanel({
   const latest = fresh ? (history.find((entry) => entry.id === fresh) ?? null) : null;
 
   return (
-    <section className="page-panel ledger-export">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>
-            <FileDown size={18} /> Export ledger
-          </h3>
-          <p>
-            Downloads an NDJSON archive with a signed <code>manifest.json</code>.
-          </p>
-        </div>
-        <span className="status-pill">
-          {(counts.jobs + counts.agent).toLocaleString('en-US')} runs loaded
-        </span>
-      </div>
+    <div className="ledger-export">
+      <p className="panel-lead">
+        Downloads an NDJSON archive with a signed <code>manifest.json</code>.
+      </p>
 
       <div className="li-filter-row" role="group" aria-label="How far back the export goes">
         <span className="li-filter-label">Window</span>
@@ -596,6 +614,6 @@ function LedgerExportPanel({
           <CircleAlert size={15} /> No exports yet.
         </p>
       )}
-    </section>
+    </div>
   );
 }
