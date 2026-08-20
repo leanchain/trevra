@@ -276,48 +276,10 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
     });
   }
 
-  app.get('/how-it-works', (_req, res) =>
-    sendPublicPage(res, config, {
-      path: '/how-it-works',
-      title: 'How Trevra Works | Agentic GTM Ledger and Control Plane',
-      description:
-        'See how Trevra records agent runs, reconstructs the revenue loop from source to paid, builds proof packs, and holds every consequential action at an approval gate.',
-      heading: 'Claude runs the loop. Trevra keeps the record.',
-      intro:
-        'Trevra is the memory and the control plane behind agent-operated go-to-market: every run recorded, every action evidenced, every consequential step gated on your approval.',
-      body: `<div class="launch-faq">
-      ${docRow('1', 'Connect the source systems', 'Email, calendar, accounting, payment, and client-management systems remain the systems of record. Trevra normalizes their commercial events into one graph you own.')}
-      ${docRow('2', 'Build the revenue memory', 'Leads, proposals, clauses, scope items, client requests, milestones, invoices, and payments become one evidence-linked graph spanning source to paid.')}
-      ${docRow('3', 'Let the skills do the work', 'Skills are small, typed, testable units of go-to-market work. Claude calls them; Trevra records the inputs, outputs, evidence, and verdict of every run.')}
-      ${docRow('4', 'Approve what leaves the workspace', 'Trevra prepares the message, invoice, or change order and holds it. Consequential work stays approval-gated unless you write a narrow standing instruction with explicit ceilings.')}
-      <details open id="skills"><summary>The skills catalog</summary><p>A skill is a small deterministic unit of go-to-market work with a typed input, a typed output, and recorded evidence — a library function first and an agent second. The catalog covers the founder revenue loop end to end: source, enrich, score, audit, draft, send, reply, ladder, guard, position, publish, measure, close, and collect. Close and collect — proposal follow-up, scope protection, unbilled milestones, and overdue invoices — are shipped in Trevra today. The sourcing and outreach skills are in progress. Every skill is meant to be read, forked, and tested, not trusted blindly.</p></details>
-      <details open><summary>Evidence before automation</summary><p>Every agent action carries a Revenue Proof Pack: why the agent acted, the agreement and scope it relied on, the client request and delivery evidence, the billing obligation, the payment state, and the exact payload you approved. The approved payload is cryptographically hashed before execution, so a modified payload is rejected.</p></details>
-      <details open><summary>Designed to work with the existing stack</summary><p>Trevra supports live integration patterns for Gmail, Microsoft 365, Google Calendar, Stripe, QuickBooks, Xero, HoneyBook, and Bonsai. CSV exports can be imported when a direct API is unavailable. Run the whole thing on your own PostgreSQL and keep the ledger.</p></details>
-    </div>`
-    })
-  );
-
-  app.get('/security', (_req, res) =>
-    sendPublicPage(res, config, {
-      path: '/security',
-      title: 'Security and Responsible Disclosure | Trevra',
-      description:
-        'How Trevra protects commercial data, constrains automation, verifies webhooks, isolates workspaces, and receives responsible vulnerability reports.',
-      heading: 'Commercial automation needs explicit boundaries.',
-      intro:
-        'Trevra is designed around evidence, least privilege, approval integrity, and auditable execution.',
-      body: `<div class="launch-faq">
-      ${docRow('01', 'Approval integrity', 'The exact approved payload, including structured financial fields, is hashed before execution. Modified payloads are rejected.')}
-      ${docRow('02', 'Workspace isolation', 'Application queries are scoped by workspace, authentication data and commercial records use PostgreSQL, and external credentials are delegated to the integration layer.')}
-      ${docRow('03', 'Verified events', 'Stripe and Nango webhooks are signature-verified, deduplicated, and processed idempotently.')}
-      <details open id="disclosure"><summary>Responsible disclosure</summary><p>Report a suspected vulnerability to <a href="mailto:${escapeAttr(config.securityEmail)}">${escapeHtml(config.securityEmail)}</a>. Include reproduction steps, affected URLs, and the potential impact. Do not access data that is not yours, disrupt service availability, or use destructive testing.</p><p>The canonical machine-readable disclosure channel is <a href="/.well-known/security.txt">/.well-known/security.txt</a>.</p></details>
-    </div>`
-    })
-  );
-
-  // /privacy and /terms are shipped documents, not routes: public/privacy/index.html
-  // and public/terms/index.html are the single legal surface on every deploy
-  // target, served here by the static middleware in src/server/index.ts.
+  // /privacy, /terms, /security and /how-it-works are shipped documents, not
+  // routes: public/{privacy,terms,security,how-it-works}/index.html are the
+  // single surface for each on every deploy target, served here by the
+  // static middleware in src/server/index.ts.
 
   app.post(
     '/api/marketing/events',
@@ -551,15 +513,6 @@ export function renderNotFoundPage(nonce: string): string {
   );
 }
 
-function sendPublicPage(res: Response, config: SiteConfig, page: PublicPage): void {
-  res.type('html').set({
-    'Cache-Control': 'public, max-age=300, stale-while-revalidate=3600',
-    'Content-Language': 'en',
-    Link: `<${config.origin}${page.path}>; rel="canonical"`
-  });
-  res.send(renderPublicDocument(config, page, String(res.locals.cspNonce ?? '')));
-}
-
 interface PublicPage {
   path: string;
   title: string;
@@ -652,16 +605,6 @@ function siteFooter(config: SiteConfig): string {
     `<p class="footer-note">&copy; ${new Date().getUTCFullYear()} ${escapeHtml(config.name)}. Built in the open.</p>` +
     `</footer>`
   );
-}
-
-/**
- * One row of a `.launch-faq` disclosure list -- the long-form pattern the
- * static /privacy and /terms documents use and the only one marketing.css
- * actually styles. `.launch-feature`, `.launch-grid` and `.launch-copy-section`
- * had zero rules behind them.
- */
-function docRow(number: string, title: string, copy: string): string {
-  return `<details open><summary>${escapeHtml(number)}. ${escapeHtml(title)}</summary><p>${escapeHtml(copy)}</p></details>`;
 }
 
 function setTextResponse(res: Response, seconds: number): void {

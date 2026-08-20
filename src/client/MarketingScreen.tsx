@@ -699,6 +699,7 @@ docker compose --env-file .env.dev \\
         </div>
         <div>
           <strong>Company</strong>
+          <a href="/how-it-works">How it works</a>
           <a href="/privacy">Privacy</a>
           <a href="/terms">Terms</a>
           <a href={founderHref} onClick={() => trackEvent('marketing_founder_cta')}>

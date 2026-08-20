@@ -7,7 +7,12 @@ import { openDatabase, type Db } from './db.js';
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 import { renderAppIndex, renderNotFoundPage } from './public-site.js';
-import { SITE_DESCRIPTION, SITE_TITLE } from '../shared/site-metadata.js';
+import {
+  renderSecurityText,
+  SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_TITLE
+} from '../shared/site-metadata.js';
 import { MarketingApp } from '../client/MarketingApp';
 
 const HOSTED = 'https://app.usetrevra.example/#get-started';
@@ -31,8 +36,24 @@ const marketingCss = await readFile(resolve('public/marketing.css'), 'utf8');
 const privacyDoc = await readFile(resolve('public/privacy/index.html'), 'utf8');
 const termsDoc = await readFile(resolve('public/terms/index.html'), 'utf8');
 const securityDoc = await readFile(resolve('public/security/index.html'), 'utf8');
-const securityTxt = await readFile(resolve('public/.well-known/security.txt'), 'utf8');
+const howItWorksDoc = await readFile(resolve('public/how-it-works/index.html'), 'utf8');
 const redirects = await readFile(resolve('public/_redirects'), 'utf8');
+
+// public/.well-known/security.txt used to be a hand-maintained copy with a
+// hardcoded expiry; scripts/build-marketing-seo.ts now generates the only
+// version, into dist/, from this same renderSecurityText() renderer -- so
+// the static-deploy-target assertion below renders the equivalent text
+// directly instead of reading a file that no longer exists.
+const securityTxt = renderSecurityText(
+  {
+    origin: 'https://usetrevra.com',
+    name: SITE_NAME,
+    description: SITE_DESCRIPTION,
+    supportEmail: 'support@usetrevra.com',
+    securityEmail: 'security@usetrevra.com'
+  },
+  '2099-01-01T00:00:00Z'
+);
 
 let db: Db | undefined;
 
@@ -270,7 +291,8 @@ describe('the server-rendered public documents', () => {
     for (const [name, doc] of [
       ['privacy', privacyDoc],
       ['terms', termsDoc],
-      ['security', securityDoc]
+      ['security', securityDoc],
+      ['how-it-works', howItWorksDoc]
     ] as const) {
       expect(doc, name).toMatch(/<main class="static-launch"[ >]/);
       expect(
@@ -280,16 +302,14 @@ describe('the server-rendered public documents', () => {
     }
   });
 
-  it('styles /security and /how-it-works the same way as the landing page', async () => {
+  it('serves /security and /how-it-works only as static documents, not Express routes', async () => {
     const app = await publicApp();
-    for (const path of ['/security', '/how-it-works']) {
-      const html = (await request(app).get(path).expect(200)).text;
-      expect(html, path).toMatch(/<main class="static-launch"[ >]/);
-      expect(
-        classesIn(html).filter((name) => !styled(name)),
-        path
-      ).toEqual([]);
-    }
+    const security = await request(app).get('/security').expect(404);
+    expect(security.text).not.toContain('Responsible disclosure');
+    expect(security.headers.link).toBeUndefined();
+    const howItWorks = await request(app).get('/how-it-works').expect(404);
+    expect(howItWorks.text).not.toContain('static-launch');
+    expect(howItWorks.headers.link).toBeUndefined();
   });
 
   it('keeps the responsible-disclosure page security.txt points at', async () => {
@@ -297,9 +317,6 @@ describe('the server-rendered public documents', () => {
     const app = await publicApp();
     const policy = (await request(app).get('/.well-known/security.txt').expect(200)).text;
     expect(policy).toContain('Policy: https://trevra.example/security');
-    expect((await request(app).get('/security').expect(200)).text).toContain(
-      'Responsible disclosure'
-    );
 
     // The static deploy target has to resolve the same RFC 9116 Policy target.
     expect(securityTxt).toContain('Policy: https://usetrevra.com/security');

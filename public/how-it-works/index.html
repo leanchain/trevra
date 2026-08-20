@@ -3,44 +3,44 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Security and Responsible Disclosure | Trevra</title>
+    <title>How It Works | Trevra</title>
     <meta
       name="description"
-      content="How Trevra protects commercial data, constrains automation, verifies webhooks, isolates workspaces, and receives responsible vulnerability reports."
+      content="How Trevra runs typed modules for Claude Code and Codex, holds external actions at an approval gate, hashes approved payloads, and records every run."
     />
     <meta name="robots" content="index,follow" />
     <meta name="theme-color" content="#1f6f4a" />
-    <link rel="canonical" href="https://usetrevra.com/security" />
+    <link rel="canonical" href="https://usetrevra.com/how-it-works" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/marketing.css" />
     <script src="/theme.js"></script>
     <script defer src="/marketing-analytics.js"></script>
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Trevra" />
-    <meta property="og:title" content="Security and Responsible Disclosure | Trevra" />
+    <meta property="og:title" content="How It Works | Trevra" />
     <meta
       property="og:description"
-      content="How Trevra protects commercial data, constrains automation, verifies webhooks, isolates workspaces, and receives responsible vulnerability reports."
+      content="How Trevra runs typed modules for Claude Code and Codex, holds external actions at an approval gate, hashes approved payloads, and records every run."
     />
-    <meta property="og:url" content="https://usetrevra.com/security" />
+    <meta property="og:url" content="https://usetrevra.com/how-it-works" />
     <meta property="og:image" content="https://usetrevra.com/og/trevra-social.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="Trevra — GTM infrastructure for AI agents" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Security and Responsible Disclosure | Trevra" />
+    <meta name="twitter:title" content="How It Works | Trevra" />
     <meta
       name="twitter:description"
-      content="How Trevra protects commercial data, constrains automation, verifies webhooks, isolates workspaces, and receives responsible vulnerability reports."
+      content="How Trevra runs typed modules for Claude Code and Codex, holds external actions at an approval gate, hashes approved payloads, and records every run."
     />
     <meta name="twitter:image" content="https://usetrevra.com/og/trevra-social.png" />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@type": "WebPage",
-        "name": "Security and Responsible Disclosure | Trevra",
-        "description": "How Trevra protects commercial data, constrains automation, verifies webhooks, isolates workspaces, and receives responsible vulnerability reports.",
-        "url": "https://usetrevra.com/security",
+        "name": "How It Works | Trevra",
+        "description": "How Trevra runs typed modules for Claude Code and Codex, holds external actions at an approval gate, hashes approved payloads, and records every run.",
+        "url": "https://usetrevra.com/how-it-works",
         "isPartOf": { "@id": "https://usetrevra.com/#website" },
         "about": { "@id": "https://usetrevra.com/#application" }
       }
@@ -117,46 +117,62 @@
       </header>
       <section class="launch-section">
         <div class="split-heading">
-          <h1>Commercial automation needs explicit boundaries.</h1>
+          <h1>How Trevra works.</h1>
           <p>
-            Trevra is designed around evidence, least privilege, approval integrity, and auditable
-            execution.
+            Claude Code and Codex call typed modules to do the work. External actions stop at an
+            approval gate, and every run is recorded.
           </p>
         </div>
         <div class="launch-faq">
           <details open>
-            <summary>01. Approval integrity</summary>
+            <summary>1. Point an agent at a Trevra workspace</summary>
             <p>
-              The exact approved payload, including structured financial fields, is hashed before
-              execution. Modified payloads are rejected.
+              Claude Code or Codex connects to a Trevra workspace and calls typed modules to do
+              go-to-market work: research, drafting, and outreach.
             </p>
           </details>
           <details open>
-            <summary>02. Workspace isolation</summary>
+            <summary>2. The module declares its shape up front</summary>
             <p>
-              Application queries are scoped by workspace, authentication data and commercial
-              records use PostgreSQL, and external credentials are delegated to the integration
-              layer.
+              Each module is versioned on GitHub with a typed input, a typed output, a declared
+              side-effect class, and whether it needs approval. Installing one never grants it
+              permission to write externally on its own.
             </p>
           </details>
           <details open>
-            <summary>03. Verified events</summary>
+            <summary>3. External actions stop at the approval gate</summary>
             <p>
-              Stripe and Nango webhooks are signature-verified, deduplicated, and processed
-              idempotently.
+              Sending a message or taking any other consequential action is held for your approval
+              by default. You review the exact payload before anything leaves the workspace.
             </p>
           </details>
-          <details open id="disclosure">
-            <summary>Responsible disclosure</summary>
+          <details open>
+            <summary>4. The approved payload is hashed and executed</summary>
             <p>
-              Report a suspected vulnerability to
-              <a href="mailto:security@usetrevra.com">security@usetrevra.com</a>. Include
-              reproduction steps, affected URLs, and the potential impact. Do not access data that
-              is not yours, disrupt service availability, or use destructive testing.
+              What you approve is cryptographically hashed before execution, so a modified payload
+              is rejected. The run — its inputs, outputs, and evidence — is recorded.
             </p>
+          </details>
+          <details open>
+            <summary>Modules are the unit of work</summary>
             <p>
-              The canonical machine-readable disclosure channel is
-              <a href="/.well-known/security.txt">/.well-known/security.txt</a>.
+              A module is a small, typed, versioned unit of go-to-market work, not a freeform
+              prompt. The catalog is public and synced from GitHub, and every module publishes its
+              input and output schemas alongside its side-effect class.
+            </p>
+          </details>
+          <details open>
+            <summary>Approval is the default</summary>
+            <p>
+              External actions require approval unless you write a narrow standing instruction with
+              explicit ceilings. Approval integrity comes from the payload hash, not from trust.
+            </p>
+          </details>
+          <details open>
+            <summary>Self-hostable on your own PostgreSQL</summary>
+            <p>
+              Trevra is open source. Run the module runner on your own PostgreSQL and keep the
+              ledger, evidence, and configuration in infrastructure you control.
             </p>
           </details>
         </div>
