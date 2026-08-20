@@ -176,6 +176,10 @@ describe('the server-rendered public documents', () => {
   });
 
   it('keeps every clause of the privacy notice and the terms', () => {
+    // Prettier wraps long paragraphs across lines, so compare against
+    // whitespace-collapsed text rather than the raw (indentation-sensitive) HTML.
+    const flatPrivacy = privacyDoc.replace(/\s+/g, ' ');
+    const flatTerms = termsDoc.replace(/\s+/g, ' ');
     for (const clause of [
       'Information processed',
       'Purposes',
@@ -187,10 +191,10 @@ describe('the server-rendered public documents', () => {
       'Hosted workspace data',
       'Self-hosting'
     ])
-      expect(privacyDoc).toContain(clause);
-    expect(privacyDoc).toContain('does not store IP addresses');
-    expect(privacyDoc).toContain('are not measured at all');
-    expect(privacyDoc).toContain(
+      expect(flatPrivacy).toContain(clause);
+    expect(flatPrivacy).toContain('does not store IP addresses');
+    expect(flatPrivacy).toContain('are not measured at all');
+    expect(flatPrivacy).toContain(
       'Identity verification may be required before fulfilling a request'
     );
 
@@ -206,9 +210,9 @@ describe('the server-rendered public documents', () => {
       'Your responsibility',
       'External actions'
     ])
-      expect(termsDoc).toContain(clause);
-    expect(termsDoc).toContain('disclaims implied warranties');
-    expect(termsDoc).toContain(
+      expect(flatTerms).toContain(clause);
+    expect(flatTerms).toContain('disclaims implied warranties');
+    expect(flatTerms).toContain(
       'Open-source components are provided under the license included with their source'
     );
   });
