@@ -140,7 +140,7 @@ describe('first sign-in (organization plugin routed, single-user flow unchanged)
     const rules = await database
       .prepare('SELECT COUNT(*)::int AS n FROM automation_rules WHERE workspace_id=?')
       .get<{ n: number }>(auth.workspaceId);
-    expect(rules?.n).toBe(4);
+    expect(rules?.n).toBe(1);
 
     const audit = await database
       .prepare(

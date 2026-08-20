@@ -138,10 +138,8 @@ const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   inmail: 'Send InMail',
   email: 'Send email',
   find_email: 'Find email',
-  webhook: 'Call webhook',
   add_tag: 'Add tag',
   remove_tag: 'Remove tag',
-  external_handoff: 'Hand off externally',
   manual_comment: 'Manual comment checkpoint'
 };
 
@@ -177,10 +175,8 @@ const ACTION_SHORT_LABEL: Record<WorkflowStep['action'], string> = {
   inmail: 'InMail',
   email: 'Email',
   find_email: 'Find email',
-  webhook: 'Webhook',
   add_tag: '+Tag',
   remove_tag: '-Tag',
-  external_handoff: 'Handoff',
   manual_comment: 'Manual comment'
 };
 
@@ -732,11 +728,14 @@ export function LinkedInManagerCampaignConfig({
               : '';
 
   return (
-    <section className="page-panel">
+    <section className="page-panel li-polished">
       <div className="section-heading">
         <div>
           <h3 aria-level={2}>Create a campaign</h3>
-          <p>The selected LinkedIn account in the header is the sender.</p>
+          <p>
+            The active LinkedIn account is the default sender. Add more senders only when you want a
+            shared campaign.
+          </p>
         </div>
       </div>
 

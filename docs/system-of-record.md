@@ -27,7 +27,7 @@ Trevra must contain enough local state to let founders and agents safely operate
 | Accounting, invoices, payments                                               | Not Trevra core                                                                            | Accounting/payment systems                                       |
 | Contracts, projects, milestones, deliverables                                | Not Trevra core                                                                            | Appropriate external business system                             |
 
-Legacy tables for non-GTM concepts may remain during migration. They are not part of the target architecture and new GTM features must not depend on them.
+Migration `095_remove_post_sale_revenue_domain.sql` removes the legacy Trevra-owned project/contract/scope/milestone/invoice/payment graph on upgrade. New GTM features must not recreate those concepts as Trevra-owned state.
 
 ---
 

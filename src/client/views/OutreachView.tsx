@@ -77,7 +77,7 @@ export function OutreachView({
   const [workflowId, campaignId] = sub === 'workflow' ? (route.id ?? '').split('/') : ['', ''];
 
   return (
-    <div className="page-stack outreach-simple">
+    <div className="page-stack outreach-simple li-polished">
       <LinkedInCompanionAttention setToast={setToast} />
       <nav className="outreach-nav" aria-label="Outreach sections">
         {OUTREACH_TABS.map((tab) => (

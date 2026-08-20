@@ -416,73 +416,10 @@ describe('workspace attribution on playbook step runs', () => {
   });
 });
 
-describe('prepared revenue action adapters', () => {
-  it('creates approved invoice and change-order actions through the provider gateway', async () => {
-    const database = await openTestDb();
-    const invoice = await startPlaybookRun(database, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      playbookId: 'revenue.invoice-delivered-work',
-      payload: {
-        recipient: 'billing@example.com',
-        amount: 2400,
-        currency: 'USD',
-        description: 'Final milestone',
-        dueDays: 14,
-        message: 'Invoice attached.'
-      },
-      actorType: 'user',
-      actorId: DEMO_USER_ID
-    });
-    const invoiced = await decidePlaybookApproval(database, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      runId: invoice.id,
-      stepId: 'approve-invoice',
-      userId: DEMO_USER_ID,
-      decision: 'approve'
-    });
-    expect(invoiced.output).toMatchObject({
-      invoice: { provider: 'simulation', actionType: 'invoice.create' }
-    });
-
-    const scope = await startPlaybookRun(database, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      playbookId: 'revenue.protect-scope',
-      payload: {
-        recipient: 'client@example.com',
-        subject: 'Additional scope',
-        body: 'Please approve the added work.',
-        amount: 750,
-        currency: 'USD',
-        description: 'Additional landing page'
-      },
-      actorType: 'user',
-      actorId: DEMO_USER_ID
-    });
-    const protectedRun = await decidePlaybookApproval(database, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      runId: scope.id,
-      stepId: 'approve-change-order',
-      userId: DEMO_USER_ID,
-      decision: 'approve'
-    });
-    expect(protectedRun.output).toMatchObject({
-      changeOrder: { provider: 'simulation', actionType: 'change_order.create' }
-    });
-  });
-});
-
-/**
- * Numeric conditions reach the engine at all. Before `policyAttributesFrom`,
- * no call site passed `context.attributes`, so every `maxAmount` /
- * `minConfidence` / `maxRecipients` rule a founder saved matched nothing and
- * was silently inert -- "ask me first before anything over EUR 5,000" never
- * fired. `maxAmount` is in MAJOR currency units, the same unit as the payload.
- */
-describe('numeric policy conditions on playbook action steps', () => {
+describe('GTM-only prepared action boundary', () => {
   async function insertPolicy(
     database: Db,
     name: string,
-    actionPattern: string,
     effect: 'allow' | 'deny' | 'require_approval',
     conditions: Record<string, unknown>
   ): Promise<void> {
@@ -490,48 +427,23 @@ describe('numeric policy conditions on playbook action steps', () => {
     await database
       .prepare(
         `
-      INSERT INTO workspace_policies (
-        id,workspace_id,name,priority,action_pattern,effect,conditions_json,enabled,created_at,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?)
-    `
+        INSERT INTO workspace_policies (
+          id,workspace_id,name,priority,action_pattern,effect,conditions_json,enabled,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+      `
       )
       .run(
         id('pol'),
         DEMO_WORKSPACE_ID,
         name,
         100,
-        actionPattern,
+        'action:email.send',
         effect,
         JSON.stringify(conditions),
         true,
         now,
         now
       );
-  }
-
-  async function runInvoice(database: Db, amount: number) {
-    const run = await startPlaybookRun(database, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      playbookId: 'revenue.invoice-delivered-work',
-      payload: {
-        recipient: 'billing@example.com',
-        amount,
-        currency: 'USD',
-        description: 'Final milestone',
-        dueDays: 14,
-        message: 'Invoice attached.'
-      },
-      actorType: 'user',
-      actorId: DEMO_USER_ID
-    });
-    const completed = await decidePlaybookApproval(database, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      runId: run.id,
-      stepId: 'approve-invoice',
-      userId: DEMO_USER_ID,
-      decision: 'approve'
-    });
-    return completed.steps.find((step) => step.stepId === 'create-invoice')?.policyDecision;
   }
 
   async function runEmail(database: Db) {
@@ -556,58 +468,22 @@ describe('numeric policy conditions on playbook action steps', () => {
     return completed.steps.find((step) => step.stepId === 'send-email')?.policyDecision;
   }
 
-  it('matches a require_approval maxAmount rule against the amount in the action payload', async () => {
+  it('applies GTM recipient policy to an email action', async () => {
     const database = await openTestDb();
-    await insertPolicy(database, 'Ask first over 5k', 'action:invoice.create', 'require_approval', {
-      maxAmount: 5000
-    });
-    expect(await runInvoice(database, 2400)).toMatchObject({
-      effect: 'require_approval',
-      policyName: 'Ask first over 5k'
-    });
-  });
-
-  it('does not match the same rule when the payload amount is over the bound', async () => {
-    const database = await openTestDb();
-    await insertPolicy(database, 'Ask first over 5k', 'action:invoice.create', 'require_approval', {
-      maxAmount: 5000
-    });
-    expect(await runInvoice(database, 6000)).toMatchObject({
-      policyId: null,
-      policyName: 'Built-in external-write boundary'
-    });
-  });
-
-  it('fails closed: a restrictive maxAmount rule matches an action whose payload carries no amount', async () => {
-    const database = await openTestDb();
-    await insertPolicy(database, 'Ask first over 5k', 'action:email.send', 'require_approval', {
-      maxAmount: 5000
-    });
-    expect(await runEmail(database)).toMatchObject({
-      effect: 'require_approval',
-      policyName: 'Ask first over 5k'
-    });
-  });
-
-  it('fails closed the other way: a permissive maxAmount rule does not match an action with no amount', async () => {
-    const database = await openTestDb();
-    await insertPolicy(database, 'Auto-send under 5k', 'action:email.send', 'allow', {
-      maxAmount: 5000
-    });
-    expect(await runEmail(database)).toMatchObject({
-      policyId: null,
-      policyName: 'Built-in external-write boundary'
-    });
-  });
-
-  it('counts the single recipient of an email action for maxRecipients', async () => {
-    const database = await openTestDb();
-    await insertPolicy(database, 'Small blasts only', 'action:email.send', 'allow', {
-      maxRecipients: 3
-    });
+    await insertPolicy(database, 'Small sends only', 'allow', { maxRecipients: 3 });
     expect(await runEmail(database)).toMatchObject({
       effect: 'allow',
-      policyName: 'Small blasts only'
+      policyName: 'Small sends only'
+    });
+  });
+
+  it('keeps the built-in approval boundary when no auto-send policy matches', async () => {
+    const database = await openTestDb();
+    await insertPolicy(database, 'No bulk sends', 'allow', { maxRecipients: 0 });
+    expect(await runEmail(database)).toMatchObject({
+      effect: 'require_approval',
+      policyId: null,
+      policyName: 'Built-in external-write boundary'
     });
   });
 });

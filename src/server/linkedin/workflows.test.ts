@@ -9,11 +9,15 @@ import {
   unsupportedVariables,
   workflowStepsSchema
 } from './workflows.js';
-
 describe('LinkedIn manager workflows', () => {
   it('accepts the supported actions and hour/day delays', () => {
     const result = workflowStepsSchema.parse([
-      { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
+      {
+        id: 'view',
+        action: 'profile_view',
+        delayBefore: { amount: 0, unit: 'hours' },
+        config: {}
+      },
       {
         id: 'invite',
         action: 'connection_request',

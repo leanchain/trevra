@@ -4,11 +4,15 @@ import type { Db } from './db.js';
 import { id } from './db.js';
 
 export const AGENT_SCOPES = [
-  'skills:read', 'skills:run', 'runs:read', 'workspace:read', 'actions:prepare',
-  'playbooks:read', 'playbooks:run', 'workflows:read'
+  'skills:read',
+  'skills:run',
+  'runs:read',
+  'workspace:read',
+  'playbooks:read',
+  'playbooks:run',
+  'workflows:read'
 ] as const;
-export type AgentScope = typeof AGENT_SCOPES[number];
-
+export type AgentScope = (typeof AGENT_SCOPES)[number];
 export interface AgentIdentity {
   tokenId: string;
   workspaceId: string;
@@ -55,40 +59,48 @@ export async function createAgentToken(
     throw new Error('Token expiry must be in the future');
   }
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO agent_tokens (
       id,workspace_id,created_by_user_id,name,token_prefix,token_hash,
       scopes_json,last_used_at,expires_at,revoked_at,created_at
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-  `).run(
-    tokenId,
-    input.workspaceId,
-    input.userId,
-    input.name.trim(),
-    prefix,
-    hashAgentToken(token),
-    JSON.stringify(scopes),
-    null,
-    expiresAt,
-    null,
-    now
-  );
+  `
+    )
+    .run(
+      tokenId,
+      input.workspaceId,
+      input.userId,
+      input.name.trim(),
+      prefix,
+      hashAgentToken(token),
+      JSON.stringify(scopes),
+      null,
+      expiresAt,
+      null,
+      now
+    );
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO audit_events (
       id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at
     ) VALUES (?,?,?,?,?,?,?,?,?)
-  `).run(
-    id('audit'),
-    input.workspaceId,
-    input.userId ? 'user' : 'system',
-    input.userId,
-    'agent_token.created',
-    'agent_token',
-    tokenId,
-    JSON.stringify({ name: input.name.trim(), prefix, scopes, expiresAt }),
-    now
-  );
+  `
+    )
+    .run(
+      id('audit'),
+      input.workspaceId,
+      input.userId ? 'user' : 'system',
+      input.userId,
+      'agent_token.created',
+      'agent_token',
+      tokenId,
+      JSON.stringify({ name: input.name.trim(), prefix, scopes, expiresAt }),
+      now
+    );
 
   return {
     token,
@@ -106,10 +118,14 @@ export async function createAgentToken(
 }
 
 export async function listAgentTokens(db: Db, workspaceId: string): Promise<AgentTokenSummary[]> {
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT id,name,token_prefix,scopes_json,last_used_at,expires_at,revoked_at,created_at
     FROM agent_tokens WHERE workspace_id=? ORDER BY created_at DESC
-  `).all<Record<string, unknown>>(workspaceId);
+  `
+    )
+    .all<Record<string, unknown>>(workspaceId);
   return rows.map(serializeToken);
 }
 
@@ -121,20 +137,35 @@ export async function revokeAgentToken(
   tokenId: string
 ): Promise<boolean> {
   const now = new Date().toISOString();
-  const result = await db.prepare(`
+  const result = await db
+    .prepare(
+      `
     UPDATE agent_tokens SET revoked_at=?
     WHERE id=? AND workspace_id=? AND revoked_at IS NULL
-  `).run(now, tokenId, workspaceId);
+  `
+    )
+    .run(now, tokenId, workspaceId);
   if (result.changes === 0) return false;
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO audit_events (
       id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at
     ) VALUES (?,?,?,?,?,?,?,?,?)
-  `).run(
-    id('audit'), workspaceId, userId ? 'user' : 'system', userId, 'agent_token.revoked',
-    'agent_token', tokenId, '{}', now
-  );
+  `
+    )
+    .run(
+      id('audit'),
+      workspaceId,
+      userId ? 'user' : 'system',
+      userId,
+      'agent_token.revoked',
+      'agent_token',
+      tokenId,
+      '{}',
+      now
+    );
   return true;
 }
 
@@ -149,12 +180,16 @@ export async function resolveAgentIdentity(
   if (!token.startsWith('trv_live_') || token.length < 40 || token.length > 200) return null;
 
   const now = new Date().toISOString();
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT id,workspace_id,created_by_user_id,name,scopes_json
     FROM agent_tokens
     WHERE token_hash=? AND revoked_at IS NULL
       AND (expires_at IS NULL OR expires_at > ?)
-  `).get<Record<string, unknown>>(hashAgentToken(token), now);
+  `
+    )
+    .get<Record<string, unknown>>(hashAgentToken(token), now);
   if (!row) return null;
 
   const scopes = normalizeScopes(parseJsonArray(row.scopes_json));
@@ -187,7 +222,14 @@ function serializeToken(row: Record<string, unknown>): AgentTokenSummary {
 
 function normalizeScopes(scopes: readonly unknown[]): AgentScope[] {
   const allowed = new Set<AgentScope>(AGENT_SCOPES);
-  return [...new Set(scopes.filter((scope): scope is AgentScope => typeof scope === 'string' && allowed.has(scope as AgentScope)))];
+  return [
+    ...new Set(
+      scopes.filter(
+        (scope): scope is AgentScope =>
+          typeof scope === 'string' && allowed.has(scope as AgentScope)
+      )
+    )
+  ];
 }
 
 function parseJsonArray(value: unknown): unknown[] {

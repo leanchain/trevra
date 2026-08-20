@@ -42,6 +42,7 @@ import {
   moveLinkedInManagedCampaignMembers,
   pauseLinkedInManagedCampaign,
   removeLinkedInManagedMember,
+  resolveLinkedInManagedUnknownOutcome,
   rerunLinkedInManagedMemberCondition,
   resumeLinkedInManagedMemberAtStep,
   retryLinkedInManagedCampaignFailures,
@@ -83,6 +84,9 @@ import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { useIsWorkspaceOwner } from './auth-client';
 import { useWorkspaceMembers } from './TeamScreen';
 import { ConfirmDrawer } from './ui/dialog';
+import { ChoiceMenu } from './ui/choice-menu';
+import { ActionMenu } from './ui/action-menu';
+import { Hint } from './ui/hint';
 
 /**
  * Campaigns: the screen an operator lives on.
@@ -178,10 +182,8 @@ const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   inmail: 'InMail',
   email: 'Email',
   find_email: 'Find email',
-  webhook: 'Webhook',
   add_tag: 'Add tag',
   remove_tag: 'Remove tag',
-  external_handoff: 'External handoff',
   manual_comment: 'Manual comment'
 };
 
@@ -229,6 +231,17 @@ function dueIn(iso: string | null, now: number): string {
   const at = Date.parse(iso);
   if (Number.isNaN(at)) return '—';
   return at <= now ? 'now' : `in ${span(at - now)}`;
+}
+
+function currentMemberStepIndex(
+  member: ManagedCampaignMember,
+  steps: readonly WorkflowStep[]
+): number {
+  if (member.currentStepId) {
+    const byId = steps.findIndex((step) => step.id === member.currentStepId);
+    if (byId >= 0) return byId;
+  }
+  return Math.max(0, Math.min(member.stepIndex, Math.max(0, steps.length - 1)));
 }
 
 function executionStateForMember(
@@ -294,7 +307,7 @@ function executionStateForMember(
     };
   }
 
-  const step = steps[member.stepIndex];
+  const step = steps[currentMemberStepIndex(member, steps)];
   if (step?.action === 'monitor' || step?.action === 'condition') {
     const kind = step.config.condition.kind;
     if (kind === 'accepted' || kind === 'connected')
@@ -733,14 +746,17 @@ function MemberTimeline({
       </p>
     );
   let elapsed = 0;
+  const currentIndex = currentMemberStepIndex(member, steps);
+  const completed = new Set(member.completedStepIds);
   return (
     <ol className="mgr-timeline">
       {steps.map((step, index) => {
         elapsed += stepHours(step);
-        const done = index < member.stepIndex;
-        const current = index === member.stepIndex;
+        const done = completed.has(step.id);
+        const current =
+          member.currentStepId !== null ? step.id === member.currentStepId : index === currentIndex;
         const copy = stepCopy(step, member.assignedVariants[step.id] ?? null);
-        const showBody = Boolean(copy.body) && (current || done || index === member.stepIndex + 1);
+        const showBody = Boolean(copy.body) && (current || done || index === currentIndex + 1);
         return (
           <li
             key={step.id}
@@ -795,11 +811,12 @@ function MemberRecoveryControls({
   onRerunCondition: (member: ManagedCampaignMember, stepId: string) => void;
   onResumeAtStep: (member: ManagedCampaignMember, stepId: string) => void;
 }) {
-  const current = steps[member.stepIndex] ?? null;
+  const currentIndex = currentMemberStepIndex(member, steps);
+  const current = steps[currentIndex] ?? null;
   const [stepId, setStepId] = useState(current?.id ?? steps[0]?.id ?? '');
   useEffect(() => {
     setStepId(current?.id ?? steps[0]?.id ?? '');
-  }, [member.id, member.stepIndex, current?.id, steps]);
+  }, [member.id, member.currentStepId, member.stepIndex, current?.id, steps]);
   if (steps.length === 0) return null;
   return (
     <div className="li-row-actions mgr-recovery-controls">
@@ -893,8 +910,8 @@ function CampaignExclusionEditor({
     )
   ];
   return (
-    <details className="mgr-advanced" open={campaign.status === 'paused'}>
-      <summary>Exclusions and suppression</summary>
+    <section className="mgr-settings-block">
+      <h4>Exclusions and suppression</h4>
       <p className="li-hint">
         Pause the campaign before changing eligibility. Saving re-evaluates only unadmitted leads;
         existing waves keep running exactly as admitted.
@@ -1012,7 +1029,7 @@ function CampaignExclusionEditor({
       >
         Save exclusions and re-evaluate pending
       </button>
-    </details>
+    </section>
   );
 }
 
@@ -1131,8 +1148,8 @@ function CampaignScheduleEditor({
   }, [campaign.id, campaign.schedule]);
   const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   return (
-    <details className="mgr-advanced" open={false}>
-      <summary>Campaign schedule</summary>
+    <section className="mgr-settings-block">
+      <h4>Campaign schedule</h4>
       <p className="li-hint">
         Uses {timezone}. Campaign hours can only narrow the LinkedIn account's working window; they
         never widen it. Pause before editing.
@@ -1235,7 +1252,7 @@ function CampaignScheduleEditor({
       >
         Save campaign schedule
       </button>
-    </details>
+    </section>
   );
 }
 
@@ -1253,6 +1270,7 @@ function CampaignMembers({
   onEnd,
   onRerunCondition,
   onResumeAtStep,
+  onResolveUnknown,
   followUpCampaigns,
   onBulkRetry,
   onMoveSelected
@@ -1270,6 +1288,11 @@ function CampaignMembers({
   onEnd: (member: ManagedCampaignMember) => void;
   onRerunCondition: (member: ManagedCampaignMember, stepId: string) => void;
   onResumeAtStep: (member: ManagedCampaignMember, stepId: string) => void;
+  onResolveUnknown: (
+    member: ManagedCampaignMember,
+    event: CampaignMemberTimeline['events'][number],
+    resolution: 'sent' | 'retry' | 'skip'
+  ) => void;
   followUpCampaigns: readonly ManagedCampaign[];
   onBulkRetry: (memberIds: string[]) => void;
   onMoveSelected: (targetCampaignId: string, memberIds: string[]) => void;
@@ -1281,6 +1304,7 @@ function CampaignMembers({
   const [openId, setOpenId] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [targetCampaignId, setTargetCampaignId] = useState('');
+  const [removeCandidate, setRemoveCandidate] = useState<ManagedCampaignMember | null>(null);
 
   useEffect(() => {
     setLimit(50);
@@ -1480,18 +1504,22 @@ function CampaignMembers({
                         <MemberState status={member.status} />
                       </td>
                       <td className="li-num">
-                        {steps.length > 0 ? (
-                          <>
-                            {Math.min(member.stepIndex + 1, steps.length)} of {steps.length}
-                            {steps[member.stepIndex] && (
-                              <span className="mgr-step-name">
-                                {ACTION_LABEL[steps[member.stepIndex].action]}
-                              </span>
-                            )}
-                          </>
-                        ) : (
-                          member.stepIndex + 1
-                        )}
+                        {steps.length > 0
+                          ? (() => {
+                              const currentIndex = currentMemberStepIndex(member, steps);
+                              const currentStep = steps[currentIndex];
+                              return (
+                                <>
+                                  {Math.min(currentIndex + 1, steps.length)} of {steps.length}
+                                  {currentStep && (
+                                    <span className="mgr-step-name">
+                                      {ACTION_LABEL[currentStep.action]}
+                                    </span>
+                                  )}
+                                </>
+                              );
+                            })()
+                          : member.stepIndex + 1}
                       </td>
                       <td>
                         <strong>{execution.label}</strong>
@@ -1531,40 +1559,38 @@ function CampaignMembers({
                               Resume
                             </button>
                           )}
-                          {(member.status === 'active' ||
-                            member.status === 'waiting' ||
-                            member.status === 'manual' ||
-                            member.status === 'paused') && (
-                            <button
-                              className="li-mini-button"
-                              type="button"
-                              disabled={busy !== ''}
-                              onClick={() => onSkip(member)}
-                            >
-                              Skip step
-                            </button>
-                          )}
                           {(LIVE_STATUSES.includes(member.status) ||
                             member.status === 'paused') && (
-                            <button
-                              className="li-mini-button"
-                              type="button"
-                              disabled={busy !== ''}
-                              onClick={() => onEnd(member)}
-                            >
-                              End automation
-                            </button>
-                          )}
-                          {(LIVE_STATUSES.includes(member.status) ||
-                            member.status === 'paused') && (
-                            <button
-                              className="li-mini-button li-mini-danger"
-                              type="button"
-                              disabled={busy !== ''}
-                              onClick={() => onRemove(member)}
-                            >
-                              <Trash2 size={12} /> Remove
-                            </button>
+                            <ActionMenu
+                              compact
+                              label={`More actions for ${member.firstName} ${member.lastName}`}
+                              items={[
+                                ...(member.status === 'active' ||
+                                member.status === 'waiting' ||
+                                member.status === 'manual' ||
+                                member.status === 'paused'
+                                  ? [
+                                      {
+                                        label: 'Skip current step',
+                                        disabled: busy !== '',
+                                        onSelect: () => onSkip(member)
+                                      }
+                                    ]
+                                  : []),
+                                {
+                                  label: 'End automation',
+                                  disabled: busy !== '',
+                                  onSelect: () => onEnd(member)
+                                },
+                                {
+                                  label: 'Remove from campaign',
+                                  icon: <Trash2 size={12} />,
+                                  disabled: busy !== '',
+                                  danger: true,
+                                  onSelect: () => setRemoveCandidate(member)
+                                }
+                              ]}
+                            />
                           )}
                         </div>
                       </td>
@@ -1604,6 +1630,41 @@ function CampaignMembers({
                                     {event.at ? (
                                       <span> · {new Date(event.at).toLocaleString()}</span>
                                     ) : null}
+                                    {event.requiresResolution && event.eventId && (
+                                      <div className="mgr-resolution">
+                                        <strong>Confirm what happened</strong>
+                                        <span>
+                                          Trevra stopped here because the side effect could not be
+                                          proven. Choose only what you verified.
+                                        </span>
+                                        <div className="mgr-resolution-actions">
+                                          <button
+                                            className="primary-button"
+                                            type="button"
+                                            disabled={busy !== ''}
+                                            onClick={() => onResolveUnknown(member, event, 'sent')}
+                                          >
+                                            <Check size={13} /> It happened
+                                          </button>
+                                          <button
+                                            className="secondary-button"
+                                            type="button"
+                                            disabled={busy !== ''}
+                                            onClick={() => onResolveUnknown(member, event, 'retry')}
+                                          >
+                                            <RefreshCw size={13} /> Retry — it did not happen
+                                          </button>
+                                          <button
+                                            className="ghost-button"
+                                            type="button"
+                                            disabled={busy !== ''}
+                                            onClick={() => onResolveUnknown(member, event, 'skip')}
+                                          >
+                                            Skip this step
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
                                   </li>
                                 ))}
                               </ul>
@@ -1631,6 +1692,33 @@ function CampaignMembers({
           </button>
           <span className="li-hint">{shown.length - limit} more lead(s) in this filter.</span>
         </div>
+      )}
+
+      {removeCandidate && (
+        <ConfirmDrawer
+          title={`Remove ${removeCandidate.firstName} ${removeCandidate.lastName} from this campaign?`}
+          body={
+            <>
+              <p>
+                This ends campaign automation for this lead and cancels work that has not started.
+                Actions that already happened remain in the lead history.
+              </p>
+              <p>
+                If you only need a temporary stop, use Pause instead. Removing the lead is intended
+                for a permanent campaign-level decision.
+              </p>
+            </>
+          }
+          confirmLabel="Remove from campaign"
+          tone="danger"
+          busy={busy.startsWith(`member:${removeCandidate.id}`)}
+          onConfirm={() => {
+            const member = removeCandidate;
+            setRemoveCandidate(null);
+            onRemove(member);
+          }}
+          onCancel={() => setRemoveCandidate(null)}
+        />
       )}
     </div>
   );
@@ -1833,6 +1921,7 @@ export function OutreachManagerRead({
   const [workerStatus, setWorkerStatus] = useState<LinkedInWorkerStatus | null>(null);
   const [companionStatus, setCompanionStatus] = useState<LinkedInCompanionStatus | null>(null);
   const [openCampaignId, setOpenCampaignId] = useState(initialCampaignId ?? '');
+  const [openCampaignSection, setOpenCampaignSection] = useState('');
   const [waveFilterByCampaign, setWaveFilterByCampaign] = useState<Record<string, number | null>>(
     {}
   );
@@ -2186,6 +2275,40 @@ export function OutreachManagerRead({
       'Unable to resume that lead at the selected node.'
     );
 
+  const resolveUnknownOutcome = (
+    member: ManagedCampaignMember,
+    event: CampaignMemberTimeline['events'][number],
+    resolution: 'sent' | 'retry' | 'skip'
+  ) => {
+    if (!event.eventId || (event.kind !== 'action' && event.kind !== 'channel')) return;
+    return guard(
+      `member:${member.id}`,
+      async () => {
+        await resolveLinkedInManagedUnknownOutcome(
+          event.kind === 'action' ? 'linkedin' : 'channel',
+          event.eventId!,
+          resolution
+        );
+        setToast(
+          resolution === 'sent'
+            ? `Confirmed the action for ${member.firstName} happened. The workflow can continue without replaying it.`
+            : resolution === 'retry'
+              ? `Confirmed the action for ${member.firstName} did not happen. It is safe to try again.`
+              : `Skipped the unresolved step for ${member.firstName}. It will not be retried.`
+        );
+        setTimelinesByMember((current) => {
+          const next = { ...current };
+          delete next[member.id];
+          return next;
+        });
+        await refreshCampaign(member.campaignId);
+        const timeline = await getLinkedInManagedMemberTimeline(member.id);
+        setTimelinesByMember((current) => ({ ...current, [member.id]: timeline }));
+      },
+      'Unable to resolve that unknown outcome.'
+    );
+  };
+
   const endMember = (member: ManagedCampaignMember) =>
     guard(
       `member:${member.id}`,
@@ -2434,7 +2557,7 @@ export function OutreachManagerRead({
   }, [campaigns, campaignFilter]);
 
   return (
-    <div className="page-stack">
+    <div className="page-stack li-polished">
       {error && <div className="error-banner">{error}</div>}
 
       <section className="page-panel" id="mgr-campaigns">
@@ -2590,7 +2713,7 @@ export function OutreachManagerRead({
                         campaign.status === 'running' ||
                         campaign.status === 'paused') && (
                         <button
-                          className="secondary-button"
+                          className="secondary-button is-danger"
                           type="button"
                           disabled={busy !== ''}
                           onClick={() => setStopping(campaign)}
@@ -2598,28 +2721,9 @@ export function OutreachManagerRead({
                           <Square size={14} /> {campaign.status === 'draft' ? 'Cancel' : 'Stop'}
                         </button>
                       )}
-                      {workflow && (
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          disabled={busy !== ''}
-                          title={
-                            campaign.status === 'running'
-                              ? 'Edit the saved workflow. This running campaign keeps its current workflow version until you pause and resume it.'
-                              : 'Edit this campaign’s saved workflow.'
-                          }
-                          onClick={() =>
-                            onNavigate(
-                              `/outreach/workflow/${encodeURIComponent(workflow.id)}/${encodeURIComponent(campaign.id)}`
-                            )
-                          }
-                        >
-                          <WorkflowIcon size={14} /> Edit workflow
-                        </button>
-                      )}
                       {terminal && rebuildable && (
                         <button
-                          className="secondary-button"
+                          className="primary-button"
                           type="button"
                           disabled={busy !== ''}
                           onClick={() => rebuild(campaign)}
@@ -2636,7 +2740,7 @@ export function OutreachManagerRead({
                             title="Retries only failures known to have produced no side effect. Unknown sends remain held."
                             onClick={() => void retryCampaignFailures(campaign)}
                           >
-                            <RefreshCw size={14} /> Retry definite failures
+                            <RefreshCw size={14} /> Retry safe failures
                           </button>
                         )}
                       {newerWorkflowAvailable && !terminal && (
@@ -2647,61 +2751,71 @@ export function OutreachManagerRead({
                           title="Only pending, unadmitted leads change. Existing waves keep their original workflow snapshot."
                           onClick={() => void applyLatestWorkflow(campaign)}
                         >
-                          <RefreshCw size={14} /> Apply workflow v{workflow!.version} to pending
+                          <RefreshCw size={14} /> Apply workflow v{workflow!.version}
                         </button>
                       )}
-                      <button
-                        className="secondary-button"
-                        type="button"
-                        disabled={busy !== ''}
-                        onClick={() => void exportCampaign(campaign)}
-                      >
-                        <Download size={14} /> Export CSV
-                      </button>
-                      <button
-                        className="secondary-button"
-                        type="button"
-                        disabled={busy !== ''}
-                        onClick={() => void duplicateCampaign(campaign)}
-                      >
-                        <Copy size={14} /> Duplicate draft
-                      </button>
-                      {terminal && (
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          disabled={busy !== ''}
-                          onClick={() => setDeleting(campaign)}
-                        >
-                          <Trash2 size={14} /> Delete
-                        </button>
-                      )}
+                      <ActionMenu
+                        label={`More actions for ${campaign.name}`}
+                        items={[
+                          ...(workflow
+                            ? [
+                                {
+                                  label: 'Edit workflow',
+                                  icon: <WorkflowIcon size={14} />,
+                                  disabled: busy !== '',
+                                  onSelect: () =>
+                                    onNavigate(
+                                      `/outreach/workflow/${encodeURIComponent(workflow.id)}/${encodeURIComponent(campaign.id)}`
+                                    )
+                                }
+                              ]
+                            : []),
+                          {
+                            label: 'Export CSV',
+                            icon: <Download size={14} />,
+                            disabled: busy !== '',
+                            onSelect: () => exportCampaign(campaign)
+                          },
+                          {
+                            label: 'Duplicate as draft',
+                            icon: <Copy size={14} />,
+                            disabled: busy !== '',
+                            onSelect: () => duplicateCampaign(campaign)
+                          },
+                          ...(terminal
+                            ? [
+                                {
+                                  label: 'Delete campaign',
+                                  icon: <Trash2 size={14} />,
+                                  disabled: busy !== '',
+                                  danger: true,
+                                  onSelect: () => setDeleting(campaign)
+                                }
+                              ]
+                            : [])
+                        ]}
+                      />
                     </div>
                   </div>
 
-                  <p className="mgr-meta">
+                  <div className="mgr-meta">
                     <span>
                       Sends from <b>{campaign.senderKeys.map(seatLabel).join(', ')}</b>
                     </span>
                     <span>
                       Owned by <b>{campaign.ownerName ?? 'workspace owner'}</b>
                       {isWorkspaceOwner && workspaceMembers.length > 0 && (
-                        <select
-                          aria-label={`Transfer ${campaign.name} owner`}
-                          value=""
+                        <ChoiceMenu
+                          label={`Change owner for ${campaign.name}`}
+                          title="Choose campaign owner"
+                          items={workspaceMembers.map((member) => ({
+                            id: member.userId,
+                            label: member.name
+                          }))}
+                          selectedId={campaign.ownerUserId}
                           disabled={busy !== ''}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            if (value) void transferCampaignOwner(campaign, value);
-                          }}
-                        >
-                          <option value="">Transfer…</option>
-                          {workspaceMembers.map((member) => (
-                            <option key={member.userId} value={member.userId}>
-                              {member.name}
-                            </option>
-                          ))}
-                        </select>
+                          onChoose={(userId) => transferCampaignOwner(campaign, userId)}
+                        />
                       )}
                     </span>
                     <span>
@@ -2722,14 +2836,16 @@ export function OutreachManagerRead({
                           : 'Workflow deleted'}
                     </span>
                     {campaign.startedAt && <span>Started {ago(campaign.startedAt, now)}</span>}
-                  </p>
+                  </div>
 
                   {open && workflow && campaign.status === 'running' && (
-                    <p className="li-hint">
-                      This campaign is locked to workflow v{campaign.workflowVersion ?? '—'} while
-                      it is running. You can edit the saved workflow, but those changes only reach
-                      pending/unadmitted leads after an explicit workflow upgrade; admitted waves
-                      keep their member snapshot.
+                    <p className="mgr-warmup">
+                      Workflow v{campaign.workflowVersion ?? '—'} locked
+                      <Hint label="Why is this workflow version locked?">
+                        Running leads keep the workflow version they entered with. Editing the saved
+                        workflow does not change admitted waves; an explicit workflow upgrade only
+                        updates pending, unadmitted leads.
+                      </Hint>
                     </p>
                   )}
 
@@ -2745,136 +2861,134 @@ export function OutreachManagerRead({
                 */}
                   {terminal ? (
                     <p className="mgr-warmup">
-                      {campaign.status === 'stopped' ? (
-                        <>
-                          Stopped. Every lead still in it was taken out where they stood and any
-                          queued action that had not started was cancelled, so those leads are free
-                          for another campaign. A stopped campaign cannot be started again
-                          {rebuildable ? (
-                            <>
-                              {' '}
-                              — build a new one from the same list and workflow to pick the work
-                              back up.
-                            </>
-                          ) : (
-                            ', and its lead list or workflow no longer exists to rebuild it from.'
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          Finished: every lead reached the end of the workflow, and nothing more
-                          goes out from it
-                          {rebuildable ? (
-                            <>
-                              {' '}
-                              — build a new one from the same list and workflow to run them through
-                              it again.
-                            </>
-                          ) : (
-                            '.'
-                          )}
-                        </>
-                      )}
+                      {campaign.status === 'stopped' ? 'Stopped' : 'Finished'}
+                      <Hint
+                        label={
+                          campaign.status === 'stopped'
+                            ? 'What happens after a campaign is stopped?'
+                            : 'What happens after a campaign finishes?'
+                        }
+                      >
+                        {campaign.status === 'stopped'
+                          ? `Queued work that had not started was cancelled and its leads are free for another campaign.${rebuildable ? ' Build a new campaign from the same list and workflow to run them again.' : ''}`
+                          : `Every lead reached the end of the workflow and nothing more will be sent.${rebuildable ? ' Build a new campaign from the same list and workflow to run them again.' : ''}`}
+                      </Hint>
                     </p>
                   ) : (
-                    <>
-                      {/* ONE LINE, ALWAYS. The four-number Allowance breakdown and its
-                        band/operator citation are detail an operator asks for by
-                        opening the card, exactly like the member list and timeline
-                        just below -- not a paragraph every collapsed card pays for. */}
-                      <p className="mgr-warmup">
-                        {campaign.status === 'draft' ? (
-                          <>
-                            Not started.{' '}
-                            {rampFractions(report) && fullCeilings ? (
-                              <>
-                                Day 1 is held to{' '}
-                                {Math.round((rampFractionForDay(report, 1) ?? 1) * 100)}% of what{' '}
-                                {seatLabel(campaign.seatKey)} may send.
-                              </>
-                            ) : (
-                              <>Nothing goes out until you start it.</>
-                            )}
-                          </>
-                        ) : warmup && warmup.fraction < 1 ? (
-                          <>
-                            <WarmupPips day={warmup.day} days={warmup.days} /> Warm-up day{' '}
-                            {warmup.day} of {warmup.days} — this campaign may use{' '}
-                            {Math.round(warmup.fraction * 100)}% of what{' '}
-                            {seatLabel(campaign.seatKey)} is allowed today. That is why day one
-                            looks slow.
-                          </>
-                        ) : warmup ? (
-                          <>
-                            <WarmupPips day={warmup.days} days={warmup.days} /> Full speed.
-                          </>
-                        ) : campaign.startedAt ? (
-                          // Started, but this account's ceilings could not be
-                          // read. Saying nothing beats printing a ramp day
-                          // that was never confirmed by anything.
-                          <>
-                            Running. Today&rsquo;s allowance for {seatLabel(campaign.seatKey)} could
-                            not be read just now.
-                          </>
-                        ) : (
-                          <>Warm-up starts when the campaign starts.</>
-                        )}
-                      </p>
-
-                      {open &&
-                        campaign.status === 'draft' &&
-                        rampFractions(report) &&
-                        fullCeilings && (
-                          <p className="mgr-warmup mgr-warmup-detail">
-                            Reaching full speed on day {rampFractions(report)?.length}. At full
-                            speed that is {plural(fullCeilings.invite.full, 'invite')} and{' '}
-                            {plural(fullCeilings.dm.full, 'message')} a day.
-                          </p>
-                        )}
-                      {open &&
-                        campaign.status !== 'draft' &&
-                        warmup &&
-                        warmup.fraction < 1 &&
-                        ceilings && (
-                          <>
-                            <p className="mgr-warmup mgr-warmup-detail">
-                              Campaign-day limits
-                              <Allowance ceilings={ceilings} of="today" />. The invite ceiling is{' '}
-                              {ceilingSourceNote(ceilings.invite)}. “Limit” is the ramp ceiling; it
-                              is not remaining capacity.
-                            </p>
-                            {operations && (
-                              <CapacityBreakdown
-                                ceilings={ceilings}
-                                allocated={operations.queues.allocatedCampaignDay}
-                              />
-                            )}
-                          </>
-                        )}
-                      {open &&
-                        campaign.status !== 'draft' &&
-                        warmup &&
-                        warmup.fraction >= 1 &&
-                        ceilings && (
-                          <>
-                            <p className="mgr-warmup mgr-warmup-detail">
-                              At full speed
-                              <Allowance ceilings={ceilings} of="full" />. The invite ceiling is{' '}
-                              {ceilingSourceNote(ceilings.invite)}. “Limit” is the campaign ceiling;
-                              it is not remaining capacity.
-                            </p>
-                            {operations && (
-                              <CapacityBreakdown
-                                ceilings={ceilings}
-                                allocated={operations.queues.allocatedCampaignDay}
-                              />
-                            )}
-                          </>
-                        )}
-                    </>
+                    <p className="mgr-warmup">
+                      {campaign.status === 'draft' ? (
+                        <>
+                          Not started
+                          {rampFractions(report) && fullCeilings && (
+                            <Hint label="How will campaign warm-up work?">
+                              Day 1 starts at{' '}
+                              {Math.round((rampFractionForDay(report, 1) ?? 1) * 100)}% of{' '}
+                              {seatLabel(campaign.seatKey)}&rsquo;s normal allowance and reaches
+                              full speed on day {rampFractions(report)!.length}. At full speed the
+                              current ceilings are {plural(fullCeilings.invite.full, 'invite')} and{' '}
+                              {plural(fullCeilings.dm.full, 'message')} a day.
+                            </Hint>
+                          )}
+                        </>
+                      ) : warmup && warmup.fraction < 1 ? (
+                        <>
+                          <WarmupPips day={warmup.day} days={warmup.days} /> Warm-up {warmup.day}/
+                          {warmup.days} · {Math.round(warmup.fraction * 100)}% today
+                          <Hint label="Why is this campaign warming up?">
+                            The campaign is temporarily limited to{' '}
+                            {Math.round(warmup.fraction * 100)}% of {seatLabel(campaign.seatKey)}
+                            &rsquo;s normal daily allowance to avoid a sudden activity spike. It
+                            reaches full speed on day {warmup.days}.
+                          </Hint>
+                        </>
+                      ) : warmup ? (
+                        <>
+                          <WarmupPips day={warmup.days} days={warmup.days} /> Full speed
+                        </>
+                      ) : campaign.startedAt ? (
+                        <>Running · allowance unavailable</>
+                      ) : (
+                        <>Warm-up starts on launch</>
+                      )}
+                    </p>
                   )}
 
                   {open && (
+                    <div
+                      className={`mgr-campaign-health${blockers.length > 0 ? ' has-issues' : ''}`}
+                    >
+                      <div>
+                        <strong>
+                          {blockers.length === 0 ? 'No blockers detected' : 'Needs attention'}
+                        </strong>
+                        <span>
+                          {blockers.length === 0
+                            ? operations
+                              ? `${operations.queues.queuedReady} queued · ${operations.queues.dueNow} eligible · ${campaign.inSequenceCount} in sequence`
+                              : 'Reading current delivery state…'
+                            : `${blockers[0]!.title}: ${blockers[0]!.detail}`}
+                        </span>
+                      </div>
+                      {blockers.length > 1 && (
+                        <span className="li-chip">{blockers.length - 1} more</span>
+                      )}
+                    </div>
+                  )}
+
+                  {open && (
+                    <div
+                      className="mgr-campaign-section-list"
+                      role="group"
+                      aria-label="Campaign details"
+                    >
+                      {(
+                        [
+                          [
+                            'execution',
+                            'Execution',
+                            operations
+                              ? `${operations.queues.queuedReady} queued · ${operations.queues.heldForReview} held`
+                              : 'Pipeline, backlog and waves'
+                          ],
+                          [
+                            'delivery',
+                            'Delivery',
+                            warmup && warmup.fraction < 1
+                              ? `${Math.round(warmup.fraction * 100)}% today`
+                              : 'Accounts, workflow and limits'
+                          ],
+                          [
+                            'settings',
+                            'Settings',
+                            `${campaign.priority} priority · schedule · exclusions`
+                          ],
+                          [
+                            'leads',
+                            'Leads',
+                            `${plural(campaign.memberCount, 'lead')} · ${campaign.inSequenceCount} in sequence`
+                          ]
+                        ] as const
+                      ).map(([section, label, detail]) => {
+                        const sectionKey = `${campaign.id}:${section}`;
+                        const sectionOpen = openCampaignSection === sectionKey;
+                        return (
+                          <button
+                            className="mgr-campaign-section-toggle"
+                            type="button"
+                            aria-expanded={sectionOpen}
+                            key={section}
+                            onClick={() => setOpenCampaignSection(sectionOpen ? '' : sectionKey)}
+                          >
+                            {sectionOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                            <span>{label}</span>
+                            <small>{detail}</small>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {open && openCampaignSection === `${campaign.id}:execution` && (
                     <div className="mgr-operations">
                       <h4>Execution pipeline</h4>
                       <p className="li-hint">
@@ -2965,43 +3079,6 @@ export function OutreachManagerRead({
                           <strong>{campaign.pausedCount}</strong>
                         </div>
                       </div>
-                      <div className="li-filter-row">
-                        <label>
-                          Campaign priority
-                          <select
-                            value={campaign.priority}
-                            disabled={busy !== ''}
-                            onChange={(event) =>
-                              void setCampaignPriority(
-                                campaign,
-                                event.target.value as ManagedCampaign['priority']
-                              )
-                            }
-                          >
-                            <option value="low">Low</option>
-                            <option value="normal">Normal</option>
-                            <option value="high">High</option>
-                          </select>
-                        </label>
-                        <p className="li-hint">
-                          Priority allocates remaining sender capacity; it never raises a safety
-                          ceiling.
-                        </p>
-                      </div>
-                      <CampaignExclusionEditor
-                        campaign={campaign}
-                        lists={lists}
-                        busy={busy !== ''}
-                        onSave={(policy) => saveCampaignExclusions(campaign, policy)}
-                      />
-                      <CampaignScheduleEditor
-                        campaign={campaign}
-                        timezone={
-                          seats.find((seat) => seat.seatKey === campaign.seatKey)?.timezone ?? 'UTC'
-                        }
-                        busy={busy !== ''}
-                        onSave={(schedule) => saveCampaignSchedule(campaign, schedule)}
-                      />
                       {operations ? (
                         <>
                           <h4>Queue and backlog</h4>
@@ -3275,7 +3352,106 @@ export function OutreachManagerRead({
                     </div>
                   )}
 
-                  {open && (
+                  {open && openCampaignSection === `${campaign.id}:delivery` && (
+                    <div className="mgr-operations">
+                      <div className="li-stat-grid">
+                        <div>
+                          <span>Sends from</span>
+                          <strong>{campaign.senderKeys.map(seatLabel).join(', ')}</strong>
+                        </div>
+                        <div>
+                          <span>Workflow</span>
+                          <strong>
+                            {workflow
+                              ? `${workflow.name}${campaign.workflowVersion === null ? '' : ` · v${campaign.workflowVersion}`}`
+                              : 'Workflow unavailable'}
+                          </strong>
+                        </div>
+                        <div>
+                          <span>Pacing</span>
+                          <strong>
+                            {warmup && warmup.fraction < 1
+                              ? `Warm-up ${warmup.day}/${warmup.days} · ${Math.round(warmup.fraction * 100)}%`
+                              : warmup
+                                ? 'Full speed'
+                                : campaign.status === 'draft'
+                                  ? 'Starts on launch'
+                                  : 'Allowance unavailable'}
+                          </strong>
+                        </div>
+                      </div>
+                      {ceilings ? (
+                        <>
+                          <h4>Daily ceilings</h4>
+                          <p className="mgr-warmup">
+                            <Allowance
+                              ceilings={ceilings}
+                              of={warmup && warmup.fraction < 1 ? 'today' : 'full'}
+                            />
+                            <Hint label="How are these delivery limits chosen?">
+                              The invite ceiling is {ceilingSourceNote(ceilings.invite)}. These
+                              numbers are maximums for the day, not remaining capacity.
+                            </Hint>
+                          </p>
+                          {operations && (
+                            <CapacityBreakdown
+                              ceilings={ceilings}
+                              allocated={operations.queues.allocatedCampaignDay}
+                            />
+                          )}
+                        </>
+                      ) : (
+                        <p className="empty-copy">Current delivery limits are unavailable.</p>
+                      )}
+                    </div>
+                  )}
+
+                  {open && openCampaignSection === `${campaign.id}:settings` && (
+                    <div className="mgr-operations">
+                      <section className="mgr-settings-block">
+                        <h4>Priority</h4>
+                        <div className="li-filter-row">
+                          <label>
+                            Campaign priority
+                            <select
+                              value={campaign.priority}
+                              disabled={busy !== ''}
+                              onChange={(event) =>
+                                void setCampaignPriority(
+                                  campaign,
+                                  event.target.value as ManagedCampaign['priority']
+                                )
+                              }
+                            >
+                              <option value="low">Low</option>
+                              <option value="normal">Normal</option>
+                              <option value="high">High</option>
+                            </select>
+                          </label>
+                          <p className="li-hint">
+                            Priority allocates remaining sender capacity; it never raises a safety
+                            ceiling.
+                          </p>
+                        </div>
+                      </section>
+                      <CampaignScheduleEditor
+                        campaign={campaign}
+                        timezone={
+                          seats.find((seat) => seat.seatKey === campaign.seatKey)?.timezone ?? 'UTC'
+                        }
+                        busy={busy !== ''}
+                        onSave={(schedule) => saveCampaignSchedule(campaign, schedule)}
+                      />
+                      <CampaignExclusionEditor
+                        campaign={campaign}
+                        lists={lists}
+                        busy={busy !== ''}
+                        onSave={(policy) => saveCampaignExclusions(campaign, policy)}
+                      />
+                    </div>
+                  )}
+
+                  {open && openCampaignSection === `${campaign.id}:leads` && (
                     <CampaignMembers
                       members={
                         waveFilterByCampaign[campaign.id]
@@ -3298,6 +3474,9 @@ export function OutreachManagerRead({
                         void rerunMemberCondition(member, stepId)
                       }
                       onResumeAtStep={(member, stepId) => void resumeMemberAtStep(member, stepId)}
+                      onResolveUnknown={(member, event, resolution) =>
+                        void resolveUnknownOutcome(member, event, resolution)
+                      }
                       followUpCampaigns={campaigns.filter(
                         (candidate) =>
                           candidate.id !== campaign.id &&

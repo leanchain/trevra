@@ -6,11 +6,13 @@ import {
   campaignMemberTimeline,
   createManagedCampaign,
   listCampaignMembers,
-  startManagedCampaign
+  pauseManagedCampaign,
+  startManagedCampaign,
+  stopManagedCampaign
 } from './managed-campaigns.js';
 import {
-  assertSafeCampaignDestination,
   recordCampaignEmailEvent,
+  resolveCampaignChannelUnknownOutcome,
   runCampaignChannelActions
 } from './campaign-channels.js';
 import { runManagedCampaigns } from './runner.js';
@@ -83,27 +85,63 @@ async function campaignFor(
   await startManagedCampaign(db, WORKSPACE, created.campaign.id, NOW);
   return created.campaign.id;
 }
-
-describe('campaign destination safety', () => {
-  it('rejects insecure, credentialed, and private destinations outside the test-local exception', async () => {
-    await expect(
-      assertSafeCampaignDestination('http://example.com/hook', { allowLocalTest: false })
-    ).rejects.toThrow(/HTTPS/i);
-    await expect(
-      assertSafeCampaignDestination('https://user:pass@example.com/hook', { allowLocalTest: false })
-    ).rejects.toThrow(/credentials/i);
-    await expect(
-      assertSafeCampaignDestination('https://127.0.0.1/hook', { allowLocalTest: false })
-    ).rejects.toThrow(/private|reserved/i);
-    await expect(
-      assertSafeCampaignDestination('https://169.254.169.254/latest/meta-data', {
-        allowLocalTest: false
-      })
-    ).rejects.toThrow(/private|reserved/i);
-  });
-});
-
 describe('campaign channel executor', () => {
+  it('does not claim channel work while a campaign is paused and retires it on stop', async () => {
+    const campaignId = await campaignFor(
+      [
+        {
+          id: 'end',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        }
+      ],
+      'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Smith,Acme,maya@example.com,https://linkedin.com/in/maya-paused-channel\n'
+    );
+    const member = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
+    await db
+      .prepare(
+        `UPDATE linkedin_campaign_members SET status='waiting',admitted_at=?::timestamptz
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(NOW.toISOString(), WORKSPACE, member.id);
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaign_channel_actions
+          (id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,idempotency_key,outcome_known,created_at,updated_at)
+         VALUES ('licha_pause',?,?,?,?,?,'email','planned',?::timestamptz,'{}'::jsonb,'pause-key',TRUE,?::timestamptz,?::timestamptz)`
+      )
+      .run(
+        WORKSPACE,
+        campaignId,
+        member.id,
+        member.contactId,
+        'email-fixture',
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+
+    await pauseManagedCampaign(db, WORKSPACE, campaignId, NOW);
+    expect((await runCampaignChannelActions(db, WORKSPACE, NOW)).claimed).toBe(0);
+    expect(
+      await db
+        .prepare(
+          `SELECT status FROM linkedin_campaign_channel_actions WHERE workspace_id=? AND id='licha_pause'`
+        )
+        .get<{ status: string }>(WORKSPACE)
+    ).toEqual({ status: 'planned' });
+
+    await stopManagedCampaign(db, WORKSPACE, campaignId, new Date(NOW.getTime() + 60_000));
+    expect(
+      await db
+        .prepare(
+          `SELECT status FROM linkedin_campaign_channel_actions WHERE workspace_id=? AND id='licha_pause'`
+        )
+        .get<{ status: string }>(WORKSPACE)
+    ).toEqual({ status: 'skipped' });
+  });
+
   it('uses an existing email without enrichment cost and advances the member exactly once', async () => {
     const campaignId = await campaignFor(
       [
@@ -154,6 +192,75 @@ describe('campaign channel executor', () => {
       )
       .get<{ total: number }>(WORKSPACE, campaignId);
     expect(count?.total).toBe(1);
+  });
+
+  it('resolves an unknown channel outcome without replaying the side effect', async () => {
+    const campaignId = await campaignFor(
+      [
+        {
+          id: 'find',
+          action: 'find_email',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { providerId: null, refresh: false }
+        },
+        {
+          id: 'end',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        }
+      ],
+      'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Smith,Acme,maya@example.com,https://linkedin.com/in/maya-unknown-channel\n'
+    );
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    const member = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
+    const channel = await db
+      .prepare(
+        `SELECT id FROM linkedin_campaign_channel_actions
+         WHERE workspace_id=? AND campaign_id=? AND workflow_step_id='find'`
+      )
+      .get<{ id: string }>(WORKSPACE, campaignId);
+    expect(channel).toBeDefined();
+
+    // Recreate the crash boundary: provider may have acted, but Trevra did not learn the outcome.
+    await db
+      .prepare(
+        `UPDATE linkedin_campaign_channel_actions
+         SET status='unknown',outcome_known=FALSE,external_ref=NULL,provider=NULL,last_error='socket closed'
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(WORKSPACE, channel!.id);
+    await db
+      .prepare(
+        `UPDATE linkedin_campaign_members
+         SET step_index=0,current_step_id='find',completed_step_ids='[]'::jsonb,status='waiting',next_eligible_at=?::timestamptz
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(NOW.toISOString(), WORKSPACE, member.id);
+
+    const resolved = await resolveCampaignChannelUnknownOutcome(
+      db,
+      WORKSPACE,
+      channel!.id,
+      'sent',
+      new Date(NOW.getTime() + 60_000)
+    );
+    expect(resolved.resolved).toBe(true);
+    const settled = await db
+      .prepare(
+        `SELECT status,outcome_known,external_ref FROM linkedin_campaign_channel_actions WHERE workspace_id=? AND id=?`
+      )
+      .get<{ status: string; outcome_known: boolean; external_ref: string | null }>(
+        WORKSPACE,
+        channel!.id
+      );
+    expect(settled).toMatchObject({
+      status: 'sent',
+      outcome_known: true,
+      external_ref: 'operator-confirmed'
+    });
+    const after = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
+    expect(after.stepIndex).toBe(1);
   });
 
   it('reserves enrichment credits exactly once and blocks before the provider when the campaign cap is exhausted', async () => {
@@ -239,146 +346,6 @@ describe('campaign channel executor', () => {
     }
   });
 
-  it('sends a webhook once with a stable idempotency key', async () => {
-    let hits = 0;
-    let idempotency = '';
-    let server: Server | null = null;
-    const port = await new Promise<number>((resolve) => {
-      server = createServer((req, res) => {
-        hits += 1;
-        idempotency = String(req.headers['idempotency-key'] ?? '');
-        req.resume();
-        res.statusCode = 204;
-        res.end();
-      }).listen(0, '127.0.0.1', () => {
-        const address = server!.address();
-        resolve(typeof address === 'object' && address ? address.port : 0);
-      });
-    });
-    try {
-      const campaignId = await campaignFor(
-        [
-          {
-            id: 'hook',
-            action: 'webhook',
-            delayBefore: { amount: 0, unit: 'hours' },
-            config: {
-              url: `http://127.0.0.1:${port}/hook`,
-              method: 'POST',
-              bodyTemplate: '{"first":"{{first_name}}"}'
-            }
-          },
-          {
-            id: 'end',
-            action: 'end',
-            delayBefore: { amount: 0, unit: 'hours' },
-            config: { outcome: 'completed' }
-          }
-        ],
-        'First Name,Last Name,Company,LinkedIn URL\nMaya,Smith,Acme,https://linkedin.com/in/maya-smith\n'
-      );
-      await runManagedCampaigns(db, WORKSPACE, NOW);
-      await runCampaignChannelActions(db, WORKSPACE, NOW);
-      await runManagedCampaigns(db, WORKSPACE, new Date(NOW.getTime() + 60_000));
-      expect(hits).toBe(1);
-      expect(idempotency).toMatch(/^[a-f0-9]{64}$/);
-      const row = await db
-        .prepare(
-          `SELECT status FROM linkedin_campaign_channel_actions WHERE workspace_id=? AND campaign_id=?`
-        )
-        .get<{ status: string }>(WORKSPACE, campaignId);
-      expect(row?.status).toBe('sent');
-    } finally {
-      if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
-    }
-  });
-
-  it('executes an approved remote handoff exactly once for CRM/list/sequencer actions', async () => {
-    let hits = 0;
-    let captured: Record<string, unknown> = {};
-    let idempotency = '';
-    let server: Server | null = null;
-    const port = await new Promise<number>((resolve) => {
-      server = createServer((req, res) => {
-        hits += 1;
-        idempotency = String(req.headers['x-trevra-idempotency-key'] ?? '');
-        let body = '';
-        req.on('data', (chunk) => (body += String(chunk)));
-        req.on('end', () => {
-          captured = JSON.parse(body) as Record<string, unknown>;
-          res.setHeader('content-type', 'application/json');
-          res.end(JSON.stringify({ provider: 'acme-crm', externalRef: 'contact_42' }));
-        });
-      }).listen(0, '127.0.0.1', () => {
-        const address = server!.address();
-        resolve(typeof address === 'object' && address ? address.port : 0);
-      });
-    });
-    const oldAdapters = process.env.TREVRA_REMOTE_ACTION_ADAPTERS_JSON;
-    const oldToken = process.env.TEST_CRM_ACTION_TOKEN;
-    process.env.TREVRA_REMOTE_ACTION_ADAPTERS_JSON = JSON.stringify([
-      {
-        actionType: 'acme.crm.update',
-        endpoint: `http://127.0.0.1:${port}/action`,
-        tokenEnv: 'TEST_CRM_ACTION_TOKEN',
-        provider: 'acme-crm'
-      }
-    ]);
-    process.env.TEST_CRM_ACTION_TOKEN = 'test-secret';
-    try {
-      const campaignId = await campaignFor(
-        [
-          {
-            id: 'handoff',
-            action: 'external_handoff',
-            delayBefore: { amount: 0, unit: 'hours' },
-            config: {
-              provider: 'remote_action',
-              destination: 'acme.crm.update',
-              payloadTemplate: '{"stage":"qualified","lead":"{{first_name}}"}'
-            }
-          },
-          {
-            id: 'end',
-            action: 'end',
-            delayBefore: { amount: 0, unit: 'hours' },
-            config: { outcome: 'completed' }
-          }
-        ],
-        'First Name,Last Name,Company,LinkedIn URL\nMaya,Smith,Acme,https://linkedin.com/in/maya-crm\n'
-      );
-      await runManagedCampaigns(db, WORKSPACE, NOW);
-      expect(hits).toBe(1);
-      expect(idempotency).toMatch(/^[a-f0-9]{64}$/);
-      expect(captured).toMatchObject({
-        actionType: 'acme.crm.update',
-        workspaceId: WORKSPACE,
-        payload: { stage: 'qualified', lead: 'Maya' }
-      });
-      const row = await db
-        .prepare(
-          `SELECT status,provider,external_ref FROM linkedin_campaign_channel_actions WHERE workspace_id=? AND campaign_id=? AND kind='external_handoff'`
-        )
-        .get<{ status: string; provider: string | null; external_ref: string | null }>(
-          WORKSPACE,
-          campaignId
-        );
-      expect(row).toMatchObject({
-        status: 'sent',
-        provider: 'acme-crm',
-        external_ref: 'contact_42'
-      });
-      await runManagedCampaigns(db, WORKSPACE, new Date(NOW.getTime() + 60_000));
-      expect(hits).toBe(1);
-    } finally {
-      if (oldAdapters === undefined) delete process.env.TREVRA_REMOTE_ACTION_ADAPTERS_JSON;
-      else process.env.TREVRA_REMOTE_ACTION_ADAPTERS_JSON = oldAdapters;
-      if (oldToken === undefined) delete process.env.TEST_CRM_ACTION_TOKEN;
-      else process.env.TEST_CRM_ACTION_TOKEN = oldToken;
-      if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
-    }
-  });
-
   it('an email reply stops LinkedIn and channel work for the same member', async () => {
     const campaignId = await campaignFor(
       [
@@ -430,7 +397,7 @@ describe('campaign channel executor', () => {
     await db
       .prepare(
         `INSERT INTO linkedin_campaign_channel_actions (id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,idempotency_key,created_at,updated_at)
-       VALUES ('licha_future',?,?,?,?,?,'webhook','planned',?::timestamptz,'{}'::jsonb,'idem-future',?::timestamptz,?::timestamptz)`
+       VALUES ('licha_future',?,?,?,?,?,'email','planned',?::timestamptz,'{}'::jsonb,'idem-future',?::timestamptz,?::timestamptz)`
       )
       .run(
         WORKSPACE,

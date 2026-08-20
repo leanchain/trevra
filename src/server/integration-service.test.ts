@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import Stripe from 'stripe';
 
 const nangoMock = vi.hoisted(() => ({
   createConnectSession: vi.fn(async (_body: Record<string, unknown>) => ({
@@ -36,9 +35,7 @@ const {
   handleNangoWebhook,
   executeConnectedAction,
   ingestCanonicalRecord,
-  listAvailableIntegrations,
-  processStripeWebhook,
-  recordOutcome
+  listAvailableIntegrations
 } = await import('./integration-service.js');
 
 type DbQueryable = ConstructorParameters<typeof Db>[0];
@@ -70,7 +67,6 @@ const createdWorkspaces: string[] = [];
 
 afterEach(async () => {
   for (const key of managedEnv) delete process.env[key];
-  delete process.env.STRIPE_WEBHOOK_SECRET;
   nangoMock.createConnectSession.mockClear();
   nangoMock.verifyIncomingWebhookRequest.mockClear();
   nangoMock.listRecords.mockClear();
@@ -93,22 +89,18 @@ async function openLiveDatabase(): Promise<LiveDb> {
   return live;
 }
 
-/** A throwaway tenant with one client and one unpaid invoice, torn down in afterEach. */
-async function seedTenant(
-  database: LiveDb,
-  externalRef: string
-): Promise<{ workspaceId: string; clientId: string; invoiceId: string }> {
+/** A throwaway tenant with one GTM identity, torn down in afterEach. */
+async function seedTenant(database: LiveDb): Promise<{ workspaceId: string; clientId: string }> {
   const now = new Date().toISOString();
   const workspaceId = id('ws');
   const clientId = id('cl');
-  const invoiceId = id('inv');
   createdWorkspaces.push(workspaceId);
   await database
     .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
     .run(workspaceId, `Tenant ${workspaceId}`, now);
   await database
     .prepare(
-      'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,active_value,currency,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+      'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
     )
     .run(
       clientId,
@@ -116,63 +108,11 @@ async function seedTenant(
       'Client',
       'Contact',
       `${clientId}@example.test`,
-      'active',
-      0,
-      'EUR',
+      'prospect',
       now,
       now
     );
-  await database
-    .prepare(
-      'INSERT INTO invoices (id,workspace_id,client_id,external_ref,amount,currency,status,issued_at,due_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
-    )
-    .run(invoiceId, workspaceId, clientId, externalRef, 1000, 'EUR', 'sent', now, now, now);
-  return { workspaceId, clientId, invoiceId };
-}
-
-/**
- * A genuinely signed Stripe event.
- *
- * The whole point of the attack these tests describe is that the signature is
- * REAL: `STRIPE_WEBHOOK_SECRET` is one deployment-wide secret, so anyone able to
- * put an object in the deployment's Stripe account produces events that pass
- * `constructEvent`. Forging the signature is not required and is not simulated.
- */
-function signedStripeEvent(
-  secret: string,
-  event: Record<string, unknown>
-): { body: Buffer; signature: string } {
-  const payload = JSON.stringify(event);
-  const signature = new Stripe('sk_test_placeholder').webhooks.generateTestHeaderString({
-    payload,
-    secret
-  });
-  return { body: Buffer.from(payload, 'utf8'), signature };
-}
-
-function invoicePaidEvent(input: {
-  eventId: string;
-  number: string;
-  metadata: Record<string, string>;
-}): Record<string, unknown> {
-  return {
-    id: input.eventId,
-    object: 'event',
-    api_version: '2024-06-20',
-    created: Math.floor(Date.now() / 1000),
-    type: 'invoice.paid',
-    data: {
-      object: {
-        id: `in_${input.eventId}`,
-        object: 'invoice',
-        number: input.number,
-        currency: 'eur',
-        amount_paid: 100_000,
-        status_transitions: { paid_at: Math.floor(Date.now() / 1000) },
-        metadata: input.metadata
-      }
-    }
-  };
+  return { workspaceId, clientId };
 }
 
 describe('integration catalog', () => {
@@ -321,309 +261,90 @@ describe('Nango connect sessions', () => {
   });
 });
 
-/**
- * These are the attacks, written as tests.
- *
- * Both used to succeed. Neither needs stolen credentials, a forged signature, or
- * anything beyond what a normal tenant of a hosted deployment already holds.
- */
-describe('Stripe webhook tenancy', () => {
-  it('refuses to touch a victim invoice named only by attacker-controlled metadata', async () => {
+describe('GTM canonical ingestion', () => {
+  it('stores GTM messages and opportunities', async () => {
     const database = await openLiveDatabase();
-    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_secret_for_tenancy_checks';
-
-    const victim = await seedTenant(database, 'INV-VICTIM-1');
-    const attacker = await seedTenant(database, 'INV-ATTACKER-1');
-
-    // The attacker's own Stripe invoice, paid for real, carrying metadata that
-    // points at the victim's workspace and the victim's invoice row.
-    const { body, signature } = signedStripeEvent(
-      process.env.STRIPE_WEBHOOK_SECRET,
-      invoicePaidEvent({
-        eventId: `evt_${id('atk')}`,
-        number: 'INV-ATTACKER-1',
-        metadata: { trevra_workspace_id: victim.workspaceId, trevra_invoice_id: victim.invoiceId }
-      })
-    );
-
-    const result = await processStripeWebhook(database, body, signature);
-    expect(result).toEqual({ duplicate: false, processed: 'rejected' });
-
-    const victimInvoice = await database
-      .prepare('SELECT status,paid_at FROM invoices WHERE id=?')
-      .get<{ status: string; paid_at: string | null }>(victim.invoiceId);
-    expect(victimInvoice?.status).toBe('sent');
-    expect(victimInvoice?.paid_at).toBeNull();
-
-    const payments = await database
-      .prepare('SELECT COUNT(*)::int AS total FROM payments WHERE workspace_id=?')
-      .get<{ total: number }>(victim.workspaceId);
-    expect(payments?.total).toBe(0);
-
-    // The attacker's own invoice is not paid either: the event was refused, not redirected.
-    const attackerInvoice = await database
-      .prepare('SELECT status FROM invoices WHERE id=?')
-      .get<{ status: string }>(attacker.invoiceId);
-    expect(attackerInvoice?.status).toBe('sent');
-
-    const audit = await database
-      .prepare('SELECT status,error FROM webhook_events WHERE provider=? AND external_event_id=?')
-      .get<{ status: string; error: string | null }>(
-        'stripe',
-        JSON.parse(body.toString('utf8')).id
-      );
-    expect(audit?.status).toBe('rejected');
-    expect(audit?.error).toContain('metadata claims workspace');
-  });
-
-  it('pays the invoice the stored records actually resolve to, with no metadata at all', async () => {
-    const database = await openLiveDatabase();
-    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_secret_for_tenancy_checks';
-
-    const owner = await seedTenant(database, 'INV-OWNER-1');
-    const { body, signature } = signedStripeEvent(
-      process.env.STRIPE_WEBHOOK_SECRET,
-      invoicePaidEvent({
-        eventId: `evt_${id('ok')}`,
-        number: 'INV-OWNER-1',
-        metadata: {}
-      })
-    );
-
-    expect(await processStripeWebhook(database, body, signature)).toEqual({
-      duplicate: false,
-      processed: 'invoice-paid'
-    });
-
-    const paid = await database
-      .prepare('SELECT status,paid_at FROM invoices WHERE id=?')
-      .get<{ status: string; paid_at: string | null }>(owner.invoiceId);
-    expect(paid?.status).toBe('paid');
-    expect(paid?.paid_at).not.toBeNull();
-
-    const payment = await database
-      .prepare('SELECT amount,workspace_id FROM payments WHERE workspace_id=?')
-      .get<{ amount: number; workspace_id: string }>(owner.workspaceId);
-    expect(payment?.amount).toBe(1000);
-  });
-
-  // The regression `app.test.ts` caught: 058 keys idempotency on the workspace,
-  // so recording an event unattributed and then resolving it vacated the
-  // `@unresolved` slot and the next redelivery was processed all over again.
-  it('treats a redelivery of an already-processed event as a duplicate', async () => {
-    const database = await openLiveDatabase();
-    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_secret_for_tenancy_checks';
-
-    const owner = await seedTenant(database, 'INV-REDELIVERED-1');
-    const { body, signature } = signedStripeEvent(
-      process.env.STRIPE_WEBHOOK_SECRET,
-      invoicePaidEvent({
-        eventId: `evt_${id('dup')}`,
-        number: 'INV-REDELIVERED-1',
-        metadata: {}
-      })
-    );
-
-    expect(await processStripeWebhook(database, body, signature)).toEqual({
-      duplicate: false,
-      processed: 'invoice-paid'
-    });
-    expect(await processStripeWebhook(database, body, signature)).toEqual({
-      duplicate: true,
-      processed: 'duplicate'
-    });
-
-    const rows = await database
-      .prepare(
-        'SELECT COUNT(*)::int AS total FROM webhook_events WHERE provider=? AND external_event_id=?'
-      )
-      .get<{ total: number }>('stripe', JSON.parse(body.toString('utf8')).id);
-    expect(rows?.total).toBe(1);
-    const payments = await database
-      .prepare('SELECT COUNT(*)::int AS total FROM payments WHERE workspace_id=?')
-      .get<{ total: number }>(owner.workspaceId);
-    expect(payments?.total).toBe(1);
-  });
-
-  it('refuses when the same external reference exists in two workspaces', async () => {
-    const database = await openLiveDatabase();
-    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_secret_for_tenancy_checks';
-
-    const first = await seedTenant(database, 'INV-SHARED-1');
-    const second = await seedTenant(database, 'INV-SHARED-1');
-    const { body, signature } = signedStripeEvent(
-      process.env.STRIPE_WEBHOOK_SECRET,
-      invoicePaidEvent({
-        eventId: `evt_${id('amb')}`,
-        number: 'INV-SHARED-1',
-        metadata: {}
-      })
-    );
-
-    expect(await processStripeWebhook(database, body, signature)).toEqual({
-      duplicate: false,
-      processed: 'rejected'
-    });
-    for (const tenant of [first, second]) {
-      const row = await database
-        .prepare('SELECT status FROM invoices WHERE id=?')
-        .get<{ status: string }>(tenant.invoiceId);
-      expect(row?.status).toBe('sent');
-    }
-  });
-});
-
-describe('child rows carry their parent workspace', () => {
-  // Migration 058 added `workspace_id` to ten tables that were reachable only
-  // through a parent id, and left it nullable because writers like this one
-  // were not filling it. Until they do, `SET NOT NULL` cannot land and every
-  // read of these rows still depends on remembering a join.
-  it('stamps milestones, scope items and contract clauses from their parent', async () => {
-    const database = await openLiveDatabase();
-    const tenant = await seedTenant(database, 'INV-CHILD-1');
+    const tenant = await seedTenant(database);
     const occurredAt = new Date().toISOString();
 
-    await ingestCanonicalRecord(database, tenant.workspaceId, 'bonsai', null, {
-      kind: 'contract',
-      id: `ct-${id('x')}`,
-      clientName: 'Child Co',
-      projectName: 'Child project',
-      title: 'Statement of work',
-      status: 'signed',
-      signedAt: occurredAt,
-      effectiveAt: occurredAt,
-      clauses: [
-        {
-          type: 'change_order',
-          title: 'Extra pages',
-          content: 'Priced separately.',
-          value: 750,
-          unit: 'per page'
-        }
-      ]
+    await ingestCanonicalRecord(database, tenant.workspaceId, 'test', null, {
+      kind: 'message',
+      id: `msg-${id('x')}`,
+      clientName: 'Prospect Co',
+      contactName: 'Ada Example',
+      clientEmail: 'ada@example.test',
+      direction: 'inbound',
+      subject: 'Demo request',
+      body: 'Can we talk next week?',
+      occurredAt
     });
-    await ingestCanonicalRecord(database, tenant.workspaceId, 'bonsai', null, {
-      kind: 'scope_item',
-      id: `sc-${id('x')}`,
-      clientName: 'Child Co',
-      projectName: 'Child project',
-      description: 'One landing page',
-      included: true,
-      currency: 'EUR'
+    await ingestCanonicalRecord(database, tenant.workspaceId, 'test', null, {
+      kind: 'opportunity',
+      id: `opp-${id('x')}`,
+      clientName: 'Prospect Co',
+      contactName: 'Ada Example',
+      clientEmail: 'ada@example.test',
+      title: 'Demo follow-up',
+      status: 'qualified',
+      proposalSentAt: occurredAt
     });
 
-    for (const table of ['scope_items', 'contract_clauses']) {
-      const rows = await database
-        .prepare(`SELECT workspace_id FROM ${table} WHERE workspace_id=?`)
-        .all<{ workspace_id: string }>(tenant.workspaceId);
-      expect(rows.length, `${table} rows stamped with the parent workspace`).toBe(1);
-    }
-  });
-
-  it('takes the outcome workspace from the recommendation, not from the caller', async () => {
-    const database = await openLiveDatabase();
-    const tenant = await seedTenant(database, 'INV-OUTCOME-1');
-    const recommendationId = id('rec');
-    const now = new Date().toISOString();
-    await database
+    const person = await database
       .prepare(
-        `
-      INSERT INTO recommendations (id,workspace_id,client_id,source_key,type,title,summary,estimated_amount,currency,confidence,urgency,priority_score,status,recommended_action,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `
+        'SELECT name,contact_name,email,status FROM clients WHERE workspace_id=? AND email=?'
       )
-      .run(
-        recommendationId,
-        tenant.workspaceId,
-        tenant.clientId,
-        `invoice:${tenant.invoiceId}:overdue`,
-        'overdue_invoice',
-        'Chase invoice',
-        'It is late.',
-        1000,
-        'EUR',
-        0.9,
-        0.5,
-        0.7,
-        'open',
-        'prepare',
-        now,
-        now
-      );
+      .get<Record<string, unknown>>(tenant.workspaceId, 'ada@example.test');
+    expect(person).toMatchObject({
+      name: 'Prospect Co',
+      contact_name: 'Ada Example',
+      email: 'ada@example.test',
+      status: 'active'
+    });
 
-    await recordOutcome(
-      database,
-      tenant.workspaceId,
-      recommendationId,
-      'revenue_collected',
-      1000,
-      'EUR',
-      {}
-    );
-
-    const outcome = await database
-      .prepare('SELECT workspace_id FROM recommendation_outcomes WHERE recommendation_id=?')
-      .get<{ workspace_id: string | null }>(recommendationId);
-    expect(outcome?.workspace_id).toBe(tenant.workspaceId);
-  });
-
-  it('refuses an outcome against a recommendation in another workspace', async () => {
-    const database = await openLiveDatabase();
-    const owner = await seedTenant(database, 'INV-OWNER-2');
-    const intruder = await seedTenant(database, 'INV-INTRUDER-2');
-    const recommendationId = id('rec');
-    const now = new Date().toISOString();
-    await database
+    const identity = await database
       .prepare(
-        `
-      INSERT INTO recommendations (id,workspace_id,client_id,source_key,type,title,summary,estimated_amount,currency,confidence,urgency,priority_score,status,recommended_action,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `
+        'SELECT provider,identity_type,identity_value FROM contact_identities WHERE workspace_id=? AND identity_value=?'
       )
-      .run(
-        recommendationId,
-        owner.workspaceId,
-        owner.clientId,
-        `invoice:${owner.invoiceId}:overdue`,
-        'overdue_invoice',
-        'Chase invoice',
-        'It is late.',
-        1000,
-        'EUR',
-        0.9,
-        0.5,
-        0.7,
-        'open',
-        'prepare',
-        now,
-        now
-      );
+      .get<Record<string, unknown>>(tenant.workspaceId, 'ada@example.test');
+    expect(identity).toMatchObject({
+      provider: 'test',
+      identity_type: 'email',
+      identity_value: 'ada@example.test'
+    });
 
-    await expect(
-      recordOutcome(
-        database,
-        intruder.workspaceId,
-        recommendationId,
-        'revenue_collected',
-        1000,
-        'EUR',
-        {}
-      )
-    ).rejects.toThrow('does not belong to this workspace');
-    const outcomes = await database
+    const message = await database
+      .prepare('SELECT direction,subject,body FROM messages WHERE workspace_id=? AND subject=?')
+      .get<Record<string, unknown>>(tenant.workspaceId, 'Demo request');
+    expect(message).toEqual({
+      direction: 'inbound',
+      subject: 'Demo request',
+      body: 'Can we talk next week?'
+    });
+
+    const opportunity = await database
       .prepare(
-        'SELECT COUNT(*)::int AS total FROM recommendation_outcomes WHERE recommendation_id=?'
+        'SELECT title,status,proposal_sent_at FROM opportunities WHERE workspace_id=? AND title=?'
       )
-      .get<{ total: number }>(recommendationId);
-    expect(outcomes?.total).toBe(0);
+      .get<Record<string, unknown>>(tenant.workspaceId, 'Demo follow-up');
+    expect(opportunity).toMatchObject({ title: 'Demo follow-up', status: 'qualified' });
+    expect(opportunity?.proposal_sent_at).toBeTruthy();
+
+    const sourceRecords = await database
+      .prepare(
+        'SELECT object_type,provider FROM source_records WHERE workspace_id=? ORDER BY object_type'
+      )
+      .all<Record<string, unknown>>(tenant.workspaceId);
+    expect(sourceRecords).toEqual([
+      { object_type: 'message', provider: 'test' },
+      { object_type: 'opportunity', provider: 'test' }
+    ]);
   });
 });
-
 describe('connected mailbox threading', () => {
   async function mailbox(provider: 'gmail' | 'microsoft') {
     const database = await openLiveDatabase();
     process.env.NANGO_API_KEY = 'test-nango-key';
-    const tenant = await seedTenant(database, `INV-${provider}-${id('mail')}`);
+    const tenant = await seedTenant(database);
     const connectionId = id('conn');
     await database
       .prepare(
@@ -643,7 +364,6 @@ describe('connected mailbox threading', () => {
       );
     return { database, workspaceId: tenant.workspaceId, connectionId };
   }
-
   it('threads Gmail follow-ups with threadId and RFC reply headers', async () => {
     const { database, workspaceId, connectionId } = await mailbox('gmail');
     nangoMock.post
@@ -742,13 +462,13 @@ describe('Nango sync tenancy', () => {
     const database = await openLiveDatabase();
     process.env.NANGO_API_KEY = 'test-nango-key';
 
-    const providerConfigKey = 'trevra-stripe';
+    const providerConfigKey = 'trevra-gmail';
     const externalConnectionId = `conn-${id('dup')}`;
     const now = new Date().toISOString();
     // Legal rows: `connections` is UNIQUE(workspace_id, provider_config_key,
     // external_connection_id), so the same pair in two tenants violates nothing.
-    for (const externalRef of ['INV-A', 'INV-B']) {
-      const tenant = await seedTenant(database, externalRef);
+    for (const _ of [0, 1]) {
+      const tenant = await seedTenant(database);
       await database
         .prepare(
           'INSERT INTO connections (id,workspace_id,provider,provider_config_key,external_connection_id,display_name,status,is_demo,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
@@ -756,7 +476,7 @@ describe('Nango sync tenancy', () => {
         .run(
           id('conn'),
           tenant.workspaceId,
-          'stripe',
+          'gmail',
           providerConfigKey,
           externalConnectionId,
           null,
@@ -773,7 +493,7 @@ describe('Nango sync tenancy', () => {
       success: true,
       providerConfigKey,
       connectionId: externalConnectionId,
-      model: 'trevra-invoices'
+      model: 'trevra-messages'
     });
 
     await expect(handleNangoWebhook(database, payload, {})).rejects.toThrow(
@@ -796,7 +516,7 @@ describe('Nango authorization notifications', () => {
   it('alerts once per transition into needs_reauth and alerts again after a successful reconnect', async () => {
     const database = await openLiveDatabase();
     process.env.NANGO_API_KEY = 'test-nango-key';
-    const tenant = await seedTenant(database, 'INV-AUTH-NOTIFY-1');
+    const tenant = await seedTenant(database);
     const providerConfigKey = 'trevra-gmail';
     const connectionId = `gmail-${id('conn')}`;
 

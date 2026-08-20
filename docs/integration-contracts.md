@@ -1,25 +1,17 @@
-# Trevra integration contracts
+# Trevra GTM integration contracts
 
-Trevra uses Nango for OAuth or API-key authorization, encrypted credentials, refresh, incremental sync storage, retries, rate-limit handling, observability, and action execution. Provider integrations must emit Trevra's canonical commercial models. Trevra owns the normalization boundary, provenance, evidence graph, recommendation policies, approvals, and outcomes.
+**Status:** Current  
+**Product boundary:** Trevra is a GTM operating system. Integrations may observe GTM state or execute an explicit GTM action. They do not turn Trevra into an accounting system, application backend, generic event bus, or arbitrary webhook runtime.
 
 ## Connection identity
 
-Every Nango Connect Session is tagged with:
+Live provider connections are workspace scoped. Trevra stores provider/config connection references; provider credentials remain in the configured credential provider (normally Nango or Trevra secret custody).
 
-```json
-{
-  "end_user_id": "<trevra user id>",
-  "end_user_email": "person@example.com",
-  "organization_id": "<trevra workspace id>",
-  "end_user_display_name": "person@example.com"
-}
-```
+A provider connection must never choose a workspace from payload data. The authenticated connection/source determines the workspace.
 
-The Nango auth webhook must preserve those tags. Trevra uses `organization_id` for tenant isolation and stores only the Nango connection ID, provider configuration key, status, and sync metadata—not raw OAuth credentials.
+## Synced canonical records
 
-## Canonical models
-
-Every synced record must include a stable provider-side `id` and one of the following `kind` values.
+The legacy Nango canonical sync surface is intentionally narrow while the People/Conversation spine is completed. It accepts only GTM records that Trevra can own today.
 
 ### Message
 
@@ -29,13 +21,12 @@ Every synced record must include a stable provider-side `id` and one of the foll
   "id": "provider-message-id",
   "clientName": "Acme Labs",
   "contactName": "Maya Chen",
-  "clientEmail": "maya@acme.com",
-  "projectName": "Website launch",
+  "clientEmail": "maya@acme.example",
   "direction": "inbound",
-  "subject": "A few additions",
-  "body": "Could you also create two additional pages?",
-  "occurredAt": "2026-07-23T09:00:00.000Z",
-  "externalUrl": "https://provider.example/item/123"
+  "subject": "Re: proposal",
+  "body": "Can we talk on Thursday?",
+  "occurredAt": "2026-08-20T09:00:00.000Z",
+  "externalUrl": "https://provider.example/message/123"
 }
 ```
 
@@ -45,191 +36,90 @@ Every synced record must include a stable provider-side `id` and one of the foll
 {
   "kind": "opportunity",
   "id": "provider-opportunity-id",
-  "clientName": "Orbit Health",
-  "contactName": "Jonas Keller",
-  "clientEmail": "jonas@orbit.com",
-  "title": "Brand strategy engagement",
-  "value": 8000,
-  "currency": "EUR",
+  "clientName": "Acme Labs",
+  "contactName": "Maya Chen",
+  "clientEmail": "maya@acme.example",
+  "title": "Expansion conversation",
   "status": "proposal_sent",
-  "proposalSentAt": "2026-07-14T09:00:00.000Z",
-  "expectedResponseAt": "2026-07-18T09:00:00.000Z",
-  "externalUrl": "https://provider.example/opportunities/123"
+  "proposalSentAt": "2026-08-18T09:00:00.000Z",
+  "expectedResponseAt": "2026-08-25T09:00:00.000Z",
+  "externalUrl": "https://provider.example/opportunity/123"
 }
 ```
 
-### Contract and scope
+Opportunity is commercial pipeline state. It does not own invoice value, accounting currency, delivery milestones, contracts, projects, or payment state.
 
-```json
-{
-  "kind": "contract",
-  "id": "provider-contract-id",
-  "clientName": "Acme Labs",
-  "projectName": "Website launch",
-  "title": "Statement of work",
-  "status": "signed",
-  "signedAt": "2026-07-01T09:00:00.000Z",
-  "clauses": [
-    {
-      "type": "change_order",
-      "title": "Additional deliverables",
-      "content": "Additional pages require written approval and are priced separately.",
-      "value": 750,
-      "unit": "per landing page"
-    }
-  ]
-}
+## Explicit GTM execution actions
+
+External writes use Trevra's prepared-action / exact-payload approval boundary. The execution registry is closed, not user-programmable.
+
+Current prepared execution action types are:
+
+- `email.send` — send through a connected Gmail or Microsoft 365 mailbox.
+- `community.reply` — publish a governed reply through a supported GTM community channel.
+- `crm.log-activity` — append a GTM activity to a connected CRM record.
+
+There is no generic remote-action adapter and no arbitrary webhook action. A new external write requires a named GTM action, a bounded payload schema, policy/approval semantics, a dedicated adapter, and tests.
+
+## Nango sync behavior
+
+A Nango sync is resolved from the registered provider configuration and external connection identity to exactly one Trevra workspace. Ambiguous connection ownership is refused.
+
+For each returned record Trevra:
+
+1. removes Nango transport metadata;
+2. maps only a supported GTM model alias;
+3. validates the bounded canonical schema;
+4. stores source evidence with workspace/provider identity;
+5. deterministically matches or creates the current legacy contact/client identity;
+6. upserts the GTM message or opportunity.
+
+Unsupported models are counted as skipped rather than silently treated as a successful empty sync.
+
+## Inbound website lead capture
+
+Website/form ingestion is **not** the old generic `/api/events` route. It is a GTM-specific capture source contract described in `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`.
+
+The intended resource model is:
+
+```text
+Workspace
+  -> GTM/Capture Source
+  -> Person
+  -> Inbound Submission
+  -> optional Account association
+  -> Signal / Opportunity / Conversation / Playbook
 ```
 
-```json
-{
-  "kind": "scope_item",
-  "id": "provider-scope-id",
-  "clientName": "Acme Labs",
-  "projectName": "Website launch",
-  "description": "Additional landing pages priced separately",
-  "included": false,
-  "unitPrice": 750,
-  "currency": "EUR"
-}
-```
+The request never supplies the destination workspace. The authenticated GTM source determines it.
 
-### Milestone
+## CRM integrations
 
-```json
-{
-  "kind": "milestone",
-  "id": "provider-milestone-id",
-  "clientName": "Luma Works",
-  "projectName": "Positioning sprint",
-  "name": "Final strategy delivery",
-  "amount": 2400,
-  "currency": "EUR",
-  "status": "delivered",
-  "deliveredAt": "2026-07-21T15:00:00.000Z"
-}
-```
+HubSpot and Attio may observe GTM records. CRM activity write-back is a dedicated `crm.log-activity` action behind Trevra's approval/execution boundary. Do not add ungated record mutation to the sync path.
 
-### Invoice and payment
+## Provider admission rule
 
-```json
-{
-  "kind": "invoice",
-  "id": "provider-invoice-id",
-  "clientName": "Acme Labs",
-  "projectName": "Website launch",
-  "externalRef": "INV-104",
-  "amount": 1850,
-  "currency": "EUR",
-  "status": "sent",
-  "issuedAt": "2026-06-28T09:00:00.000Z",
-  "dueAt": "2026-07-16T09:00:00.000Z"
-}
-```
+A connector belongs in Trevra only when it does at least one of these:
 
-```json
-{
-  "kind": "payment",
-  "id": "provider-payment-id",
-  "invoiceExternalRef": "INV-104",
-  "amount": 1850,
-  "currency": "EUR",
-  "paidAt": "2026-07-23T09:00:00.000Z"
-}
-```
+1. **Observe GTM state** — people, accounts, conversations, commercial signals, opportunities, campaign/reply outcomes.
+2. **Execute a GTM action** — a bounded founder-approved outreach or CRM action.
 
-## Nango write-back actions
+Do not add providers whose primary purpose is customer accounting, invoicing, project delivery, contract administration, arbitrary application telemetry, generic storage, or arbitrary webhook automation.
 
-### `trevra-create-invoice`
+## Explicitly removed / unsupported
 
-Input:
+Trevra does not expose or own customer-business:
 
-```json
-{
-  "recommendationId": "rec_123",
-  "recommendationType": "unbilled_milestone",
-  "clientId": "cl_123",
-  "clientName": "Luma Works",
-  "recipient": "sofia@luma.com",
-  "amount": 2400,
-  "currency": "EUR",
-  "description": "Final strategy delivery",
-  "dueDays": 14,
-  "message": "The completed milestone invoice is attached.",
-  "idempotencyKey": "sha256-approved-payload"
-}
-```
+- projects;
+- contracts / clauses;
+- scope items / commitments / deliverables;
+- milestones;
+- invoices;
+- payments;
+- accounting-provider actions;
+- customer Stripe payment webhooks;
+- generic `/api/events` ingestion;
+- generic remote action adapters;
+- campaign workflow `webhook` or `external_handoff` primitives.
 
-Output must contain one of:
-
-```json
-{ "invoiceId": "INV-105" }
-```
-
-```json
-{ "id": "provider-invoice-id" }
-```
-
-```json
-{ "externalRef": "INV-105" }
-```
-
-The provider integration must use `idempotencyKey` or an equivalent provider idempotency mechanism and must return an existing invoice when the same key is retried.
-
-### `trevra-create-change-order`
-
-Input is the same commercial payload plus `subject` and `message`. Output must contain `changeOrderId`, `id`, or `externalRef`. This action must create a draft or approval request; Trevra never delegates automatic execution of scope changes.
-
-## Sync behavior
-
-- Return incremental records with stable IDs.
-- Preserve provider timestamps and URLs.
-- Never place provider instructions in canonical content fields.
-- Map deletions to Nango's deleted-record mechanism; Trevra retains provenance and marks records inactive rather than erasing audit history.
-- Emit financial values as decimal major units, never cents.
-- Normalize currencies to ISO 4217 uppercase codes.
-- Keep raw provider payloads in Nango; Trevra stores the canonical payload and a SHA-256 content hash.
-
-## Direct webhooks
-
-Stripe may send signed events directly to `/api/webhooks/stripe`. Nango sends signed auth and sync events to `/api/webhooks/nango`. Both endpoints store provider event IDs before processing, so retries are idempotent.
-
-## Proprietary systems
-
-Trevra supports proprietary systems through three implemented boundaries:
-
-1. **Read/analysis modules** run as signed OCI, WASI, or restricted remote community modules through the sandbox gateway.
-2. **Canonical ingestion** accepts signed or trusted normalized records through `/api/events`, Nango syncs, CSV imports, or document imports. Supported canonical kinds are message, opportunity, contract, scope item, milestone, invoice, and payment.
-3. **Approved remote action adapters** perform proprietary write-back only after a playbook approval step has pinned the exact payload hash.
-
-Configure remote write adapters with `TREVRA_REMOTE_ACTION_ADAPTERS_JSON`:
-
-```json
-[
-  {
-    "actionType": "acme.crm.update",
-    "endpoint": "https://actions.internal.example/trevra",
-    "tokenEnv": "TREVRA_REMOTE_ACTION_ADAPTER_TOKEN",
-    "provider": "acme-crm",
-    "timeoutSeconds": 30,
-    "payloadSchema": {
-      "type": "object",
-      "properties": {
-        "contactId": { "type": "string" },
-        "lifecycle": { "enum": ["qualified", "customer"] }
-      },
-      "required": ["contactId", "lifecycle"],
-      "additionalProperties": false
-    }
-  }
-]
-```
-
-The receiving adapter gets:
-
-- `Authorization: Bearer <token>`;
-- `X-Trevra-Action` with the configured action type;
-- `X-Trevra-Idempotency-Key` containing the exact approved payload hash;
-- `X-Trevra-Signature: sha256=<HMAC-SHA256>` over the canonical JSON body.
-
-The JSON body contains `actionType`, `workspaceId`, `idempotencyKey`, and `payload`. The adapter must return `externalRef` or `id`, and should return its provider name. Production endpoints must use HTTPS. A custom playbook may reference the configured action type, but generic external-write modules remain blocked.
+Trevra's own future SaaS subscription billing is a separate platform concern and must not recreate these customer-business entities.

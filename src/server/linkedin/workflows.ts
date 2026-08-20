@@ -102,7 +102,7 @@ export const workflowVariantSchema = z
   .strict();
 export type WorkflowVariant = z.infer<typeof workflowVariantSchema>;
 
-export const workflowConditionKindSchema = z.enum([
+const workflowConditionKindSchema = z.enum([
   'connected',
   'accepted',
   'replied',
@@ -112,8 +112,7 @@ export const workflowConditionKindSchema = z.enum([
   'email_clicked',
   'email_bounced',
   'email_replied',
-  'email_found',
-  'handoff_succeeded'
+  'email_found'
 ]);
 export type WorkflowConditionKind = z.infer<typeof workflowConditionKindSchema>;
 
@@ -352,19 +351,6 @@ export const workflowStepSchema = z.discriminatedUnion('action', [
   z
     .object({
       ...common,
-      action: z.literal('webhook'),
-      config: z
-        .object({
-          url: z.string().url().max(2000),
-          method: z.enum(['POST', 'PUT', 'PATCH']).default('POST'),
-          bodyTemplate: z.string().max(16000).default('{}')
-        })
-        .strict()
-    })
-    .strict(),
-  z
-    .object({
-      ...common,
       action: z.literal('add_tag'),
       config: z.object({ tag: z.string().trim().min(1).max(100) }).strict()
     })
@@ -374,19 +360,6 @@ export const workflowStepSchema = z.discriminatedUnion('action', [
       ...common,
       action: z.literal('remove_tag'),
       config: z.object({ tag: z.string().trim().min(1).max(100) }).strict()
-    })
-    .strict(),
-  z
-    .object({
-      ...common,
-      action: z.literal('external_handoff'),
-      config: z
-        .object({
-          provider: z.string().trim().min(1).max(100),
-          destination: z.string().trim().min(1).max(200),
-          payloadTemplate: z.string().max(16000).default('{}')
-        })
-        .strict()
     })
     .strict(),
   z
@@ -632,8 +605,6 @@ function templatesOf(step: WorkflowStep): string[] {
     return [step.config.subject, ...step.config.variants.map((variant) => variant.body)];
   if (step.action === 'manual_message' || step.action === 'manual_comment')
     return step.config.suggestedTemplate ? [step.config.suggestedTemplate] : [];
-  if (step.action === 'webhook') return [step.config.bodyTemplate];
-  if (step.action === 'external_handoff') return [step.config.payloadTemplate];
   return [];
 }
 

@@ -1137,6 +1137,12 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
           <Inbox size={16} /> Inbox
         </h3>
         <div className="li-inbox-filters" role="group" aria-label="Narrow the inbox">
+          <span className="li-chip" aria-live="polite">
+            {inboxRows.length} shown
+          </span>
+          {visibleTasks.length > 0 && (
+            <span className="li-chip li-status-held">{visibleTasks.length} need you</span>
+          )}
           <button
             type="button"
             className={`li-range ${filters.unread ? 'is-active' : ''}`}

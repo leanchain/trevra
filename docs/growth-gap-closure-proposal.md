@@ -8,7 +8,7 @@
 
 ## 1. Decision
 
-Trevra should become the sole owner of the founder revenue loop from prospect discovery through reply handling, while the Beseam e-commerce backend remains an optional source of domain intelligence.
+Trevra should become the sole GTM operating system for the founder from prospect discovery/inbound capture through conversation, qualification, opportunity outcome, and follow-up, while the Beseam e-commerce backend remains an optional source of domain intelligence.
 
 The migration rule is deliberately one-way:
 
@@ -33,9 +33,10 @@ Trevra
     email delivery state
     inbound reply ingestion
     suppressions
-    funnel state
+    funnel / opportunity state
+    conversations / verified replies
     ledger / evidence
-    opportunity -> client -> invoice -> payment
+    GTM outcomes such as qualified / won / lost / disqualified
 
 Beseam e-commerce backend
   optionally provides:
@@ -54,24 +55,24 @@ The original `docs/founder-skills.md` assessment is stale in an important way. T
 
 ### Already present in Trevra
 
-| Capability                                 | Current Trevra owner                                                         | Decision                                               |
-| ------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Account identity                           | `migrations/039_accounts.sql`, `src/server/accounts/*`                       | Keep. Do not recreate a `leads` table.                 |
-| Generic lead sourcing                      | `src/server/research/source.ts` (`gtm.source-leads`)                         | Extend with providers.                                 |
-| Enrich                                     | `src/server/skills/enrich.ts`                                                | Keep.                                                  |
-| Score                                      | `src/server/skills/score.ts`                                                 | Keep.                                                  |
-| Audit                                      | `src/server/skills/audit.ts`                                                 | Keep.                                                  |
-| Draft                                      | `src/server/skills/draft.ts`                                                 | Keep.                                                  |
-| Ladder rule                                | `src/server/skills/ladder.ts`                                                | Reuse for outreach lifecycle rules.                    |
-| SSRF guard                                 | `src/server/skills/guard.ts`                                                 | Reuse for directory/source fetches.                    |
-| Skill ledger                               | `src/server/skills/runner.ts`                                                | Keep.                                                  |
-| Durable orchestration                      | `src/server/playbooks/engine.ts`                                             | Keep.                                                  |
-| Exact-payload approval                     | `src/server/playbooks/engine.ts`, `src/server/action-service.ts`             | Keep. This is stronger than the growth implementation. |
-| Email execution                            | `src/server/control-plane/execution.ts`, `src/server/integration-service.ts` | Reuse transport; add cold-outreach safety.             |
-| Gmail / Microsoft 365 provider integration | Nango-backed integration service                                             | Keep. Do not add a new SMTP subsystem.                 |
-| Audit-led outreach playbook                | `gtm.audit-led-outreach` in `src/server/playbooks/registry.ts`               | Extend send semantics, do not rewrite.                 |
-| Domain event ledger                        | `src/server/control-plane/events.ts` and `domain_events`                     | Reuse.                                                 |
-| Revenue graph                              | clients / opportunities / projects / invoices / payments                     | Link GTM outcomes into it.                             |
+| Capability                                 | Current Trevra owner                                                         | Decision                                                                      |
+| ------------------------------------------ | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Account identity                           | `migrations/039_accounts.sql`, `src/server/accounts/*`                       | Keep. Do not recreate a `leads` table.                                        |
+| Generic lead sourcing                      | `src/server/research/source.ts` (`gtm.source-leads`)                         | Extend with providers.                                                        |
+| Enrich                                     | `src/server/skills/enrich.ts`                                                | Keep.                                                                         |
+| Score                                      | `src/server/skills/score.ts`                                                 | Keep.                                                                         |
+| Audit                                      | `src/server/skills/audit.ts`                                                 | Keep.                                                                         |
+| Draft                                      | `src/server/skills/draft.ts`                                                 | Keep.                                                                         |
+| Ladder rule                                | `src/server/skills/ladder.ts`                                                | Reuse for outreach lifecycle rules.                                           |
+| SSRF guard                                 | `src/server/skills/guard.ts`                                                 | Reuse for directory/source fetches.                                           |
+| Skill ledger                               | `src/server/skills/runner.ts`                                                | Keep.                                                                         |
+| Durable orchestration                      | `src/server/playbooks/engine.ts`                                             | Keep.                                                                         |
+| Exact-payload approval                     | `src/server/playbooks/engine.ts`, `src/server/action-service.ts`             | Keep. This is stronger than the growth implementation.                        |
+| Email execution                            | `src/server/control-plane/execution.ts`, `src/server/integration-service.ts` | Reuse transport; add cold-outreach safety.                                    |
+| Gmail / Microsoft 365 provider integration | Nango-backed integration service                                             | Keep. Do not add a new SMTP subsystem.                                        |
+| Audit-led outreach playbook                | `gtm.audit-led-outreach` in `src/server/playbooks/registry.ts`               | Extend send semantics, do not rewrite.                                        |
+| Domain event ledger                        | `src/server/control-plane/events.ts` and `domain_events`                     | Reuse.                                                                        |
+| Opportunity-lite                           | `opportunities`                                                              | Keep minimal GTM pipeline state; do not rebuild post-sale revenue/accounting. |
 
 ### Still missing or incomplete
 
@@ -86,7 +87,7 @@ The real remaining gap is narrower:
 5. Generic workspace suppressions for email/domain outreach.
 6. Inbound Gmail/Microsoft reply ingestion with verified thread matching.
 7. Reply/bounce/unsubscribe lifecycle transitions and inbox APIs.
-8. A durable link from account/outreach outcome into opportunity/client/revenue.
+8. A durable link from account/person/outreach outcome into minimal Opportunity state and explicit GTM outcomes.
 9. Cutover tooling and parity tests proving the Python growth service is redundant.
 
 `src/server/outreach/reply.ts` does **not** close item 6. It drafts replies to public/community threads; it is not inbound email reply ingestion.

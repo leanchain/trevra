@@ -89,6 +89,12 @@ export type LinkedInFailureKind =
   | 'compose_unavailable'
   | 'paid_credit_required';
 
+export interface LinkedInPostImageUpload {
+  name: string;
+  mimeType: string;
+  buffer: Buffer;
+}
+
 export interface LinkedInDriverResult {
   ok: boolean;
   /** The canonical profile URL the action landed on. Absent on failure. */
@@ -116,7 +122,7 @@ export interface LinkedInLocator {
   first(): LinkedInLocator;
   click(options?: { timeout?: number }): Promise<void>;
   fill(text: string, options?: { timeout?: number }): Promise<void>;
-  /** Optional Playwright file-input primitive, used only after a workflow explicitly carries media. */
+  /** Optional Playwright file-input primitive, used only after a workflow/post explicitly carries media. */
   setInputFiles?(files: { name: string; mimeType: string; buffer: Buffer }): Promise<void>;
   /**
    * Optional because only the sign-in form needs it, and every fake in the
@@ -348,7 +354,11 @@ export interface LinkedInDriver {
     options?: { seed?: string; maxSkills?: number }
   ): Promise<LinkedInDriverResult>;
   /** Publish a rendered post to the feed. Optional -- see `driver-post.ts`, which owns its own selector table. */
-  publishPost?(page: LinkedInPage, body: string): Promise<LinkedInDriverResult>;
+  publishPost?(
+    page: LinkedInPage,
+    body: string,
+    options?: { images?: LinkedInPostImageUpload[] }
+  ): Promise<LinkedInDriverResult>;
   readSeat(
     page: LinkedInPage,
     options?: { skipConnections?: boolean }

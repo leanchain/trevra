@@ -1279,6 +1279,36 @@ export async function createLinkedInPost(input: {
   return result.post;
 }
 
+export async function updateLinkedInPost(
+  postId: string,
+  patch: {
+    blocks?: PostBlock[];
+    status?: 'draft' | 'scheduled';
+    scheduledAt?: string | null;
+  }
+): Promise<LinkedInPost> {
+  const result = await request<{ post: LinkedInPost }>(
+    `/api/linkedin/posts/${encodeURIComponent(postId)}`,
+    { method: 'PATCH', body: JSON.stringify(patch) }
+  );
+  return result.post;
+}
+
+export async function addLinkedInPostImage(postId: string, file: File): Promise<LinkedInPost> {
+  const result = await request<{ post: LinkedInPost }>(
+    `/api/linkedin/posts/${encodeURIComponent(postId)}/media`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': file.type,
+        'X-Trevra-File-Name': encodeURIComponent(file.name)
+      },
+      body: file
+    }
+  );
+  return result.post;
+}
+
 export async function cancelLinkedInPost(postId: string): Promise<LinkedInPost> {
   const result = await request<{ post: LinkedInPost }>(
     `/api/linkedin/posts/${encodeURIComponent(postId)}`,
@@ -1785,6 +1815,25 @@ export async function applyLatestLinkedInManagedCampaignWorkflow(id: string): Pr
     `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/apply-latest-workflow`,
     { method: 'POST', body: '{}' }
   );
+}
+
+export type LinkedInUnknownOutcomeResolution = 'sent' | 'retry' | 'skip';
+
+export async function resolveLinkedInManagedUnknownOutcome(
+  surface: 'linkedin' | 'channel',
+  actionId: string,
+  resolution: LinkedInUnknownOutcomeResolution
+): Promise<boolean> {
+  const path =
+    surface === 'linkedin'
+      ? `/api/linkedin/manager/actions/${encodeURIComponent(actionId)}/resolve`
+      : `/api/linkedin/manager/channel-actions/${encodeURIComponent(actionId)}/resolve`;
+  return (
+    await request<{ resolved: boolean }>(path, {
+      method: 'POST',
+      body: JSON.stringify({ resolution })
+    })
+  ).resolved;
 }
 
 export async function retryLinkedInManagedCampaignFailures(

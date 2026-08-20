@@ -4,6 +4,7 @@ import type { Db } from '../db.js';
 import { outreachThreadSchema } from '../outreach/scorer.js';
 import type { PlaybookDefinition } from './types.js';
 
+// GTM-only registry: post-sale revenue/project playbooks and financial action flows are intentionally absent.
 const playbooks = new Map<string, PlaybookDefinition>();
 
 export const auditLedOutreachPlaybook: PlaybookDefinition = {
@@ -105,96 +106,9 @@ export const auditLedOutreachPlaybook: PlaybookDefinition = {
   source: { type: 'builtin' }
 };
 
-export const invoiceDeliveredWorkPlaybook: PlaybookDefinition = {
-  id: 'revenue.invoice-delivered-work',
-  version: '1.0.0',
-  name: 'Invoice delivered work',
-  description:
-    'Prepare an invoice payload, require founder approval, and create it through the connected accounting provider.',
-  inputSchema: z.object({
-    recipient: z.string().email(),
-    amount: z.number().positive().max(10_000_000),
-    currency: z.string().length(3),
-    description: z.string().min(1).max(500),
-    dueDays: z.number().int().min(0).max(365).default(14),
-    message: z.string().max(20_000).default('')
-  }),
-  steps: [
-    {
-      id: 'approve-invoice',
-      type: 'approval',
-      title: 'Approve invoice creation',
-      payload: {
-        recipient: { $ref: '$.input.recipient' },
-        amount: { $ref: '$.input.amount' },
-        currency: { $ref: '$.input.currency' },
-        description: { $ref: '$.input.description' },
-        dueDays: { $ref: '$.input.dueDays' },
-        message: { $ref: '$.input.message' }
-      }
-    },
-    {
-      id: 'create-invoice',
-      type: 'action',
-      actionType: 'invoice.create',
-      approvalStepId: 'approve-invoice',
-      needs: ['approve-invoice'],
-      payload: { $ref: '$.steps.approve-invoice.input' },
-      retry: { maxAttempts: 3, delaySeconds: 30 }
-    }
-  ],
-  output: { invoice: { $ref: '$.steps.create-invoice.output' } },
-  source: { type: 'builtin' }
-};
-
-export const protectScopePlaybook: PlaybookDefinition = {
-  id: 'revenue.protect-scope',
-  version: '1.0.0',
-  name: 'Protect project scope',
-  description:
-    'Require exact approval for a priced change order and create it through HoneyBook, Bonsai, or the configured communication provider.',
-  inputSchema: z.object({
-    recipient: z.string().email(),
-    subject: z.string().min(1).max(200),
-    body: z.string().min(1).max(20_000),
-    amount: z.number().nonnegative().max(10_000_000),
-    currency: z.string().length(3),
-    description: z.string().min(1).max(500)
-  }),
-  steps: [
-    {
-      id: 'approve-change-order',
-      type: 'approval',
-      title: 'Approve change order',
-      payload: {
-        recipient: { $ref: '$.input.recipient' },
-        subject: { $ref: '$.input.subject' },
-        body: { $ref: '$.input.body' },
-        amount: { $ref: '$.input.amount' },
-        currency: { $ref: '$.input.currency' },
-        description: { $ref: '$.input.description' }
-      }
-    },
-    {
-      id: 'create-change-order',
-      type: 'action',
-      actionType: 'change_order.create',
-      approvalStepId: 'approve-change-order',
-      needs: ['approve-change-order'],
-      payload: { $ref: '$.steps.approve-change-order.input' },
-      retry: { maxAttempts: 3, delaySeconds: 30 }
-    }
-  ],
-  output: { changeOrder: { $ref: '$.steps.create-change-order.output' } },
-  source: { type: 'builtin' }
-};
-
 /**
  * Community outreach, end to end.
  *
- * Scout -> score -> gate -> draft -> APPROVE -> post, ported from the Python
- * reference's `main.py` pipeline (`run_scout`, `run_analyzer`, `run_writer`,
- * `run_poster`). The reference chained these behind a `dry_run: true` flag that
  * was never flipped, so "nothing posts without a human" was a config value one
  * edit away from false. Here it is structural: the post is an `action` step
  * bound to `approve-reply`, and the engine refuses to execute it unless a
@@ -446,8 +360,6 @@ export const threadReplyPlaybook: PlaybookDefinition = {
 registerPlaybook(auditLedOutreachPlaybook);
 registerPlaybook(communityOutreachPlaybook);
 registerPlaybook(threadReplyPlaybook);
-registerPlaybook(invoiceDeliveredWorkPlaybook);
-registerPlaybook(protectScopePlaybook);
 
 export function registerPlaybook(playbook: PlaybookDefinition): PlaybookDefinition {
   validatePlaybook(playbook);

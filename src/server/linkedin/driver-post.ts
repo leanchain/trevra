@@ -9,7 +9,12 @@
  */
 
 import { hoverClick, settle, typeLike } from './human.js';
-import type { LinkedInDriverResult, LinkedInFailureKind, LinkedInPage } from './driver.js';
+import type {
+  LinkedInDriverResult,
+  LinkedInFailureKind,
+  LinkedInPage,
+  LinkedInPostImageUpload
+} from './driver.js';
 
 const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
@@ -28,6 +33,11 @@ export const POST_SELECTORS = {
   postComposeBox:
     'div.ql-editor[contenteditable="true"], div[aria-label="Text editor for creating content"][contenteditable="true"]',
   publishPostButton: 'button.share-actions__primary-action, button[aria-label="Post"]',
+  addMediaButton:
+    'button[aria-label*="Add media" i], button[aria-label*="Photo" i], button[aria-label*="image" i]',
+  imageInput: 'input[type="file"][accept*="image" i]',
+  imagePreview:
+    '.share-creation-state__preview img, .share-media__preview img, img[alt*="preview" i]',
   challengeForm:
     'form.challenge, input[name="pin"], #captcha-internal, iframe[title*="challenge" i]',
   restrictionNotice: 'text=/temporarily restricted|unusual activity|account has been restricted/i',
@@ -59,7 +69,11 @@ async function detectWall(page: LinkedInPage): Promise<LinkedInFailureKind | nul
  * -- this file knows nothing about runs, styles or blocks, only text and
  * where Shift+Enter has to go, which `typeLike` already handles for `\n`.
  */
-export async function publishPost(page: LinkedInPage, body: string): Promise<LinkedInDriverResult> {
+export async function publishPost(
+  page: LinkedInPage,
+  body: string,
+  options: { images?: LinkedInPostImageUpload[] } = {}
+): Promise<LinkedInDriverResult> {
   if (!body.trim()) {
     return fail(
       'compose_unavailable',
@@ -106,6 +120,44 @@ export async function publishPost(page: LinkedInPage, body: string): Promise<Lin
     }
 
     await typeLike(page, compose.first(), body, 'post#body', CLICK_TIMEOUT_MS);
+
+    const images = options.images ?? [];
+    if (images.length > 0) {
+      let input = page.locator(POST_SELECTORS.imageInput);
+      if ((await input.count()) === 0) {
+        const addMedia = page.locator(POST_SELECTORS.addMediaButton);
+        if ((await addMedia.count()) === 0) {
+          return fail(
+            'unknown',
+            'The post draft is open, but LinkedIn exposed no image control. Nothing was published; inspect or discard the open draft.'
+          );
+        }
+        await hoverClick(page, addMedia.first(), 'post#add-media', CLICK_TIMEOUT_MS);
+        await settle(page, 'post#media-picker');
+        input = page.locator(POST_SELECTORS.imageInput);
+      }
+      const upload = input.first();
+      if ((await input.count()) === 0 || !upload.setInputFiles) {
+        return fail(
+          'unknown',
+          'The post draft is open, but LinkedIn exposed no usable image file input. Nothing was published; inspect or discard the open draft.'
+        );
+      }
+      // Playwright accepts an array for a `multiple` file input. The structural
+      // locator type stays single-file because every pre-existing DM/InMail fake
+      // implements that smaller surface; this post-specific cast widens only the
+      // call that actually needs LinkedIn's multi-image picker.
+      await (
+        upload.setInputFiles as unknown as (files: LinkedInPostImageUpload[]) => Promise<void>
+      )(images);
+      await settle(page, 'post#images-uploaded');
+      if ((await page.locator(POST_SELECTORS.imagePreview).count()) === 0) {
+        return fail(
+          'unknown',
+          'LinkedIn accepted the image files but no verifiable image preview appeared. Nothing was published; inspect or discard the open draft.'
+        );
+      }
+    }
 
     const publish = page.locator(POST_SELECTORS.publishPostButton);
     if ((await publish.count()) === 0) {

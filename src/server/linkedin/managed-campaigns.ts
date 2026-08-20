@@ -1452,7 +1452,15 @@ export async function startManagedCampaign(
     // the runner's admission pass creates a capacity-safe wave later.
     await tx
       .prepare(
-        `UPDATE linkedin_actions SET status='planned' WHERE workspace_id=? AND campaign_id=? AND status='held'`
+        `UPDATE linkedin_actions a SET status='planned'
+         WHERE a.workspace_id=? AND a.campaign_id=? AND a.status='held'
+           AND (
+             a.campaign_member_id IS NULL OR EXISTS (
+               SELECT 1 FROM linkedin_campaign_members m
+               WHERE m.workspace_id=a.workspace_id AND m.id=a.campaign_member_id
+                 AND m.status<>'paused'
+             )
+           )`
       )
       .run(workspaceId, campaignId);
   });
@@ -1548,6 +1556,14 @@ export async function stopManagedCampaign(
         `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL WHERE workspace_id=? AND campaign_id=? AND status IN ('planned','held') AND claimed_at IS NULL`
       )
       .run(workspaceId, campaignId);
+    await tx
+      .prepare(
+        `UPDATE linkedin_campaign_channel_actions
+         SET status='skipped',claimed_at=NULL,updated_at=?::timestamptz
+         WHERE workspace_id=? AND campaign_id=?
+           AND (status='planned' OR (status='failed' AND outcome_known=TRUE))`
+      )
+      .run(timestamp, workspaceId, campaignId);
   });
   return (await getManagedCampaign(db, workspaceId, campaignId)) as ManagedCampaign;
 }
@@ -1560,27 +1576,54 @@ export async function setCampaignMemberPaused(
   now: Date = new Date()
 ): Promise<boolean> {
   const timestamp = now.toISOString();
-  const result = paused
-    ? await db
+  return db.transaction(async (tx) => {
+    const result = paused
+      ? await tx
+          .prepare(
+            `UPDATE linkedin_campaign_members
+             SET paused_from_status=status,status='paused',updated_at=?
+             WHERE workspace_id=? AND id=? AND status IN ('pending','active','waiting','manual')`
+          )
+          .run(timestamp, workspaceId, memberId)
+      : await tx
+          .prepare(
+            `UPDATE linkedin_campaign_members
+             SET status=CASE
+               WHEN admitted_at IS NULL THEN 'pending'
+               WHEN paused_from_status IN ('active','waiting','manual') THEN paused_from_status
+               ELSE 'active'
+             END,
+             paused_from_status=NULL,updated_at=?
+             WHERE workspace_id=? AND id=? AND status='paused'`
+          )
+          .run(timestamp, workspaceId, memberId);
+    if (!result.changes) return false;
+
+    if (paused) {
+      await tx
         .prepare(
-          `UPDATE linkedin_campaign_members
-           SET paused_from_status=status,status='paused',updated_at=?
-           WHERE workspace_id=? AND id=? AND status IN ('pending','active','waiting','manual')`
+          `UPDATE linkedin_actions SET status='held'
+           WHERE workspace_id=? AND campaign_member_id=? AND status='planned' AND claimed_at IS NULL`
         )
-        .run(timestamp, workspaceId, memberId)
-    : await db
+        .run(workspaceId, memberId);
+    } else {
+      await tx
         .prepare(
-          `UPDATE linkedin_campaign_members
-           SET status=CASE
-             WHEN admitted_at IS NULL THEN 'pending'
-             WHEN paused_from_status IN ('active','waiting','manual') THEN paused_from_status
-             ELSE 'active'
-           END,
-           paused_from_status=NULL,updated_at=?
-           WHERE workspace_id=? AND id=? AND status='paused'`
+          `UPDATE linkedin_actions a SET status='planned'
+           WHERE a.workspace_id=? AND a.campaign_member_id=? AND a.status='held'
+             AND EXISTS (
+               SELECT 1
+               FROM linkedin_campaign_members m
+               JOIN linkedin_campaigns c
+                 ON c.workspace_id=m.workspace_id AND c.id=m.campaign_id
+               WHERE m.workspace_id=a.workspace_id AND m.id=a.campaign_member_id
+                 AND c.status='running' AND m.status<>'paused'
+             )`
         )
-        .run(timestamp, workspaceId, memberId);
-  return result.changes > 0;
+        .run(workspaceId, memberId);
+    }
+    return true;
+  });
 }
 
 /**
@@ -1726,6 +1769,14 @@ export async function removeCampaignMember(
         `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL WHERE workspace_id=? AND campaign_member_id=? AND status IN ('planned','held') AND claimed_at IS NULL`
       )
       .run(workspaceId, memberId);
+    await tx
+      .prepare(
+        `UPDATE linkedin_campaign_channel_actions
+         SET status='skipped',claimed_at=NULL,updated_at=?::timestamptz
+         WHERE workspace_id=? AND member_id=?
+           AND (status='planned' OR (status='failed' AND outcome_known=TRUE))`
+      )
+      .run(timestamp, workspaceId, memberId);
     return true;
   });
 }
@@ -1842,7 +1893,7 @@ export async function completeManualTask(
       .prepare(
         `
       SELECT t.member_id, t.campaign_id, t.seat_key, t.workflow_step_id, t.suggested_body, l.profile_url,
-             m.step_index, m.current_step_id, m.completed_step_ids
+             m.step_index, m.current_step_id, m.completed_step_ids, m.workflow_snapshot_json
       FROM linkedin_manual_tasks t
       JOIN linkedin_campaign_members m ON m.id = t.member_id AND m.workspace_id = t.workspace_id
       JOIN linkedin_lead_contacts l ON l.id = m.contact_id AND l.workspace_id = m.workspace_id
@@ -1859,10 +1910,15 @@ export async function completeManualTask(
         step_index: number;
         current_step_id: string | null;
         completed_step_ids: unknown;
+        workflow_snapshot_json: unknown;
       }>(workspaceId, taskId);
     if (!task) return false;
 
-    const steps = await campaignWorkflowSteps(tx, workspaceId, task.campaign_id);
+    const snapshotSteps = campaignSnapshotSteps(task.workflow_snapshot_json);
+    const steps =
+      snapshotSteps.length > 0
+        ? snapshotSteps
+        : await campaignWorkflowSteps(tx, workspaceId, task.campaign_id);
     const completedStepIds = parseStepIds(task.completed_step_ids);
     if (task.workflow_step_id && !completedStepIds.includes(task.workflow_step_id)) {
       completedStepIds.push(task.workflow_step_id);
@@ -2604,6 +2660,8 @@ export interface CampaignMemberTimeline {
   member: ManagedCampaignMember;
   events: Array<{
     at: string | null;
+    eventId?: string | null;
+    requiresResolution?: boolean;
     kind: 'wave' | 'action' | 'channel' | 'manual' | 'branch' | 'state';
     label: string;
     status?: string;
@@ -2651,10 +2709,11 @@ export async function campaignMemberTimeline(
     });
   const actions = await db
     .prepare(
-      `SELECT kind,status,workflow_step_id,planned_for,recorded_at,failure_kind,external_ref,seat_key,variant_id,body
+      `SELECT id,kind,status,workflow_step_id,planned_for,recorded_at,failure_kind,external_ref,seat_key,variant_id,body,settlement_hold_at
      FROM linkedin_actions WHERE workspace_id=? AND campaign_member_id=? ORDER BY COALESCE(recorded_at,planned_for,created_at),created_at`
     )
     .all<{
+      id: string;
       kind: string;
       status: string;
       workflow_step_id: string | null;
@@ -2665,10 +2724,13 @@ export async function campaignMemberTimeline(
       seat_key: string;
       variant_id: string | null;
       body: string | null;
+      settlement_hold_at: string | null;
     }>(workspaceId, memberId);
   for (const action of actions)
     events.push({
       at: action.recorded_at ?? action.planned_for,
+      eventId: action.id,
+      requiresResolution: action.settlement_hold_at !== null,
       kind: 'action',
       label: action.kind.replaceAll('_', ' '),
       status: action.status,
@@ -2705,6 +2767,8 @@ export async function campaignMemberTimeline(
     const approvedText = [subject, body].filter(Boolean).join('\n') || null;
     events.push({
       at: action.completed_at ?? action.planned_for,
+      eventId: action.id,
+      requiresResolution: action.status === 'unknown',
       kind: 'channel',
       label: action.kind.replaceAll('_', ' '),
       status: action.status,
@@ -2809,6 +2873,14 @@ export async function endManagedCampaignMember(
         .run(workspaceId, memberId);
       await tx
         .prepare(
+          `UPDATE linkedin_campaign_channel_actions
+           SET status='skipped',claimed_at=NULL,updated_at=?::timestamptz
+           WHERE workspace_id=? AND member_id=?
+             AND (status='planned' OR (status='failed' AND outcome_known=TRUE))`
+        )
+        .run(timestamp, workspaceId, memberId);
+      await tx
+        .prepare(
           `UPDATE linkedin_manual_tasks SET status='cancelled' WHERE workspace_id=? AND member_id=? AND status='pending'`
         )
         .run(workspaceId, memberId);
@@ -2823,42 +2895,72 @@ export async function skipManagedCampaignMemberStep(
   memberId: string,
   now: Date = new Date()
 ): Promise<boolean> {
-  const row = await db
-    .prepare(
-      `SELECT campaign_id,step_index,status,workflow_snapshot_json FROM linkedin_campaign_members WHERE workspace_id=? AND id=?`
-    )
-    .get<{
-      campaign_id: string;
-      step_index: number;
-      status: string;
-      workflow_snapshot_json: unknown;
-    }>(workspaceId, memberId);
-  if (!row || !['active', 'waiting', 'manual', 'paused'].includes(row.status)) return false;
-  const memberSteps = campaignSnapshotSteps(row.workflow_snapshot_json);
-  const steps =
-    memberSteps.length > 0
-      ? memberSteps
-      : await campaignWorkflowSteps(db, workspaceId, row.campaign_id);
-  const step = steps[Number(row.step_index)];
+  if (await unresolvedOutcomeForMember(db, workspaceId, memberId))
+    throw new Error(
+      'Resolve the unknown action outcome before changing this lead’s workflow position.'
+    );
+
+  const context = await memberExecutionContext(db, workspaceId, memberId);
+  if (!context || !['active', 'waiting', 'manual', 'paused'].includes(context.status)) return false;
+  const currentIndex =
+    context.currentStepId === null
+      ? context.stepIndex
+      : context.steps.findIndex((step) => step.id === context.currentStepId);
+  const index = currentIndex >= 0 ? currentIndex : context.stepIndex;
+  const step = context.steps[index];
   if (!step) return false;
-  const targetId = step.nextStepId === null ? null : step.nextStepId;
-  const nextIndex = targetId
-    ? steps.findIndex((s) => s.id === targetId)
-    : Number(row.step_index) + 1;
-  const next = nextIndex >= 0 && nextIndex < steps.length ? steps[nextIndex] : null;
+  const completed = [...context.completedStepIds];
+  if (!completed.includes(step.id)) completed.push(step.id);
+
+  let nextIndex: number | null;
+  if (step.nextStepId === null) nextIndex = null;
+  else if (step.nextStepId) {
+    const explicit = context.steps.findIndex((candidate) => candidate.id === step.nextStepId);
+    if (explicit < 0) nextIndex = null;
+    else {
+      const nextUncompleted = nextUncompletedStep(context.steps, explicit - 1, completed);
+      nextIndex = nextUncompleted.step ? nextUncompleted.index : null;
+    }
+  } else {
+    const nextUncompleted = nextUncompletedStep(context.steps, index, completed);
+    nextIndex = nextUncompleted.step ? nextUncompleted.index : null;
+  }
+  const next = nextIndex === null ? null : context.steps[nextIndex];
   const timestamp = now.toISOString();
   await db.transaction(async (tx) => {
     await tx
       .prepare(
-        `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL WHERE workspace_id=? AND campaign_member_id=? AND workflow_step_id=? AND status IN ('planned','held') AND claimed_at IS NULL`
+        `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL,claimed_by=NULL,
+             lease_expires_at=NULL,batch_id=NULL
+         WHERE workspace_id=? AND campaign_member_id=? AND workflow_step_id=?
+           AND status IN ('planned','held') AND claimed_at IS NULL`
       )
       .run(workspaceId, memberId, step.id);
     await tx
       .prepare(
-        `UPDATE linkedin_campaign_members SET step_index=?,status=?,next_eligible_at=?::timestamptz,updated_at=?::timestamptz WHERE workspace_id=? AND id=?`
+        `UPDATE linkedin_campaign_channel_actions
+         SET status='skipped',claimed_at=NULL,outcome_known=TRUE,updated_at=?::timestamptz
+         WHERE workspace_id=? AND member_id=? AND workflow_step_id=?
+           AND status IN ('planned','failed') AND outcome_known=TRUE`
+      )
+      .run(timestamp, workspaceId, memberId, step.id);
+    await tx
+      .prepare(
+        `UPDATE linkedin_manual_tasks SET status='cancelled'
+         WHERE workspace_id=? AND member_id=? AND workflow_step_id=? AND status='pending'`
+      )
+      .run(workspaceId, memberId, step.id);
+    await tx
+      .prepare(
+        `UPDATE linkedin_campaign_members
+         SET step_index=?,current_step_id=?,completed_step_ids=?::jsonb,status=?,
+             next_eligible_at=?::timestamptz,last_action_id=NULL,updated_at=?::timestamptz
+         WHERE workspace_id=? AND id=?`
       )
       .run(
-        next ? nextIndex : steps.length,
+        next ? nextIndex : context.steps.length,
+        next?.id ?? null,
+        JSON.stringify(completed),
         next ? 'waiting' : 'completed',
         next ? new Date(now.getTime() + delayMilliseconds(next.delayBefore)).toISOString() : null,
         timestamp,
@@ -2981,17 +3083,21 @@ async function memberExecutionContext(
   campaignId: string;
   status: string;
   stepIndex: number;
+  currentStepId: string | null;
+  completedStepIds: string[];
   steps: WorkflowStep[];
 } | null> {
   const row = await db
     .prepare(
-      `SELECT campaign_id,status,step_index,workflow_snapshot_json
+      `SELECT campaign_id,status,step_index,current_step_id,completed_step_ids,workflow_snapshot_json
        FROM linkedin_campaign_members WHERE workspace_id=? AND id=?`
     )
     .get<{
       campaign_id: string;
       status: string;
       step_index: number;
+      current_step_id: string | null;
+      completed_step_ids: unknown;
       workflow_snapshot_json: unknown;
     }>(workspaceId, memberId);
   if (!row) return null;
@@ -3004,7 +3110,156 @@ async function memberExecutionContext(
     campaignId: row.campaign_id,
     status: row.status,
     stepIndex: Number(row.step_index),
+    currentStepId: row.current_step_id,
+    completedStepIds: parseStepIds(row.completed_step_ids),
     steps
+  };
+}
+
+export type UnknownOutcomeResolution = 'sent' | 'retry' | 'skip';
+
+async function unresolvedOutcomeForMember(
+  db: Db,
+  workspaceId: string,
+  memberId: string
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS unresolved
+       WHERE EXISTS (
+         SELECT 1 FROM linkedin_actions
+         WHERE workspace_id=? AND campaign_member_id=? AND settlement_hold_at IS NOT NULL
+       ) OR EXISTS (
+         SELECT 1 FROM linkedin_campaign_channel_actions
+         WHERE workspace_id=? AND member_id=? AND status='unknown' AND outcome_known=FALSE
+       )`
+    )
+    .get<{ unresolved: number }>(workspaceId, memberId, workspaceId, memberId);
+  return row !== undefined;
+}
+
+async function advanceMemberAfterResolvedLinkedInAction(
+  db: Db,
+  workspaceId: string,
+  actionId: string,
+  now: Date
+): Promise<void> {
+  const row = await db
+    .prepare(
+      `SELECT a.campaign_member_id,a.workflow_step_id,
+              m.current_step_id,m.step_index,m.completed_step_ids,m.workflow_snapshot_json,m.campaign_id
+       FROM linkedin_actions a
+       JOIN linkedin_campaign_members m
+         ON m.workspace_id=a.workspace_id AND m.id=a.campaign_member_id
+       WHERE a.id=? AND a.workspace_id=?`
+    )
+    .get<{
+      campaign_member_id: string | null;
+      workflow_step_id: string | null;
+      current_step_id: string | null;
+      step_index: number;
+      completed_step_ids: unknown;
+      workflow_snapshot_json: unknown;
+      campaign_id: string;
+    }>(actionId, workspaceId);
+  if (!row?.campaign_member_id || !row.workflow_step_id) return;
+  const memberSteps = campaignSnapshotSteps(row.workflow_snapshot_json);
+  const steps =
+    memberSteps.length > 0
+      ? memberSteps
+      : await campaignWorkflowSteps(db, workspaceId, row.campaign_id);
+  const currentIndex = steps.findIndex((step) => step.id === row.workflow_step_id);
+  if (currentIndex < 0) return;
+  if (row.current_step_id !== null && row.current_step_id !== row.workflow_step_id) return;
+  if (row.current_step_id === null && Number(row.step_index) !== currentIndex) return;
+  const current = steps[currentIndex]!;
+  const nextIndex =
+    current.nextStepId === null
+      ? -1
+      : current.nextStepId
+        ? steps.findIndex((step) => step.id === current.nextStepId)
+        : currentIndex + 1;
+  const next = nextIndex >= 0 && nextIndex < steps.length ? steps[nextIndex] : null;
+  const completed = parseStepIds(row.completed_step_ids);
+  if (!completed.includes(current.id)) completed.push(current.id);
+  await db
+    .prepare(
+      `UPDATE linkedin_campaign_members
+       SET step_index=?,current_step_id=?,completed_step_ids=?::jsonb,status=?,
+           next_eligible_at=?::timestamptz,last_action_id=?,last_failure_reason=NULL,updated_at=?::timestamptz
+       WHERE workspace_id=? AND id=?
+         AND (current_step_id=? OR (current_step_id IS NULL AND step_index=?))
+         AND status IN ('active','waiting','paused')`
+    )
+    .run(
+      next ? nextIndex : steps.length,
+      next?.id ?? null,
+      JSON.stringify(completed),
+      next ? 'waiting' : 'completed',
+      next ? new Date(now.getTime() + delayMilliseconds(next.delayBefore)).toISOString() : null,
+      actionId,
+      now.toISOString(),
+      workspaceId,
+      row.campaign_member_id,
+      row.workflow_step_id,
+      currentIndex
+    );
+}
+
+/** Resolve an action whose browser side effect could not be proven. Never guesses. */
+export async function resolveManagedCampaignLinkedInUnknownOutcome(
+  db: Db,
+  workspaceId: string,
+  actionId: string,
+  resolution: UnknownOutcomeResolution,
+  now: Date = new Date()
+): Promise<{ resolved: boolean; memberId: string | null; campaignId: string | null }> {
+  const action = await db
+    .prepare(
+      `SELECT campaign_member_id,campaign_id FROM linkedin_actions
+       WHERE workspace_id=? AND id=? AND settlement_hold_at IS NOT NULL`
+    )
+    .get<{ campaign_member_id: string | null; campaign_id: string | null }>(workspaceId, actionId);
+  if (!action) return { resolved: false, memberId: null, campaignId: null };
+  const timestamp = now.toISOString();
+  await db.transaction(async (tx) => {
+    if (resolution === 'retry') {
+      await tx
+        .prepare(
+          `UPDATE linkedin_actions
+           SET status='planned',recorded_at=NULL,failure_kind=NULL,claimed_at=NULL,claimed_by=NULL,
+               lease_expires_at=NULL,batch_id=NULL,settlement_hold_at=NULL,planned_for=?::timestamptz
+           WHERE workspace_id=? AND id=? AND settlement_hold_at IS NOT NULL`
+        )
+        .run(timestamp, workspaceId, actionId);
+      if (action.campaign_member_id)
+        await tx
+          .prepare(
+            `UPDATE linkedin_campaign_members SET status='waiting',next_eligible_at=?::timestamptz,
+                 last_failure_reason=NULL,updated_at=?::timestamptz WHERE workspace_id=? AND id=?`
+          )
+          .run(timestamp, timestamp, workspaceId, action.campaign_member_id);
+      return;
+    }
+    await tx
+      .prepare(
+        `UPDATE linkedin_actions
+         SET status=?,recorded_at=?::timestamptz,failure_kind=NULL,claimed_at=NULL,claimed_by=NULL,
+             lease_expires_at=NULL,batch_id=NULL,settlement_hold_at=NULL
+         WHERE workspace_id=? AND id=? AND settlement_hold_at IS NOT NULL`
+      )
+      .run(
+        resolution === 'sent' ? 'sent' : 'skipped',
+        resolution === 'sent' ? timestamp : null,
+        workspaceId,
+        actionId
+      );
+    await advanceMemberAfterResolvedLinkedInAction(tx, workspaceId, actionId, now);
+  });
+  return {
+    resolved: true,
+    memberId: action.campaign_member_id,
+    campaignId: action.campaign_id
   };
 }
 
@@ -3022,16 +3277,23 @@ export async function rerunManagedCampaignCondition(
   const step = context.steps[index];
   if (!step || (step.action !== 'condition' && step.action !== 'monitor')) return false;
   const timestamp = now.toISOString();
+  const keepCompleted = context.completedStepIds.filter((id) => {
+    const completedIndex = context.steps.findIndex((candidate) => candidate.id === id);
+    return completedIndex >= 0 && completedIndex < index;
+  });
   const result = await db
     .prepare(
       `UPDATE linkedin_campaign_members
-       SET step_index=?,status='waiting',next_eligible_at=?::timestamptz,
+       SET step_index=?,current_step_id=?,completed_step_ids=?::jsonb,status='waiting',
+           next_eligible_at=?::timestamptz,
            branch_state_json=(COALESCE(branch_state_json,'{}'::jsonb) - ?::text - ?::text),
-           last_failure_reason=NULL,ended_at=NULL,updated_at=?::timestamptz
+           last_action_id=NULL,last_failure_reason=NULL,ended_at=NULL,updated_at=?::timestamptz
        WHERE workspace_id=? AND id=? AND status NOT IN ('replied','removed','excluded')`
     )
     .run(
       index,
+      step.id,
+      JSON.stringify(keepCompleted),
       timestamp,
       `branch:${step.id}`,
       `monitor:${step.id}`,
@@ -3050,6 +3312,11 @@ export async function resumeManagedCampaignMemberAtStep(
   stepId: string,
   now: Date = new Date()
 ): Promise<boolean> {
+  if (await unresolvedOutcomeForMember(db, workspaceId, memberId))
+    throw new Error(
+      'Resolve the unknown action outcome before changing this lead’s workflow position.'
+    );
+
   const context = await memberExecutionContext(db, workspaceId, memberId);
   if (!context || ['replied', 'removed', 'excluded'].includes(context.status)) return false;
   const index = context.steps.findIndex((step) => step.id === stepId);
@@ -3070,13 +3337,27 @@ export async function resumeManagedCampaignMemberAtStep(
          WHERE workspace_id=? AND member_id=? AND status IN ('planned','failed') AND outcome_known=TRUE`
       )
       .run(timestamp, workspaceId, memberId);
+    const keepCompleted = context.completedStepIds.filter((id) => {
+      const completedIndex = context.steps.findIndex((candidate) => candidate.id === id);
+      return completedIndex >= 0 && completedIndex < index;
+    });
     const result = await tx
       .prepare(
-        `UPDATE linkedin_campaign_members SET step_index=?,status='waiting',next_eligible_at=?::timestamptz,
-             last_action_id=NULL,last_failure_reason=NULL,ended_at=NULL,updated_at=?::timestamptz
+        `UPDATE linkedin_campaign_members
+         SET step_index=?,current_step_id=?,completed_step_ids=?::jsonb,status='waiting',
+             next_eligible_at=?::timestamptz,last_action_id=NULL,last_failure_reason=NULL,
+             ended_at=NULL,updated_at=?::timestamptz
          WHERE workspace_id=? AND id=? AND status NOT IN ('replied','removed','excluded')`
       )
-      .run(index, timestamp, timestamp, workspaceId, memberId);
+      .run(
+        index,
+        stepId,
+        JSON.stringify(keepCompleted),
+        timestamp,
+        timestamp,
+        workspaceId,
+        memberId
+      );
     changed = result.changes;
   });
   return changed > 0;
@@ -3191,6 +3472,10 @@ export async function moveManagedCampaignMembers(
       )
       .all<{ id: string; contact_id: string }>(workspaceId, sourceCampaignId, ids);
     for (const row of rows) {
+      if (await unresolvedOutcomeForMember(tx, workspaceId, row.id)) {
+        skipped += 1;
+        continue;
+      }
       await tx
         .prepare(
           `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL

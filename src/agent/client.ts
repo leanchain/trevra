@@ -45,7 +45,6 @@ export interface TrevraSkillRun {
   durationMs: number;
 }
 
-
 export interface TrevraPlaybookManifest {
   id: string;
   version: string;
@@ -88,32 +87,24 @@ export class TrevraAgentClient {
   }
 
   constructor(options: { baseUrl?: string; token?: string } = {}) {
-    this.baseUrl = (options.baseUrl ?? process.env.TREVRA_API_URL ?? 'http://localhost:43887').replace(/\/$/, '');
+    this.baseUrl = (
+      options.baseUrl ??
+      process.env.TREVRA_API_URL ??
+      'http://localhost:43887'
+    ).replace(/\/$/, '');
     // `||`, not `??`: an EMPTY variable must fall through to the file. A shell
     // or a compose file that declares TREVRA_AGENT_TOKEN and leaves it blank
     // otherwise wins the `??` and the token file is never opened -- the bridge
     // then reports a missing token while holding a perfectly good one.
-    this.token = options.token?.trim() || process.env.TREVRA_AGENT_TOKEN?.trim() || readTokenFile(process.env.TREVRA_AGENT_TOKEN_FILE);
+    this.token =
+      options.token?.trim() ||
+      process.env.TREVRA_AGENT_TOKEN?.trim() ||
+      readTokenFile(process.env.TREVRA_AGENT_TOKEN_FILE);
     if (!this.token) {
-      throw new Error('TREVRA_AGENT_TOKEN is required (or TREVRA_AGENT_TOKEN_FILE, a path to a file holding one). Create one in Trevra Autopilot or POST /api/agent-tokens from an authenticated session.');
+      throw new Error(
+        'TREVRA_AGENT_TOKEN is required (or TREVRA_AGENT_TOKEN_FILE, a path to a file holding one). Create one in Trevra Autopilot or POST /api/agent-tokens from an authenticated session.'
+      );
     }
-  }
-
-
-  async getRevenueBrief(): Promise<Record<string, unknown>> {
-    return this.request('/api/agent/revenue-brief');
-  }
-
-  async listPendingActions(): Promise<unknown[]> {
-    const result = await this.request<{ actions: unknown[] }>('/api/agent/actions');
-    return result.actions;
-  }
-
-  async prepareRecommendation(recommendationId: string): Promise<Record<string, unknown>> {
-    return this.request(`/api/agent/recommendations/${encodeURIComponent(recommendationId)}/prepare`, {
-      method: 'POST',
-      body: JSON.stringify({})
-    });
   }
 
   async listSkills(): Promise<TrevraSkillManifest[]> {
@@ -122,42 +113,63 @@ export class TrevraAgentClient {
   }
 
   async listPlaybooks(): Promise<TrevraPlaybookManifest[]> {
-    const result = await this.request<{ playbooks: TrevraPlaybookManifest[] }>('/api/agent/playbooks');
+    const result = await this.request<{ playbooks: TrevraPlaybookManifest[] }>(
+      '/api/agent/playbooks'
+    );
     return result.playbooks;
   }
-
-  async startPlaybook(playbookId: string, input: unknown, version?: string): Promise<TrevraPlaybookRun> {
-    const result = await this.request<{ run: TrevraPlaybookRun }>(`/api/agent/playbooks/${encodeURIComponent(playbookId)}/runs`, {
-      method: 'POST',
-      body: JSON.stringify({ input: input ?? {}, ...(version ? { version } : {}) })
-    });
+  async startPlaybook(
+    playbookId: string,
+    input: unknown,
+    version?: string
+  ): Promise<TrevraPlaybookRun> {
+    const result = await this.request<{ run: TrevraPlaybookRun }>(
+      `/api/agent/playbooks/${encodeURIComponent(playbookId)}/runs`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ input: input ?? {}, ...(version ? { version } : {}) })
+      }
+    );
     return result.run;
   }
 
-  async listPlaybookRuns(filters: { status?: TrevraPlaybookRun['status']; limit?: number } = {}): Promise<TrevraPlaybookRun[]> {
+  async listPlaybookRuns(
+    filters: { status?: TrevraPlaybookRun['status']; limit?: number } = {}
+  ): Promise<TrevraPlaybookRun[]> {
     const query = new URLSearchParams();
     if (filters.status) query.set('status', filters.status);
     if (filters.limit) query.set('limit', String(filters.limit));
-    const result = await this.request<{ runs: TrevraPlaybookRun[] }>(`/api/agent/playbook-runs${query.size ? `?${query}` : ''}`);
+    const result = await this.request<{ runs: TrevraPlaybookRun[] }>(
+      `/api/agent/playbook-runs${query.size ? `?${query}` : ''}`
+    );
     return result.runs;
   }
 
   async getPlaybookRun(runId: string): Promise<TrevraPlaybookRun> {
-    const result = await this.request<{ run: TrevraPlaybookRun }>(`/api/agent/playbook-runs/${encodeURIComponent(runId)}`);
+    const result = await this.request<{ run: TrevraPlaybookRun }>(
+      `/api/agent/playbook-runs/${encodeURIComponent(runId)}`
+    );
     return result.run;
   }
 
-  async listEvents(filters: { streamType?: string; streamId?: string; correlationId?: string; limit?: number } = {}): Promise<unknown[]> {
+  async listEvents(
+    filters: { streamType?: string; streamId?: string; correlationId?: string; limit?: number } = {}
+  ): Promise<unknown[]> {
     const query = new URLSearchParams();
     if (filters.streamType) query.set('streamType', filters.streamType);
     if (filters.streamId) query.set('streamId', filters.streamId);
     if (filters.correlationId) query.set('correlationId', filters.correlationId);
     if (filters.limit) query.set('limit', String(filters.limit));
-    const result = await this.request<{ events: unknown[] }>(`/api/agent/events${query.size ? `?${query}` : ''}`);
+    const result = await this.request<{ events: unknown[] }>(
+      `/api/agent/events${query.size ? `?${query}` : ''}`
+    );
     return result.events;
   }
 
-  async runSkill(skillId: string, input: unknown): Promise<{
+  async runSkill(
+    skillId: string,
+    input: unknown
+  ): Promise<{
     run: TrevraSkillRun;
     approvalRequired: boolean;
     sideEffect: TrevraSkillManifest['sideEffect'];
@@ -168,17 +180,23 @@ export class TrevraAgentClient {
     });
   }
 
-  async listRuns(filters: { skillId?: string; status?: 'ok' | 'error'; limit?: number } = {}): Promise<TrevraSkillRun[]> {
+  async listRuns(
+    filters: { skillId?: string; status?: 'ok' | 'error'; limit?: number } = {}
+  ): Promise<TrevraSkillRun[]> {
     const query = new URLSearchParams();
     if (filters.skillId) query.set('skillId', filters.skillId);
     if (filters.status) query.set('status', filters.status);
     if (filters.limit) query.set('limit', String(filters.limit));
-    const result = await this.request<{ runs: TrevraSkillRun[] }>(`/api/agent/runs${query.size ? `?${query}` : ''}`);
+    const result = await this.request<{ runs: TrevraSkillRun[] }>(
+      `/api/agent/runs${query.size ? `?${query}` : ''}`
+    );
     return result.runs;
   }
 
   async getRun(runId: string): Promise<TrevraSkillRun> {
-    const result = await this.request<{ run: TrevraSkillRun }>(`/api/agent/runs/${encodeURIComponent(runId)}`);
+    const result = await this.request<{ run: TrevraSkillRun }>(
+      `/api/agent/runs/${encodeURIComponent(runId)}`
+    );
     return result.run;
   }
 
@@ -193,8 +211,11 @@ export class TrevraAgentClient {
       },
       signal: AbortSignal.timeout(Number(process.env.TREVRA_AGENT_TIMEOUT_MS ?? 60_000))
     });
-    const body = await response.json().catch(() => ({ error: response.statusText })) as { error?: string } & T;
-    if (!response.ok) throw new Error(body.error || `Trevra API request failed with ${response.status}`);
+    const body = (await response.json().catch(() => ({ error: response.statusText }))) as {
+      error?: string;
+    } & T;
+    if (!response.ok)
+      throw new Error(body.error || `Trevra API request failed with ${response.status}`);
     return body;
   }
 }

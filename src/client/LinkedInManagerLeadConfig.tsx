@@ -30,6 +30,7 @@ import type {
 } from '../server/linkedin/lead-lists';
 import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { errorMessage } from './LinkedInSafety';
+import { ActionMenu } from './ui/action-menu';
 
 /**
  * Building a lead list, and living with one afterwards.
@@ -717,7 +718,7 @@ export function LinkedInManagerLeadConfig({
   });
 
   return (
-    <div className="lead-build">
+    <div className="lead-build li-polished">
       <section
         className="page-panel"
         onDragOver={(event) => {
@@ -1350,33 +1351,33 @@ export function LinkedInManagerLeadConfig({
                                   {armed === contact.id ? (
                                     <span className="li-hint">Confirm above</span>
                                   ) : (
-                                    <>
-                                      <button
-                                        className="li-mini-button"
-                                        type="button"
-                                        disabled={rowBusy !== '' || editing}
-                                        onClick={() => startEdit(contact)}
-                                      >
-                                        <Pencil size={12} /> Edit
-                                      </button>
-                                      <button
-                                        className="li-mini-button li-mini-danger"
-                                        type="button"
-                                        disabled={rowBusy !== ''}
-                                        onClick={() => {
-                                          setDraft(null);
-                                          setArmed(contact.id);
-                                          // The confirmation is above the table, so it is
-                                          // brought to the operator rather than left for
-                                          // them to scroll back and find.
-                                          requestAnimationFrame(() =>
-                                            confirmRef.current?.scrollIntoView({ block: 'nearest' })
-                                          );
-                                        }}
-                                      >
-                                        <Trash2 size={12} /> Remove
-                                      </button>
-                                    </>
+                                    <ActionMenu
+                                      compact
+                                      label={`More actions for ${contact.firstName} ${contact.lastName}`}
+                                      items={[
+                                        {
+                                          label: 'Edit lead',
+                                          icon: <Pencil size={12} />,
+                                          disabled: rowBusy !== '' || editing,
+                                          onSelect: () => startEdit(contact)
+                                        },
+                                        {
+                                          label: 'Remove from list',
+                                          icon: <Trash2 size={12} />,
+                                          disabled: rowBusy !== '',
+                                          danger: true,
+                                          onSelect: () => {
+                                            setDraft(null);
+                                            setArmed(contact.id);
+                                            requestAnimationFrame(() =>
+                                              confirmRef.current?.scrollIntoView({
+                                                block: 'nearest'
+                                              })
+                                            );
+                                          }
+                                        }
+                                      ]}
+                                    />
                                   )}
                                 </div>
                               </td>

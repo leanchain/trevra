@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { upsertSeat } from './seats.js';
 import {
+  addPostImage,
   cancelPost,
   claimNextDuePost,
   createPost,
   getPost,
+  LINKEDIN_POST_IMAGE_MAX_COUNT,
+  loadPostImages,
   LinkedInPostsApiError,
   listPosts,
   markPostFailed,
@@ -83,6 +86,67 @@ describe('createPost', () => {
     );
     expect(post.status).toBe('scheduled');
     expect(post.scheduledAt).toBe('2026-08-20T09:00:00.000Z');
+  });
+
+  it('stores image bytes outside the post row and exposes lightweight media metadata', async () => {
+    const post = await createPost(
+      db,
+      {
+        id: 'lipost_media',
+        workspaceId: WORKSPACE_ID,
+        blocks: BLOCKS,
+        status: 'draft',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const withImage = await addPostImage(
+      db,
+      WORKSPACE_ID,
+      post.id,
+      { name: 'launch.png', mimeType: 'image/png', bytes },
+      NOW
+    );
+
+    expect(withImage.media).toEqual([
+      expect.objectContaining({ name: 'launch.png', mimeType: 'image/png', size: bytes.length })
+    ]);
+    const payloads = await loadPostImages(db, WORKSPACE_ID, post.id);
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]?.buffer.equals(bytes)).toBe(true);
+  });
+
+  it("enforces LinkedIn's nine-image post cap in the store", async () => {
+    const post = await createPost(
+      db,
+      {
+        id: 'lipost_media_cap',
+        workspaceId: WORKSPACE_ID,
+        blocks: BLOCKS,
+        status: 'draft',
+        createdBy: 'usr_1'
+      },
+      NOW
+    );
+    for (let index = 0; index < LINKEDIN_POST_IMAGE_MAX_COUNT; index += 1) {
+      await addPostImage(
+        db,
+        WORKSPACE_ID,
+        post.id,
+        { name: `${index}.png`, mimeType: 'image/png', bytes: Buffer.from([index + 1]) },
+        NOW
+      );
+    }
+    await expect(
+      addPostImage(
+        db,
+        WORKSPACE_ID,
+        post.id,
+        { name: 'too-many.png', mimeType: 'image/png', bytes: Buffer.from([1]) },
+        NOW
+      )
+    ).rejects.toMatchObject({ status: 400 });
   });
 });
 

@@ -732,6 +732,7 @@ async function seedDemo(db: Db): Promise<void> {
   if (existing) return;
   const now = new Date();
   const iso = (daysAgo = 0) => new Date(now.getTime() - daysAgo * 86_400_000).toISOString();
+
   await db.transaction(async (tx) => {
     await tx
       .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
@@ -763,23 +764,14 @@ async function seedDemo(db: Db): Promise<void> {
       );
 
     const clients = [
-      ['cl_acme', 'Acme Labs', 'Maya Chen', 'maya@acme.example', 'active', 15000, 'EUR', iso(1)],
-      [
-        'cl_orbit',
-        'Orbit Health',
-        'Jonas Keller',
-        'jonas@orbit.example',
-        'prospect',
-        8000,
-        'EUR',
-        iso(9)
-      ],
-      ['cl_luma', 'Luma Works', 'Sofia Rossi', 'sofia@luma.example', 'active', 7200, 'EUR', iso(4)]
+      ['cl_acme', 'Acme Labs', 'Maya Chen', 'maya@acme.example', 'prospect', iso(1)],
+      ['cl_orbit', 'Orbit Health', 'Jonas Keller', 'jonas@orbit.example', 'prospect', iso(9)],
+      ['cl_luma', 'Luma Works', 'Sofia Rossi', 'sofia@luma.example', 'prospect', iso(4)]
     ] as const;
     for (const client of clients) {
       await tx
         .prepare(
-          'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,active_value,currency,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+          'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
         )
         .run(
           client[0],
@@ -789,8 +781,6 @@ async function seedDemo(db: Db): Promise<void> {
           client[3],
           client[4],
           client[5],
-          client[6],
-          client[7],
           iso(80)
         );
       await tx
@@ -802,229 +792,49 @@ async function seedDemo(db: Db): Promise<void> {
 
     await tx
       .prepare(
-        'INSERT INTO opportunities (id,workspace_id,client_id,title,value,currency,status,proposal_sent_at,expected_response_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+        'INSERT INTO opportunities (id,workspace_id,client_id,title,status,proposal_sent_at,expected_response_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
       )
       .run(
         'opp_orbit',
         DEMO_WORKSPACE_ID,
         'cl_orbit',
         'Brand strategy engagement',
-        8000,
-        'EUR',
         'proposal_sent',
         iso(9),
         iso(5),
         iso(14)
       );
+
     await tx
       .prepare(
-        'INSERT INTO projects (id,workspace_id,client_id,name,status,total_value,currency,created_at) VALUES (?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        'prj_acme',
-        DEMO_WORKSPACE_ID,
-        'cl_acme',
-        'Acme website launch',
-        'active',
-        15000,
-        'EUR',
-        iso(50)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO projects (id,workspace_id,client_id,name,status,total_value,currency,created_at) VALUES (?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        'prj_luma',
-        DEMO_WORKSPACE_ID,
-        'cl_luma',
-        'Luma positioning sprint',
-        'delivered',
-        7200,
-        'EUR',
-        iso(35)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO contracts (id,workspace_id,client_id,project_id,title,status,signed_at,effective_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        'contract_acme',
-        DEMO_WORKSPACE_ID,
-        'cl_acme',
-        'prj_acme',
-        'Acme website statement of work',
-        'signed',
-        iso(52),
-        iso(50),
-        iso(52)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO contract_clauses (id,contract_id,clause_type,title,content,value_number,unit,created_at) VALUES (?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        'clause_acme_revision',
-        'contract_acme',
-        'change_order',
-        'Additional deliverables',
-        'Additional pages and deliverables require written approval and are priced separately.',
-        750,
-        'per landing page',
-        iso(52)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO scope_items (id,project_id,description,included,unit_price,created_at) VALUES (?,?,?,?,?,?)'
-      )
-      .run(
-        'scope_acme_1',
-        'prj_acme',
-        'One homepage and one product landing page',
-        1,
-        null,
-        iso(50)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO scope_items (id,project_id,description,included,unit_price,created_at) VALUES (?,?,?,?,?,?)'
-      )
-      .run(
-        'scope_acme_2',
-        'prj_acme',
-        'Additional landing pages priced separately',
-        0,
-        750,
-        iso(50)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO scope_items (id,project_id,description,included,unit_price,created_at) VALUES (?,?,?,?,?,?)'
-      )
-      .run(
-        'scope_luma_1',
-        'prj_luma',
-        'Positioning workshop and final strategy deck',
-        1,
-        null,
-        iso(35)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO milestones (id,project_id,name,amount,currency,status,delivered_at,invoiced_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        'mil_luma_final',
-        'prj_luma',
-        'Final strategy delivery',
-        2400,
-        'EUR',
-        'delivered',
-        iso(2),
-        null,
-        iso(35)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO deliverables (id,workspace_id,project_id,name,status,delivered_at,created_at) VALUES (?,?,?,?,?,?,?)'
-      )
-      .run(
-        'del_luma_deck',
-        DEMO_WORKSPACE_ID,
-        'prj_luma',
-        'Final positioning deck',
-        'delivered',
-        iso(2),
-        iso(35)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO invoices (id,workspace_id,client_id,project_id,external_ref,amount,currency,status,issued_at,due_at,paid_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        'inv_acme_104',
-        DEMO_WORKSPACE_ID,
-        'cl_acme',
-        'prj_acme',
-        'INV-104',
-        1850,
-        'EUR',
-        'sent',
-        iso(25),
-        iso(7),
-        null,
-        iso(25)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        'msg_acme_extra',
-        DEMO_WORKSPACE_ID,
-        'cl_acme',
-        'prj_acme',
-        'inbound',
-        'A few additions',
-        'Could you also create two additional landing pages for the partner campaigns? We would love to include those in this round.',
-        iso(1),
-        iso(1)
-      );
-    await tx
-      .prepare(
-        'INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+        'INSERT INTO messages (id,workspace_id,client_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
       )
       .run(
         'msg_orbit_proposal',
         DEMO_WORKSPACE_ID,
         'cl_orbit',
-        null,
         'outbound',
         'Orbit brand strategy proposal',
-        'Hi Jonas, attached is the €8,000 proposal. I can reserve an August start if you confirm this week.',
+        'Hi Jonas, attached is the proposal. I can reserve an August start if you confirm this week.',
         iso(9),
         iso(9)
       );
+
     await tx
       .prepare(
-        'INSERT INTO messages (id,workspace_id,client_id,project_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+        'INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,delay_minutes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)'
       )
       .run(
-        'msg_luma_delivery',
+        'rule_stale',
         DEMO_WORKSPACE_ID,
-        'cl_luma',
-        'prj_luma',
-        'outbound',
-        'Final strategy deck',
-        'Hi Sofia, the final positioning deck and workshop summary are attached. This completes the final milestone.',
-        iso(2),
-        iso(2)
+        'stale_proposal',
+        'prepare',
+        0.85,
+        0,
+        1,
+        iso(30),
+        iso()
       );
-
-    const defaults = [
-      ['rule_stale', 'stale_proposal', 'prepare', 0.85, 25000, 0, 1],
-      ['rule_overdue', 'overdue_invoice', 'prepare', 0.95, 5000, 0, 1],
-      ['rule_scope', 'scope_creep', 'suggest', 0.9, 5000, 0, 1],
-      ['rule_unbilled', 'unbilled_milestone', 'prepare', 0.95, 10000, 0, 1]
-    ] as const;
-    for (const rule of defaults) {
-      await tx
-        .prepare(
-          'INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,max_amount,delay_minutes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
-        )
-        .run(
-          rule[0],
-          DEMO_WORKSPACE_ID,
-          rule[1],
-          rule[2],
-          rule[3],
-          rule[4],
-          rule[5],
-          rule[6],
-          iso(30),
-          iso()
-        );
-    }
   });
 }
 

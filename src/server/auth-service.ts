@@ -710,17 +710,9 @@ async function createDefaultAutomationRules(
   workspaceId: string,
   now: string
 ): Promise<void> {
-  const defaults = [
-    ['stale_proposal', 'prepare', 0.85, 25000, 0, 1],
-    ['overdue_invoice', 'prepare', 0.95, 5000, 0, 1],
-    ['scope_creep', 'suggest', 0.9, 5000, 0, 1],
-    ['unbilled_milestone', 'prepare', 0.95, 10000, 0, 1]
-  ] as const;
-  for (const rule of defaults) {
-    await db
-      .prepare(
-        'INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,max_amount,delay_minutes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
-      )
-      .run(id('rule'), workspaceId, ...rule, now, now);
-  }
+  await db
+    .prepare(
+      'INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,delay_minutes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)'
+    )
+    .run(id('rule'), workspaceId, 'stale_proposal', 'prepare', 0.85, 0, 1, now, now);
 }

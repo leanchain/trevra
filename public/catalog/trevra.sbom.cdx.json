@@ -5,7 +5,7 @@
   "serialNumber": "urn:uuid:***",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-17T10:34:39.310Z",
+    "timestamp": "2026-08-20T21:33:15.679Z",
     "lifecycles": [
       {
         "phase": "build"
@@ -21,7 +21,7 @@
     "component": {
       "bom-ref": "trevra@0.1.0",
       "type": "library",
-      "name": "app",
+      "name": "Trevra",
       "version": "0.1.0",
       "scope": "required",
       "purl": "pkg:npm/trevra@0.1.0",
@@ -1752,105 +1752,6 @@
         {
           "alg": "SHA-512",
           "content": "d5453c48841f4d93000c62d115aa6b4f7e0a90c5b1f0a528a886479a95266e3befd0eb8b90b53c6c4d575ec8ce03ae9cfda6953b7f49b4b9daeae28fa4839d10"
-        }
-      ]
-    },
-    {
-      "bom-ref": "@napi-rs/canvas@0.1.80",
-      "type": "library",
-      "name": "@napi-rs/canvas",
-      "version": "0.1.80",
-      "scope": "required",
-      "description": "Canvas for Node.js with skia backend",
-      "purl": "pkg:npm/%40napi-rs/canvas@0.1.80",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/@napi-rs/canvas/-/canvas-0.1.80.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/Brooooooklyn/canvas.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "0f1b93d4296720fb6cd64431f05066924e014034df239908cf2c0068c8d04977cd9eb6b950553d3f0bab5eb97e25eddb27a046b29ff39ac8555456c29b223ec3"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "@napi-rs/canvas-linux-x64-gnu@0.1.80",
-      "type": "library",
-      "name": "@napi-rs/canvas-linux-x64-gnu",
-      "version": "0.1.80",
-      "scope": "optional",
-      "description": "Canvas for Node.js with skia backend",
-      "purl": "pkg:npm/%40napi-rs/canvas-linux-x64-gnu@0.1.80",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/@napi-rs/canvas-linux-x64-gnu/-/canvas-linux-x64-gnu-0.1.80.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/Brooooooklyn/canvas.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "05e5c09a12a0d645f7502ac9b186dd41dde120c0c7fcae879cffe91b62ee21369785706235d87ffd35555550816c9cd541a57980aff864e08cad05bd9afb93a8"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "@napi-rs/canvas-linux-x64-musl@0.1.80",
-      "type": "library",
-      "name": "@napi-rs/canvas-linux-x64-musl",
-      "version": "0.1.80",
-      "scope": "optional",
-      "description": "Canvas for Node.js with skia backend",
-      "purl": "pkg:npm/%40napi-rs/canvas-linux-x64-musl@0.1.80",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/@napi-rs/canvas-linux-x64-musl/-/canvas-linux-x64-musl-0.1.80.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/Brooooooklyn/canvas.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "c745ef6567476e481d82e709b11c69ad7ff8a38b0479deeaa3dac2400f6e8224bda84d90bcfd1122212e82d6617cb1f773223e8c844524757816ecfed411c732"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
         }
       ]
     },
@@ -3958,6 +3859,48 @@
       ]
     },
     {
+      "bom-ref": "@types/nodemailer@8.0.1",
+      "type": "library",
+      "name": "@types/nodemailer",
+      "version": "8.0.1",
+      "scope": "optional",
+      "description": "TypeScript definitions for nodemailer",
+      "purl": "pkg:npm/%40types/nodemailer@8.0.1",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@types/nodemailer/-/nodemailer-8.0.1.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/nodemailer"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "3f1a5a2279bc5752500dde23d1db391dfbd6424f09ba94b50b43e271bf7a409b2bad10e3047f8394aecbe1974d4aa3542e18994501dce349cb55285a1b15c033"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "@types/pg@8.20.0",
       "type": "library",
       "name": "@types/pg",
@@ -5500,47 +5443,6 @@
       ]
     },
     {
-      "bom-ref": "@xmldom/xmldom@0.8.13",
-      "type": "library",
-      "name": "@xmldom/xmldom",
-      "version": "0.8.13",
-      "scope": "required",
-      "description": "A pure JavaScript W3C standard-based (XML DOM Level 2 Core) DOMParser and XMLSerializer module.",
-      "purl": "pkg:npm/%40xmldom/xmldom@0.8.13",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/@xmldom/xmldom/-/xmldom-0.8.13.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git://github.com/xmldom/xmldom.git"
-        },
-        {
-          "type": "website",
-          "url": "https://github.com/xmldom/xmldom"
-        },
-        {
-          "type": "issue-tracker",
-          "url": "https://github.com/xmldom/xmldom/issues"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "291633c5ea5cd781bf084a4419cdd89fe24a680793eb7b26943afebe307c8d17e04c1048f70463fe791010efae715f29f08f5b7ca2d6a77eee1e016b6e7b4fbf"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "@xtuc/ieee754@1.2.0",
       "type": "library",
       "name": "@xtuc/ieee754",
@@ -6899,11 +6801,16 @@
       "type": "library",
       "name": "base64-js",
       "version": "1.5.1",
-      "scope": "required",
+      "scope": "optional",
       "author": "T. Jameson Little <t.jameson.little@gmail.com>",
       "description": "Base64 encoding/decoding in pure JS",
       "purl": "pkg:npm/base64-js@1.5.1",
-      "properties": [],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
@@ -7509,48 +7416,6 @@
       ]
     },
     {
-      "bom-ref": "bluebird@3.4.7",
-      "type": "library",
-      "name": "bluebird",
-      "version": "3.4.7",
-      "scope": "required",
-      "author": "Petka Antonov",
-      "description": "Full featured Promises/A+ implementation with exceptionally good performance",
-      "purl": "pkg:npm/bluebird@3.4.7",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/bluebird/-/bluebird-3.4.7.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git://github.com/petkaantonov/bluebird.git"
-        },
-        {
-          "type": "website",
-          "url": "https://github.com/petkaantonov/bluebird"
-        },
-        {
-          "type": "issue-tracker",
-          "url": "http://github.com/petkaantonov/bluebird/issues"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "883dfcf7c491eec5954476e242ffac1d4b479ccbc2d68de75b9ac072a9eadee3a7d3b0d2029a596149081ac943cfa8170bb1dfba73deed85418281090123dc1c"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "body-parser@2.3.0",
       "type": "library",
       "name": "body-parser",
@@ -7792,6 +7657,38 @@
           "license": {
             "id": "MIT"
           }
+        }
+      ]
+    },
+    {
+      "bom-ref": "buildcheck@0.0.7",
+      "type": "library",
+      "name": "buildcheck",
+      "version": "0.0.7",
+      "scope": "optional",
+      "author": "Brian White <mscdex@mscdex.net>",
+      "description": "Build environment checking (a la autoconf) for node.js",
+      "purl": "pkg:npm/buildcheck@0.0.7",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/buildcheck/-/buildcheck-0.0.7.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "http://github.com/mscdex/buildcheck.git"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "9476e5cf86a16a6c694e69ec93e30d4d15ac8d82aff7ae4cc0ead2272783e7cf2b47725cbbbb3013ed3037917e3db2f972382effd39b9217f310fba87c43302c"
         }
       ]
     },
@@ -8969,11 +8866,16 @@
       "type": "library",
       "name": "core-util-is",
       "version": "1.0.3",
-      "scope": "required",
+      "scope": "optional",
       "author": "Isaac Z. Schlueter <i@izs.me> (http://blog.izs.me/)",
       "description": "The `util.is*` functions introduced in Node v0.12.",
       "purl": "pkg:npm/core-util-is@1.0.3",
-      "properties": [],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
@@ -9029,6 +8931,38 @@
           "license": {
             "id": "MIT"
           }
+        }
+      ]
+    },
+    {
+      "bom-ref": "cpu-features@0.0.10",
+      "type": "library",
+      "name": "cpu-features",
+      "version": "0.0.10",
+      "scope": "optional",
+      "author": "Brian White <mscdex@mscdex.net>",
+      "description": "A simple binding to Google's cpu_features library for obtaining information about installed CPU(s)",
+      "purl": "pkg:npm/cpu-features@0.0.10",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/cpu-features/-/cpu-features-0.0.10.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/mscdex/cpu-features.git"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f48918aad5f76073c2ce8560d4fcbea3dd39edade2d1fa7b4b9df4516a2409268555373b0b05cf4623a3463050435f1908d69fc7bf187e71be1c02f1b5598e18"
         }
       ]
     },
@@ -9479,48 +9413,6 @@
       ]
     },
     {
-      "bom-ref": "dingbat-to-unicode@1.0.1",
-      "type": "library",
-      "name": "dingbat-to-unicode",
-      "version": "1.0.1",
-      "scope": "required",
-      "author": "Michael Williamson <mike@zwobble.org>",
-      "description": "Mapping from Dingbat fonts, such as Symbol, Webdings and Wingdings, to Unicode code points",
-      "purl": "pkg:npm/dingbat-to-unicode@1.0.1",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/dingbat-to-unicode/-/dingbat-to-unicode-1.0.1.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/mwilliamson/dingbat-to-unicode.git"
-        },
-        {
-          "type": "website",
-          "url": "https://github.com/mwilliamson/dingbat-to-unicode#readme"
-        },
-        {
-          "type": "issue-tracker",
-          "url": "https://github.com/mwilliamson/dingbat-to-unicode/issues"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "f7c974b16f3b653e7ca54e22eb5c1ad8e1f0c5b89849bbb1b02068cda567617da20a7af76cb3377c87acd7f7a3ee1d5874e2ae2adfcc2ecef4e9356700b03ae7"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "BSD-2-Clause"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "docker-compose@1.4.2",
       "type": "library",
       "name": "docker-compose",
@@ -9816,33 +9708,6 @@
           "license": {
             "id": "BSD-2-Clause"
           }
-        }
-      ]
-    },
-    {
-      "bom-ref": "duck@0.1.12",
-      "type": "library",
-      "name": "duck",
-      "version": "0.1.12",
-      "scope": "required",
-      "author": "Michael Williamson <mike@zwobble.org>",
-      "description": "Rich matchers inspired by Hamcrest. Useful for generating helpful assertion failure messages in tests.",
-      "purl": "pkg:npm/duck@0.1.12",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/duck/-/duck-0.1.12.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/mwilliamson/duck.js.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "c2472d95ad4ee957cff3d810f89ff20deb0cd12ec1ed72d78ca1b35f130354583bb849fbd3a9e202dc98a2f29bcaad684fd6300dc972ef6d7f8945a873c31546"
         }
       ]
     },
@@ -12441,39 +12306,6 @@
       ]
     },
     {
-      "bom-ref": "immediate@3.0.6",
-      "type": "library",
-      "name": "immediate",
-      "version": "3.0.6",
-      "scope": "required",
-      "description": "A cross browser microtask library",
-      "purl": "pkg:npm/immediate@3.0.6",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/immediate/-/immediate-3.0.6.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git://github.com/calvinmetcalf/immediate.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "5d7385b72a838cd0c043155f631b85ee0f4897f21b5a69a5420d8c60a387f04c484f5aa0eb1738cf24b71da10401382cd5bb5fcf1ab5e5c894898ee08d25d119"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "inherits@2.0.4",
       "type": "library",
       "name": "inherits",
@@ -12670,11 +12502,16 @@
       "type": "library",
       "name": "isarray",
       "version": "1.0.0",
-      "scope": "required",
+      "scope": "optional",
       "author": "Julian Gruber",
       "description": "Array#isArray for older browsers",
       "purl": "pkg:npm/isarray@1.0.0",
-      "properties": [],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
@@ -13111,38 +12948,6 @@
       ]
     },
     {
-      "bom-ref": "jszip@3.10.1",
-      "type": "library",
-      "name": "jszip",
-      "version": "3.10.1",
-      "scope": "required",
-      "author": "Stuart Knightley <stuart@stuartk.com>",
-      "description": "Create, read and edit .zip files with JavaScript http://stuartk.com/jszip",
-      "purl": "pkg:npm/jszip@3.10.1",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/jszip/-/jszip-3.10.1.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/Stuk/jszip.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "c570ef79cc93a462eba85aef92b512a31c5f248e401fb53ccf1c6d55c969b14b4c0aae09436f742d8f005b973b1a09ebfd8fe82be6d031ba8adaa9ad937a4de2"
-        }
-      ],
-      "licenses": [
-        {
-          "expression": "(MIT OR GPL-3.0-or-later)"
-        }
-      ]
-    },
-    {
       "bom-ref": "kysely@0.29.4",
       "type": "library",
       "name": "kysely",
@@ -13217,43 +13022,6 @@
         {
           "alg": "SHA-512",
           "content": "6fde0688d1d0372e89353aede70eb33727df32b3645d96f72939026496f6575c5a1060a4d3ddef919da3937b6969e3f7dff3a25c2f96bcaf40c5479b9dfe676f"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "lie@3.3.0",
-      "type": "library",
-      "name": "lie",
-      "version": "3.3.0",
-      "scope": "required",
-      "description": "A basic but performant promise implementation",
-      "purl": "pkg:npm/lie@3.3.0",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/lie/-/lie-3.3.0.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/calvinmetcalf/lie.git"
-        },
-        {
-          "type": "issue-tracker",
-          "url": "https://github.com/calvinmetcalf/lie/issues"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "51a88c27379646512e8f302ec392e8918d4be5e70d41864a7e6c99f4bef00c76ffa797ad29ac5786884172bc341186f2f86fcd039daf452378377f5dc47008c1"
         }
       ],
       "licenses": [
@@ -13485,40 +13253,6 @@
       ]
     },
     {
-      "bom-ref": "lop@0.4.2",
-      "type": "library",
-      "name": "lop",
-      "version": "0.4.2",
-      "scope": "required",
-      "author": "Michael Williamson <mike@zwobble.org>",
-      "description": "Create parsers using parser combinators with helpful error messages",
-      "purl": "pkg:npm/lop@0.4.2",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/lop/-/lop-0.4.2.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/mwilliamson/lop.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "45e7c82d50d0e032a8459b09e0f8f6d93c44de89833b8ef21699080680cace4a8f4484ace54d5c9c0760ff9e7cdd83e458f68b2181ce2913104af8c5b0edba73"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "BSD-2-Clause"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "lru-cache@10.4.3",
       "type": "library",
       "name": "lru-cache",
@@ -13619,69 +13353,6 @@
         {
           "alg": "SHA-512",
           "content": "bddd85e1853211728670b1e8abe4c4c828f1b9e49e1e7171cb28cda7cd328345d5e2f5219c37abfe5bef96a33f6ab0796d740de4adbfde88a7c82472c7c4f609"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "mammoth@1.12.0",
-      "type": "library",
-      "name": "mammoth",
-      "version": "1.12.0",
-      "scope": "required",
-      "author": "Michael Williamson <mike@zwobble.org>",
-      "description": "Convert Word documents from docx to simple HTML and Markdown",
-      "purl": "pkg:npm/mammoth@1.12.0",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/mammoth/-/mammoth-1.12.0.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/mwilliamson/mammoth.js.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "7309cad5121c45d0cc8b61d1c76117198971a88121d0ea376cb868ae09ec5498b65246d7d7e8cac6e04d47d3c2e7e25a5fb124989c453e6a3a9a32e9a92848db"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "BSD-2-Clause"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "argparse@1.0.10",
-      "type": "library",
-      "name": "argparse",
-      "version": "1.0.10",
-      "scope": "required",
-      "description": "Very powerful CLI arguments parser. Native port of argparse - python's options parsing library",
-      "purl": "pkg:npm/argparse@1.0.10",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/argparse/-/argparse-1.0.10.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "a39468cbab4d1b848bfc53a408037a4738e26a4652db944b605adc32db49a9b75df015ab9c0f9f1b3e7b88de4f6f4ea9bc11af979810d01e3c74996c957be84e"
         }
       ],
       "licenses": [
@@ -14585,6 +14256,48 @@
       ]
     },
     {
+      "bom-ref": "nodemailer@9.0.5",
+      "type": "library",
+      "name": "nodemailer",
+      "version": "9.0.5",
+      "scope": "required",
+      "author": "Andris Reinman",
+      "description": "Easy as cake e-mail sending from your Node.js applications",
+      "purl": "pkg:npm/nodemailer@9.0.5",
+      "properties": [],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/nodemailer/-/nodemailer-9.0.5.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/nodemailer/nodemailer.git"
+        },
+        {
+          "type": "website",
+          "url": "https://nodemailer.com/"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/nodemailer/nodemailer/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "c2f8e22af8dcce6b0ded4ffcd34e8939d5ee6e0064d971406e2a0331b4feb0cedc3ecd10ae12536ba281457ecfe511061a40dc2d4cff11aad689d6fc1bc0b58d"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT-0"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "normalize-path@3.0.0",
       "type": "library",
       "name": "normalize-path",
@@ -14941,40 +14654,6 @@
       ]
     },
     {
-      "bom-ref": "option@0.2.4",
-      "type": "library",
-      "name": "option",
-      "version": "0.2.4",
-      "scope": "required",
-      "author": "Michael Williamson <mike@zwobble.org>",
-      "description": "The option type, also known as the maybe type, for JavaScript",
-      "purl": "pkg:npm/option@0.2.4",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/option/-/option-0.2.4.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/mwilliamson/node-options.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "a6412a6c3ca5f28bb9729abe56c9d06defd6944cb9a92ef13f3312d54e793821bd28fbf0143e3acc36f14088f77a025215cdc3f9785838f533cf8f73400572ec"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "BSD-2-Clause"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "package-json-from-dist@1.0.1",
       "type": "library",
       "name": "package-json-from-dist",
@@ -15010,37 +14689,6 @@
           "license": {
             "id": "BlueOak-1.0.0"
           }
-        }
-      ]
-    },
-    {
-      "bom-ref": "pako@1.0.11",
-      "type": "library",
-      "name": "pako",
-      "version": "1.0.11",
-      "scope": "required",
-      "description": "zlib port to javascript - fast, modularized, with browser support",
-      "purl": "pkg:npm/pako@1.0.11",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/pako/-/pako-1.0.11.tgz"
-        },
-        {
-          "type": "website",
-          "url": "https://github.com/nodeca/pako"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "e212c1f0fcb8cd971ee6ce3277d5f3a29ab056fff218d855d4197c353982ab5efadc778adbe130553bfe95e19e2f5dc39e1db07dbaa8c153d70883b4cf8b5a63"
-        }
-      ],
-      "licenses": [
-        {
-          "expression": "(MIT AND Zlib)"
         }
       ]
     },
@@ -15145,36 +14793,6 @@
         {
           "license": {
             "id": "Apache-2.0"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "path-is-absolute@1.0.1",
-      "type": "library",
-      "name": "path-is-absolute",
-      "version": "1.0.1",
-      "scope": "required",
-      "author": "Sindre Sorhus",
-      "description": "Node.js 0.12 path.isAbsolute() ponyfill",
-      "purl": "pkg:npm/path-is-absolute@1.0.1",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/path-is-absolute/-/path-is-absolute-1.0.1.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "0156f0dd42767bd6eaeb8bd2692f409b47e37b53daf296c6a934ec9977da2223299ebe4394385f24eb8b8fd49ff7964f5430147ab0df124f3c30f98f7bb50242"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
           }
         }
       ]
@@ -15306,85 +14924,6 @@
         {
           "license": {
             "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "pdf-parse@2.4.5",
-      "type": "library",
-      "name": "pdf-parse",
-      "version": "2.4.5",
-      "scope": "required",
-      "author": "Mehmet Kozan",
-      "description": "Pure TypeScript, cross-platform module for extracting text, images, and tabular data from PDFs. Run directly in your browser or in Node!",
-      "purl": "pkg:npm/pdf-parse@2.4.5",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/pdf-parse/-/pdf-parse-2.4.5.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/mehmet-kozan/pdf-parse.git"
-        },
-        {
-          "type": "website",
-          "url": "https://mehmet-kozan.github.io/pdf-parse/"
-        },
-        {
-          "type": "issue-tracker",
-          "url": "https://github.com/mehmet-kozan/pdf-parse/issues"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "98753cf471a1eeffb8bb6b9b7e77af274de598f810e565380b10159934a1fecc554c40d87757abfdd292fc0eaf83becd5f8eca4c4a2286af236412ebf02c6ec2"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "pdfjs-dist@5.4.296",
-      "type": "library",
-      "name": "pdfjs-dist",
-      "version": "5.4.296",
-      "scope": "required",
-      "description": "Generic build of Mozilla's PDF.js library.",
-      "purl": "pkg:npm/pdfjs-dist@5.4.296",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-5.4.296.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git+https://github.com/mozilla/pdf.js.git"
-        },
-        {
-          "type": "website",
-          "url": "https://mozilla.github.io/pdf.js/"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "0e53b37add073bb3849e652607ac16189aeb76f6f224a7ed2356e1322b4aeced8df16da073be7bcb26016c8372f480da7d7015f7098aafdb7bc6c4da34a446e5"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
           }
         }
       ]
@@ -16199,6 +15738,45 @@
       ]
     },
     {
+      "bom-ref": "prettier@3.9.6",
+      "type": "library",
+      "name": "prettier",
+      "version": "3.9.6",
+      "scope": "optional",
+      "author": "James Long",
+      "description": "Prettier is an opinionated code formatter",
+      "purl": "pkg:npm/prettier@3.9.6",
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/prettier/-/prettier-3.9.6.tgz"
+        },
+        {
+          "type": "website",
+          "url": "https://prettier.io"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "3a9374cf355d89a880871a6eba3e5e7e9212e2c63d8fb6d8eae4799a78f9c8fcc691d92334a4897944e13dbeb4270dbd42e019800e28fbf881e3d90589a057ea"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
       "bom-ref": "process@0.11.10",
       "type": "library",
       "name": "process",
@@ -16242,10 +15820,15 @@
       "type": "library",
       "name": "process-nextick-args",
       "version": "2.0.1",
-      "scope": "required",
+      "scope": "optional",
       "description": "process.nextTick but always with args",
       "purl": "pkg:npm/process-nextick-args@2.0.1",
-      "properties": [],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
@@ -16836,10 +16419,15 @@
       "type": "library",
       "name": "readable-stream",
       "version": "2.3.8",
-      "scope": "required",
+      "scope": "optional",
       "description": "Streams3, a user-land copy of the stream library from Node.js",
       "purl": "pkg:npm/readable-stream@2.3.8",
-      "properties": [],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        }
+      ],
       "externalReferences": [
         {
           "type": "distribution",
@@ -17598,36 +17186,6 @@
         {
           "alg": "SHA-512",
           "content": "e7faff953c1b277cd0faac1d50565879136a75aecfe470fccd02aa9528dd1add7f4b47232c0a611eeb23e18e7c6a10ed5a7fe0df6c6b212e7cfe290ebf09742f"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "setimmediate@1.0.5",
-      "type": "library",
-      "name": "setimmediate",
-      "version": "1.0.5",
-      "scope": "required",
-      "author": "YuzuJS",
-      "description": "A shim for the setImmediate efficient script yielding API",
-      "purl": "pkg:npm/setimmediate@1.0.5",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/setimmediate/-/setimmediate-1.0.5.tgz"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "3004c9759a7cb0ba8397febc2df4266cff3328f2d0355e81219a0882bb1c14343e46cbcafc1c5e0d03a0cb128aa21d32ffc87706a5459c2a90fe077eade8885c"
         }
       ],
       "licenses": [
@@ -18531,40 +18089,6 @@
       ]
     },
     {
-      "bom-ref": "sprintf-js@1.0.3",
-      "type": "library",
-      "name": "sprintf-js",
-      "version": "1.0.3",
-      "scope": "required",
-      "author": "Alexandru Marasteanu <hello@alexei.ro> (http://alexei.ro/)",
-      "description": "JavaScript sprintf implementation",
-      "purl": "pkg:npm/sprintf-js@1.0.3",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/sprintf-js/-/sprintf-js-1.0.3.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/alexei/sprintf.js.git"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "0fd70f824bcb955deddc8ccbd03d182ef180f40864e0f72f57051b3747521abd5a3f436bb780049d351bb86beab840b4980eb81aab757f38ab951b3989b5f1f2"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "BSD-3-Clause"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "ssh-remote-port-forward@1.0.4",
       "type": "library",
       "name": "ssh-remote-port-forward",
@@ -18977,44 +18501,6 @@
         {
           "alg": "SHA-512",
           "content": "c833cc363a785b27d80641e78c844b7dc6b58ba28cc860adb1582829eff3d7eeafba481a10d76018166df9998a3dce206afbc46793a01df1ddadace180dc86ef"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "bom-ref": "stripe@22.3.2",
-      "type": "library",
-      "name": "stripe",
-      "version": "22.3.2",
-      "scope": "required",
-      "author": "Stripe <support@stripe.com> (https://stripe.com/)",
-      "description": "Stripe API wrapper",
-      "purl": "pkg:npm/stripe@22.3.2",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/stripe/-/stripe-22.3.2.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "https://github.com/stripe/stripe-node"
-        },
-        {
-          "type": "website",
-          "url": "https://github.com/stripe/stripe-node"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "3b5dd03af804210bc3953cba51b6f9901f7cd30a5b866a1936c8025ca20b8c23194baedff9b5beeb0f7d9378274a2fcdd6592bca88f5598769193e5673979d8e"
         }
       ],
       "licenses": [
@@ -20191,44 +19677,6 @@
       ]
     },
     {
-      "bom-ref": "underscore@1.13.8",
-      "type": "library",
-      "name": "underscore",
-      "version": "1.13.8",
-      "scope": "required",
-      "author": "Jeremy Ashkenas <jeremy@documentcloud.org>",
-      "description": "JavaScript's functional programming helper library.",
-      "purl": "pkg:npm/underscore@1.13.8",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/underscore/-/underscore-1.13.8.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git://github.com/jashkenas/underscore.git"
-        },
-        {
-          "type": "website",
-          "url": "https://underscorejs.org"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "0d7b43dd9b4443373b33c9b8717a2dc8747e1404b5f02eb86ac058639bea65ec5f62bc8d3670dcd365b884a837add42ea8e61ab358e4b1e5f4fa76578d35e7bd"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "undici@8.9.0",
       "type": "library",
       "name": "undici",
@@ -20998,48 +20446,6 @@
       ]
     },
     {
-      "bom-ref": "xmlbuilder@10.1.1",
-      "type": "library",
-      "name": "xmlbuilder",
-      "version": "10.1.1",
-      "scope": "required",
-      "author": "Ozgur Ozcitak <oozcitak@gmail.com>",
-      "description": "An XML builder for node.js",
-      "purl": "pkg:npm/xmlbuilder@10.1.1",
-      "properties": [],
-      "externalReferences": [
-        {
-          "type": "distribution",
-          "url": "https://registry.npmjs.org/xmlbuilder/-/xmlbuilder-10.1.1.tgz"
-        },
-        {
-          "type": "vcs",
-          "url": "git://github.com/oozcitak/xmlbuilder-js.git"
-        },
-        {
-          "type": "website",
-          "url": "http://github.com/oozcitak/xmlbuilder-js"
-        },
-        {
-          "type": "issue-tracker",
-          "url": "http://github.com/oozcitak/xmlbuilder-js/issues"
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "3b2ceb7052cbfe76fa7cc1876e2443b8fba9f658c1c9cb1d0b2a70bb28390001efc96cc67c2849a425cc1bcf0019320c161199f5171c14dd5eea5860de19302a"
-        }
-      ],
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
       "bom-ref": "xtend@4.0.2",
       "type": "library",
       "name": "xtend",
@@ -21371,16 +20777,14 @@
         "express-rate-limit@8.6.1",
         "helmet@8.3.0",
         "lucide-react@0.468.0",
-        "mammoth@1.12.0",
         "multer@2.2.0",
+        "nodemailer@9.0.5",
         "openai@6.49.0",
-        "pdf-parse@2.4.5",
         "pg@8.22.0",
         "pino@10.3.1",
         "pino-http@11.0.0",
         "react@19.2.8",
         "react-dom@19.2.8",
-        "stripe@22.3.2",
         "ws@8.21.3",
         "zod@3.25.76",
         "zod-to-json-schema@3.25.2",
@@ -21391,6 +20795,7 @@
         "@types/express@5.0.6",
         "@types/multer@2.2.0",
         "@types/node@24.13.3",
+        "@types/nodemailer@8.0.1",
         "@types/pg@8.20.0",
         "@types/react@19.2.17",
         "@types/react-dom@19.2.3",
@@ -21398,6 +20803,7 @@
         "@types/ws@8.18.1",
         "@vitejs/plugin-react@6.0.4",
         "concurrently@9.2.4",
+        "prettier@3.9.6",
         "supertest@7.2.2",
         "testcontainers@12.0.4",
         "tsx@4.23.1",
@@ -21417,17 +20823,11 @@
     },
     {
       "ref": "@ai-sdk/openai-compatible@3.0.20",
-      "dependsOn": [
-        "zod@3.25.76",
-        "@ai-sdk/provider@4.0.4",
-        "@ai-sdk/provider-utils@5.0.18"
-      ]
+      "dependsOn": ["zod@3.25.76", "@ai-sdk/provider@4.0.4", "@ai-sdk/provider-utils@5.0.18"]
     },
     {
       "ref": "@ai-sdk/provider@4.0.4",
-      "dependsOn": [
-        "json-schema@0.4.0"
-      ]
+      "dependsOn": ["json-schema@0.4.0"]
     },
     {
       "ref": "@ai-sdk/provider-utils@5.0.18",
@@ -21450,9 +20850,7 @@
     },
     {
       "ref": "@better-auth/utils@0.4.2",
-      "dependsOn": [
-        "@noble/hashes@2.2.0"
-      ]
+      "dependsOn": ["@noble/hashes@2.2.0"]
     },
     {
       "ref": "@better-fetch/fetch@1.3.1",
@@ -21460,9 +20858,7 @@
     },
     {
       "ref": "@emnapi/wasi-threads@1.2.3",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "@esbuild/linux-x64@0.28.1",
@@ -21470,25 +20866,15 @@
     },
     {
       "ref": "@grpc/grpc-js@1.14.4",
-      "dependsOn": [
-        "@grpc/proto-loader@0.8.1",
-        "@js-sdsl/ordered-map@4.4.2"
-      ]
+      "dependsOn": ["@grpc/proto-loader@0.8.1", "@js-sdsl/ordered-map@4.4.2"]
     },
     {
       "ref": "@grpc/proto-loader@0.8.1",
-      "dependsOn": [
-        "lodash.camelcase@4.3.0",
-        "long@5.3.2",
-        "protobufjs@7.6.5",
-        "yargs@17.7.3"
-      ]
+      "dependsOn": ["lodash.camelcase@4.3.0", "long@5.3.2", "protobufjs@7.6.5", "yargs@17.7.3"]
     },
     {
       "ref": "@hono/node-server@2.0.12",
-      "dependsOn": [
-        "hono@4.13.2"
-      ]
+      "dependsOn": ["hono@4.13.2"]
     },
     {
       "ref": "@isaacs/cliui@8.0.2",
@@ -21503,10 +20889,7 @@
     },
     {
       "ref": "@jridgewell/gen-mapping@0.3.13",
-      "dependsOn": [
-        "@jridgewell/sourcemap-codec@1.5.5",
-        "@jridgewell/trace-mapping@0.3.31"
-      ]
+      "dependsOn": ["@jridgewell/sourcemap-codec@1.5.5", "@jridgewell/trace-mapping@0.3.31"]
     },
     {
       "ref": "@jridgewell/resolve-uri@3.1.2",
@@ -21514,10 +20897,7 @@
     },
     {
       "ref": "@jridgewell/source-map@0.3.11",
-      "dependsOn": [
-        "@jridgewell/gen-mapping@0.3.13",
-        "@jridgewell/trace-mapping@0.3.31"
-      ]
+      "dependsOn": ["@jridgewell/gen-mapping@0.3.13", "@jridgewell/trace-mapping@0.3.31"]
     },
     {
       "ref": "@jridgewell/sourcemap-codec@1.5.5",
@@ -21525,10 +20905,7 @@
     },
     {
       "ref": "@jridgewell/trace-mapping@0.3.31",
-      "dependsOn": [
-        "@jridgewell/resolve-uri@3.1.2",
-        "@jridgewell/sourcemap-codec@1.5.5"
-      ]
+      "dependsOn": ["@jridgewell/resolve-uri@3.1.2", "@jridgewell/sourcemap-codec@1.5.5"]
     },
     {
       "ref": "@js-sdsl/ordered-map@4.4.2",
@@ -21536,33 +20913,23 @@
     },
     {
       "ref": "@jsep-plugin/assignment@1.3.0",
-      "dependsOn": [
-        "jsep@1.4.0"
-      ]
+      "dependsOn": ["jsep@1.4.0"]
     },
     {
       "ref": "@jsep-plugin/regex@1.0.4",
-      "dependsOn": [
-        "jsep@1.4.0"
-      ]
+      "dependsOn": ["jsep@1.4.0"]
     },
     {
       "ref": "@jsonjoy.com/base64@1.1.2",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "@jsonjoy.com/buffers@17.67.0",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "@jsonjoy.com/codegen@1.0.0",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "@jsonjoy.com/fs-core@4.64.0",
@@ -21598,9 +20965,7 @@
     },
     {
       "ref": "@jsonjoy.com/fs-node-builtins@4.64.0",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "@jsonjoy.com/fs-node-to-fsa@4.64.0",
@@ -21613,19 +20978,11 @@
     },
     {
       "ref": "@jsonjoy.com/fs-node-utils@4.64.0",
-      "dependsOn": [
-        "tslib@2.8.1",
-        "@jsonjoy.com/fs-node-builtins@4.64.0",
-        "glob-to-regex.js@1.2.0"
-      ]
+      "dependsOn": ["tslib@2.8.1", "@jsonjoy.com/fs-node-builtins@4.64.0", "glob-to-regex.js@1.2.0"]
     },
     {
       "ref": "@jsonjoy.com/fs-print@4.64.0",
-      "dependsOn": [
-        "tslib@2.8.1",
-        "@jsonjoy.com/fs-node-utils@4.64.0",
-        "tree-dump@1.1.0"
-      ]
+      "dependsOn": ["tslib@2.8.1", "@jsonjoy.com/fs-node-utils@4.64.0", "tree-dump@1.1.0"]
     },
     {
       "ref": "@jsonjoy.com/fs-snapshot@4.64.0",
@@ -21639,15 +20996,11 @@
     },
     {
       "ref": "@jsonjoy.com/base64@17.67.0",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "@jsonjoy.com/codegen@17.67.0",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "@jsonjoy.com/json-pack@17.67.0",
@@ -21665,18 +21018,11 @@
     },
     {
       "ref": "@jsonjoy.com/json-pointer@17.67.0",
-      "dependsOn": [
-        "tslib@2.8.1",
-        "@jsonjoy.com/util@17.67.0"
-      ]
+      "dependsOn": ["tslib@2.8.1", "@jsonjoy.com/util@17.67.0"]
     },
     {
       "ref": "@jsonjoy.com/util@17.67.0",
-      "dependsOn": [
-        "tslib@2.8.1",
-        "@jsonjoy.com/buffers@17.67.0",
-        "@jsonjoy.com/codegen@17.67.0"
-      ]
+      "dependsOn": ["tslib@2.8.1", "@jsonjoy.com/buffers@17.67.0", "@jsonjoy.com/codegen@17.67.0"]
     },
     {
       "ref": "@jsonjoy.com/json-pack@1.21.0",
@@ -21694,25 +21040,15 @@
     },
     {
       "ref": "@jsonjoy.com/buffers@1.2.1",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "@jsonjoy.com/json-pointer@1.0.2",
-      "dependsOn": [
-        "tslib@2.8.1",
-        "@jsonjoy.com/codegen@1.0.0",
-        "@jsonjoy.com/util@1.9.0"
-      ]
+      "dependsOn": ["tslib@2.8.1", "@jsonjoy.com/codegen@1.0.0", "@jsonjoy.com/util@1.9.0"]
     },
     {
       "ref": "@jsonjoy.com/util@1.9.0",
-      "dependsOn": [
-        "tslib@2.8.1",
-        "@jsonjoy.com/buffers@1.2.1",
-        "@jsonjoy.com/codegen@1.0.0"
-      ]
+      "dependsOn": ["tslib@2.8.1", "@jsonjoy.com/buffers@1.2.1", "@jsonjoy.com/codegen@1.0.0"]
     },
     {
       "ref": "@kubernetes/client-node@1.4.0",
@@ -21737,9 +21073,7 @@
     },
     {
       "ref": "@kwsites/file-exists@1.1.1",
-      "dependsOn": [
-        "debug@4.4.3"
-      ]
+      "dependsOn": ["debug@4.4.3"]
     },
     {
       "ref": "@modelcontextprotocol/sdk@1.30.0",
@@ -21765,39 +21099,15 @@
     },
     {
       "ref": "@nangohq/frontend@0.71.2",
-      "dependsOn": [
-        "@nangohq/types@0.71.2"
-      ]
+      "dependsOn": ["@nangohq/types@0.71.2"]
     },
     {
       "ref": "@nangohq/node@0.71.2",
-      "dependsOn": [
-        "@nangohq/types@0.71.2",
-        "axios@1.18.0"
-      ]
+      "dependsOn": ["@nangohq/types@0.71.2", "axios@1.18.0"]
     },
     {
       "ref": "@nangohq/types@0.71.2",
-      "dependsOn": [
-        "axios@1.18.0",
-        "json-schema@0.4.0",
-        "type-fest@4.41.0"
-      ]
-    },
-    {
-      "ref": "@napi-rs/canvas@0.1.80",
-      "dependsOn": [
-        "@napi-rs/canvas-linux-x64-gnu@0.1.80",
-        "@napi-rs/canvas-linux-x64-musl@0.1.80"
-      ]
-    },
-    {
-      "ref": "@napi-rs/canvas-linux-x64-gnu@0.1.80",
-      "dependsOn": []
-    },
-    {
-      "ref": "@napi-rs/canvas-linux-x64-musl@0.1.80",
-      "dependsOn": []
+      "dependsOn": ["axios@1.18.0", "json-schema@0.4.0", "type-fest@4.41.0"]
     },
     {
       "ref": "@noble/ciphers@2.2.0",
@@ -21817,9 +21127,7 @@
     },
     {
       "ref": "@paralleldrive/cuid2@2.3.1",
-      "dependsOn": [
-        "@noble/hashes@1.8.0"
-      ]
+      "dependsOn": ["@noble/hashes@1.8.0"]
     },
     {
       "ref": "@noble/hashes@1.8.0",
@@ -21851,9 +21159,7 @@
     },
     {
       "ref": "@protobufjs/fetch@1.1.1",
-      "dependsOn": [
-        "@protobufjs/aspromise@1.1.2"
-      ]
+      "dependsOn": ["@protobufjs/aspromise@1.1.2"]
     },
     {
       "ref": "@protobufjs/float@1.0.2",
@@ -21910,16 +21216,11 @@
     },
     {
       "ref": "@swc/types@0.1.27",
-      "dependsOn": [
-        "@swc/counter@0.1.3"
-      ]
+      "dependsOn": ["@swc/counter@0.1.3"]
     },
     {
       "ref": "@temporalio/activity@1.21.1",
-      "dependsOn": [
-        "@temporalio/common@1.21.1",
-        "@temporalio/client@1.21.1"
-      ]
+      "dependsOn": ["@temporalio/common@1.21.1", "@temporalio/client@1.21.1"]
     },
     {
       "ref": "@temporalio/client@1.21.1",
@@ -21945,10 +21246,7 @@
     },
     {
       "ref": "@temporalio/core-bridge@1.21.1",
-      "dependsOn": [
-        "@grpc/grpc-js@1.14.4",
-        "@temporalio/common@1.21.1"
-      ]
+      "dependsOn": ["@grpc/grpc-js@1.14.4", "@temporalio/common@1.21.1"]
     },
     {
       "ref": "@temporalio/nexus@1.21.1",
@@ -21962,10 +21260,7 @@
     },
     {
       "ref": "@temporalio/proto@1.21.1",
-      "dependsOn": [
-        "long@5.3.2",
-        "protobufjs@7.6.5"
-      ]
+      "dependsOn": ["long@5.3.2", "protobufjs@7.6.5"]
     },
     {
       "ref": "@temporalio/worker@1.21.1",
@@ -21994,43 +21289,27 @@
     },
     {
       "ref": "@temporalio/workflow@1.21.1",
-      "dependsOn": [
-        "nexus-rpc@0.0.2",
-        "@temporalio/proto@1.21.1",
-        "@temporalio/common@1.21.1"
-      ]
+      "dependsOn": ["nexus-rpc@0.0.2", "@temporalio/proto@1.21.1", "@temporalio/common@1.21.1"]
     },
     {
       "ref": "@testcontainers/postgresql@12.0.4",
-      "dependsOn": [
-        "testcontainers@12.0.4"
-      ]
+      "dependsOn": ["testcontainers@12.0.4"]
     },
     {
       "ref": "@types/body-parser@1.19.6",
-      "dependsOn": [
-        "@types/connect@3.4.38",
-        "@types/node@24.13.3"
-      ]
+      "dependsOn": ["@types/connect@3.4.38", "@types/node@24.13.3"]
     },
     {
       "ref": "@types/chai@5.2.3",
-      "dependsOn": [
-        "@types/deep-eql@4.0.2",
-        "assertion-error@2.0.1"
-      ]
+      "dependsOn": ["@types/deep-eql@4.0.2", "assertion-error@2.0.1"]
     },
     {
       "ref": "@types/connect@3.4.38",
-      "dependsOn": [
-        "@types/node@24.13.3"
-      ]
+      "dependsOn": ["@types/node@24.13.3"]
     },
     {
       "ref": "@types/cookie-parser@1.4.10",
-      "dependsOn": [
-        "@types/express@5.0.6"
-      ]
+      "dependsOn": ["@types/express@5.0.6"]
     },
     {
       "ref": "@types/cookiejar@2.1.5",
@@ -22042,18 +21321,11 @@
     },
     {
       "ref": "@types/docker-modem@3.0.6",
-      "dependsOn": [
-        "@types/node@24.13.3",
-        "@types/ssh2@1.15.5"
-      ]
+      "dependsOn": ["@types/node@24.13.3", "@types/ssh2@1.15.5"]
     },
     {
       "ref": "@types/dockerode@4.0.1",
-      "dependsOn": [
-        "@types/docker-modem@3.0.6",
-        "@types/node@24.13.3",
-        "@types/ssh2@1.15.5"
-      ]
+      "dependsOn": ["@types/docker-modem@3.0.6", "@types/node@24.13.3", "@types/ssh2@1.15.5"]
     },
     {
       "ref": "@types/estree@1.0.9",
@@ -22094,30 +21366,23 @@
     },
     {
       "ref": "@types/multer@2.2.0",
-      "dependsOn": [
-        "@types/express@5.0.6"
-      ]
+      "dependsOn": ["@types/express@5.0.6"]
     },
     {
       "ref": "@types/node@24.13.3",
-      "dependsOn": [
-        "undici-types@7.18.2"
-      ]
+      "dependsOn": ["undici-types@7.18.2"]
     },
     {
       "ref": "@types/node-fetch@2.6.13",
-      "dependsOn": [
-        "@types/node@24.13.3",
-        "form-data@4.0.6"
-      ]
+      "dependsOn": ["@types/node@24.13.3", "form-data@4.0.6"]
+    },
+    {
+      "ref": "@types/nodemailer@8.0.1",
+      "dependsOn": ["@types/node@24.13.3"]
     },
     {
       "ref": "@types/pg@8.20.0",
-      "dependsOn": [
-        "@types/node@24.13.3",
-        "pg-protocol@1.15.0",
-        "pg-types@2.2.0"
-      ]
+      "dependsOn": ["@types/node@24.13.3", "pg-protocol@1.15.0", "pg-types@2.2.0"]
     },
     {
       "ref": "@types/qs@6.15.1",
@@ -22129,46 +21394,31 @@
     },
     {
       "ref": "@types/react@19.2.17",
-      "dependsOn": [
-        "csstype@3.2.3"
-      ]
+      "dependsOn": ["csstype@3.2.3"]
     },
     {
       "ref": "@types/react-dom@19.2.3",
-      "dependsOn": [
-        "@types/react@19.2.17"
-      ]
+      "dependsOn": ["@types/react@19.2.17"]
     },
     {
       "ref": "@types/send@1.2.1",
-      "dependsOn": [
-        "@types/node@24.13.3"
-      ]
+      "dependsOn": ["@types/node@24.13.3"]
     },
     {
       "ref": "@types/serve-static@2.2.0",
-      "dependsOn": [
-        "@types/http-errors@2.0.5",
-        "@types/node@24.13.3"
-      ]
+      "dependsOn": ["@types/http-errors@2.0.5", "@types/node@24.13.3"]
     },
     {
       "ref": "@types/ssh2@1.15.5",
-      "dependsOn": [
-        "@types/node@18.19.130"
-      ]
+      "dependsOn": ["@types/node@18.19.130"]
     },
     {
       "ref": "@types/ssh2-streams@0.1.13",
-      "dependsOn": [
-        "@types/node@24.13.3"
-      ]
+      "dependsOn": ["@types/node@24.13.3"]
     },
     {
       "ref": "@types/node@18.19.130",
-      "dependsOn": [
-        "undici-types@5.26.5"
-      ]
+      "dependsOn": ["undici-types@5.26.5"]
     },
     {
       "ref": "undici-types@5.26.5",
@@ -22176,9 +21426,7 @@
     },
     {
       "ref": "@types/stream-buffers@3.0.8",
-      "dependsOn": [
-        "@types/node@24.13.3"
-      ]
+      "dependsOn": ["@types/node@24.13.3"]
     },
     {
       "ref": "@types/superagent@8.1.11",
@@ -22191,16 +21439,11 @@
     },
     {
       "ref": "@types/supertest@6.0.3",
-      "dependsOn": [
-        "@types/methods@1.1.4",
-        "@types/superagent@8.1.11"
-      ]
+      "dependsOn": ["@types/methods@1.1.4", "@types/superagent@8.1.11"]
     },
     {
       "ref": "@types/ws@8.18.1",
-      "dependsOn": [
-        "@types/node@24.13.3"
-      ]
+      "dependsOn": ["@types/node@24.13.3"]
     },
     {
       "ref": "@vercel/oidc@3.2.0",
@@ -22208,10 +21451,7 @@
     },
     {
       "ref": "@vitejs/plugin-react@6.0.4",
-      "dependsOn": [
-        "vite@8.1.5",
-        "@rolldown/pluginutils@1.0.1"
-      ]
+      "dependsOn": ["vite@8.1.5", "@rolldown/pluginutils@1.0.1"]
     },
     {
       "ref": "@vitest/expect@4.1.10",
@@ -22235,16 +21475,11 @@
     },
     {
       "ref": "@vitest/pretty-format@4.1.10",
-      "dependsOn": [
-        "tinyrainbow@3.1.0"
-      ]
+      "dependsOn": ["tinyrainbow@3.1.0"]
     },
     {
       "ref": "@vitest/runner@4.1.10",
-      "dependsOn": [
-        "pathe@2.0.3",
-        "@vitest/utils@4.1.10"
-      ]
+      "dependsOn": ["pathe@2.0.3", "@vitest/utils@4.1.10"]
     },
     {
       "ref": "@vitest/snapshot@4.1.10",
@@ -22261,11 +21496,7 @@
     },
     {
       "ref": "@vitest/utils@4.1.10",
-      "dependsOn": [
-        "convert-source-map@2.0.0",
-        "tinyrainbow@3.1.0",
-        "@vitest/pretty-format@4.1.10"
-      ]
+      "dependsOn": ["convert-source-map@2.0.0", "tinyrainbow@3.1.0", "@vitest/pretty-format@4.1.10"]
     },
     {
       "ref": "@webassemblyjs/ast@1.14.1",
@@ -22309,15 +21540,11 @@
     },
     {
       "ref": "@webassemblyjs/ieee754@1.13.2",
-      "dependsOn": [
-        "@xtuc/ieee754@1.2.0"
-      ]
+      "dependsOn": ["@xtuc/ieee754@1.2.0"]
     },
     {
       "ref": "@webassemblyjs/leb128@1.13.2",
-      "dependsOn": [
-        "@xtuc/long@4.2.2"
-      ]
+      "dependsOn": ["@xtuc/long@4.2.2"]
     },
     {
       "ref": "@webassemblyjs/utf8@1.13.2",
@@ -22368,17 +21595,10 @@
     },
     {
       "ref": "@webassemblyjs/wast-printer@1.14.1",
-      "dependsOn": [
-        "@webassemblyjs/ast@1.14.1",
-        "@xtuc/long@4.2.2"
-      ]
+      "dependsOn": ["@webassemblyjs/ast@1.14.1", "@xtuc/long@4.2.2"]
     },
     {
       "ref": "@workflow/serde@4.1.0",
-      "dependsOn": []
-    },
-    {
-      "ref": "@xmldom/xmldom@0.8.13",
       "dependsOn": []
     },
     {
@@ -22391,16 +21611,11 @@
     },
     {
       "ref": "abort-controller@3.0.0",
-      "dependsOn": [
-        "event-target-shim@5.0.1"
-      ]
+      "dependsOn": ["event-target-shim@5.0.1"]
     },
     {
       "ref": "accepts@2.0.0",
-      "dependsOn": [
-        "mime-types@3.0.2",
-        "negotiator@1.0.0"
-      ]
+      "dependsOn": ["mime-types@3.0.2", "negotiator@1.0.0"]
     },
     {
       "ref": "acorn@8.17.0",
@@ -22408,9 +21623,7 @@
     },
     {
       "ref": "agent-base@6.0.2",
-      "dependsOn": [
-        "debug@4.4.3"
-      ]
+      "dependsOn": ["debug@4.4.3"]
     },
     {
       "ref": "ai@7.0.49",
@@ -22432,16 +21645,11 @@
     },
     {
       "ref": "ajv-formats@3.0.1",
-      "dependsOn": [
-        "ajv@8.20.0"
-      ]
+      "dependsOn": ["ajv@8.20.0"]
     },
     {
       "ref": "ajv-keywords@5.1.0",
-      "dependsOn": [
-        "ajv@8.20.0",
-        "fast-deep-equal@3.1.3"
-      ]
+      "dependsOn": ["ajv@8.20.0", "fast-deep-equal@3.1.3"]
     },
     {
       "ref": "ansi-regex@6.2.2",
@@ -22449,9 +21657,7 @@
     },
     {
       "ref": "ansi-styles@4.3.0",
-      "dependsOn": [
-        "color-convert@2.0.1"
-      ]
+      "dependsOn": ["color-convert@2.0.1"]
     },
     {
       "ref": "append-field@1.0.0",
@@ -22497,9 +21703,7 @@
     },
     {
       "ref": "string_decoder@1.3.0",
-      "dependsOn": [
-        "safe-buffer@5.2.1"
-      ]
+      "dependsOn": ["safe-buffer@5.2.1"]
     },
     {
       "ref": "argparse@2.0.1",
@@ -22511,9 +21715,7 @@
     },
     {
       "ref": "asn1@0.2.6",
-      "dependsOn": [
-        "safer-buffer@2.1.2"
-      ]
+      "dependsOn": ["safer-buffer@2.1.2"]
     },
     {
       "ref": "assertion-error@2.0.1",
@@ -22572,18 +21774,11 @@
     },
     {
       "ref": "bare-stream@2.13.3",
-      "dependsOn": [
-        "bare-events@2.9.1",
-        "b4a@1.8.1",
-        "streamx@2.28.0",
-        "teex@1.0.1"
-      ]
+      "dependsOn": ["bare-events@2.9.1", "b4a@1.8.1", "streamx@2.28.0", "teex@1.0.1"]
     },
     {
       "ref": "bare-url@2.4.6",
-      "dependsOn": [
-        "bare-path@3.1.1"
-      ]
+      "dependsOn": ["bare-path@3.1.1"]
     },
     {
       "ref": "base64-js@1.5.1",
@@ -22595,9 +21790,7 @@
     },
     {
       "ref": "bcrypt-pbkdf@1.0.2",
-      "dependsOn": [
-        "tweetnacl@0.14.5"
-      ]
+      "dependsOn": ["tweetnacl@0.14.5"]
     },
     {
       "ref": "better-auth@1.6.25",
@@ -22641,39 +21834,23 @@
     },
     {
       "ref": "@better-auth/drizzle-adapter@1.6.25",
-      "dependsOn": [
-        "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.25"
-      ]
+      "dependsOn": ["@better-auth/utils@0.4.2", "@better-auth/core@1.6.25"]
     },
     {
       "ref": "@better-auth/kysely-adapter@1.6.25",
-      "dependsOn": [
-        "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.25",
-        "kysely@0.29.4"
-      ]
+      "dependsOn": ["@better-auth/utils@0.4.2", "@better-auth/core@1.6.25", "kysely@0.29.4"]
     },
     {
       "ref": "@better-auth/memory-adapter@1.6.25",
-      "dependsOn": [
-        "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.25"
-      ]
+      "dependsOn": ["@better-auth/utils@0.4.2", "@better-auth/core@1.6.25"]
     },
     {
       "ref": "@better-auth/mongo-adapter@1.6.25",
-      "dependsOn": [
-        "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.25"
-      ]
+      "dependsOn": ["@better-auth/utils@0.4.2", "@better-auth/core@1.6.25"]
     },
     {
       "ref": "@better-auth/prisma-adapter@1.6.25",
-      "dependsOn": [
-        "@better-auth/utils@0.4.2",
-        "@better-auth/core@1.6.25"
-      ]
+      "dependsOn": ["@better-auth/utils@0.4.2", "@better-auth/core@1.6.25"]
     },
     {
       "ref": "@better-auth/telemetry@1.6.25",
@@ -22699,30 +21876,15 @@
     },
     {
       "ref": "bl@4.1.0",
-      "dependsOn": [
-        "buffer@5.7.1",
-        "inherits@2.0.4",
-        "readable-stream@3.6.2"
-      ]
+      "dependsOn": ["buffer@5.7.1", "inherits@2.0.4", "readable-stream@3.6.2"]
     },
     {
       "ref": "buffer@5.7.1",
-      "dependsOn": [
-        "base64-js@1.5.1",
-        "ieee754@1.2.1"
-      ]
+      "dependsOn": ["base64-js@1.5.1", "ieee754@1.2.1"]
     },
     {
       "ref": "readable-stream@3.6.2",
-      "dependsOn": [
-        "inherits@2.0.4",
-        "string_decoder@1.1.1",
-        "util-deprecate@1.0.2"
-      ]
-    },
-    {
-      "ref": "bluebird@3.4.7",
-      "dependsOn": []
+      "dependsOn": ["inherits@2.0.4", "string_decoder@1.1.1", "util-deprecate@1.0.2"]
     },
     {
       "ref": "body-parser@2.3.0",
@@ -22744,9 +21906,7 @@
     },
     {
       "ref": "brace-expansion@5.0.9",
-      "dependsOn": [
-        "balanced-match@4.0.4"
-      ]
+      "dependsOn": ["balanced-match@4.0.4"]
     },
     {
       "ref": "browserslist@4.28.7",
@@ -22760,10 +21920,7 @@
     },
     {
       "ref": "buffer@6.0.3",
-      "dependsOn": [
-        "base64-js@1.5.1",
-        "ieee754@1.2.1"
-      ]
+      "dependsOn": ["base64-js@1.5.1", "ieee754@1.2.1"]
     },
     {
       "ref": "buffer-crc32@1.0.0",
@@ -22774,10 +21931,12 @@
       "dependsOn": []
     },
     {
+      "ref": "buildcheck@0.0.7",
+      "dependsOn": []
+    },
+    {
       "ref": "busboy@1.6.0",
-      "dependsOn": [
-        "streamsearch@1.1.0"
-      ]
+      "dependsOn": ["streamsearch@1.1.0"]
     },
     {
       "ref": "byline@5.0.0",
@@ -22789,17 +21948,11 @@
     },
     {
       "ref": "call-bind-apply-helpers@1.0.2",
-      "dependsOn": [
-        "es-errors@1.3.0",
-        "function-bind@1.1.2"
-      ]
+      "dependsOn": ["es-errors@1.3.0", "function-bind@1.1.2"]
     },
     {
       "ref": "call-bound@1.0.4",
-      "dependsOn": [
-        "call-bind-apply-helpers@1.0.2",
-        "get-intrinsic@1.3.0"
-      ]
+      "dependsOn": ["call-bind-apply-helpers@1.0.2", "get-intrinsic@1.3.0"]
     },
     {
       "ref": "caniuse-lite@1.0.30001806",
@@ -22811,16 +21964,11 @@
     },
     {
       "ref": "chalk@4.1.2",
-      "dependsOn": [
-        "ansi-styles@4.3.0",
-        "supports-color@7.2.0"
-      ]
+      "dependsOn": ["ansi-styles@4.3.0", "supports-color@7.2.0"]
     },
     {
       "ref": "supports-color@7.2.0",
-      "dependsOn": [
-        "has-flag@4.0.0"
-      ]
+      "dependsOn": ["has-flag@4.0.0"]
     },
     {
       "ref": "chownr@1.1.4",
@@ -22832,11 +21980,7 @@
     },
     {
       "ref": "cliui@8.0.1",
-      "dependsOn": [
-        "string-width@4.2.3",
-        "strip-ansi@6.0.1",
-        "wrap-ansi@7.0.0"
-      ]
+      "dependsOn": ["string-width@4.2.3", "strip-ansi@6.0.1", "wrap-ansi@7.0.0"]
     },
     {
       "ref": "ansi-regex@5.0.1",
@@ -22848,31 +21992,19 @@
     },
     {
       "ref": "string-width@4.2.3",
-      "dependsOn": [
-        "emoji-regex@8.0.0",
-        "is-fullwidth-code-point@3.0.0",
-        "strip-ansi@6.0.1"
-      ]
+      "dependsOn": ["emoji-regex@8.0.0", "is-fullwidth-code-point@3.0.0", "strip-ansi@6.0.1"]
     },
     {
       "ref": "strip-ansi@6.0.1",
-      "dependsOn": [
-        "ansi-regex@5.0.1"
-      ]
+      "dependsOn": ["ansi-regex@5.0.1"]
     },
     {
       "ref": "wrap-ansi@7.0.0",
-      "dependsOn": [
-        "ansi-styles@4.3.0",
-        "string-width@4.2.3",
-        "strip-ansi@6.0.1"
-      ]
+      "dependsOn": ["ansi-styles@4.3.0", "string-width@4.2.3", "strip-ansi@6.0.1"]
     },
     {
       "ref": "color-convert@2.0.1",
-      "dependsOn": [
-        "color-name@1.1.4"
-      ]
+      "dependsOn": ["color-name@1.1.4"]
     },
     {
       "ref": "color-name@1.1.4",
@@ -22880,9 +22012,7 @@
     },
     {
       "ref": "combined-stream@1.0.8",
-      "dependsOn": [
-        "delayed-stream@1.0.0"
-      ]
+      "dependsOn": ["delayed-stream@1.0.0"]
     },
     {
       "ref": "commander@2.20.3",
@@ -22952,10 +22082,7 @@
     },
     {
       "ref": "cookie-parser@1.4.7",
-      "dependsOn": [
-        "cookie@0.7.2",
-        "cookie-signature@1.0.6"
-      ]
+      "dependsOn": ["cookie@0.7.2", "cookie-signature@1.0.6"]
     },
     {
       "ref": "cookie-signature@1.0.6",
@@ -22971,10 +22098,11 @@
     },
     {
       "ref": "cors@2.8.6",
-      "dependsOn": [
-        "object-assign@4.1.1",
-        "vary@1.1.2"
-      ]
+      "dependsOn": ["object-assign@4.1.1", "vary@1.1.2"]
+    },
+    {
+      "ref": "cpu-features@0.0.10",
+      "dependsOn": ["buildcheck@0.0.7", "nan@2.28.0"]
     },
     {
       "ref": "crc-32@1.2.2",
@@ -22982,18 +22110,11 @@
     },
     {
       "ref": "crc32-stream@6.0.0",
-      "dependsOn": [
-        "crc-32@1.2.2",
-        "readable-stream@4.7.0"
-      ]
+      "dependsOn": ["crc-32@1.2.2", "readable-stream@4.7.0"]
     },
     {
       "ref": "cross-spawn@7.0.6",
-      "dependsOn": [
-        "path-key@3.1.1",
-        "shebang-command@2.0.0",
-        "which@2.0.2"
-      ]
+      "dependsOn": ["path-key@3.1.1", "shebang-command@2.0.0", "which@2.0.2"]
     },
     {
       "ref": "csstype@3.2.3",
@@ -23005,9 +22126,7 @@
     },
     {
       "ref": "debug@4.4.3",
-      "dependsOn": [
-        "ms@2.1.3"
-      ]
+      "dependsOn": ["ms@2.1.3"]
     },
     {
       "ref": "ms@2.1.3",
@@ -23031,29 +22150,15 @@
     },
     {
       "ref": "dezalgo@1.0.4",
-      "dependsOn": [
-        "asap@2.0.6",
-        "wrappy@1.0.2"
-      ]
-    },
-    {
-      "ref": "dingbat-to-unicode@1.0.1",
-      "dependsOn": []
+      "dependsOn": ["asap@2.0.6", "wrappy@1.0.2"]
     },
     {
       "ref": "docker-compose@1.4.2",
-      "dependsOn": [
-        "yaml@2.9.0"
-      ]
+      "dependsOn": ["yaml@2.9.0"]
     },
     {
       "ref": "docker-modem@5.0.7",
-      "dependsOn": [
-        "debug@4.4.3",
-        "readable-stream@3.6.2",
-        "split-ca@1.0.1",
-        "ssh2@1.17.0"
-      ]
+      "dependsOn": ["debug@4.4.3", "readable-stream@3.6.2", "split-ca@1.0.1", "ssh2@1.17.0"]
     },
     {
       "ref": "dockerode@5.0.1",
@@ -23068,21 +22173,11 @@
     },
     {
       "ref": "@grpc/proto-loader@0.7.15",
-      "dependsOn": [
-        "lodash.camelcase@4.3.0",
-        "long@5.3.2",
-        "protobufjs@7.6.5",
-        "yargs@17.7.3"
-      ]
+      "dependsOn": ["lodash.camelcase@4.3.0", "long@5.3.2", "protobufjs@7.6.5", "yargs@17.7.3"]
     },
     {
       "ref": "tar-fs@2.1.5",
-      "dependsOn": [
-        "chownr@1.1.4",
-        "mkdirp-classic@0.5.3",
-        "pump@3.0.4",
-        "tar-stream@2.2.0"
-      ]
+      "dependsOn": ["chownr@1.1.4", "mkdirp-classic@0.5.3", "pump@3.0.4", "tar-stream@2.2.0"]
     },
     {
       "ref": "tar-stream@2.2.0",
@@ -23099,18 +22194,8 @@
       "dependsOn": []
     },
     {
-      "ref": "duck@0.1.12",
-      "dependsOn": [
-        "underscore@1.13.8"
-      ]
-    },
-    {
       "ref": "dunder-proto@1.0.1",
-      "dependsOn": [
-        "call-bind-apply-helpers@1.0.2",
-        "es-errors@1.3.0",
-        "gopd@1.2.0"
-      ]
+      "dependsOn": ["call-bind-apply-helpers@1.0.2", "es-errors@1.3.0", "gopd@1.2.0"]
     },
     {
       "ref": "eastasianwidth@0.2.0",
@@ -23134,16 +22219,11 @@
     },
     {
       "ref": "end-of-stream@1.4.5",
-      "dependsOn": [
-        "once@1.4.0"
-      ]
+      "dependsOn": ["once@1.4.0"]
     },
     {
       "ref": "enhanced-resolve@5.24.3",
-      "dependsOn": [
-        "graceful-fs@4.2.11",
-        "tapable@2.3.3"
-      ]
+      "dependsOn": ["graceful-fs@4.2.11", "tapable@2.3.3"]
     },
     {
       "ref": "es-define-property@1.0.1",
@@ -23159,9 +22239,7 @@
     },
     {
       "ref": "es-object-atoms@1.1.2",
-      "dependsOn": [
-        "es-errors@1.3.0"
-      ]
+      "dependsOn": ["es-errors@1.3.0"]
     },
     {
       "ref": "es-set-tostringtag@2.1.0",
@@ -23174,9 +22252,7 @@
     },
     {
       "ref": "esbuild@0.28.1",
-      "dependsOn": [
-        "@esbuild/linux-x64@0.28.1"
-      ]
+      "dependsOn": ["@esbuild/linux-x64@0.28.1"]
     },
     {
       "ref": "escalade@3.2.0",
@@ -23188,16 +22264,11 @@
     },
     {
       "ref": "eslint-scope@5.1.1",
-      "dependsOn": [
-        "esrecurse@4.3.0",
-        "estraverse@4.3.0"
-      ]
+      "dependsOn": ["esrecurse@4.3.0", "estraverse@4.3.0"]
     },
     {
       "ref": "esrecurse@4.3.0",
-      "dependsOn": [
-        "estraverse@5.3.0"
-      ]
+      "dependsOn": ["estraverse@5.3.0"]
     },
     {
       "ref": "estraverse@5.3.0",
@@ -23209,9 +22280,7 @@
     },
     {
       "ref": "estree-walker@3.0.3",
-      "dependsOn": [
-        "@types/estree@1.0.9"
-      ]
+      "dependsOn": ["@types/estree@1.0.9"]
     },
     {
       "ref": "etag@1.8.1",
@@ -23227,15 +22296,11 @@
     },
     {
       "ref": "events-universal@1.0.1",
-      "dependsOn": [
-        "bare-events@2.9.1"
-      ]
+      "dependsOn": ["bare-events@2.9.1"]
     },
     {
       "ref": "eventsource@3.0.7",
-      "dependsOn": [
-        "eventsource-parser@3.1.0"
-      ]
+      "dependsOn": ["eventsource-parser@3.1.0"]
     },
     {
       "ref": "eventsource-parser@3.1.0",
@@ -23280,11 +22345,7 @@
     },
     {
       "ref": "express-rate-limit@8.6.1",
-      "dependsOn": [
-        "express@5.2.1",
-        "debug@4.4.3",
-        "ip-address@10.3.1"
-      ]
+      "dependsOn": ["express@5.2.1", "debug@4.4.3", "ip-address@10.3.1"]
     },
     {
       "ref": "cookie-signature@1.2.2",
@@ -23308,9 +22369,7 @@
     },
     {
       "ref": "fdir@6.5.0",
-      "dependsOn": [
-        "picomatch@4.0.5"
-      ]
+      "dependsOn": ["picomatch@4.0.5"]
     },
     {
       "ref": "finalhandler@2.1.1",
@@ -23329,10 +22388,7 @@
     },
     {
       "ref": "foreground-child@3.3.1",
-      "dependsOn": [
-        "cross-spawn@7.0.6",
-        "signal-exit@4.1.0"
-      ]
+      "dependsOn": ["cross-spawn@7.0.6", "signal-exit@4.1.0"]
     },
     {
       "ref": "form-data@4.0.6",
@@ -23350,17 +22406,11 @@
     },
     {
       "ref": "mime-types@2.1.35",
-      "dependsOn": [
-        "mime-db@1.52.0"
-      ]
+      "dependsOn": ["mime-db@1.52.0"]
     },
     {
       "ref": "formidable@3.5.4",
-      "dependsOn": [
-        "@paralleldrive/cuid2@2.3.1",
-        "dezalgo@1.0.4",
-        "once@1.4.0"
-      ]
+      "dependsOn": ["@paralleldrive/cuid2@2.3.1", "dezalgo@1.0.4", "once@1.4.0"]
     },
     {
       "ref": "forwarded@0.2.0",
@@ -23407,10 +22457,7 @@
     },
     {
       "ref": "get-proto@1.0.1",
-      "dependsOn": [
-        "dunder-proto@1.0.1",
-        "es-object-atoms@1.1.2"
-      ]
+      "dependsOn": ["dunder-proto@1.0.1", "es-object-atoms@1.1.2"]
     },
     {
       "ref": "glob@10.5.0",
@@ -23425,9 +22472,7 @@
     },
     {
       "ref": "glob-to-regex.js@1.2.0",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "gopd@1.2.0",
@@ -23447,15 +22492,11 @@
     },
     {
       "ref": "has-tostringtag@1.0.2",
-      "dependsOn": [
-        "has-symbols@1.1.0"
-      ]
+      "dependsOn": ["has-symbols@1.1.0"]
     },
     {
       "ref": "hasown@2.0.4",
-      "dependsOn": [
-        "function-bind@1.1.2"
-      ]
+      "dependsOn": ["function-bind@1.1.2"]
     },
     {
       "ref": "heap-js@2.7.1",
@@ -23485,10 +22526,7 @@
     },
     {
       "ref": "https-proxy-agent@5.0.1",
-      "dependsOn": [
-        "agent-base@6.0.2",
-        "debug@4.4.3"
-      ]
+      "dependsOn": ["agent-base@6.0.2", "debug@4.4.3"]
     },
     {
       "ref": "hyperdyperid@1.2.0",
@@ -23496,16 +22534,10 @@
     },
     {
       "ref": "iconv-lite@0.7.3",
-      "dependsOn": [
-        "safer-buffer@2.1.2"
-      ]
+      "dependsOn": ["safer-buffer@2.1.2"]
     },
     {
       "ref": "ieee754@1.2.1",
-      "dependsOn": []
-    },
-    {
-      "ref": "immediate@3.0.6",
       "dependsOn": []
     },
     {
@@ -23542,24 +22574,15 @@
     },
     {
       "ref": "isomorphic-ws@5.0.0",
-      "dependsOn": [
-        "ws@8.21.3"
-      ]
+      "dependsOn": ["ws@8.21.3"]
     },
     {
       "ref": "jackspeak@3.4.3",
-      "dependsOn": [
-        "@isaacs/cliui@8.0.2",
-        "@pkgjs/parseargs@0.11.0"
-      ]
+      "dependsOn": ["@isaacs/cliui@8.0.2", "@pkgjs/parseargs@0.11.0"]
     },
     {
       "ref": "jest-worker@27.5.1",
-      "dependsOn": [
-        "@types/node@24.13.3",
-        "merge-stream@2.0.0",
-        "supports-color@8.1.1"
-      ]
+      "dependsOn": ["@types/node@24.13.3", "merge-stream@2.0.0", "supports-color@8.1.1"]
     },
     {
       "ref": "jose@6.2.4",
@@ -23567,9 +22590,7 @@
     },
     {
       "ref": "js-yaml@4.3.1",
-      "dependsOn": [
-        "argparse@2.0.1"
-      ]
+      "dependsOn": ["argparse@2.0.1"]
     },
     {
       "ref": "jsep@1.4.0",
@@ -23589,20 +22610,7 @@
     },
     {
       "ref": "jsonpath-plus@10.4.0",
-      "dependsOn": [
-        "@jsep-plugin/assignment@1.3.0",
-        "@jsep-plugin/regex@1.0.4",
-        "jsep@1.4.0"
-      ]
-    },
-    {
-      "ref": "jszip@3.10.1",
-      "dependsOn": [
-        "lie@3.3.0",
-        "pako@1.0.11",
-        "readable-stream@2.3.8",
-        "setimmediate@1.0.5"
-      ]
+      "dependsOn": ["@jsep-plugin/assignment@1.3.0", "@jsep-plugin/regex@1.0.4", "jsep@1.4.0"]
     },
     {
       "ref": "kysely@0.29.4",
@@ -23610,15 +22618,7 @@
     },
     {
       "ref": "lazystream@1.0.1",
-      "dependsOn": [
-        "readable-stream@2.3.8"
-      ]
-    },
-    {
-      "ref": "lie@3.3.0",
-      "dependsOn": [
-        "immediate@3.0.6"
-      ]
+      "dependsOn": ["readable-stream@2.3.8"]
     },
     {
       "ref": "lightningcss@1.33.0",
@@ -23649,49 +22649,16 @@
       "dependsOn": []
     },
     {
-      "ref": "lop@0.4.2",
-      "dependsOn": [
-        "duck@0.1.12",
-        "option@0.2.4",
-        "underscore@1.13.8"
-      ]
-    },
-    {
       "ref": "lru-cache@10.4.3",
       "dependsOn": []
     },
     {
       "ref": "lucide-react@0.468.0",
-      "dependsOn": [
-        "react@19.2.8"
-      ]
+      "dependsOn": ["react@19.2.8"]
     },
     {
       "ref": "magic-string@0.30.21",
-      "dependsOn": [
-        "@jridgewell/sourcemap-codec@1.5.5"
-      ]
-    },
-    {
-      "ref": "mammoth@1.12.0",
-      "dependsOn": [
-        "@xmldom/xmldom@0.8.13",
-        "argparse@1.0.10",
-        "base64-js@1.5.1",
-        "bluebird@3.4.7",
-        "dingbat-to-unicode@1.0.1",
-        "jszip@3.10.1",
-        "lop@0.4.2",
-        "path-is-absolute@1.0.1",
-        "underscore@1.13.8",
-        "xmlbuilder@10.1.1"
-      ]
-    },
-    {
-      "ref": "argparse@1.0.10",
-      "dependsOn": [
-        "sprintf-js@1.0.3"
-      ]
+      "dependsOn": ["@jridgewell/sourcemap-codec@1.5.5"]
     },
     {
       "ref": "math-intrinsics@1.1.0",
@@ -23742,15 +22709,11 @@
     },
     {
       "ref": "mime-types@3.0.2",
-      "dependsOn": [
-        "mime-db@1.54.0"
-      ]
+      "dependsOn": ["mime-db@1.54.0"]
     },
     {
       "ref": "minimatch@9.0.9",
-      "dependsOn": [
-        "brace-expansion@5.0.9"
-      ]
+      "dependsOn": ["brace-expansion@5.0.9"]
     },
     {
       "ref": "minimizer-webpack-plugin@5.6.1",
@@ -23780,12 +22743,7 @@
     },
     {
       "ref": "multer@2.2.0",
-      "dependsOn": [
-        "append-field@1.0.0",
-        "busboy@1.6.0",
-        "concat-stream@2.0.0",
-        "type-is@1.6.18"
-      ]
+      "dependsOn": ["append-field@1.0.0", "busboy@1.6.0", "concat-stream@2.0.0", "type-is@1.6.18"]
     },
     {
       "ref": "media-typer@0.3.0",
@@ -23793,10 +22751,7 @@
     },
     {
       "ref": "type-is@1.6.18",
-      "dependsOn": [
-        "media-typer@0.3.0",
-        "mime-types@2.1.35"
-      ]
+      "dependsOn": ["media-typer@0.3.0", "mime-types@2.1.35"]
     },
     {
       "ref": "nan@2.28.0",
@@ -23824,12 +22779,14 @@
     },
     {
       "ref": "node-fetch@2.7.0",
-      "dependsOn": [
-        "whatwg-url@5.0.0"
-      ]
+      "dependsOn": ["whatwg-url@5.0.0"]
     },
     {
       "ref": "node-releases@2.0.51",
+      "dependsOn": []
+    },
+    {
+      "ref": "nodemailer@9.0.5",
       "dependsOn": []
     },
     {
@@ -23858,40 +22815,22 @@
     },
     {
       "ref": "on-finished@2.4.1",
-      "dependsOn": [
-        "ee-first@1.1.1"
-      ]
+      "dependsOn": ["ee-first@1.1.1"]
     },
     {
       "ref": "once@1.4.0",
-      "dependsOn": [
-        "wrappy@1.0.2"
-      ]
+      "dependsOn": ["wrappy@1.0.2"]
     },
     {
       "ref": "openai@6.49.0",
-      "dependsOn": [
-        "ws@8.21.3",
-        "zod@3.25.76"
-      ]
+      "dependsOn": ["ws@8.21.3", "zod@3.25.76"]
     },
     {
       "ref": "openid-client@6.8.4",
-      "dependsOn": [
-        "jose@6.2.4",
-        "oauth4webapi@3.8.6"
-      ]
-    },
-    {
-      "ref": "option@0.2.4",
-      "dependsOn": []
+      "dependsOn": ["jose@6.2.4", "oauth4webapi@3.8.6"]
     },
     {
       "ref": "package-json-from-dist@1.0.1",
-      "dependsOn": []
-    },
-    {
-      "ref": "pako@1.0.11",
       "dependsOn": []
     },
     {
@@ -23900,16 +22839,10 @@
     },
     {
       "ref": "patchright@1.61.1",
-      "dependsOn": [
-        "patchright-core@1.61.1"
-      ]
+      "dependsOn": ["patchright-core@1.61.1"]
     },
     {
       "ref": "patchright-core@1.61.1",
-      "dependsOn": []
-    },
-    {
-      "ref": "path-is-absolute@1.0.1",
       "dependsOn": []
     },
     {
@@ -23918,10 +22851,7 @@
     },
     {
       "ref": "path-scurry@1.11.1",
-      "dependsOn": [
-        "lru-cache@10.4.3",
-        "minipass@7.1.3"
-      ]
+      "dependsOn": ["lru-cache@10.4.3", "minipass@7.1.3"]
     },
     {
       "ref": "path-to-regexp@8.4.2",
@@ -23930,19 +22860,6 @@
     {
       "ref": "pathe@2.0.3",
       "dependsOn": []
-    },
-    {
-      "ref": "pdf-parse@2.4.5",
-      "dependsOn": [
-        "@napi-rs/canvas@0.1.80",
-        "pdfjs-dist@5.4.296"
-      ]
-    },
-    {
-      "ref": "pdfjs-dist@5.4.296",
-      "dependsOn": [
-        "@napi-rs/canvas@0.1.80"
-      ]
     },
     {
       "ref": "pg@8.22.0",
@@ -23969,9 +22886,7 @@
     },
     {
       "ref": "pg-pool@3.14.0",
-      "dependsOn": [
-        "pg@8.22.0"
-      ]
+      "dependsOn": ["pg@8.22.0"]
     },
     {
       "ref": "pg-protocol@1.15.0",
@@ -23989,9 +22904,7 @@
     },
     {
       "ref": "pgpass@1.0.5",
-      "dependsOn": [
-        "split2@4.2.0"
-      ]
+      "dependsOn": ["split2@4.2.0"]
     },
     {
       "ref": "picocolors@1.1.1",
@@ -24019,9 +22932,7 @@
     },
     {
       "ref": "pino-abstract-transport@3.0.0",
-      "dependsOn": [
-        "split2@4.2.0"
-      ]
+      "dependsOn": ["split2@4.2.0"]
     },
     {
       "ref": "pino-http@11.0.0",
@@ -24042,9 +22953,7 @@
     },
     {
       "ref": "playwright@1.62.1",
-      "dependsOn": [
-        "playwright-core@1.62.1"
-      ]
+      "dependsOn": ["playwright-core@1.62.1"]
     },
     {
       "ref": "playwright-core@1.62.1",
@@ -24052,11 +22961,7 @@
     },
     {
       "ref": "postcss@8.5.23",
-      "dependsOn": [
-        "nanoid@3.3.18",
-        "picocolors@1.1.1",
-        "source-map-js@1.2.1"
-      ]
+      "dependsOn": ["nanoid@3.3.18", "picocolors@1.1.1", "source-map-js@1.2.1"]
     },
     {
       "ref": "postgres-array@2.0.0",
@@ -24072,9 +22977,11 @@
     },
     {
       "ref": "postgres-interval@1.2.0",
-      "dependsOn": [
-        "xtend@4.0.2"
-      ]
+      "dependsOn": ["xtend@4.0.2"]
+    },
+    {
+      "ref": "prettier@3.9.6",
+      "dependsOn": []
     },
     {
       "ref": "process@0.11.10",
@@ -24090,11 +22997,7 @@
     },
     {
       "ref": "proper-lockfile@4.1.2",
-      "dependsOn": [
-        "graceful-fs@4.2.11",
-        "retry@0.12.0",
-        "signal-exit@3.0.7"
-      ]
+      "dependsOn": ["graceful-fs@4.2.11", "retry@0.12.0", "signal-exit@3.0.7"]
     },
     {
       "ref": "signal-exit@3.0.7",
@@ -24102,16 +23005,11 @@
     },
     {
       "ref": "properties-reader@3.0.1",
-      "dependsOn": [
-        "@kwsites/file-exists@1.1.1",
-        "mkdirp@3.0.1"
-      ]
+      "dependsOn": ["@kwsites/file-exists@1.1.1", "mkdirp@3.0.1"]
     },
     {
       "ref": "proto3-json-serializer@2.0.2",
-      "dependsOn": [
-        "protobufjs@7.6.5"
-      ]
+      "dependsOn": ["protobufjs@7.6.5"]
     },
     {
       "ref": "protobufjs@7.6.5",
@@ -24131,10 +23029,7 @@
     },
     {
       "ref": "proxy-addr@2.0.7",
-      "dependsOn": [
-        "forwarded@0.2.0",
-        "ipaddr.js@1.9.1"
-      ]
+      "dependsOn": ["forwarded@0.2.0", "ipaddr.js@1.9.1"]
     },
     {
       "ref": "proxy-from-env@2.1.0",
@@ -24142,17 +23037,11 @@
     },
     {
       "ref": "pump@3.0.4",
-      "dependsOn": [
-        "end-of-stream@1.4.5",
-        "once@1.4.0"
-      ]
+      "dependsOn": ["end-of-stream@1.4.5", "once@1.4.0"]
     },
     {
       "ref": "qs@6.15.3",
-      "dependsOn": [
-        "es-define-property@1.0.1",
-        "side-channel@1.1.1"
-      ]
+      "dependsOn": ["es-define-property@1.0.1", "side-channel@1.1.1"]
     },
     {
       "ref": "quick-format-unescaped@4.0.4",
@@ -24164,12 +23053,7 @@
     },
     {
       "ref": "raw-body@3.0.2",
-      "dependsOn": [
-        "bytes@3.1.2",
-        "http-errors@2.0.1",
-        "iconv-lite@0.7.3",
-        "unpipe@1.0.0"
-      ]
+      "dependsOn": ["bytes@3.1.2", "http-errors@2.0.1", "iconv-lite@0.7.3", "unpipe@1.0.0"]
     },
     {
       "ref": "react@19.2.8",
@@ -24177,10 +23061,7 @@
     },
     {
       "ref": "react-dom@19.2.8",
-      "dependsOn": [
-        "react@19.2.8",
-        "scheduler@0.27.0"
-      ]
+      "dependsOn": ["react@19.2.8", "scheduler@0.27.0"]
     },
     {
       "ref": "readable-stream@2.3.8",
@@ -24196,15 +23077,11 @@
     },
     {
       "ref": "readdir-glob@1.1.3",
-      "dependsOn": [
-        "minimatch@5.1.9"
-      ]
+      "dependsOn": ["minimatch@5.1.9"]
     },
     {
       "ref": "minimatch@5.1.9",
-      "dependsOn": [
-        "brace-expansion@5.0.9"
-      ]
+      "dependsOn": ["brace-expansion@5.0.9"]
     },
     {
       "ref": "real-require@0.2.0",
@@ -24251,9 +23128,7 @@
     },
     {
       "ref": "rxjs@7.8.2",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "safe-buffer@5.1.2",
@@ -24282,9 +23157,7 @@
     },
     {
       "ref": "ajv-formats@2.1.1",
-      "dependsOn": [
-        "ajv@8.20.0"
-      ]
+      "dependsOn": ["ajv@8.20.0"]
     },
     {
       "ref": "send@1.2.1",
@@ -24304,19 +23177,10 @@
     },
     {
       "ref": "serve-static@2.2.1",
-      "dependsOn": [
-        "encodeurl@2.0.0",
-        "escape-html@1.0.3",
-        "parseurl@1.3.3",
-        "send@1.2.1"
-      ]
+      "dependsOn": ["encodeurl@2.0.0", "escape-html@1.0.3", "parseurl@1.3.3", "send@1.2.1"]
     },
     {
       "ref": "set-cookie-parser@3.1.2",
-      "dependsOn": []
-    },
-    {
-      "ref": "setimmediate@1.0.5",
       "dependsOn": []
     },
     {
@@ -24325,9 +23189,7 @@
     },
     {
       "ref": "shebang-command@2.0.0",
-      "dependsOn": [
-        "shebang-regex@3.0.0"
-      ]
+      "dependsOn": ["shebang-regex@3.0.0"]
     },
     {
       "ref": "shebang-regex@3.0.0",
@@ -24349,10 +23211,7 @@
     },
     {
       "ref": "side-channel-list@1.0.1",
-      "dependsOn": [
-        "es-errors@1.3.0",
-        "object-inspect@1.13.4"
-      ]
+      "dependsOn": ["es-errors@1.3.0", "object-inspect@1.13.4"]
     },
     {
       "ref": "side-channel-map@1.0.1",
@@ -24387,18 +23246,11 @@
     },
     {
       "ref": "socks@2.8.9",
-      "dependsOn": [
-        "ip-address@10.3.1",
-        "smart-buffer@4.2.0"
-      ]
+      "dependsOn": ["ip-address@10.3.1", "smart-buffer@4.2.0"]
     },
     {
       "ref": "socks-proxy-agent@8.0.5",
-      "dependsOn": [
-        "agent-base@7.1.4",
-        "debug@4.4.3",
-        "socks@2.8.9"
-      ]
+      "dependsOn": ["agent-base@7.1.4", "debug@4.4.3", "socks@2.8.9"]
     },
     {
       "ref": "agent-base@7.1.4",
@@ -24406,9 +23258,7 @@
     },
     {
       "ref": "sonic-boom@4.2.1",
-      "dependsOn": [
-        "atomic-sleep@1.0.0"
-      ]
+      "dependsOn": ["atomic-sleep@1.0.0"]
     },
     {
       "ref": "source-map@0.7.6",
@@ -24420,24 +23270,15 @@
     },
     {
       "ref": "source-map-loader@5.0.0",
-      "dependsOn": [
-        "webpack@5.109.0",
-        "iconv-lite@0.6.3",
-        "source-map-js@1.2.1"
-      ]
+      "dependsOn": ["webpack@5.109.0", "iconv-lite@0.6.3", "source-map-js@1.2.1"]
     },
     {
       "ref": "iconv-lite@0.6.3",
-      "dependsOn": [
-        "safer-buffer@2.1.2"
-      ]
+      "dependsOn": ["safer-buffer@2.1.2"]
     },
     {
       "ref": "source-map-support@0.5.21",
-      "dependsOn": [
-        "buffer-from@1.1.2",
-        "source-map@0.6.1"
-      ]
+      "dependsOn": ["buffer-from@1.1.2", "source-map@0.6.1"]
     },
     {
       "ref": "source-map@0.6.1",
@@ -24452,30 +23293,16 @@
       "dependsOn": []
     },
     {
-      "ref": "sprintf-js@1.0.3",
-      "dependsOn": []
-    },
-    {
       "ref": "ssh-remote-port-forward@1.0.4",
-      "dependsOn": [
-        "@types/ssh2@0.5.52",
-        "ssh2@1.17.0"
-      ]
+      "dependsOn": ["@types/ssh2@0.5.52", "ssh2@1.17.0"]
     },
     {
       "ref": "@types/ssh2@0.5.52",
-      "dependsOn": [
-        "@types/node@24.13.3",
-        "@types/ssh2-streams@0.1.13"
-      ]
+      "dependsOn": ["@types/node@24.13.3", "@types/ssh2-streams@0.1.13"]
     },
     {
       "ref": "ssh2@1.17.0",
-      "dependsOn": [
-        "asn1@0.2.6",
-        "bcrypt-pbkdf@1.0.2",
-        "nan@2.28.0"
-      ]
+      "dependsOn": ["asn1@0.2.6", "bcrypt-pbkdf@1.0.2", "cpu-features@0.0.10", "nan@2.28.0"]
     },
     {
       "ref": "stackback@0.0.2",
@@ -24499,37 +23326,19 @@
     },
     {
       "ref": "streamx@2.28.0",
-      "dependsOn": [
-        "events-universal@1.0.1",
-        "fast-fifo@1.3.2",
-        "text-decoder@1.2.7"
-      ]
+      "dependsOn": ["events-universal@1.0.1", "fast-fifo@1.3.2", "text-decoder@1.2.7"]
     },
     {
       "ref": "string_decoder@1.1.1",
-      "dependsOn": [
-        "safe-buffer@5.1.2"
-      ]
+      "dependsOn": ["safe-buffer@5.1.2"]
     },
     {
       "ref": "string-width@5.1.2",
-      "dependsOn": [
-        "eastasianwidth@0.2.0",
-        "emoji-regex@9.2.2",
-        "strip-ansi@7.2.0"
-      ]
+      "dependsOn": ["eastasianwidth@0.2.0", "emoji-regex@9.2.2", "strip-ansi@7.2.0"]
     },
     {
       "ref": "strip-ansi@7.2.0",
-      "dependsOn": [
-        "ansi-regex@6.2.2"
-      ]
-    },
-    {
-      "ref": "stripe@22.3.2",
-      "dependsOn": [
-        "@types/node@24.13.3"
-      ]
+      "dependsOn": ["ansi-regex@6.2.2"]
     },
     {
       "ref": "superagent@10.3.0",
@@ -24547,25 +23356,15 @@
     },
     {
       "ref": "supertest@7.2.2",
-      "dependsOn": [
-        "methods@1.1.2",
-        "superagent@10.3.0",
-        "cookie-signature@1.2.2"
-      ]
+      "dependsOn": ["methods@1.1.2", "superagent@10.3.0", "cookie-signature@1.2.2"]
     },
     {
       "ref": "supports-color@8.1.1",
-      "dependsOn": [
-        "has-flag@4.0.0"
-      ]
+      "dependsOn": ["has-flag@4.0.0"]
     },
     {
       "ref": "swc-loader@0.2.7",
-      "dependsOn": [
-        "@swc/core@1.15.46",
-        "webpack@5.109.0",
-        "@swc/counter@0.1.3"
-      ]
+      "dependsOn": ["@swc/core@1.15.46", "webpack@5.109.0", "@swc/counter@0.1.3"]
     },
     {
       "ref": "tapable@2.3.3",
@@ -24573,27 +23372,15 @@
     },
     {
       "ref": "tar-fs@3.1.3",
-      "dependsOn": [
-        "pump@3.0.4",
-        "tar-stream@3.2.0",
-        "bare-fs@4.7.4",
-        "bare-path@3.1.1"
-      ]
+      "dependsOn": ["pump@3.0.4", "tar-stream@3.2.0", "bare-fs@4.7.4", "bare-path@3.1.1"]
     },
     {
       "ref": "tar-stream@3.2.0",
-      "dependsOn": [
-        "b4a@1.8.1",
-        "bare-fs@4.7.4",
-        "fast-fifo@1.3.2",
-        "streamx@2.28.0"
-      ]
+      "dependsOn": ["b4a@1.8.1", "bare-fs@4.7.4", "fast-fifo@1.3.2", "streamx@2.28.0"]
     },
     {
       "ref": "teex@1.0.1",
-      "dependsOn": [
-        "streamx@2.28.0"
-      ]
+      "dependsOn": ["streamx@2.28.0"]
     },
     {
       "ref": "terser@5.49.0",
@@ -24626,21 +23413,15 @@
     },
     {
       "ref": "text-decoder@1.2.7",
-      "dependsOn": [
-        "b4a@1.8.1"
-      ]
+      "dependsOn": ["b4a@1.8.1"]
     },
     {
       "ref": "thingies@2.6.1",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "thread-stream@4.2.0",
-      "dependsOn": [
-        "real-require@1.0.0"
-      ]
+      "dependsOn": ["real-require@1.0.0"]
     },
     {
       "ref": "real-require@1.0.0",
@@ -24656,10 +23437,7 @@
     },
     {
       "ref": "tinyglobby@0.2.17",
-      "dependsOn": [
-        "fdir@6.5.0",
-        "picomatch@4.0.5"
-      ]
+      "dependsOn": ["fdir@6.5.0", "picomatch@4.0.5"]
     },
     {
       "ref": "tinyrainbow@3.1.0",
@@ -24679,9 +23457,7 @@
     },
     {
       "ref": "tree-dump@1.1.0",
-      "dependsOn": [
-        "tslib@2.8.1"
-      ]
+      "dependsOn": ["tslib@2.8.1"]
     },
     {
       "ref": "tree-kill@1.2.2",
@@ -24693,9 +23469,7 @@
     },
     {
       "ref": "tsx@4.23.1",
-      "dependsOn": [
-        "esbuild@0.28.1"
-      ]
+      "dependsOn": ["esbuild@0.28.1"]
     },
     {
       "ref": "tweetnacl@0.14.5",
@@ -24707,11 +23481,7 @@
     },
     {
       "ref": "type-is@2.1.0",
-      "dependsOn": [
-        "content-type@2.0.0",
-        "media-typer@1.1.1",
-        "mime-types@3.0.2"
-      ]
+      "dependsOn": ["content-type@2.0.0", "media-typer@1.1.1", "mime-types@3.0.2"]
     },
     {
       "ref": "typedarray@0.0.6",
@@ -24719,10 +23489,6 @@
     },
     {
       "ref": "typescript@5.9.3",
-      "dependsOn": []
-    },
-    {
-      "ref": "underscore@1.13.8",
       "dependsOn": []
     },
     {
@@ -24735,9 +23501,7 @@
     },
     {
       "ref": "unionfs@4.6.0",
-      "dependsOn": [
-        "fs-monkey@1.1.0"
-      ]
+      "dependsOn": ["fs-monkey@1.1.0"]
     },
     {
       "ref": "unpipe@1.0.0",
@@ -24745,11 +23509,7 @@
     },
     {
       "ref": "update-browserslist-db@1.2.3",
-      "dependsOn": [
-        "browserslist@4.28.7",
-        "escalade@3.2.0",
-        "picocolors@1.1.1"
-      ]
+      "dependsOn": ["browserslist@4.28.7", "escalade@3.2.0", "picocolors@1.1.1"]
     },
     {
       "ref": "util-deprecate@1.0.2",
@@ -24806,9 +23566,7 @@
     },
     {
       "ref": "watchpack@2.5.2",
-      "dependsOn": [
-        "graceful-fs@4.2.11"
-      ]
+      "dependsOn": ["graceful-fs@4.2.11"]
     },
     {
       "ref": "webidl-conversions@3.0.1",
@@ -24845,31 +23603,19 @@
     },
     {
       "ref": "whatwg-url@5.0.0",
-      "dependsOn": [
-        "tr46@0.0.3",
-        "webidl-conversions@3.0.1"
-      ]
+      "dependsOn": ["tr46@0.0.3", "webidl-conversions@3.0.1"]
     },
     {
       "ref": "which@2.0.2",
-      "dependsOn": [
-        "isexe@2.0.0"
-      ]
+      "dependsOn": ["isexe@2.0.0"]
     },
     {
       "ref": "why-is-node-running@2.3.0",
-      "dependsOn": [
-        "siginfo@2.0.0",
-        "stackback@0.0.2"
-      ]
+      "dependsOn": ["siginfo@2.0.0", "stackback@0.0.2"]
     },
     {
       "ref": "wrap-ansi@8.1.0",
-      "dependsOn": [
-        "ansi-styles@6.2.3",
-        "string-width@5.1.2",
-        "strip-ansi@7.2.0"
-      ]
+      "dependsOn": ["ansi-styles@6.2.3", "string-width@5.1.2", "strip-ansi@7.2.0"]
     },
     {
       "ref": "ansi-styles@6.2.3",
@@ -24881,10 +23627,6 @@
     },
     {
       "ref": "ws@8.21.3",
-      "dependsOn": []
-    },
-    {
-      "ref": "xmlbuilder@10.1.1",
       "dependsOn": []
     },
     {
@@ -24917,11 +23659,7 @@
     },
     {
       "ref": "zip-stream@6.0.1",
-      "dependsOn": [
-        "archiver-utils@5.0.2",
-        "compress-commons@6.0.2",
-        "readable-stream@4.7.0"
-      ]
+      "dependsOn": ["archiver-utils@5.0.2", "compress-commons@6.0.2", "readable-stream@4.7.0"]
     },
     {
       "ref": "zod@3.25.76",
@@ -24929,9 +23667,7 @@
     },
     {
       "ref": "zod-to-json-schema@3.25.2",
-      "dependsOn": [
-        "zod@3.25.76"
-      ]
+      "dependsOn": ["zod@3.25.76"]
     }
   ]
 }

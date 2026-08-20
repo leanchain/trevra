@@ -1,5 +1,5 @@
-import { id, type Db } from '../db.js';
 import type { PostBlock } from '../../shared/linkedin-post-format.js';
+import { id, type Db } from '../db.js';
 import { OWNER_SEAT_KEY } from './seats.js';
 
 export class LinkedInPostsApiError extends Error {
@@ -15,12 +15,34 @@ export class LinkedInPostsApiError extends Error {
 export type LinkedInPostStatus =
   'draft' | 'scheduled' | 'publishing' | 'posted' | 'failed' | 'missed' | 'canceled';
 
+export const LINKEDIN_POST_IMAGE_MAX_COUNT = 9;
+export const LINKEDIN_POST_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+export const LINKEDIN_POST_IMAGE_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif'
+] as const;
+export type LinkedInPostImageMime = (typeof LINKEDIN_POST_IMAGE_TYPES)[number];
+
+export interface LinkedInPostImage {
+  id: string;
+  name: string;
+  mimeType: LinkedInPostImageMime;
+  size: number;
+}
+
+export interface LinkedInPostImagePayload extends LinkedInPostImage {
+  buffer: Buffer;
+}
+
 export interface LinkedInPost {
   id: string;
   workspaceId: string;
   seatKey: string;
   status: LinkedInPostStatus;
   blocks: PostBlock[];
+  media: LinkedInPostImage[];
   scheduledAt: string | null;
   publishedAt: string | null;
   postedUrl: string | null;
@@ -36,6 +58,7 @@ interface PostRow {
   seat_key: string;
   status: LinkedInPostStatus;
   blocks_json: unknown;
+  media_json: unknown;
   scheduled_at: string | null;
   published_at: string | null;
   posted_url: string | null;
@@ -53,7 +76,7 @@ interface PostRow {
 const UTC_ISO = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;
 
 const POST_COLUMNS = `
-  id, workspace_id, seat_key, status, blocks_json,
+  id, workspace_id, seat_key, status, blocks_json, media_json,
   TO_CHAR(scheduled_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS scheduled_at,
   TO_CHAR(published_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS published_at,
   posted_url, error_json, created_by,
@@ -77,6 +100,7 @@ function toPost(row: PostRow): LinkedInPost {
     seatKey: row.seat_key,
     status: row.status,
     blocks: (parseJson(row.blocks_json) as PostBlock[]) ?? [],
+    media: (parseJson(row.media_json) as LinkedInPostImage[]) ?? [],
     scheduledAt: row.scheduled_at,
     publishedAt: row.published_at,
     postedUrl: row.posted_url,
@@ -86,7 +110,6 @@ function toPost(row: PostRow): LinkedInPost {
     updatedAt: row.updated_at
   };
 }
-
 /**
  * 'failed' and 'missed' are editable ON PURPOSE. The spec's own words for a
  * missed post are "the user reschedules or discards from the UI", and with
@@ -222,6 +245,137 @@ export async function updatePost(
       postId
     );
   return toPost(row!);
+}
+
+function isPostImageMime(value: string): value is LinkedInPostImageMime {
+  return (LINKEDIN_POST_IMAGE_TYPES as readonly string[]).includes(value);
+}
+
+interface PostMediaRow {
+  id: string;
+  filename: string;
+  mime_type: string;
+  byte_size: number;
+  bytes?: Buffer | Uint8Array;
+}
+
+function postImageOf(row: PostMediaRow): LinkedInPostImage {
+  return {
+    id: row.id,
+    name: row.filename,
+    mimeType: row.mime_type as LinkedInPostImageMime,
+    size: Number(row.byte_size)
+  };
+}
+
+async function refreshPostMediaMetadata(
+  db: Db,
+  workspaceId: string,
+  postId: string,
+  now: Date
+): Promise<LinkedInPost> {
+  const rows = await db
+    .prepare(
+      `SELECT id, filename, mime_type, byte_size
+       FROM linkedin_post_media
+       WHERE workspace_id = ? AND post_id = ?
+       ORDER BY position ASC`
+    )
+    .all<PostMediaRow>(workspaceId, postId);
+  await db
+    .prepare(
+      `UPDATE linkedin_posts
+       SET media_json = ?::jsonb, updated_at = ?
+       WHERE workspace_id = ? AND id = ?`
+    )
+    .run(JSON.stringify(rows.map(postImageOf)), now.toISOString(), workspaceId, postId);
+  const post = await getPost(db, workspaceId, postId);
+  if (!post) throw new LinkedInPostsApiError('No such post.', 404);
+  return post;
+}
+
+export async function addPostImage(
+  db: Db,
+  workspaceId: string,
+  postId: string,
+  input: { name: string; mimeType: string; bytes: Buffer },
+  now: Date
+): Promise<LinkedInPost> {
+  if (!isPostImageMime(input.mimeType)) {
+    throw new LinkedInPostsApiError('Posts accept JPEG, PNG, WebP or GIF images only.', 415);
+  }
+  if (input.bytes.byteLength === 0) {
+    throw new LinkedInPostsApiError('That image is empty.');
+  }
+  if (input.bytes.byteLength > LINKEDIN_POST_IMAGE_MAX_BYTES) {
+    throw new LinkedInPostsApiError('Each post image must be 10 MB or smaller.', 413);
+  }
+  const name = input.name.trim().slice(0, 255) || 'image';
+
+  return db.transaction(async (tx) => {
+    // Serialize media changes for one post. Without the parent-row lock, two
+    // simultaneous uploads could both read count=8, both choose position 8,
+    // and turn a harmless double-click into a unique-key failure (or a cap
+    // bypass if the position rule ever changed).
+    const locked = await tx
+      .prepare(`SELECT id FROM linkedin_posts WHERE workspace_id = ? AND id = ? FOR UPDATE`)
+      .get<{ id: string }>(workspaceId, postId);
+    if (!locked) throw new LinkedInPostsApiError('No such post.', 404);
+    const post = await getPost(tx, workspaceId, postId);
+    if (!post) throw new LinkedInPostsApiError('No such post.', 404);
+    assertEditable(post);
+
+    const count = await tx
+      .prepare(
+        `SELECT COUNT(*)::int AS count
+         FROM linkedin_post_media
+         WHERE workspace_id = ? AND post_id = ?`
+      )
+      .get<{ count: number }>(workspaceId, postId);
+    const position = Number(count?.count ?? 0);
+    if (position >= LINKEDIN_POST_IMAGE_MAX_COUNT) {
+      throw new LinkedInPostsApiError(
+        `A LinkedIn post can have at most ${LINKEDIN_POST_IMAGE_MAX_COUNT} images.`
+      );
+    }
+    await tx
+      .prepare(
+        `INSERT INTO linkedin_post_media
+          (id, workspace_id, post_id, position, filename, mime_type, bytes, byte_size, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        id('lipostimg'),
+        workspaceId,
+        postId,
+        position,
+        name,
+        input.mimeType,
+        input.bytes,
+        input.bytes.byteLength,
+        now.toISOString()
+      );
+    return refreshPostMediaMetadata(tx, workspaceId, postId, now);
+  });
+}
+
+export async function loadPostImages(
+  db: Db,
+  workspaceId: string,
+  postId: string
+): Promise<LinkedInPostImagePayload[]> {
+  const rows = await db
+    .prepare(
+      `SELECT id, filename, mime_type, byte_size, bytes
+       FROM linkedin_post_media
+       WHERE workspace_id = ? AND post_id = ?
+       ORDER BY position ASC`
+    )
+    .all<PostMediaRow>(workspaceId, postId);
+  return rows.map((row) => ({
+    ...postImageOf(row),
+    buffer: Buffer.isBuffer(row.bytes) ? row.bytes : Buffer.from(row.bytes ?? [])
+  }));
 }
 
 export async function cancelPost(

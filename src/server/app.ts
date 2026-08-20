@@ -28,9 +28,7 @@ import {
   createNangoConnectSession,
   disconnectIntegration,
   handleNangoWebhook,
-  processStripeWebhook,
   ingestCanonicalRecord,
-  isMoneyIntegrationProvider,
   listAvailableIntegrations,
   triggerConnectionSync
 } from './integration-service.js';
@@ -251,9 +249,12 @@ import {
   type CampaignStatus
 } from './linkedin/action-ledger.js';
 import {
+  addPostImage,
   cancelPost,
   createPost,
   getPost,
+  LINKEDIN_POST_IMAGE_MAX_BYTES,
+  LINKEDIN_POST_IMAGE_TYPES,
   LinkedInPostsApiError,
   listPosts,
   updatePost,
@@ -339,6 +340,7 @@ import { runManagedCampaigns } from './linkedin/runner.js';
 import {
   listCampaignMailboxes,
   recordCampaignEmailEvent,
+  resolveCampaignChannelUnknownOutcome,
   retryCampaignChannelAction,
   upsertCampaignMailboxSettings
 } from './linkedin/campaign-channels.js';
@@ -368,6 +370,7 @@ import {
   releaseSeatWork,
   removeCampaignMember,
   rerunManagedCampaignCondition,
+  resolveManagedCampaignLinkedInUnknownOutcome,
   resumeManagedCampaignMemberAtStep,
   retryManagedCampaignFailures,
   setCampaignMemberPaused,
@@ -530,23 +533,6 @@ export function createApp(db: Db) {
         res
           .status(401)
           .json({ error: error instanceof Error ? error.message : 'Invalid Nango webhook' });
-      }
-    }
-  );
-
-  app.post(
-    '/api/webhooks/stripe',
-    express.raw({ type: 'application/json', limit: '2mb' }),
-    async (req, res) => {
-      try {
-        const signature = String(req.headers['stripe-signature'] ?? '');
-        const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body ?? ''));
-        const result = await processStripeWebhook(db, raw, signature);
-        res.status(result.duplicate ? 200 : 202).json(result);
-      } catch (error) {
-        res
-          .status(400)
-          .json({ error: error instanceof Error ? error.message : 'Invalid Stripe webhook' });
       }
     }
   );
@@ -2273,8 +2259,8 @@ export function createApp(db: Db) {
    * Spent, sent, produced -- one payload, one period, no attribution.
    *
    * The refusal is the feature: nothing joins a model call or an outreach
-   * action to an invoice, so `produced.attribution` ships the sentence saying
-   * so and the client renders it verbatim.
+   * action to downstream revenue, so `produced.attribution` states that no
+   * causal revenue attribution is claimed here.
    */
   app.get('/api/loop/cost', async (req: AuthedRequest, res, next) => {
     try {
@@ -2285,12 +2271,11 @@ export function createApp(db: Db) {
       next(error);
     }
   });
+
   app.get('/api/dashboard', async (req: AuthedRequest, res, next) => {
     try {
       const workspaceId = req.auth!.workspaceId;
-      const connections = (await listConnections(db, workspaceId)).filter(
-        (connection) => !isMoneyIntegrationProvider(connection.provider)
-      );
+      const connections = await listConnections(db, workspaceId);
       const availableIntegrations = await listAvailableIntegrations(db, workspaceId);
       res.json({
         workspace: await db.prepare('SELECT id,name FROM workspaces WHERE id=?').get(workspaceId),
@@ -2308,9 +2293,7 @@ export function createApp(db: Db) {
   });
 
   app.get('/api/integrations', async (req: AuthedRequest, res) => {
-    const connections = (await listConnections(db, req.auth!.workspaceId)).filter(
-      (connection) => !isMoneyIntegrationProvider(connection.provider)
-    );
+    const connections = await listConnections(db, req.auth!.workspaceId);
     res.json({
       connections,
       available: await listAvailableIntegrations(db, req.auth!.workspaceId),
@@ -3398,6 +3381,31 @@ export function createApp(db: Db) {
     })
   );
 
+  app.post(
+    '/api/linkedin/posts/:id/media',
+    express.raw({ type: [...LINKEDIN_POST_IMAGE_TYPES], limit: LINKEDIN_POST_IMAGE_MAX_BYTES }),
+    linkedinRoute(async (req, res) => {
+      const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      const mimeType = String(req.headers['content-type'] ?? '')
+        .split(';')[0]!
+        .trim();
+      let name = String(req.headers['x-trevra-file-name'] ?? 'image');
+      try {
+        name = decodeURIComponent(name);
+      } catch {
+        /* keep the literal header; the store still bounds it to 255 chars */
+      }
+      const post = await addPostImage(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        { name, mimeType, bytes },
+        new Date()
+      );
+      res.status(201).json({ post });
+    })
+  );
+
   app.get(
     '/api/linkedin/posts/:id',
     linkedinRoute(async (req, res) => {
@@ -4418,6 +4426,101 @@ export function createApp(db: Db) {
       const removed = await removeCampaignMember(db, req.auth!.workspaceId, memberId, new Date());
       if (!removed) throw new LinkedInApiError('Active campaign member not found', 404);
       res.json({ removed: true });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/actions/:id/resolve',
+    linkedinRoute(async (req, res) => {
+      const input = z
+        .object({ resolution: z.enum(['sent', 'retry', 'skip']) })
+        .strict()
+        .parse(req.body ?? {});
+      const actionId = String(req.params.id);
+      const row = await db
+        .prepare(
+          `SELECT campaign_member_id FROM linkedin_actions
+           WHERE workspace_id=? AND id=? AND settlement_hold_at IS NOT NULL`
+        )
+        .get<{ campaign_member_id: string | null }>(req.auth!.workspaceId, actionId);
+      if (!row?.campaign_member_id)
+        throw new LinkedInApiError('Held LinkedIn campaign action not found', 404);
+      const campaignId = await assertCanManageCampaignMember(
+        db,
+        req,
+        row.campaign_member_id,
+        'resolve an unknown LinkedIn action outcome'
+      );
+      const now = new Date();
+      const result = await resolveManagedCampaignLinkedInUnknownOutcome(
+        db,
+        req.auth!.workspaceId,
+        actionId,
+        input.resolution,
+        now
+      );
+      if (!result.resolved)
+        throw new LinkedInApiError('Held LinkedIn campaign action not found', 404);
+      await recordManagedCampaignAudit(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          actorId: req.auth!.userId,
+          eventType: 'linkedin_campaign_member.unknown_outcome_resolved',
+          entityType: 'linkedin_campaign_member',
+          entityId: row.campaign_member_id,
+          metadata: { surface: 'linkedin', actionId, resolution: input.resolution, campaignId }
+        },
+        now
+      );
+      res.json({ resolved: true });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/channel-actions/:id/resolve',
+    linkedinRoute(async (req, res) => {
+      const input = z
+        .object({ resolution: z.enum(['sent', 'retry', 'skip']) })
+        .strict()
+        .parse(req.body ?? {});
+      const actionId = String(req.params.id);
+      const row = await db
+        .prepare(
+          `SELECT member_id FROM linkedin_campaign_channel_actions
+           WHERE workspace_id=? AND id=? AND status='unknown' AND outcome_known=FALSE`
+        )
+        .get<{ member_id: string }>(req.auth!.workspaceId, actionId);
+      if (!row) throw new LinkedInApiError('Unknown campaign channel action not found', 404);
+      const campaignId = await assertCanManageCampaignMember(
+        db,
+        req,
+        row.member_id,
+        'resolve an unknown channel action outcome'
+      );
+      const now = new Date();
+      const result = await resolveCampaignChannelUnknownOutcome(
+        db,
+        req.auth!.workspaceId,
+        actionId,
+        input.resolution,
+        now
+      );
+      if (!result.resolved)
+        throw new LinkedInApiError('Unknown campaign channel action not found', 404);
+      await recordManagedCampaignAudit(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          actorId: req.auth!.userId,
+          eventType: 'linkedin_campaign_member.unknown_outcome_resolved',
+          entityType: 'linkedin_campaign_member',
+          entityId: row.member_id,
+          metadata: { surface: 'channel', actionId, resolution: input.resolution, campaignId }
+        },
+        now
+      );
+      res.json({ resolved: true });
     })
   );
 
@@ -6359,45 +6462,30 @@ const SAFE_TABLE_NAME = /^[a-z_][a-z0-9_]*$/;
 /**
  * Tables the catalogue finds that are NOT this workspace's data.
  *
- * `workspace_erasures` is the RECORD of an erasure and deliberately carries no
+ * `workspace_erasures` is the record of an erasure and deliberately carries no
  * foreign key to `workspaces`, so that it outlives the workspace it describes.
- * Counting it as something to remove would delete the proof that the deletion
- * happened -- the one row anybody would ever ask to see afterwards.
  */
 const WORKSPACE_INVENTORY_EXCLUDED: ReadonlySet<string> = new Set(['workspace_erasures']);
 
 /**
  * Rows that are the customer's data and do not carry `workspace_id`.
  *
- * Ten tables in this schema hang off a workspace-scoped parent and are reached
- * only through it -- the clauses of a contract, the milestones and scope of a
- * project, the evidence and outcome of a recommendation. An export that walked
- * only the `workspace_id` column would hand back contracts with no clauses and
- * recommendations with no outcomes, and call it "your data". Each entry takes
- * exactly one bind parameter: the workspace id.
+ * A small number of tables hang off a workspace-scoped parent and are reached
+ * only through it. An export that walked only the `workspace_id` column would
+ * omit their rows and call the result complete. Each entry takes exactly one
+ * bind parameter: the workspace id.
  *
- * They do not need to be listed for ERASURE -- every one of them cascades from
- * its parent -- but they are counted there anyway, because a preview that
- * under-reports what it is about to delete is a preview nobody can consent to.
+ * They do not need to be listed for erasure because they cascade from their
+ * parent, but they are counted there so the preview reports what will disappear.
  */
 const WORKSPACE_CHILD_TABLES: ReadonlyArray<{ table: string; where: string }> = [
   { table: 'approvals', where: 'action_id IN (SELECT id FROM actions WHERE workspace_id=?)' },
-  {
-    table: 'contract_clauses',
-    where: 'contract_id IN (SELECT id FROM contracts WHERE workspace_id=?)'
-  },
-  { table: 'milestones', where: 'project_id IN (SELECT id FROM projects WHERE workspace_id=?)' },
-  { table: 'scope_items', where: 'project_id IN (SELECT id FROM projects WHERE workspace_id=?)' },
   {
     table: 'playbook_step_runs',
     where: 'playbook_run_id IN (SELECT id FROM playbook_runs WHERE workspace_id=?)'
   },
   {
     table: 'recommendation_evidence',
-    where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)'
-  },
-  {
-    table: 'recommendation_outcomes',
     where: 'recommendation_id IN (SELECT id FROM recommendations WHERE workspace_id=?)'
   },
   {
@@ -6417,8 +6505,6 @@ const WORKSPACE_CHILD_TABLES: ReadonlyArray<{ table: string; where: string }> = 
 
 /**
  * Tables whose rows are KEYS, not information.
- *
- * A data-subject export is a copy of the customer's own data, handed to a
  * browser and then to wherever they choose to keep it. A sealed LinkedIn
  * password, a Reddit sign-in, a CLI subscription token and an agent token's
  * hash are none of those things -- they are the material somebody needs to BE
@@ -6797,7 +6883,8 @@ function rethrowLinkedInManagerError(error: unknown): never {
   if (
     error instanceof Error &&
     (/^Only an? .+ can be /i.test(error.message) ||
-      /Pause the campaign before changing/i.test(error.message))
+      /Pause the campaign before changing/i.test(error.message) ||
+      /Resolve the unknown action outcome before changing/i.test(error.message))
   )
     throw new LinkedInApiError(error.message, 409);
   if (

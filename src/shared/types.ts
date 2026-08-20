@@ -1,5 +1,4 @@
-export type RecommendationType =
-  'stale_proposal' | 'scope_creep' | 'unbilled_milestone' | 'overdue_invoice';
+export type RecommendationType = 'stale_proposal';
 
 export type RecommendationStatus =
   'detected' | 'ready' | 'approved' | 'completed' | 'dismissed' | 'snoozed';
@@ -28,8 +27,6 @@ export interface Recommendation {
   summary: string;
   clientId: string;
   clientName: string;
-  estimatedAmount: number;
-  currency: string;
   confidence: number;
   urgency: number;
   priorityScore: number;
@@ -52,8 +49,6 @@ export interface ClientSummary {
   contactName: string;
   email: string;
   status: string;
-  activeValue: number;
-  currency: string;
   lastInteractionAt: string;
   nextAction?: string | null;
 }
@@ -68,16 +63,7 @@ export interface ConnectionSummary {
   lastSyncedAt?: string | null;
   lastError?: string | null;
 }
-
-export type IntegrationCategory =
-  | 'communication'
-  | 'calendar'
-  | 'accounting'
-  | 'payments'
-  | 'marketplace'
-  | 'project'
-  | 'crm'
-  | 'data';
+export type IntegrationCategory = 'communication' | 'calendar' | 'crm' | 'data';
 
 /**
  * `oauth`  — the end user authorizes Trevra through the provider's OAuth screen.
@@ -118,7 +104,6 @@ export interface AutomationRule {
   recommendationType: RecommendationType;
   mode: AutomationMode;
   minConfidence: number;
-  maxAmount: number;
   delayMinutes: number;
   enabled: boolean;
 }
@@ -135,11 +120,9 @@ export type AgentScope =
   | 'skills:run'
   | 'runs:read'
   | 'workspace:read'
-  | 'actions:prepare'
   | 'playbooks:read'
   | 'playbooks:run'
   | 'workflows:read';
-
 export type PlaybookRunStatus =
   'queued' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
 export type PlaybookStepStatus =
@@ -262,7 +245,7 @@ export interface AgentTokenSummary {
 export interface PreparedAction {
   id: string;
   recommendationId: string;
-  type: 'email_draft' | 'invoice_draft' | 'change_order_draft';
+  type: 'email_draft';
   subject: string;
   body: string;
   recipient: string;
@@ -420,9 +403,4 @@ export interface SkillRun {
 export interface ClientDetail {
   client: Record<string, unknown>;
   messages: Array<Record<string, unknown>>;
-  invoices: Array<Record<string, unknown>>;
-  projects: Array<Record<string, unknown>>;
-  commitments: Array<Record<string, unknown>>;
-  contracts: Array<Record<string, unknown>>;
-  outcomes: Array<Record<string, unknown>>;
 }

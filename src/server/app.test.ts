@@ -2,7 +2,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import request from 'supertest';
 import { MockLanguageModelV4 } from 'ai/test';
 import type { LanguageModelV4, LanguageModelV4GenerateResult } from '@ai-sdk/provider';
-import Stripe from 'stripe';
 import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -132,8 +131,6 @@ afterAll(async () => closeAuthDatabase());
 afterEach(async () => {
   await db?.close();
   db = undefined;
-  delete process.env.STRIPE_WEBHOOK_SECRET;
-  delete process.env.STRIPE_SECRET_KEY;
   delete process.env.OPENAI_API_KEY;
   delete process.env.GOOGLE_CLIENT_ID;
   delete process.env.GOOGLE_CLIENT_SECRET;
@@ -306,7 +303,7 @@ describe('Trevra API on PostgreSQL', () => {
       .expect(403);
   });
 
-  it('returns the four-section shell dashboard without Money data', async () => {
+  it('returns the GTM shell dashboard', async () => {
     const agent = await agentWithSession();
     const response = await agent.get('/api/dashboard').expect(200);
     expect(response.body.workspace).toBeTruthy();
@@ -314,17 +311,6 @@ describe('Trevra API on PostgreSQL', () => {
       expect.objectContaining({ connectedSources: expect.any(Number) })
     );
     expect(Object.keys(response.body.metrics)).toEqual(['connectedSources']);
-    expect(response.body).not.toHaveProperty('recommendations');
-    expect(response.body).not.toHaveProperty('clients');
-    expect(response.body).not.toHaveProperty('automationRules');
-  });
-
-  it('does not expose the removed Money HTTP surface', async () => {
-    const agent = await agentWithSession();
-    await agent.get('/api/recommendations').expect(404);
-    await agent.post('/api/automation/run').expect(404);
-    await agent.post('/api/imports/marketplace').send({ provider: 'upwork', csv: 'x' }).expect(404);
-    await agent.get('/api/clients/client_x').expect(404);
   });
 
   it('creates a real account and maps it to an isolated Trevra workspace', async () => {
@@ -361,7 +347,6 @@ describe('Trevra API on PostgreSQL', () => {
       'skills:run',
       'runs:read',
       'workspace:read',
-      'actions:prepare',
       'playbooks:read',
       'playbooks:run',
       'workflows:read'
@@ -545,51 +530,6 @@ describe('Trevra API on PostgreSQL', () => {
       .set('Authorization', authorization)
       .send({ decision: 'approve' })
       .expect(401);
-  });
-
-  it('verifies and deduplicates Stripe payment webhooks', async () => {
-    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test_secret';
-    process.env.STRIPE_SECRET_KEY = 'sk_test_placeholder';
-    const agent = await agentWithSession();
-    const payload = JSON.stringify({
-      id: 'evt_trevra_paid',
-      object: 'event',
-      api_version: '2025-06-30.basil',
-      created: Math.floor(Date.now() / 1000),
-      type: 'invoice.paid',
-      data: {
-        object: {
-          id: 'in_test',
-          object: 'invoice',
-          number: 'INV-104',
-          amount_paid: 185000,
-          currency: 'eur',
-          metadata: { trevra_workspace_id: 'ws_demo', trevra_invoice_id: 'inv_acme_104' },
-          status_transitions: { paid_at: Math.floor(Date.now() / 1000) }
-        }
-      }
-    });
-    const signature = Stripe.webhooks.generateTestHeaderString({
-      payload,
-      secret: process.env.STRIPE_WEBHOOK_SECRET
-    });
-    await agent
-      .post('/api/webhooks/stripe')
-      .set('stripe-signature', signature)
-      .set('content-type', 'application/json')
-      .send(payload)
-      .expect(202);
-    await agent
-      .post('/api/webhooks/stripe')
-      .set('stripe-signature', signature)
-      .set('content-type', 'application/json')
-      .send(payload)
-      .expect(200);
-    const invoice = await db!
-      .prepare("SELECT status,paid_at FROM invoices WHERE id='inv_acme_104'")
-      .get<{ status: string; paid_at: string | null }>();
-    expect(invoice?.status).toBe('paid');
-    expect(invoice?.paid_at).not.toBeNull();
   });
 
   it('reports BYOK availability and starts a workspace with no key, no endpoint, and the default budget', async () => {
@@ -1388,11 +1328,9 @@ describe('owner-only acts', () => {
       .send({ timezone: 'Europe/Berlin' })
       .expect(403);
     await member.agent.put('/api/linkedin/lead-sources/allowance').send({ cap: 200 }).expect(403);
-
-    // Queueing is the closest an HTTP caller gets to a send; stopping and
-    // deleting do not come back.
-    await member.agent.post('/api/linkedin/manager/campaigns/cmp_x/start').send({}).expect(403);
-    await member.agent.post('/api/linkedin/manager/campaigns/cmp_x/stop').send({}).expect(403);
+    // Destructive shared resources remain owner-only. Managed campaigns have
+    // their own teammate/assignment authorization contract and are tested in
+    // manager-team-api.test.ts.
     await member.agent.delete('/api/linkedin/manager/lead-lists/lst_x').expect(403);
 
     // Export and erasure of the whole workspace.
@@ -1476,19 +1414,9 @@ describe('export and erasure', () => {
       withheld: string[];
       truncated: string[];
     };
-
-    // The tables the ledger export does NOT cover -- which is the reason this
-    // route exists at all.
     expect(bundle.tables.clients.length).toBeGreaterThan(0);
     expect(bundle.tables.messages.length).toBeGreaterThan(0);
-    expect(bundle.tables.invoices.length).toBeGreaterThan(0);
     expect(bundle.tables.workspace_settings.length).toBe(1);
-    // Reached through their parents; they carry no workspace_id of their own.
-    expect(bundle.tables.milestones).toBeDefined();
-    expect(bundle.tables.recommendation_outcomes).toBeDefined();
-
-    // The key is named as withheld and its bytes are nowhere in the file.
-    expect(bundle.withheld).toContain('workspace_secrets');
     expect(bundle.tables.workspace_secrets).toBeUndefined();
     expect(JSON.stringify(bundle)).not.toContain(apiKey);
     expect(bundle.truncated).toEqual([]);

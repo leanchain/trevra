@@ -5,6 +5,7 @@ import type {
   LinkedInDriver,
   LinkedInDriverResult,
   LinkedInPage,
+  LinkedInPostImageUpload,
   LinkedInSeatRead
 } from './driver.js';
 import type { LinkedInInboxDriver } from './driver-inbox.js';
@@ -16,7 +17,7 @@ import {
   syncLinkedInThread
 } from './jobs.js';
 import { syncThreads } from './inbox.js';
-import { createPost, getPost } from './posts.js';
+import { addPostImage, createPost, getPost } from './posts.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
 import { parseBackgroundRunDetail, setSeatRestingUntil } from './seat-events.js';
 import { upsertSeat } from './seats.js';
@@ -850,12 +851,20 @@ describe('runLinkedInPostTick', () => {
       name: 'Connected',
       connectionsCount: 10,
       degraded: []
-    }
+    },
+    onPublish?: (options?: { images?: LinkedInPostImageUpload[] }) => void
   ) {
     return {
       readSeat: async () => seatRead,
       isLoggedIn: async () => true,
-      publishPost: async () => result,
+      publishPost: async (
+        _page: LinkedInPage,
+        _body: string,
+        options?: { images?: LinkedInPostImageUpload[] }
+      ) => {
+        onPublish?.(options);
+        return result;
+      },
       sendInvite: async () => {
         throw new Error('unused');
       },
@@ -922,6 +931,50 @@ describe('runLinkedInPostTick', () => {
       status: 'posted',
       postedUrl: 'https://www.linkedin.com/feed/update/urn:li:activity:123/'
     });
+  });
+
+  it('loads stored post images and hands their bytes to the publisher', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    const post = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'Hi with image' }] }],
+        status: 'scheduled',
+        scheduledAt: NOW.toISOString(),
+        createdBy: null
+      },
+      NOW
+    );
+    await addPostImage(
+      db,
+      WORKSPACE_ID,
+      post.id,
+      { name: 'proof.png', mimeType: 'image/png', bytes: Buffer.from([1, 2, 3]) },
+      NOW
+    );
+    let images: LinkedInPostImageUpload[] | undefined;
+
+    const result = await runLinkedInPostTick(db, CONFIG, {
+      workspaceId: WORKSPACE_ID,
+      now: NOW,
+      page,
+      driver: driverThatReturns({ ok: true, failureKind: null }, undefined, (options) => {
+        images = options?.images;
+      }),
+      accountConfirmed: true
+    });
+
+    expect(result.published).toBe(1);
+    expect(images).toHaveLength(1);
+    expect(images?.[0]).toMatchObject({ name: 'proof.png', mimeType: 'image/png' });
+    expect(images?.[0]?.buffer.equals(Buffer.from([1, 2, 3]))).toBe(true);
   });
 
   it('marks a post failed, not retried, when the driver reports a failure', async () => {

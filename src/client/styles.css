@@ -7776,6 +7776,95 @@ button:disabled {
   font-weight: 700;
 }
 
+/* Expanding a campaign should answer the operator's immediate question before
+   exposing the full execution console. One compact health row stays visible;
+   queue diagnostics, settings, waves and the lead table are opt-in below it. */
+.mgr-campaign-health {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.mgr-campaign-health.has-issues {
+  border-left-color: var(--amber);
+}
+.mgr-campaign-health > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.mgr-campaign-health strong {
+  font-size: var(--t-text-xs);
+}
+.mgr-campaign-health span:not(.li-chip) {
+  max-width: var(--t-measure);
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.45;
+}
+.mgr-campaign-section-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.mgr-campaign-section-toggle {
+  width: 100%;
+  min-height: var(--t-tap);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-field);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mgr-campaign-section-toggle:hover {
+  border-color: var(--t-line-strong);
+  background: var(--t-surface-2);
+}
+.mgr-campaign-section-toggle > svg {
+  color: var(--muted);
+}
+.mgr-campaign-section-toggle > span {
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+}
+.mgr-campaign-section-toggle > small {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-weight: var(--t-w-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mgr-settings-block {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+.mgr-settings-block + .mgr-settings-block {
+  border-top: 1px solid var(--t-line-soft);
+  padding-top: 16px;
+}
+.mgr-settings-block > h4 {
+  margin: 0;
+}
+@media (max-width: 640px) {
+  .mgr-campaign-section-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .mgr-chip-running {
   background: var(--green-3);
   color: var(--green);
@@ -9462,6 +9551,82 @@ button:disabled {
 .li-post-toolbar button:hover {
   background: var(--t-field);
 }
+.li-post-image-input {
+  display: none;
+}
+.li-post-media-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0 2px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.li-post-media-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.li-post-media-heading > div {
+  display: grid;
+  gap: 2px;
+}
+.li-post-media-heading strong {
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-strong);
+}
+.li-post-media-heading span,
+.li-post-media-note {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+}
+.li-post-media-note {
+  margin: 0;
+}
+.li-post-media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 9px;
+}
+.li-post-media-card {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  overflow: hidden;
+  background: var(--t-surface-2);
+}
+.li-post-media-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: var(--t-surface-3);
+}
+.li-post-media-card figcaption {
+  overflow: hidden;
+  padding: 7px 9px;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.li-post-media-card > button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--t-line-strong);
+  border-radius: var(--t-r-pill);
+  background: var(--t-surface);
+  color: var(--ink);
+  box-shadow: var(--t-shadow-sm);
+  cursor: pointer;
+}
 .li-post-editor {
   min-height: 160px;
   border: 1px solid var(--line);
@@ -9507,8 +9672,7 @@ button:disabled {
   color: var(--red);
 }
 .li-post-preview {
-  border-top: 1px solid var(--t-line-soft);
-  padding-top: 12px;
+  margin-top: 0;
 }
 .li-post-preview-card {
   border: 1px solid var(--line);
@@ -9536,10 +9700,34 @@ button:disabled {
   margin: 0;
 }
 .li-post-actions {
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.li-post-now-row {
   display: flex;
-  gap: 9px;
   align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
   flex-wrap: wrap;
+}
+.li-post-schedule-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.li-post-schedule {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-strong);
 }
 .li-post-actions button {
   white-space: nowrap;
@@ -9613,6 +9801,14 @@ button:disabled {
   white-space: nowrap;
   font-size: var(--t-text-xs);
 }
+.li-post-media-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  white-space: nowrap;
+}
 .li-post-row-when {
   color: var(--muted);
   font-size: var(--t-text-chip);
@@ -9647,6 +9843,24 @@ button:disabled {
   font-size: var(--t-text-xs);
   padding: 20px 4px 4px;
   margin: 0;
+}
+@media (max-width: 640px) {
+  .li-post-now-row {
+    justify-content: stretch;
+  }
+  .li-post-now-row > button {
+    flex: 1 1 9rem;
+  }
+  .li-post-schedule-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .li-post-schedule-row > button {
+    width: 100%;
+  }
+  .li-post-row-actions {
+    width: 100%;
+    margin-left: 0;
+  }
 }
 
 /* Campaign waves / queue controls. */
@@ -9763,4 +9977,668 @@ button:disabled {
   display: grid;
   gap: 4px;
   font-size: var(--t-text-xs);
+}
+
+/* --------------------------------------------------------------------------
+ * Outreach control polish
+ *
+ * The LinkedIn manager grew from a handful of fields into a real operating
+ * console. These rules give every campaign/account/workflow surface one control
+ * language without forcing each screen to invent its own dropdown/button skin.
+ * `li-polished` is deliberately scoped so unrelated legacy forms can migrate
+ * independently.
+ * ----------------------------------------------------------------------- */
+.li-polished :is(input, textarea, select):not([type='checkbox']):not([type='radio']) {
+  width: 100%;
+  min-height: var(--t-tap);
+  border: 1px solid var(--t-field-line);
+  border-radius: var(--t-r-md);
+  background-color: var(--t-field);
+  color: var(--ink);
+  padding: 9px 12px;
+  box-shadow: 0 1px 0 rgba(20, 32, 25, 0.03);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background-color 120ms ease;
+}
+.li-polished textarea {
+  line-height: 1.55;
+}
+.li-polished select:not([multiple]) {
+  appearance: none;
+  padding-right: 38px !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px);
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+}
+.li-polished select[multiple] {
+  min-height: 7.5rem;
+  padding: 6px;
+}
+.li-polished select[multiple] option {
+  border-radius: var(--t-r-xs);
+  padding: 7px 9px;
+}
+.li-polished
+  :is(input, textarea, select):not([type='checkbox']):not([type='radio']):hover:not(:disabled) {
+  border-color: var(--t-line-strong);
+  background-color: var(--t-surface);
+}
+.li-polished :is(input, textarea, select):not([type='checkbox']):not([type='radio']):focus {
+  border-color: var(--t-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-focus) 14%, transparent);
+}
+.li-polished :is(input, textarea, select):disabled {
+  background-color: var(--t-surface-2);
+  color: var(--muted);
+}
+.li-polished :is(.li-form-grid, .li-filter-row, .mgr-fields) label:not(.li-check-row),
+.li-polished .li-block-label {
+  color: var(--ink);
+  font-weight: var(--t-w-strong);
+}
+.li-polished
+  :is(.li-form-grid, .li-filter-row, .mgr-fields)
+  label:not(.li-check-row)
+  > :is(.li-hint, small),
+.li-polished .li-block-label > :is(.li-hint, small) {
+  font-weight: var(--t-w-body);
+}
+
+.li-polished :is(.primary-button, .secondary-button, .ghost-button, .li-mini-button, .li-range) {
+  border-radius: var(--t-r-md);
+  transition:
+    transform 100ms ease,
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease;
+}
+.li-polished .primary-button {
+  min-height: var(--t-tap);
+  padding-inline: 16px;
+  box-shadow: var(--t-shadow-sm);
+}
+.li-polished .primary-button:hover:not(:disabled) {
+  background: var(--t-green-700);
+  border-color: var(--t-green-700);
+  transform: translateY(-1px);
+  box-shadow: var(--t-shadow-md);
+}
+:root[data-theme='dark'] .li-polished .primary-button:hover:not(:disabled) {
+  background: var(--t-green-500);
+  border-color: var(--t-green-500);
+}
+.li-polished .secondary-button {
+  min-height: var(--t-tap);
+  padding-inline: 14px;
+  border-color: var(--t-line-strong);
+  background: var(--t-surface);
+  box-shadow: var(--t-shadow-sm);
+}
+.li-polished .secondary-button:hover:not(:disabled) {
+  color: var(--green);
+  border-color: var(--t-green-300);
+  background: var(--t-green-50);
+  transform: translateY(-1px);
+}
+.li-polished .ghost-button:hover:not(:disabled) {
+  color: var(--green);
+  background: var(--t-green-50);
+}
+.li-polished
+  :is(.primary-button, .secondary-button, .ghost-button, .li-mini-button):active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+.li-polished .li-danger-button,
+.li-polished .secondary-button.is-danger {
+  color: var(--red);
+  border-color: var(--t-red-line);
+  background: var(--t-red-bg);
+}
+.li-polished .li-danger-button:hover:not(:disabled),
+.li-polished .secondary-button.is-danger:hover:not(:disabled) {
+  color: var(--red);
+  border-color: var(--red);
+  background: var(--t-red-bg);
+}
+
+.li-polished .li-check-grid {
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 8px;
+}
+.li-polished .li-check-row {
+  min-height: var(--t-tap);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-field);
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-medium);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.li-polished .li-check-row:hover {
+  border-color: var(--t-line-strong);
+  background: var(--t-surface);
+}
+.li-polished .li-check-row:has(input:checked) {
+  border-color: var(--t-green-300);
+  background: var(--t-green-50);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--t-green-300) 35%, transparent);
+}
+.li-polished .li-check-row:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+.li-polished .li-check-row input[type='checkbox'] {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--t-green-fill);
+}
+
+.li-polished .mgr-advanced,
+.li-polished .li-manual-fields {
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+  padding: 0;
+  overflow: clip;
+}
+.li-polished .li-manual-fields {
+  margin-top: 12px;
+}
+.li-polished :is(.mgr-advanced, .li-manual-fields) > summary {
+  list-style: none;
+  width: 100%;
+  min-height: var(--t-tap);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-strong);
+  cursor: pointer;
+  user-select: none;
+}
+.li-polished :is(.mgr-advanced, .li-manual-fields) > summary::-webkit-details-marker {
+  display: none;
+}
+.li-polished :is(.mgr-advanced, .li-manual-fields) > summary::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 120ms ease;
+  color: var(--muted);
+}
+.li-polished :is(.mgr-advanced, .li-manual-fields)[open] > summary {
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--t-surface);
+  color: var(--green);
+}
+.li-polished :is(.mgr-advanced, .li-manual-fields)[open] > summary::after {
+  transform: rotate(225deg) translate(-1px, -1px);
+}
+.li-polished :is(.mgr-advanced, .li-manual-fields) > :not(summary) {
+  margin-left: 12px;
+  margin-right: 12px;
+}
+.li-polished :is(.mgr-advanced, .li-manual-fields) > :last-child {
+  margin-bottom: 12px;
+}
+
+.li-polished .li-filter-row {
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.li-polished .li-filter-row > label {
+  min-width: 10rem;
+}
+.li-polished .mgr-window {
+  min-height: var(--t-tap);
+  align-items: center;
+}
+.li-polished .li-range {
+  border-color: transparent;
+  background: transparent;
+}
+.li-polished .li-range:hover:not(.is-active) {
+  background: var(--t-surface);
+  border-color: var(--line);
+  color: var(--ink);
+}
+.li-polished .li-range.is-active {
+  border-color: var(--t-green-300);
+  background: var(--t-green-50);
+  color: var(--green);
+}
+
+.li-polished .panel-footer {
+  gap: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.li-polished .panel-footer > span {
+  max-width: var(--t-measure);
+  line-height: 1.45;
+}
+
+@media (max-width: 720px) {
+  .li-polished .li-filter-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .li-polished .li-filter-row > label {
+    min-width: 0;
+  }
+  .li-polished .panel-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .li-polished .panel-footer > .primary-button {
+    width: 100%;
+  }
+}
+
+/* Campaign headers keep lifecycle actions visible; maintenance/export/destructive
+   actions live in one compact menu so eight equal buttons no longer compete. */
+.mgr-action-menu {
+  position: relative;
+}
+.mgr-action-menu > summary {
+  list-style: none;
+  min-height: var(--t-tap);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--t-line-strong);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface);
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-strong);
+  cursor: pointer;
+  box-shadow: var(--t-shadow-sm);
+}
+.mgr-action-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.mgr-action-menu > summary:hover,
+.mgr-action-menu[open] > summary {
+  color: var(--green);
+  border-color: var(--t-green-300);
+  background: var(--t-green-50);
+}
+.mgr-action-menu-popover {
+  position: absolute;
+  z-index: 12;
+  top: calc(100% + 7px);
+  right: 0;
+  width: max-content;
+  min-width: 12.5rem;
+  display: grid;
+  gap: 3px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+  box-shadow: var(--t-shadow-lg);
+}
+.mgr-action-menu-popover button {
+  width: 100%;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--t-r-sm);
+  padding: 7px 9px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-medium);
+  cursor: pointer;
+}
+.mgr-action-menu-popover button:hover:not(:disabled) {
+  background: var(--t-surface-2);
+  color: var(--green);
+}
+.mgr-action-menu-popover button.is-danger {
+  color: var(--red);
+}
+.mgr-action-menu-popover button.is-danger:hover:not(:disabled) {
+  background: var(--t-red-bg);
+  color: var(--red);
+}
+@media (max-width: 640px) {
+  .mgr-action-menu-popover {
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    top: auto;
+    width: auto;
+  }
+}
+
+/* Overflow actions use the conventional vertical kebab. Disclosure rows such
+   as “More results” keep text because they expand content; only action menus
+   use this icon-only affordance. */
+.mgr-action-menu > summary {
+  width: var(--t-tap);
+  padding: 0;
+  gap: 0;
+}
+.mgr-action-menu > summary svg {
+  flex: none;
+}
+
+/* Small edit affordance for ownership/assignment. The current value stays
+   readable; the pencil means “change this”, and the actual choices live in a
+   designed popover instead of a context-free native select. */
+.li-choice-menu {
+  position: relative;
+  display: inline-flex;
+  margin-left: 5px;
+  vertical-align: middle;
+}
+.li-edit-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--t-r-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.li-edit-icon:hover:not(:disabled),
+.li-edit-icon[aria-expanded='true'] {
+  color: var(--green);
+  border-color: var(--t-green-200);
+  background: var(--t-green-50);
+}
+.li-choice-menu-popover {
+  position: absolute;
+  z-index: 14;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(18rem, calc(100vw - 32px));
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+  box-shadow: var(--t-shadow-lg);
+}
+.li-choice-menu-title {
+  padding: 7px 9px 6px;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-weight: var(--t-w-bold);
+  letter-spacing: var(--t-track-caps);
+  text-transform: uppercase;
+}
+.li-choice-menu-items {
+  display: grid;
+  gap: 2px;
+}
+.li-choice-menu-items > button {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--t-r-sm);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.li-choice-menu-items > button:hover,
+.li-choice-menu-items > button.is-selected {
+  background: var(--t-surface-2);
+}
+.li-choice-menu-items > button.is-selected {
+  color: var(--green);
+}
+.li-choice-menu-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.li-choice-menu-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-strong);
+}
+.li-choice-menu-copy small {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+}
+
+/* The workflow action vocabulary is powerful, not flat. Group it by operator
+   intent so common outreach steps are first and specialist surfaces remain
+   discoverable without becoming a wall of identical mini-buttons. */
+.li-add-step {
+  display: grid;
+  align-items: stretch;
+}
+.li-add-step-group {
+  width: 100%;
+}
+.li-add-step-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 10px;
+}
+.li-add-step-section {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.li-add-step-section > span {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-weight: var(--t-w-bold);
+  letter-spacing: var(--t-track-caps);
+  text-transform: uppercase;
+}
+.li-add-step-section .li-add-step-buttons {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+.li-add-action {
+  width: 100%;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--t-r-sm);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-medium);
+  cursor: pointer;
+}
+.li-add-action svg {
+  flex: none;
+  color: var(--muted);
+}
+.li-add-action:hover:not(:disabled) {
+  border-color: var(--t-green-200);
+  background: var(--t-green-50);
+  color: var(--green);
+}
+.li-add-action:hover:not(:disabled) svg {
+  color: var(--green);
+}
+
+/* Advanced forms use fieldset as visible information architecture instead of
+   letting legends float over one undifferentiated two-column grid. */
+.li-polished .li-form-grid > fieldset,
+.li-polished .mgr-fields > fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface);
+}
+.li-polished .li-form-grid > fieldset > legend,
+.li-polished .mgr-fields > fieldset > legend {
+  padding: 0 6px;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+}
+.li-polished .mgr-advanced > .li-form-grid {
+  padding-top: 2px;
+}
+.li-polished .mgr-operations > h4:not(:first-child) {
+  margin-top: 7px;
+  padding-top: 16px;
+  border-top: 1px solid var(--t-line-soft);
+}
+
+.mgr-resolution {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+  padding: 10px 11px;
+  border: 1px solid var(--t-amber-line);
+  border-radius: var(--t-r-md);
+  background: var(--t-amber-bg);
+  color: var(--t-amber-ink);
+}
+.mgr-resolution > strong {
+  color: var(--t-amber);
+  font-size: var(--t-text-xs);
+}
+.mgr-resolution > span {
+  max-width: var(--t-measure);
+  font-size: var(--t-text-xs);
+  line-height: 1.45;
+}
+.mgr-resolution-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 2px;
+}
+
+/* Reusable vertical-kebab overflow used anywhere actions are secondary to the
+   row/card itself. Direct lifecycle actions stay visible; maintenance lives here. */
+.li-action-menu {
+  position: relative;
+  display: inline-flex;
+}
+.li-action-menu-trigger {
+  width: var(--t-tap);
+  height: var(--t-tap);
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--t-line-strong);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface);
+  color: var(--muted);
+  box-shadow: var(--t-shadow-sm);
+  cursor: pointer;
+}
+.li-action-menu.is-compact .li-action-menu-trigger {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.li-action-menu-trigger:hover:not(:disabled),
+.li-action-menu-trigger[aria-expanded='true'] {
+  color: var(--green);
+  border-color: var(--t-green-300);
+  background: var(--t-green-50);
+}
+.li-action-menu-popover {
+  position: absolute;
+  z-index: 14;
+  top: calc(100% + 6px);
+  right: 0;
+  width: max-content;
+  min-width: 13rem;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+  box-shadow: var(--t-shadow-lg);
+}
+.li-action-menu-popover > button {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--t-r-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-medium);
+  text-align: left;
+  cursor: pointer;
+}
+.li-action-menu-popover > button:hover:not(:disabled) {
+  color: var(--green);
+  background: var(--t-surface-2);
+}
+.li-action-menu-popover > button.is-danger {
+  color: var(--red);
+}
+.li-action-menu-popover > button.is-danger:hover:not(:disabled) {
+  color: var(--red);
+  background: var(--t-red-bg);
 }

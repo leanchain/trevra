@@ -48,16 +48,9 @@ import { resolveCliBackend, resolveWorkspaceCliBackend, runHostedAgentViaCli } f
 import { describeMissingWorkspaceModel, resolveWorkspaceModel } from './provider.js';
 
 /**
- * The hosted agent's scopes, from §6: "Exactly what your laptop agent may do."
- *
- * There is no `approve` and no `execute` scope to leave out -- app-spec.md §11:
- * "`actions:prepare` is an agent scope. `approve` and `execute` deliberately are
- * not." `actions:prepare` is the far end of this list and it stops at a draft.
- *
- * This is every scope a laptop agent token is issued with -- see `AGENT_SCOPES`
- * in `../agent-access.js`. If the two ever diverge, the hosted agent is offered
- * tools it will then be refused, which reads as a broken product rather than a
- * boundary.
+ * The hosted agent gets the same read/run scopes as a laptop agent token.
+ * Approval and execution are not agent scopes; prepared external work is
+ * created only inside durable GTM playbooks and remains human-gated.
  */
 export const HOSTED_AGENT_SCOPES: readonly AgentScope[] = [
   'skills:read',
@@ -66,8 +59,7 @@ export const HOSTED_AGENT_SCOPES: readonly AgentScope[] = [
   'playbooks:read',
   'playbooks:run',
   'workflows:read',
-  'workspace:read',
-  'actions:prepare'
+  'workspace:read'
 ];
 
 export interface HostedAgentRunInput {
@@ -96,7 +88,7 @@ const SUMMARY_LIMIT = 2000;
  * boundary. It contains no key, no endpoint and no secret of any kind.
  */
 export const HOSTED_AGENT_SYSTEM_PROMPT = [
-  'You are Trevra\'s hosted agent, working inside one workspace on the goal you were given.',
+  "You are Trevra's hosted agent, working inside one workspace on the goal you were given.",
   '',
   'The rule that does not bend, from Trevra\'s product spec: "No agent approves its own work."',
   'You prepare work and a human approves it. You have no tool that can approve, execute, send or',
@@ -197,32 +189,34 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
   const toolErrors = new Map<string, string>();
 
   const definitions = await listAgentTools(db, input.workspaceId);
-  const tools = Object.fromEntries(definitions.map((definition) => [
-    definition.name,
-    dynamicTool({
-      description: definition.description,
-      // The schemas are JSON Schema known only at runtime (they include one tool
-      // per installed workspace skill), which is precisely what `dynamicTool`
-      // exists for. No Zod mirror to drift from the MCP surface.
-      inputSchema: jsonSchema(definition.inputSchema as Parameters<typeof jsonSchema>[0]),
-      execute: async (args: unknown, options: { toolCallId: string }) => {
-        try {
-          // Scope enforcement lives in `callAgentTool` and is not repeated here:
-          // one check, one place, shared with MCP.
-          return await callAgentTool(
-            { db, workspaceId: input.workspaceId, actorId: run.id },
-            HOSTED_AGENT_SCOPES,
-            definition.name,
-            asRecord(args)
-          );
-        } catch (cause) {
-          const message = cause instanceof Error ? cause.message : String(cause);
-          toolErrors.set(options.toolCallId, message);
-          return { error: message };
+  const tools = Object.fromEntries(
+    definitions.map((definition) => [
+      definition.name,
+      dynamicTool({
+        description: definition.description,
+        // The schemas are JSON Schema known only at runtime (they include one tool
+        // per installed workspace skill), which is precisely what `dynamicTool`
+        // exists for. No Zod mirror to drift from the MCP surface.
+        inputSchema: jsonSchema(definition.inputSchema as Parameters<typeof jsonSchema>[0]),
+        execute: async (args: unknown, options: { toolCallId: string }) => {
+          try {
+            // Scope enforcement lives in `callAgentTool` and is not repeated here:
+            // one check, one place, shared with MCP.
+            return await callAgentTool(
+              { db, workspaceId: input.workspaceId, actorId: run.id },
+              HOSTED_AGENT_SCOPES,
+              definition.name,
+              asRecord(args)
+            );
+          } catch (cause) {
+            const message = cause instanceof Error ? cause.message : String(cause);
+            toolErrors.set(options.toolCallId, message);
+            return { error: message };
+          }
         }
-      }
-    })
-  ]));
+      })
+    ])
+  );
 
   // Latched by the between-steps budget check so the outcome survives the SDK
   // returning normally.
@@ -362,7 +356,9 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
 
           for (const call of step.toolCalls) {
             const error = toolErrors.get(call.toolCallId) ?? null;
-            const toolResult = step.toolResults.find((candidate) => candidate.toolCallId === call.toolCallId);
+            const toolResult = step.toolResults.find(
+              (candidate) => candidate.toolCallId === call.toolCallId
+            );
             await appendAgentRunStep(db, {
               runId: run.id,
               workspaceId: input.workspaceId,
@@ -429,6 +425,6 @@ function truncate(text: string): string | null {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : {};
 }

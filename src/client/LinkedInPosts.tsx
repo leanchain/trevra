@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Bold, Italic, Underline, List, ListOrdered } from 'lucide-react';
+import { Bold, ImagePlus, Images, Italic, List, ListOrdered, Underline, X } from 'lucide-react';
 import {
   applyStyleToSelection,
   plainTextLength,
@@ -10,17 +10,24 @@ import {
   type RunPosition
 } from '../shared/linkedin-post-format';
 import {
+  addLinkedInPostImage,
   cancelLinkedInPost,
   createLinkedInPost,
   listLinkedInPosts,
   publishLinkedInPostNow,
+  updateLinkedInPost,
   type ApiError,
   type LinkedInPost
 } from './api';
 import { useActiveSeatKey } from './LinkedInActiveAccount';
 
 const MAX_CHARS = 3000;
+const MAX_IMAGES = 9;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const EMPTY_BLOCKS: PostBlock[] = [{ runs: [{ type: 'text', text: '' }] }];
+
+type PendingImage = { id: string; file: File; previewUrl: string };
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong.';
@@ -184,9 +191,12 @@ function PostComposer({
   const [seatKey] = useActiveSeatKey();
   const [blocks, setBlocks] = useState<PostBlock[]>(EMPTY_BLOCKS);
   const [scheduledAt, setScheduledAt] = useState('');
+  const [media, setMedia] = useState<PendingImage[]>([]);
   const [busy, setBusy] = useState<'save' | 'schedule' | 'now' | null>(null);
   const [error, setError] = useState('');
   const editorRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const mediaRef = useRef<PendingImage[]>([]);
   // STATE, not a ref, and deliberately: a toolbar action must re-render even
   // when its mutation returns the blocks array unchanged (applyStyleToSelection
   // no-ops on a multi-block selection). With a ref, that bump would never be
@@ -198,7 +208,18 @@ function PostComposer({
 
   const rendered = useMemo(() => renderPostBody(blocks), [blocks]);
   const length = useMemo(() => plainTextLength(blocks), [blocks]);
+  const empty = length === 0;
   const overLimit = length > MAX_CHARS;
+
+  useEffect(() => {
+    mediaRef.current = media;
+  }, [media]);
+  useEffect(
+    () => () => {
+      for (const image of mediaRef.current) URL.revokeObjectURL(image.previewUrl);
+    },
+    []
+  );
 
   // Runs on mount (token 0 vs -1: always syncs once) and whenever a toolbar
   // action bumps domSyncToken. Deliberately does NOT run on every `blocks`
@@ -259,6 +280,45 @@ function PostComposer({
     );
   };
 
+  const addImages = (files: FileList | null) => {
+    if (!files?.length) return;
+    const chosen = Array.from(files);
+    const problems: string[] = [];
+    const accepted: PendingImage[] = [];
+    let room = MAX_IMAGES - media.length;
+    for (const file of chosen) {
+      if (room <= 0) {
+        problems.push(`A LinkedIn post can have at most ${MAX_IMAGES} images.`);
+        break;
+      }
+      if (!IMAGE_TYPES.has(file.type)) {
+        problems.push(`${file.name} is not a supported image. Use JPEG, PNG, WebP or GIF.`);
+        continue;
+      }
+      if (file.size === 0 || file.size > MAX_IMAGE_BYTES) {
+        problems.push(`${file.name} must be larger than 0 bytes and no more than 10 MB.`);
+        continue;
+      }
+      accepted.push({
+        id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
+        file,
+        previewUrl: URL.createObjectURL(file)
+      });
+      room -= 1;
+    }
+    if (accepted.length > 0) setMedia((current) => [...current, ...accepted]);
+    setError(problems[0] ?? '');
+    if (imageInputRef.current) imageInputRef.current.value = '';
+  };
+
+  const removeImage = (imageId: string) => {
+    setMedia((current) => {
+      const removed = current.find((image) => image.id === imageId);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((image) => image.id !== imageId);
+    });
+  };
+
   // Routed through applyAndSync, not a bare setBlocks: the sync effect treats
   // an unbumped token as "typing-driven, leave the DOM alone", so a plain
   // setBlocks(EMPTY_BLOCKS) here would clear the state but leave the
@@ -266,34 +326,51 @@ function PostComposer({
   const reset = () => {
     applyAndSync(() => EMPTY_BLOCKS);
     setScheduledAt('');
+    setMedia((current) => {
+      for (const image of current) URL.revokeObjectURL(image.previewUrl);
+      return [];
+    });
   };
 
   const save = async (mode: 'save' | 'schedule' | 'now') => {
-    if (overLimit) return;
+    if (empty || overLimit) return;
     setBusy(mode);
     setError('');
+    let createdId: string | null = null;
     try {
+      // Images are uploaded as raw binary to their own endpoint, so the post is
+      // born as a draft first. Only after every image is safely stored do we
+      // schedule/publish it; a failed upload can therefore never leave a due
+      // post whose media is only half present.
       const post = await createLinkedInPost({
         ...(seatKey ? { seatKey } : {}),
         blocks,
-        ...(mode === 'schedule'
-          ? { status: 'scheduled' as const, scheduledAt: new Date(scheduledAt).toISOString() }
-          : mode === 'save'
-            ? { status: 'draft' as const }
-            : {})
+        status: 'draft'
       });
-      if (mode === 'now') await publishLinkedInPostNow(post.id);
+      createdId = post.id;
+      for (const image of media) await addLinkedInPostImage(post.id, image.file);
+      if (mode === 'schedule') {
+        await updateLinkedInPost(post.id, {
+          status: 'scheduled',
+          scheduledAt: new Date(scheduledAt).toISOString()
+        });
+      } else if (mode === 'now') {
+        await publishLinkedInPostNow(post.id);
+      }
       setToast(
         mode === 'save'
-          ? 'Draft saved.'
+          ? `Draft saved${media.length ? ` with ${media.length} image${media.length === 1 ? '' : 's'}` : ''}.`
           : mode === 'schedule'
-            ? 'Post scheduled.'
-            : 'Queued to publish shortly.'
+            ? `Post scheduled${media.length ? ` with ${media.length} image${media.length === 1 ? '' : 's'}` : ''}.`
+            : `Queued to publish shortly${media.length ? ` with ${media.length} image${media.length === 1 ? '' : 's'}` : ''}.`
       );
       reset();
       onCreated();
     } catch (cause) {
       setError((cause as ApiError)?.message ?? errorMessage(cause));
+      // If the row was created before an image failed, show that recoverable
+      // draft in history instead of leaving it invisible until the next reload.
+      if (createdId) onCreated();
     } finally {
       setBusy(null);
     }
@@ -331,6 +408,9 @@ function PostComposer({
         ref={editorRef}
         className="li-post-editor"
         contentEditable
+        role="textbox"
+        aria-label="Post text"
+        aria-multiline="true"
         suppressContentEditableWarning
         onInput={handleInput}
       />
@@ -339,34 +419,108 @@ function PostComposer({
         {length} / {MAX_CHARS}
       </div>
 
-      <div className="li-post-preview">
-        <div className="li-post-preview-card">
-          <pre>{rendered}</pre>
+      <section className="li-post-media-section" aria-label="Post images">
+        <div className="li-post-media-heading">
+          <div>
+            <strong>Images</strong>
+            <span>
+              {media.length > 0
+                ? `${media.length} of ${MAX_IMAGES} added`
+                : `Optional · up to ${MAX_IMAGES} images`}
+            </span>
+          </div>
+          <input
+            ref={imageInputRef}
+            className="li-post-image-input"
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            multiple
+            onChange={(event) => addImages(event.target.files)}
+          />
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={media.length >= MAX_IMAGES || busy !== null}
+            onClick={() => imageInputRef.current?.click()}
+          >
+            <ImagePlus size={15} /> {media.length > 0 ? 'Add more' : 'Add images'}
+          </button>
         </div>
-      </div>
+        {media.length > 0 ? (
+          <div className="li-post-media-grid" aria-label="Images attached to this post">
+            {media.map((image, index) => (
+              <figure className="li-post-media-card" key={image.id}>
+                <img
+                  src={image.previewUrl}
+                  alt={`Post attachment ${index + 1}: ${image.file.name}`}
+                />
+                <figcaption title={image.file.name}>{image.file.name}</figcaption>
+                <button
+                  type="button"
+                  aria-label={`Remove ${image.file.name}`}
+                  disabled={busy !== null}
+                  onClick={() => removeImage(image.id)}
+                >
+                  <X size={14} />
+                </button>
+              </figure>
+            ))}
+          </div>
+        ) : (
+          <p className="li-post-media-note">JPEG, PNG, WebP or GIF · 10 MB each</p>
+        )}
+      </section>
+
+      {length > 0 && (
+        <details className="mgr-inputs li-post-preview">
+          <summary>Preview</summary>
+          <div className="mgr-inputs-body">
+            <div className="li-post-preview-card">
+              <pre>{rendered}</pre>
+            </div>
+          </div>
+        </details>
+      )}
 
       {error && <p className="li-post-error">{error}</p>}
 
       <div className="li-post-actions">
-        <input
-          type="datetime-local"
-          value={scheduledAt}
-          onChange={(event) => setScheduledAt(event.target.value)}
-          aria-label="Schedule for"
-        />
-        <button type="button" disabled={busy !== null || overLimit} onClick={() => save('save')}>
-          Save draft
-        </button>
-        <button
-          type="button"
-          disabled={busy !== null || overLimit || !scheduledAt}
-          onClick={() => save('schedule')}
-        >
-          Schedule
-        </button>
-        <button type="button" disabled={busy !== null || overLimit} onClick={() => save('now')}>
-          Publish now
-        </button>
+        <div className="li-post-now-row">
+          <button
+            className="ghost-button"
+            type="button"
+            disabled={busy !== null || empty || overLimit}
+            onClick={() => save('save')}
+          >
+            Save draft
+          </button>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy !== null || empty || overLimit}
+            onClick={() => save('now')}
+          >
+            Publish now
+          </button>
+        </div>
+        <div className="li-post-schedule-row">
+          <label className="li-post-schedule">
+            Or schedule for
+            <input
+              type="datetime-local"
+              value={scheduledAt}
+              onChange={(event) => setScheduledAt(event.target.value)}
+            />
+          </label>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busy !== null || empty || overLimit || !scheduledAt}
+            onClick={() => save('schedule')}
+          >
+            Schedule
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -421,6 +575,14 @@ function PostRow({ post, onChanged }: { post: LinkedInPost; onChanged: () => voi
         {STATUS_LABELS[post.status]}
       </span>
       <span className="li-post-row-preview">{preview}</span>
+      {post.media.length > 0 && (
+        <span
+          className="li-post-media-count"
+          title={post.media.map((image) => image.name).join(', ')}
+        >
+          <Images size={13} /> {post.media.length}
+        </span>
+      )}
       <span className="li-post-row-when">
         {post.scheduledAt ? new Date(post.scheduledAt).toLocaleString() : '—'}
       </span>
@@ -435,10 +597,10 @@ function PostRow({ post, onChanged }: { post: LinkedInPost; onChanged: () => voi
         post.status === 'failed' ||
         post.status === 'missed') && (
         <span className="li-post-row-actions">
-          <button type="button" disabled={busy} onClick={publishNow}>
+          <button className="secondary-button" type="button" disabled={busy} onClick={publishNow}>
             Publish now
           </button>
-          <button type="button" disabled={busy} onClick={cancel}>
+          <button className="ghost-button" type="button" disabled={busy} onClick={cancel}>
             Cancel
           </button>
         </span>
@@ -470,19 +632,37 @@ export function LinkedInPosts({ setToast }: { setToast: (message: string) => voi
 
   return (
     <div className="li-posts-screen">
-      <PostComposer setToast={setToast} onCreated={load} />
-      {error && <p className="li-post-error">{error}</p>}
-      {posts === null ? (
-        <p>Loading…</p>
-      ) : posts.length === 0 ? (
-        <p className="li-post-empty">No posts yet — write one above.</p>
-      ) : (
-        <ul className="li-post-list">
-          {posts.map((post) => (
-            <PostRow key={post.id} post={post} onChanged={load} />
-          ))}
-        </ul>
-      )}
+      <section className="page-panel li-posts-compose-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>New post</h3>
+          </div>
+        </div>
+        <PostComposer setToast={setToast} onCreated={load} />
+      </section>
+
+      <section className="page-panel li-posts-history-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Scheduled and recent</h3>
+          </div>
+          {posts && <span className="li-chip">{posts.length}</span>}
+        </div>
+        {error && <p className="li-post-error">{error}</p>}
+        {posts === null ? (
+          <p className="empty-copy">Loading posts…</p>
+        ) : posts.length === 0 ? (
+          <div className="empty-state">
+            <h4 aria-level={3}>No posts yet</h4>
+          </div>
+        ) : (
+          <ul className="li-post-list">
+            {posts.map((post) => (
+              <PostRow key={post.id} post={post} onChanged={load} />
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

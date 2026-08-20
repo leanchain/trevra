@@ -58,6 +58,8 @@ import {
 import { ACTION_GAP_SECONDS, type PacedKind } from './limits.js';
 import { dayShapeFor, localDateOf, visitsForDay, workWindowOf, zonedToUtc } from './pacing.js';
 import { clearInboxForSeat, syncThreadMessages, syncThreads } from './inbox.js';
+import { campaignSnapshotSteps } from './managed-campaigns.js';
+import { delayMilliseconds } from './workflows.js';
 import {
   OWNER_SEAT_KEY,
   assertTimezone,
@@ -392,6 +394,8 @@ export interface DueLinkedInAction {
    * PLAN time (`runner.ts` budgets against it) and nowhere at SEND time.
    */
   campaignId?: string | null;
+  /** Exact workflow node that produced this row when it came from a managed campaign. */
+  workflowStepId?: string | null;
   /**
    * This row's replay identity within its kind and target (migration 047).
    *
@@ -578,7 +582,7 @@ export interface LocalWorkerStore {
    * simply skips it.
    */
   recordNewThread?(summary: LinkedInThreadSummary, now: Date): Promise<void>;
-  settleSkipped(actionId: string, failureKind: LinkedInFailureKind): Promise<void>;
+  settleSkipped(actionId: string, failureKind: LinkedInFailureKind, now: Date): Promise<void>;
   /**
    * This step's branch can never be satisfied: retire the row.
    *
@@ -589,7 +593,7 @@ export interface LocalWorkerStore {
    * nothing went out, the target is released) and the reason is the
    * evaluator's own sentence.
    */
-  settleBranchSkipped(actionId: string, reason: string): Promise<void>;
+  settleBranchSkipped(actionId: string, reason: string, now: Date): Promise<void>;
   /**
    * What this action's branch says right now, or null when nothing branches.
    *
@@ -1185,7 +1189,7 @@ export async function runLinkedInLocalBatch(
     }
 
     if (branch && branch.outcome === 'skipped') {
-      await store.settleBranchSkipped(action.id, branch.reason);
+      await store.settleBranchSkipped(action.id, branch.reason, now());
       result.branchSkipped += 1;
       log(`LinkedIn local worker retired action ${action.id}: ${branch.reason}`);
       continue;
@@ -1426,12 +1430,14 @@ export async function runLinkedInLocalBatch(
     if (
       failureKind === 'not_found' ||
       failureKind === 'already_connected' ||
-      failureKind === 'already_pending'
+      failureKind === 'already_pending' ||
+      failureKind === 'compose_unavailable' ||
+      failureKind === 'paid_credit_required'
     ) {
-      // Definite, and no retry will change it. 'skipped' keeps it out of every
-      // rolling window (it never happened) and releases the target, which is
-      // what the ledger's replay guard treats 'skipped' as meaning.
-      await store.settleSkipped(action.id, failureKind);
+      // Definite no-side-effect failure. The row is `skipped` so it consumes
+      // no rolling limit/replay claim, but the campaign member stays FAILED on
+      // this node until an operator retries or deliberately skips the step.
+      await store.settleSkipped(action.id, failureKind, at);
       continue;
     }
 
@@ -1486,6 +1492,112 @@ function postureRefusal(posture: SeatPosture | null): string | null {
   return null;
 }
 
+async function advanceManagedMemberAfterSettledLinkedInAction(
+  db: Db,
+  workspaceId: string,
+  actionId: string,
+  now: Date
+): Promise<void> {
+  const row = await db
+    .prepare(
+      `SELECT a.campaign_member_id,a.workflow_step_id,a.channel_metadata_json,
+              m.current_step_id,m.step_index,m.completed_step_ids,m.workflow_snapshot_json,
+              c.sequence_json
+       FROM linkedin_actions a
+       JOIN linkedin_campaign_members m
+         ON m.workspace_id=a.workspace_id AND m.id=a.campaign_member_id
+       JOIN linkedin_campaigns c
+         ON c.workspace_id=m.workspace_id AND c.id=m.campaign_id
+       WHERE a.id=? AND a.workspace_id=?`
+    )
+    .get<{
+      campaign_member_id: string | null;
+      workflow_step_id: string | null;
+      channel_metadata_json: unknown;
+      current_step_id: string | null;
+      step_index: number;
+      completed_step_ids: unknown;
+      workflow_snapshot_json: unknown;
+      sequence_json: unknown;
+    }>(actionId, workspaceId);
+  if (!row?.campaign_member_id || !row.workflow_step_id) return;
+
+  const metadata = (() => {
+    const raw =
+      typeof row.channel_metadata_json === 'string'
+        ? (() => {
+            try {
+              return JSON.parse(row.channel_metadata_json) as unknown;
+            } catch {
+              return {};
+            }
+          })()
+        : row.channel_metadata_json;
+    return raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  })();
+  // These rows answer a Condition/Monitor. Settling the probe makes the next
+  // runner tick evaluate the condition; it must not skip the condition node.
+  if (metadata.connectionProbe === true || metadata.openProfileProbe === true) return;
+
+  const memberSteps = campaignSnapshotSteps(row.workflow_snapshot_json);
+  const steps = memberSteps.length > 0 ? memberSteps : campaignSnapshotSteps(row.sequence_json);
+  const currentIndex = steps.findIndex((step) => step.id === row.workflow_step_id);
+  if (currentIndex < 0) return;
+  if (row.current_step_id !== null && row.current_step_id !== row.workflow_step_id) return;
+  if (row.current_step_id === null && row.step_index !== currentIndex) return;
+
+  const current = steps[currentIndex]!;
+  const nextIndex =
+    current.nextStepId === null
+      ? -1
+      : current.nextStepId
+        ? steps.findIndex((step) => step.id === current.nextStepId)
+        : currentIndex + 1;
+  const next = nextIndex >= 0 && nextIndex < steps.length ? steps[nextIndex] : null;
+  const rawCompleted =
+    typeof row.completed_step_ids === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(row.completed_step_ids) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : row.completed_step_ids;
+  const completed = Array.isArray(rawCompleted)
+    ? rawCompleted.filter((value): value is string => typeof value === 'string')
+    : [];
+  if (!completed.includes(current.id)) completed.push(current.id);
+  const nextEligibleAt = next
+    ? new Date(now.getTime() + delayMilliseconds(next.delayBefore)).toISOString()
+    : null;
+
+  await db
+    .prepare(
+      `UPDATE linkedin_campaign_members
+       SET step_index=?,current_step_id=?,completed_step_ids=?::jsonb,status=?,
+           next_eligible_at=?::timestamptz,last_action_id=?,updated_at=?::timestamptz
+       WHERE workspace_id=? AND id=?
+         AND (current_step_id=? OR (current_step_id IS NULL AND step_index=?))
+         AND status IN ('active','waiting')`
+    )
+    .run(
+      next ? nextIndex : steps.length,
+      next?.id ?? null,
+      JSON.stringify(completed),
+      next ? 'waiting' : 'completed',
+      nextEligibleAt,
+      actionId,
+      now.toISOString(),
+      workspaceId,
+      row.campaign_member_id,
+      row.workflow_step_id,
+      currentIndex
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Postgres implementation
 // ---------------------------------------------------------------------------
@@ -1501,6 +1613,7 @@ interface DueActionRow {
   subject: string | null;
   thread_urn: string | null;
   campaign_id: string | null;
+  workflow_step_id: string | null;
   replay_scope: string | null;
   override_warmup_ceiling: boolean | null;
   reply_to_inbound: boolean | null;
@@ -1785,6 +1898,22 @@ export function postgresLocalWorkerStore(
             -- not claimable rather than claimable-and-unsendable, for the same
             -- reason as the body rule above.
             AND (kind <> 'reply' OR (thread_urn IS NOT NULL AND thread_urn <> ''))
+            -- Managed campaign rows are executable only while BOTH the campaign
+            -- and this lead are live. Campaign/member pause is a runtime safety
+            -- boundary, not merely a planner hint. Legacy/manual rows have no
+            -- campaign_member_id and keep their existing behaviour.
+            AND (
+              campaign_member_id IS NULL OR EXISTS (
+                SELECT 1
+                FROM linkedin_campaign_members m
+                JOIN linkedin_campaigns c
+                  ON c.workspace_id=m.workspace_id AND c.id=m.campaign_id
+                WHERE m.workspace_id=linkedin_actions.workspace_id
+                  AND m.id=linkedin_actions.campaign_member_id
+                  AND c.status='running'
+                  AND m.status IN ('active','waiting')
+              )
+            )
             -- Rows this pass already deferred on a branch that has no answer
             -- yet. Excluded by id so the loop moves on instead of re-claiming
             -- the same undecided row until the pass is exhausted.
@@ -1810,7 +1939,7 @@ export function postgresLocalWorkerStore(
         -- person queued by hand from one the planner placed.
         RETURNING id, workspace_id, seat_key, kind, target_ref,
                   TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS planned_for,
-                  body, subject, thread_urn, campaign_id, replay_scope, override_warmup_ceiling,
+                  body, subject, thread_urn, campaign_id, workflow_step_id, replay_scope, override_warmup_ceiling,
                   reply_to_inbound, source, channel_metadata_json, attachment_json
       `
         )
@@ -1837,6 +1966,7 @@ export function postgresLocalWorkerStore(
         subject: row.subject,
         threadUrn: row.thread_urn,
         campaignId: row.campaign_id,
+        workflowStepId: row.workflow_step_id,
         replayScope: row.replay_scope ?? 'legacy',
         overrideWarmupCeiling: row.override_warmup_ceiling === true,
         replyToInbound: row.reply_to_inbound === true,
@@ -1903,34 +2033,34 @@ export function postgresLocalWorkerStore(
         .prepare(
           `
         SELECT c.sequence_json AS sequence_json,
+               m.workflow_snapshot_json AS workflow_snapshot_json,
                TO_CHAR(c.created_at AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS created_at
         FROM linkedin_actions a
         JOIN linkedin_campaigns c ON c.id = a.campaign_id AND c.workspace_id = a.workspace_id
+        LEFT JOIN linkedin_campaign_members m
+          ON m.id=a.campaign_member_id AND m.workspace_id=a.workspace_id
         WHERE a.id=? AND a.workspace_id=?
       `
         )
-        .get<{ sequence_json: unknown; created_at: string }>(action.id, workspaceId);
+        .get<{ sequence_json: unknown; workflow_snapshot_json: unknown; created_at: string }>(
+          action.id,
+          workspaceId
+        );
       // No campaign, or a campaign with no conditions: nothing to decide, and
       // the action runs exactly as it did before branching existed.
       if (!campaign) return null;
 
-      const steps = branchableSteps(campaign.sequence_json);
+      // Admitted members own an immutable workflow snapshot. Campaign-level
+      // sequence_json may later move to a newer version for future waves, so a
+      // browser action must branch against the member's version when one exists.
+      const steps = branchableSteps(campaign.workflow_snapshot_json ?? campaign.sequence_json);
       if (!hasBranching(steps)) return null;
 
-      /**
-       * WHICH STEP WROTE THIS ROW.
-       *
-       * By kind, because `linkedin_actions` carries no step id -- the same
-       * fallback `branching.ts` `rowForStep` uses, deliberately, so the two
-       * sides of the question resolve identically. Taking the first step of
-       * this kind is what makes them agree.
-       *
-       * lc-debt: two dm steps against one target share a ledger row under the
-       * 022 replay guard, so the second one's branch is decided from the
-       * first's row; upgrade path is a `step_id` column on `linkedin_actions`
-       * plus a widened replay guard, then match on it here and in `rowForStep`.
-       */
-      const index = steps.findIndex((step) => step.kind === action.kind);
+      // New managed rows carry the exact workflow step id. Kind lookup remains
+      // only for legacy rows written before workflow_step_id existed.
+      const index = action.workflowStepId
+        ? steps.findIndex((step) => step.id === action.workflowStepId)
+        : steps.findIndex((step) => step.kind === action.kind);
       if (index === -1) return null;
 
       const rows = await db
@@ -2027,6 +2157,7 @@ export function postgresLocalWorkerStore(
           actionId,
           workspaceId
         );
+      await advanceManagedMemberAfterSettledLinkedInAction(db, workspaceId, actionId, now);
     },
 
     async settleExistingInvite(actionId, state, now) {
@@ -2049,6 +2180,7 @@ export function postgresLocalWorkerStore(
           actionId,
           workspaceId
         );
+      await advanceManagedMemberAfterSettledLinkedInAction(db, workspaceId, actionId, now);
     },
 
     async recordReplyMessages(threadUrn, messages, now) {
@@ -2063,17 +2195,32 @@ export function postgresLocalWorkerStore(
       await syncThreads(db, { workspaceId, seatKey, threads: [summary] }, now);
     },
 
-    async settleSkipped(actionId, failureKind) {
-      await db
-        .prepare(
-          `
-        UPDATE linkedin_actions
-        SET status='skipped', recorded_at=NULL, claimed_at=NULL, claimed_by=NULL,
-            lease_expires_at=NULL, failure_kind=?
-        WHERE id=? AND workspace_id=?
-      `
-        )
-        .run(failureKind, actionId, workspaceId);
+    async settleSkipped(actionId, failureKind, now) {
+      // A definite driver failure means “nothing happened”, not “this workflow
+      // step is complete”. Keep the lead on the same node so Retry can replay
+      // this exact action without racing downstream work. Branch/operator skips
+      // use their own settlement paths and are the only skips that advance.
+      await db.transaction(async (tx) => {
+        await tx
+          .prepare(
+            `
+          UPDATE linkedin_actions
+          SET status='skipped', recorded_at=NULL, claimed_at=NULL, claimed_by=NULL,
+              lease_expires_at=NULL, batch_id=NULL, failure_kind=?
+          WHERE id=? AND workspace_id=?
+        `
+          )
+          .run(failureKind, actionId, workspaceId);
+        await tx
+          .prepare(
+            `UPDATE linkedin_campaign_members m
+             SET status='failed',next_eligible_at=NULL,last_action_id=?,last_failure_reason=?,updated_at=?::timestamptz
+             FROM linkedin_actions a
+             WHERE a.id=? AND a.workspace_id=? AND m.workspace_id=a.workspace_id
+               AND m.id=a.campaign_member_id AND m.status IN ('active','waiting')`
+          )
+          .run(actionId, failureKind, now.toISOString(), actionId, workspaceId);
+      });
     },
 
     // `_reason` is the evaluator's sentence and is deliberately not stored:
@@ -2081,7 +2228,7 @@ export function postgresLocalWorkerStore(
     // resolved to "they never accepted" is the sequence working, and writing a
     // failure there would have the ledger report a driver problem that never
     // happened. It reaches the operator through the batch log instead.
-    async settleBranchSkipped(actionId, _reason) {
+    async settleBranchSkipped(actionId, _reason, now) {
       await db
         .prepare(
           `
@@ -2092,6 +2239,7 @@ export function postgresLocalWorkerStore(
       `
         )
         .run(actionId, workspaceId);
+      await advanceManagedMemberAfterSettledLinkedInAction(db, workspaceId, actionId, now);
     },
 
     async holdClaim(actionId, failureKind) {

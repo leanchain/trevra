@@ -108,6 +108,14 @@ const MANAGED_LEDGER_KINDS: readonly LinkedInActionKind[] = [
 
 /** Statuses that still hold the one-active-campaign claim on a contact. */
 const LIVE_MEMBER_STATUSES = ['pending', 'active', 'waiting', 'manual', 'paused'] as const;
+const SETTLED_WORKFLOW_ACTION_STATUSES = new Set<LinkedInActionStatus>([
+  'sent',
+  'accepted',
+  'replied',
+  'declined',
+  'withdrawn',
+  'skipped'
+]);
 
 /**
  * How far ahead a slot search will walk before giving up.
@@ -1836,19 +1844,22 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           continue;
         }
 
-        if (
-          step.action === 'email' ||
-          step.action === 'find_email' ||
-          step.action === 'webhook' ||
-          step.action === 'external_handoff'
-        ) {
+        if (step.action === 'email' || step.action === 'find_email') {
           const existing = await tx
             .prepare(
-              `SELECT status FROM linkedin_campaign_channel_actions
+              `SELECT id,status,outcome_known,external_ref,
+                      TO_CHAR(completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS completed_at
+               FROM linkedin_campaign_channel_actions
                WHERE workspace_id=? AND member_id=? AND workflow_step_id=?
                ORDER BY created_at DESC LIMIT 1`
             )
-            .get<{ status: string }>(workspaceId, member.id, step.id);
+            .get<{
+              id: string;
+              status: string;
+              outcome_known: boolean;
+              external_ref: string | null;
+              completed_at: string | null;
+            }>(workspaceId, member.id, step.id);
           if (existing) {
             if (existing.status === 'unknown') {
               memberWrites.set(
@@ -1872,10 +1883,38 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
                   now
                 )
               );
+            } else if (
+              existing.status === 'sent' ||
+              (existing.status === 'failed' && existing.outcome_known)
+            ) {
+              const success = existing.status === 'sent';
+              const found =
+                step.action === 'find_email' &&
+                success &&
+                typeof existing.external_ref === 'string' &&
+                existing.external_ref.startsWith('email:') &&
+                existing.external_ref !== 'email:not-found';
+              const advanced = advanceMember({
+                stepIndex,
+                steps: executionSteps,
+                completedStepIds,
+                from: parseIso(existing.completed_at) ?? now,
+                actionId: null,
+                now,
+                branchState: branchStatePatch(`external:${step.action}_success`, success)
+              });
+              memberWrites.set(member.id, {
+                ...advanced.write,
+                branchState: JSON.stringify({
+                  [`external:${step.action}_success`]: success,
+                  ...(step.action === 'find_email'
+                    ? { 'external:email_found': found, 'external:email_available': found }
+                    : {}),
+                  ...(step.action === 'email' && success ? { 'external:email_sent': true } : {})
+                })
+              });
+              if (advanced.completed) result.membersCompleted += 1;
             }
-            // Known outcomes are advanced by campaign-channels.ts. If the member is still
-            // here, a later tick will see the channel executor's state update rather than
-            // planning the side effect a second time.
             continue;
           }
 
@@ -1911,21 +1950,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
               threaded: step.config.threaded,
               tracking: step.config.tracking
             };
-          } else if (step.action === 'find_email') {
-            payload = { providerId: step.config.providerId ?? null, refresh: step.config.refresh };
-          } else if (step.action === 'webhook') {
-            payload = {
-              url: step.config.url,
-              method: step.config.method,
-              body: renderWorkflowTemplate(step.config.bodyTemplate, lead),
-              provider: 'webhook'
-            };
           } else {
-            payload = {
-              provider: step.config.provider,
-              destination: step.config.destination,
-              payload: renderWorkflowTemplate(step.config.payloadTemplate, lead)
-            };
+            payload = { providerId: step.config.providerId ?? null, refresh: step.config.refresh };
           }
           const mailboxMap = parseJsonObject(campaign.mailbox_assignments_json);
           const connectionId =
@@ -1975,6 +2001,54 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         const ledgerKind = ledgerKindForStep(step);
         const budgetKind = budgetKindForStep(step);
         if (!ledgerKind || !budgetKind) continue;
+
+        // Browser actions are outcome-driven. A planned row keeps the member on
+        // this exact workflow node until the worker settles it; a settled row
+        // left behind by a worker crash is enough evidence to advance here.
+        const existingAction = await tx
+          .prepare(
+            `SELECT id,status,failure_kind,
+                    TO_CHAR(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS recorded_at
+             FROM linkedin_actions
+             WHERE workspace_id=? AND campaign_member_id=? AND workflow_step_id=? AND kind=?
+             ORDER BY created_at DESC LIMIT 1`
+          )
+          .get<{
+            id: string;
+            status: LinkedInActionStatus;
+            failure_kind: string | null;
+            recorded_at: string | null;
+          }>(workspaceId, member.id, step.id, ledgerKind);
+        if (existingAction) {
+          if (
+            SETTLED_WORKFLOW_ACTION_STATUSES.has(existingAction.status) &&
+            !(existingAction.status === 'skipped' && existingAction.failure_kind)
+          ) {
+            const advanced = advanceMember({
+              stepIndex,
+              steps: executionSteps,
+              completedStepIds,
+              from: parseIso(existingAction.recorded_at) ?? now,
+              actionId: existingAction.id,
+              now
+            });
+            memberWrites.set(member.id, advanced.write);
+            if (advanced.completed) result.membersCompleted += 1;
+          } else {
+            memberWrites.set(member.id, {
+              ...stayOnStep(
+                stepIndex,
+                step.id,
+                completedStepIds,
+                new Date(now.getTime() + 5 * 60_000),
+                now
+              ),
+              lastActionId: existingAction.id
+            });
+          }
+          continue;
+        }
+
         if (!member.profile_url) {
           memberWrites.set(member.id, {
             stepIndex,
@@ -2121,19 +2195,17 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           floors.set(senderKey, plannedFor);
         }
 
-        const advanced = advanceMember({
-          stepIndex,
-          steps: executionSteps,
-          completedStepIds,
-          from: plannedFor,
-          actionId: written.id,
-          now
-        });
         memberWrites.set(member.id, {
-          ...advanced.write,
+          ...stayOnStep(
+            stepIndex,
+            step.id,
+            completedStepIds,
+            new Date(plannedFor.getTime() + 5 * 60_000),
+            now
+          ),
+          lastActionId: written.id,
           variants: variantId === null ? null : JSON.stringify({ [step.id]: variantId })
         });
-        if (advanced.completed) result.membersCompleted += 1;
       }
 
       if (manualTaskIds.length > 0) {

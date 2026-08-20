@@ -940,7 +940,7 @@ export function EditAccountForm({
   return (
     <details className="li-manual-fields li-acct-manage">
       <summary>
-        <Settings2 size={13} /> Change name, hours and limits
+        <Settings2 size={13} /> Account settings
       </summary>
 
       {/* A form, for the same reason the add form is one: `min` and `max` on the

@@ -46,6 +46,7 @@ import {
 } from './local-worker.js';
 import {
   claimNextDuePost,
+  loadPostImages,
   markPostFailed,
   markPostMissed,
   markPostPublished,
@@ -1415,8 +1416,9 @@ export async function runLinkedInPostTick(
 
     attempted += 1;
     const body = renderPostBody(claimed.blocks);
+    const images = await loadPostImages(db, workspaceId, claimed.id);
     const result = session.driver.publishPost
-      ? await session.driver.publishPost(session.page, body)
+      ? await session.driver.publishPost(session.page, body, { images })
       : {
           ok: false as const,
           failureKind: 'compose_unavailable' as const,

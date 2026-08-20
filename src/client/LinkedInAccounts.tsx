@@ -64,6 +64,7 @@ import { MAINTENANCE_TASK_LABELS, formatVisitWindow, queueWaitCopy } from './Lin
 import { ConfidenceTag, LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 import { Hint } from './ui/hint';
+import { ChoiceMenu } from './ui/choice-menu';
 import { useIsWorkspaceOwner } from './auth-client';
 import { useWorkspaceMembers } from './TeamScreen';
 
@@ -299,7 +300,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
   const empty = accounts !== null && accounts.length === 0;
 
   return (
-    <div className="page-stack">
+    <div className="page-stack li-polished">
       <TimezoneOptions />
 
       {failure && (
@@ -318,7 +319,14 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
       )}
 
       <WorkerNotice worker={worker} />
-      {worker?.companionBrowser && <CompanionPanel setToast={setToast} />}
+      {worker?.companionBrowser && (
+        <details className="mgr-inputs li-settings-companion">
+          <summary>Connected computer</summary>
+          <div className="mgr-inputs-body">
+            <CompanionPanel setToast={setToast} />
+          </div>
+        </details>
+      )}
 
       {accounts === null ? (
         <section className="page-panel">
@@ -411,14 +419,13 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
                       />
                       <strong>{account.label}</strong>
                     </span>
-                    <small>
-                      {detail?.auth.maskedEmail ??
-                        (detail?.auth.sessionValidAt
-                          ? 'Local browser session'
-                          : 'No confirmed session')}
-                    </small>
                     <small className="li-acct-tab-state">
-                      {isActive ? 'Active account' : STATE_LABELS[state]}
+                      {STATE_LABELS[state]}
+                      {detail?.auth.maskedEmail
+                        ? ` · ${detail.auth.maskedEmail}`
+                        : detail?.auth.sessionValidAt
+                          ? ' · Local browser session'
+                          : ''}
                     </small>
                   </button>
                 );
@@ -875,21 +882,16 @@ function AccountPanel({
                 <dd>
                   {account.ownerName ?? 'Workspace owner'}
                   {canAssignOwner && workspaceMembers.length > 0 && (
-                    <select
-                      aria-label={`Assign ${account.label} owner`}
-                      value=""
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        if (value) void onAssignOwner(account, value);
-                      }}
-                    >
-                      <option value="">Assign teammate…</option>
-                      {workspaceMembers.map((member) => (
-                        <option key={member.userId} value={member.userId}>
-                          {member.name}
-                        </option>
-                      ))}
-                    </select>
+                    <ChoiceMenu
+                      label={`Change assignment for ${account.label}`}
+                      title="Choose account owner"
+                      items={workspaceMembers.map((member) => ({
+                        id: member.userId,
+                        label: member.name
+                      }))}
+                      selectedId={account.ownerUserId}
+                      onChoose={(userId) => onAssignOwner(account, userId)}
+                    />
                   )}
                 </dd>
               </div>

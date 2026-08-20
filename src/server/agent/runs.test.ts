@@ -24,7 +24,10 @@ beforeEach(async () => {
     // The cascade from workspaces clears agent_runs and its steps, so every
     // test sees a ledger with only its own rows in it.
     await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
-    await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+    await db
+      .prepare(
+        'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+      )
       .run(workspaceId, `Agent runs test ${workspaceId}`, new Date().toISOString());
   }
 });
@@ -37,7 +40,7 @@ function start(overrides: Partial<Parameters<typeof startAgentRun>[1]> = {}) {
   return startAgentRun(db, {
     workspaceId: WORKSPACE_ID,
     trigger: 'manual',
-    goal: 'Chase the overdue Acme invoice',
+    goal: 'Follow up the Acme proposal',
     maxSteps: 12,
     ...overrides
   });
@@ -118,11 +121,13 @@ describe('the run lifecycle', () => {
   });
 
   it('refuses to append to a run that does not exist', async () => {
-    await expect(appendAgentRunStep(db, {
-      runId: 'arun_missing',
-      workspaceId: WORKSPACE_ID,
-      kind: 'model'
-    })).rejects.toThrow('Agent run not found: arun_missing');
+    await expect(
+      appendAgentRunStep(db, {
+        runId: 'arun_missing',
+        workspaceId: WORKSPACE_ID,
+        kind: 'model'
+      })
+    ).rejects.toThrow('Agent run not found: arun_missing');
   });
 });
 
@@ -130,13 +135,15 @@ describe('appendAgentRunStep under concurrency', () => {
   it('hands every concurrent append its own sequence number', async () => {
     const run = await start();
     const seqs = await Promise.all(
-      Array.from({ length: 8 }, (_, index) => appendAgentRunStep(db, {
-        runId: run.id,
-        workspaceId: WORKSPACE_ID,
-        kind: 'tool',
-        toolName: `tool_${index}`,
-        input: { index }
-      }))
+      Array.from({ length: 8 }, (_, index) =>
+        appendAgentRunStep(db, {
+          runId: run.id,
+          workspaceId: WORKSPACE_ID,
+          kind: 'tool',
+          toolName: `tool_${index}`,
+          input: { index }
+        })
+      )
     );
 
     expect([...seqs].sort((left, right) => left - right)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -164,7 +171,11 @@ describe('payload size', () => {
     });
 
     const loaded = await getAgentRun(db, WORKSPACE_ID, run.id);
-    const output = loaded?.steps[0].output as { truncated?: boolean; originalLength?: number; preview?: string };
+    const output = loaded?.steps[0].output as {
+      truncated?: boolean;
+      originalLength?: number;
+      preview?: string;
+    };
     expect(output.truncated).toBe(true);
     expect(output.originalLength).toBeGreaterThan(200_000);
     expect(output.preview?.length).toBe(8 * 1024);
@@ -273,7 +284,10 @@ describe('stopRunningAgentRuns', () => {
     const running = await start({ goal: 'still going' });
     const alsoRunning = await start({ goal: 'also going' });
     const done = await start({ goal: 'already done' });
-    await finishAgentRun(db, done.id, { status: 'completed', summary: 'finished before the switch' });
+    await finishAgentRun(db, done.id, {
+      status: 'completed',
+      summary: 'finished before the switch'
+    });
     const elsewhere = await startAgentRun(db, {
       workspaceId: OTHER_WORKSPACE_ID,
       trigger: 'schedule',
@@ -393,10 +407,14 @@ describe('reapStaleAgentRuns', () => {
     const run = await start();
     await age(run.id, 20);
 
-    expect(await reapStaleAgentRuns(db, { workspaceId: WORKSPACE_ID, olderThanMinutes: 30 })).toBe(0);
+    expect(await reapStaleAgentRuns(db, { workspaceId: WORKSPACE_ID, olderThanMinutes: 30 })).toBe(
+      0
+    );
     expect((await getAgentRun(db, WORKSPACE_ID, run.id))?.status).toBe('running');
 
-    expect(await reapStaleAgentRuns(db, { workspaceId: WORKSPACE_ID, olderThanMinutes: 15 })).toBe(1);
+    expect(await reapStaleAgentRuns(db, { workspaceId: WORKSPACE_ID, olderThanMinutes: 15 })).toBe(
+      1
+    );
     expect((await getAgentRun(db, WORKSPACE_ID, run.id))?.status).toBe('failed');
   });
 

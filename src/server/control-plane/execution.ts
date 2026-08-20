@@ -1,15 +1,23 @@
-import { createHmac } from 'node:crypto';
-import { Ajv, type ValidateFunction } from 'ajv';
 import { z } from 'zod';
 import type { Db } from '../db.js';
-import { stableJson } from './payload.js';
 import { executeConnectedAction } from '../integration-service.js';
 import { communityReplyPayloadSchema, publishCommunityReply } from '../outreach/publish.js';
 import { crmActivityPayloadSchema, logCrmActivity } from '../crm/activity.js';
 
-export type ExecutionActionType = string;
-
-const actionTypeSchema = z.string().regex(/^[a-z][a-z0-9_.-]{2,119}$/);
+/**
+ * External execution is intentionally a closed GTM action set.
+ *
+ * Trevra is not a generic webhook/action runtime. Adding a new action here means
+ * adding a named GTM capability with its own payload schema, approval semantics,
+ * execution adapter, and tests. Arbitrary action names are rejected.
+ */
+export const EXECUTION_ACTION_TYPES = [
+  'email.send',
+  'community.reply',
+  'crm.log-activity'
+] as const;
+export type ExecutionActionType = (typeof EXECUTION_ACTION_TYPES)[number];
+const actionTypeSchema = z.enum(EXECUTION_ACTION_TYPES);
 
 const emailPayloadSchema = z.object({
   recipient: z.string().email(),
@@ -18,51 +26,17 @@ const emailPayloadSchema = z.object({
   metadata: z.record(z.unknown()).optional()
 });
 
-const invoicePayloadSchema = z.object({
-  recipient: z.string().email(),
-  amount: z.number().positive().max(10_000_000),
-  currency: z
-    .string()
-    .length(3)
-    .transform((value) => value.toUpperCase()),
-  description: z.string().min(1).max(500),
-  dueDays: z.number().int().min(0).max(365).default(14),
-  message: z.string().max(20_000).default('')
-});
-
-const changeOrderPayloadSchema = z.object({
-  recipient: z.string().email(),
-  subject: z.string().min(1).max(200),
-  body: z.string().min(1).max(20_000),
-  amount: z.number().nonnegative().max(10_000_000),
-  currency: z
-    .string()
-    .length(3)
-    .transform((value) => value.toUpperCase()),
-  description: z.string().min(1).max(500)
-});
-
-const remoteActionAdapterSchema = z.object({
-  actionType: actionTypeSchema,
-  endpoint: z.string().url(),
-  tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]{1,127}$/),
-  provider: z.string().trim().min(1).max(100).optional(),
-  timeoutSeconds: z.number().int().min(1).max(300).default(30),
-  payloadSchema: z.record(z.unknown()).optional()
-});
-
-export type RemoteActionAdapterConfig = z.infer<typeof remoteActionAdapterSchema>;
-
 export async function executePreparedPlaybookAction(
   db: Db,
   input: {
     workspaceId: string;
-    actionType: ExecutionActionType;
+    actionType: ExecutionActionType | string;
     payload: unknown;
     payloadHash: string;
   }
 ): Promise<{ provider: string; externalRef: string; actionType: ExecutionActionType }> {
   const actionType = actionTypeSchema.parse(input.actionType);
+
   if (actionType === 'email.send') {
     const payload = emailPayloadSchema.parse(input.payload);
     const delivery = await executeConnectedAction(db, input.workspaceId, {
@@ -75,49 +49,8 @@ export async function executePreparedPlaybookAction(
     });
     return { ...delivery, actionType };
   }
-  if (actionType === 'invoice.create') {
-    const payload = invoicePayloadSchema.parse(input.payload);
-    const delivery = await executeConnectedAction(db, input.workspaceId, {
-      type: 'invoice_draft',
-      recipient: payload.recipient,
-      subject: payload.description,
-      body: payload.message,
-      structured_payload_json: JSON.stringify({
-        recipient: payload.recipient,
-        amount: payload.amount,
-        currency: payload.currency,
-        description: payload.description,
-        dueDays: payload.dueDays
-      }),
-      payload_hash: input.payloadHash
-    });
-    return { ...delivery, actionType };
-  }
-  if (actionType === 'change_order.create') {
-    const payload = changeOrderPayloadSchema.parse(input.payload);
-    const delivery = await executeConnectedAction(db, input.workspaceId, {
-      type: 'change_order_draft',
-      recipient: payload.recipient,
-      subject: payload.subject,
-      body: payload.body,
-      structured_payload_json: JSON.stringify({
-        recipient: payload.recipient,
-        amount: payload.amount,
-        currency: payload.currency,
-        description: payload.description
-      }),
-      payload_hash: input.payloadHash
-    });
-    return { ...delivery, actionType };
-  }
 
   if (actionType === 'community.reply') {
-    // Posting a reply into someone else's thread. Unlike the three action
-    // types above it routes through no connection: the credential is the
-    // founder's own platform token, and whether Trevra may press the button at
-    // all is decided by the channel adapter's automation mode inside
-    // `publishCommunityReply`. A platform that forbids unattended posting
-    // yields a manual handoff, never a post.
     const payload = communityReplyPayloadSchema.parse(input.payload);
     const now = new Date();
     const outcome = await publishCommunityReply(
@@ -128,53 +61,26 @@ export async function executePreparedPlaybookAction(
       now
     );
 
-    // Close the loop into the CRM the team actually works in. Best-effort and
-    // deliberately AFTER the post: the reply is already public, so a CRM outage
-    // must never turn a delivered reply into a failed action that the engine
-    // then retries. Whatever happens here is recorded in `crm_activities`.
+    // CRM mirroring happens after the public reply. It is best-effort so a CRM
+    // outage can never cause Trevra to retry an external write that already happened.
     await recordOutreachInCrm(db, input.workspaceId, payload, outcome, now);
-
     return { provider: outcome.provider, externalRef: outcome.externalRef, actionType };
   }
 
-  if (actionType === 'crm.log-activity') {
-    // Standalone, so any playbook can append evidence to a CRM record under the
-    // same approval gate -- not only outreach.
-    const payload = crmActivityPayloadSchema.parse(input.payload);
-    const result = await logCrmActivity(db, input.workspaceId, payload, new Date());
-    if (result.status === 'failed') throw new Error(result.reason ?? 'CRM activity write failed');
-    return {
-      provider: result.provider ?? 'none',
-      externalRef: result.externalRef ?? `skipped:${result.reason ?? 'no CRM contact'}`,
-      actionType
-    };
-  }
-
-  const adapter = listRemoteActionAdapters().find(
-    (candidate) => candidate.actionType === actionType
-  );
-  if (!adapter) throw new Error(`No approved action adapter is configured for ${actionType}`);
-  validateRemotePayload(adapter, input.payload);
-  const delivery = await executeRemoteActionAdapter(adapter, {
-    workspaceId: input.workspaceId,
-    actionType,
-    payload: input.payload,
-    payloadHash: input.payloadHash
-  });
-  return { ...delivery, actionType };
+  const payload = crmActivityPayloadSchema.parse(input.payload);
+  const result = await logCrmActivity(db, input.workspaceId, payload, new Date());
+  if (result.status === 'failed') throw new Error(result.reason ?? 'CRM activity write failed');
+  return {
+    provider: result.provider ?? 'none',
+    externalRef: result.externalRef ?? `skipped:${result.reason ?? 'no CRM contact'}`,
+    actionType
+  };
 }
 
 /**
  * Mirror a delivered community reply into the CRM, if one is connected and the
- * thread's author is somebody it already knows.
- *
- * Never throws. The reply has already been posted by the time this runs; a
- * failure here is a bookkeeping problem, not a delivery problem, and letting it
- * propagate would fail the action step and trigger a retry of an action whose
- * external write already succeeded.
- *
- * The common outcome is `skipped` — a random GitHub handle belongs to nobody in
- * the CRM, and Trevra does not create a contact to have somewhere to write.
+ * thread author is somebody it already knows. Trevra never creates a contact
+ * merely to have somewhere to write an activity.
  */
 async function recordOutreachInCrm(
   db: Db,
@@ -206,101 +112,6 @@ async function recordOutreachInCrm(
       now
     );
   } catch {
-    // Swallowed on purpose. See the doc comment.
+    // Swallowed on purpose. The external reply has already happened.
   }
-}
-
-export function listRemoteActionAdapters(
-  env: NodeJS.ProcessEnv = process.env
-): RemoteActionAdapterConfig[] {
-  const raw = env.TREVRA_REMOTE_ACTION_ADAPTERS_JSON?.trim();
-  if (!raw) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error('TREVRA_REMOTE_ACTION_ADAPTERS_JSON must contain valid JSON');
-  }
-  const adapters = z.array(remoteActionAdapterSchema).max(100).parse(parsed);
-  const seen = new Set<string>();
-  for (const adapter of adapters) {
-    if (seen.has(adapter.actionType))
-      throw new Error(`Duplicate remote action adapter: ${adapter.actionType}`);
-    seen.add(adapter.actionType);
-    const endpoint = new URL(adapter.endpoint);
-    if (env.NODE_ENV === 'production' && endpoint.protocol !== 'https:') {
-      throw new Error(`Remote action adapter ${adapter.actionType} must use HTTPS in production`);
-    }
-  }
-  return adapters;
-}
-
-async function executeRemoteActionAdapter(
-  adapter: RemoteActionAdapterConfig,
-  input: { workspaceId: string; actionType: string; payload: unknown; payloadHash: string }
-): Promise<{ provider: string; externalRef: string }> {
-  const token = process.env[adapter.tokenEnv]?.trim();
-  if (!token)
-    throw new Error(`Remote action adapter ${adapter.actionType} requires ${adapter.tokenEnv}`);
-  const body = {
-    actionType: input.actionType,
-    workspaceId: input.workspaceId,
-    idempotencyKey: input.payloadHash,
-    payload: input.payload
-  };
-  const serialized = stableJson(body);
-  const signature = createHmac('sha256', token).update(serialized).digest('hex');
-  const response = await fetch(adapter.endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      'X-Trevra-Action': input.actionType,
-      'X-Trevra-Idempotency-Key': input.payloadHash,
-      'X-Trevra-Signature': `sha256=${signature}`
-    },
-    body: serialized,
-    redirect: 'error',
-    signal: AbortSignal.timeout(adapter.timeoutSeconds * 1000)
-  });
-  const result = (await response.json().catch(() => ({ error: response.statusText }))) as {
-    provider?: unknown;
-    externalRef?: unknown;
-    id?: unknown;
-    error?: unknown;
-  };
-  if (!response.ok)
-    throw new Error(
-      typeof result.error === 'string' ? result.error : `Action adapter returned ${response.status}`
-    );
-  const externalRef = result.externalRef ?? result.id;
-  if (typeof externalRef !== 'string' || !externalRef.trim()) {
-    throw new Error(`Remote action adapter ${adapter.actionType} returned no external reference`);
-  }
-  return {
-    provider:
-      typeof result.provider === 'string' && result.provider.trim()
-        ? result.provider
-        : (adapter.provider ?? 'custom'),
-    externalRef
-  };
-}
-
-function validateRemotePayload(adapter: RemoteActionAdapterConfig, payload: unknown): void {
-  if (!adapter.payloadSchema) return;
-  let validator: ValidateFunction;
-  try {
-    validator = new Ajv({ strict: false, allErrors: true, allowUnionTypes: true }).compile(
-      adapter.payloadSchema
-    );
-  } catch (error) {
-    throw new Error(
-      `Payload schema for ${adapter.actionType} is invalid: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-  if (validator(payload)) return;
-  const issues = (validator.errors ?? [])
-    .map((item) => `${item.instancePath || '/'} ${item.message ?? 'is invalid'}`)
-    .join('; ');
-  throw new Error(`Payload for ${adapter.actionType} failed validation: ${issues}`);
 }

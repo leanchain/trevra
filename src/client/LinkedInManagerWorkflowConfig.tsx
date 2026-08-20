@@ -316,12 +316,6 @@ const ACTION_META: Record<Action, ActionMeta> = {
     chip: 'li-kind-profile_view',
     blurb: 'Runs configured enrichment and stores provenance.'
   },
-  webhook: {
-    label: 'Webhook',
-    Icon: LayoutTemplate,
-    chip: 'li-kind-profile_view',
-    blurb: 'Calls an approved external endpoint idempotently.'
-  },
   add_tag: {
     label: 'Add tag',
     Icon: UserCheck,
@@ -334,12 +328,6 @@ const ACTION_META: Record<Action, ActionMeta> = {
     chip: 'li-kind-profile_view',
     blurb: 'Removes a workspace lead tag.'
   },
-  external_handoff: {
-    label: 'External handoff',
-    Icon: ArrowDown,
-    chip: 'li-kind-profile_view',
-    blurb: 'Hands the lead to a configured downstream system.'
-  },
   manual_comment: {
     label: 'Manual comment checkpoint',
     Icon: PenLine,
@@ -348,37 +336,40 @@ const ACTION_META: Record<Action, ActionMeta> = {
   }
 };
 
-const ACTION_ORDER: readonly Action[] = [
-  'profile_view',
-  'follow',
-  'unfollow',
-  'disconnect',
-  'follow_company',
-  'like_company_post',
-  'invite_to_follow_company',
-  'invite_to_event',
-  'invite_to_group',
-  'group_message',
-  'event_message',
-  'like_post',
-  'endorse_skills',
-  'connection_request',
-  'message',
-  'manual_message',
-  'withdraw_pending',
-  'wait',
-  'condition',
-  'monitor',
-  'end',
-  'find_email',
-  'email',
-  'inmail',
-  'webhook',
-  'add_tag',
-  'remove_tag',
-  'external_handoff',
-  'manual_comment'
+const ACTION_GROUPS: ReadonlyArray<{ label: string; actions: readonly Action[] }> = [
+  {
+    label: 'Core outreach',
+    actions: ['profile_view', 'connection_request', 'message', 'inmail']
+  },
+  {
+    label: 'Branching & timing',
+    actions: ['wait', 'condition', 'monitor', 'end']
+  },
+  {
+    label: 'Email & lead state',
+    actions: ['find_email', 'email', 'add_tag', 'remove_tag']
+  },
+  {
+    label: 'Engagement',
+    actions: [
+      'follow',
+      'like_post',
+      'endorse_skills',
+      'follow_company',
+      'like_company_post',
+      'invite_to_follow_company',
+      'invite_to_event',
+      'invite_to_group',
+      'group_message',
+      'event_message'
+    ]
+  },
+  {
+    label: 'Cleanup & manual',
+    actions: ['withdraw_pending', 'unfollow', 'disconnect', 'manual_message', 'manual_comment']
+  }
 ];
+const ACTION_ORDER: readonly Action[] = ACTION_GROUPS.flatMap((group) => group.actions);
 
 const CONDITION_LABELS = {
   connected: 'Already connected',
@@ -429,8 +420,6 @@ function templatesOf(step: WorkflowStep): string[] {
     return [step.config.subject, ...step.config.variants.map((variant) => variant.body)];
   if (step.action === 'manual_message' || step.action === 'manual_comment')
     return step.config.suggestedTemplate ? [step.config.suggestedTemplate] : [];
-  if (step.action === 'webhook') return [step.config.bodyTemplate];
-  if (step.action === 'external_handoff') return [step.config.payloadTemplate];
   return [];
 }
 
@@ -609,15 +598,6 @@ function stepProblems(step: WorkflowStep, index: number, steps: readonly Workflo
         `${step.config.condition.kind === 'accepted' ? 'Accepted' : 'Replied'} must reference an earlier result-bearing step.`
       );
   }
-  if (step.action === 'webhook') {
-    try {
-      new URL(step.config.url);
-    } catch {
-      problems.push('Webhook URL must be a valid absolute URL.');
-    }
-  }
-  if (step.action === 'external_handoff' && !step.config.destination.trim())
-    problems.push('External handoff needs a destination.');
   if ((step.action === 'add_tag' || step.action === 'remove_tag') && !step.config.tag.trim())
     problems.push('Tag cannot be empty.');
 
@@ -767,19 +747,10 @@ function blankStep(action: Action, stepId: string, delayBefore: WorkflowDelay): 
     };
   if (action === 'find_email')
     return { ...base, action, config: { providerId: null, refresh: false } };
-  if (action === 'webhook')
-    return {
-      ...base,
-      action,
-      config: { url: 'https://example.invalid/hook', method: 'POST', bodyTemplate: '{}' }
-    };
   if (action === 'add_tag' || action === 'remove_tag')
     return { ...base, action, config: { tag: 'prospect' } };
-  return {
-    ...base,
-    action: 'external_handoff',
-    config: { provider: 'webhook', destination: 'default', payloadTemplate: '{}' }
-  };
+  const exhaustive: never = action;
+  throw new Error(`Unsupported workflow action: ${String(exhaustive)}`);
 }
 
 interface Starter {
@@ -1656,7 +1627,7 @@ export function LinkedInManagerWorkflowConfig({
 
   if (compact) {
     return (
-      <div className="li-wf-compact">
+      <div className="li-wf-compact li-polished">
         {error && <div className="error-banner">{error}</div>}
         <div className="li-wf-starters">
           {STARTERS.map((starter) => (
@@ -1689,7 +1660,7 @@ export function LinkedInManagerWorkflowConfig({
   }
 
   return (
-    <section className="page-panel">
+    <section className="page-panel li-polished">
       <div className="section-heading">
         <div>
           <h3 aria-level={2}>Reusable workflow builder</h3>
@@ -1841,21 +1812,30 @@ export function LinkedInManagerWorkflowConfig({
       <div className="li-add-step">
         <fieldset className="li-add-step-group">
           <legend>{steps.length === 0 ? 'Start with a step' : 'Add a step'}</legend>
-          <div className="li-add-step-buttons">
-            {ACTION_ORDER.map((action) => {
-              const { Icon, label } = ACTION_META[action];
-              return (
-                <button
-                  className="li-mini-button"
-                  type="button"
-                  key={action}
-                  disabled={steps.length >= MAX_STEPS}
-                  onClick={() => addStep(action)}
-                >
-                  <Icon size={12} /> {label}
-                </button>
-              );
-            })}
+          <div className="li-add-step-groups">
+            {ACTION_GROUPS.map((group) => (
+              <div className="li-add-step-section" key={group.label}>
+                <span>{group.label}</span>
+                <div className="li-add-step-buttons">
+                  {group.actions.map((action) => {
+                    const { Icon, label, blurb } = ACTION_META[action];
+                    return (
+                      <button
+                        className="li-add-action"
+                        type="button"
+                        key={action}
+                        disabled={steps.length >= MAX_STEPS}
+                        title={blurb}
+                        onClick={() => addStep(action)}
+                      >
+                        <Icon size={14} />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </fieldset>
         {steps.length >= MAX_STEPS && (
@@ -2086,10 +2066,14 @@ function WorkflowStepCard({
             aria-label={`Action for step ${index + 1}`}
             onChange={(event) => onChangeAction(event.target.value as Action)}
           >
-            {ACTION_ORDER.map((action) => (
-              <option key={action} value={action}>
-                {ACTION_META[action].label}
-              </option>
+            {ACTION_GROUPS.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {group.actions.map((action) => (
+                  <option key={action} value={action}>
+                    {ACTION_META[action].label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
@@ -2854,62 +2838,6 @@ function WorkflowStepCard({
           </div>
         )}
 
-        {step.action === 'webhook' && (
-          <div className="li-span-2 li-form-grid">
-            <label>
-              Endpoint URL
-              <input
-                value={step.config.url}
-                onChange={(event) =>
-                  onChange({ ...step, config: { ...step.config, url: event.target.value } })
-                }
-              />
-            </label>
-            <label>
-              Method
-              <select
-                value={step.config.method}
-                onChange={(event) =>
-                  onChange({
-                    ...step,
-                    config: {
-                      ...step.config,
-                      method: event.target.value as typeof step.config.method
-                    }
-                  })
-                }
-              >
-                <option value="POST">POST</option>
-                <option value="PUT">PUT</option>
-                <option value="PATCH">PATCH</option>
-              </select>
-            </label>
-            <label className="li-span-2">
-              JSON/body template
-              <textarea
-                ref={(element) => {
-                  fields.current.webhook = element;
-                }}
-                rows={4}
-                value={step.config.bodyTemplate}
-                onChange={(event) =>
-                  onChange({
-                    ...step,
-                    config: { ...step.config, bodyTemplate: event.target.value }
-                  })
-                }
-              />
-            </label>
-            <MergeRow
-              onInsert={(variable) =>
-                insert('webhook', step.config.bodyTemplate, `{{${variable}}}`, (next) =>
-                  onChange({ ...step, config: { ...step.config, bodyTemplate: next } })
-                )
-              }
-            />
-          </div>
-        )}
-
         {(step.action === 'add_tag' || step.action === 'remove_tag') && (
           <label>
             Tag
@@ -2918,68 +2846,6 @@ function WorkflowStepCard({
               onChange={(event) => onChange({ ...step, config: { tag: event.target.value } })}
             />
           </label>
-        )}
-
-        {step.action === 'external_handoff' && (
-          <div className="li-span-2 li-form-grid">
-            <label>
-              Provider
-              <select
-                value={step.config.provider}
-                onChange={(event) =>
-                  onChange({ ...step, config: { ...step.config, provider: event.target.value } })
-                }
-              >
-                <option value="webhook">Webhook URL</option>
-                <option value="remote_action">Approved remote action — CRM/list/sequencer</option>
-                <option value="crm_activity">Connected CRM activity note</option>
-              </select>
-            </label>
-            <label>
-              Destination
-              <input
-                value={step.config.destination}
-                onChange={(event) =>
-                  onChange({ ...step, config: { ...step.config, destination: event.target.value } })
-                }
-                placeholder={
-                  step.config.provider === 'webhook'
-                    ? 'https://…'
-                    : step.config.provider === 'remote_action'
-                      ? 'Configured action type, e.g. acme.crm.update'
-                      : 'crm.log-activity'
-                }
-              />
-            </label>
-            <p className="li-span-2 li-hint">
-              Remote actions use the approved adapter registry and can move a lead into a CRM
-              stage/list or external email sequence without exposing provider credentials to this
-              workflow. The payload must render as JSON.
-            </p>
-            <label className="li-span-2">
-              Payload template
-              <textarea
-                ref={(element) => {
-                  fields.current.handoff = element;
-                }}
-                rows={4}
-                value={step.config.payloadTemplate}
-                onChange={(event) =>
-                  onChange({
-                    ...step,
-                    config: { ...step.config, payloadTemplate: event.target.value }
-                  })
-                }
-              />
-            </label>
-            <MergeRow
-              onInsert={(variable) =>
-                insert('handoff', step.config.payloadTemplate, `{{${variable}}}`, (next) =>
-                  onChange({ ...step, config: { ...step.config, payloadTemplate: next } })
-                )
-              }
-            />
-          </div>
         )}
 
         {step.action === 'manual_comment' && (

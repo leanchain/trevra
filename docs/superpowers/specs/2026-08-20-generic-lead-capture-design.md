@@ -1,8 +1,8 @@
-# Generic lead capture into Trevra — design
+# GTM lead capture into Trevra — design
 
 **Date:** 2026-08-20  
 **Status:** Proposed  
-**Scope:** Any Trevra customer can connect one or more landing pages, marketing sites, product surfaces, forms, serverless functions, or backends to their own Trevra workspace and capture inbound people there.
+**Scope:** Any Trevra customer can connect landing pages, marketing sites, contact/demo/waitlist/signup forms, or the server/edge handlers behind those GTM surfaces to their own Trevra workspace and capture inbound people there. This is not a generic application-event API.
 
 **Related:** `docs/growth-gap-closure-proposal.md`, `docs/source-providers.md`.
 
@@ -38,7 +38,7 @@ Visitor
 
 The request never chooses the workspace. The authenticated Capture Source determines it.
 
-This is intentionally generic. Beseam's `landings/ecom-clean-lp` and Cloudflare Worker are the first migration example, not a special-case Trevra integration.
+This is generic **across GTM capture sources**, not across arbitrary application events. Beseam's `landings/ecom-clean-lp` and Cloudflare Worker are the first migration example, not a special-case Trevra integration.
 
 ---
 
@@ -70,9 +70,9 @@ Examples:
 ```text
 Beseam website
 Acme marketing site
-Acme product signup
+Acme demo/signup form
 Founder waitlist
-Conference QR form
+Partner referral form
 ```
 
 A startup can have many Capture Sources.
@@ -86,7 +86,7 @@ Examples:
 ```text
 Ada Example <ada@example.com>
 Kim Sidi <kim@...>
-A visitor identified only by a product external ID
+A visitor identified by a source-scoped external signup ID
 ```
 
 A Person does **not** need an Account.
@@ -140,6 +140,8 @@ An optional company/account association can be added when a real company identit
 - Treating a marketing-consent assertion as universal permission for every future channel.
 - Inferring a company from `person@gmail.com`, `person@example.com`, a surname or free-text message.
 - Building an arbitrary user-programmable field mapping language in v1.
+- Capturing page views, button clicks, feature usage, database changes, background jobs, errors, or other general product/application telemetry.
+- Replacing a product-analytics or application event system.
 
 ---
 
@@ -231,7 +233,7 @@ id
 workspace_id
 name
 key
-kind                       -- website | product | event | partner | other
+kind                       -- website | form | signup | partner | integration
 status                     -- active | disabled
 secret_ref                 -- secret-custody reference, never plaintext
 previous_secret_ref        -- optional rotation overlap
@@ -508,9 +510,9 @@ Non-person product events are outside this v1 capture contract unless a later de
 
 ---
 
-## 12. Open event kinds
+## 12. GTM submission kinds
 
-`kind` is source-defined and bounded, not a Trevra deployment enum.
+`kind` is source-defined and bounded, not a Trevra deployment enum, but it must describe a GTM interaction or commercial lifecycle transition. It is not an escape hatch for arbitrary telemetry.
 
 Examples:
 
@@ -521,8 +523,8 @@ waitlist_joined
 newsletter_subscribed
 store_health_review_requested
 ai_scan_requested
-product_signup
-trial_started
+signup_requested
+trial_started              -- only when treated as an explicit GTM lifecycle transition
 ```
 
 Validation syntax:
@@ -537,7 +539,7 @@ Downstream automations may match:
 capture_source_id + kind
 ```
 
-This lets every startup use its own funnel language without adding source-specific Trevra code.
+This lets every startup use its own **GTM funnel language** without adding source-specific Trevra code. Kinds such as `page_view`, `button_clicked`, `job_finished`, `database_changed`, or general feature-usage events are rejected by product policy even if they match the syntax.
 
 ---
 

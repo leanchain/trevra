@@ -25,8 +25,6 @@ set -euo pipefail
 : "${TEMPORAL_API_KEY:=}"
 : "${TREVRA_SANDBOX_GATEWAY_URL:=}"
 : "${TREVRA_SANDBOX_GATEWAY_TOKEN:=}"
-: "${TREVRA_REMOTE_ACTION_ADAPTERS_JSON:=[]}"
-: "${TREVRA_REMOTE_ACTION_ADAPTER_TOKEN:=}"
 : "${PUBLIC_REGISTRY_CORS_ORIGIN:=${APP_ORIGIN}}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -65,8 +63,6 @@ export TF_VAR_temporal_tls="${TEMPORAL_TLS}"
 export TF_VAR_temporal_api_key="${TEMPORAL_API_KEY}"
 export TF_VAR_sandbox_gateway_url="${TREVRA_SANDBOX_GATEWAY_URL}"
 export TF_VAR_sandbox_gateway_token="${TREVRA_SANDBOX_GATEWAY_TOKEN}"
-export TF_VAR_remote_action_adapters_json="${TREVRA_REMOTE_ACTION_ADAPTERS_JSON}"
-export TF_VAR_remote_action_adapter_token="${TREVRA_REMOTE_ACTION_ADAPTER_TOKEN}"
 export TF_VAR_registry_cors_origin="${PUBLIC_REGISTRY_CORS_ORIGIN}"
 
 gcloud config set project "${GCP_PROJECT_ID}"

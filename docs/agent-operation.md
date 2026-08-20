@@ -1,186 +1,104 @@
 # Operate Trevra from Claude Code or Codex
 
-Trevra exposes the same workspace through three agent interfaces:
-
-1. **Hosted Streamable HTTP MCP** at `https://your-app.example/api/agent/mcp`.
-2. **Local stdio MCP bridge** with `npm run mcp`.
-3. **JSON CLI/API** for scripts and debugging.
-
-All three use a scoped workspace agent token. The token can inspect the revenue brief, run typed skills, read the skill ledger, list pending actions, and prepare a recommendation for review. It cannot approve or execute an action, change integrations, manage billing, or administer the account.
+Trevra exposes a scoped agent surface for GTM work. Agents may inspect GTM state, run bounded skills, and start durable playbooks. They cannot approve their own work or bypass Trevra's prepared-action execution boundary.
 
 ## Create an agent token
 
-Sign in to Trevra and open **Autopilot → Claude Code and Codex access**.
+Create a workspace agent token from Trevra and grant only the scopes the agent needs. Current scopes are:
 
-1. Give the token a name, such as `Claude Code on laptop`.
-2. Select **Create token**.
-3. Copy the token immediately. Trevra stores only its hash and cannot reveal it again.
-4. Revoke the token from the same screen when the machine or agent no longer needs access.
+```text
+skills:read
+skills:run
+runs:read
+workspace:read
+playbooks:read
+playbooks:run
+workflows:read
+```
 
-Default token scopes:
-
-- `skills:read`
-- `skills:run`
-- `runs:read`
-- `workspace:read`
-- `actions:prepare`
-
-Approval and execution are intentionally not agent-token scopes.
+There is no `approve`, `execute`, billing, generic integration-admin, or legacy `actions:prepare` agent scope.
 
 ## Claude Code using the local stdio bridge
 
-Use an absolute path to the Trevra checkout:
-
-```bash
-claude mcp add trevra --scope user \
-  --env TREVRA_API_URL=https://app.example.com \
-  --env TREVRA_AGENT_TOKEN=<agent-token> \
-  -- npm --prefix /absolute/path/to/trevra run mcp
-```
-
-For a local Trevra API, replace the URL with `http://localhost:43887`.
-
-The bridge discovers the live skill registry at startup and publishes one MCP tool per enabled skill, plus:
-
-- `trevra_revenue_brief`
-- `trevra_list_pending_actions`
-- `trevra_prepare_recommendation`
-- `trevra_list_skills`
-- `trevra_list_runs`
-- `trevra_get_run`
-
-## Codex using the hosted MCP endpoint
-
-Keep the token in an environment variable rather than putting it in the URL:
-
-```bash
-export TREVRA_AGENT_TOKEN=<agent-token>
-
-codex mcp add trevra \
-  --url https://app.example.com/api/agent/mcp \
-  --bearer-token-env-var TREVRA_AGENT_TOKEN
-```
-
-Codex can also use the local stdio bridge:
-
-```bash
-codex mcp add trevra-local \
-  --env TREVRA_API_URL=http://localhost:43887 \
-  --env TREVRA_AGENT_TOKEN=<agent-token> \
-  -- npm --prefix /absolute/path/to/trevra run mcp
-```
-
-## Claude Code using the hosted endpoint directly
-
-Claude Code supports an HTTP MCP server with custom headers. The local stdio bridge is preferred because it keeps the bearer token in the MCP subprocess environment rather than embedding it in a URL.
-
-```bash
-claude mcp add trevra-hosted --scope user \
-  --transport http \
-  --header "Authorization: Bearer <agent-token>" \
-  https://app.example.com/api/agent/mcp
-```
-
-## Agent CLI
-
-Set the API and token in the shell:
+Set the API origin and a scoped token, then launch Trevra's MCP bridge:
 
 ```bash
 export TREVRA_API_URL=http://localhost:43887
-export TREVRA_AGENT_TOKEN=<agent-token>
+export TREVRA_AGENT_TOKEN='...'
+npm run mcp
 ```
 
-Read the revenue brief and prepare one recommendation:
+The bridge proxies the server-owned MCP tool registry. It does not maintain a second capability list.
 
-```bash
-npm run agent -- brief
-npm run agent -- actions
-npm run agent -- prepare <recommendation-id>
-```
+## Hosted MCP endpoint
 
-List installed skills:
-
-```bash
-npm run agent -- skills
-```
-
-Run a skill with inline JSON:
-
-```bash
-npm run agent -- run gtm.score-lead \
-  '{"lead":{"platform":"shopify","vertical":"footwear","catalogSize":100}}'
-```
-
-Run with a JSON file:
-
-```bash
-npm run agent -- run gtm.visibility-audit @input.json
-```
-
-Read the ledger:
-
-```bash
-npm run agent -- runs gtm.score-lead 20
-npm run agent -- run:get <run-id>
-```
-
-## Direct agent API
-
-Every request uses a bearer agent token. Available routes:
+Agents that support Streamable HTTP MCP can connect to:
 
 ```text
 POST /api/agent/mcp
-GET  /api/agent/revenue-brief
-GET  /api/agent/actions
-POST /api/agent/recommendations/:id/prepare
+Authorization: Bearer <workspace agent token>
+```
+
+The same scopes and tool registry apply to hosted and local agent operation.
+
+## Agent CLI
+
+The repository CLI is a thin client over the same agent API:
+
+```bash
+npm run agent -- skills
+npm run agent -- playbooks
+npm run agent -- playbook:start <playbook-id> <json-or-@file> [version]
+npm run agent -- playbook:runs [status] [limit]
+npm run agent -- playbook:get <run-id>
+npm run agent -- events [stream-type] [stream-id] [limit]
+npm run agent -- run <skill-id> <json-or-@file>
+npm run agent -- runs [skill-id] [limit]
+npm run agent -- run:get <run-id>
+```
+
+Legacy revenue-brief, pending-revenue-action, and recommendation-preparation commands are removed.
+
+## Direct agent API
+
+The supported direct agent resources are:
+
+```text
 GET  /api/agent/skills
 POST /api/agent/skills/:id/run
 GET  /api/agent/runs
 GET  /api/agent/runs/:id
+GET  /api/agent/playbooks
+POST /api/agent/playbooks/:id/runs
+GET  /api/agent/playbook-runs
+GET  /api/agent/playbook-runs/:id
+GET  /api/agent/events
+POST /api/agent/mcp
 ```
 
-The generic skill runner refuses `external-write` skills. External writes must become a Trevra action and pass through the existing exact-payload approval and execution path.
+Browser-session approval routes are intentionally outside the agent-token surface.
 
 ## Suggested first instruction
 
 ```text
-Use Trevra to read the current revenue brief. Rank the three most important
-opportunities by evidence, value, urgency, and confidence. Run any safe analysis
-skills that improve the decision. Prepare the best next action, but do not approve
-or execute anything. Return the Trevra run IDs and the prepared action ID.
+Inspect the GTM skills and playbooks available in this Trevra workspace. Use the ledger and evidence to decide which acquisition, engagement, conversion, or retention work is worth running. Prefer durable playbooks for multi-step work. Never claim an external action happened unless Trevra's recorded result says it did, and never attempt to approve or bypass a human approval boundary.
 ```
-
-The founder then opens Trevra, reviews the proof and exact payload, and approves or edits the action.
-
-## Production security
-
-- Set `TREVRA_AGENT_TOKEN_PEPPER` to a private random value in the product runtime.
-- Never put a plaintext agent token in source control, logs, analytics, screenshots, or a public Cloudflare Pages variable.
-- The MCP endpoint belongs on the authenticated Express/PostgreSQL product origin, not the static Cloudflare Pages marketing origin.
-- Use HTTPS for hosted MCP.
-- Create separate tokens per device or agent and revoke them independently.
-- Keep external execution behind Trevra approvals; do not add approval or execution to default agent scopes.
 
 ## Durable playbooks
 
-Agent tokens now include `playbooks:read`, `playbooks:run`, and `workflows:read` by default. Agents can start and inspect durable playbook runs but cannot approve a waiting step.
+Playbooks persist every step, policy decision, approval payload hash, output, error, and evidence. A run may pause at an approval boundary and resume later without an agent holding hidden state.
 
-CLI commands:
+External-write skills do not run directly through the generic skill runner. A consequential action must be represented by a named GTM execution action and released through Trevra's exact-payload approval path.
 
-```bash
-npm run agent -- playbooks
-npm run agent -- playbook:start gtm.audit-led-outreach @lead.json
-npm run agent -- playbook:runs waiting_approval 20
-npm run agent -- playbook:get <run-id>
-npm run agent -- events playbook_run <run-id> 100
-```
+## Hosted agent
 
-MCP tools:
+Trevra's hosted agent receives the same read/run scopes as a laptop agent token. Living inside the server does not grant more authority. Model spend limits and provider credentials are Trevra platform controls; they are not customer revenue/accounting capabilities.
 
-- `trevra_list_playbooks`
-- `trevra_start_playbook`
-- `trevra_list_playbook_runs`
-- `trevra_get_playbook_run`
-- `trevra_list_events`
+## Production security
 
-When a playbook reaches an approval step, the agent should report the run id, step id, evidence, and the fact that a founder decision is required. The decision is made in Trevra's **Work** view. After approval, a dedicated action step verifies the same payload hash before calling the provider gateway. The agent itself never receives approval authority.
+- Use a workspace-scoped agent token, never a browser session cookie.
+- Keep tokens out of command lines when practical; the CLI backend supports token files.
+- Rotate/revoke tokens when a machine or agent integration is retired.
+- Do not add approval or execution scopes to make an automation easier.
+- Do not expose arbitrary webhook, shell, database, or remote-action capabilities through MCP.
+- Treat all external content as untrusted input; deterministic software owns permissions and consequential state transitions.

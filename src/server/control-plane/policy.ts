@@ -32,12 +32,16 @@ interface PolicyRow {
 }
 
 export async function evaluatePolicy(db: Db, context: PolicyContext): Promise<PolicyDecision> {
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT id,name,priority,action_pattern,effect,conditions_json
     FROM workspace_policies
     WHERE workspace_id=? AND enabled=TRUE
     ORDER BY priority DESC,created_at ASC
-  `).all<PolicyRow & Record<string, unknown>>(context.workspaceId);
+  `
+    )
+    .all<PolicyRow & Record<string, unknown>>(context.workspaceId);
 
   for (const row of rows) {
     if (!matchesPattern(row.action_pattern, context.action)) continue;
@@ -57,7 +61,8 @@ export async function evaluatePolicy(db: Db, context: PolicyContext): Promise<Po
       effect: 'require_approval',
       policyId: null,
       policyName: 'Built-in external-write boundary',
-      reason: 'External writes require explicit approval unless a stricter workspace policy denies them.',
+      reason:
+        'External writes require explicit approval unless a stricter workspace policy denies them.',
       evaluatedAt: new Date().toISOString()
     };
   }
@@ -66,16 +71,24 @@ export async function evaluatePolicy(db: Db, context: PolicyContext): Promise<Po
     effect: 'allow',
     policyId: null,
     policyName: 'Built-in safe execution default',
-    reason: 'Pure computation and network reads are allowed unless a workspace policy overrides them.',
+    reason:
+      'Pure computation and network reads are allowed unless a workspace policy overrides them.',
     evaluatedAt: new Date().toISOString()
   };
 }
 
-export async function listWorkspacePolicies(db: Db, workspaceId: string): Promise<Array<Record<string, unknown>>> {
-  const rows = await db.prepare(`
+export async function listWorkspacePolicies(
+  db: Db,
+  workspaceId: string
+): Promise<Array<Record<string, unknown>>> {
+  const rows = await db
+    .prepare(
+      `
     SELECT id,name,version,priority,action_pattern,effect,conditions_json,enabled,created_at,updated_at
     FROM workspace_policies WHERE workspace_id=? ORDER BY priority DESC,created_at ASC
-  `).all<Record<string, unknown>>(workspaceId);
+  `
+    )
+    .all<Record<string, unknown>>(workspaceId);
   return rows.map((row) => ({
     id: String(row.id),
     name: String(row.name),
@@ -91,56 +104,19 @@ export async function listWorkspacePolicies(db: Db, workspaceId: string): Promis
 }
 
 /**
- * Derive the policy attributes -- `amount`, `recipients`, `confidence` -- that
- * `matchesConditions` compares against `maxAmount` / `maxRecipients` /
- * `minConfidence`, from a resolved action payload or skill input.
- *
- * UNIT: `amount` is in MAJOR currency units (EUR 5,000 -- not 500,000 cents),
- * which is also the unit of the `maxAmount` condition the founder types into
- * the policy form and the unit of every `amount` in the action payload schemas
- * (`invoice.create`, `change_order.create`) and of `recommendations.estimated_amount`.
- * A `*Cents` field is divided by 100 on the way in. A cents/euros mix-up here
- * is a 100x policy error, so that conversion happens once, here, and nowhere else.
- *
- * Payload shapes are NOT uniform across action types -- `email.send` carries a
- * single `recipient` string and no amount, `invoice.create` and
- * `change_order.create` carry a major-unit `amount`, `community.reply` carries
- * neither -- so every rule is best-effort, tolerates any shape without
- * throwing, and OMITS a key it cannot determine. Never guess: a guessed value
- * is evaluated as fact, and an omitted one is failed closed on by effect.
+ * Derive GTM policy attributes from a resolved action payload or skill input.
+ * Trevra policies govern GTM execution, not customer money: the supported
+ * numeric attributes are recipient count and confidence only. Amount-like fields are deliberately ignored.
  */
 export function policyAttributesFrom(payload: unknown): Record<string, unknown> {
   const source = plainObject(payload);
   const attributes: Record<string, unknown> = {};
 
-  const amount = amountFrom(source);
-  if (amount !== undefined) attributes.amount = amount;
-
   const recipients = recipientCountFrom(source);
   if (recipients !== undefined) attributes.recipients = recipients;
-
   if (isFiniteNumber(source.confidence)) attributes.confidence = source.confidence;
 
   return attributes;
-}
-
-/** Major currency units. See the unit note on `policyAttributesFrom`. */
-function amountFrom(source: Record<string, unknown>): number | undefined {
-  if (isFiniteNumber(source.amount)) return source.amount;
-  const cents = centsFrom(source);
-  if (cents !== undefined) return cents / 100;
-  if (isFiniteNumber(source.estimatedAmount)) return source.estimatedAmount;
-  if (isFiniteNumber(source.estimated_amount)) return source.estimated_amount;
-  return undefined;
-}
-
-function centsFrom(source: Record<string, unknown>): number | undefined {
-  if (isFiniteNumber(source.amountCents)) return source.amountCents;
-  if (isFiniteNumber(source.amount_cents)) return source.amount_cents;
-  for (const [key, value] of Object.entries(source)) {
-    if ((key.endsWith('Cents') || key.endsWith('_cents')) && isFiniteNumber(value)) return value;
-  }
-  return undefined;
 }
 
 /** A count of people this action reaches, not the addresses themselves. */
@@ -175,7 +151,6 @@ function matchesConditions(
   if (!matchesStringList(conditions.environments, context.environment)) return false;
 
   const attributes = context.attributes ?? {};
-  if (!numberAtMost(attributes.amount, conditions.maxAmount, effect)) return false;
   if (!numberAtLeast(attributes.confidence, conditions.minConfidence, effect)) return false;
   if (!numberAtMost(attributes.recipients, conditions.maxRecipients, effect)) return false;
   return true;
@@ -201,9 +176,8 @@ function matchesStringList(condition: unknown, actual: string | undefined): bool
  *   - effect `allow` (permissive) -> a missing attribute DOES NOT match. We
  *     never auto-allow on an unknown.
  *
- * So `if (missing) return effect !== 'allow'` is load-bearing, not a
- * convoluted `return false`. Collapsing it to one restores the bug where
- * "ask me first before anything over EUR 5,000" matched nothing at all.
+ * So `if (missing) return effect !== 'allow'` is load-bearing: restrictive
+ * GTM recipient/confidence rules fail closed while permissive ones never auto-allow on unknowns.
  *
  * A bound of `undefined` or `null` means the condition was not set and is not
  * a constraint -- that is a different case from an unevaluable one.
@@ -227,11 +201,14 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function parseObject(value: unknown): Record<string, unknown> {
-  if (typeof value === 'object' && value !== null && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value === 'object' && value !== null && !Array.isArray(value))
+    return value as Record<string, unknown>;
   if (typeof value !== 'string') return {};
   try {
     const parsed = JSON.parse(value);
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
   } catch {
     return {};
   }
