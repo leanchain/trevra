@@ -2,14 +2,23 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { openDatabase, type Db } from './db.js';
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 import { renderAppIndex, renderNotFoundPage } from './public-site.js';
+import { MarketingApp } from '../client/MarketingApp';
 
 const HOSTED = 'https://app.usetrevra.example/#get-started';
 
-const indexHtml = await readFile(resolve('index.html'), 'utf8');
+// The template file only carries the head and an empty #root; what actually
+// ships is that template with MarketingScreen's own markup rendered into it,
+// which is exactly what scripts/prerender-marketing.tsx does at build time.
+const template = await readFile(resolve('index.html'), 'utf8');
+const indexHtml = template.replace(
+  '<div id="root"></div>',
+  `<div id="root">${renderToStaticMarkup(<MarketingApp />)}</div>`
+);
 const marketingCss = await readFile(resolve('public/marketing.css'), 'utf8');
 
 /**

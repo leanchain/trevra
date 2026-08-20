@@ -269,11 +269,13 @@ export function MarketingScreen({
   hostedAppUrl = '',
   githubUrl = ''
 }: MarketingScreenProps) {
+  // `?.` on `import.meta.env` itself: see MarketingApp.tsx, which the build-time
+  // prerender script also imports outside of Vite.
   const [supportEmail, setSupportEmail] = useState(
-    import.meta.env.VITE_SUPPORT_EMAIL?.trim() ?? ''
+    import.meta.env?.VITE_SUPPORT_EMAIL?.trim() ?? ''
   );
   const [registryApiUrl, setRegistryApiUrl] = useState(
-    import.meta.env.VITE_CATALOG_API_URL?.trim() ?? ''
+    import.meta.env?.VITE_CATALOG_API_URL?.trim() ?? ''
   );
   const [liveModules, setLiveModules] = useState<PublicModule[]>(STATIC_MODULES);
   const primaryHref = hostedAppUrl || '#hosted';
