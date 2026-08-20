@@ -89,13 +89,12 @@ import type {
   WithdrawalRecord,
   WithdrawalStatus
 } from '../server/linkedin/withdraw';
+import type { LinkedInCampaign, LinkedInExportRecord } from '../server/linkedin/campaigns';
 import type {
   CampaignStatus,
   LinkedInActionView,
-  LinkedInAnalytics,
-  LinkedInCampaign,
-  LinkedInExportRecord
-} from '../server/linkedin/campaigns';
+  LinkedInAnalytics
+} from '../server/linkedin/action-ledger';
 import type { LinkedInExclusion } from '../server/linkedin/exclusions';
 import type { ExportContact, ExportFormat, ScheduledDay } from '../server/linkedin/export';
 import type { BandName, LinkedInBand, PacedKind } from '../server/linkedin/limits';

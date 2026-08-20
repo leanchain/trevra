@@ -1,6 +1,6 @@
 import { id, type Db } from '../db.js';
 import { COUNTED_MESSAGE_KINDS, recordAction } from './actions.js';
-import type { CampaignStatus } from './campaigns.js';
+import type { CampaignStatus } from './action-ledger.js';
 import { getLeadList } from './lead-lists.js';
 import { getSeat, OWNER_SEAT_KEY } from './seats.js';
 import {

@@ -7,7 +7,7 @@ import {
   ingestOutcome,
   recordDetectedAcceptance,
   type LinkedInActionView
-} from './campaigns.js';
+} from './action-ledger.js';
 import { profileUrlFor } from './driver.js';
 import type { LinkedInInboxMessage, LinkedInThreadSummary } from './driver-inbox.js';
 import { filterExcluded } from './exclusions.js';

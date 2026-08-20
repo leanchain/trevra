@@ -1,15 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { ACTION_STATUS_VALUES, recordAction, type LinkedInActionStatus } from './actions.js';
-import {
-  createCampaign,
-  getCampaign,
-  linkedinAnalytics,
-  newCampaignId,
-  skipAction,
-  stopCampaign,
-  type CampaignStatus
-} from './campaigns.js';
+import { createCampaign, getCampaign, newCampaignId, stopCampaign } from './campaigns.js';
+import { linkedinAnalytics, skipAction, type CampaignStatus } from './action-ledger.js';
 import type { ManagedCampaignStatus } from './managed-campaigns.js';
 import { upsertSeat } from './seats.js';
 
@@ -32,7 +25,10 @@ const WORKSPACE = 'ws_linkedin_campaigns_test';
 
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
-  await db.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+  await db
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE, 'LinkedIn Campaigns Test', NOW.toISOString());
   await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(WORKSPACE);
   await db.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=?').run(WORKSPACE);
@@ -52,7 +48,11 @@ async function campaign(name: string, status: 'draft' | 'running' = 'running'): 
 }
 
 let actionSeq = 0;
-async function action(campaignId: string | null, status: LinkedInActionStatus, at: Date = NOW): Promise<string> {
+async function action(
+  campaignId: string | null,
+  status: LinkedInActionStatus,
+  at: Date = NOW
+): Promise<string> {
   actionSeq += 1;
   const written = await recordAction(
     db,
@@ -72,11 +72,14 @@ async function action(campaignId: string | null, status: LinkedInActionStatus, a
 
 /** Exactly what `pauseManagedCampaign` does to a scheduled, unclaimed row. */
 async function park(actionId: string): Promise<void> {
-  await db.prepare("UPDATE linkedin_actions SET status='held' WHERE workspace_id=? AND id=?").run(WORKSPACE, actionId);
+  await db
+    .prepare("UPDATE linkedin_actions SET status='held' WHERE workspace_id=? AND id=?")
+    .run(WORKSPACE, actionId);
 }
 
 async function statusOf(actionId: string): Promise<string> {
-  const row = await db.prepare('SELECT status FROM linkedin_actions WHERE workspace_id=? AND id=?')
+  const row = await db
+    .prepare('SELECT status FROM linkedin_actions WHERE workspace_id=? AND id=?')
     .get<{ status: string }>(WORKSPACE, actionId);
   if (!row) throw new Error(`no action ${actionId}`);
   return row.status;
@@ -107,7 +110,8 @@ describe('stopping a campaign that was paused', () => {
     const campaignId = await campaign('Mid-send');
     const claimed = await action(campaignId, 'planned');
     await park(claimed);
-    await db.prepare('UPDATE linkedin_actions SET claimed_at=? WHERE workspace_id=? AND id=?')
+    await db
+      .prepare('UPDATE linkedin_actions SET claimed_at=? WHERE workspace_id=? AND id=?')
       .run(NOW.toISOString(), WORKSPACE, claimed);
 
     expect((await stopCampaign(db, WORKSPACE, campaignId, NOW))?.released).toBe(0);
@@ -165,11 +169,15 @@ describe('the analytics funnel', () => {
 
     // The identity funnelSelect() documents: `replied` is deliberately not a
     // term, because a reply is already counted inside `accepted`.
-    const { planned, held, exported, sent, accepted, declined, skipped, withdrawn } = analytics.total;
-    const rows = await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_actions WHERE workspace_id=?')
+    const { planned, held, exported, sent, accepted, declined, skipped, withdrawn } =
+      analytics.total;
+    const rows = await db
+      .prepare('SELECT COUNT(*)::int AS total FROM linkedin_actions WHERE workspace_id=?')
       .get<{ total: number }>(WORKSPACE);
     expect(rows?.total).toBe(ACTION_STATUS_VALUES.length);
-    expect(planned + held + exported + sent + accepted + declined + skipped + withdrawn).toBe(rows?.total);
+    expect(planned + held + exported + sent + accepted + declined + skipped + withdrawn).toBe(
+      rows?.total
+    );
   });
 
   /**
@@ -253,7 +261,7 @@ describe('the analytics funnel', () => {
  * saying which.
  */
 describe('one acceptance denominator', () => {
-  it('divides accepted invites by invites SENT, and keeps the throttle\'s denominator under its own name', async () => {
+  it("divides accepted invites by invites SENT, and keeps the throttle's denominator under its own name", async () => {
     const campaignId = await campaign('Denominators');
     await action(campaignId, 'accepted');
     await action(campaignId, 'replied');
@@ -306,7 +314,7 @@ describe('which day the series means', () => {
    * repair it by re-labelling: renaming a column does not move the rows summed
    * into it.
    */
-  it('cuts the buckets in the seat\'s own timezone, not the server\'s', async () => {
+  it("cuts the buckets in the seat's own timezone, not the server's", async () => {
     await upsertSeat(db, WORKSPACE, { label: 'Sydney', timezone: 'Australia/Sydney' }, NOW);
     const campaignId = await campaign('Across the dateline');
     // 09:00 on the 6th in Sydney (UTC+10), which is still the 5th in UTC.
@@ -325,7 +333,13 @@ describe('which day the series means', () => {
     expect(last.startsAt).toBe('2026-08-05T14:00:00.000Z');
     expect(last.endsAt).toBe('2026-08-06T14:00:00.000Z');
     expect(analytics.series.map((day) => day.date)).toEqual([
-      '2026-07-31', '2026-08-01', '2026-08-02', '2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06'
+      '2026-07-31',
+      '2026-08-01',
+      '2026-08-02',
+      '2026-08-03',
+      '2026-08-04',
+      '2026-08-05',
+      '2026-08-06'
     ]);
   });
 
@@ -335,8 +349,20 @@ describe('which day the series means', () => {
    * most of the seats are in and SAYS that it did.
    */
   it('says so when the workspace spans zones, rather than picking one in silence', async () => {
-    await upsertSeat(db, WORKSPACE, { label: 'Berlin one', timezone: 'Europe/Berlin' }, NOW, 'berlin-1');
-    await upsertSeat(db, WORKSPACE, { label: 'Berlin two', timezone: 'Europe/Berlin' }, NOW, 'berlin-2');
+    await upsertSeat(
+      db,
+      WORKSPACE,
+      { label: 'Berlin one', timezone: 'Europe/Berlin' },
+      NOW,
+      'berlin-1'
+    );
+    await upsertSeat(
+      db,
+      WORKSPACE,
+      { label: 'Berlin two', timezone: 'Europe/Berlin' },
+      NOW,
+      'berlin-2'
+    );
     await upsertSeat(db, WORKSPACE, { label: 'LA', timezone: 'America/Los_Angeles' }, NOW, 'la-1');
 
     const analytics = await linkedinAnalytics(db, WORKSPACE, 7, NOW);
@@ -352,7 +378,9 @@ describe('which day the series means', () => {
 
   it('falls back to UTC for a workspace with no seat, and for an unusable zone', async () => {
     expect((await linkedinAnalytics(db, WORKSPACE, 7, NOW)).timezone).toBe('UTC');
-    expect((await linkedinAnalytics(db, WORKSPACE, 7, NOW, { timezone: 'Mars/Olympus_Mons' })).timezone).toBe('UTC');
+    expect(
+      (await linkedinAnalytics(db, WORKSPACE, 7, NOW, { timezone: 'Mars/Olympus_Mons' })).timezone
+    ).toBe('UTC');
   });
 });
 
@@ -375,7 +403,9 @@ describe('one status vocabulary per column', () => {
 
     const campaignId = await campaign('Pause me', 'running');
     // Exactly what `pauseManagedCampaign` writes.
-    await db.prepare("UPDATE linkedin_campaigns SET status='paused' WHERE workspace_id=? AND id=?").run(WORKSPACE, campaignId);
+    await db
+      .prepare("UPDATE linkedin_campaigns SET status='paused' WHERE workspace_id=? AND id=?")
+      .run(WORKSPACE, campaignId);
     await action(campaignId, 'held');
 
     // The legacy reader, which used to cast this very row onto a union that
