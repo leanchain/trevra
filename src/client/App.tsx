@@ -528,7 +528,7 @@ const SETUP_LEGACY_REDIRECTS: Record<string, string> = {
   team: '/setup/workspace',
   skills: '/setup/workspace',
   reddit: '/research',
-  seat: '/outreach',
+  seat: '/outreach/settings',
   research: '/research'
 };
 

@@ -1917,8 +1917,8 @@ export function OutreachManagerRead({
                 <h3 aria-level={2}>LinkedIn accounts</h3>
                 <p>
                   Each sending account has its own timezone, working hours and daily limits. Manage
-                  them on Outreach &rarr; LinkedIn accounts. If an account is not connected, its
-                  campaigns wait instead of sending from another account.
+                  them on Outreach &rarr; Settings. If an account is not connected, its campaigns
+                  wait instead of sending from another account.
                 </p>
               </div>
             </div>
@@ -1930,7 +1930,7 @@ export function OutreachManagerRead({
                   hours it is allowed to work.
                 </p>
                 <div className="mgr-actions">
-                  <a className="primary-button" href="/outreach">
+                  <a className="primary-button" href="/outreach/settings">
                     Add a LinkedIn account
                   </a>
                 </div>

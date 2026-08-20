@@ -46,10 +46,8 @@ interface Block {
 
 interface LoopData {
   planned: number;
-  exported: number;
-  /** Of `planned`/`exported`, the subset that is an invite rather than a follow-up step. */
+  /** Of `planned`, the subset that is an invite rather than a follow-up step. */
   plannedInvites: number;
-  exportedInvites: number;
   waitingApprovals: PlaybookRun[];
 }
 
@@ -63,9 +61,7 @@ export function LoopView({
   const { limits, error: seatError } = useSeatLimits();
   const [loop, setLoop] = useState<LoopData>({
     planned: 0,
-    exported: 0,
     plannedInvites: 0,
-    exportedInvites: 0,
     waitingApprovals: []
   });
   const [cost, setCost] = useState<LoopCost | null>(null);
@@ -81,17 +77,14 @@ export function LoopView({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [planned, exported, waiting] = await Promise.all([
+      const [planned, waiting] = await Promise.all([
         getLinkedInActions({ status: 'planned', limit: 200 }).catch(() => []),
-        getLinkedInActions({ status: 'exported', limit: 200 }).catch(() => []),
         getPlaybookRuns({ status: 'waiting_approval', limit: 20 }).catch(() => [] as PlaybookRun[])
       ]);
       if (!cancelled)
         setLoop({
           planned: planned.length,
-          exported: exported.length,
           plannedInvites: planned.filter((action) => action.kind === 'invite').length,
-          exportedInvites: exported.filter((action) => action.kind === 'invite').length,
           waitingApprovals: waiting
         });
     })();
@@ -125,8 +118,8 @@ export function LoopView({
   useOutreachRefresh(loadAnalytics);
 
   const seat = limits?.seat ?? null;
-  const queued = loop.planned + loop.exported;
-  const invitesQueued = loop.plannedInvites + loop.exportedInvites;
+  const queued = loop.planned;
+  const invitesQueued = loop.plannedInvites;
   const followUpsQueued = queued - invitesQueued;
   const funnel = analytics?.total ?? null;
   const waitingCount = loop.waitingApprovals.length;

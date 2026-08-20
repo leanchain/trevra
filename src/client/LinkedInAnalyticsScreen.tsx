@@ -109,7 +109,7 @@ function ReadFailure({
 }
 
 /**
- * planned → exported → sent → accepted → replied, for the whole workspace.
+ * planned → sent → accepted → replied, for the whole workspace.
  *
  * Rendered by the shell on `/loop`, where it answers the second stage of the
  * loop -- what goes out, and how far does it get -- for somebody who has not
@@ -167,8 +167,8 @@ export function LinkedInFunnel({
           <TrendingUp size={26} />
           <h4 aria-level={3}>Nothing has gone out in this window</h4>
           <p>
-            A slot enters this ledger when an approved plan is exported. Widen the window, or build
-            a campaign and the funnel fills itself in.
+            A slot enters this ledger when a campaign plans it. Widen the window, or build a
+            campaign and the funnel fills itself in.
           </p>
           <a className="primary-button" href="/outreach" style={{ textDecoration: 'none' }}>
             Build a campaign
@@ -179,7 +179,6 @@ export function LinkedInFunnel({
           <FunnelBars
             stages={[
               { label: 'Planned', value: total.planned, hint: 'scheduled, not yet in a file' },
-              { label: 'Exported', value: total.exported, hint: 'handed to your tool' },
               { label: 'Sent', value: total.sent, hint: 'reported as sent' },
               { label: 'Accepted', value: total.accepted, hint: 'includes replies' },
               { label: 'Replied', value: total.replied }
@@ -218,7 +217,7 @@ export function LinkedInFunnel({
           {/* The honesty rule the Seat screen states at the top of itself, said
               once here too, because this panel is read on a screen that has no
           <p className="panel-note">
-            <b>Planned</b> and <b>exported</b> are facts from Trevra’s ledger. <b>Sent</b>, <b>accepted</b> and{' '}
+            <b>Planned</b> is a fact from Trevra’s ledger. <b>Sent</b>, <b>accepted</b> and{' '}
             <b>replied</b> are reported outcomes; the local worker records them after it acts. An outcome nobody reported
             stays missing rather than being guessed.
           </p>
