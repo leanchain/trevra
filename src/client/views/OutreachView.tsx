@@ -50,6 +50,10 @@ export function OutreachView({
   const sub = route.sub;
   const [anchor, setAnchor] = useState<{ id: string; seq: number } | null>(null);
   const anchorSeq = useRef(0);
+  const [openFolds, setOpenFolds] = useState<{ leads: boolean; accounts: boolean }>({
+    leads: false,
+    accounts: false
+  });
 
   useEffect(() => {
     const target = OUTREACH_LEGACY_REDIRECTS[sub];
@@ -93,16 +97,28 @@ export function OutreachView({
       {sub === '' && (
         <>
           <OutreachManagerRead setToast={setToast} onNavigate={onNavigate} />
-          <details className="mgr-inputs" id="leads">
+          <details
+            className="mgr-inputs"
+            id="leads"
+            onToggle={(event) =>
+              setOpenFolds((current) => ({ ...current, leads: event.currentTarget.open }))
+            }
+          >
             <summary>Find people</summary>
             <div className="mgr-inputs-body">
-              <OutreachLeads setToast={setToast} />
+              {openFolds.leads && <OutreachLeads setToast={setToast} />}
             </div>
           </details>
-          <details className="mgr-inputs" id="accounts">
+          <details
+            className="mgr-inputs"
+            id="accounts"
+            onToggle={(event) =>
+              setOpenFolds((current) => ({ ...current, accounts: event.currentTarget.open }))
+            }
+          >
             <summary>Target accounts</summary>
             <div className="mgr-inputs-body">
-              <AccountsScreen setToast={setToast} />
+              {openFolds.accounts && <AccountsScreen setToast={setToast} />}
             </div>
           </details>
         </>
