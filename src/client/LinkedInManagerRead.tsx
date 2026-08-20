@@ -20,9 +20,11 @@ import {
   Zap
 } from 'lucide-react';
 import {
+  applyLatestLinkedInManagedCampaignWorkflow,
   completeLinkedInManualTask,
   duplicateLinkedInManagedCampaign,
   endLinkedInManagedMember,
+  getLinkedInCampaignOperationalAnalytics,
   getLinkedInCampaignOperations,
   getLinkedInLimits,
   getLinkedInManagedAnalytics,
@@ -33,8 +35,12 @@ import {
   getLinkedInManagerSeats,
   getLinkedInManagerWorkflows,
   getLinkedInManualTasks,
+  moveLinkedInManagedCampaignMembers,
   pauseLinkedInManagedCampaign,
   removeLinkedInManagedMember,
+  rerunLinkedInManagedMemberCondition,
+  resumeLinkedInManagedMemberAtStep,
+  retryLinkedInManagedCampaignFailures,
   setLinkedInManagedMemberPaused,
   skipLinkedInManagedMemberStep,
   startLinkedInManagedCampaign,
@@ -49,6 +55,7 @@ import type { LinkedInSeat } from '../server/linkedin/seats';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
 import type {
   CampaignMemberTimeline,
+  CampaignOperationalAnalytics,
   CampaignQueueSummary,
   ManagedAnalytics,
   ManagedCampaign,
@@ -497,6 +504,60 @@ function MemberTimeline({
   );
 }
 
+function MemberRecoveryControls({
+  member,
+  steps,
+  busy,
+  onRerunCondition,
+  onResumeAtStep
+}: {
+  member: ManagedCampaignMember;
+  steps: readonly WorkflowStep[];
+  busy: boolean;
+  onRerunCondition: (member: ManagedCampaignMember, stepId: string) => void;
+  onResumeAtStep: (member: ManagedCampaignMember, stepId: string) => void;
+}) {
+  const current = steps[member.stepIndex] ?? null;
+  const [stepId, setStepId] = useState(current?.id ?? steps[0]?.id ?? '');
+  useEffect(() => {
+    setStepId(current?.id ?? steps[0]?.id ?? '');
+  }, [member.id, member.stepIndex, current?.id, steps]);
+  if (steps.length === 0) return null;
+  return (
+    <div className="li-row-actions mgr-recovery-controls">
+      <span className="li-hint">Executing workflow v{member.workflowVersion ?? '?'}</span>
+      {(current?.action === 'condition' || current?.action === 'monitor') && (
+        <button
+          className="li-mini-button"
+          type="button"
+          disabled={busy}
+          onClick={() => onRerunCondition(member, current.id)}
+        >
+          <RefreshCw size={12} /> Re-run condition
+        </button>
+      )}
+      <label className="li-inline-field">
+        Resume from
+        <select value={stepId} onChange={(event) => setStepId(event.target.value)}>
+          {steps.map((step, index) => (
+            <option key={step.id} value={step.id}>
+              {index + 1}. {ACTION_LABEL[step.action]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        className="li-mini-button"
+        type="button"
+        disabled={busy || !stepId || member.status === 'replied' || member.status === 'removed'}
+        onClick={() => onResumeAtStep(member, stepId)}
+      >
+        Resume at node
+      </button>
+    </div>
+  );
+}
+
 /* ==========================================================================
  * The member list: search, filter, sort, timeline, per-lead controls.
  * ======================================================================= */
@@ -514,7 +575,12 @@ function CampaignMembers({
   timelines,
   onLoadTimeline,
   onSkip,
-  onEnd
+  onEnd,
+  onRerunCondition,
+  onResumeAtStep,
+  followUpCampaigns,
+  onBulkRetry,
+  onMoveSelected
 }: {
   members: readonly ManagedCampaignMember[];
   steps: readonly WorkflowStep[];
@@ -527,12 +593,19 @@ function CampaignMembers({
   onLoadTimeline: (member: ManagedCampaignMember) => void;
   onSkip: (member: ManagedCampaignMember) => void;
   onEnd: (member: ManagedCampaignMember) => void;
+  onRerunCondition: (member: ManagedCampaignMember, stepId: string) => void;
+  onResumeAtStep: (member: ManagedCampaignMember, stepId: string) => void;
+  followUpCampaigns: readonly ManagedCampaign[];
+  onBulkRetry: (memberIds: string[]) => void;
+  onMoveSelected: (targetCampaignId: string, memberIds: string[]) => void;
 }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<'all' | MemberStatus>('all');
   const [sort, setSort] = useState<MemberSort>('next');
   const [limit, setLimit] = useState(50);
   const [openId, setOpenId] = useState('');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [targetCampaignId, setTargetCampaignId] = useState('');
 
   useEffect(() => {
     setLimit(50);
@@ -559,6 +632,11 @@ function CampaignMembers({
       return left - right || byName(a, b);
     });
   }, [members, query, status, sort]);
+
+  useEffect(() => {
+    const live = new Set(members.map((member) => member.id));
+    setSelectedIds((current) => new Set([...current].filter((id) => live.has(id))));
+  }, [members]);
 
   const present = STATUS_ORDER.filter((value) => members.some((member) => member.status === value));
 
@@ -602,6 +680,52 @@ function CampaignMembers({
         </p>
       </div>
 
+      {selectedIds.size > 0 && (
+        <div className="li-filter-row mgr-bulk-actions">
+          <strong>{selectedIds.size} selected</strong>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busy !== ''}
+            onClick={() => onBulkRetry([...selectedIds])}
+          >
+            <RefreshCw size={13} /> Retry selected failures
+          </button>
+          {followUpCampaigns.length > 0 && (
+            <>
+              <label>
+                Follow-up campaign
+                <select
+                  value={targetCampaignId}
+                  onChange={(event) => setTargetCampaignId(event.target.value)}
+                >
+                  <option value="">Choose campaign…</option>
+                  {followUpCampaigns.map((campaign) => (
+                    <option key={campaign.id} value={campaign.id}>
+                      {campaign.name} ({CAMPAIGN_STATUS_LABEL[campaign.status]})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={busy !== '' || !targetCampaignId}
+                onClick={() => {
+                  onMoveSelected(targetCampaignId, [...selectedIds]);
+                  setSelectedIds(new Set());
+                }}
+              >
+                Move selected
+              </button>
+            </>
+          )}
+          <button className="ghost-button" type="button" onClick={() => setSelectedIds(new Set())}>
+            Clear selection
+          </button>
+        </div>
+      )}
+
       {shown.length === 0 ? (
         <p className="empty-copy">
           No lead matches that search. Clear the filters to see the whole list.
@@ -612,6 +736,25 @@ function CampaignMembers({
             <table className="li-table">
               <thead>
                 <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      aria-label="Select visible leads"
+                      checked={
+                        shown.slice(0, limit).length > 0 &&
+                        shown.slice(0, limit).every((member) => selectedIds.has(member.id))
+                      }
+                      onChange={(event) => {
+                        const visible = shown.slice(0, limit).map((member) => member.id);
+                        setSelectedIds((current) => {
+                          const next = new Set(current);
+                          for (const id of visible)
+                            event.target.checked ? next.add(id) : next.delete(id);
+                          return next;
+                        });
+                      }}
+                    />
+                  </th>
                   <th>Lead</th>
                   <th>Company</th>
                   <th>Status</th>
@@ -628,6 +771,20 @@ function CampaignMembers({
                   const rowBusy = busy.startsWith(`member:${member.id}`);
                   return [
                     <tr key={member.id} className={open ? 'mgr-row-open' : undefined}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${member.firstName} ${member.lastName}`}
+                          checked={selectedIds.has(member.id)}
+                          onChange={(event) =>
+                            setSelectedIds((current) => {
+                              const next = new Set(current);
+                              event.target.checked ? next.add(member.id) : next.delete(member.id);
+                              return next;
+                            })
+                          }
+                        />
+                      </td>
                       <td>
                         <button
                           className="mgr-linkish"
@@ -737,8 +894,15 @@ function CampaignMembers({
                     </tr>,
                     open ? (
                       <tr key={`${member.id}:detail`} className="mgr-row-detail">
-                        <td colSpan={6}>
+                        <td colSpan={7}>
                           <MemberTimeline steps={steps} member={member} now={now} />
+                          <MemberRecoveryControls
+                            member={member}
+                            steps={steps}
+                            busy={busy !== ''}
+                            onRerunCondition={onRerunCondition}
+                            onResumeAtStep={onResumeAtStep}
+                          />
                           {timelines[member.id] && (
                             <div className="mgr-timeline-events">
                               <h5>Recorded history</h5>
@@ -964,6 +1128,9 @@ export function OutreachManagerRead({
   const [operationsByCampaign, setOperationsByCampaign] = useState<
     Record<string, { queues: CampaignQueueSummary; waves: ManagedCampaignWave[] }>
   >({});
+  const [operationalAnalyticsByCampaign, setOperationalAnalyticsByCampaign] = useState<
+    Record<string, CampaignOperationalAnalytics>
+  >({});
   const [timelinesByMember, setTimelinesByMember] = useState<
     Record<string, CampaignMemberTimeline>
   >({});
@@ -1111,14 +1278,19 @@ export function OutreachManagerRead({
   );
 
   const refreshCampaign = async (campaignId: string) => {
-    const [detail, operations] = await Promise.all([
+    const [detail, operations, operationalAnalytics] = await Promise.all([
       getLinkedInManagedCampaign(campaignId),
-      getLinkedInCampaignOperations(campaignId)
+      getLinkedInCampaignOperations(campaignId),
+      getLinkedInCampaignOperationalAnalytics(campaignId)
     ]);
     setMembersByCampaign((current) => ({ ...current, [campaignId]: detail.members }));
     setOperationsByCampaign((current) => ({
       ...current,
       [campaignId]: { queues: operations.queues, waves: operations.waves }
+    }));
+    setOperationalAnalyticsByCampaign((current) => ({
+      ...current,
+      [campaignId]: operationalAnalytics
     }));
     setCampaigns((current) =>
       current.map((campaign) => (campaign.id === campaignId ? detail.campaign : campaign))
@@ -1166,6 +1338,21 @@ export function OutreachManagerRead({
         await refreshAll();
       },
       'Unable to pause that campaign.'
+    );
+
+  const applyLatestWorkflow = (campaign: ManagedCampaign) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await applyLatestLinkedInManagedCampaignWorkflow(campaign.id);
+        setToast(
+          result.pendingAffected > 0
+            ? `Pending leads in “${campaign.name}” will use workflow v${result.latestVersion}. Existing waves stay on their original versions.`
+            : `“${campaign.name}” now targets workflow v${result.latestVersion}; no pending leads were waiting to receive it.`
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to apply the latest workflow version.'
     );
 
   const stopCampaign = (campaign: ManagedCampaign) =>
@@ -1236,6 +1423,42 @@ export function OutreachManagerRead({
       'Unable to skip that step.'
     );
 
+  const rerunMemberCondition = (member: ManagedCampaignMember, stepId: string) =>
+    guard(
+      `member:${member.id}`,
+      async () => {
+        await rerunLinkedInManagedMemberCondition(member.id, stepId);
+        setToast(
+          `${member.firstName} ${member.lastName}'s condition will be evaluated again without re-sending the previous action.`
+        );
+        setTimelinesByMember((current) => {
+          const next = { ...current };
+          delete next[member.id];
+          return next;
+        });
+        await refreshCampaign(member.campaignId);
+      },
+      'Unable to re-run that condition.'
+    );
+
+  const resumeMemberAtStep = (member: ManagedCampaignMember, stepId: string) =>
+    guard(
+      `member:${member.id}`,
+      async () => {
+        await resumeLinkedInManagedMemberAtStep(member.id, stepId);
+        setToast(
+          `${member.firstName} ${member.lastName} will resume from the selected workflow node. Unstarted later work was cancelled.`
+        );
+        setTimelinesByMember((current) => {
+          const next = { ...current };
+          delete next[member.id];
+          return next;
+        });
+        await refreshCampaign(member.campaignId);
+      },
+      'Unable to resume that lead at the selected node.'
+    );
+
   const endMember = (member: ManagedCampaignMember) =>
     guard(
       `member:${member.id}`,
@@ -1252,6 +1475,55 @@ export function OutreachManagerRead({
         await refreshCampaign(member.campaignId);
       },
       'Unable to end automation for that lead.'
+    );
+
+  const retrySelectedFailures = (campaign: ManagedCampaign, memberIds: string[]) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await retryLinkedInManagedCampaignFailures(campaign.id, memberIds);
+        setToast(
+          `Selected leads: requeued ${result.linkedinActions + result.channelActions} definite failure(s); unknown outcomes were left untouched.`
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to retry the selected failures.'
+    );
+
+  const moveSelectedMembers = (
+    campaign: ManagedCampaign,
+    targetCampaignId: string,
+    memberIds: string[]
+  ) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await moveLinkedInManagedCampaignMembers(
+          campaign.id,
+          targetCampaignId,
+          memberIds
+        );
+        setToast(
+          `Moved ${result.moved} lead(s) to the follow-up campaign${result.skipped ? `; ${result.skipped} were skipped by dedupe/eligibility rules` : ''}.`
+        );
+        await refreshAll();
+      },
+      'Unable to move the selected leads.'
+    );
+
+  const retryCampaignFailures = (campaign: ManagedCampaign) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await retryLinkedInManagedCampaignFailures(campaign.id);
+        setToast(
+          result.linkedinActions + result.channelActions > 0
+            ? `Requeued ${result.linkedinActions + result.channelActions} definite failure(s). Unknown outcomes were left untouched.`
+            : 'No definite no-side-effect failures were eligible for retry.'
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to retry campaign failures.'
     );
 
   const setCampaignPriority = (campaign: ManagedCampaign, priority: ManagedCampaign['priority']) =>
@@ -1485,6 +1757,9 @@ export function OutreachManagerRead({
               const members = membersByCampaign[campaign.id] ?? [];
               const counts = campaignCountByStatus(campaign);
               const workflow = workflowOf(campaign);
+              const newerWorkflowAvailable = Boolean(
+                workflow && workflow.version > (campaign.workflowVersion ?? 0)
+              );
               const report = limitsBySeat[campaign.seatKey] ?? null;
               const warmup = warmupOf(campaign, now, report);
               /**
@@ -1508,6 +1783,7 @@ export function OutreachManagerRead({
               const open = openCampaignId === campaign.id;
               const busyHere = busy === `campaign:${campaign.id}`;
               const operations = operationsByCampaign[campaign.id] ?? null;
+              const operationalAnalytics = operationalAnalyticsByCampaign[campaign.id] ?? null;
               return (
                 <article className={`mgr-campaign${open ? ' is-open' : ''}`} key={campaign.id}>
                   <div className="mgr-campaign-head">
@@ -1583,6 +1859,29 @@ export function OutreachManagerRead({
                           onClick={() => rebuild(campaign)}
                         >
                           <Copy size={14} /> Build it again
+                        </button>
+                      )}
+                      {!terminal &&
+                        (campaign.failedCount > 0 || (operations?.queues.failed ?? 0) > 0) && (
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={busy !== ''}
+                            title="Retries only failures known to have produced no side effect. Unknown sends remain held."
+                            onClick={() => void retryCampaignFailures(campaign)}
+                          >
+                            <RefreshCw size={14} /> Retry definite failures
+                          </button>
+                        )}
+                      {newerWorkflowAvailable && !terminal && (
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={busy !== ''}
+                          title="Only pending, unadmitted leads change. Existing waves keep their original workflow snapshot."
+                          onClick={() => void applyLatestWorkflow(campaign)}
+                        >
+                          <RefreshCw size={14} /> Apply workflow v{workflow!.version} to pending
                         </button>
                       )}
                       <button
@@ -1855,6 +2154,68 @@ export function OutreachManagerRead({
                                 .join(' · ')}
                             </p>
                           )}
+                          {operationalAnalytics && (
+                            <>
+                              <h4>Why this campaign is moving at this speed</h4>
+                              <p className="li-hint">{operationalAnalytics.bottlenecks.reason}</p>
+                              <div className="li-stat-grid">
+                                <div>
+                                  <span>Audience</span>
+                                  <strong>{operationalAnalytics.funnel.totalAudience}</strong>
+                                </div>
+                                <div>
+                                  <span>Pending</span>
+                                  <strong>{operationalAnalytics.funnel.pending}</strong>
+                                </div>
+                                <div>
+                                  <span>In sequence</span>
+                                  <strong>{operationalAnalytics.funnel.inSequence}</strong>
+                                </div>
+                                <div>
+                                  <span>Invited</span>
+                                  <strong>{operationalAnalytics.funnel.invited}</strong>
+                                </div>
+                                <div>
+                                  <span>Accepted</span>
+                                  <strong>{operationalAnalytics.funnel.accepted}</strong>
+                                </div>
+                                <div>
+                                  <span>Messaged</span>
+                                  <strong>{operationalAnalytics.funnel.messaged}</strong>
+                                </div>
+                                <div>
+                                  <span>Replied</span>
+                                  <strong>{operationalAnalytics.funnel.replied}</strong>
+                                </div>
+                                <div>
+                                  <span>Overdue actions</span>
+                                  <strong>{operationalAnalytics.bottlenecks.overdueActions}</strong>
+                                </div>
+                              </div>
+                              {operationalAnalytics.steps.length > 0 && (
+                                <p className="li-hint">
+                                  Step health:{' '}
+                                  {operationalAnalytics.steps
+                                    .map(
+                                      (row) =>
+                                        `${row.workflowStepId}: ${row.executed} done · ${row.overdue} overdue${row.medianQueueLatencyMinutes === null ? '' : ` · median ${Math.round(row.medianQueueLatencyMinutes)}m late`}`
+                                    )
+                                    .join(' | ')}
+                                </p>
+                              )}
+                              {operationalAnalytics.senders.length > 1 && (
+                                <p className="li-hint">
+                                  Sender allocation:{' '}
+                                  {operationalAnalytics.senders
+                                    .map(
+                                      (row) =>
+                                        `${seatLabel(row.seatKey)} ${row.executed} actions · ${row.accepted}/${row.invitesSent} accepted · ${row.replied} replies`
+                                    )
+                                    .join(' | ')}
+                                </p>
+                              )}
+                            </>
+                          )}
                           <h4>Admission waves</h4>
                           {operations.waves.length === 0 ? (
                             <p className="empty-copy">
@@ -1905,6 +2266,19 @@ export function OutreachManagerRead({
                       onLoadTimeline={loadMemberTimeline}
                       onSkip={(member) => void skipMember(member)}
                       onEnd={(member) => void endMember(member)}
+                      onRerunCondition={(member, stepId) =>
+                        void rerunMemberCondition(member, stepId)
+                      }
+                      onResumeAtStep={(member, stepId) => void resumeMemberAtStep(member, stepId)}
+                      followUpCampaigns={campaigns.filter(
+                        (candidate) =>
+                          candidate.id !== campaign.id &&
+                          !['stopped', 'completed'].includes(candidate.status)
+                      )}
+                      onBulkRetry={(memberIds) => void retrySelectedFailures(campaign, memberIds)}
+                      onMoveSelected={(targetCampaignId, memberIds) =>
+                        void moveSelectedMembers(campaign, targetCampaignId, memberIds)
+                      }
                     />
                   )}
                 </article>

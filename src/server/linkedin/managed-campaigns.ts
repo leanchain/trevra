@@ -114,6 +114,7 @@ export interface ManagedCampaignMember {
   waveId: string | null;
   waveOrdinal: number | null;
   assignedSeatKey: string | null;
+  workflowVersion: number | null;
   assignedVariants: Record<string, string>;
   branchState: Record<string, unknown>;
   lastActionId: string | null;
@@ -208,6 +209,8 @@ interface MemberRow {
   wave_id: string | null;
   wave_ordinal: number | null;
   assigned_seat_key: string | null;
+  workflow_snapshot_json: unknown;
+  workflow_version: number | null;
   assigned_variants: unknown;
   branch_state_json: unknown;
   last_action_id: string | null;
@@ -415,6 +418,7 @@ function toMember(row: MemberRow): ManagedCampaignMember {
     waveId: row.wave_id,
     waveOrdinal: row.wave_ordinal === null ? null : Number(row.wave_ordinal),
     assignedSeatKey: row.assigned_seat_key,
+    workflowVersion: row.workflow_version === null ? null : Number(row.workflow_version),
     assignedVariants: parseVariants(row.assigned_variants),
     branchState: parseJsonObject(row.branch_state_json),
     lastActionId: row.last_action_id,
@@ -480,7 +484,7 @@ export async function listCampaignMembers(
     .prepare(
       `
     SELECT m.id,m.campaign_id,m.contact_id,m.status,m.step_index,m.next_eligible_at,m.admitted_at,m.wave_id,w.ordinal AS wave_ordinal,
-           m.assigned_seat_key,m.assigned_variants,m.branch_state_json,m.last_action_id,m.exclusion_reason,m.last_failure_reason,
+           m.assigned_seat_key,m.workflow_snapshot_json,m.workflow_version,m.assigned_variants,m.branch_state_json,m.last_action_id,m.exclusion_reason,m.last_failure_reason,
            l.first_name,l.last_name,l.company,l.email,l.profile_url,l.custom_fields_json
     FROM linkedin_campaign_members m
     JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
@@ -952,8 +956,11 @@ export async function admitPendingCampaignMembers(
       const sender = senderKeys[(ordinal - 1 + at) % senderKeys.length];
       const result = await tx
         .prepare(
-          `UPDATE linkedin_campaign_members
-           SET status='active',admitted_at=?::timestamptz,wave_id=?,assigned_seat_key=?,next_eligible_at=?::timestamptz,updated_at=?::timestamptz
+          `UPDATE linkedin_campaign_members m
+           SET status='active',admitted_at=?::timestamptz,wave_id=?,assigned_seat_key=?,
+               workflow_snapshot_json=(SELECT c.sequence_json FROM linkedin_campaigns c WHERE c.workspace_id=m.workspace_id AND c.id=m.campaign_id),
+               workflow_version=(SELECT CASE WHEN (c.sequence_json->>'workflowVersion') ~ '^[0-9]+$' THEN (c.sequence_json->>'workflowVersion')::integer ELSE NULL END FROM linkedin_campaigns c WHERE c.workspace_id=m.workspace_id AND c.id=m.campaign_id),
+               next_eligible_at=?::timestamptz,updated_at=?::timestamptz
            WHERE workspace_id=? AND id=? AND status='pending' AND admitted_at IS NULL`
         )
         .run(
@@ -1045,18 +1052,16 @@ export async function startManagedCampaign(
   const workflow = await getWorkflow(db, workspaceId, campaign.workflowId);
   if (!workflow) throw new Error('Campaign workflow no longer exists.');
   const timestamp = now.toISOString();
-  const snapshot = JSON.stringify({
-    manager: true,
-    workflowId: workflow.id,
-    workflowVersion: workflow.version,
-    steps: workflow.steps
-  });
+  // Resume is lossless. Workflow upgrades are explicit through
+  // applyLatestWorkflowToPendingMembers; a pause/resume must never mutate the
+  // sequence already chosen for pending leads, and admitted leads carry their
+  // own immutable snapshot from wave admission.
   await db.transaction(async (tx) => {
     await tx
       .prepare(
-        `UPDATE linkedin_campaigns SET status='running',started_at=COALESCE(started_at,?),paused_at=NULL,sequence_json=?::jsonb,updated_at=? WHERE workspace_id=? AND id=?`
+        `UPDATE linkedin_campaigns SET status='running',started_at=COALESCE(started_at,?),paused_at=NULL,updated_at=? WHERE workspace_id=? AND id=?`
       )
-      .run(timestamp, snapshot, timestamp, workspaceId, campaignId);
+      .run(timestamp, timestamp, workspaceId, campaignId);
     // Pending means not admitted. Starting/resuming a campaign never promotes the whole audience;
     // the runner's admission pass creates a capacity-safe wave later.
     await tx
@@ -1900,6 +1905,50 @@ export async function duplicateManagedCampaign(
   );
 }
 
+export async function applyLatestWorkflowToPendingMembers(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  now: Date = new Date()
+): Promise<{
+  campaign: ManagedCampaign;
+  previousVersion: number | null;
+  latestVersion: number;
+  pendingAffected: number;
+}> {
+  const campaign = await getManagedCampaign(db, workspaceId, campaignId);
+  if (!campaign) throw new Error('Campaign not found.');
+  if (campaign.status === 'stopped' || campaign.status === 'completed')
+    throw new Error(`A ${campaign.status} campaign cannot be upgraded.`);
+  const workflow = await getWorkflow(db, workspaceId, campaign.workflowId);
+  if (!workflow) throw new Error('Campaign workflow no longer exists.');
+  const snapshot = JSON.stringify({
+    manager: true,
+    workflowId: workflow.id,
+    workflowVersion: workflow.version,
+    steps: workflow.steps
+  });
+  const timestamp = now.toISOString();
+  const pending = await db
+    .prepare(
+      `SELECT COUNT(*)::int AS total FROM linkedin_campaign_members
+       WHERE workspace_id=? AND campaign_id=? AND admitted_at IS NULL AND status='pending'`
+    )
+    .get<{ total: number }>(workspaceId, campaignId);
+  await db
+    .prepare(
+      `UPDATE linkedin_campaigns SET sequence_json=?::jsonb,updated_at=?::timestamptz
+       WHERE workspace_id=? AND id=?`
+    )
+    .run(snapshot, timestamp, workspaceId, campaignId);
+  return {
+    campaign: (await getManagedCampaign(db, workspaceId, campaignId)) as ManagedCampaign,
+    previousVersion: campaign.workflowVersion,
+    latestVersion: workflow.version,
+    pendingAffected: Number(pending?.total ?? 0)
+  };
+}
+
 export interface CampaignMemberTimeline {
   member: ManagedCampaignMember;
   events: Array<{
@@ -1920,7 +1969,7 @@ export async function campaignMemberTimeline(
   const memberRow = await db
     .prepare(
       `SELECT m.id,m.campaign_id,m.contact_id,m.status,m.step_index,m.next_eligible_at,m.admitted_at,m.wave_id,w.ordinal AS wave_ordinal,
-            m.assigned_seat_key,m.assigned_variants,m.branch_state_json,m.last_action_id,m.exclusion_reason,m.last_failure_reason,
+            m.assigned_seat_key,m.workflow_snapshot_json,m.workflow_version,m.assigned_variants,m.branch_state_json,m.last_action_id,m.exclusion_reason,m.last_failure_reason,
             l.first_name,l.last_name,l.company,l.email,l.profile_url,l.custom_fields_json
      FROM linkedin_campaign_members m JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
      LEFT JOIN linkedin_campaign_waves w ON w.id=m.wave_id AND w.workspace_id=m.workspace_id
@@ -2044,11 +2093,20 @@ export async function skipManagedCampaignMemberStep(
 ): Promise<boolean> {
   const row = await db
     .prepare(
-      `SELECT campaign_id,step_index,status FROM linkedin_campaign_members WHERE workspace_id=? AND id=?`
+      `SELECT campaign_id,step_index,status,workflow_snapshot_json FROM linkedin_campaign_members WHERE workspace_id=? AND id=?`
     )
-    .get<{ campaign_id: string; step_index: number; status: string }>(workspaceId, memberId);
+    .get<{
+      campaign_id: string;
+      step_index: number;
+      status: string;
+      workflow_snapshot_json: unknown;
+    }>(workspaceId, memberId);
   if (!row || !['active', 'waiting', 'manual', 'paused'].includes(row.status)) return false;
-  const steps = await campaignWorkflowSteps(db, workspaceId, row.campaign_id);
+  const memberSteps = campaignSnapshotSteps(row.workflow_snapshot_json);
+  const steps =
+    memberSteps.length > 0
+      ? memberSteps
+      : await campaignWorkflowSteps(db, workspaceId, row.campaign_id);
   const step = steps[Number(row.step_index)];
   if (!step) return false;
   const targetId = step.nextStepId === null ? null : step.nextStepId;
@@ -2077,6 +2135,305 @@ export async function skipManagedCampaignMemberStep(
       );
   });
   return true;
+}
+
+export async function recordManagedCampaignAudit(
+  db: Db,
+  input: {
+    workspaceId: string;
+    actorId: string;
+    eventType: string;
+    entityType: 'linkedin_campaign' | 'linkedin_campaign_member' | 'linkedin_workflow';
+    entityId: string;
+    metadata?: Record<string, unknown>;
+  },
+  now: Date = new Date()
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO audit_events (id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?::timestamptz)`
+    )
+    .run(
+      id('audit'),
+      input.workspaceId,
+      'user',
+      input.actorId,
+      input.eventType,
+      input.entityType,
+      input.entityId,
+      JSON.stringify(input.metadata ?? {}),
+      now.toISOString()
+    );
+}
+
+async function memberExecutionContext(
+  db: Db,
+  workspaceId: string,
+  memberId: string
+): Promise<{
+  campaignId: string;
+  status: string;
+  stepIndex: number;
+  steps: WorkflowStep[];
+} | null> {
+  const row = await db
+    .prepare(
+      `SELECT campaign_id,status,step_index,workflow_snapshot_json
+       FROM linkedin_campaign_members WHERE workspace_id=? AND id=?`
+    )
+    .get<{
+      campaign_id: string;
+      status: string;
+      step_index: number;
+      workflow_snapshot_json: unknown;
+    }>(workspaceId, memberId);
+  if (!row) return null;
+  const memberSteps = campaignSnapshotSteps(row.workflow_snapshot_json);
+  const steps =
+    memberSteps.length > 0
+      ? memberSteps
+      : await campaignWorkflowSteps(db, workspaceId, row.campaign_id);
+  return {
+    campaignId: row.campaign_id,
+    status: row.status,
+    stepIndex: Number(row.step_index),
+    steps
+  };
+}
+
+/** Re-evaluate a condition/monitor without replaying any outbound action. */
+export async function rerunManagedCampaignCondition(
+  db: Db,
+  workspaceId: string,
+  memberId: string,
+  stepId?: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  const context = await memberExecutionContext(db, workspaceId, memberId);
+  if (!context || ['replied', 'removed', 'excluded'].includes(context.status)) return false;
+  const index = stepId ? context.steps.findIndex((step) => step.id === stepId) : context.stepIndex;
+  const step = context.steps[index];
+  if (!step || (step.action !== 'condition' && step.action !== 'monitor')) return false;
+  const timestamp = now.toISOString();
+  const result = await db
+    .prepare(
+      `UPDATE linkedin_campaign_members
+       SET step_index=?,status='waiting',next_eligible_at=?::timestamptz,
+           branch_state_json=(COALESCE(branch_state_json,'{}'::jsonb) - ?::text - ?::text),
+           last_failure_reason=NULL,ended_at=NULL,updated_at=?::timestamptz
+       WHERE workspace_id=? AND id=? AND status NOT IN ('replied','removed','excluded')`
+    )
+    .run(
+      index,
+      timestamp,
+      `branch:${step.id}`,
+      `monitor:${step.id}`,
+      timestamp,
+      workspaceId,
+      memberId
+    );
+  return result.changes > 0;
+}
+
+/** Resume one lead at an exact node, cancelling only work that has not started. */
+export async function resumeManagedCampaignMemberAtStep(
+  db: Db,
+  workspaceId: string,
+  memberId: string,
+  stepId: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  const context = await memberExecutionContext(db, workspaceId, memberId);
+  if (!context || ['replied', 'removed', 'excluded'].includes(context.status)) return false;
+  const index = context.steps.findIndex((step) => step.id === stepId);
+  if (index < 0) return false;
+  const timestamp = now.toISOString();
+  let changed = 0;
+  await db.transaction(async (tx) => {
+    await tx
+      .prepare(
+        `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL,claimed_by=NULL,
+             lease_expires_at=NULL,batch_id=NULL
+         WHERE workspace_id=? AND campaign_member_id=? AND status IN ('planned','held') AND claimed_at IS NULL`
+      )
+      .run(workspaceId, memberId);
+    await tx
+      .prepare(
+        `UPDATE linkedin_campaign_channel_actions SET status='skipped',claimed_at=NULL,updated_at=?::timestamptz
+         WHERE workspace_id=? AND member_id=? AND status IN ('planned','failed') AND outcome_known=TRUE`
+      )
+      .run(timestamp, workspaceId, memberId);
+    const result = await tx
+      .prepare(
+        `UPDATE linkedin_campaign_members SET step_index=?,status='waiting',next_eligible_at=?::timestamptz,
+             last_action_id=NULL,last_failure_reason=NULL,ended_at=NULL,updated_at=?::timestamptz
+         WHERE workspace_id=? AND id=? AND status NOT IN ('replied','removed','excluded')`
+      )
+      .run(index, timestamp, timestamp, workspaceId, memberId);
+    changed = result.changes;
+  });
+  return changed > 0;
+}
+
+const RETRYABLE_LINKEDIN_FAILURES = [
+  'not_found',
+  'compose_unavailable',
+  'paid_credit_required',
+  'selector_drift',
+  'limit_wall',
+  'challenge'
+] as const;
+
+/**
+ * Requeue only failures whose side effect is known not to have happened.
+ * `unknown` and settlement-held rows are intentionally absent: retrying those
+ * is how a campaign sends the same invite/message twice.
+ */
+export async function retryManagedCampaignFailures(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  memberIds: readonly string[] = [],
+  now: Date = new Date()
+): Promise<{ linkedinActions: number; channelActions: number; membersResumed: number }> {
+  const timestamp = now.toISOString();
+  const scopeMembers = [...new Set(memberIds.filter(Boolean))];
+  const linkedinRows = await db
+    .prepare(
+      `UPDATE linkedin_actions SET status='planned',failure_kind=NULL,recorded_at=NULL,claimed_at=NULL,
+           claimed_by=NULL,lease_expires_at=NULL,batch_id=NULL,settlement_hold_at=NULL,planned_for=?::timestamptz
+       WHERE workspace_id=? AND campaign_id=? AND status='skipped'
+         AND failure_kind = ANY(?::text[])
+         AND (?::boolean=FALSE OR campaign_member_id = ANY(?::text[]))
+       RETURNING campaign_member_id`
+    )
+    .all<{ campaign_member_id: string | null }>(
+      timestamp,
+      workspaceId,
+      campaignId,
+      [...RETRYABLE_LINKEDIN_FAILURES],
+      scopeMembers.length > 0,
+      scopeMembers
+    );
+  const channelRows = await db
+    .prepare(
+      `UPDATE linkedin_campaign_channel_actions SET status='planned',claimed_at=NULL,last_error=NULL,
+           next_retry_at=NULL,planned_for=?::timestamptz,updated_at=?::timestamptz
+       WHERE workspace_id=? AND campaign_id=? AND status='failed' AND outcome_known=TRUE
+         AND (?::boolean=FALSE OR member_id = ANY(?::text[]))
+       RETURNING member_id`
+    )
+    .all<{ member_id: string }>(
+      timestamp,
+      timestamp,
+      workspaceId,
+      campaignId,
+      scopeMembers.length > 0,
+      scopeMembers
+    );
+  const affected = [
+    ...new Set([
+      ...linkedinRows
+        .map((row) => row.campaign_member_id)
+        .filter((id): id is string => Boolean(id)),
+      ...channelRows.map((row) => row.member_id)
+    ])
+  ];
+  let membersResumed = 0;
+  if (affected.length > 0) {
+    const result = await db
+      .prepare(
+        `UPDATE linkedin_campaign_members SET status='waiting',next_eligible_at=?::timestamptz,
+             last_failure_reason=NULL,ended_at=NULL,updated_at=?::timestamptz
+         WHERE workspace_id=? AND campaign_id=? AND id = ANY(?::text[]) AND status='failed'`
+      )
+      .run(timestamp, timestamp, workspaceId, campaignId, affected);
+    membersResumed = result.changes;
+  }
+  return {
+    linkedinActions: linkedinRows.length,
+    channelActions: channelRows.length,
+    membersResumed
+  };
+}
+
+/** Move selected leads into another campaign only after releasing the source claim. */
+export async function moveManagedCampaignMembers(
+  db: Db,
+  workspaceId: string,
+  sourceCampaignId: string,
+  targetCampaignId: string,
+  memberIds: readonly string[],
+  now: Date = new Date()
+): Promise<{ moved: number; skipped: number }> {
+  if (sourceCampaignId === targetCampaignId)
+    throw new Error('Source and target campaign must differ.');
+  const target = await getManagedCampaign(db, workspaceId, targetCampaignId);
+  if (!target || ['stopped', 'completed'].includes(target.status))
+    throw new Error('Target follow-up campaign must be draft, running, or paused.');
+  const ids = [...new Set(memberIds.filter(Boolean))];
+  if (ids.length === 0) return { moved: 0, skipped: 0 };
+  const timestamp = now.toISOString();
+  let moved = 0;
+  let skipped = 0;
+  await db.transaction(async (tx) => {
+    const rows = await tx
+      .prepare(
+        `SELECT id,contact_id FROM linkedin_campaign_members
+         WHERE workspace_id=? AND campaign_id=? AND id = ANY(?::text[]) FOR UPDATE`
+      )
+      .all<{ id: string; contact_id: string }>(workspaceId, sourceCampaignId, ids);
+    for (const row of rows) {
+      await tx
+        .prepare(
+          `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL
+           WHERE workspace_id=? AND campaign_member_id=? AND status IN ('planned','held') AND claimed_at IS NULL`
+        )
+        .run(workspaceId, row.id);
+      await tx
+        .prepare(
+          `UPDATE linkedin_campaign_channel_actions SET status='skipped',claimed_at=NULL,updated_at=?::timestamptz
+           WHERE workspace_id=? AND member_id=? AND status IN ('planned','failed') AND outcome_known=TRUE`
+        )
+        .run(timestamp, workspaceId, row.id);
+      await tx
+        .prepare(
+          `UPDATE linkedin_campaign_members SET status='removed',next_eligible_at=NULL,ended_at=?::timestamptz,updated_at=?::timestamptz
+           WHERE workspace_id=? AND id=?`
+        )
+        .run(timestamp, timestamp, workspaceId, row.id);
+      const occupied = await tx
+        .prepare(
+          `SELECT 1 AS occupied FROM linkedin_campaign_members
+           WHERE workspace_id=? AND contact_id=? AND campaign_id<>? AND status IN ('pending','active','waiting','manual','paused')
+           LIMIT 1`
+        )
+        .get(workspaceId, row.contact_id, targetCampaignId);
+      if (occupied) {
+        skipped += 1;
+        continue;
+      }
+      await tx
+        .prepare(
+          `INSERT INTO linkedin_lead_list_members (workspace_id,list_id,contact_id,created_at)
+           VALUES (?,?,?,?::timestamptz) ON CONFLICT DO NOTHING`
+        )
+        .run(workspaceId, target.leadListId, row.contact_id, timestamp);
+      const inserted = await tx
+        .prepare(
+          `INSERT INTO linkedin_campaign_members
+             (id,workspace_id,campaign_id,contact_id,status,step_index,assigned_variants,branch_state_json,created_at,updated_at)
+           VALUES (?, ?, ?, ?, 'pending', 0, '{}'::jsonb, '{}'::jsonb, ?::timestamptz, ?::timestamptz)
+           ON CONFLICT DO NOTHING`
+        )
+        .run(id('licm'), workspaceId, targetCampaignId, row.contact_id, timestamp, timestamp);
+      if (inserted.changes > 0) moved += 1;
+      else skipped += 1;
+    }
+    skipped += Math.max(0, ids.length - rows.length);
+  });
+  return { moved, skipped };
 }
 
 export interface ManagedAnalytics {
@@ -2292,5 +2649,309 @@ export async function managedAnalytics(
       sent: Number(v.sent),
       replied: Number(v.replied)
     }))
+  };
+}
+
+export interface CampaignOperationalAnalytics {
+  funnel: {
+    totalAudience: number;
+    pending: number;
+    inSequence: number;
+    invited: number;
+    accepted: number;
+    messaged: number;
+    replied: number;
+    completed: number;
+    failed: number;
+    excluded: number;
+  };
+  waves: Array<
+    ManagedCampaignWave & {
+      backlog: number;
+      replied: number;
+      accepted: number;
+      failed: number;
+      medianMinutesToFirstAction: number | null;
+    }
+  >;
+  steps: Array<{
+    workflowStepId: string;
+    action: WorkflowStep['action'] | 'unknown';
+    scheduled: number;
+    executed: number;
+    skipped: number;
+    failed: number;
+    overdue: number;
+    medianQueueLatencyMinutes: number | null;
+  }>;
+  variants: Array<{
+    workflowStepId: string;
+    variantId: string;
+    kind: string;
+    sent: number;
+    accepted: number;
+    replied: number;
+    acceptanceRate: number | null;
+    replyRate: number | null;
+    eligibleForWinner: boolean;
+  }>;
+  senders: Array<{
+    seatKey: string;
+    planned: number;
+    executed: number;
+    invitesSent: number;
+    accepted: number;
+    messagesSent: number;
+    replied: number;
+    failed: number;
+    safetyBlocks: number;
+  }>;
+  bottlenecks: {
+    pending: number;
+    waitingOnCondition: number;
+    overdueActions: number;
+    heldActions: number;
+    failedMembers: number;
+    limitingKind: string | null;
+    reason: string;
+  };
+}
+
+/**
+ * One server-side read model for operating a wave campaign. The campaign page
+ * should not reconstruct this from thousands of members in React: every count
+ * below is computed next to the rows that own the state and can therefore stay
+ * consistent with the runner's queue semantics.
+ */
+export async function campaignOperationalAnalytics(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  now: Date = new Date()
+): Promise<CampaignOperationalAnalytics> {
+  const campaign = await getManagedCampaign(db, workspaceId, campaignId);
+  if (!campaign) throw new Error('Campaign not found.');
+  const messageKinds = COUNTED_MESSAGE_KINDS.map((kind) => `'${kind}'`).join(', ');
+  const funnel = await db
+    .prepare(
+      `SELECT
+         COUNT(*)::int AS total_audience,
+         COUNT(*) FILTER (WHERE m.status='pending')::int AS pending,
+         COUNT(*) FILTER (WHERE m.admitted_at IS NOT NULL AND m.status IN ('active','waiting','manual','paused'))::int AS in_sequence,
+         COUNT(*) FILTER (WHERE EXISTS (
+           SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id
+             AND a.kind='invite' AND a.status IN ('sent','accepted','replied','declined')
+         ))::int AS invited,
+         COUNT(*) FILTER (WHERE EXISTS (
+           SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id
+             AND a.kind='invite' AND a.status IN ('accepted','replied')
+         ))::int AS accepted,
+         COUNT(*) FILTER (WHERE EXISTS (
+           SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id
+             AND a.kind IN (${messageKinds}) AND a.status IN ('sent','accepted','replied')
+         ) OR EXISTS (
+           SELECT 1 FROM linkedin_campaign_channel_actions ca WHERE ca.workspace_id=m.workspace_id AND ca.member_id=m.id
+             AND ca.kind='email' AND ca.status='completed'
+         ))::int AS messaged,
+         COUNT(*) FILTER (WHERE m.status='replied' OR EXISTS (
+           SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id AND a.status='replied'
+         ) OR EXISTS (
+           SELECT 1 FROM linkedin_campaign_channel_actions ca
+           JOIN linkedin_campaign_email_events ee ON ee.workspace_id=ca.workspace_id AND ee.channel_action_id=ca.id AND ee.event_kind='replied'
+           WHERE ca.workspace_id=m.workspace_id AND ca.member_id=m.id
+         ))::int AS replied,
+         COUNT(*) FILTER (WHERE m.status='completed')::int AS completed,
+         COUNT(*) FILTER (WHERE m.status='failed')::int AS failed,
+         COUNT(*) FILTER (WHERE m.status='excluded')::int AS excluded
+       FROM linkedin_campaign_members m WHERE m.workspace_id=? AND m.campaign_id=?`
+    )
+    .get<Record<string, number>>(workspaceId, campaignId);
+
+  const waveRows = await listCampaignWaves(db, workspaceId, campaignId);
+  const waveStats = await db
+    .prepare(
+      `SELECT m.wave_id,
+         COUNT(*) FILTER (WHERE m.status IN ('active','waiting','manual','paused'))::int AS backlog,
+         COUNT(*) FILTER (WHERE m.status='replied')::int AS replied,
+         COUNT(*) FILTER (WHERE EXISTS (
+           SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id
+             AND a.kind='invite' AND a.status IN ('accepted','replied')
+         ))::int AS accepted,
+         COUNT(*) FILTER (WHERE m.status='failed')::int AS failed,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (first_action.first_at - m.admitted_at))/60.0)
+           FILTER (WHERE first_action.first_at IS NOT NULL AND m.admitted_at IS NOT NULL) AS median_first_minutes
+       FROM linkedin_campaign_members m
+       LEFT JOIN LATERAL (
+         SELECT MIN(a.recorded_at) AS first_at FROM linkedin_actions a
+          WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id AND a.recorded_at IS NOT NULL
+       ) first_action ON TRUE
+       WHERE m.workspace_id=? AND m.campaign_id=? AND m.wave_id IS NOT NULL
+       GROUP BY m.wave_id`
+    )
+    .all<{
+      wave_id: string;
+      backlog: number;
+      replied: number;
+      accepted: number;
+      failed: number;
+      median_first_minutes: number | null;
+    }>(workspaceId, campaignId);
+  const statsByWave = new Map(waveStats.map((row) => [row.wave_id, row]));
+
+  const stepRows = await db
+    .prepare(
+      `SELECT a.workflow_step_id,
+         COUNT(*) FILTER (WHERE a.status IN ('planned','held'))::int AS scheduled,
+         COUNT(*) FILTER (WHERE a.status IN ('sent','accepted','replied','declined','withdrawn'))::int AS executed,
+         COUNT(*) FILTER (WHERE a.status='skipped')::int AS skipped,
+         COUNT(*) FILTER (WHERE a.failure_kind IS NOT NULL AND a.status NOT IN ('sent','accepted','replied'))::int AS failed,
+         COUNT(*) FILTER (WHERE a.status IN ('planned','held') AND a.planned_for<?::timestamptz)::int AS overdue,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (a.recorded_at-a.planned_for))/60.0)
+           FILTER (WHERE a.recorded_at IS NOT NULL AND a.planned_for IS NOT NULL) AS median_latency
+       FROM linkedin_actions a
+       WHERE a.workspace_id=? AND a.campaign_id=? AND a.workflow_step_id IS NOT NULL
+       GROUP BY a.workflow_step_id ORDER BY a.workflow_step_id`
+    )
+    .all<{
+      workflow_step_id: string;
+      scheduled: number;
+      executed: number;
+      skipped: number;
+      failed: number;
+      overdue: number;
+      median_latency: number | null;
+    }>(now.toISOString(), workspaceId, campaignId);
+  const stepById = new Map(campaign.steps.map((step) => [step.id, step]));
+
+  const variantRows = await db
+    .prepare(
+      `SELECT a.workflow_step_id,a.variant_id,a.kind,
+         COUNT(*) FILTER (WHERE a.status IN ('sent','accepted','replied','declined'))::int AS sent,
+         COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('accepted','replied'))::int AS accepted,
+         COUNT(*) FILTER (WHERE a.status='replied')::int AS replied
+       FROM linkedin_actions a
+       WHERE a.workspace_id=? AND a.campaign_id=? AND a.workflow_step_id IS NOT NULL AND a.variant_id IS NOT NULL
+       GROUP BY a.workflow_step_id,a.variant_id,a.kind ORDER BY a.workflow_step_id,a.variant_id`
+    )
+    .all<{
+      workflow_step_id: string;
+      variant_id: string;
+      kind: string;
+      sent: number;
+      accepted: number;
+      replied: number;
+    }>(workspaceId, campaignId);
+
+  const senderRows = await db
+    .prepare(
+      `SELECT a.seat_key,
+         COUNT(*) FILTER (WHERE a.status IN ('planned','held'))::int AS planned,
+         COUNT(*) FILTER (WHERE a.status IN ('sent','accepted','replied','declined','withdrawn'))::int AS executed,
+         COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('sent','accepted','replied','declined'))::int AS invites_sent,
+         COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('accepted','replied'))::int AS accepted,
+         COUNT(*) FILTER (WHERE a.kind IN (${messageKinds}) AND a.status IN ('sent','accepted','replied'))::int AS messages_sent,
+         COUNT(*) FILTER (WHERE a.status='replied')::int AS replied,
+         COUNT(*) FILTER (WHERE a.failure_kind IS NOT NULL AND a.status NOT IN ('sent','accepted','replied'))::int AS failed,
+         COUNT(*) FILTER (WHERE a.failure_kind IN ('limit_wall','challenge'))::int AS safety_blocks
+       FROM linkedin_actions a WHERE a.workspace_id=? AND a.campaign_id=?
+       GROUP BY a.seat_key ORDER BY a.seat_key`
+    )
+    .all<Record<string, string | number>>(workspaceId, campaignId);
+
+  const queues = await campaignQueueSummary(db, workspaceId, campaignId, now);
+  const latestWave = waveRows[0] ?? null;
+  const capacity = latestWave?.capacitySnapshot ?? {};
+  const limitingEntry = Object.entries(capacity)
+    .filter(([, value]) => Number.isFinite(value))
+    .sort((left, right) => left[1] - right[1])[0];
+  const limitingKind = limitingEntry?.[0] ?? null;
+  const reason =
+    queues.held > 0
+      ? `${queues.held} action(s) are held for operator review.`
+      : queues.failed > 0
+        ? `${queues.failed} lead(s) have failed and need operator action.`
+        : queues.waitingForConnection + queues.waitingForReply > 0
+          ? `${queues.waitingForConnection + queues.waitingForReply} lead(s) are waiting on an outcome.`
+          : queues.pending > 0 && limitingKind
+            ? `New admission is constrained by ${limitingKind} capacity.`
+            : queues.pending > 0
+              ? `${queues.pending} lead(s) remain in the pending pool until downstream capacity clears.`
+              : 'No material campaign bottleneck is currently detected.';
+
+  const n = (key: string) => Number(funnel?.[key] ?? 0);
+  return {
+    funnel: {
+      totalAudience: n('total_audience'),
+      pending: n('pending'),
+      inSequence: n('in_sequence'),
+      invited: n('invited'),
+      accepted: n('accepted'),
+      messaged: n('messaged'),
+      replied: n('replied'),
+      completed: n('completed'),
+      failed: n('failed'),
+      excluded: n('excluded')
+    },
+    waves: waveRows.map((wave) => {
+      const row = statsByWave.get(wave.id);
+      return {
+        ...wave,
+        backlog: Number(row?.backlog ?? 0),
+        replied: Number(row?.replied ?? 0),
+        accepted: Number(row?.accepted ?? 0),
+        failed: Number(row?.failed ?? 0),
+        medianMinutesToFirstAction:
+          row?.median_first_minutes === null || row?.median_first_minutes === undefined
+            ? null
+            : Number(row.median_first_minutes)
+      };
+    }),
+    steps: stepRows.map((row) => ({
+      workflowStepId: row.workflow_step_id,
+      action: stepById.get(row.workflow_step_id)?.action ?? 'unknown',
+      scheduled: Number(row.scheduled),
+      executed: Number(row.executed),
+      skipped: Number(row.skipped),
+      failed: Number(row.failed),
+      overdue: Number(row.overdue),
+      medianQueueLatencyMinutes: row.median_latency === null ? null : Number(row.median_latency)
+    })),
+    variants: variantRows.map((row) => {
+      const sent = Number(row.sent);
+      const accepted = Number(row.accepted);
+      const replied = Number(row.replied);
+      return {
+        workflowStepId: row.workflow_step_id,
+        variantId: row.variant_id,
+        kind: row.kind,
+        sent,
+        accepted,
+        replied,
+        acceptanceRate: row.kind === 'invite' && sent > 0 ? accepted / sent : null,
+        replyRate: sent > 0 ? replied / sent : null,
+        eligibleForWinner: sent >= 20
+      };
+    }),
+    senders: senderRows.map((row) => ({
+      seatKey: String(row.seat_key),
+      planned: Number(row.planned),
+      executed: Number(row.executed),
+      invitesSent: Number(row.invites_sent),
+      accepted: Number(row.accepted),
+      messagesSent: Number(row.messages_sent),
+      replied: Number(row.replied),
+      failed: Number(row.failed),
+      safetyBlocks: Number(row.safety_blocks)
+    })),
+    bottlenecks: {
+      pending: queues.pending,
+      waitingOnCondition:
+        queues.waitingForConnection + queues.waitingForReply + queues.waitingOther,
+      overdueActions: stepRows.reduce((sum, row) => sum + Number(row.overdue), 0),
+      heldActions: queues.held,
+      failedMembers: queues.failed,
+      limitingKind,
+      reason
+    }
   };
 }

@@ -136,6 +136,8 @@ interface DueMemberRow {
   step_index: number;
   admitted_at: string | null;
   assigned_seat_key: string | null;
+  workflow_snapshot_json: unknown;
+  workflow_version: number | null;
   assigned_variants: unknown;
   branch_state_json: unknown;
   first_name: string;
@@ -702,6 +704,14 @@ function queuePriorityForStep(
   return score;
 }
 
+function workflowStepsForMember(
+  member: Pick<DueMemberRow, 'workflow_snapshot_json'>,
+  fallback: readonly WorkflowStep[]
+): WorkflowStep[] {
+  const snapshot = campaignSnapshotSteps(member.workflow_snapshot_json);
+  return snapshot.length > 0 ? snapshot : [...fallback];
+}
+
 async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Promise<RunnerResult> {
   const result: RunnerResult = {
     campaignsTicked: 0,
@@ -951,7 +961,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
 
     const members = await db
       .prepare(
-        `SELECT m.id,m.contact_id,m.step_index,m.admitted_at,m.assigned_seat_key,m.assigned_variants,m.branch_state_json,
+        `SELECT m.id,m.contact_id,m.step_index,m.admitted_at,m.assigned_seat_key,m.workflow_snapshot_json,m.workflow_version,m.assigned_variants,m.branch_state_json,
               l.first_name,l.last_name,l.company,l.email,l.phone,l.country,l.profile_url,l.custom_fields_json
        FROM linkedin_campaign_members m
        JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
@@ -965,8 +975,10 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
 
     // Apply action-aware priority without losing the SQL's deterministic tie-breaks.
     members.sort((left, right) => {
-      const a = steps[Number(left.step_index)];
-      const b = steps[Number(right.step_index)];
+      const leftSteps = workflowStepsForMember(left, steps);
+      const rightSteps = workflowStepsForMember(right, steps);
+      const a = leftSteps[Number(left.step_index)];
+      const b = rightSteps[Number(right.step_index)];
       const aScore = a ? queuePriorityForStep(a, Number(left.step_index), now, null) : 0;
       const bScore = b ? queuePriorityForStep(b, Number(right.step_index), now, null) : 0;
       return bScore - aScore;
@@ -990,7 +1002,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
       for (const member of members) {
         const nowIso = now.toISOString();
         const stepIndex = Number(member.step_index);
-        const step = steps[stepIndex];
+        const executionSteps = workflowStepsForMember(member, steps);
+        const step = executionSteps[stepIndex];
         const senderKey =
           member.assigned_seat_key && budgetBySeat.has(member.assigned_seat_key)
             ? member.assigned_seat_key
@@ -1032,10 +1045,10 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             (step.action === 'condition' || step.action === 'monitor') &&
             step.config.condition.kind === 'replied'
           ) {
-            const target = targetIndexForBranch(steps, step.config.yesStepId);
+            const target = targetIndexForBranch(executionSteps, step.config.yesStepId);
             const transitioned = transitionMember({
               targetIndex: target,
-              steps,
+              steps: executionSteps,
               from: now,
               actionId: null,
               now,
@@ -1060,8 +1073,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         if (step.action === 'wait') {
           const waitUntil = new Date(now.getTime() + delayMilliseconds(step.config.duration));
           const transitioned = transitionMember({
-            targetIndex: nextStepIndex(steps, stepIndex),
-            steps,
+            targetIndex: nextStepIndex(executionSteps, stepIndex),
+            steps: executionSteps,
             from: waitUntil,
             actionId: null,
             now,
@@ -1107,14 +1120,14 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           );
           const branchTarget = (outcome: 'yes' | 'no') =>
             targetIndexForBranch(
-              steps,
+              executionSteps,
               outcome === 'yes' ? step.config.yesStepId : step.config.noStepId
             );
 
           if (verdict === 'yes' || verdict === 'no') {
             const transitioned = transitionMember({
               targetIndex: branchTarget(verdict),
-              steps,
+              steps: executionSteps,
               from: now,
               actionId: null,
               now,
@@ -1204,7 +1217,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           if (step.action === 'condition') {
             const transitioned = transitionMember({
               targetIndex: branchTarget('no'),
-              steps,
+              steps: executionSteps,
               from: now,
               actionId: null,
               now,
@@ -1225,7 +1238,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           if (now.getTime() >= timeoutAt.getTime()) {
             const transitioned = transitionMember({
               targetIndex: branchTarget('no'),
-              steps,
+              steps: executionSteps,
               from: now,
               actionId: null,
               now,
@@ -1270,7 +1283,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           if (!accepted) {
             const terminalNegative =
               invite && ['declined', 'withdrawn', 'skipped'].includes(invite.status);
-            const nextWithdraw = steps
+            const nextWithdraw = executionSteps
               .slice(stepIndex + 1)
               .find(
                 (candidate): candidate is Extract<WorkflowStep, { action: 'withdraw_pending' }> =>
@@ -1283,7 +1296,13 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
                 : null;
             const stale = staleAt !== null && now.getTime() >= staleAt.getTime();
             if (terminalNegative || stale) {
-              const advanced = advanceMember({ stepIndex, steps, from: now, actionId: null, now });
+              const advanced = advanceMember({
+                stepIndex,
+                steps: executionSteps,
+                from: now,
+                actionId: null,
+                now
+              });
               memberWrites.set(member.id, advanced.write);
               if (advanced.completed) result.membersCompleted += 1;
               continue;
@@ -1330,7 +1349,13 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             memberWrites.set(member.id, stayOnStep(stepIndex, outcome.waitUntil, now));
             continue;
           }
-          const advanced = advanceMember({ stepIndex, steps, from: now, actionId: null, now });
+          const advanced = advanceMember({
+            stepIndex,
+            steps: executionSteps,
+            from: now,
+            actionId: null,
+            now
+          });
           memberWrites.set(member.id, advanced.write);
           if (advanced.completed) result.membersCompleted += 1;
           continue;
@@ -1350,7 +1375,13 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
               `UPDATE linkedin_lead_contacts SET tags_json=?::jsonb,updated_at=? WHERE workspace_id=? AND id=?`
             )
             .run(JSON.stringify([...tags]), nowIso, workspaceId, member.contact_id);
-          const advanced = advanceMember({ stepIndex, steps, from: now, actionId: null, now });
+          const advanced = advanceMember({
+            stepIndex,
+            steps: executionSteps,
+            from: now,
+            actionId: null,
+            now
+          });
           memberWrites.set(member.id, advanced.write);
           if (advanced.completed) result.membersCompleted += 1;
           continue;
@@ -1388,7 +1419,13 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           }
 
           if (step.action === 'email' && (!member.email || !member.email.trim())) {
-            const advanced = advanceMember({ stepIndex, steps, from: now, actionId: null, now });
+            const advanced = advanceMember({
+              stepIndex,
+              steps: executionSteps,
+              from: now,
+              actionId: null,
+              now
+            });
             memberWrites.set(member.id, {
               ...advanced.write,
               branchState: branchStatePatch('external:email_available', false)

@@ -338,8 +338,10 @@ import {
   upsertCampaignMailboxSettings
 } from './linkedin/campaign-channels.js';
 import {
+  applyLatestWorkflowToPendingMembers,
   campaignAdmissionSummary,
   campaignMemberTimeline,
+  campaignOperationalAnalytics,
   campaignQueueSummary,
   campaignWarmupFraction,
   completeManualTask,
@@ -352,10 +354,15 @@ import {
   listManagedCampaigns,
   listManualTasks,
   managedAnalytics,
+  moveManagedCampaignMembers,
   pauseManagedCampaign,
   previewManagedCampaignLaunch,
+  recordManagedCampaignAudit,
   releaseSeatWork,
   removeCampaignMember,
+  rerunManagedCampaignCondition,
+  resumeManagedCampaignMemberAtStep,
+  retryManagedCampaignFailures,
   setCampaignMemberPaused,
   skipManagedCampaignMemberStep,
   startManagedCampaign,
@@ -3777,6 +3784,24 @@ export function createApp(db: Db) {
   );
 
   app.get(
+    '/api/linkedin/manager/campaigns/:id/operational-analytics',
+    linkedinRoute(async (req, res) => {
+      try {
+        res.json(
+          await campaignOperationalAnalytics(
+            db,
+            req.auth!.workspaceId,
+            String(req.params.id),
+            new Date()
+          )
+        );
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
+  app.get(
     '/api/linkedin/manager/campaigns/:id/waves',
     linkedinRoute(async (req, res) => {
       const campaignId = String(req.params.id);
@@ -3819,6 +3844,28 @@ export function createApp(db: Db) {
             new Date()
           )
         });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/campaigns/:id/apply-latest-workflow',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'apply a newer workflow version to pending campaign leads');
+      z.object({})
+        .strict()
+        .parse(req.body ?? {});
+      try {
+        res.json(
+          await applyLatestWorkflowToPendingMembers(
+            db,
+            req.auth!.workspaceId,
+            String(req.params.id),
+            new Date()
+          )
+        );
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
@@ -3929,6 +3976,82 @@ export function createApp(db: Db) {
     })
   );
 
+  app.post(
+    '/api/linkedin/manager/campaigns/:id/retry-failures',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'retry managed campaign failures');
+      const input = z
+        .object({ memberIds: z.array(z.string().trim().min(1).max(160)).max(1000).default([]) })
+        .strict()
+        .parse(req.body ?? {});
+      const campaignId = String(req.params.id);
+      if (!(await getManagedCampaign(db, req.auth!.workspaceId, campaignId)))
+        throw new LinkedInApiError('Managed campaign not found', 404);
+      const now = new Date();
+      const result = await retryManagedCampaignFailures(
+        db,
+        req.auth!.workspaceId,
+        campaignId,
+        input.memberIds,
+        now
+      );
+      await recordManagedCampaignAudit(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          actorId: req.auth!.userId,
+          eventType: 'linkedin_campaign.failures_retried',
+          entityType: 'linkedin_campaign',
+          entityId: campaignId,
+          metadata: { ...result, memberIds: input.memberIds }
+        },
+        now
+      );
+      res.json(result);
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/campaigns/:id/move-members',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'move managed campaign leads to a follow-up campaign');
+      const input = z
+        .object({
+          targetCampaignId: z.string().trim().min(1).max(160),
+          memberIds: z.array(z.string().trim().min(1).max(160)).min(1).max(1000)
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const sourceCampaignId = String(req.params.id);
+      const now = new Date();
+      const result = await moveManagedCampaignMembers(
+        db,
+        req.auth!.workspaceId,
+        sourceCampaignId,
+        input.targetCampaignId,
+        input.memberIds,
+        now
+      );
+      await recordManagedCampaignAudit(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          actorId: req.auth!.userId,
+          eventType: 'linkedin_campaign.members_moved',
+          entityType: 'linkedin_campaign',
+          entityId: sourceCampaignId,
+          metadata: {
+            targetCampaignId: input.targetCampaignId,
+            ...result,
+            memberIds: input.memberIds
+          }
+        },
+        now
+      );
+      res.json(result);
+    })
+  );
+
   app.get(
     '/api/linkedin/manager/members/:id/timeline',
     linkedinRoute(async (req, res) => {
@@ -3943,20 +4066,104 @@ export function createApp(db: Db) {
   );
 
   app.post(
+    '/api/linkedin/manager/members/:id/rerun-condition',
+    linkedinRoute(async (req, res) => {
+      const input = z
+        .object({ stepId: z.string().trim().min(1).max(64).optional() })
+        .strict()
+        .parse(req.body ?? {});
+      const now = new Date();
+      const memberId = String(req.params.id);
+      const changed = await rerunManagedCampaignCondition(
+        db,
+        req.auth!.workspaceId,
+        memberId,
+        input.stepId,
+        now
+      );
+      if (!changed)
+        throw new LinkedInApiError('Condition or monitor step not found for this member', 404);
+      await recordManagedCampaignAudit(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          actorId: req.auth!.userId,
+          eventType: 'linkedin_campaign_member.condition_rerun',
+          entityType: 'linkedin_campaign_member',
+          entityId: memberId,
+          metadata: { stepId: input.stepId ?? null }
+        },
+        now
+      );
+      res.json({ rerun: true });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/members/:id/resume-at-step',
+    linkedinRoute(async (req, res) => {
+      const input = z
+        .object({ stepId: z.string().trim().min(1).max(64) })
+        .strict()
+        .parse(req.body ?? {});
+      const now = new Date();
+      const memberId = String(req.params.id);
+      const changed = await resumeManagedCampaignMemberAtStep(
+        db,
+        req.auth!.workspaceId,
+        memberId,
+        input.stepId,
+        now
+      );
+      if (!changed) throw new LinkedInApiError('Workflow step not found for this member', 404);
+      await recordManagedCampaignAudit(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          actorId: req.auth!.userId,
+          eventType: 'linkedin_campaign_member.resumed_at_step',
+          entityType: 'linkedin_campaign_member',
+          entityId: memberId,
+          metadata: { stepId: input.stepId }
+        },
+        now
+      );
+      res.json({ resumed: true, stepId: input.stepId });
+    })
+  );
+
+  app.post(
     '/api/linkedin/manager/members/:id/end',
     linkedinRoute(async (req, res) => {
       const input = z
-        .object({ outcome: z.enum(['completed', 'excluded', 'removed']).default('completed') })
+        .object({
+          outcome: z.enum(['completed', 'excluded', 'removed']).default('completed'),
+          reason: z.string().trim().max(500).optional()
+        })
         .strict()
         .parse(req.body ?? {});
+      const now = new Date();
+      const memberId = String(req.params.id);
       const ended = await endManagedCampaignMember(
         db,
         req.auth!.workspaceId,
-        String(req.params.id),
+        memberId,
         input.outcome,
-        new Date()
+        now
       );
       if (!ended) throw new LinkedInApiError('Active campaign member not found', 404);
+      await recordManagedCampaignAudit(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          actorId: req.auth!.userId,
+          eventType: 'linkedin_campaign_member.ended',
+          entityType: 'linkedin_campaign_member',
+          entityId: memberId,
+          metadata: { outcome: input.outcome, reason: input.reason ?? null }
+        },
+        now
+      );
       res.json({ ended: true, outcome: input.outcome });
     })
   );
@@ -3964,16 +4171,26 @@ export function createApp(db: Db) {
   app.post(
     '/api/linkedin/manager/members/:id/skip',
     linkedinRoute(async (req, res) => {
-      z.object({})
+      const input = z
+        .object({ reason: z.string().trim().max(500).optional() })
         .strict()
         .parse(req.body ?? {});
-      const skipped = await skipManagedCampaignMemberStep(
-        db,
-        req.auth!.workspaceId,
-        String(req.params.id),
-        new Date()
-      );
+      const now = new Date();
+      const memberId = String(req.params.id);
+      const skipped = await skipManagedCampaignMemberStep(db, req.auth!.workspaceId, memberId, now);
       if (!skipped) throw new LinkedInApiError('Skippable campaign member step not found', 404);
+      await recordManagedCampaignAudit(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          actorId: req.auth!.userId,
+          eventType: 'linkedin_campaign_member.step_skipped',
+          entityType: 'linkedin_campaign_member',
+          entityId: memberId,
+          metadata: { reason: input.reason ?? null }
+        },
+        now
+      );
       res.json({ skipped: true });
     })
   );

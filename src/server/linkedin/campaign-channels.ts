@@ -310,10 +310,21 @@ async function mergeMemberExternalState(
 
 async function advanceMemberAfterKnownOutcome(db: Db, row: ChannelRow, now: Date): Promise<void> {
   const campaign = await db
-    .prepare(`SELECT sequence_json FROM linkedin_campaigns WHERE workspace_id=? AND id=?`)
-    .get<{ sequence_json: unknown }>(row.workspace_id, row.campaign_id);
+    .prepare(
+      `SELECT c.sequence_json,m.workflow_snapshot_json
+       FROM linkedin_campaigns c
+       JOIN linkedin_campaign_members m ON m.workspace_id=c.workspace_id AND m.campaign_id=c.id
+       WHERE c.workspace_id=? AND c.id=? AND m.id=?`
+    )
+    .get<{ sequence_json: unknown; workflow_snapshot_json: unknown }>(
+      row.workspace_id,
+      row.campaign_id,
+      row.member_id
+    );
   if (!campaign) return;
-  const steps = campaignSnapshotSteps(campaign.sequence_json);
+  const memberSteps = campaignSnapshotSteps(campaign.workflow_snapshot_json);
+  const steps =
+    memberSteps.length > 0 ? memberSteps : campaignSnapshotSteps(campaign.sequence_json);
   const currentIndex = steps.findIndex((step) => step.id === row.workflow_step_id);
   if (currentIndex < 0) return;
   const current = steps[currentIndex]!;

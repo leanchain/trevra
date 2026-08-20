@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { createLeadList, importLeadCsv, listLeadContacts } from './lead-lists.js';
 import {
+  applyLatestWorkflowToPendingMembers,
   completeManualTask,
   createManagedCampaign,
   listCampaignMembers,
@@ -953,24 +954,80 @@ describe('managed campaign runner', () => {
     const kinds = (await actions()).map((row) => row.kind);
     // The follow the campaign was STARTED with, not the message it was edited to.
     expect(kinds).toEqual(['profile_view', 'follow']);
+  });
 
-    // Restarting is the operator's act of choosing the new version, and only
-    // then does the edit reach this campaign.
-    await db
-      .prepare(
-        `UPDATE linkedin_campaign_members SET status='active', step_index=1, next_eligible_at=? WHERE workspace_id=? AND campaign_id=?`
-      )
-      .run(NOW.toISOString(), WORKSPACE, campaignId);
-    await db
-      .prepare(`UPDATE linkedin_campaigns SET status='paused' WHERE workspace_id=? AND id=?`)
-      .run(WORKSPACE, campaignId);
-    await startManagedCampaign(db, WORKSPACE, campaignId, at(3 * HOUR));
-    expect((await runManagedCampaigns(db, WORKSPACE, at(4 * HOUR))).actionsPlanned).toBe(1);
-    expect((await actions()).map((row) => row.kind).sort()).toEqual([
-      'dm',
-      'follow',
-      'profile_view'
+  it('applies a newer workflow only to future waves while existing members keep their admitted version', async () => {
+    const listId = await seededList('Versioned waves', [
+      { first: 'Ada', last: 'One', company: 'Acme', slug: 'version-one' },
+      { first: 'Grace', last: 'Two', company: 'Beta', slug: 'version-two' }
     ]);
+    const workflow = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Versioned',
+        steps: [
+          {
+            id: 'touch',
+            action: 'profile_view',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          }
+        ]
+      },
+      NOW
+    );
+    const made = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Versioned waves',
+        leadListId: listId,
+        workflowId: workflow.id,
+        admissionPolicy: { maxWaveSize: 1 }
+      },
+      NOW
+    );
+    await startManagedCampaign(db, WORKSPACE, made.campaign.id, NOW);
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(1);
+
+    const edited = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        id: workflow.id,
+        name: 'Versioned',
+        steps: [
+          {
+            id: 'touch',
+            action: 'follow',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          }
+        ]
+      },
+      at(HOUR)
+    );
+    expect(edited.version).toBe(2);
+    const applied = await applyLatestWorkflowToPendingMembers(
+      db,
+      WORKSPACE,
+      made.campaign.id,
+      at(HOUR)
+    );
+    expect(applied.previousVersion).toBe(1);
+    expect(applied.latestVersion).toBe(2);
+    expect(applied.pendingAffected).toBe(1);
+
+    expect((await runManagedCampaigns(db, WORKSPACE, at(2 * HOUR))).actionsPlanned).toBe(1);
+    expect((await actions()).map((row) => row.kind).sort()).toEqual(['follow', 'profile_view']);
+    const versions = await db
+      .prepare(
+        `SELECT workflow_version FROM linkedin_campaign_members
+         WHERE workspace_id=? AND campaign_id=? ORDER BY admitted_at,id`
+      )
+      .all<{ workflow_version: number | null }>(WORKSPACE, made.campaign.id);
+    expect(versions.map((row) => Number(row.workflow_version))).toEqual([1, 2]);
   });
 
   /**
