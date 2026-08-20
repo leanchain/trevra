@@ -6,11 +6,17 @@ import type { Db } from './db.js';
 import { id } from './db.js';
 import { listPublicModulePopularity, listPublicRegistryModules } from './registry/service.js';
 import {
+  JSON_LD_MARKER,
+  PRODUCTION_ORIGIN,
+  VERIFICATION_MARKER
+} from '../shared/marketing-head.js';
+import {
   buildStructuredData,
   buildWebPageStructuredData,
   renderHumansText,
   renderLlmsText,
   renderPublicAgents,
+  renderRobotsTxt,
   renderSecurityText,
   renderSitemap,
   SITE_DESCRIPTION,
@@ -118,10 +124,10 @@ export function getSiteConfig(env: NodeJS.ProcessEnv = process.env): SiteConfig 
     title: env.PUBLIC_SITE_TITLE?.trim() || SITE_TITLE,
     description: env.PUBLIC_SITE_DESCRIPTION?.trim() || SITE_DESCRIPTION,
     supportEmail: env.PUBLIC_SUPPORT_EMAIL?.trim() || `support@${hostname}`,
-    securityEmail:
-      env.SECURITY_CONTACT_EMAIL?.trim() ||
-      env.PUBLIC_SUPPORT_EMAIL?.trim() ||
-      `security@${hostname}`,
+    // Never the support address: security.txt and the disclosure page publish
+    // this, and routing vulnerability reports to a public support inbox is a
+    // disclosure hazard, not a convenience.
+    securityEmail: env.SECURITY_CONTACT_EMAIL?.trim() || `security@${hostname}`,
     googleVerification: env.GOOGLE_SITE_VERIFICATION?.trim() || '',
     bingVerification: env.BING_SITE_VERIFICATION?.trim() || '',
     indexNowKey: env.INDEXNOW_KEY?.trim() || '',
@@ -219,17 +225,7 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
 
   app.get('/robots.txt', (_req, res) => {
     setTextResponse(res, 3600);
-    res.send(
-      [
-        'User-agent: *',
-        'Allow: /',
-        'Disallow: /api/',
-        '',
-        `Sitemap: ${config.origin}/sitemap.xml`,
-        `Host: ${new URL(config.origin).host}`,
-        ''
-      ].join('\n')
-    );
+    res.send(renderRobotsTxt(config.origin));
   });
 
   app.get('/sitemap.xml', (_req, res) => {
@@ -442,23 +438,28 @@ export function renderAppIndex(template: string, nonce: string): string {
   ]
     .filter(Boolean)
     .join('\n    ');
-  const html = template
+  const jsonLdScript = `<script type="application/ld+json" nonce="${escapeAttr(nonce)}">${jsonLd}</script>`;
+  const rewritten = template
     .replaceAll('http://localhost:43173', config.origin)
+    // The origin index.html hardcodes, too: this template may be a
+    // `build:marketing` dist whose canonical, og:url and og:image were already
+    // pointed at production at build time. On any other origin -- a self-host,
+    // a preview -- that canonical is a lie.
+    .replaceAll(PRODUCTION_ORIGIN, config.origin)
     .replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(config.title)}</title>`)
-    // \s+ rather than a literal space: this tag's copy runs past Prettier's
-    // printWidth, so the shipped index.html wraps it across three lines with
-    // one attribute per line -- and only this tag, since <title> and the two
-    // shorter og/twitter title tags stay on one line.
+    // \s+ rather than a literal space throughout: a tag whose copy runs past
+    // Prettier's printWidth is wrapped across three lines with one attribute
+    // per line, and which tags those are changes with the length of the copy.
     .replace(
       /<meta\s+name="description"\s+content="[^"]*"\s*\/>/,
       `<meta name="description" content="${escapeAttr(config.description)}" />`
     )
     .replace(
-      /<meta property="og:title" content="[^"]*" \/>/,
+      /<meta\s+property="og:title"\s+content="[^"]*"\s*\/>/,
       `<meta property="og:title" content="${escapeAttr(config.title)}" />`
     )
     .replace(
-      /<meta name="twitter:title" content="[^"]*" \/>/,
+      /<meta\s+name="twitter:title"\s+content="[^"]*"\s*\/>/,
       `<meta name="twitter:title" content="${escapeAttr(config.title)}" />`
     )
     .replace(
@@ -468,13 +469,33 @@ export function renderAppIndex(template: string, nonce: string): string {
     .replace(
       /<meta\s+name="twitter:description"\s+content="[^"]*"\s*\/>/,
       `<meta name="twitter:description" content="${escapeAttr(config.description)}" />`
-    )
-    .replace('<!-- TREVRA_VERIFICATION -->', verification)
-    .replace(
-      '<!-- TREVRA_JSON_LD -->',
-      `<script type="application/ld+json" nonce="${escapeAttr(nonce)}">${jsonLd}</script>`
     );
+  const html = rewritten.includes(JSON_LD_MARKER)
+    ? rewritten.replace(VERIFICATION_MARKER, verification).replace(JSON_LD_MARKER, jsonLdScript)
+    : reinjectMarketingHead(rewritten, verification, jsonLdScript);
   return withHostedWorkspaceHrefs(html, config.hostedAppUrl);
+}
+
+/**
+ * Re-inject a head that was already injected at build time.
+ *
+ * `npm run build:marketing` consumes both `TREVRA_` markers, so serving that
+ * dist from Express no-opped both replacements above: the page shipped the
+ * build-time JSON-LD with no nonce -- blocked outright by this server's
+ * nonce-only `script-src` -- no verification meta, and the build-time origin.
+ * Silently degraded, which is worse than either doing it or refusing to.
+ *
+ * Replacing the injected block instead makes renderAppIndex idempotent: the
+ * build-time block gives way to this request's nonce-carrying one, and any
+ * build-time verification meta gives way to this deployment's.
+ */
+function reinjectMarketingHead(html: string, verification: string, jsonLdScript: string): string {
+  const injected = /<script\s+type="application\/ld\+json"[^>]*>[\s\S]*?<\/script>/;
+  if (!injected.test(html)) return html;
+  return html
+    .replace(/[ \t]*<meta\s+name="google-site-verification"[^>]*>\n?/gi, '')
+    .replace(/[ \t]*<meta\s+name="msvalidate\.01"[^>]*>\n?/gi, '')
+    .replace(injected, verification ? `${verification}\n    ${jsonLdScript}` : jsonLdScript);
 }
 
 /**

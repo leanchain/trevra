@@ -22,6 +22,11 @@ Configure these GitHub Actions variables:
 - `PUBLIC_GITHUB_URL`: the public repository or organization URL used by source and self-host CTAs.
 - `PUBLIC_SUPPORT_EMAIL`: the founder or support address shown on the static site.
 - `CATALOG_API_URL`: the hosted Trevra API origin used to load live module popularity and community releases.
+- `SECURITY_CONTACT_EMAIL`: the address published in `/.well-known/security.txt` and `llms.txt`. Never the support address. Defaults to `security@<site hostname>` when unset.
+- `GOOGLE_SITE_VERIFICATION`: optional Search Console token, injected into the built `index.html` as `meta[name=google-site-verification]`.
+- `BING_SITE_VERIFICATION`: optional Bing Webmaster token, injected as `meta[name=msvalidate.01]`.
+
+The last three are read by the build scripts rather than by Vite, so they are passed to the workflow under their own names, without the `VITE_` prefix. Unset means "no verification meta" and the `security@<hostname>` default, not a build failure.
 
 The workflow in `.github/workflows/cloudflare-pages.yml` validates TypeScript, regenerates the public module catalog from the executable registry, builds the marketing-only bundle, stores a short-lived build artifact, and deploys pushes to `main`.
 

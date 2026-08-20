@@ -24,6 +24,12 @@ jobs:
       VITE_GITHUB_URL: ${{ vars.PUBLIC_GITHUB_URL }}
       VITE_SUPPORT_EMAIL: ${{ vars.PUBLIC_SUPPORT_EMAIL }}
       VITE_CATALOG_API_URL: ${{ vars.CATALOG_API_URL }}
+      # Read by scripts/prerender-marketing.tsx and scripts/build-marketing-seo.ts,
+      # not by Vite: without them the build injects an empty verification meta and
+      # falls back to security@<host>.
+      SECURITY_CONTACT_EMAIL: ${{ vars.SECURITY_CONTACT_EMAIL }}
+      GOOGLE_SITE_VERIFICATION: ${{ vars.GOOGLE_SITE_VERIFICATION }}
+      BING_SITE_VERIFICATION: ${{ vars.BING_SITE_VERIFICATION }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -65,5 +71,5 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "4.123.0"
+          wranglerVersion: '4.123.0'
           command: pages deploy dist --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }} --branch=${{ github.ref_name }} --commit-hash=${{ github.sha }}

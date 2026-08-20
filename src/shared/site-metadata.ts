@@ -131,6 +131,10 @@ export function buildWebPageStructuredData(config: WebPageStructuredDataConfig) 
   return {
     '@context': 'https://schema.org',
     '@type': 'WebPage',
+    // Addressable rather than anonymous: an `@id` lets the WebSite and
+    // WebApplication nodes -- and anything else consuming the graph -- refer
+    // to this page instead of re-describing it.
+    '@id': `${config.origin}${config.path}/#webpage`,
     name: config.title,
     description: config.description,
     url: `${config.origin}${config.path}`,
@@ -212,6 +216,23 @@ export function renderSitemap(origin: string, lastmod: string): string {
     (path) => `  <url><loc>${escapeXml(`${origin}${path}`)}</loc><lastmod>${date}</lastmod></url>`
   ).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
+}
+
+/**
+ * `robots.txt`. One renderer for both origins: the Express route serves it
+ * per request and scripts/build-marketing-seo.ts writes it into `dist/`, so a
+ * preview deploy advertises its own sitemap and host instead of production's.
+ */
+export function renderRobotsTxt(origin: string): string {
+  return `${[
+    'User-agent: *',
+    'Allow: /',
+    'Disallow: /api/',
+    '',
+    `Sitemap: ${origin}/sitemap.xml`,
+    `Host: ${new URL(origin).host}`,
+    ''
+  ].join('\n')}`;
 }
 
 /**

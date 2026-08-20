@@ -7,6 +7,7 @@ import { openDatabase, type Db } from './db.js';
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 import { renderAppIndex, renderNotFoundPage } from './public-site.js';
+import { injectMarketingHead } from '../shared/marketing-head.js';
 import {
   renderSecurityText,
   SITE_DESCRIPTION,
@@ -64,7 +65,9 @@ afterEach(async () => {
   db = undefined;
   delete process.env.VITE_HOSTED_APP_URL;
   delete process.env.PUBLIC_SITE_URL;
+  delete process.env.PUBLIC_SITE_TITLE;
   delete process.env.PUBLIC_SITE_DESCRIPTION;
+  delete process.env.GOOGLE_SITE_VERIFICATION;
 });
 
 async function publicApp() {
@@ -183,18 +186,68 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
     );
   });
 
-  it('defaults the title to SITE_TITLE, one title everywhere', () => {
+  /**
+   * SENTINELS, NOT THE DEFAULTS.
+   *
+   * These two used to assert the output contained SITE_TITLE and
+   * SITE_DESCRIPTION -- which is what index.html already ships and what
+   * renderAppIndex writes back, so they passed whether or not a single
+   * replacement matched. A configured title and description that appear
+   * nowhere in the file can only get there through the replacements.
+   */
+  it('rewrites the title in every head tag that carries it', () => {
+    const title = 'A distinct configured title';
+    process.env.PUBLIC_SITE_TITLE = title;
     const rendered = renderAppIndex(indexHtml, 'test-nonce');
-    expect(rendered).toContain(`<title>${SITE_TITLE}</title>`);
-    expect(rendered).toContain(`<meta property="og:title" content="${SITE_TITLE}" />`);
-    expect(rendered).toContain(`<meta name="twitter:title" content="${SITE_TITLE}" />`);
+    expect(rendered).toContain(`<title>${title}</title>`);
+    expect(rendered).toContain(`<meta property="og:title" content="${title}" />`);
+    expect(rendered).toContain(`<meta name="twitter:title" content="${title}" />`);
+    // No head tag is left behind carrying the shipped default.
+    for (const tag of rendered.match(/<meta\s+(?:property|name)="(?:og|twitter):title"[^>]*>/g) ??
+      [])
+      expect(tag).toContain(title);
+    expect(rendered).not.toContain(`<title>${SITE_TITLE}</title>`);
   });
 
-  it('defaults the description to SITE_DESCRIPTION everywhere it appears', () => {
+  it('rewrites the description in every head tag that carries it', () => {
+    const description = 'A distinct configured description';
+    process.env.PUBLIC_SITE_DESCRIPTION = description;
     const rendered = renderAppIndex(indexHtml, 'test-nonce');
-    expect(rendered).toContain(`<meta name="description" content="${SITE_DESCRIPTION}" />`);
-    expect(rendered).toContain(`<meta property="og:description" content="${SITE_DESCRIPTION}" />`);
-    expect(rendered).toContain(`<meta name="twitter:description" content="${SITE_DESCRIPTION}" />`);
+    expect(rendered).toContain(`<meta name="description" content="${description}" />`);
+    expect(rendered).toContain(`<meta property="og:description" content="${description}" />`);
+    expect(rendered).toContain(`<meta name="twitter:description" content="${description}" />`);
+    for (const tag of rendered.match(
+      /<meta\s+(?:property|name)="(?:og:|twitter:)?description"[\s\S]*?>/g
+    ) ?? [])
+      expect(tag).toContain(description);
+    expect(rendered).not.toContain(`content="${SITE_DESCRIPTION}"`);
+  });
+
+  /**
+   * Express serving a `build:marketing` dist. Both TREVRA_ markers were
+   * consumed at build time, so the marker replacements no-op: the page used to
+   * ship the build-time JSON-LD with no nonce -- blocked outright by this
+   * server's nonce-only script-src -- no verification meta, and usetrevra.com
+   * as the canonical of a self-host origin.
+   */
+  it('re-injects a head that a marketing build already injected', () => {
+    process.env.PUBLIC_SITE_URL = 'https://selfhost.example';
+    process.env.GOOGLE_SITE_VERIFICATION = 'serve-time-token';
+    const built = injectMarketingHead(indexHtml, {
+      origin: 'https://usetrevra.com',
+      verification: '<meta name="google-site-verification" content="build-time-token" />',
+      jsonLd: { '@type': 'WebSite', url: 'https://usetrevra.com' }
+    });
+    expect(built).not.toContain('<!-- TREVRA_JSON_LD -->');
+
+    const rendered = renderAppIndex(built, 'test-nonce');
+    const blocks = rendered.match(/<script[^>]*application\/ld\+json[^>]*>/g) ?? [];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toContain('nonce="test-nonce"');
+    expect(rendered).toContain('content="serve-time-token"');
+    expect(rendered).not.toContain('build-time-token');
+    expect(rendered).not.toContain('https://usetrevra.com');
+    expect(rendered).toContain('<link rel="canonical" href="https://selfhost.example/" />');
   });
 
   it('leaves the shipped CTAs on their own fallback when nothing is configured', () => {
