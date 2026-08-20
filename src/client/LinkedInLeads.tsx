@@ -35,7 +35,8 @@ import { formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
 import { navigate } from './ui/route';
 
 /**
- * `/outreach/leads` -- a search page or a post, walked into a list of people.
+ * A fold on `/outreach` ("Find people") -- a search page or a post, walked
+ * into a list of people. `/outreach/leads` redirects here and opens the fold.
  *
  * THIS FEATURE IS OFF BY DEFAULT AND THAT IS DELIBERATE, which is the only
  * thing about this screen worth writing at length.

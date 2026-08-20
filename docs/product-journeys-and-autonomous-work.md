@@ -147,7 +147,7 @@ never have to do.
 
 Target-company scoring now lives at:
 
-`/outreach#accounts` → **Outreach → Target accounts**
+`/outreach/accounts` → **Outreach → Target accounts**
 
 The old `/leads` URL remains a compatibility alias and is replaced in history so
 Back does not bounce through obsolete navigation.

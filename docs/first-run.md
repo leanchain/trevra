@@ -39,7 +39,7 @@ Four verifiable steps, in order:
    - set timezone, working days/hours and operator ceilings;
    - connect/sign in when the deployment supports browser execution.
 2. **Build one lead list** → `/outreach/new`
-   - import people directly, or use the Find people fold at `/outreach#leads`
+   - import people directly, or use the Find people fold at `/outreach/leads`
      to turn a LinkedIn source into a reviewed list.
 3. **Build one workflow** → `/outreach/new`
    - view, invite, message, follow, wait, or stop for a manual message.
@@ -57,10 +57,10 @@ list, workflow, campaign. There are no permanently-untracked circles.
 
 ### Related prospecting routes
 
-- `/outreach#accounts` — **Target accounts**: ranked companies and the evidence
+- `/outreach/accounts` — **Target accounts**: ranked companies and the evidence
   behind their score. This used to be a sixth primary nav destination at `/leads`.
   `/leads` remains a compatibility alias and is replaced with this route.
-- `/outreach#leads` — **Find people**: turn LinkedIn searches, posts or keyword
+- `/outreach/leads` — **Find people**: turn LinkedIn searches, posts or keyword
   sources into people, then save reviewed results into lead lists.
 
 These are ways to produce campaign inputs, not primary app destinations.

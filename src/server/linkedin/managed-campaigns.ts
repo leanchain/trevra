@@ -13,7 +13,7 @@ import {
 /**
  * AN ALIAS, NOT A SECOND UNION.
  *
- * It named the same column as `CampaignStatus` in campaigns.ts and disagreed
+ * It named the same column as `CampaignStatus` in action-ledger.ts and disagreed
  * with it about whether 'paused' exists -- this file had it, that one did not,
  * and both cast the same rows onto their own answer. Managed and legacy
  * campaigns are rows in ONE table with ONE status column; the manager adds a
@@ -89,8 +89,8 @@ export interface ManagedCampaignMember {
   profileUrl: string | null;
 }
 
-// `status` is `CampaignStatus`, narrowed where campaigns.ts narrows it and for
-// the reason given there -- so `toCampaign` below needs no cast either.
+// `status` is `CampaignStatus`, narrowed where action-ledger.ts narrows it and
+// for the reason given there -- so `toCampaign` below needs no cast either.
 interface CampaignRow {
   id: string;
   workspace_id: string;
@@ -132,10 +132,11 @@ const CAMPAIGN_SELECT = `
 /**
  * The steps stored in a campaign's `sequence_json` snapshot.
  *
- * NEVER THROWS, and that is deliberate: `linkedin_campaigns` also holds the
- * legacy playbook sequences (`campaigns.ts`), whose `sequence_json` is a
- * completely different shape, and a manager read that exploded on one of those
- * would take the campaign list down with it. An unreadable or foreign snapshot
+ * NEVER THROWS, and that is deliberate: `linkedin_campaigns` also holds rows
+ * written by the deleted legacy sequence-builder (formerly `campaigns.ts`),
+ * whose `sequence_json` was a completely different shape, and a manager read
+ * that exploded on one of those would take the campaign list down with it. An
+ * unreadable or foreign snapshot
  * is an empty list, which every caller already has to handle -- a campaign
  * whose workflow was deleted has always been able to have no steps.
  */
@@ -573,10 +574,9 @@ export async function startManagedCampaign(
 /**
  * Pause a campaign, and HOLD the work it has already queued.
  *
- * Writing 'paused' into `linkedin_campaigns` on its own was decoration, for
- * exactly the reason `campaigns.ts` `stopCampaign` spells out about
- * `stop_requested_at`: the local worker claims out of `linkedin_actions` and
- * never looks at this table. So a pause stopped the PLANNER -- the runner
+ * Writing 'paused' into `linkedin_campaigns` on its own was decoration: the
+ * local worker claims out of `linkedin_actions` and never looks at this
+ * table. So a pause stopped the PLANNER -- the runner
  * skips a campaign that is not running -- and left every invite and DM the
  * runner had already scheduled for the coming days to fire on time. The
  * operator pressed Pause, watched the campaign say Paused, and the sending
@@ -1126,7 +1126,7 @@ export interface ManagedAnalytics {
   /**
    * `invitesAccepted / invitesSent`, or null at 0-of-0.
    *
-   * THE SAME DENOMINATOR `campaigns.ts` USES, deliberately: there were three
+   * THE SAME DENOMINATOR `action-ledger.ts` USES, deliberately: there were three
    * acceptance rates in this product over two screens and a throttle, and two
    * of them were shown to a user side by side without either page saying which
    * question it had answered. Invites sent is the one a user sees, here and in
@@ -1197,8 +1197,9 @@ export async function managedAnalytics(
     SELECT
       -- 'declined' IS AN INVITE THAT WAS SENT. Leaving it out inflated the
       -- acceptance rate below by exactly the refusals it was measuring. Same
-      -- three lists as inviteSelect in campaigns.ts; 'withdrawn' stays out of
-      -- all of them because a retracted invite never got its chance.
+      -- three-status list action-ledger.ts uses for its own invites_sent;
+      -- 'withdrawn' stays out of all of them because a retracted invite never
+      -- got its chance.
       COUNT(*) FILTER (WHERE a.kind='invite' AND a.status IN ('sent','accepted','replied','declined'))::int AS invites_sent,
       -- 'inmail' LEFT THIS FILTER AND ITS TWO SIBLINGS BELOW. Nothing in this
       -- deployment sends an InMail (UNSUPPORTED_ACTION_KINDS in actions.ts), so

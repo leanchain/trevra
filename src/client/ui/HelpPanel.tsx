@@ -271,6 +271,16 @@ const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
     label: 'Outreach · Messages',
     hint: 'Replies and conversations with campaign contacts'
   },
+  {
+    path: '/outreach/posts',
+    label: 'Outreach · Posts',
+    hint: 'Scheduled and published LinkedIn posts'
+  },
+  {
+    path: '/outreach/settings',
+    label: 'Outreach · Settings',
+    hint: 'LinkedIn accounts and their limits'
+  },
   { path: '/ledger', label: 'Run ledger', hint: 'Every run, with the evidence' },
   {
     path: '/research',
