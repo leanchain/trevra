@@ -42,6 +42,7 @@ afterEach(async () => {
   db = undefined;
   delete process.env.VITE_HOSTED_APP_URL;
   delete process.env.PUBLIC_SITE_URL;
+  delete process.env.PUBLIC_SITE_DESCRIPTION;
 });
 
 async function publicApp() {
@@ -60,7 +61,9 @@ function classesIn(html: string): string[] {
 
 /** Does the stylesheet actually carry a rule for this class name? */
 function styled(className: string): boolean {
-  return new RegExp(`\\.${className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(marketingCss);
+  return new RegExp(`\\.${className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(
+    marketingCss
+  );
 }
 
 describe('the hosted-workspace CTA in shipped HTML', () => {
@@ -108,8 +111,11 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
   it('rewrites every marked CTA the shipped index.html actually carries', () => {
     const shipped = indexHtml.match(/<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi) ?? [];
     expect(shipped.length).toBeGreaterThan(0);
-    for (const tag of shipped) expect(tag).toMatch(/href="(?:#hosted|\/login|https:\/\/app\.usetrevra\.com\/login)"/);
-    expect(shipped.filter((tag) => /href="(?:\/login|https:\/\/app\.usetrevra\.com\/login)"/.test(tag))).toHaveLength(1);
+    for (const tag of shipped)
+      expect(tag).toMatch(/href="(?:#hosted|\/login|https:\/\/app\.usetrevra\.com\/login)"/);
+    expect(
+      shipped.filter((tag) => /href="(?:\/login|https:\/\/app\.usetrevra\.com\/login)"/.test(tag))
+    ).toHaveLength(1);
 
     process.env.VITE_HOSTED_APP_URL = HOSTED;
     const rendered = renderAppIndex(indexHtml, 'test-nonce');
@@ -121,19 +127,38 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
     expect(rendered).not.toContain('<!-- TREVRA_JSON_LD -->');
   });
 
+  /**
+   * The shipped `<meta name="description">` tag's content runs past
+   * Prettier's printWidth, so index.html wraps its attributes one per line;
+   * the replace has to tolerate that instead of assuming one space between
+   * `name="description"` and `content="..."`.
+   */
+  it('replaces the real, wrapped description meta tag on the shipped file', () => {
+    expect(indexHtml).toMatch(/<meta\s+name="description"[\s\S]*?\/>/);
+    process.env.PUBLIC_SITE_DESCRIPTION = 'a distinct configured description';
+    const rendered = renderAppIndex(indexHtml, 'test-nonce');
+    expect(rendered).toContain(
+      '<meta name="description" content="a distinct configured description" />'
+    );
+  });
+
   it('leaves the shipped CTAs on their own fallback when nothing is configured', () => {
     const rendered = renderAppIndex(indexHtml, 'test-nonce');
     const marked = rendered.match(/<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi) ?? [];
     expect(marked.length).toBeGreaterThan(0);
-    for (const tag of marked) expect(tag).toMatch(/href="(?:#hosted|\/login|https:\/\/app\.usetrevra\.com\/login)"/);
+    for (const tag of marked)
+      expect(tag).toMatch(/href="(?:#hosted|\/login|https:\/\/app\.usetrevra\.com\/login)"/);
     // The nav's Login keeps naming the live auth screen rather than a scroll target.
-    expect(marked.filter((tag) => /href="(?:\/login|https:\/\/app\.usetrevra\.com\/login)"/.test(tag))).toHaveLength(1);
+    expect(
+      marked.filter((tag) => /href="(?:\/login|https:\/\/app\.usetrevra\.com\/login)"/.test(tag))
+    ).toHaveLength(1);
   });
 
   it('leaves the hosted app shell as an app document rather than marketing it', () => {
     process.env.VITE_HOSTED_APP_URL = HOSTED;
     process.env.PUBLIC_SITE_URL = 'https://usetrevra.example';
-    const shell = '<!doctype html><html data-trevra-app-shell><head><title>Trevra — Sign in</title><meta name="description" content="Open your workspace." /></head><body><div id="root">Opening Trevra…</div></body></html>';
+    const shell =
+      '<!doctype html><html data-trevra-app-shell><head><title>Trevra — Sign in</title><meta name="description" content="Open your workspace." /></head><body><div id="root">Opening Trevra…</div></body></html>';
     const rendered = renderAppIndex(shell, 'test-nonce');
     expect(rendered).toContain('<title>Trevra — Sign in</title>');
     expect(rendered).toContain('Open your workspace.');
@@ -152,23 +177,40 @@ describe('the server-rendered public documents', () => {
 
   it('keeps every clause of the privacy notice and the terms', () => {
     for (const clause of [
-      'Information processed', 'Purposes', 'Connected services and processors',
-      'Analytics', 'Retention and deletion', 'Data rights and contact',
+      'Information processed',
+      'Purposes',
+      'Connected services and processors',
+      'Analytics',
+      'Retention and deletion',
+      'Data rights and contact',
       // Static-only clauses that had to survive the merge too.
-      'Hosted workspace data', 'Self-hosting'
-    ]) expect(privacyDoc).toContain(clause);
+      'Hosted workspace data',
+      'Self-hosting'
+    ])
+      expect(privacyDoc).toContain(clause);
     expect(privacyDoc).toContain('does not store IP addresses');
     expect(privacyDoc).toContain('are not measured at all');
-    expect(privacyDoc).toContain('Identity verification may be required before fulfilling a request');
+    expect(privacyDoc).toContain(
+      'Identity verification may be required before fulfilling a request'
+    );
 
     for (const clause of [
-      'Service', 'Accounts and authorization', 'Acceptable use', 'Third-party services',
-      'No professional advice', 'Availability and liability', 'Contact',
+      'Service',
+      'Accounts and authorization',
+      'Acceptable use',
+      'Third-party services',
+      'No professional advice',
+      'Availability and liability',
+      'Contact',
       // Static-only clauses that had to survive the merge too.
-      'Your responsibility', 'External actions'
-    ]) expect(termsDoc).toContain(clause);
+      'Your responsibility',
+      'External actions'
+    ])
+      expect(termsDoc).toContain(clause);
     expect(termsDoc).toContain('disclaims implied warranties');
-    expect(termsDoc).toContain('Open-source components are provided under the license included with their source');
+    expect(termsDoc).toContain(
+      'Open-source components are provided under the license included with their source'
+    );
   });
 
   it('leaves exactly one legal surface, dated once', async () => {
@@ -176,7 +218,10 @@ describe('the server-rendered public documents', () => {
     await request(app).get('/privacy').expect(404);
     await request(app).get('/terms').expect(404);
 
-    for (const [name, doc] of [['privacy', privacyDoc], ['terms', termsDoc]] as const) {
+    for (const [name, doc] of [
+      ['privacy', privacyDoc],
+      ['terms', termsDoc]
+    ] as const) {
       const dates = doc.match(/Last updated[^<]*/g) ?? [];
       expect(dates, name).toEqual(['Last updated August 5, 2026.']);
       expect(doc.match(/<h1[ >]/g) ?? [], name).toHaveLength(1);
@@ -184,9 +229,16 @@ describe('the server-rendered public documents', () => {
   });
 
   it('styles the shipped documents the same way as the landing page', () => {
-    for (const [name, doc] of [['privacy', privacyDoc], ['terms', termsDoc], ['security', securityDoc]] as const) {
+    for (const [name, doc] of [
+      ['privacy', privacyDoc],
+      ['terms', termsDoc],
+      ['security', securityDoc]
+    ] as const) {
       expect(doc, name).toMatch(/<main class="static-launch"[ >]/);
-      expect(classesIn(doc).filter((className) => !styled(className)), name).toEqual([]);
+      expect(
+        classesIn(doc).filter((className) => !styled(className)),
+        name
+      ).toEqual([]);
     }
   });
 
@@ -195,7 +247,10 @@ describe('the server-rendered public documents', () => {
     for (const path of ['/security', '/how-it-works']) {
       const html = (await request(app).get(path).expect(200)).text;
       expect(html, path).toMatch(/<main class="static-launch"[ >]/);
-      expect(classesIn(html).filter((name) => !styled(name)), path).toEqual([]);
+      expect(
+        classesIn(html).filter((name) => !styled(name)),
+        path
+      ).toEqual([]);
     }
   });
 
@@ -204,7 +259,9 @@ describe('the server-rendered public documents', () => {
     const app = await publicApp();
     const policy = (await request(app).get('/.well-known/security.txt').expect(200)).text;
     expect(policy).toContain('Policy: https://trevra.example/security');
-    expect((await request(app).get('/security').expect(200)).text).toContain('Responsible disclosure');
+    expect((await request(app).get('/security').expect(200)).text).toContain(
+      'Responsible disclosure'
+    );
 
     // The static deploy target has to resolve the same RFC 9116 Policy target.
     expect(securityTxt).toContain('Policy: https://usetrevra.com/security');
