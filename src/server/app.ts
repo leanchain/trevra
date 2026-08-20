@@ -2376,7 +2376,7 @@ export function createApp(db: Db) {
    * rule is worse than no comment at all.
    *
    * Structurally, not by convention: every status write below goes through
-   * `writeActionStatus` in linkedin/campaigns.ts, which refuses a
+   * `writeActionStatus` in linkedin/action-ledger.ts, which refuses a
    * sent/accepted/replied status unless the caller names itself
    * 'outcome-ingest'. Exactly one route does, and it is the one section 5
    * names for the job.
@@ -3955,8 +3955,8 @@ export function createApp(db: Db) {
    * `deleteLeadList` owns the refusal, not this route: a list a RUNNING
    * campaign is enrolling from cannot be deleted, because doing so would strand
    * members mid-workflow against contacts that no longer exist. That check
-   * belongs with the write for the same reason `queueCampaign` owns the
-   * self-hosted gate -- a rule enforced in the route is a rule the next caller
+   * belongs with the write for the same reason every other guard here lives
+   * beside its write -- a rule enforced in the route is a rule the next caller
    * skips.
    *
    * Owner-only: this is the delete that removes a workspace's contact data
@@ -5792,8 +5792,6 @@ function hash(value: string): string {
 /* ===========================================================================
  * LinkedIn: schemas, provenance, and the two things that must never throw.
  * ======================================================================== */
-
-const LINKEDIN_PLAYBOOK_ID = 'gtm.linkedin-outreach';
 
 /** Where every number below comes from. Quoted in each response, per the plan's honesty rule. */
 const LINKEDIN_PLAN_DOC = 'docs/linkedin-outreach-plan.md';

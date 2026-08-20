@@ -841,11 +841,11 @@ describe('GET /api/linkedin/worker/status', () => {
 /* ---------------------------------------------------------------------------
  * Campaigns and exports.
  *
- * The approved run is seeded directly rather than driven through
- * `gtm.linkedin-outreach`, because what these tests are about is the export
- * layer -- the bytes, the ledger, and the download -- and routing them through
- * a guard whose verdict depends on the day of the week would make them assert
- * the calendar instead.
+ * The approved run is seeded directly rather than driven through the
+ * playbook that used to produce it, because what these tests are about is
+ * the export layer -- the bytes, the ledger, and the download -- and routing
+ * them through a guard whose verdict depends on the day of the week would
+ * make them assert the calendar instead.
  * ------------------------------------------------------------------------ */
 
 const APPROVED_PAYLOAD = {
@@ -943,7 +943,10 @@ async function seedApprovedCampaign(
     .run(
       runId,
       workspaceId,
-      'gtm.linkedin-outreach',
+      // Any registered playbook_key/version satisfies the FK on playbook_runs;
+      // the row this fixture builds is never read back through the registry,
+      // only through linkedin_campaigns and linkedin_actions.
+      'gtm.audit-led-outreach',
       '1.0.0',
       'running',
       'user',

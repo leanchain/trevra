@@ -1576,7 +1576,7 @@ export async function getLinkedInCampaigns(seatKey?: string): Promise<LinkedInCa
   return result.campaigns;
 }
 
-/** Runs `gtm.linkedin-outreach`, whose first step is the `gtm.linkedin-sequence` skill. */
+/** Posts to the now-unreachable legacy campaign route. Dead code -- see the note atop this file. */
 export async function createLinkedInCampaign(
   input: LinkedInCampaignInput
 ): Promise<LinkedInCampaignCreated> {
