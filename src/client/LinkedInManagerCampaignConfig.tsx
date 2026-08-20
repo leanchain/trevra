@@ -47,7 +47,21 @@ const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   message: 'Send a message',
   manual_message: 'A message you write yourself',
   follow: 'Follow them',
-  withdraw_pending: 'Withdraw the invite if still pending'
+  withdraw_pending: 'Withdraw the invite if still pending',
+  like_post: 'Like a recent post',
+  endorse_skills: 'Endorse selected skills',
+  wait: 'Wait',
+  condition: 'Check a condition',
+  monitor: 'Monitor a condition',
+  end: 'End this path',
+  inmail: 'Send InMail',
+  email: 'Send email',
+  find_email: 'Find email',
+  webhook: 'Call webhook',
+  add_tag: 'Add tag',
+  remove_tag: 'Remove tag',
+  external_handoff: 'Hand off externally',
+  manual_comment: 'Manual comment checkpoint'
 };
 
 const plural = (count: number, one: string, many = `${one}s`) =>
@@ -63,7 +77,21 @@ const ACTION_SHORT_LABEL: Record<WorkflowStep['action'], string> = {
   message: 'Message',
   manual_message: 'Manual note',
   follow: 'Follow',
-  withdraw_pending: 'Withdraw'
+  withdraw_pending: 'Withdraw',
+  like_post: 'Like',
+  endorse_skills: 'Endorse',
+  wait: 'Wait',
+  condition: 'If',
+  monitor: 'Monitor',
+  end: 'End',
+  inmail: 'InMail',
+  email: 'Email',
+  find_email: 'Find email',
+  webhook: 'Webhook',
+  add_tag: '+Tag',
+  remove_tag: '-Tag',
+  external_handoff: 'Handoff',
+  manual_comment: 'Manual comment'
 };
 
 /** A workflow's steps as a compact trail for the card picker: "View → Invite → wait 3d → Message". */

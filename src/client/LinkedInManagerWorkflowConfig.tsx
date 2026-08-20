@@ -171,48 +171,145 @@ const ACTION_META: Record<Action, ActionMeta> = {
     label: 'Profile view',
     Icon: Eye,
     chip: 'li-kind-profile_view',
-    blurb: 'Opens the profile and nothing else. It warms the lead before whatever comes next.'
+    blurb: 'Opens the profile and warms the lead.'
   },
   connection_request: {
     label: 'Connection request',
     Icon: UserPlus,
     chip: 'li-kind-invite',
-    blurb: 'Sends the invitation. An empty note sends the request without one.'
+    blurb: 'Sends an invitation, optionally A/B testing the note.'
   },
   message: {
     label: 'Message (A/B)',
     Icon: MessageSquare,
     chip: 'li-kind-dm',
-    blurb: 'Sends one of the variants below. The same lead always lands on the same variant.'
+    blurb: 'Sends one deterministic message variant.'
   },
   manual_message: {
     label: 'Manual message checkpoint',
     Icon: PenLine,
     chip: 'li-kind-inmail',
-    blurb: 'Pauses the lead here for a human to write the message. Nothing is sent automatically.'
+    blurb: 'Pauses for a human-written message.'
   },
   follow: {
     label: 'Follow',
     Icon: UserCheck,
     chip: 'li-kind-profile_view',
-    blurb: 'Follows the profile. It carries no message.'
+    blurb: 'Follows the profile.'
   },
   withdraw_pending: {
     label: 'Withdraw pending invite',
     Icon: UserMinus,
     chip: 'li-kind-profile_view',
-    blurb:
-      'Cancels an invitation that was never accepted, so the pending backlog stays under its ceiling.'
+    blurb: 'Withdraws a stale unanswered invitation.'
+  },
+  like_post: {
+    label: 'Like recent post',
+    Icon: UserCheck,
+    chip: 'li-kind-profile_view',
+    blurb: 'Likes one recent post using the engagement driver.'
+  },
+  endorse_skills: {
+    label: 'Endorse skills',
+    Icon: UserCheck,
+    chip: 'li-kind-profile_view',
+    blurb: 'Endorses a small bounded number of visible skills.'
+  },
+  wait: {
+    label: 'Wait',
+    Icon: ArrowDown,
+    chip: 'li-kind-profile_view',
+    blurb: 'Timer only. It checks no condition.'
+  },
+  condition: {
+    label: 'Condition',
+    Icon: LayoutTemplate,
+    chip: 'li-kind-dm',
+    blurb: 'Checks once now and routes Yes or No.'
+  },
+  monitor: {
+    label: 'Monitor',
+    Icon: Eye,
+    chip: 'li-kind-dm',
+    blurb: 'Checks repeatedly until Yes or a configured timeout routes No.'
+  },
+  end: {
+    label: 'End path',
+    Icon: UserMinus,
+    chip: 'li-kind-profile_view',
+    blurb: 'Explicitly terminates this branch.'
+  },
+  inmail: {
+    label: 'InMail',
+    Icon: MessageSquare,
+    chip: 'li-kind-inmail',
+    blurb: 'Sends InMail only when the sender capability and credits are known.'
+  },
+  email: {
+    label: 'Email',
+    Icon: MessageSquare,
+    chip: 'li-kind-dm',
+    blurb: 'Sends through the campaign mailbox channel.'
+  },
+  find_email: {
+    label: 'Find email',
+    Icon: Eye,
+    chip: 'li-kind-profile_view',
+    blurb: 'Runs configured enrichment and stores provenance.'
+  },
+  webhook: {
+    label: 'Webhook',
+    Icon: LayoutTemplate,
+    chip: 'li-kind-profile_view',
+    blurb: 'Calls an approved external endpoint idempotently.'
+  },
+  add_tag: {
+    label: 'Add tag',
+    Icon: UserCheck,
+    chip: 'li-kind-profile_view',
+    blurb: 'Adds a workspace lead tag.'
+  },
+  remove_tag: {
+    label: 'Remove tag',
+    Icon: UserMinus,
+    chip: 'li-kind-profile_view',
+    blurb: 'Removes a workspace lead tag.'
+  },
+  external_handoff: {
+    label: 'External handoff',
+    Icon: ArrowDown,
+    chip: 'li-kind-profile_view',
+    blurb: 'Hands the lead to a configured downstream system.'
+  },
+  manual_comment: {
+    label: 'Manual comment checkpoint',
+    Icon: PenLine,
+    chip: 'li-kind-inmail',
+    blurb: 'Suggests a comment but requires a human to post it.'
   }
 };
 
 const ACTION_ORDER: readonly Action[] = [
   'profile_view',
+  'follow',
+  'like_post',
+  'endorse_skills',
   'connection_request',
   'message',
   'manual_message',
-  'follow',
-  'withdraw_pending'
+  'withdraw_pending',
+  'wait',
+  'condition',
+  'monitor',
+  'end',
+  'find_email',
+  'email',
+  'inmail',
+  'webhook',
+  'add_tag',
+  'remove_tag',
+  'external_handoff',
+  'manual_comment'
 ];
 
 /* ---------------------------------------------------------------------------
@@ -390,7 +487,9 @@ function blankStep(action: Action, stepId: string, delayBefore: WorkflowDelay): 
   const base = { id: stepId, delayBefore };
   if (action === 'connection_request') return { ...base, action, config: { message: '' } };
   if (action === 'withdraw_pending') return { ...base, action, config: { afterDays: 14 } };
-  if (action === 'profile_view') return { ...base, action, config: {} };
+  if (action === 'profile_view' || action === 'follow' || action === 'like_post')
+    return { ...base, action, config: {} };
+  if (action === 'endorse_skills') return { ...base, action, config: { maxSkills: 3 } };
   if (action === 'message')
     return {
       ...base,
@@ -404,7 +503,65 @@ function blankStep(action: Action, stepId: string, delayBefore: WorkflowDelay): 
       }
     };
   if (action === 'manual_message') return { ...base, action, config: { suggestedTemplate: '' } };
-  return { ...base, action: 'follow', config: {} };
+  if (action === 'manual_comment')
+    return { ...base, action, config: { suggestedTemplate: '', postUrl: null } };
+  if (action === 'wait')
+    return { ...base, action, config: { duration: { amount: 1, unit: 'days' } } };
+  if (action === 'condition')
+    return {
+      ...base,
+      action,
+      config: {
+        condition: { kind: 'email_available' },
+        yesStepId: '__choose_yes__',
+        noStepId: '__choose_no__'
+      }
+    };
+  if (action === 'monitor')
+    return {
+      ...base,
+      action,
+      config: {
+        condition: { kind: 'accepted', ofStepId: null },
+        timeout: { amount: 10, unit: 'days' },
+        pollEveryMinutes: 60,
+        yesStepId: '__choose_yes__',
+        noStepId: '__choose_no__'
+      }
+    };
+  if (action === 'end') return { ...base, action, config: { outcome: 'completed' } };
+  if (action === 'inmail')
+    return {
+      ...base,
+      action,
+      config: { subject: '', variants: [{ id: 'a', body: '', weight: 100 }], allowPaid: false }
+    };
+  if (action === 'email')
+    return {
+      ...base,
+      action,
+      config: {
+        subject: '',
+        variants: [{ id: 'a', body: '', weight: 100 }],
+        threaded: true,
+        tracking: 'off'
+      }
+    };
+  if (action === 'find_email')
+    return { ...base, action, config: { providerId: null, refresh: false } };
+  if (action === 'webhook')
+    return {
+      ...base,
+      action,
+      config: { url: 'https://example.invalid/hook', method: 'POST', bodyTemplate: '{}' }
+    };
+  if (action === 'add_tag' || action === 'remove_tag')
+    return { ...base, action, config: { tag: 'prospect' } };
+  return {
+    ...base,
+    action: 'external_handoff',
+    config: { provider: 'webhook', destination: 'default', payloadTemplate: '{}' }
+  };
 }
 
 interface Starter {

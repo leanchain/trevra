@@ -262,7 +262,7 @@ export interface LinkedInDriver {
   endorseSkills(
     page: LinkedInPage,
     target: string,
-    options?: { seed?: string }
+    options?: { seed?: string; maxSkills?: number }
   ): Promise<LinkedInDriverResult>;
   /** Publish a rendered post to the feed. Optional -- see `driver-post.ts`, which owns its own selector table. */
   publishPost?(page: LinkedInPage, body: string): Promise<LinkedInDriverResult>;

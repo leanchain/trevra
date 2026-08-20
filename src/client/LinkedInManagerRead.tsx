@@ -107,6 +107,7 @@ const STATUS_ORDER: readonly MemberStatus[] = [
   'replied',
   'completed',
   'removed',
+  'excluded',
   'failed'
 ];
 const STATUS_LABEL: Record<MemberStatus, string> = {
@@ -118,6 +119,7 @@ const STATUS_LABEL: Record<MemberStatus, string> = {
   replied: 'Replied',
   completed: 'Finished',
   removed: 'Removed',
+  excluded: 'Excluded',
   failed: 'Failed'
 };
 const LIVE_STATUSES: readonly MemberStatus[] = ['pending', 'active', 'waiting', 'manual'];
@@ -128,7 +130,21 @@ const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   message: 'Send a message',
   manual_message: 'A message you write yourself',
   follow: 'Follow them',
-  withdraw_pending: 'Withdraw the invite if still pending'
+  withdraw_pending: 'Withdraw the invite if still pending',
+  like_post: 'Like a recent post',
+  endorse_skills: 'Endorse skills',
+  wait: 'Wait',
+  condition: 'Condition',
+  monitor: 'Monitor',
+  end: 'End',
+  inmail: 'InMail',
+  email: 'Email',
+  find_email: 'Find email',
+  webhook: 'Webhook',
+  add_tag: 'Add tag',
+  remove_tag: 'Remove tag',
+  external_handoff: 'External handoff',
+  manual_comment: 'Manual comment'
 };
 
 const CAMPAIGN_STATUS_LABEL: Record<ManagedCampaign['status'], string> = {

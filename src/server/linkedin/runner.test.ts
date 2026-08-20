@@ -371,7 +371,7 @@ describe('managed campaign runner', () => {
     expect((await actions()).filter((row) => row.kind === 'invite')).toHaveLength(2);
     const waiting = (await members(campaignId)).filter((row) => row.step_index === 0);
     expect(waiting).toHaveLength(3);
-    expect(waiting.every((row) => row.status === 'active')).toBe(true);
+    expect(waiting.every((row) => row.status === 'pending')).toBe(true);
 
     // Re-ticking the same day plans nothing more: the ramp is counted against
     // what this campaign already has in the next 24 hours.
@@ -533,7 +533,7 @@ describe('managed campaign runner', () => {
     expect([...reassigned.entries()]).toEqual([...assigned.entries()]);
   });
 
-  it('fails a member with no profile URL instead of blocking the campaign, and stays idempotent', async () => {
+  it('excludes a member with no profile URL before admission, and stays idempotent', async () => {
     const listId = await seededList('Targets', [
       { first: 'Has', last: 'Url', company: 'Acme', slug: 'has-url' },
       { first: 'No', last: 'Url', company: 'Widgets', slug: 'no-url' }
@@ -568,10 +568,10 @@ describe('managed campaign runner', () => {
 
     const tick = await runManagedCampaigns(db, WORKSPACE, NOW);
     expect(tick.actionsPlanned).toBe(1);
-    expect(tick.membersBlocked).toBe(1);
+    expect(tick.membersBlocked).toBe(0);
     expect(tick.membersCompleted).toBe(1);
     const after = await members(campaignId);
-    expect(after.filter((row) => row.status === 'failed')).toHaveLength(1);
+    expect(after.filter((row) => row.status === 'excluded')).toHaveLength(1);
     expect(after.filter((row) => row.status === 'completed')).toHaveLength(1);
     expect(await campaignStatus(campaignId)).toBe('completed');
 
@@ -1155,10 +1155,10 @@ describe('one tick, several members, several branches', () => {
 
     const result = await runManagedCampaigns(db, WORKSPACE, NOW);
     // Two profile views planned (the healthy members), one member
-    // short-circuited on a reply, one released as failed -- and none of them
+    // short-circuited on a reply, one excluded before admission -- and none of them
     // wrote over another in the single flush at the end of the tick.
     expect(result.actionsPlanned).toBe(2);
-    expect(result.membersBlocked).toBe(1);
+    expect(result.membersBlocked).toBe(0);
 
     const byContact = new Map(
       (
@@ -1185,7 +1185,7 @@ describe('one tick, several members, several branches', () => {
     expect(forSlug('plans-fine')).toMatchObject({ status: 'waiting', step_index: 1 });
     expect(forSlug('also-plans')).toMatchObject({ status: 'waiting', step_index: 1 });
     expect(forSlug('already-replied')).toMatchObject({ status: 'replied', step_index: 0 });
-    expect(byContact.get('none')).toMatchObject({ status: 'failed', step_index: 0 });
+    expect(byContact.get('none')).toMatchObject({ status: 'excluded', step_index: 0 });
   });
 
   it('creates one manual task per member in a single tick, and parks each of them', async () => {

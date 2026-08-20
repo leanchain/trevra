@@ -31,6 +31,7 @@ import {
 import {
   SELECTORS,
   isSeatRead,
+  playwrightDegreeDriver,
   playwrightDriver,
   type LinkedInDriver,
   type LinkedInDriverResult,
@@ -404,6 +405,8 @@ export interface DueLinkedInAction {
    * a clock that already let it in.
    */
   manual?: boolean;
+  channelMetadata?: Record<string, unknown>;
+  attachment?: Record<string, unknown> | null;
 }
 
 export type BatchStatus = 'completed' | 'halted';
@@ -874,14 +877,33 @@ async function execute(
       }
       return deps.driver.sendReply(deps.page, action.threadUrn, action.body ?? '');
     }
-    case 'profile_view':
+    case 'profile_view': {
+      if (action.channelMetadata?.connectionProbe === true) {
+        const read = await playwrightDegreeDriver.readProfileDegree(deps.page, action.targetRef);
+        if ('degree' in read) {
+          return {
+            ok: true,
+            externalRef: `connection-degree:${read.degree ?? 'unknown'}`,
+            failureKind: null,
+            detail: read.degraded.length > 0 ? read.degraded.join(' ') : undefined
+          };
+        }
+        return read;
+      }
       return deps.driver.viewProfile(deps.page, action.targetRef);
+    }
     case 'follow':
       return deps.driver.followProfile(deps.page, action.targetRef);
     case 'like':
       return deps.driver.likeRecentPost(deps.page, action.targetRef, { seed });
     case 'endorse':
-      return deps.driver.endorseSkills(deps.page, action.targetRef, { seed });
+      return deps.driver.endorseSkills(deps.page, action.targetRef, {
+        seed,
+        maxSkills:
+          typeof action.channelMetadata?.maxSkills === 'number'
+            ? action.channelMetadata.maxSkills
+            : undefined
+      });
     default: {
       const unhandled: never = action.kind;
       return {
@@ -1304,6 +1326,8 @@ interface DueActionRow {
   override_warmup_ceiling: boolean | null;
   reply_to_inbound: boolean | null;
   source: string | null;
+  channel_metadata_json: unknown;
+  attachment_json: unknown;
 }
 
 const EXECUTABLE_KIND_LIST = EXECUTABLE_KINDS.map((kind) => `'${kind}'`).join(', ');
@@ -1580,7 +1604,7 @@ export function postgresLocalWorkerStore(
             -- yet. Excluded by id so the loop moves on instead of re-claiming
             -- the same undecided row until the pass is exhausted.
             AND NOT (id = ANY(?::text[]))
-          ORDER BY planned_for ASC
+          ORDER BY queue_priority DESC, planned_for ASC
           FOR UPDATE SKIP LOCKED
           LIMIT 1
         )
@@ -1599,7 +1623,7 @@ export function postgresLocalWorkerStore(
         RETURNING id, workspace_id, seat_key, kind, target_ref,
                   TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS planned_for,
                   body, thread_urn, campaign_id, replay_scope, override_warmup_ceiling,
-                  reply_to_inbound, source
+                  reply_to_inbound, source, channel_metadata_json, attachment_json
       `
         )
         .get<DueActionRow>(
@@ -1626,7 +1650,37 @@ export function postgresLocalWorkerStore(
         replayScope: row.replay_scope ?? 'legacy',
         overrideWarmupCeiling: row.override_warmup_ceiling === true,
         replyToInbound: row.reply_to_inbound === true,
-        manual: row.source === 'manual'
+        manual: row.source === 'manual',
+        channelMetadata: (() => {
+          const raw =
+            typeof row.channel_metadata_json === 'string'
+              ? (() => {
+                  try {
+                    return JSON.parse(row.channel_metadata_json) as unknown;
+                  } catch {
+                    return {};
+                  }
+                })()
+              : row.channel_metadata_json;
+          return raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? (raw as Record<string, unknown>)
+            : {};
+        })(),
+        attachment: (() => {
+          const raw =
+            typeof row.attachment_json === 'string'
+              ? (() => {
+                  try {
+                    return JSON.parse(row.attachment_json) as unknown;
+                  } catch {
+                    return null;
+                  }
+                })()
+              : row.attachment_json;
+          return raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? (raw as Record<string, unknown>)
+            : null;
+        })()
       };
     },
 

@@ -1,6 +1,7 @@
 import { id, type Db } from '../db.js';
 import { COUNTED_MESSAGE_KINDS, recordAction } from './actions.js';
 import type { CampaignStatus } from './action-ledger.js';
+import type { AdmissionDecision, AdmissionPolicy } from './admission.js';
 import { getLeadList } from './lead-lists.js';
 import { getSeat, OWNER_SEAT_KEY } from './seats.js';
 import {
@@ -31,7 +32,20 @@ export type ManagedMemberStatus =
   | 'replied'
   | 'completed'
   | 'removed'
-  | 'failed';
+  | 'failed'
+  | 'excluded';
+
+export type CampaignPriority = 'low' | 'normal' | 'high';
+export type CampaignEndBehavior = 'finish_waves' | 'pause_all' | 'stop_immediately';
+
+export interface CampaignSchedule {
+  startAt: string | null;
+  endAt: string | null;
+  workingDays: number[] | null;
+  workStartMinute: number | null;
+  workEndMinute: number | null;
+  endBehavior: CampaignEndBehavior;
+}
 
 export interface ManagedCampaign {
   id: string;
@@ -39,39 +53,42 @@ export interface ManagedCampaign {
   name: string;
   status: ManagedCampaignStatus;
   seatKey: string;
+  /** One or more eligible senders. `seatKey` remains the compatibility/default sender. */
+  senderKeys: string[];
   leadListId: string;
   workflowId: string;
-  /**
-   * The workflow VERSION this campaign is executing, out of its own snapshot.
-   *
-   * Not the workflow's current version, and the difference is the whole point:
-   * a running campaign executes the steps it was started with, so an operator
-   * looking at this number is looking at what is actually happening to their
-   * leads rather than at what the workflow editor happens to contain today.
-   * Null for a campaign with no readable snapshot.
-   */
   workflowVersion: number | null;
-  /**
-   * THE STEPS THIS CAMPAIGN IS ACTUALLY RUNNING -- its own snapshot, not a
-   * live read of `linkedin_workflows`.
-   *
-   * The campaign screen tells the operator, in so many words, that "editing
-   * one does not change campaigns already running on it". That sentence was
-   * false: `runner.ts` loaded the workflow by id on every tick, so saving an
-   * edit rewrote the sequence of every campaign already mid-flight -- moving
-   * people who had had step 2 to a different step 3, or off the end of a
-   * shortened workflow entirely.
-   *
-   * It is served here so a member timeline renders the steps that member is
-   * really on, including ones an edit has since deleted from the workflow.
-   */
   steps: WorkflowStep[];
+  priority: CampaignPriority;
+  admissionPolicy: AdmissionPolicy;
+  exclusionPolicy: CampaignExclusionPolicy;
+  schedule: CampaignSchedule;
+  lastAdmissionAt: string | null;
   startedAt: string | null;
   pausedAt: string | null;
   memberCount: number;
+  /** Compatibility: live claim holders including pending. */
   activeCount: number;
+  pendingCount: number;
+  inSequenceCount: number;
+  waitingCount: number;
+  manualCount: number;
+  repliedCount: number;
+  completedCount: number;
+  failedCount: number;
+  excludedCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CampaignExclusionPolicy {
+  excludeMissingProfile?: boolean;
+  excludeDoNotContact?: boolean;
+  excludeExistingConversation?: boolean;
+  contactedLookbackDays?: number | null;
+  excludeSameSenderMessaged?: boolean;
+  suppressedCompanies?: string[];
+  suppressedDomains?: string[];
 }
 
 export interface ManagedCampaignMember {
@@ -81,16 +98,46 @@ export interface ManagedCampaignMember {
   status: ManagedMemberStatus;
   stepIndex: number;
   nextEligibleAt: string | null;
+  admittedAt: string | null;
+  waveId: string | null;
+  waveOrdinal: number | null;
+  assignedSeatKey: string | null;
   assignedVariants: Record<string, string>;
+  branchState: Record<string, unknown>;
   lastActionId: string | null;
+  exclusionReason: string | null;
+  lastFailureReason: string | null;
   firstName: string;
   lastName: string;
   company: string;
+  email: string | null;
   profileUrl: string | null;
+  customFields: Record<string, unknown>;
 }
 
-// `status` is `CampaignStatus`, narrowed where action-ledger.ts narrows it and
-// for the reason given there -- so `toCampaign` below needs no cast either.
+export interface ManagedCampaignWave {
+  id: string;
+  campaignId: string;
+  ordinal: number;
+  admittedAt: string;
+  memberCount: number;
+  admissionReason: string | null;
+  capacitySnapshot: Record<string, number>;
+}
+
+export interface CampaignQueueSummary {
+  pending: number;
+  dueNow: number;
+  scheduledToday: number;
+  waitingForConnection: number;
+  waitingForReply: number;
+  waitingOther: number;
+  manual: number;
+  held: number;
+  blocked: number;
+  failed: number;
+  backlogByStep: Array<{ stepId: string; count: number; due: number }>;
+}
 interface CampaignRow {
   id: string;
   workspace_id: string;
@@ -100,10 +147,29 @@ interface CampaignRow {
   lead_list_id: string;
   workflow_id: string;
   sequence_json: unknown;
+  priority: number;
+  admission_policy_json: unknown;
+  exclusion_policy_json: unknown;
+  sender_keys_json: unknown;
+  scheduled_start_at: string | null;
+  scheduled_end_at: string | null;
+  schedule_days_json: unknown;
+  schedule_start_minute: number | null;
+  schedule_end_minute: number | null;
+  end_behavior: string;
+  last_admission_at: string | null;
   started_at: string | null;
   paused_at: string | null;
   member_count: number;
   active_count: number;
+  pending_count: number;
+  in_sequence_count: number;
+  waiting_count: number;
+  manual_count: number;
+  replied_count: number;
+  completed_count: number;
+  failed_count: number;
+  excluded_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -114,19 +180,39 @@ interface MemberRow {
   status: string;
   step_index: number;
   next_eligible_at: string | null;
+  admitted_at: string | null;
+  wave_id: string | null;
+  wave_ordinal: number | null;
+  assigned_seat_key: string | null;
   assigned_variants: unknown;
+  branch_state_json: unknown;
   last_action_id: string | null;
+  exclusion_reason: string | null;
+  last_failure_reason: string | null;
   first_name: string;
   last_name: string;
   company: string;
+  email: string | null;
   profile_url: string | null;
+  custom_fields_json: unknown;
 }
 
 const ACTIVE_MEMBER_STATUSES = ['pending', 'active', 'waiting', 'manual', 'paused'] as const;
 const CAMPAIGN_SELECT = `
-  c.id,c.workspace_id,c.name,c.status,c.seat_key,c.lead_list_id,c.workflow_id,c.sequence_json,c.started_at,c.paused_at,c.created_at,c.updated_at,
+  c.id,c.workspace_id,c.name,c.status,c.seat_key,c.lead_list_id,c.workflow_id,c.sequence_json,
+  c.priority,c.admission_policy_json,c.exclusion_policy_json,c.sender_keys_json,
+  c.scheduled_start_at,c.scheduled_end_at,c.schedule_days_json,c.schedule_start_minute,c.schedule_end_minute,c.end_behavior,c.last_admission_at,
+  c.started_at,c.paused_at,c.created_at,c.updated_at,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id) AS member_count,
-  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status = ANY(ARRAY['pending','active','waiting','manual','paused'])) AS active_count
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status = ANY(ARRAY['pending','active','waiting','manual','paused'])) AS active_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='pending') AS pending_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.admitted_at IS NOT NULL AND m.status = ANY(ARRAY['active','waiting','manual','paused'])) AS in_sequence_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='waiting') AS waiting_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='manual') AS manual_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='replied') AS replied_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='completed') AS completed_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='failed') AS failed_count,
+  (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status='excluded') AS excluded_count
 `;
 
 /**
@@ -171,21 +257,94 @@ function snapshotVersion(sequenceJson: unknown): number | null {
   return typeof version === 'number' && Number.isFinite(version) ? version : null;
 }
 
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return {};
+          }
+        })()
+      : value;
+  return raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {};
+}
+
+function parseStringArray(value: unknown): string[] {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : value;
+  return Array.isArray(raw)
+    ? raw.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : [];
+}
+
+function priorityOf(value: number): CampaignPriority {
+  return value > 0 ? 'high' : value < 0 ? 'low' : 'normal';
+}
+
 function toCampaign(row: CampaignRow): ManagedCampaign {
+  const senderKeys = parseStringArray(row.sender_keys_json);
+  const daysRaw =
+    typeof row.schedule_days_json === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(row.schedule_days_json) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : row.schedule_days_json;
   return {
     id: row.id,
     workspaceId: row.workspace_id,
     name: row.name,
     status: row.status,
     seatKey: row.seat_key,
+    senderKeys: senderKeys.length > 0 ? senderKeys : [row.seat_key],
     leadListId: row.lead_list_id,
     workflowId: row.workflow_id,
     workflowVersion: snapshotVersion(row.sequence_json),
     steps: campaignSnapshotSteps(row.sequence_json),
+    priority: priorityOf(Number(row.priority)),
+    admissionPolicy: parseJsonObject(row.admission_policy_json) as AdmissionPolicy,
+    exclusionPolicy: parseJsonObject(row.exclusion_policy_json) as CampaignExclusionPolicy,
+    schedule: {
+      startAt: row.scheduled_start_at,
+      endAt: row.scheduled_end_at,
+      workingDays: Array.isArray(daysRaw)
+        ? daysRaw.filter((v): v is number => Number.isInteger(v) && v >= 0 && v <= 6)
+        : null,
+      workStartMinute:
+        row.schedule_start_minute === null ? null : Number(row.schedule_start_minute),
+      workEndMinute: row.schedule_end_minute === null ? null : Number(row.schedule_end_minute),
+      endBehavior: (['finish_waves', 'pause_all', 'stop_immediately'].includes(row.end_behavior)
+        ? row.end_behavior
+        : 'finish_waves') as CampaignEndBehavior
+    },
+    lastAdmissionAt: row.last_admission_at,
     startedAt: row.started_at,
     pausedAt: row.paused_at,
     memberCount: Number(row.member_count),
     activeCount: Number(row.active_count),
+    pendingCount: Number(row.pending_count),
+    inSequenceCount: Number(row.in_sequence_count),
+    waitingCount: Number(row.waiting_count),
+    manualCount: Number(row.manual_count),
+    repliedCount: Number(row.replied_count),
+    completedCount: Number(row.completed_count),
+    failedCount: Number(row.failed_count),
+    excludedCount: Number(row.excluded_count),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -217,12 +376,21 @@ function toMember(row: MemberRow): ManagedCampaignMember {
     status: row.status as ManagedMemberStatus,
     stepIndex: Number(row.step_index),
     nextEligibleAt: row.next_eligible_at,
+    admittedAt: row.admitted_at,
+    waveId: row.wave_id,
+    waveOrdinal: row.wave_ordinal === null ? null : Number(row.wave_ordinal),
+    assignedSeatKey: row.assigned_seat_key,
     assignedVariants: parseVariants(row.assigned_variants),
+    branchState: parseJsonObject(row.branch_state_json),
     lastActionId: row.last_action_id,
+    exclusionReason: row.exclusion_reason,
+    lastFailureReason: row.last_failure_reason,
     firstName: row.first_name,
     lastName: row.last_name,
     company: row.company,
-    profileUrl: row.profile_url
+    email: row.email,
+    profileUrl: row.profile_url,
+    customFields: parseJsonObject(row.custom_fields_json)
   };
 }
 
@@ -276,9 +444,12 @@ export async function listCampaignMembers(
   const rows = await db
     .prepare(
       `
-    SELECT m.id,m.campaign_id,m.contact_id,m.status,m.step_index,m.next_eligible_at,m.assigned_variants,m.last_action_id,
-           l.first_name,l.last_name,l.company,l.profile_url
-    FROM linkedin_campaign_members m JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
+    SELECT m.id,m.campaign_id,m.contact_id,m.status,m.step_index,m.next_eligible_at,m.admitted_at,m.wave_id,w.ordinal AS wave_ordinal,
+           m.assigned_seat_key,m.assigned_variants,m.branch_state_json,m.last_action_id,m.exclusion_reason,m.last_failure_reason,
+           l.first_name,l.last_name,l.company,l.email,l.profile_url,l.custom_fields_json
+    FROM linkedin_campaign_members m
+    JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
+    LEFT JOIN linkedin_campaign_waves w ON w.id=m.wave_id AND w.workspace_id=m.workspace_id
     WHERE m.workspace_id=? AND m.campaign_id=? ORDER BY m.created_at,m.id
   `
     )
@@ -292,20 +463,38 @@ export async function createManagedCampaign(
     workspaceId: string;
     name: string;
     seatKey?: string;
+    senderKeys?: string[];
     leadListId: string;
     workflowId: string;
+    priority?: CampaignPriority;
+    admissionPolicy?: AdmissionPolicy;
+    exclusionPolicy?: CampaignExclusionPolicy;
+    schedule?: Partial<CampaignSchedule>;
   },
   now: Date = new Date()
-): Promise<{ campaign: ManagedCampaign; enrolled: number; skippedAlreadyActive: number }> {
+): Promise<{
+  campaign: ManagedCampaign;
+  enrolled: number;
+  skippedAlreadyActive: number;
+  excluded: number;
+}> {
   const name = input.name.trim();
   if (!name) throw new Error('Campaign name is required.');
-  const seatKey = input.seatKey ?? OWNER_SEAT_KEY;
-  const [seat, list, workflow] = await Promise.all([
-    getSeat(db, input.workspaceId, seatKey),
+  const requestedSenders = [
+    ...new Set(
+      (input.senderKeys?.length ? input.senderKeys : [input.seatKey ?? OWNER_SEAT_KEY])
+        .map((key) => key.trim())
+        .filter(Boolean)
+    )
+  ];
+  const seatKey = requestedSenders[0] ?? OWNER_SEAT_KEY;
+  const [seats, list, workflow] = await Promise.all([
+    Promise.all(requestedSenders.map((key) => getSeat(db, input.workspaceId, key))),
     getLeadList(db, input.workspaceId, input.leadListId, seatKey),
     getWorkflow(db, input.workspaceId, input.workflowId)
   ]);
-  if (!seat) throw new Error(`LinkedIn account '${seatKey}' is not configured.`);
+  const missingSeat = requestedSenders.find((_key, index) => !seats[index]);
+  if (missingSeat) throw new Error(`LinkedIn account '${missingSeat}' is not configured.`);
   if (!list) throw new Error('Lead list not found.');
   if (!workflow) throw new Error('Workflow not found.');
   const timestamp = now.toISOString();
@@ -316,8 +505,12 @@ export async function createManagedCampaign(
     await tx
       .prepare(
         `
-      INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,playbook_run_id,seat_key,lead_list_id,workflow_id,created_at,updated_at)
-      VALUES (?,?,?,'draft',?::jsonb,NULL,?,?,?,?,?)
+      INSERT INTO linkedin_campaigns (
+        id,workspace_id,name,status,sequence_json,playbook_run_id,seat_key,sender_keys_json,lead_list_id,workflow_id,
+        priority,admission_policy_json,exclusion_policy_json,scheduled_start_at,scheduled_end_at,schedule_days_json,
+        schedule_start_minute,schedule_end_minute,end_behavior,created_at,updated_at
+      )
+      VALUES (?,?,?,'draft',?::jsonb,NULL,?,?::jsonb,?,?,?,?::jsonb,?::jsonb,?,?,?::jsonb,?,?,?, ?,?)
     `
       )
       .run(
@@ -331,8 +524,18 @@ export async function createManagedCampaign(
           steps: workflow.steps
         }),
         seatKey,
+        JSON.stringify(requestedSenders),
         list.id,
         workflow.id,
+        input.priority === 'high' ? 1 : input.priority === 'low' ? -1 : 0,
+        JSON.stringify(input.admissionPolicy ?? {}),
+        JSON.stringify(input.exclusionPolicy ?? {}),
+        input.schedule?.startAt ?? null,
+        input.schedule?.endAt ?? null,
+        input.schedule?.workingDays ? JSON.stringify(input.schedule.workingDays) : null,
+        input.schedule?.workStartMinute ?? null,
+        input.schedule?.workEndMinute ?? null,
+        input.schedule?.endBehavior ?? 'finish_waves',
         timestamp,
         timestamp
       );
@@ -345,17 +548,20 @@ export async function createManagedCampaign(
       )
       .get<{ total: number }>(input.workspaceId, list.id);
     total = count?.total ?? 0;
-    // THE DIGEST IS KEYED ON THE WORKSPACE FIRST -- see `derivedMemberId`.
-    const inserted = await tx
+    // Insert every audience member first so exclusions are explainable rather than silently disappearing.
+    // A provisional excluded row does not contend with the one-live-campaign partial unique index.
+    await tx
       .prepare(
         `
-      INSERT INTO linkedin_campaign_members (id,workspace_id,campaign_id,contact_id,status,step_index,assigned_variants,created_at,updated_at)
-      SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'pending', 0, '{}'::jsonb, ?, ?
+      INSERT INTO linkedin_campaign_members (
+        id,workspace_id,campaign_id,contact_id,status,step_index,assigned_variants,exclusion_reason,created_at,updated_at
+      )
+      SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'excluded', 0, '{}'::jsonb, '__eligibility__', ?, ?
       FROM linkedin_lead_list_members m WHERE m.workspace_id=? AND m.list_id=?
-      ON CONFLICT DO NOTHING RETURNING id
+      ON CONFLICT DO NOTHING
     `
       )
-      .all<{ id: string }>(
+      .run(
         input.workspaceId,
         campaignId,
         input.workspaceId,
@@ -365,11 +571,88 @@ export async function createManagedCampaign(
         input.workspaceId,
         list.id
       );
-    enrolled = inserted.length;
+
+    const policy = input.exclusionPolicy ?? {};
+    const suppressedCompanies = (policy.suppressedCompanies ?? [])
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    const lookback = Math.max(0, Math.trunc(policy.contactedLookbackDays ?? 0));
+    const promoted = await tx
+      .prepare(
+        `
+      UPDATE linkedin_campaign_members m
+      SET status='pending', exclusion_reason=NULL, updated_at=?
+      FROM linkedin_lead_contacts c
+      WHERE m.workspace_id=? AND m.campaign_id=? AND m.contact_id=c.id AND c.workspace_id=m.workspace_id
+        AND m.status='excluded' AND m.exclusion_reason='__eligibility__'
+        AND (?::boolean = false OR c.do_not_contact=false)
+        AND (?::boolean = false OR (c.profile_url IS NOT NULL AND BTRIM(c.profile_url)<>''))
+        AND (COALESCE(array_length(?::text[],1),0)=0 OR LOWER(c.company) <> ALL(?::text[]))
+        AND NOT EXISTS (
+          SELECT 1 FROM linkedin_campaign_members other
+          WHERE other.workspace_id=m.workspace_id AND other.contact_id=m.contact_id AND other.campaign_id<>m.campaign_id
+            AND other.status IN ('pending','active','waiting','manual','paused')
+        )
+        AND (?::boolean=false OR NOT EXISTS (
+          SELECT 1 FROM linkedin_threads t JOIN linkedin_messages msg ON msg.thread_id=t.id AND msg.workspace_id=t.workspace_id
+          WHERE t.workspace_id=m.workspace_id AND c.profile_url IS NOT NULL AND LOWER(t.profile_url)=LOWER(c.profile_url) AND msg.direction='in'
+        ))
+        AND (?::int=0 OR NOT EXISTS (
+          SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND c.profile_url IS NOT NULL
+            AND LOWER(a.target_ref)=LOWER(c.profile_url) AND a.status<>'skipped'
+            AND a.created_at >= (?::timestamptz - (?::int * INTERVAL '1 day'))
+        ))
+        AND (?::boolean=false OR NOT EXISTS (
+          SELECT 1 FROM linkedin_actions a WHERE a.workspace_id=m.workspace_id AND a.seat_key = ANY(?::text[])
+            AND c.profile_url IS NOT NULL AND LOWER(a.target_ref)=LOWER(c.profile_url)
+            AND a.kind IN ('dm','reply','inmail') AND a.status IN ('sent','replied')
+        ))
+      RETURNING m.id
+    `
+      )
+      .all<{ id: string }>(
+        timestamp,
+        input.workspaceId,
+        campaignId,
+        policy.excludeDoNotContact !== false,
+        policy.excludeMissingProfile !== false,
+        suppressedCompanies,
+        suppressedCompanies,
+        policy.excludeExistingConversation === true,
+        lookback,
+        now.toISOString(),
+        lookback,
+        policy.excludeSameSenderMessaged === true,
+        requestedSenders
+      );
+    enrolled = promoted.length;
+
+    await tx
+      .prepare(
+        `
+      UPDATE linkedin_campaign_members m SET exclusion_reason = CASE
+        WHEN EXISTS (SELECT 1 FROM linkedin_lead_contacts c WHERE c.id=m.contact_id AND c.workspace_id=m.workspace_id AND c.do_not_contact) THEN 'Do not contact'
+        WHEN EXISTS (SELECT 1 FROM linkedin_lead_contacts c WHERE c.id=m.contact_id AND c.workspace_id=m.workspace_id AND (c.profile_url IS NULL OR BTRIM(c.profile_url)='')) THEN 'Missing LinkedIn profile URL'
+        WHEN EXISTS (SELECT 1 FROM linkedin_campaign_members other WHERE other.workspace_id=m.workspace_id AND other.contact_id=m.contact_id AND other.campaign_id<>m.campaign_id AND other.status IN ('pending','active','waiting','manual','paused')) THEN 'Already in another live campaign'
+        ELSE 'Excluded by campaign eligibility policy'
+      END
+      WHERE m.workspace_id=? AND m.campaign_id=? AND m.status='excluded' AND m.exclusion_reason='__eligibility__'
+    `
+      )
+      .run(input.workspaceId, campaignId);
   });
   const campaign = await getManagedCampaign(db, input.workspaceId, campaignId);
   if (!campaign) throw new Error('Campaign could not be created.');
-  return { campaign, enrolled, skippedAlreadyActive: Math.max(0, total - enrolled) };
+  const excluded = Math.max(0, total - enrolled);
+  const skippedAlreadyActive =
+    (
+      await db
+        .prepare(
+          `SELECT COUNT(*)::int AS total FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=? AND exclusion_reason='Already in another live campaign'`
+        )
+        .get<{ total: number }>(input.workspaceId, campaignId)
+    )?.total ?? 0;
+  return { campaign, enrolled, skippedAlreadyActive, excluded };
 }
 /**
  * The campaign-member primary key, DERIVED rather than minted -- and derived
@@ -458,16 +741,22 @@ export async function enrolNewContacts(
 ): Promise<number> {
   if (campaign.steps.length === 0) return 0;
   const timestamp = now.toISOString();
-  // Straight to 'active' on the first step's own delay -- the campaign is
-  // already running, so there is no start event coming to promote a 'pending'
-  // row, and a member stuck at 'pending' is one the runner never selects.
-  const eligible = firstEligibleAt(campaign.steps, now);
+  // Live-list additions join the pending pool. Admission, not enrolment, decides when their
+  // first action can exist. Removed members keep their derived id and therefore never re-enter.
   const inserted = await db
     .prepare(
       `
     INSERT INTO linkedin_campaign_members (id,workspace_id,campaign_id,contact_id,status,step_index,next_eligible_at,assigned_variants,created_at,updated_at)
-    SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'active', 0, ?::timestamptz, '{}'::jsonb, ?, ?
-    FROM linkedin_lead_list_members m WHERE m.workspace_id=? AND m.list_id=?
+    SELECT ${DERIVED_MEMBER_ID}, ?, ?, m.contact_id, 'pending', 0, NULL, '{}'::jsonb, ?, ?
+    FROM linkedin_lead_list_members m
+    JOIN linkedin_lead_contacts c ON c.id=m.contact_id AND c.workspace_id=m.workspace_id
+    WHERE m.workspace_id=? AND m.list_id=?
+      AND c.do_not_contact=false AND c.profile_url IS NOT NULL AND BTRIM(c.profile_url)<>''
+      AND NOT EXISTS (
+        SELECT 1 FROM linkedin_campaign_members other
+        WHERE other.workspace_id=? AND other.contact_id=m.contact_id AND other.campaign_id<>?
+          AND other.status IN ('pending','active','waiting','manual','paused')
+      )
     ON CONFLICT DO NOTHING RETURNING id
   `
     )
@@ -476,19 +765,150 @@ export async function enrolNewContacts(
       campaign.id,
       workspaceId,
       campaign.id,
-      eligible,
       timestamp,
       timestamp,
       workspaceId,
-      campaign.leadListId
+      campaign.leadListId,
+      workspaceId,
+      campaign.id
     );
   return inserted.length;
 }
 
+export async function listCampaignWaves(
+  db: Db,
+  workspaceId: string,
+  campaignId: string
+): Promise<ManagedCampaignWave[]> {
+  const rows = await db
+    .prepare(
+      `SELECT id,campaign_id,ordinal,
+              TO_CHAR(admitted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS admitted_at,
+              member_count,admission_reason,capacity_snapshot
+       FROM linkedin_campaign_waves
+       WHERE workspace_id=? AND campaign_id=? ORDER BY ordinal DESC`
+    )
+    .all<{
+      id: string;
+      campaign_id: string;
+      ordinal: number;
+      admitted_at: string;
+      member_count: number;
+      admission_reason: string | null;
+      capacity_snapshot: unknown;
+    }>(workspaceId, campaignId);
+  return rows.map((row) => ({
+    id: row.id,
+    campaignId: row.campaign_id,
+    ordinal: Number(row.ordinal),
+    admittedAt: row.admitted_at,
+    memberCount: Number(row.member_count),
+    admissionReason: row.admission_reason,
+    capacitySnapshot: Object.fromEntries(
+      Object.entries(parseJsonObject(row.capacity_snapshot)).filter(
+        ([, value]) => typeof value === 'number'
+      )
+    ) as Record<string, number>
+  }));
+}
+
+/** Create one durable admission cohort and attach each chosen pending member exactly once. */
+export async function admitPendingCampaignMembers(
+  db: Db,
+  input: {
+    workspaceId: string;
+    campaignId: string;
+    steps: readonly WorkflowStep[];
+    decision: AdmissionDecision;
+    senderKeys: readonly string[];
+  },
+  now: Date = new Date()
+): Promise<{ wave: ManagedCampaignWave | null; admitted: number }> {
+  const amount = Math.max(0, Math.trunc(input.decision.admit));
+  if (amount <= 0) return { wave: null, admitted: 0 };
+  const timestamp = now.toISOString();
+  const firstEligible = firstEligibleAt(input.steps, now);
+  const waveId = id('liwave');
+  let ordinal = 0;
+  let admitted = 0;
+  await db.transaction(async (tx) => {
+    await tx
+      .prepare('SELECT id FROM linkedin_campaigns WHERE workspace_id=? AND id=? FOR UPDATE')
+      .get(input.workspaceId, input.campaignId);
+    const next = await tx
+      .prepare(
+        'SELECT COALESCE(MAX(ordinal),0)::int + 1 AS ordinal FROM linkedin_campaign_waves WHERE workspace_id=? AND campaign_id=?'
+      )
+      .get<{ ordinal: number }>(input.workspaceId, input.campaignId);
+    ordinal = Number(next?.ordinal ?? 1);
+    const pending = await tx
+      .prepare(
+        `SELECT id FROM linkedin_campaign_members
+         WHERE workspace_id=? AND campaign_id=? AND status='pending' AND admitted_at IS NULL
+         ORDER BY created_at,id LIMIT ? FOR UPDATE SKIP LOCKED`
+      )
+      .all<{ id: string }>(input.workspaceId, input.campaignId, amount);
+    if (pending.length === 0) return;
+    await tx
+      .prepare(
+        `INSERT INTO linkedin_campaign_waves (id,workspace_id,campaign_id,ordinal,admitted_at,member_count,admission_reason,capacity_snapshot,created_at)
+         VALUES (?,?,?,?,?::timestamptz,?,?,?::jsonb,?::timestamptz)`
+      )
+      .run(
+        waveId,
+        input.workspaceId,
+        input.campaignId,
+        ordinal,
+        timestamp,
+        pending.length,
+        input.decision.reasons.join(' '),
+        JSON.stringify(input.decision.capacitySnapshot),
+        timestamp
+      );
+    const senderKeys = input.senderKeys.length > 0 ? [...input.senderKeys] : [OWNER_SEAT_KEY];
+    // Stable deterministic round-robin: wave ordinal and row order decide once; assignment is persisted.
+    for (let at = 0; at < pending.length; at += 1) {
+      const sender = senderKeys[(ordinal - 1 + at) % senderKeys.length];
+      const result = await tx
+        .prepare(
+          `UPDATE linkedin_campaign_members
+           SET status='active',admitted_at=?::timestamptz,wave_id=?,assigned_seat_key=?,next_eligible_at=?::timestamptz,updated_at=?::timestamptz
+           WHERE workspace_id=? AND id=? AND status='pending' AND admitted_at IS NULL`
+        )
+        .run(
+          timestamp,
+          waveId,
+          sender,
+          firstEligible,
+          timestamp,
+          input.workspaceId,
+          pending[at].id
+        );
+      admitted += result.changes;
+    }
+    await tx
+      .prepare(
+        'UPDATE linkedin_campaigns SET last_admission_at=?::timestamptz,updated_at=?::timestamptz WHERE workspace_id=? AND id=?'
+      )
+      .run(timestamp, timestamp, input.workspaceId, input.campaignId);
+  });
+  if (admitted === 0) return { wave: null, admitted: 0 };
+  return {
+    admitted,
+    wave: {
+      id: waveId,
+      campaignId: input.campaignId,
+      ordinal,
+      admittedAt: timestamp,
+      memberCount: admitted,
+      admissionReason: input.decision.reasons.join(' '),
+      capacitySnapshot: input.decision.capacitySnapshot
+    }
+  };
+}
+
 /**
- * The steps a campaign is executing: its own snapshot, or the live workflow
- * when it has none.
- *
+ * The steps a campaign is executing: its own snapshot, or the live workflow when it has none.
  * The fallback is for campaigns created before the runner read snapshots, and
  * for the legacy playbook campaigns whose `sequence_json` is a different shape
  * entirely. It is a fallback and not the normal path -- a campaign started
@@ -544,7 +964,6 @@ export async function startManagedCampaign(
   const workflow = await getWorkflow(db, workspaceId, campaign.workflowId);
   if (!workflow) throw new Error('Campaign workflow no longer exists.');
   const timestamp = now.toISOString();
-  const eligible = firstEligibleAt(workflow.steps, now);
   const snapshot = JSON.stringify({
     manager: true,
     workflowId: workflow.id,
@@ -557,11 +976,8 @@ export async function startManagedCampaign(
         `UPDATE linkedin_campaigns SET status='running',started_at=COALESCE(started_at,?),paused_at=NULL,sequence_json=?::jsonb,updated_at=? WHERE workspace_id=? AND id=?`
       )
       .run(timestamp, snapshot, timestamp, workspaceId, campaignId);
-    await tx
-      .prepare(
-        `UPDATE linkedin_campaign_members SET status='active',next_eligible_at=COALESCE(next_eligible_at,?::timestamptz),updated_at=? WHERE workspace_id=? AND campaign_id=? AND status='pending'`
-      )
-      .run(eligible, timestamp, workspaceId, campaignId);
+    // Pending means not admitted. Starting/resuming a campaign never promotes the whole audience;
+    // the runner's admission pass creates a capacity-safe wave later.
     await tx
       .prepare(
         `UPDATE linkedin_actions SET status='planned' WHERE workspace_id=? AND campaign_id=? AND status='held'`
@@ -675,12 +1091,21 @@ export async function setCampaignMemberPaused(
   const result = paused
     ? await db
         .prepare(
-          `UPDATE linkedin_campaign_members SET status='paused',updated_at=? WHERE workspace_id=? AND id=? AND status IN ('pending','active','waiting','manual')`
+          `UPDATE linkedin_campaign_members
+           SET paused_from_status=status,status='paused',updated_at=?
+           WHERE workspace_id=? AND id=? AND status IN ('pending','active','waiting','manual')`
         )
         .run(timestamp, workspaceId, memberId)
     : await db
         .prepare(
-          `UPDATE linkedin_campaign_members SET status='active',updated_at=? WHERE workspace_id=? AND id=? AND status='paused'`
+          `UPDATE linkedin_campaign_members
+           SET status=CASE
+             WHEN admitted_at IS NULL THEN 'pending'
+             WHEN paused_from_status IN ('active','waiting','manual') THEN paused_from_status
+             ELSE 'active'
+           END,
+           paused_from_status=NULL,updated_at=?
+           WHERE workspace_id=? AND id=? AND status='paused'`
         )
         .run(timestamp, workspaceId, memberId);
   return result.changes > 0;
