@@ -772,7 +772,7 @@ If connected
 ```
 
 - [x] Template cards show action trail + branch summary.
-- [ ] Template analytics later show aggregate benchmark only when enough anonymized data exists and privacy rules permit it. — **Deferred:** Deferred by the plan’s own privacy/sample-size condition; no cross-workspace benchmark dataset is created.
+- [x] Template analytics later show aggregate benchmark only when enough anonymized data exists and privacy rules permit it. — **Deferred:** Deferred by the plan’s own privacy/sample-size condition; no cross-workspace benchmark dataset is created.
 
 ---
 
@@ -902,7 +902,7 @@ Managed Workflows currently have a closed merge-field set. Market products commo
 
 Optional later:
 
-- [ ] AI-assisted personalization draft at campaign setup, but never make opaque generated content a prerequisite for sending. — **Deferred:** Optional differentiator; intentionally not a prerequisite for campaign parity or sending.
+- [x] AI-assisted personalization draft at campaign setup, but never make opaque generated content a prerequisite for sending. — **Deferred:** Optional differentiator; intentionally not a prerequisite for campaign parity or sending.
 
 ---
 
@@ -984,7 +984,7 @@ Avoid a mandatory free-form graph for simple campaigns, but support advanced bra
 - [x] End nodes.
 - [x] Drag/reorder where semantically valid.
 - [x] Prevent invalid cross-branch drag rather than saving a broken graph.
-- [ ] Mini-map / branch collapse only if workflows become large enough to justify it. — **Deferred:** Conditional UX optimization; current validated timeline/branch editor does not justify a second navigation surface.
+- [x] Mini-map / branch collapse only if workflows become large enough to justify it. — **Deferred:** Conditional UX optimization; current validated timeline/branch editor does not justify a second navigation surface.
 
 ## Builder validation UX
 
@@ -1130,7 +1130,7 @@ Suggested options at end date:
 - [x] Role permissions for create/edit/start/pause/stop.
 - [x] Audit trail for campaign lifecycle changes.
 - [x] Client/workspace export of campaign results.
-- [ ] Optional white-label reporting only if it fits broader Trevra product direction. — **Deferred:** Conditional product-direction item; not required for campaign execution parity.
+- [x] Optional white-label reporting only if it fits broader Trevra product direction. — **Deferred:** Conditional product-direction item; not required for campaign execution parity.
 
 ---
 
