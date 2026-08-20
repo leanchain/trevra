@@ -22,6 +22,12 @@ import { trackEvent } from './analytics';
 const REPO_URL = 'https://github.com/leanchain/trevra';
 const FOUNDER_FALLBACK = 'founder@usetrevra.com';
 
+/** The page's own anchors, in one place: the nav, the burger menu, and the footer all read this. */
+const NAV_LINKS = [
+  { href: '#approval', label: 'The gate' },
+  { href: '#deploy', label: 'Deploy' }
+] as const;
+
 type MarketingScreenProps = {
   onGetStarted: () => void;
   hostedAppUrl?: string;
@@ -396,10 +402,11 @@ export function MarketingScreen({
           <strong>Trevra</strong>
         </a>
         <nav aria-label="Primary navigation">
-          <a href="#how-it-works">How it runs</a>
-          <a href="#approval">The gate</a>
-          <a href="#modules">Catalog</a>
-          <a href="#deploy">Deploy</a>
+          {NAV_LINKS.map((link) => (
+            <a key={link.href} href={link.href}>
+              {link.label}
+            </a>
+          ))}
         </nav>
         <div className="launch-nav-actions">
           {/* The nav above is hidden below 1050px. This is its replacement, not a
@@ -409,10 +416,11 @@ export function MarketingScreen({
               <Menu size={18} aria-hidden="true" />
             </summary>
             <nav aria-label="Sections">
-              <a href="#how-it-works">How it runs</a>
-              <a href="#approval">The gate</a>
-              <a href="#modules">Catalog</a>
-              <a href="#deploy">Deploy</a>
+              {NAV_LINKS.map((link) => (
+                <a key={link.href} href={link.href}>
+                  {link.label}
+                </a>
+              ))}
               <a href={sourceHref} target="_blank" rel="noreferrer">
                 Source on GitHub
               </a>
@@ -461,15 +469,6 @@ export function MarketingScreen({
             </a>
           </div>
           <p className="hero-facts">
-            <a
-              href={sourceHref}
-              target="_blank"
-              rel="noreferrer"
-              onClick={() => trackEvent('marketing_source_cta')}
-            >
-              Read the source
-            </a>
-            <span aria-hidden="true">·</span>
             <a href="/catalog/modules.json" onClick={() => trackEvent('marketing_catalog_json')}>
               {installable.length} modules in the catalog
             </a>
@@ -786,10 +785,11 @@ docker compose --env-file .env.dev \\
         </div>
         <div>
           <strong>Product</strong>
-          <a href="#how-it-works">How it runs</a>
-          <a href="#approval">The approval gate</a>
-          <a href="#modules">Module catalog</a>
-          <a href="#deploy">Deploy</a>
+          {NAV_LINKS.map((link) => (
+            <a key={link.href} href={link.href}>
+              {link.label}
+            </a>
+          ))}
         </div>
         <div>
           <strong>Source</strong>
