@@ -196,6 +196,7 @@ import {
   listSeats,
   pauseSeat,
   resumeSeat,
+  setSeatCapabilities,
   upsertSeat,
   warmupWeekOf,
   type SeatPatch
@@ -330,6 +331,12 @@ import {
   workflowStepsSchema
 } from './linkedin/workflows.js';
 import { runManagedCampaigns } from './linkedin/runner.js';
+import {
+  listCampaignMailboxes,
+  recordCampaignEmailEvent,
+  retryCampaignChannelAction,
+  upsertCampaignMailboxSettings
+} from './linkedin/campaign-channels.js';
 import {
   campaignAdmissionSummary,
   campaignMemberTimeline,
@@ -3587,6 +3594,67 @@ export function createApp(db: Db) {
     })
   );
 
+  app.patch(
+    '/api/linkedin/manager/seats/:seatKey/capabilities',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, "change a LinkedIn account's InMail capability");
+      const seatKey = linkedinSeatKeySchema.parse(String(req.params.seatKey));
+      const input = z
+        .object({
+          inmail: z.enum(['unknown', 'available', 'unavailable']),
+          salesNavigator: z.boolean().optional(),
+          recruiter: z.boolean().optional(),
+          inmailMonthlyBudget: z.number().int().min(0).max(10000).nullable().optional(),
+          inmailPaidCreditCap: z.number().int().min(0).max(10000).nullable().optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      try {
+        res.json({
+          seat: await setSeatCapabilities(db, req.auth!.workspaceId, seatKey, input, new Date())
+        });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
+  app.get(
+    '/api/linkedin/manager/mailboxes',
+    linkedinRoute(async (req, res) => {
+      res.json({ mailboxes: await listCampaignMailboxes(db, req.auth!.workspaceId) });
+    })
+  );
+
+  app.put(
+    '/api/linkedin/manager/mailboxes/:id',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'change campaign mailbox limits');
+      const input = z
+        .object({
+          dailyLimit: z.number().int().min(1).max(1000),
+          timezone: z.string().trim().min(1).max(100),
+          workingDays: z.array(z.number().int().min(0).max(6)).max(7),
+          workStartMinute: z.number().int().min(0).max(1439),
+          workEndMinute: z.number().int().min(1).max(1440)
+        })
+        .strict()
+        .parse(req.body ?? {});
+      try {
+        await upsertCampaignMailboxSettings(
+          db,
+          req.auth!.workspaceId,
+          String(req.params.id),
+          input,
+          new Date()
+        );
+        res.json({ updated: true });
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
   app.get(
     '/api/linkedin/manager/lead-lists',
     linkedinRoute(async (req, res) => {
@@ -3970,6 +4038,46 @@ export function createApp(db: Db) {
       );
       if (!removed) throw new LinkedInApiError('Active campaign member not found', 404);
       res.json({ removed: true });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/channel-actions/:id/retry',
+    linkedinRoute(async (req, res) => {
+      z.object({})
+        .strict()
+        .parse(req.body ?? {});
+      const retried = await retryCampaignChannelAction(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        new Date()
+      );
+      if (!retried) throw new LinkedInApiError('Retryable channel action not found', 404);
+      res.json({ retried: true });
+    })
+  );
+
+  app.post(
+    '/api/linkedin/manager/channel-actions/:id/events',
+    linkedinRoute(async (req, res) => {
+      const input = z
+        .object({
+          eventKind: z.enum(['opened', 'clicked', 'bounced', 'replied']),
+          providerEventId: z.string().trim().max(300).nullable().optional(),
+          metadata: z.record(z.unknown()).optional(),
+          occurredAt: z.string().datetime().optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const recorded = await recordCampaignEmailEvent(
+        db,
+        req.auth!.workspaceId,
+        { channelActionId: String(req.params.id), ...input },
+        new Date()
+      );
+      if (!recorded.memberId) throw new LinkedInApiError('Campaign email action not found', 404);
+      res.status(recorded.recorded ? 201 : 200).json(recorded);
     })
   );
 
@@ -6582,6 +6690,8 @@ const linkedinManagedCampaignCreateSchema = z
     name: z.string().trim().min(1).max(200),
     seatKey: linkedinSeatKeySchema.optional(),
     senderKeys: z.array(linkedinSeatKeySchema).min(1).max(100).optional(),
+    mailboxAssignments: z.record(z.string().trim().min(1).max(200)).optional(),
+    inmailCreditCap: z.number().int().min(0).max(10000).nullable().optional(),
     leadListId: z.string().trim().min(1).max(120),
     workflowId: z.string().trim().min(1).max(120),
     priority: z.enum(['low', 'normal', 'high']).optional(),
@@ -6602,6 +6712,8 @@ const linkedinManagedCampaignControlsSchema = z
     priority: z.enum(['low', 'normal', 'high']).optional(),
     admissionPolicy: linkedinAdmissionPolicySchema.optional(),
     senderKeys: z.array(linkedinSeatKeySchema).min(1).max(100).optional(),
+    mailboxAssignments: z.record(z.string().trim().min(1).max(200)).optional(),
+    inmailCreditCap: z.number().int().min(0).max(10000).nullable().optional(),
     schedule: linkedinCampaignScheduleSchema.optional()
   })
   .strict()

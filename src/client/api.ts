@@ -1555,6 +1555,79 @@ export async function deleteLinkedInManagerWorkflow(id: string): Promise<boolean
   ).deleted;
 }
 
+export interface CampaignMailbox {
+  id: string;
+  provider: string;
+  status: string;
+  dailyLimit: number;
+  timezone: string;
+  workingDays: number[];
+  workStartMinute: number;
+  workEndMinute: number;
+}
+
+export async function getLinkedInCampaignMailboxes(): Promise<CampaignMailbox[]> {
+  return (await request<{ mailboxes: CampaignMailbox[] }>('/api/linkedin/manager/mailboxes'))
+    .mailboxes;
+}
+
+export async function updateLinkedInCampaignMailbox(
+  id: string,
+  input: Omit<CampaignMailbox, 'id' | 'provider' | 'status'>
+): Promise<boolean> {
+  return (
+    await request<{ updated: boolean }>(
+      `/api/linkedin/manager/mailboxes/${encodeURIComponent(id)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(input)
+      }
+    )
+  ).updated;
+}
+
+export async function retryLinkedInCampaignChannelAction(id: string): Promise<boolean> {
+  return (
+    await request<{ retried: boolean }>(
+      `/api/linkedin/manager/channel-actions/${encodeURIComponent(id)}/retry`,
+      { method: 'POST', body: '{}' }
+    )
+  ).retried;
+}
+
+export async function recordLinkedInCampaignEmailEvent(
+  id: string,
+  input: {
+    eventKind: 'opened' | 'clicked' | 'bounced' | 'replied';
+    providerEventId?: string | null;
+    metadata?: Record<string, unknown>;
+    occurredAt?: string;
+  }
+): Promise<{ recorded: boolean; memberId: string | null }> {
+  return request(`/api/linkedin/manager/channel-actions/${encodeURIComponent(id)}/events`, {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateLinkedInSeatCapabilities(
+  seatKey: string,
+  input: {
+    inmail: 'unknown' | 'available' | 'unavailable';
+    salesNavigator?: boolean;
+    recruiter?: boolean;
+    inmailMonthlyBudget?: number | null;
+    inmailPaidCreditCap?: number | null;
+  }
+): Promise<LinkedInSeat> {
+  return (
+    await request<{ seat: LinkedInSeat }>(
+      `/api/linkedin/manager/seats/${encodeURIComponent(seatKey)}/capabilities`,
+      { method: 'PATCH', body: JSON.stringify(input) }
+    )
+  ).seat;
+}
+
 export async function getLinkedInManagedCampaigns(): Promise<ManagedCampaign[]> {
   return (await request<{ campaigns: ManagedCampaign[] }>('/api/linkedin/manager/campaigns'))
     .campaigns;
@@ -1563,6 +1636,8 @@ export async function getLinkedInManagedCampaigns(): Promise<ManagedCampaign[]> 
 export async function previewLinkedInManagedCampaign(input: {
   seatKey?: string;
   senderKeys?: string[];
+  mailboxAssignments?: Record<string, string>;
+  inmailCreditCap?: number | null;
   leadListId: string;
   workflowId: string;
   admissionPolicy?: ManagedCampaign['admissionPolicy'];
@@ -1579,6 +1654,8 @@ export async function createLinkedInManagedCampaign(input: {
   name: string;
   seatKey?: string;
   senderKeys?: string[];
+  mailboxAssignments?: Record<string, string>;
+  inmailCreditCap?: number | null;
   leadListId: string;
   workflowId: string;
   priority?: ManagedCampaign['priority'];
@@ -1611,6 +1688,8 @@ export async function updateLinkedInCampaignControls(
     priority?: ManagedCampaign['priority'];
     admissionPolicy?: ManagedCampaign['admissionPolicy'];
     senderKeys?: string[];
+    mailboxAssignments?: Record<string, string>;
+    inmailCreditCap?: number | null;
     schedule?: Partial<ManagedCampaign['schedule']>;
   }
 ): Promise<ManagedCampaign> {

@@ -70,6 +70,7 @@ export interface LinkedInLeadContact {
   phone: string | null;
   country: string | null;
   profileUrl: string | null;
+  customFields: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }
@@ -96,6 +97,7 @@ interface ContactRow {
   phone: string | null;
   country: string | null;
   profile_url: string | null;
+  custom_fields_json: unknown;
   created_at: string;
   updated_at: string;
 }
@@ -105,9 +107,9 @@ interface ContactRow {
 // being one contact row, and the column only records the list they first
 // landed in.
 const LIST_SELECT = `l.id,l.workspace_id,l.seat_key,l.name,l.source_kind,l.source_ref,l.created_at,l.updated_at,(SELECT COUNT(*)::int FROM linkedin_lead_list_members m WHERE m.list_id=l.id) AS lead_count`;
-const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,created_at,updated_at`;
+const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,custom_fields_json,created_at,updated_at`;
 /** The same columns through the membership join, where `list_id` is the list asked for. */
-const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.phone,c.country,c.profile_url,c.created_at,c.updated_at`;
+const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.phone,c.country,c.profile_url,c.custom_fields_json,c.created_at,c.updated_at`;
 
 function toList(row: ListRow): LinkedInLeadList {
   return {
@@ -122,6 +124,25 @@ function toList(row: ListRow): LinkedInLeadList {
     updatedAt: row.updated_at
   };
 }
+function customFieldsFromDb(value: unknown): Record<string, string> {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return {};
+          }
+        })()
+      : value;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string'
+    )
+  );
+}
+
 function toContact(row: ContactRow): LinkedInLeadContact {
   return {
     id: row.id,
@@ -134,6 +155,7 @@ function toContact(row: ContactRow): LinkedInLeadContact {
     phone: row.phone,
     country: row.country,
     profileUrl: row.profile_url,
+    customFields: customFieldsFromDb(row.custom_fields_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -339,7 +361,7 @@ async function insertLead(
 ): Promise<LeadInsertOutcome> {
   const row = await db
     .prepare(
-      `INSERT INTO linkedin_lead_contacts (id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,dedupe_key,original_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?) ON CONFLICT DO NOTHING RETURNING id`
+      `INSERT INTO linkedin_lead_contacts (id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,dedupe_key,original_json,custom_fields_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?) ON CONFLICT DO NOTHING RETURNING id`
     )
     .get<{ id: string }>(
       id('lilead'),
@@ -354,6 +376,7 @@ async function insertLead(
       lead.profileUrl,
       lead.dedupeKey,
       JSON.stringify(lead.original),
+      JSON.stringify(lead.customFields),
       now,
       now
     );
@@ -378,6 +401,18 @@ async function insertLead(
     )?.id ??
     '';
   if (!contactId) return { contactId: '', inserted: false, reused: false };
+
+  // A person reused from another list keeps one contact row, but new CSV enrichment is not lost.
+  // New non-empty custom fields win by key; built-in fields stay governed by their dedicated columns.
+  if (!row && Object.keys(lead.customFields).length > 0) {
+    await db
+      .prepare(
+        `UPDATE linkedin_lead_contacts
+         SET custom_fields_json=COALESCE(custom_fields_json,'{}'::jsonb) || ?::jsonb,updated_at=?
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(JSON.stringify(lead.customFields), now, workspaceId, contactId);
+  }
 
   const link = await db
     .prepare(

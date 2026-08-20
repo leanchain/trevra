@@ -61,6 +61,8 @@ export interface ManagedCampaign {
   seatKey: string;
   /** One or more eligible senders. `seatKey` remains the compatibility/default sender. */
   senderKeys: string[];
+  /** Stable LinkedIn-seat -> connected mailbox assignment for cross-channel steps. */
+  mailboxAssignments: Record<string, string>;
   leadListId: string;
   workflowId: string;
   workflowVersion: number | null;
@@ -69,6 +71,8 @@ export interface ManagedCampaign {
   admissionPolicy: AdmissionPolicy;
   exclusionPolicy: CampaignExclusionPolicy;
   schedule: CampaignSchedule;
+  /** Maximum paid InMail credits this campaign may consume. Null means no paid credits are approved campaign-wide. */
+  inmailCreditCap: number | null;
   lastAdmissionAt: string | null;
   startedAt: string | null;
   pausedAt: string | null;
@@ -167,12 +171,14 @@ interface CampaignRow {
   admission_policy_json: unknown;
   exclusion_policy_json: unknown;
   sender_keys_json: unknown;
+  mailbox_assignments_json: unknown;
   scheduled_start_at: string | null;
   scheduled_end_at: string | null;
   schedule_days_json: unknown;
   schedule_start_minute: number | null;
   schedule_end_minute: number | null;
   end_behavior: string;
+  inmail_credit_cap: number | null;
   last_admission_at: string | null;
   started_at: string | null;
   paused_at: string | null;
@@ -218,8 +224,8 @@ interface MemberRow {
 const ACTIVE_MEMBER_STATUSES = ['pending', 'active', 'waiting', 'manual', 'paused'] as const;
 const CAMPAIGN_SELECT = `
   c.id,c.workspace_id,c.name,c.status,c.seat_key,c.lead_list_id,c.workflow_id,c.sequence_json,
-  c.priority,c.admission_policy_json,c.exclusion_policy_json,c.sender_keys_json,
-  c.scheduled_start_at,c.scheduled_end_at,c.schedule_days_json,c.schedule_start_minute,c.schedule_end_minute,c.end_behavior,c.last_admission_at,
+  c.priority,c.admission_policy_json,c.exclusion_policy_json,c.sender_keys_json,c.mailbox_assignments_json,
+  c.scheduled_start_at,c.scheduled_end_at,c.schedule_days_json,c.schedule_start_minute,c.schedule_end_minute,c.end_behavior,c.inmail_credit_cap,c.last_admission_at,
   c.started_at,c.paused_at,c.created_at,c.updated_at,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id) AS member_count,
   (SELECT COUNT(*)::int FROM linkedin_campaign_members m WHERE m.campaign_id=c.id AND m.status = ANY(ARRAY['pending','active','waiting','manual','paused'])) AS active_count,
@@ -332,6 +338,12 @@ function toCampaign(row: CampaignRow): ManagedCampaign {
     status: row.status,
     seatKey: row.seat_key,
     senderKeys: senderKeys.length > 0 ? senderKeys : [row.seat_key],
+    mailboxAssignments: Object.fromEntries(
+      Object.entries(parseJsonObject(row.mailbox_assignments_json)).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[1] === 'string' && entry[1].trim().length > 0
+      )
+    ),
     leadListId: row.lead_list_id,
     workflowId: row.workflow_id,
     workflowVersion: snapshotVersion(row.sequence_json),
@@ -352,6 +364,7 @@ function toCampaign(row: CampaignRow): ManagedCampaign {
         ? row.end_behavior
         : 'finish_waves') as CampaignEndBehavior
     },
+    inmailCreditCap: row.inmail_credit_cap === null ? null : Number(row.inmail_credit_cap),
     lastAdmissionAt: row.last_admission_at,
     startedAt: row.started_at,
     pausedAt: row.paused_at,
@@ -486,12 +499,14 @@ export async function createManagedCampaign(
     name: string;
     seatKey?: string;
     senderKeys?: string[];
+    mailboxAssignments?: Record<string, string>;
     leadListId: string;
     workflowId: string;
     priority?: CampaignPriority;
     admissionPolicy?: AdmissionPolicy;
     exclusionPolicy?: CampaignExclusionPolicy;
     schedule?: Partial<CampaignSchedule>;
+    inmailCreditCap?: number | null;
   },
   now: Date = new Date()
 ): Promise<{
@@ -501,6 +516,13 @@ export async function createManagedCampaign(
   excluded: number;
 }> {
   const name = input.name.trim();
+  if (
+    input.inmailCreditCap != null &&
+    (!Number.isInteger(input.inmailCreditCap) ||
+      input.inmailCreditCap < 0 ||
+      input.inmailCreditCap > 10000)
+  )
+    throw new Error('Campaign InMail credit cap must be a whole number from 0 to 10000.');
   if (!name) throw new Error('Campaign name is required.');
   const requestedSenders = [
     ...new Set(
@@ -528,11 +550,11 @@ export async function createManagedCampaign(
       .prepare(
         `
       INSERT INTO linkedin_campaigns (
-        id,workspace_id,name,status,sequence_json,playbook_run_id,seat_key,sender_keys_json,lead_list_id,workflow_id,
+        id,workspace_id,name,status,sequence_json,playbook_run_id,seat_key,sender_keys_json,mailbox_assignments_json,lead_list_id,workflow_id,
         priority,admission_policy_json,exclusion_policy_json,scheduled_start_at,scheduled_end_at,schedule_days_json,
-        schedule_start_minute,schedule_end_minute,end_behavior,created_at,updated_at
+        schedule_start_minute,schedule_end_minute,end_behavior,inmail_credit_cap,created_at,updated_at
       )
-      VALUES (?,?,?,'draft',?::jsonb,NULL,?,?::jsonb,?,?,?,?::jsonb,?::jsonb,?,?,?::jsonb,?,?,?, ?,?)
+      VALUES (?,?,?,'draft',?::jsonb,NULL,?,?::jsonb,?::jsonb,?,?,?,?::jsonb,?::jsonb,?,?,?::jsonb,?,?,?,?, ?,?)
     `
       )
       .run(
@@ -547,6 +569,7 @@ export async function createManagedCampaign(
         }),
         seatKey,
         JSON.stringify(requestedSenders),
+        JSON.stringify(input.mailboxAssignments ?? {}),
         list.id,
         workflow.id,
         input.priority === 'high' ? 1 : input.priority === 'low' ? -1 : 0,
@@ -558,6 +581,7 @@ export async function createManagedCampaign(
         input.schedule?.workStartMinute ?? null,
         input.schedule?.workEndMinute ?? null,
         input.schedule?.endBehavior ?? 'finish_waves',
+        input.inmailCreditCap ?? null,
         timestamp,
         timestamp
       );
@@ -1549,7 +1573,7 @@ export interface CampaignLaunchPreview {
   audience: number;
   eligibleSenders: string[];
   dayOneCapacity: Partial<
-    Record<'profile_view' | 'invite' | 'dm' | 'follow' | 'like' | 'endorse', number>
+    Record<'profile_view' | 'invite' | 'dm' | 'inmail' | 'follow' | 'like' | 'endorse', number>
   >;
   sustainableNewLeadsPerDay: number;
   firstWaveSize: number;
@@ -1562,6 +1586,7 @@ function workflowKindToPaced(kind: keyof ReturnType<typeof workflowAdmissionDema
   if (kind === 'invite') return 'invite';
   if (kind === 'dm') return 'dm';
   if (kind === 'profile_view') return 'profile_view';
+  if (kind === 'inmail') return 'inmail';
   if (kind === 'follow') return 'follow';
   if (kind === 'like') return 'like';
   return 'endorse';
@@ -1763,13 +1788,15 @@ export async function updateManagedCampaignControls(
     admissionPolicy?: AdmissionPolicy;
     schedule?: Partial<CampaignSchedule>;
     senderKeys?: string[];
+    mailboxAssignments?: Record<string, string>;
+    inmailCreditCap?: number | null;
   },
   now: Date = new Date()
 ): Promise<ManagedCampaign> {
   const campaign = await getManagedCampaign(db, workspaceId, campaignId);
   if (!campaign) throw new Error('Campaign not found.');
   if (
-    (input.admissionPolicy || input.schedule || input.senderKeys) &&
+    (input.admissionPolicy || input.schedule || input.senderKeys || input.mailboxAssignments) &&
     campaign.status === 'running'
   ) {
     throw new Error(
@@ -1785,6 +1812,13 @@ export async function updateManagedCampaignControls(
       if (!(await getSeat(db, workspaceId, key)))
         throw new Error(`LinkedIn account '${key}' is not configured.`);
   }
+  if (
+    input.inmailCreditCap != null &&
+    (!Number.isInteger(input.inmailCreditCap) ||
+      input.inmailCreditCap < 0 ||
+      input.inmailCreditCap > 10000)
+  )
+    throw new Error('Campaign InMail credit cap must be a whole number from 0 to 10000.');
   const timestamp = now.toISOString();
   await db
     .prepare(
@@ -1792,13 +1826,15 @@ export async function updateManagedCampaignControls(
        priority=COALESCE(?,priority),
        admission_policy_json=COALESCE(?::jsonb,admission_policy_json),
        sender_keys_json=COALESCE(?::jsonb,sender_keys_json),
+       mailbox_assignments_json=COALESCE(?::jsonb,mailbox_assignments_json),
        seat_key=COALESCE(?,seat_key),
        scheduled_start_at=CASE WHEN ?::boolean THEN ?::timestamptz ELSE scheduled_start_at END,
        scheduled_end_at=CASE WHEN ?::boolean THEN ?::timestamptz ELSE scheduled_end_at END,
        schedule_days_json=CASE WHEN ?::boolean THEN ?::jsonb ELSE schedule_days_json END,
        schedule_start_minute=CASE WHEN ?::boolean THEN ? ELSE schedule_start_minute END,
        schedule_end_minute=CASE WHEN ?::boolean THEN ? ELSE schedule_end_minute END,
-       end_behavior=COALESCE(?,end_behavior),updated_at=?
+       end_behavior=COALESCE(?,end_behavior),
+       inmail_credit_cap=CASE WHEN ?::boolean THEN ? ELSE inmail_credit_cap END,updated_at=?
      WHERE workspace_id=? AND id=?`
     )
     .run(
@@ -1811,6 +1847,7 @@ export async function updateManagedCampaignControls(
             : 0,
       input.admissionPolicy === undefined ? null : JSON.stringify(input.admissionPolicy),
       senderKeys === null ? null : JSON.stringify(senderKeys),
+      input.mailboxAssignments === undefined ? null : JSON.stringify(input.mailboxAssignments),
       senderKeys?.[0] ?? null,
       input.schedule?.startAt !== undefined,
       input.schedule?.startAt ?? null,
@@ -1823,6 +1860,8 @@ export async function updateManagedCampaignControls(
       input.schedule?.workEndMinute !== undefined,
       input.schedule?.workEndMinute ?? null,
       input.schedule?.endBehavior ?? null,
+      input.inmailCreditCap !== undefined,
+      input.inmailCreditCap ?? null,
       timestamp,
       workspaceId,
       campaignId

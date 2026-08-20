@@ -90,6 +90,18 @@ describe('LinkedIn manager workflows', () => {
   // them could reach a message. A merge field for data the operator already
   // supplied is not a feature request, it is the data being connected to the
   // one place it was collected for.
+
+  it('renders arbitrary imported custom fields and accepts them at validation time', () => {
+    expect(unsupportedVariables('Hi {{custom.job_title}} at {{custom.icp_tier}}')).toEqual([]);
+    expect(
+      renderWorkflowTemplate('{{first_name}} / {{custom.job_title}} / {{custom.missing}}', {
+        firstName: 'Maya',
+        lastName: 'Smith',
+        company: 'Acme',
+        customFields: { job_title: 'VP Sales' }
+      })
+    ).toBe('Maya / VP Sales / ');
+  });
   it('merges email, phone and country, and renders a missing one as empty rather than as a token', () => {
     expect(
       renderWorkflowTemplate('{{first_name}} / {{email}} / {{phone}} / {{country}}', {

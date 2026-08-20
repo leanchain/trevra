@@ -4,6 +4,7 @@ export const ADMISSION_KINDS = [
   'profile_view',
   'invite',
   'dm',
+  'inmail',
   'follow',
   'like',
   'endorse'
@@ -61,6 +62,9 @@ export function workflowAdmissionDemand(
         break;
       case 'message':
         demand.dm += 1;
+        break;
+      case 'inmail':
+        demand.inmail += 1;
         break;
       case 'follow':
         demand.follow += 1;

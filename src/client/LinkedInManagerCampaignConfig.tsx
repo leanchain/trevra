@@ -11,10 +11,12 @@ import {
   createLinkedInManagedCampaign,
   previewLinkedInManagedCampaign,
   getLinkedInLimits,
+  getLinkedInCampaignMailboxes,
   getLinkedInManagerLeadLists,
   getLinkedInManagerSeats,
   getLinkedInManagerWorkflows,
   startLinkedInManagedCampaign,
+  type CampaignMailbox,
   type LinkedInCeilingSource,
   type LinkedInLimitsReport
 } from './api';
@@ -283,6 +285,7 @@ export function LinkedInManagerCampaignConfig({
   const [seats, setSeats] = useState<LinkedInSeat[]>([]);
   const [lists, setLists] = useState<LinkedInLeadList[]>([]);
   const [workflows, setWorkflows] = useState<LinkedInWorkflow[]>([]);
+  const [mailboxes, setMailboxes] = useState<CampaignMailbox[]>([]);
   const [name, setName] = useState('');
   /** Whether the operator has typed into the name field. Until then it auto-fills from the list + workflow choice; the first keystroke stops that. */
   const [nameTouched, setNameTouched] = useState(false);
@@ -294,6 +297,8 @@ export function LinkedInManagerCampaignConfig({
   const [showSendingDetails, setShowSendingDetails] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [senderKeys, setSenderKeys] = useState<string[]>(activeSeatKey ? [activeSeatKey] : []);
+  const [mailboxAssignments, setMailboxAssignments] = useState<Record<string, string>>({});
+  const [inmailCreditCap, setInmailCreditCap] = useState<number | ''>('');
   const [priority, setPriority] = useState<ManagedCampaign['priority']>('normal');
   const [maxWaveSize, setMaxWaveSize] = useState<number | ''>('');
   const [maxNewLeadsPerDay, setMaxNewLeadsPerDay] = useState<number | ''>('');
@@ -321,14 +326,16 @@ export function LinkedInManagerCampaignConfig({
   } | null>(null);
 
   const refreshOptions = async () => {
-    const [nextSeats, nextLists, nextWorkflows] = await Promise.all([
+    const [nextSeats, nextLists, nextWorkflows, nextMailboxes] = await Promise.all([
       getLinkedInManagerSeats(),
       getLinkedInManagerLeadLists(activeSeatKey),
-      getLinkedInManagerWorkflows()
+      getLinkedInManagerWorkflows(),
+      getLinkedInCampaignMailboxes()
     ]);
     setSeats(nextSeats);
     setLists(nextLists);
     setWorkflows(nextWorkflows);
+    setMailboxes(nextMailboxes);
     setListId((current) =>
       nextLists.some((candidate) => candidate.id === current) ? current : nextLists[0]?.id || ''
     );
@@ -389,6 +396,8 @@ export function LinkedInManagerCampaignConfig({
   const seat = seats.find((candidate) => candidate.seatKey === activeSeatKey) ?? null;
   const list = lists.find((candidate) => candidate.id === listId) ?? null;
   const workflow = workflows.find((candidate) => candidate.id === workflowId) ?? null;
+  const workflowNeedsEmail = workflow?.steps.some((step) => step.action === 'email') ?? false;
+  const workflowNeedsInmail = workflow?.steps.some((step) => step.action === 'inmail') ?? false;
 
   useEffect(() => {
     if (nameTouched || !list || !workflow) return;
@@ -477,6 +486,28 @@ export function LinkedInManagerCampaignConfig({
       `“${seat.label}” is not allowed to send anything at the moment, so the campaign would enrol its leads and then wait. ${limits?.limits.find((limit) => limit.kind === 'invite' && limit.window === 'day')?.rule ?? ''}`.trim()
     );
   }
+  if (workflowNeedsEmail && mailboxes.length === 0)
+    warnings.push(
+      'This workflow sends email, but no connected Gmail or Microsoft 365 mailbox is available.'
+    );
+  if (
+    workflowNeedsEmail &&
+    senderKeys.some((key) => !mailboxAssignments[key]) &&
+    mailboxes.length > 0
+  )
+    warnings.push(
+      'Assign a mailbox to every selected LinkedIn sender used by this multichannel campaign.'
+    );
+  if (
+    workflowNeedsInmail &&
+    senderKeys.some(
+      (key) =>
+        seats.find((candidate) => candidate.seatKey === key)?.capabilities.inmail !== 'available'
+    )
+  )
+    warnings.push(
+      'This workflow contains InMail, but one or more selected LinkedIn accounts are not marked InMail-capable.'
+    );
 
   const create = async () => {
     if (!name.trim() || !listId || !workflowId) return;
@@ -494,6 +525,8 @@ export function LinkedInManagerCampaignConfig({
       const result = await createLinkedInManagedCampaign({
         name: name.trim(),
         senderKeys,
+        mailboxAssignments,
+        inmailCreditCap: inmailCreditCap === '' ? null : inmailCreditCap,
         leadListId: listId,
         workflowId,
         priority,
@@ -712,6 +745,61 @@ export function LinkedInManagerCampaignConfig({
                     ))}
                   </div>
                 </fieldset>
+                {workflowNeedsEmail && (
+                  <fieldset className="li-span-2">
+                    <legend>Email mailbox assignment</legend>
+                    <p className="li-hint">
+                      Each lead keeps the mailbox paired with its LinkedIn sender for the whole
+                      campaign.
+                    </p>
+                    <div className="mgr-pick-grid">
+                      {senderKeys.map((key) => (
+                        <label key={`mailbox-${key}`}>
+                          {seats.find((candidate) => candidate.seatKey === key)?.label ?? key}
+                          <select
+                            value={mailboxAssignments[key] ?? ''}
+                            onChange={(event) =>
+                              setMailboxAssignments((current) => ({
+                                ...current,
+                                [key]: event.target.value
+                              }))
+                            }
+                          >
+                            <option value="">Choose mailbox</option>
+                            {mailboxes.map((mailbox) => (
+                              <option key={mailbox.id} value={mailbox.id}>
+                                {mailbox.provider} · {mailbox.dailyLimit}/day · {mailbox.timezone}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                )}
+                {workflowNeedsInmail && (
+                  <label>
+                    Paid InMail credit cap
+                    <input
+                      type="number"
+                      min={0}
+                      max={10000}
+                      value={inmailCreditCap}
+                      placeholder="0 — free/Open Profile only"
+                      onChange={(event) =>
+                        setInmailCreditCap(
+                          event.target.value === ''
+                            ? ''
+                            : Math.max(0, Math.trunc(Number(event.target.value) || 0))
+                        )
+                      }
+                    />
+                    <span className="li-hint">
+                      Paid credits are used only when the workflow explicitly allows them and both
+                      campaign and account caps permit it.
+                    </span>
+                  </label>
+                )}
                 <label>
                   Campaign priority
                   <select

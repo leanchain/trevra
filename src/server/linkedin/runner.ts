@@ -1,8 +1,15 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
 import { recordAction } from './actions.js';
+import { runCampaignChannelActions } from './campaign-channels.js';
 import { decideAdmission, type AdmissionKind, type AdmissionPolicy } from './admission.js';
-import { ACTION_GAP_SECONDS, bandFor, effectiveDailyCeiling, seatOperatorLimit } from './limits.js';
+import {
+  ACTION_GAP_SECONDS,
+  INMAIL_MONTHLY_QUOTA,
+  bandFor,
+  effectiveDailyCeiling,
+  seatOperatorLimit
+} from './limits.js';
 import {
   admitPendingCampaignMembers,
   campaignActionLimit,
@@ -63,7 +70,15 @@ export interface RunnerResult {
 }
 
 /** Ledger kinds a workflow step can produce, and the four the ramp is budgeted per. */
-const BUDGETED_KINDS = ['invite', 'dm', 'profile_view', 'follow', 'like', 'endorse'] as const;
+const BUDGETED_KINDS = [
+  'invite',
+  'dm',
+  'inmail',
+  'profile_view',
+  'follow',
+  'like',
+  'endorse'
+] as const;
 type BudgetedKind = (typeof BUDGETED_KINDS)[number];
 
 /** Statuses that still hold the one-active-campaign claim on a contact. */
@@ -98,6 +113,7 @@ interface CampaignRow {
   id: string;
   seat_key: string;
   sender_keys_json: unknown;
+  mailbox_assignments_json: unknown;
   workflow_id: string;
   lead_list_id: string;
   sequence_json: unknown;
@@ -109,6 +125,7 @@ interface CampaignRow {
   schedule_start_minute: number | null;
   schedule_end_minute: number | null;
   end_behavior: string;
+  inmail_credit_cap: number | null;
   last_admission_at: string | null;
   started_at: string | null;
 }
@@ -170,6 +187,8 @@ function kindForStep(step: WorkflowStep): BudgetedKind | null {
       return 'invite';
     case 'message':
       return 'dm';
+    case 'inmail':
+      return 'inmail';
     case 'profile_view':
       return 'profile_view';
     case 'follow':
@@ -432,7 +451,7 @@ export async function runManagedCampaigns(
   workspaceId: string,
   now: Date = new Date()
 ): Promise<RunnerResult> {
-  return db.withConnection('linkedin-runner-lease', async (lease) => {
+  const planned = await db.withConnection('linkedin-runner-lease', async (lease) => {
     const claimed = await lease.query<{ locked: boolean }>(
       'SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS locked',
       [RUNNER_LEASE_NAMESPACE, workspaceId]
@@ -457,6 +476,10 @@ export async function runManagedCampaigns(
         .catch(() => undefined);
     }
   });
+  // API-backed channels execute outside the LinkedIn planner lease: a mailbox or webhook
+  // network call must never hold the workspace's scheduling lock.
+  await runCampaignChannelActions(db, workspaceId, now);
+  return planned;
 }
 
 type ConditionOutcome = 'yes' | 'no' | 'unknown';
@@ -525,6 +548,23 @@ async function evaluateWorkflowCondition(
 
   if (condition.kind === 'email_available' || condition.kind === 'email_found') {
     return member.email && member.email.trim().length > 0 ? 'yes' : 'no';
+  }
+
+  if (condition.kind === 'open_profile') {
+    const probe = await db
+      .prepare(
+        `SELECT external_ref,status FROM linkedin_actions
+         WHERE workspace_id=? AND campaign_member_id=? AND kind='profile_view' AND workflow_step_id=?
+         ORDER BY created_at DESC LIMIT 1`
+      )
+      .get<{ external_ref: string | null; status: string }>(
+        workspaceId,
+        member.id,
+        probeStepId ?? ''
+      );
+    if (probe?.external_ref === 'open-profile:true') return 'yes';
+    if (probe?.external_ref === 'open-profile:false') return 'no';
+    return 'unknown';
   }
 
   if (condition.kind === 'connected') {
@@ -674,8 +714,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
   const campaigns = await db
     .prepare(
       `
-    SELECT id,seat_key,sender_keys_json,workflow_id,lead_list_id,sequence_json,priority,admission_policy_json,
-           scheduled_start_at,scheduled_end_at,schedule_days_json,schedule_start_minute,schedule_end_minute,end_behavior,last_admission_at,
+    SELECT id,seat_key,sender_keys_json,mailbox_assignments_json,workflow_id,lead_list_id,sequence_json,priority,admission_policy_json,
+           scheduled_start_at,scheduled_end_at,schedule_days_json,schedule_start_minute,schedule_end_minute,end_behavior,inmail_credit_cap,last_admission_at,
            TO_CHAR(started_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS started_at
     FROM linkedin_campaigns
     WHERE workspace_id=? AND status='running' AND lead_list_id IS NOT NULL AND workflow_id IS NOT NULL
@@ -788,6 +828,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
     const windowStart = new Date(now.getTime() - 86_400_000).toISOString();
     const windowEnd = new Date(now.getTime() + 86_400_000).toISOString();
     const budgetBySeat = new Map<string, Map<BudgetedKind, number>>();
+    const paidInmailRemainingBySeat = new Map<string, number>();
     for (const sender of usableSenders) {
       const used = await db
         .prepare(
@@ -805,6 +846,18 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           [...BUDGETED_KINDS]
         );
       const usedByKind = new Map(used.map((row) => [row.kind, Number(row.total)]));
+      const inmailUsage = await db
+        .prepare(
+          `SELECT COUNT(*) FILTER (WHERE kind='inmail' AND status<>'skipped')::int AS total,
+                  COUNT(*) FILTER (WHERE kind='inmail' AND paid_credit_used=TRUE AND status<>'skipped')::int AS paid
+           FROM linkedin_actions
+           WHERE workspace_id=? AND seat_key=? AND COALESCE(recorded_at,planned_for,created_at)>=?::timestamptz`
+        )
+        .get<{ total: number; paid: number }>(
+          workspaceId,
+          sender.key,
+          new Date(now.getTime() - 30 * 86_400_000).toISOString()
+        );
       const budget = new Map<BudgetedKind, number>();
       for (const kind of BUDGETED_KINDS) {
         const limit = campaignActionLimit(
@@ -812,8 +865,23 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           campaign.started_at,
           now
         );
-        budget.set(kind, Math.max(0, limit - (usedByKind.get(kind) ?? 0)));
+        let remaining = Math.max(0, limit - (usedByKind.get(kind) ?? 0));
+        if (kind === 'inmail') {
+          const monthlyLimit = sender.seat.inmailMonthlyBudget ?? INMAIL_MONTHLY_QUOTA;
+          remaining = Math.min(
+            remaining,
+            Math.max(0, monthlyLimit - Number(inmailUsage?.total ?? 0))
+          );
+        }
+        budget.set(kind, remaining);
       }
+      const seatPaidCap = sender.seat.inmailPaidCreditCap ?? 0;
+      const campaignPaidCap = campaign.inmail_credit_cap ?? 0;
+      const effectivePaidCap = Math.min(seatPaidCap, campaignPaidCap);
+      paidInmailRemainingBySeat.set(
+        sender.key,
+        Math.max(0, effectivePaidCap - Number(inmailUsage?.paid ?? 0))
+      );
       budgetBySeat.set(sender.key, budget);
     }
 
@@ -1060,7 +1128,10 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           // An initial connection-status decision is the one condition for which "unknown"
           // can be resolved by Trevra itself. The probe is filed as a real profile view and
           // consumes the same budget as any other view.
-          if (step.config.condition.kind === 'connected') {
+          if (
+            step.config.condition.kind === 'connected' ||
+            step.config.condition.kind === 'open_profile'
+          ) {
             if (!member.profile_url) {
               memberWrites.set(member.id, {
                 stepIndex,
@@ -1097,7 +1168,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
                 status: 'planned',
                 plannedFor: plannedFor.toISOString(),
                 source: 'campaign',
-                replayScope: `${member.id}:${step.id}:connection-probe`
+                replayScope: `${member.id}:${step.id}:${step.config.condition.kind}-probe`
               },
               now
             );
@@ -1111,7 +1182,11 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
                   member.id,
                   step.id,
                   queuePriorityForStep(step, stepIndex, now, nowIso),
-                  JSON.stringify({ connectionProbe: true }),
+                  JSON.stringify(
+                    step.config.condition.kind === 'connected'
+                      ? { connectionProbe: true }
+                      : { openProfileProbe: true }
+                  ),
                   written.id,
                   workspaceId
                 );
@@ -1281,12 +1356,119 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           continue;
         }
 
-        const kind = kindForStep(step);
-        if (!kind) {
-          // External/multichannel nodes are executed by campaign-channels.ts. Leaving the
-          // member due here is deliberate until that executor writes its branch state.
+        if (
+          step.action === 'email' ||
+          step.action === 'find_email' ||
+          step.action === 'webhook' ||
+          step.action === 'external_handoff'
+        ) {
+          const existing = await tx
+            .prepare(
+              `SELECT status FROM linkedin_campaign_channel_actions
+               WHERE workspace_id=? AND member_id=? AND workflow_step_id=?
+               ORDER BY created_at DESC LIMIT 1`
+            )
+            .get<{ status: string }>(workspaceId, member.id, step.id);
+          if (existing) {
+            if (existing.status === 'unknown') {
+              memberWrites.set(
+                member.id,
+                stayOnStep(stepIndex, new Date(now.getTime() + 24 * 3_600_000), now)
+              );
+            } else if (existing.status === 'planned' || existing.status === 'claimed') {
+              memberWrites.set(
+                member.id,
+                stayOnStep(stepIndex, new Date(now.getTime() + 5 * 60_000), now)
+              );
+            }
+            // Known outcomes are advanced by campaign-channels.ts. If the member is still
+            // here, a later tick will see the channel executor's state update rather than
+            // planning the side effect a second time.
+            continue;
+          }
+
+          if (step.action === 'email' && (!member.email || !member.email.trim())) {
+            const advanced = advanceMember({ stepIndex, steps, from: now, actionId: null, now });
+            memberWrites.set(member.id, {
+              ...advanced.write,
+              branchState: branchStatePatch('external:email_available', false)
+            });
+            if (advanced.completed) result.membersCompleted += 1;
+            continue;
+          }
+
+          let payload: Record<string, unknown>;
+          let variantId: string | null = null;
+          if (step.action === 'email') {
+            const assigned = parseVariants(member.assigned_variants)[step.id];
+            const variant =
+              step.config.variants.find((candidate) => candidate.id === assigned) ??
+              chooseMessageVariant(step.config.variants, `${member.id}:${step.id}`);
+            variantId = variant.id;
+            payload = {
+              recipient: member.email,
+              subject: renderWorkflowTemplate(step.config.subject, lead),
+              body: renderWorkflowTemplate(variant.body, lead),
+              threaded: step.config.threaded,
+              tracking: step.config.tracking
+            };
+          } else if (step.action === 'find_email') {
+            payload = { providerId: step.config.providerId ?? null, refresh: step.config.refresh };
+          } else if (step.action === 'webhook') {
+            payload = {
+              url: step.config.url,
+              method: step.config.method,
+              body: renderWorkflowTemplate(step.config.bodyTemplate, lead),
+              provider: 'webhook'
+            };
+          } else {
+            payload = {
+              provider: step.config.provider,
+              destination: step.config.destination,
+              payload: renderWorkflowTemplate(step.config.payloadTemplate, lead)
+            };
+          }
+          const mailboxMap = parseJsonObject(campaign.mailbox_assignments_json);
+          const connectionId =
+            step.action === 'email' && typeof mailboxMap[senderKey] === 'string'
+              ? String(mailboxMap[senderKey])
+              : null;
+          const channelId = id('licha');
+          const idempotencyKey = createHash('sha256')
+            .update(`${workspaceId}:${campaign.id}:${member.id}:${step.id}`)
+            .digest('hex');
+          await tx
+            .prepare(
+              `INSERT INTO linkedin_campaign_channel_actions (
+                 id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,variant_id,idempotency_key,connection_id,created_at,updated_at
+               ) VALUES (?,?,?,?,?,?,?,'planned',?::timestamptz,?::jsonb,?,?,?,?::timestamptz,?::timestamptz)
+               ON CONFLICT (workspace_id,idempotency_key) DO NOTHING`
+            )
+            .run(
+              channelId,
+              workspaceId,
+              campaign.id,
+              member.id,
+              member.contact_id,
+              step.id,
+              step.action,
+              nowIso,
+              JSON.stringify(payload),
+              variantId,
+              idempotencyKey,
+              connectionId,
+              nowIso,
+              nowIso
+            );
+          memberWrites.set(member.id, {
+            ...stayOnStep(stepIndex, new Date(now.getTime() + 5 * 60_000), now),
+            variants: variantId ? JSON.stringify({ [step.id]: variantId }) : null
+          });
           continue;
         }
+
+        const kind = kindForStep(step);
+        if (!kind) continue;
         if (!member.profile_url) {
           memberWrites.set(member.id, {
             stepIndex,
@@ -1301,11 +1483,29 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           continue;
         }
 
+        if (kind === 'inmail' && seat.capabilities.inmail !== 'available') {
+          memberWrites.set(
+            member.id,
+            stayOnStep(
+              stepIndex,
+              new Date(now.getTime() + 24 * 3_600_000),
+              now,
+              branchStatePatch(`blocked:${step.id}`, {
+                reason: `InMail capability is ${seat.capabilities.inmail}.`,
+                at: nowIso
+              })
+            )
+          );
+          result.membersBlocked += 1;
+          continue;
+        }
+
         const remaining = budget.get(kind) ?? 0;
         if (remaining <= 0) continue;
 
         let variantId: string | null = null;
         let body: string | null = null;
+        let subject: string | null = null;
         let attachment: Record<string, unknown> | null = null;
         if (step.action === 'connection_request') {
           if (step.config.variants && step.config.variants.length > 0) {
@@ -1320,13 +1520,14 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             const template = step.config.message ?? '';
             body = template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
           }
-        } else if (step.action === 'message') {
+        } else if (step.action === 'message' || step.action === 'inmail') {
           const assigned = parseVariants(member.assigned_variants)[step.id];
           const variant =
             step.config.variants.find((candidate) => candidate.id === assigned) ??
             chooseMessageVariant(step.config.variants, `${member.id}:${step.id}`);
           variantId = variant.id;
           body = renderWorkflowTemplate(variant.body, lead);
+          if (step.action === 'inmail') subject = renderWorkflowTemplate(step.config.subject, lead);
           if (variant.attachmentUrl)
             attachment = {
               url: variant.attachmentUrl,
@@ -1363,18 +1564,28 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         if (!written.duplicate) {
           await tx
             .prepare(
-              `UPDATE linkedin_actions SET body=?,campaign_member_id=?,workflow_step_id=?,variant_id=?,queue_priority=?,attachment_json=?::jsonb,channel_metadata_json=?::jsonb
+              `UPDATE linkedin_actions SET body=?,subject=?,campaign_member_id=?,workflow_step_id=?,variant_id=?,queue_priority=?,attachment_json=?::jsonb,channel_metadata_json=?::jsonb
              WHERE id=? AND workspace_id=?`
             )
             .run(
               body,
+              subject,
               member.id,
               step.id,
               variantId,
               queuePriorityForStep(step, stepIndex, now, plannedFor.toISOString()),
               attachment ? JSON.stringify(attachment) : null,
               JSON.stringify(
-                step.action === 'endorse_skills' ? { maxSkills: step.config.maxSkills } : {}
+                step.action === 'endorse_skills'
+                  ? { maxSkills: step.config.maxSkills }
+                  : step.action === 'inmail'
+                    ? {
+                        allowPaid:
+                          step.config.allowPaid &&
+                          (paidInmailRemainingBySeat.get(senderKey) ?? 0) > 0,
+                        paidCreditCapRemaining: paidInmailRemainingBySeat.get(senderKey) ?? 0
+                      }
+                    : {}
               ),
               written.id,
               workspaceId

@@ -70,7 +70,8 @@ export type LinkedInFailureKind =
   | 'challenge'
   | 'selector_drift'
   | 'unknown'
-  | 'compose_unavailable';
+  | 'compose_unavailable'
+  | 'paid_credit_required';
 
 export interface LinkedInDriverResult {
   ok: boolean;
@@ -80,6 +81,8 @@ export interface LinkedInDriverResult {
   failureKind: LinkedInFailureKind | null;
   /** Written for the operator reading the ledger later, not for a log grep. */
   detail?: string;
+  /** Verified channel facts discovered while performing the action. */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -213,6 +216,13 @@ export function isOtpRequired(value: LinkedInLoginResult): value is { ok: false;
 export interface LinkedInDriver {
   sendInvite(page: LinkedInPage, target: string, note?: string): Promise<LinkedInDriverResult>;
   sendDm(page: LinkedInPage, target: string, body: string): Promise<LinkedInDriverResult>;
+  sendInMail?(
+    page: LinkedInPage,
+    target: string,
+    subject: string,
+    body: string,
+    options?: { allowPaid?: boolean }
+  ): Promise<LinkedInDriverResult>;
   /**
    * Answer inside an existing conversation, by thread id rather than by
    * profile. NOT `sendDm` with different words: `sendDm` navigates to a profile
@@ -339,6 +349,17 @@ export const SELECTORS = {
   messageButton: 'button[aria-label^="Message"]',
   messageComposeBox: 'div.msg-form__contenteditable[contenteditable="true"]',
   messageSendButton: 'button.msg-form__send-button, button[type="submit"][aria-label="Send"]',
+  /** InMail is a distinct paid/entitled surface; never fall back to Message. */
+  inmailButton:
+    'button[aria-label*="InMail" i], a[aria-label*="InMail" i], button:has-text("InMail")',
+  inmailSubject:
+    'input[name="subject"], input[placeholder*="Subject" i], input[aria-label*="Subject" i]',
+  inmailComposeBox:
+    'div.msg-form__contenteditable[contenteditable="true"], div[contenteditable="true"][role="textbox"]',
+  inmailSendButton:
+    'button[aria-label*="Send InMail" i], button.msg-form__send-button, button[type="submit"]:has-text("Send")',
+  inmailPaidWarning:
+    'text=/paid InMail|credit will be used|use an InMail credit|purchase.*credit/i',
   /** "You've reached the weekly invitation limit" and its siblings. */
   limitWall:
     'text=/reached the weekly invitation limit|You.ve reached the limit|try again next week|invitation limit/i',
@@ -840,6 +861,110 @@ export async function sendDm(
     return fail(
       'unknown',
       `The message to ${url} was interrupted after the composer opened: ${cause instanceof Error ? cause.message : String(cause)}. Whether it left is unknown.`
+    );
+  }
+}
+
+/** Send a real InMail from its dedicated composer. Message is never used as a fallback. */
+export async function readOpenProfile(
+  page: LinkedInPage,
+  target: string
+): Promise<LinkedInDriverResult> {
+  const opened = await openProfile(page, target);
+  if (isResult(opened)) return opened;
+  const { url } = opened;
+  const control = page.locator(SELECTORS.inmailButton);
+  if ((await control.count()) === 0) {
+    return { ok: true, externalRef: 'open-profile:false', failureKind: null };
+  }
+  try {
+    await hoverClick(page, control.first(), `${url}#open-profile-probe`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#open-profile-probe-settle`);
+    const wall = await detectWall(page);
+    if (wall) return fail(wall, `LinkedIn blocked the Open Profile probe on ${url}.`);
+    const paid = page.locator(SELECTORS.inmailPaidWarning);
+    const usesCredit = (await paid.count()) > 0;
+    return {
+      ok: true,
+      externalRef: usesCredit ? 'open-profile:false' : 'open-profile:true',
+      failureKind: null,
+      metadata: { inmailAvailable: true, paidCreditRequired: usesCredit }
+    };
+  } catch (cause) {
+    return fail(
+      'unknown',
+      `The Open Profile probe for ${url} could not determine whether InMail is free: ${cause instanceof Error ? cause.message : String(cause)}.`
+    );
+  }
+}
+
+export async function sendInMail(
+  page: LinkedInPage,
+  target: string,
+  subject: string,
+  body: string,
+  options: { allowPaid?: boolean } = {}
+): Promise<LinkedInDriverResult> {
+  if (!subject.trim() || !body.trim())
+    return fail('selector_drift', 'Refusing to open InMail without an approved subject and body.');
+  const opened = await openProfile(page, target);
+  if (isResult(opened)) return opened;
+  const { url } = opened;
+  const control = page.locator(SELECTORS.inmailButton);
+  if ((await control.count()) === 0)
+    return fail(
+      'compose_unavailable',
+      `No InMail control matched on ${url}. This sender may not have InMail access for this profile.`
+    );
+  try {
+    await hoverClick(page, control.first(), `${url}#inmail`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#inmail-composer`);
+    const wall = await detectWall(page);
+    if (wall)
+      return fail(
+        wall,
+        `LinkedIn answered the InMail click on ${url} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}.`
+      );
+    const paid = page.locator(SELECTORS.inmailPaidWarning);
+    const paidCredit = (await paid.count()) > 0;
+    if (paidCredit && options.allowPaid !== true)
+      return fail(
+        'paid_credit_required',
+        'LinkedIn says this InMail consumes a paid credit, but this workflow did not approve paid credits. Nothing was sent.'
+      );
+    const subjectBox = page.locator(SELECTORS.inmailSubject);
+    const compose = page.locator(SELECTORS.inmailComposeBox);
+    if ((await subjectBox.count()) === 0 || (await compose.count()) === 0)
+      return fail(
+        'unknown',
+        'The InMail composer opened but its subject or body field could not be identified. Nothing was sent; inspect the open draft.'
+      );
+    await typeLike(page, subjectBox.first(), subject, `${url}#inmail-subject`, CLICK_TIMEOUT_MS);
+    await typeLike(page, compose.first(), body, `${url}#inmail-body`, CLICK_TIMEOUT_MS);
+    const send = page.locator(SELECTORS.inmailSendButton);
+    if ((await send.count()) === 0)
+      return fail(
+        'unknown',
+        'The approved InMail is in the composer but no send control matched. Send or discard the draft by hand.'
+      );
+    await hoverClick(page, send.first(), `${url}#inmail-send`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#after-inmail`);
+    const after = await detectWall(page);
+    if (after)
+      return fail(
+        after,
+        `LinkedIn answered the InMail send for ${url} with a ${after === 'challenge' ? 'challenge' : 'limit wall'}.`
+      );
+    return {
+      ok: true,
+      externalRef: url,
+      failureKind: null,
+      metadata: { paidCreditConsumed: paidCredit }
+    };
+  } catch (cause) {
+    return fail(
+      'unknown',
+      `The InMail to ${url} was interrupted after its composer opened: ${cause instanceof Error ? cause.message : String(cause)}. Whether it left is unknown.`
     );
   }
 }
@@ -1643,6 +1768,7 @@ async function submitOtp(page: LinkedInPage, otp: string): Promise<LinkedInLogin
 export const playwrightDriver: LinkedInDriver = {
   sendInvite,
   sendDm,
+  sendInMail,
   sendReply,
   readThread,
   listConversations,

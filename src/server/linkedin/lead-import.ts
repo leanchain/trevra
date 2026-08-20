@@ -32,6 +32,7 @@ export interface NormalizedLeadInput {
   country: string | null;
   profileUrl: string | null;
   dedupeKey: string;
+  customFields: Record<string, string>;
   original: Record<string, string>;
 }
 
@@ -400,6 +401,41 @@ export function leadDedupeKey(
   return createHash('sha256').update(identity).digest('hex');
 }
 
+/** Stable merge-field key for a CSV column that is not one of the built-ins. */
+export function customFieldKey(header: string): string {
+  const key = header
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+  return key && /^[a-z]/.test(key) ? key : key ? `field_${key}` : 'field';
+}
+
+function customFieldsOf(
+  row: Record<string, string>,
+  mapping: LeadFieldMapping
+): Record<string, string> {
+  const mapped = new Set(Object.values(mapping).filter((value): value is string => Boolean(value)));
+  const out: Record<string, string> = {};
+  const used = new Set<string>();
+  for (const [header, raw] of Object.entries(row)) {
+    if (mapped.has(header)) continue;
+    const value = String(raw ?? '')
+      .normalize('NFKC')
+      .trim();
+    if (!value) continue;
+    const base = customFieldKey(header);
+    let key = base;
+    let suffix = 2;
+    while (used.has(key)) key = `${base}_${suffix++}`.slice(0, 80);
+    used.add(key);
+    out[key] = value;
+  }
+  return out;
+}
+
 export function normalizeLeadRow(
   row: Record<string, string>,
   mapping: LeadFieldMapping
@@ -428,6 +464,7 @@ export function normalizeLeadRow(
     country: nullable(read('country')),
     profileUrl: canonicalProfileUrl(read('profileUrl')),
     dedupeKey: '',
+    customFields: customFieldsOf(row, mapping),
     original: { ...row }
   };
   lead.dedupeKey = leadDedupeKey(lead);
@@ -490,6 +527,7 @@ export function normalizeScrapedLead(input: ScrapedLeadRecord): NormalizedLeadIn
     country: null,
     profileUrl,
     dedupeKey: '',
+    customFields: {},
     original
   };
   lead.dedupeKey = leadDedupeKey(lead);
