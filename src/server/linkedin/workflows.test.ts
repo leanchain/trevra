@@ -1,34 +1,208 @@
 import { describe, expect, it } from 'vitest';
-import { MESSAGE_VARIANT_MAX, chooseMessageVariant, delayMilliseconds, parseWorkflowSteps, renderWorkflowTemplate, unsupportedVariables, workflowStepsSchema } from './workflows.js';
+import {
+  MESSAGE_VARIANT_MAX,
+  chooseMessageVariant,
+  delayMilliseconds,
+  diagnoseWorkflow,
+  parseWorkflowSteps,
+  renderWorkflowTemplate,
+  unsupportedVariables,
+  workflowStepsSchema
+} from './workflows.js';
 
 describe('LinkedIn manager workflows', () => {
   it('accepts the supported actions and hour/day delays', () => {
     const result = workflowStepsSchema.parse([
       { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
-      { id: 'invite', action: 'connection_request', delayBefore: { amount: 3, unit: 'hours' }, config: { message: 'Hi {{first_name}}' } },
-      { id: 'withdraw', action: 'withdraw_pending', delayBefore: { amount: 14, unit: 'days' }, config: { afterDays: 14 } },
-      { id: 'msg', action: 'message', delayBefore: { amount: 2, unit: 'days' }, config: { variants: [{ id: 'a', body: 'Hey {{first_name}} at {{company}}', weight: 50 }, { id: 'b', body: 'Hi {{first_name}}', weight: 50 }] } },
-      { id: 'manual', action: 'manual_message', delayBefore: { amount: 1, unit: 'days' }, config: { suggestedTemplate: 'Check in with {{first_name}}' } },
+      {
+        id: 'invite',
+        action: 'connection_request',
+        delayBefore: { amount: 3, unit: 'hours' },
+        config: { message: 'Hi {{first_name}}' }
+      },
+      {
+        id: 'withdraw',
+        action: 'withdraw_pending',
+        delayBefore: { amount: 14, unit: 'days' },
+        config: { afterDays: 14 }
+      },
+      {
+        id: 'msg',
+        action: 'message',
+        delayBefore: { amount: 2, unit: 'days' },
+        config: {
+          variants: [
+            { id: 'a', body: 'Hey {{first_name}} at {{company}}', weight: 50 },
+            { id: 'b', body: 'Hi {{first_name}}', weight: 50 }
+          ]
+        }
+      },
+      {
+        id: 'manual',
+        action: 'manual_message',
+        delayBefore: { amount: 1, unit: 'days' },
+        config: { suggestedTemplate: 'Check in with {{first_name}}' }
+      },
       { id: 'follow', action: 'follow', delayBefore: { amount: 1, unit: 'hours' }, config: {} }
     ]);
     expect(result).toHaveLength(6);
     expect(delayMilliseconds(result[2].delayBefore)).toBe(14 * 24 * 3_600_000);
   });
 
+  it('reuses branching result semantics for Managed replied references', () => {
+    expect(
+      workflowStepsSchema.safeParse([
+        {
+          id: 'group-msg',
+          action: 'group_message',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {
+            groupUrl: 'https://www.linkedin.com/groups/123/',
+            variants: [{ id: 'a', body: 'Hi', weight: 100 }]
+          }
+        },
+        {
+          id: 'end-yes',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'replied' }
+        },
+        {
+          id: 'end-no',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        },
+        {
+          id: 'reply-check',
+          action: 'condition',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {
+            condition: { kind: 'replied', ofStepId: 'group-msg' },
+            yesStepId: 'end-yes',
+            noStepId: 'end-no'
+          }
+        }
+      ]).success
+    ).toBe(false); // backward branch targets remain invalid even though the result kind is valid.
+    expect(
+      workflowStepsSchema.safeParse([
+        {
+          id: 'view',
+          action: 'profile_view',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {}
+        },
+        {
+          id: 'check',
+          action: 'condition',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {
+            condition: { kind: 'replied', ofStepId: 'view' },
+            yesStepId: 'yes',
+            noStepId: 'no'
+          }
+        },
+        {
+          id: 'yes',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'replied' }
+        },
+        {
+          id: 'no',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        }
+      ]).success
+    ).toBe(false);
+  });
+
+  it('accepts only LinkedIn company/event/group destinations for community nodes', () => {
+    expect(() =>
+      workflowStepsSchema.parse([
+        {
+          id: 'company',
+          action: 'follow_company',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { companyUrl: 'https://evil.example/company/acme/' }
+        }
+      ])
+    ).toThrow(/LinkedIn company URL/);
+    expect(
+      workflowStepsSchema.parse([
+        {
+          id: 'group',
+          action: 'group_message',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {
+            groupUrl: 'https://www.linkedin.com/groups/123/',
+            variants: [{ id: 'a', body: 'Hello', weight: 100 }]
+          }
+        }
+      ])[0].action
+    ).toBe('group_message');
+  });
+
+  it('requires an explicit destructive acknowledgement for disconnect steps', () => {
+    expect(() =>
+      workflowStepsSchema.parse([
+        {
+          id: 'disconnect',
+          action: 'disconnect',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {}
+        }
+      ])
+    ).toThrow();
+    expect(
+      workflowStepsSchema.parse([
+        {
+          id: 'disconnect',
+          action: 'disconnect',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { acknowledgeDestructive: true }
+        }
+      ])[0].action
+    ).toBe('disconnect');
+  });
+
   it('rejects unsupported merge variables and duplicate step ids', () => {
-    expect(() => workflowStepsSchema.parse([
-      { id: 'x', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: 'Hi {{job_title}}' } },
-      { id: 'x', action: 'follow', delayBefore: { amount: 1, unit: 'days' }, config: {} }
-    ])).toThrow();
+    expect(() =>
+      workflowStepsSchema.parse([
+        {
+          id: 'x',
+          action: 'connection_request',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { message: 'Hi {{job_title}}' }
+        },
+        { id: 'x', action: 'follow', delayBefore: { amount: 1, unit: 'days' }, config: {} }
+      ])
+    ).toThrow();
   });
 
   it('requires withdrawal to follow an invite', () => {
-    expect(() => workflowStepsSchema.parse([{ id: 'withdraw', action: 'withdraw_pending', delayBefore: { amount: 1, unit: 'days' }, config: { afterDays: 7 } }])).toThrow();
+    expect(() =>
+      workflowStepsSchema.parse([
+        {
+          id: 'withdraw',
+          action: 'withdraw_pending',
+          delayBefore: { amount: 1, unit: 'days' },
+          config: { afterDays: 7 }
+        }
+      ])
+    ).toThrow();
   });
 
-  it('renders the supported variables and leaves an unknown token standing', () => {
-    expect(renderWorkflowTemplate('Hi {{first_name}} {{last_name}} from {{company}} / {{other}}', { firstName: 'Maya', lastName: 'Smith', company: 'Acme' }))
-      .toBe('Hi Maya Smith from Acme / {{other}}');
+  it('renders supported variables and fails closed on an unknown token', () => {
+    expect(
+      renderWorkflowTemplate('Hi {{first_name}} {{last_name}} from {{company}} / {{other}}', {
+        firstName: 'Maya',
+        lastName: 'Smith',
+        company: 'Acme'
+      })
+    ).toBe('Hi Maya Smith from Acme / ');
   });
 
   // Migration 046 stores an email, a phone and a country on every contact, the
@@ -36,20 +210,51 @@ describe('LinkedIn manager workflows', () => {
   // them could reach a message. A merge field for data the operator already
   // supplied is not a feature request, it is the data being connected to the
   // one place it was collected for.
+
+  it('renders arbitrary imported custom fields and accepts them at validation time', () => {
+    expect(unsupportedVariables('Hi {{custom.job_title}} at {{custom.icp_tier}}')).toEqual([]);
+    expect(
+      renderWorkflowTemplate('{{first_name}} / {{custom.job_title}} / {{custom.missing}}', {
+        firstName: 'Maya',
+        lastName: 'Smith',
+        company: 'Acme',
+        customFields: { job_title: 'VP Sales' }
+      })
+    ).toBe('Maya / VP Sales / ');
+  });
   it('merges email, phone and country, and renders a missing one as empty rather than as a token', () => {
-    expect(renderWorkflowTemplate(
-      '{{first_name}} / {{email}} / {{phone}} / {{country}}',
-      { firstName: 'Maya', lastName: 'Smith', company: 'Acme', email: 'maya@acme.test', phone: '+41 79 000 00 00', country: 'CH' }
-    )).toBe('Maya / maya@acme.test / +41 79 000 00 00 / CH');
+    expect(
+      renderWorkflowTemplate('{{first_name}} / {{email}} / {{phone}} / {{country}}', {
+        firstName: 'Maya',
+        lastName: 'Smith',
+        company: 'Acme',
+        email: 'maya@acme.test',
+        phone: '+41 79 000 00 00',
+        country: 'CH'
+      })
+    ).toBe('Maya / maya@acme.test / +41 79 000 00 00 / CH');
 
     // A contact whose CSV had no phone column: a blank, not the word null and
     // not `{{phone}}` arriving in somebody's inbox.
-    expect(renderWorkflowTemplate('Call {{phone}} in {{country}}.', { firstName: 'Maya', lastName: 'Smith', company: 'Acme', phone: null }))
-      .toBe('Call  in .');
+    expect(
+      renderWorkflowTemplate('Call {{phone}} in {{country}}.', {
+        firstName: 'Maya',
+        lastName: 'Smith',
+        company: 'Acme',
+        phone: null
+      })
+    ).toBe('Call  in .');
 
-    expect(workflowStepsSchema.parse([
-      { id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: 'Hi {{first_name}} in {{country}}' } }
-    ])).toHaveLength(1);
+    expect(
+      workflowStepsSchema.parse([
+        {
+          id: 'invite',
+          action: 'connection_request',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { message: 'Hi {{first_name}} in {{country}}' }
+        }
+      ])
+    ).toHaveLength(1);
   });
 
   // `sequence.ts` documents camelCase (`{{firstName}}`) and this renderer filled
@@ -57,27 +262,54 @@ describe('LinkedIn manager workflows', () => {
   // at save time -- or delivered with the braces intact by anything that leaves
   // unknown tokens standing.
   it('accepts the camelCase spelling of the three fields the sequence path shares', () => {
-    expect(renderWorkflowTemplate('Hi {{firstName}} {{lastName}} at {{company}}', { firstName: 'Maya', lastName: 'Smith', company: 'Acme' }))
-      .toBe('Hi Maya Smith at Acme');
+    expect(
+      renderWorkflowTemplate('Hi {{firstName}} {{lastName}} at {{company}}', {
+        firstName: 'Maya',
+        lastName: 'Smith',
+        company: 'Acme'
+      })
+    ).toBe('Hi Maya Smith at Acme');
     expect(unsupportedVariables('{{firstName}} {{lastName}} {{company}} {{email}}')).toEqual([]);
-    expect(workflowStepsSchema.parse([
-      { id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: 'Hi {{firstName}}' } }
-    ])).toHaveLength(1);
+    expect(
+      workflowStepsSchema.parse([
+        {
+          id: 'invite',
+          action: 'connection_request',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { message: 'Hi {{firstName}}' }
+        }
+      ])
+    ).toHaveLength(1);
   });
 
   // Widening the set does not soften the refusal: a name that is neither a
   // canonical field nor an alias is still rejected on the write that
   // introduced it, which is the whole reason the set is closed.
   it('still refuses a variable that is neither a field nor an alias', () => {
-    expect(unsupportedVariables('Hi {{fistName}} at {{jobTitle}}').sort()).toEqual(['fistName', 'jobTitle']);
-    expect(() => workflowStepsSchema.parse([
-      { id: 'invite', action: 'connection_request', delayBefore: { amount: 0, unit: 'hours' }, config: { message: 'Hi {{fistName}}' } }
-    ])).toThrow();
+    expect(unsupportedVariables('Hi {{fistName}} at {{jobTitle}}').sort()).toEqual([
+      'fistName',
+      'jobTitle'
+    ]);
+    expect(() =>
+      workflowStepsSchema.parse([
+        {
+          id: 'invite',
+          action: 'connection_request',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { message: 'Hi {{fistName}}' }
+        }
+      ])
+    ).toThrow();
   });
 
   it('assigns an A/B variant deterministically', () => {
-    const variants = [{ id: 'a', body: 'A', weight: 50 }, { id: 'b', body: 'B', weight: 50 }];
-    expect(chooseMessageVariant(variants, 'member:step')).toEqual(chooseMessageVariant(variants, 'member:step'));
+    const variants = [
+      { id: 'a', body: 'A', weight: 50 },
+      { id: 'b', body: 'B', weight: 50 }
+    ];
+    expect(chooseMessageVariant(variants, 'member:step')).toEqual(
+      chooseMessageVariant(variants, 'member:step')
+    );
   });
 
   // A/B was capped at two arms by the schema alone -- nothing downstream needed
@@ -94,19 +326,38 @@ describe('LinkedIn manager workflows', () => {
     it('accepts four message variants and still refuses a fifth', () => {
       expect(MESSAGE_VARIANT_MAX).toBe(4);
       const parsed = workflowStepsSchema.parse([
-        { id: 'msg', action: 'message', delayBefore: { amount: 0, unit: 'hours' }, config: { variants: four } }
+        {
+          id: 'msg',
+          action: 'message',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { variants: four }
+        }
       ]);
       expect(parsed[0].action === 'message' && parsed[0].config.variants).toHaveLength(4);
 
-      expect(() => workflowStepsSchema.parse([
-        { id: 'msg', action: 'message', delayBefore: { amount: 0, unit: 'hours' }, config: { variants: [...four, { id: 'e', body: 'E', weight: 20 }] } }
-      ])).toThrow();
+      expect(() =>
+        workflowStepsSchema.parse([
+          {
+            id: 'msg',
+            action: 'message',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { variants: [...four, { id: 'e', body: 'E', weight: 20 }] }
+          }
+        ])
+      ).toThrow();
 
       // The uniqueness rule is not weakened by the extra room: four arms, two
       // of them called `c`, is still a rejected save and not a silent overwrite.
-      expect(() => workflowStepsSchema.parse([
-        { id: 'msg', action: 'message', delayBefore: { amount: 0, unit: 'hours' }, config: { variants: [...four.slice(0, 3), { id: 'c', body: 'D', weight: 25 }] } }
-      ])).toThrow();
+      expect(() =>
+        workflowStepsSchema.parse([
+          {
+            id: 'msg',
+            action: 'message',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: { variants: [...four.slice(0, 3), { id: 'c', body: 'D', weight: 25 }] }
+          }
+        ])
+      ).toThrow();
     });
 
     it('spreads 1000 members across all four arms in roughly the weighted proportions', () => {
@@ -181,7 +432,9 @@ describe('LinkedIn manager workflows', () => {
         expect(ids.has(chooseMessageVariant(four, `seed-${seed}`).id)).toBe(true);
       }
       // One arm is not a draw at all.
-      expect(chooseMessageVariant([{ id: 'only', body: 'O', weight: 50 }], 'anything').id).toBe('only');
+      expect(chooseMessageVariant([{ id: 'only', body: 'O', weight: 50 }], 'anything').id).toBe(
+        'only'
+      );
     });
   });
 
@@ -192,16 +445,35 @@ describe('LinkedIn manager workflows', () => {
   it('still parses a stored 1- and 2-variant workflow exactly as written', () => {
     const stored = JSON.stringify([
       { id: 'view', action: 'profile_view', delayBefore: { amount: 0, unit: 'hours' }, config: {} },
-      { id: 'msg', action: 'message', delayBefore: { amount: 2, unit: 'days' }, config: { variants: [{ id: 'a', body: 'Hey {{first_name}}', weight: 70 }, { id: 'b', body: 'Hi {{first_name}}', weight: 30 }] } },
-      { id: 'solo', action: 'message', delayBefore: { amount: 3, unit: 'days' }, config: { variants: [{ id: 'a', body: 'Following up, {{first_name}}', weight: 50 }] } }
+      {
+        id: 'msg',
+        action: 'message',
+        delayBefore: { amount: 2, unit: 'days' },
+        config: {
+          variants: [
+            { id: 'a', body: 'Hey {{first_name}}', weight: 70 },
+            { id: 'b', body: 'Hi {{first_name}}', weight: 30 }
+          ]
+        }
+      },
+      {
+        id: 'solo',
+        action: 'message',
+        delayBefore: { amount: 3, unit: 'days' },
+        config: { variants: [{ id: 'a', body: 'Following up, {{first_name}}', weight: 50 }] }
+      }
     ]);
 
     const steps = parseWorkflowSteps(stored);
     expect(steps).toHaveLength(3);
     const ab = steps[1];
     const solo = steps[2];
-    if (ab.action !== 'message' || solo.action !== 'message') throw new Error('expected two message steps');
-    expect(ab.config.variants.map((variant) => [variant.id, variant.weight])).toEqual([['a', 70], ['b', 30]]);
+    if (ab.action !== 'message' || solo.action !== 'message')
+      throw new Error('expected two message steps');
+    expect(ab.config.variants.map((variant) => [variant.id, variant.weight])).toEqual([
+      ['a', 70],
+      ['b', 30]
+    ]);
     expect(solo.config.variants).toHaveLength(1);
 
     // And the split those stored weights describe is still the split that runs:
@@ -212,5 +484,60 @@ describe('LinkedIn manager workflows', () => {
     }
     expect(a / 1000).toBeGreaterThan(0.65);
     expect(a / 1000).toBeLessThan(0.75);
+  });
+
+  it('accepts a positive per-step SLA and rejects a zero SLA', () => {
+    const parsed = workflowStepsSchema.parse([
+      {
+        id: 'follow-up',
+        action: 'message',
+        delayBefore: { amount: 1, unit: 'days' },
+        sla: { amount: 6, unit: 'hours' },
+        config: { variants: [{ id: 'a', body: 'Hi', weight: 100 }] }
+      }
+    ]);
+    expect(parsed[0]?.sla).toEqual({ amount: 6, unit: 'hours' });
+    expect(() =>
+      workflowStepsSchema.parse([
+        {
+          id: 'bad-sla',
+          action: 'profile_view',
+          delayBefore: { amount: 0, unit: 'hours' },
+          sla: { amount: 0, unit: 'hours' },
+          config: {}
+        }
+      ])
+    ).toThrow(/SLA/i);
+  });
+
+  it('suggests sequence fixes without invalidating or rewriting the workflow', () => {
+    const diagnosticSteps = workflowStepsSchema.parse([
+      {
+        id: 'invite',
+        action: 'connection_request',
+        delayBefore: { amount: 0, unit: 'hours' },
+        config: { message: 'Hi {{first_name}}' }
+      },
+      ...['m1', 'm2', 'm3', 'm4'].map((id, index) => ({
+        id,
+        action: 'message' as const,
+        delayBefore: { amount: index + 1, unit: 'days' as const },
+        config: { variants: [{ id: 'a', body: 'Reach me at {{email}}', weight: 100 }] }
+      }))
+    ]);
+    const diagnostics = diagnoseWorkflow(diagnosticSteps, {
+      email: { present: 7, total: 10 }
+    });
+    expect(diagnostics.map((item) => item.code)).toEqual(
+      expect.arrayContaining([
+        'repeated_action_bottleneck',
+        'missing_reply_monitor',
+        'missing_invite_cleanup',
+        'missing_variable_coverage'
+      ])
+    );
+    // Diagnostics are advisory: the already-parsed input is unchanged.
+    expect(diagnosticSteps).toHaveLength(5);
+    expect(diagnosticSteps[1]?.action).toBe('message');
   });
 });

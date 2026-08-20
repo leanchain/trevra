@@ -31,12 +31,15 @@ import {
 import {
   SELECTORS,
   isSeatRead,
+  playwrightDegreeDriver,
   playwrightDriver,
+  readOpenProfile,
   type LinkedInDriver,
   type LinkedInDriverResult,
   type LinkedInFailureKind,
   type LinkedInLocator,
-  type LinkedInPage
+  type LinkedInPage,
+  type LinkedInAttachment
 } from './driver.js';
 import {
   isThreadListing,
@@ -145,13 +148,39 @@ import {
  * in an hour is a ban signal however harmless one like is.
  */
 export type ExecutableKind =
-  'invite' | 'dm' | 'reply' | 'profile_view' | 'follow' | 'like' | 'endorse';
+  | 'invite'
+  | 'dm'
+  | 'reply'
+  | 'inmail'
+  | 'profile_view'
+  | 'follow'
+  | 'unfollow'
+  | 'disconnect'
+  | 'company_follow'
+  | 'company_like'
+  | 'company_invite_follow'
+  | 'event_invite'
+  | 'group_invite'
+  | 'group_message'
+  | 'event_message'
+  | 'like'
+  | 'endorse';
 export const EXECUTABLE_KINDS: readonly ExecutableKind[] = [
   'invite',
   'dm',
   'reply',
+  'inmail',
   'profile_view',
   'follow',
+  'unfollow',
+  'disconnect',
+  'company_follow',
+  'company_like',
+  'company_invite_follow',
+  'event_invite',
+  'group_invite',
+  'group_message',
+  'event_message',
   'like',
   'endorse'
 ];
@@ -338,6 +367,8 @@ export interface DueLinkedInAction {
   plannedFor: string;
   /** The approved bytes: an invite note, a DM body, a reply. Null for the passive kinds. */
   body: string | null;
+  /** Subject for InMail. Null for every other LinkedIn action. */
+  subject?: string | null;
   /**
    * The conversation a `reply` answers in. Null for every other kind.
    *
@@ -404,6 +435,8 @@ export interface DueLinkedInAction {
    * a clock that already let it in.
    */
   manual?: boolean;
+  channelMetadata?: Record<string, unknown>;
+  attachment?: Record<string, unknown> | null;
 }
 
 export type BatchStatus = 'completed' | 'halted';
@@ -515,7 +548,14 @@ export interface LocalWorkerStore {
    * row never happened and is evidence of nothing.
    */
   hasUnacceptedInvite(action: DueLinkedInAction): Promise<boolean>;
-  settleSent(actionId: string, externalRef: string | null, now: Date): Promise<void>;
+  settleSent(
+    actionId: string,
+    externalRef: string | null,
+    now: Date,
+    metadata?: Record<string, unknown>
+  ): Promise<void>;
+  /** Record positive invite state discovered before any send attempt. */
+  settleExistingInvite(actionId: string, state: 'accepted' | 'pending', now: Date): Promise<void>;
   /**
    * File a reply's own words into its conversation the moment it lands, off
    * the SAME re-read `runLinkedInLocalBatch` just took, so the thread shows
@@ -858,7 +898,28 @@ async function execute(
     case 'invite':
       return deps.driver.sendInvite(deps.page, action.targetRef, action.body ?? undefined);
     case 'dm':
-      return deps.driver.sendDm(deps.page, action.targetRef, action.body ?? '');
+      return deps.driver.sendDm(deps.page, action.targetRef, action.body ?? '', {
+        attachment: action.attachment as LinkedInAttachment | null | undefined
+      });
+    case 'inmail': {
+      if (!deps.driver.sendInMail) {
+        return {
+          ok: false,
+          failureKind: 'compose_unavailable',
+          detail: 'This worker has no InMail driver configured. Nothing was attempted.'
+        };
+      }
+      return deps.driver.sendInMail(
+        deps.page,
+        action.targetRef,
+        action.subject ?? '',
+        action.body ?? '',
+        {
+          allowPaid: action.channelMetadata?.allowPaid === true,
+          attachment: action.attachment as LinkedInAttachment | null | undefined
+        }
+      );
+    }
     case 'reply': {
       // Unreachable through the claim, which requires a thread_urn on a reply.
       // Reported rather than asserted, because the alternative -- falling back
@@ -874,14 +935,133 @@ async function execute(
       }
       return deps.driver.sendReply(deps.page, action.threadUrn, action.body ?? '');
     }
-    case 'profile_view':
+    case 'profile_view': {
+      if (action.channelMetadata?.openProfileProbe === true) {
+        return readOpenProfile(deps.page, action.targetRef);
+      }
+      if (action.channelMetadata?.connectionProbe === true) {
+        const read = await playwrightDegreeDriver.readProfileDegree(deps.page, action.targetRef);
+        if ('degree' in read) {
+          return {
+            ok: true,
+            externalRef: `connection-degree:${read.degree ?? 'unknown'}`,
+            failureKind: null,
+            detail: read.degraded.length > 0 ? read.degraded.join(' ') : undefined
+          };
+        }
+        return read;
+      }
       return deps.driver.viewProfile(deps.page, action.targetRef);
+    }
     case 'follow':
       return deps.driver.followProfile(deps.page, action.targetRef);
+    case 'unfollow':
+      return deps.driver.unfollowProfile(deps.page, action.targetRef);
+    case 'disconnect':
+      return deps.driver.disconnectProfile(deps.page, action.targetRef);
+    case 'company_follow': {
+      const companyUrl =
+        typeof action.channelMetadata?.companyUrl === 'string'
+          ? action.channelMetadata.companyUrl
+          : '';
+      return deps.driver.followCompany
+        ? deps.driver.followCompany(deps.page, companyUrl, { seed })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no company-follow driver configured. Nothing was attempted.'
+          };
+    }
+    case 'company_like': {
+      const companyUrl =
+        typeof action.channelMetadata?.companyUrl === 'string'
+          ? action.channelMetadata.companyUrl
+          : '';
+      return deps.driver.likeCompanyRecentPost
+        ? deps.driver.likeCompanyRecentPost(deps.page, companyUrl, { seed })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no company-like driver configured. Nothing was attempted.'
+          };
+    }
+    case 'company_invite_follow': {
+      const companyUrl =
+        typeof action.channelMetadata?.companyUrl === 'string'
+          ? action.channelMetadata.companyUrl
+          : '';
+      return deps.driver.inviteConnectionToFollowCompany
+        ? deps.driver.inviteConnectionToFollowCompany(deps.page, action.targetRef, companyUrl, {
+            seed
+          })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no company-invite driver configured. Nothing was attempted.'
+          };
+    }
+    case 'event_invite': {
+      const eventUrl =
+        typeof action.channelMetadata?.eventUrl === 'string' ? action.channelMetadata.eventUrl : '';
+      return deps.driver.inviteConnectionToEvent
+        ? deps.driver.inviteConnectionToEvent(deps.page, action.targetRef, eventUrl, { seed })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no event-invite driver configured. Nothing was attempted.'
+          };
+    }
+    case 'group_invite': {
+      const groupUrl =
+        typeof action.channelMetadata?.groupUrl === 'string' ? action.channelMetadata.groupUrl : '';
+      return deps.driver.inviteConnectionToGroup
+        ? deps.driver.inviteConnectionToGroup(deps.page, action.targetRef, groupUrl, { seed })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no group-invite driver configured. Nothing was attempted.'
+          };
+    }
+    case 'group_message': {
+      const groupUrl =
+        typeof action.channelMetadata?.groupUrl === 'string' ? action.channelMetadata.groupUrl : '';
+      return deps.driver.messageGroupMember
+        ? deps.driver.messageGroupMember(deps.page, action.targetRef, groupUrl, action.body ?? '', {
+            seed
+          })
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no group-message driver configured. Nothing was attempted.'
+          };
+    }
+    case 'event_message': {
+      const eventUrl =
+        typeof action.channelMetadata?.eventUrl === 'string' ? action.channelMetadata.eventUrl : '';
+      return deps.driver.messageEventAttendee
+        ? deps.driver.messageEventAttendee(
+            deps.page,
+            action.targetRef,
+            eventUrl,
+            action.body ?? '',
+            { seed }
+          )
+        : {
+            ok: false,
+            failureKind: 'compose_unavailable',
+            detail: 'This worker has no event-message driver configured. Nothing was attempted.'
+          };
+    }
     case 'like':
       return deps.driver.likeRecentPost(deps.page, action.targetRef, { seed });
     case 'endorse':
-      return deps.driver.endorseSkills(deps.page, action.targetRef, { seed });
+      return deps.driver.endorseSkills(deps.page, action.targetRef, {
+        seed,
+        maxSkills:
+          typeof action.channelMetadata?.maxSkills === 'number'
+            ? action.channelMetadata.maxSkills
+            : undefined
+      });
     default: {
       const unhandled: never = action.kind;
       return {
@@ -1086,7 +1266,7 @@ export async function runLinkedInLocalBatch(
     const outcome = await execute(deps, action, `${batchId}:${action.id}`);
 
     if (outcome.ok) {
-      await store.settleSent(action.id, outcome.externalRef ?? null, at);
+      await store.settleSent(action.id, outcome.externalRef ?? null, at, outcome.metadata);
       // BEST-EFFORT, AND STRICTLY AFTER THE SETTLE ABOVE: the reply already
       // landed on LinkedIn and the ledger already says so. Re-reading the
       // conversation is only so the transcript catches up to that same fact
@@ -1227,7 +1407,27 @@ export async function runLinkedInLocalBatch(
       break;
     }
 
-    if (failureKind === 'not_found' || failureKind === 'already_connected') {
+    if (action.kind === 'invite' && failureKind === 'already_connected') {
+      // Positive 1st-degree evidence. No invite was sent, but the condition an
+      // invite step is trying to establish is already true, so file the step as
+      // accepted and let Accepted branches read the correct fact.
+      await store.settleExistingInvite(action.id, 'accepted', at);
+      continue;
+    }
+
+    if (action.kind === 'invite' && failureKind === 'already_pending') {
+      // An existing pending invite is "not yet", never "no". Keep the action
+      // result in a sent-like state so acceptance monitors wait rather than
+      // taking the Not Accepted path immediately.
+      await store.settleExistingInvite(action.id, 'pending', at);
+      continue;
+    }
+
+    if (
+      failureKind === 'not_found' ||
+      failureKind === 'already_connected' ||
+      failureKind === 'already_pending'
+    ) {
       // Definite, and no retry will change it. 'skipped' keeps it out of every
       // rolling window (it never happened) and releases the target, which is
       // what the ledger's replay guard treats 'skipped' as meaning.
@@ -1298,12 +1498,15 @@ interface DueActionRow {
   target_ref: string;
   planned_for: string;
   body: string | null;
+  subject: string | null;
   thread_urn: string | null;
   campaign_id: string | null;
   replay_scope: string | null;
   override_warmup_ceiling: boolean | null;
   reply_to_inbound: boolean | null;
   source: string | null;
+  channel_metadata_json: unknown;
+  attachment_json: unknown;
 }
 
 const EXECUTABLE_KIND_LIST = EXECUTABLE_KINDS.map((kind) => `'${kind}'`).join(', ');
@@ -1317,7 +1520,13 @@ const EXECUTABLE_KIND_LIST = EXECUTABLE_KINDS.map((kind) => `'${kind}'`).join(',
  * and a second hand-written `['dm', 'reply']` over there is how a queue that
  * silently never drains gets built.
  */
-export const KINDS_REQUIRING_BODY: readonly ExecutableKind[] = ['dm', 'reply'];
+export const KINDS_REQUIRING_BODY: readonly ExecutableKind[] = [
+  'dm',
+  'reply',
+  'inmail',
+  'group_message',
+  'event_message'
+];
 const BODY_REQUIRED_LIST = KINDS_REQUIRING_BODY.map((kind) => `'${kind}'`).join(', ');
 
 const UTC_ISO_FORMAT = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;
@@ -1580,7 +1789,10 @@ export function postgresLocalWorkerStore(
             -- yet. Excluded by id so the loop moves on instead of re-claiming
             -- the same undecided row until the pass is exhausted.
             AND NOT (id = ANY(?::text[]))
-          ORDER BY planned_for ASC
+          ORDER BY
+            (CASE WHEN sla_deadline_at IS NOT NULL AND sla_deadline_at <= ?::timestamptz THEN 1 ELSE 0 END) DESC,
+            queue_priority DESC,
+            planned_for ASC
           FOR UPDATE SKIP LOCKED
           LIMIT 1
         )
@@ -1598,8 +1810,8 @@ export function postgresLocalWorkerStore(
         -- person queued by hand from one the planner placed.
         RETURNING id, workspace_id, seat_key, kind, target_ref,
                   TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS planned_for,
-                  body, thread_urn, campaign_id, replay_scope, override_warmup_ceiling,
-                  reply_to_inbound, source
+                  body, subject, thread_urn, campaign_id, replay_scope, override_warmup_ceiling,
+                  reply_to_inbound, source, channel_metadata_json, attachment_json
       `
         )
         .get<DueActionRow>(
@@ -1610,7 +1822,8 @@ export function postgresLocalWorkerStore(
           workspaceId,
           seatKey,
           now.toISOString(),
-          [...exclude]
+          [...exclude],
+          now.toISOString()
         );
       if (!row) return null;
       return {
@@ -1621,12 +1834,43 @@ export function postgresLocalWorkerStore(
         targetRef: row.target_ref,
         plannedFor: row.planned_for,
         body: row.body,
+        subject: row.subject,
         threadUrn: row.thread_urn,
         campaignId: row.campaign_id,
         replayScope: row.replay_scope ?? 'legacy',
         overrideWarmupCeiling: row.override_warmup_ceiling === true,
         replyToInbound: row.reply_to_inbound === true,
-        manual: row.source === 'manual'
+        manual: row.source === 'manual',
+        channelMetadata: (() => {
+          const raw =
+            typeof row.channel_metadata_json === 'string'
+              ? (() => {
+                  try {
+                    return JSON.parse(row.channel_metadata_json) as unknown;
+                  } catch {
+                    return {};
+                  }
+                })()
+              : row.channel_metadata_json;
+          return raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? (raw as Record<string, unknown>)
+            : {};
+        })(),
+        attachment: (() => {
+          const raw =
+            typeof row.attachment_json === 'string'
+              ? (() => {
+                  try {
+                    return JSON.parse(row.attachment_json) as unknown;
+                  } catch {
+                    return null;
+                  }
+                })()
+              : row.attachment_json;
+          return raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? (raw as Record<string, unknown>)
+            : null;
+        })()
       };
     },
 
@@ -1757,7 +2001,7 @@ export function postgresLocalWorkerStore(
       return row?.url ?? null;
     },
 
-    async settleSent(actionId, externalRef, now) {
+    async settleSent(actionId, externalRef, now, metadata) {
       // `recorded_at` is what every rolling window counts, so it is written
       // here and nowhere else: the moment the action actually happened.
       //
@@ -1769,11 +2013,42 @@ export function postgresLocalWorkerStore(
           `
         UPDATE linkedin_actions
         SET status='sent', recorded_at=?, external_ref=?, failure_kind=NULL,
+            paid_credit_used=CASE WHEN ?::boolean THEN TRUE ELSE paid_credit_used END,
+            channel_metadata_json=channel_metadata_json || ?::jsonb,
             claimed_by=NULL, lease_expires_at=NULL
         WHERE id=? AND workspace_id=?
       `
         )
-        .run(now.toISOString(), externalRef, actionId, workspaceId);
+        .run(
+          now.toISOString(),
+          externalRef,
+          metadata?.paidCreditConsumed === true,
+          JSON.stringify(metadata ?? {}),
+          actionId,
+          workspaceId
+        );
+    },
+
+    async settleExistingInvite(actionId, state, now) {
+      await db
+        .prepare(
+          `UPDATE linkedin_actions
+           SET status=?, recorded_at=COALESCE(recorded_at,?::timestamptz), failure_kind=NULL,
+               channel_metadata_json=channel_metadata_json || ?::jsonb,
+               claimed_at=NULL,claimed_by=NULL,lease_expires_at=NULL
+           WHERE id=? AND workspace_id=? AND kind='invite'`
+        )
+        .run(
+          state === 'accepted' ? 'accepted' : 'sent',
+          now.toISOString(),
+          JSON.stringify(
+            state === 'accepted'
+              ? { preexistingConnection: true }
+              : { preexistingPendingInvite: true }
+          ),
+          actionId,
+          workspaceId
+        );
     },
 
     async recordReplyMessages(threadUrn, messages, now) {

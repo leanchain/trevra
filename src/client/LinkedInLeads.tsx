@@ -62,21 +62,33 @@ const KIND_LABELS: Record<LeadSourceKind, string> = {
   search: 'People search',
   sales_navigator: 'Sales Navigator search',
   content: 'Post & comment keywords',
-  post: 'One post’s engagement'
+  post: 'One post’s engagement',
+  recruiter: 'Recruiter candidates',
+  group_members: 'Group members',
+  event_attendees: 'Event attendees',
+  company_employees: 'Company employees'
 };
 
 const KIND_HINTS: Record<LeadSourceKind, string> = {
   search: 'Find people from LinkedIn people search.',
   sales_navigator: 'Use a Sales Navigator people search you already ran.',
   content: 'Find people writing or commenting about these terms.',
-  post: 'Find people who reacted to or commented on one post.'
+  post: 'Find people who reacted to or commented on one post.',
+  recruiter: 'Use a Recruiter/Talent search you already ran.',
+  group_members: 'Read the visible members of a LinkedIn group you belong to.',
+  event_attendees: 'Read visible attendees from a LinkedIn event page.',
+  company_employees: 'Read visible profiles from a company’s People page.'
 };
 
 const KIND_PLACEHOLDERS: Record<LeadSourceKind, string> = {
   search: 'https://www.linkedin.com/search/results/people/?keywords=…',
   sales_navigator: 'https://www.linkedin.com/sales/search/people?query=…',
   content: 'https://www.linkedin.com/search/results/content/?keywords=…',
-  post: 'https://www.linkedin.com/posts/…'
+  post: 'https://www.linkedin.com/posts/…',
+  recruiter: 'https://www.linkedin.com/talent/…',
+  group_members: 'https://www.linkedin.com/groups/123456/members/',
+  event_attendees: 'https://www.linkedin.com/events/…',
+  company_employees: 'https://www.linkedin.com/company/acme/people/'
 };
 
 /** Which kinds the keyword box can write a URL for. Sales Navigator cannot be composed. */

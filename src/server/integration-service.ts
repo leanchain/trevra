@@ -709,44 +709,92 @@ export async function executeConnectedAction(
     return { provider, externalRef: String(externalRef) };
   }
 
+  const threadExternalRef =
+    structuredPayload.threaded === true && typeof structuredPayload.threadExternalRef === 'string'
+      ? structuredPayload.threadExternalRef.trim()
+      : '';
+  const threadIdempotencyKey =
+    structuredPayload.threaded === true &&
+    typeof structuredPayload.threadIdempotencyKey === 'string'
+      ? structuredPayload.threadIdempotencyKey.trim()
+      : '';
+
   if (provider === 'microsoft' || provider === 'outlook') {
-    const response = await nango.post({
-      endpoint: '/v1.0/me/sendMail',
+    if (threadExternalRef) {
+      const replyDraft = await nango.post<{ id?: string }>({
+        endpoint: `/v1.0/me/messages/${encodeURIComponent(threadExternalRef)}/createReply`,
+        providerConfigKey,
+        connectionId,
+        retries: 3,
+        data: {
+          message: {
+            body: { contentType: 'Text', content: String(action.body) }
+          }
+        }
+      });
+      const replyId = String(replyDraft.data.id ?? '').trim();
+      if (!replyId) throw new Error('Microsoft reply draft returned no message id.');
+      await nango.post({
+        endpoint: `/v1.0/me/messages/${encodeURIComponent(replyId)}/send`,
+        providerConfigKey,
+        connectionId,
+        retries: 3
+      });
+      return { provider: 'microsoft', externalRef: replyId };
+    }
+
+    const draft = await nango.post<{ id?: string }>({
+      endpoint: '/v1.0/me/messages',
       providerConfigKey,
       connectionId,
       retries: 3,
       data: {
-        message: {
-          subject: String(action.subject),
-          body: { contentType: 'Text', content: String(action.body) },
-          toRecipients: [{ emailAddress: { address: String(action.recipient) } }],
-          internetMessageHeaders: [
-            { name: 'x-trevra-idempotency-key', value: String(action.payload_hash) }
-          ]
-        },
-        saveToSentItems: true
+        subject: String(action.subject),
+        body: { contentType: 'Text', content: String(action.body) },
+        toRecipients: [{ emailAddress: { address: String(action.recipient) } }],
+        internetMessageHeaders: [
+          { name: 'x-trevra-idempotency-key', value: String(action.payload_hash) }
+        ]
       }
     });
-    return {
-      provider: 'microsoft',
-      externalRef: String(response.headers['request-id'] ?? id('msmail'))
-    };
+    const draftId = String(draft.data.id ?? '').trim();
+    if (!draftId) throw new Error('Microsoft message draft returned no message id.');
+    await nango.post({
+      endpoint: `/v1.0/me/messages/${encodeURIComponent(draftId)}/send`,
+      providerConfigKey,
+      connectionId,
+      retries: 3
+    });
+    return { provider: 'microsoft', externalRef: draftId };
   }
 
   if (!['gmail', 'google-mail'].includes(provider))
     throw new Error(`Provider ${provider} cannot execute ${actionType}`);
+  let threadId = '';
+  if (threadExternalRef) {
+    const previous = await nango.get<{ threadId?: string }>({
+      endpoint: `/gmail/v1/users/me/messages/${encodeURIComponent(threadExternalRef)}`,
+      providerConfigKey,
+      connectionId,
+      retries: 3,
+      params: { format: 'minimal' }
+    });
+    threadId = String(previous.data.threadId ?? '').trim();
+    if (!threadId) throw new Error('Gmail previous message returned no thread id.');
+  }
   const raw = createMimeMessage(
     String(action.recipient),
     String(action.subject),
     String(action.body),
-    String(action.payload_hash)
+    String(action.payload_hash),
+    threadIdempotencyKey || null
   );
-  const response = await nango.post<{ id?: string }>({
+  const response = await nango.post<{ id?: string; threadId?: string }>({
     endpoint: '/gmail/v1/users/me/messages/send',
     providerConfigKey,
     connectionId,
     retries: 3,
-    data: { raw }
+    data: { raw, ...(threadId ? { threadId } : {}) }
   });
   return { provider: 'gmail', externalRef: String(response.data.id ?? id('gmail')) };
 }
@@ -1845,12 +1893,15 @@ function createMimeMessage(
   recipient: string,
   subject: string,
   body: string,
-  idempotencyKey: string
+  idempotencyKey: string,
+  replyToIdempotencyKey: string | null = null
 ): string {
   const encodedSubject = `=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`;
+  const priorMessageId = replyToIdempotencyKey ? `<${replyToIdempotencyKey}@trevra.app>` : null;
   const mime = [
     `To: ${recipient}`,
     `Subject: ${encodedSubject}`,
+    ...(priorMessageId ? [`In-Reply-To: ${priorMessageId}`, `References: ${priorMessageId}`] : []),
     `Message-ID: <${idempotencyKey}@trevra.app>`,
     `X-Trevra-Idempotency-Key: ${idempotencyKey}`,
     'MIME-Version: 1.0',

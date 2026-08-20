@@ -4,6 +4,7 @@ import {
   ApiError,
   createLinkedInManagerSeat,
   updateLinkedInManagerSeat,
+  updateLinkedInSeatCapabilities,
   type LinkedInLimitsReport,
   type LinkedInSeat,
   type LinkedInSeatResponse,
@@ -71,7 +72,7 @@ export const LIMIT_FIELDS: ReadonlyArray<{
   {
     field: 'dailyInviteLimit',
     kind: 'invite',
-    kinds: ['invite'],
+    kinds: ['invite', 'company_invite_follow', 'event_invite', 'group_invite'],
     range: 'invite',
     label: 'Connection invites',
     column: 'Invites'
@@ -79,11 +80,11 @@ export const LIMIT_FIELDS: ReadonlyArray<{
   {
     field: 'dailyMessageLimit',
     kind: 'dm',
-    kinds: ['dm', 'reply', 'inmail'],
+    kinds: ['dm', 'reply', 'inmail', 'group_message', 'event_message'],
     range: 'message',
     label: 'Messages',
     column: 'Messages',
-    pooledKindsLabel: 'new messages, replies and InMail'
+    pooledKindsLabel: 'new messages, replies, InMail, group messages and event messages'
   },
   {
     field: 'dailyProfileViewLimit',
@@ -96,10 +97,10 @@ export const LIMIT_FIELDS: ReadonlyArray<{
   {
     field: 'dailyFollowLimit',
     kind: 'follow',
-    kinds: ['follow'],
+    kinds: ['follow', 'unfollow', 'disconnect', 'company_follow'],
     range: 'follow',
-    label: 'Follows',
-    column: 'Follows'
+    label: 'Relationship changes',
+    column: 'Follow / cleanup'
   }
 ];
 
@@ -876,11 +877,27 @@ export function EditAccountForm({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState('');
   const [wall, setWall] = useState('');
+  const [capDraft, setCapDraft] = useState(() => ({
+    inmail: account.capabilities.inmail,
+    premium: account.capabilities.premium,
+    salesNavigator: account.capabilities.salesNavigator,
+    recruiter: account.capabilities.recruiter,
+    monthly: account.inmailMonthlyBudget === null ? '' : String(account.inmailMonthlyBudget),
+    paid: account.inmailPaidCreditCap === null ? '' : String(account.inmailPaidCreditCap)
+  }));
 
   // The server is the record. A save elsewhere, or a read from the live
   // session, must not lose to a form somebody opened and left.
   useEffect(() => {
     setDraft(draftOf(account));
+    setCapDraft({
+      inmail: account.capabilities.inmail,
+      premium: account.capabilities.premium,
+      salesNavigator: account.capabilities.salesNavigator,
+      recruiter: account.capabilities.recruiter,
+      monthly: account.inmailMonthlyBudget === null ? '' : String(account.inmailMonthlyBudget),
+      paid: account.inmailPaidCreditCap === null ? '' : String(account.inmailPaidCreditCap)
+    });
   }, [account]);
 
   const change = (patch: Partial<AccountDraft>) =>
@@ -892,6 +909,21 @@ export function EditAccountForm({
     setWall('');
     try {
       await updateLinkedInManagerSeat(account.seatKey, draftToPatch(draft, ranges));
+      const monthly = capDraft.monthly.trim() === '' ? null : Number(capDraft.monthly);
+      const paid = capDraft.paid.trim() === '' ? null : Number(capDraft.paid);
+      if (
+        (monthly !== null && !Number.isInteger(monthly)) ||
+        (paid !== null && !Number.isInteger(paid))
+      )
+        throw new Error('InMail budgets must be whole credit counts.');
+      await updateLinkedInSeatCapabilities(account.seatKey, {
+        inmail: capDraft.inmail,
+        premium: capDraft.premium,
+        salesNavigator: capDraft.salesNavigator,
+        recruiter: capDraft.recruiter,
+        inmailMonthlyBudget: monthly,
+        inmailPaidCreditCap: paid
+      });
       setToast(
         `${draft.label.trim() || account.label} saved. New limits apply to what is scheduled from now on.`
       );
@@ -941,6 +973,88 @@ export function EditAccountForm({
           bandOverride
           proxy={account.proxy}
         />
+
+        <fieldset className="li-span-2">
+          <legend>LinkedIn license and InMail capability</legend>
+          <p className="li-hint">
+            Mark only capabilities this account actually has. Campaign setup uses these flags to
+            keep unsupported senders out of InMail workflows.
+          </p>
+          <div className="li-form-grid">
+            <label>
+              InMail availability
+              <select
+                value={capDraft.inmail}
+                onChange={(event) =>
+                  setCapDraft((current) => ({
+                    ...current,
+                    inmail: event.target.value as typeof current.inmail
+                  }))
+                }
+              >
+                <option value="unknown">Unknown / not checked</option>
+                <option value="available">Available</option>
+                <option value="unavailable">Unavailable</option>
+              </select>
+            </label>
+            <label>
+              Monthly InMail budget
+              <input
+                type="number"
+                min={0}
+                max={10000}
+                value={capDraft.monthly}
+                placeholder="Use researched ceiling"
+                onChange={(event) =>
+                  setCapDraft((current) => ({ ...current, monthly: event.target.value }))
+                }
+              />
+            </label>
+            <label>
+              Paid-credit cap
+              <input
+                type="number"
+                min={0}
+                max={10000}
+                value={capDraft.paid}
+                placeholder="No paid credits"
+                onChange={(event) =>
+                  setCapDraft((current) => ({ ...current, paid: event.target.value }))
+                }
+              />
+            </label>
+            <label className="li-check-row">
+              <input
+                type="checkbox"
+                checked={capDraft.premium}
+                onChange={(event) =>
+                  setCapDraft((current) => ({ ...current, premium: event.target.checked }))
+                }
+              />{' '}
+              LinkedIn Premium
+            </label>
+            <label className="li-check-row">
+              <input
+                type="checkbox"
+                checked={capDraft.salesNavigator}
+                onChange={(event) =>
+                  setCapDraft((current) => ({ ...current, salesNavigator: event.target.checked }))
+                }
+              />{' '}
+              Sales Navigator
+            </label>
+            <label className="li-check-row">
+              <input
+                type="checkbox"
+                checked={capDraft.recruiter}
+                onChange={(event) =>
+                  setCapDraft((current) => ({ ...current, recruiter: event.target.checked }))
+                }
+              />{' '}
+              Recruiter
+            </label>
+          </div>
+        </fieldset>
 
         <div className="panel-footer">
           <span>

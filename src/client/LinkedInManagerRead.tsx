@@ -7,41 +7,65 @@ import {
   CircleAlert,
   ClipboardList,
   Copy,
+  Download,
   Inbox,
   LoaderCircle,
   Pause,
   Play,
   Plus,
+  RefreshCw,
   Square,
   Trash2,
   Users,
   Workflow as WorkflowIcon
 } from 'lucide-react';
 import {
+  applyLatestLinkedInManagedCampaignWorkflow,
   completeLinkedInManualTask,
   deleteLinkedInManagedCampaign,
+  duplicateLinkedInManagedCampaign,
+  downloadLinkedInManagedCampaignExport,
+  endLinkedInManagedMember,
+  getLinkedInCampaignOperationalAnalytics,
+  getLinkedInCampaignOperations,
   getLinkedInLimits,
   getLinkedInManagedAnalytics,
   getLinkedInManagedCampaign,
   getLinkedInManagedCampaigns,
+  getLinkedInManagedMemberTimeline,
+  getLinkedInWorkerStatus,
+  getLinkedInCompanionStatus,
   getLinkedInManagerLeadLists,
   getLinkedInManagerSeats,
   getLinkedInManagerWorkflows,
   getLinkedInManualTasks,
+  moveLinkedInManagedCampaignMembers,
   pauseLinkedInManagedCampaign,
   removeLinkedInManagedMember,
+  rerunLinkedInManagedMemberCondition,
+  resumeLinkedInManagedMemberAtStep,
+  retryLinkedInManagedCampaignFailures,
+  setLinkedInManagedCampaignOwner,
   setLinkedInManagedMemberPaused,
+  skipLinkedInManagedMemberStep,
   startLinkedInManagedCampaign,
   stopLinkedInManagedCampaign,
-  type LinkedInLimitsReport
+  updateLinkedInCampaignControls,
+  type LinkedInLimitsReport,
+  type LinkedInWorkerStatus,
+  type LinkedInCompanionStatus
 } from './api';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
 import type { LinkedInSeat } from '../server/linkedin/seats';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
 import type {
+  CampaignMemberTimeline,
+  CampaignOperationalAnalytics,
+  CampaignQueueSummary,
   ManagedAnalytics,
   ManagedCampaign,
   ManagedCampaignMember,
+  ManagedCampaignWave,
   ManualTaskView
 } from '../server/linkedin/managed-campaigns';
 import { errorMessage, useOutreachRefresh } from './LinkedInSafety';
@@ -56,6 +80,8 @@ import {
 } from './LinkedInManagerCampaignConfig';
 import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
 import { useActiveSeatKey } from './LinkedInActiveAccount';
+import { useIsWorkspaceOwner } from './auth-client';
+import { useWorkspaceMembers } from './TeamScreen';
 import { ConfirmDrawer } from './ui/dialog';
 
 /**
@@ -91,7 +117,13 @@ const SOURCE_LABELS: Record<LinkedInLeadList['sourceKind'], string> = {
   csv: 'CSV',
   linkedin_search: 'LinkedIn people search',
   sales_navigator: 'Sales Navigator',
-  post_keyword: 'Post/comment keywords'
+  post_keyword: 'Post/comment keywords',
+  recruiter: 'LinkedIn Recruiter',
+  group_members: 'LinkedIn group',
+  event_attendees: 'LinkedIn event',
+  company_employees: 'LinkedIn company people',
+  profile_urls: 'LinkedIn profile URLs',
+  signal: 'External signal'
 };
 
 /** Bar and legend order: what is moving first, what has stopped last. */
@@ -104,6 +136,7 @@ const STATUS_ORDER: readonly MemberStatus[] = [
   'replied',
   'completed',
   'removed',
+  'excluded',
   'failed'
 ];
 const STATUS_LABEL: Record<MemberStatus, string> = {
@@ -115,6 +148,7 @@ const STATUS_LABEL: Record<MemberStatus, string> = {
   replied: 'Replied',
   completed: 'Finished',
   removed: 'Removed',
+  excluded: 'Excluded',
   failed: 'Failed'
 };
 const LIVE_STATUSES: readonly MemberStatus[] = ['pending', 'active', 'waiting', 'manual'];
@@ -125,7 +159,30 @@ const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   message: 'Send a message',
   manual_message: 'A message you write yourself',
   follow: 'Follow them',
-  withdraw_pending: 'Withdraw the invite if still pending'
+  unfollow: 'Unfollow them',
+  disconnect: 'Remove the connection',
+  follow_company: 'Follow company',
+  like_company_post: 'Like company post',
+  invite_to_follow_company: 'Invite to follow company',
+  invite_to_event: 'Invite to event',
+  invite_to_group: 'Invite to group',
+  group_message: 'Group message',
+  event_message: 'Event message',
+  withdraw_pending: 'Withdraw the invite if still pending',
+  like_post: 'Like a recent post',
+  endorse_skills: 'Endorse skills',
+  wait: 'Wait',
+  condition: 'Condition',
+  monitor: 'Monitor',
+  end: 'End',
+  inmail: 'InMail',
+  email: 'Email',
+  find_email: 'Find email',
+  webhook: 'Webhook',
+  add_tag: 'Add tag',
+  remove_tag: 'Remove tag',
+  external_handoff: 'External handoff',
+  manual_comment: 'Manual comment'
 };
 
 const CAMPAIGN_STATUS_LABEL: Record<ManagedCampaign['status'], string> = {
@@ -171,7 +228,104 @@ function dueIn(iso: string | null, now: number): string {
   if (!iso) return '—';
   const at = Date.parse(iso);
   if (Number.isNaN(at)) return '—';
-  return at <= now ? 'due now' : `in ${span(at - now)}`;
+  return at <= now ? 'now' : `in ${span(at - now)}`;
+}
+
+function executionStateForMember(
+  member: ManagedCampaignMember,
+  steps: readonly WorkflowStep[],
+  now: number
+): { label: string; detail: string } {
+  if (member.status === 'pending')
+    return {
+      label: 'Pending admission',
+      detail:
+        'This lead has not entered a wave yet. Capacity and exclusions are checked before admission.'
+    };
+  if (member.status === 'manual')
+    return {
+      label: 'Needs you',
+      detail: 'This workflow step is manual and will not be executed by the LinkedIn worker.'
+    };
+  if (member.status === 'paused')
+    return { label: 'Paused', detail: 'This lead is explicitly paused.' };
+  if (member.status === 'failed')
+    return {
+      label: 'Failed',
+      detail: member.lastFailureReason ?? 'This lead stopped after an execution failure.'
+    };
+  if (member.status === 'excluded')
+    return {
+      label: 'Excluded',
+      detail: member.exclusionReason ?? 'This lead is excluded by campaign policy.'
+    };
+  if (member.status === 'replied')
+    return { label: 'Stopped — replied', detail: 'Automation stopped because the lead replied.' };
+  if (member.status === 'completed')
+    return { label: 'Completed', detail: 'The workflow finished for this lead.' };
+  if (member.status === 'removed')
+    return { label: 'Removed', detail: 'This lead was removed from the campaign.' };
+
+  const action = member.lastAction;
+  if (action?.settlementHoldAt)
+    return {
+      label: 'Held for review',
+      detail:
+        'The worker cannot prove whether the last LinkedIn action happened, so Trevra will not retry it automatically.'
+    };
+  if (action?.status === 'held')
+    return {
+      label: 'Held',
+      detail: 'The planned action is parked and cannot execute until it is released.'
+    };
+  if (action?.status === 'planned' && action.claimedAt)
+    return { label: 'Executing', detail: 'A LinkedIn browser worker has claimed this action.' };
+  if (action?.status === 'planned' && action.plannedFor) {
+    const planned = Date.parse(action.plannedFor);
+    if (!Number.isNaN(planned) && planned > now)
+      return {
+        label: 'Scheduled',
+        detail: `A LinkedIn action is allocated for ${new Date(planned).toLocaleString()}.`
+      };
+    return {
+      label: 'Queued for executor',
+      detail:
+        'The planner allocated this action and its scheduled time has arrived. A LinkedIn browser worker must claim it.'
+    };
+  }
+
+  const step = steps[member.stepIndex];
+  if (step?.action === 'monitor' || step?.action === 'condition') {
+    const kind = step.config.condition.kind;
+    if (kind === 'accepted' || kind === 'connected')
+      return {
+        label: 'Waiting for connection',
+        detail: 'The workflow is waiting for connection evidence or the monitor timeout.'
+      };
+    if (kind === 'replied')
+      return {
+        label: 'Waiting for reply',
+        detail: 'The workflow is waiting for a reply or the monitor timeout.'
+      };
+    return {
+      label: 'Waiting for condition',
+      detail: `The workflow is waiting for the “${kind.replaceAll('_', ' ')}” condition.`
+    };
+  }
+
+  if (member.nextEligibleAt) {
+    const eligible = Date.parse(member.nextEligibleAt);
+    if (!Number.isNaN(eligible) && eligible > now)
+      return {
+        label: 'Waiting for next step',
+        detail: `Sequence timing makes this lead eligible ${dueIn(member.nextEligibleAt, now)}.`
+      };
+  }
+  return {
+    label: 'Eligible — not allocated',
+    detail:
+      'The sequence says this lead may advance now, but the planner has not allocated an execution slot yet. Check campaign capacity and blockers above.'
+  };
 }
 
 function ago(iso: string, now: number): string {
@@ -190,10 +344,29 @@ function countByStatus(members: readonly ManagedCampaignMember[]): Record<Member
     replied: 0,
     completed: 0,
     removed: 0,
+    excluded: 0,
     failed: 0
   } as Record<MemberStatus, number>;
   for (const member of members) counts[member.status] += 1;
   return counts;
+}
+
+function campaignCountByStatus(campaign: ManagedCampaign): Record<MemberStatus, number> {
+  return {
+    pending: campaign.pendingCount,
+    active: Math.max(
+      0,
+      campaign.inSequenceCount - campaign.waitingCount - campaign.manualCount - campaign.pausedCount
+    ),
+    waiting: campaign.waitingCount,
+    manual: campaign.manualCount,
+    paused: campaign.pausedCount,
+    replied: campaign.repliedCount,
+    completed: campaign.completedCount,
+    removed: campaign.removedCount,
+    excluded: campaign.excludedCount,
+    failed: campaign.failedCount
+  };
 }
 
 /**
@@ -317,6 +490,165 @@ function Allowance({
   );
 }
 
+const CAPACITY_LABEL: Record<ManagedKind, string> = {
+  invite: 'Invites',
+  dm: 'Messages',
+  profile_view: 'Profile views',
+  follow: 'Relationship actions'
+};
+
+function CapacityBreakdown({
+  ceilings,
+  allocated
+}: {
+  ceilings: Record<ManagedKind, EnforcedCeiling>;
+  allocated: CampaignQueueSummary['allocatedCampaignDay'];
+}) {
+  return (
+    <div className="mgr-summary">
+      {(['profile_view', 'invite', 'dm', 'follow'] as const).map((kind) => {
+        const limit = ceilings[kind].today;
+        const used = allocated[kind];
+        const remaining = Math.max(0, limit - used);
+        return (
+          <span key={kind}>
+            <b>{CAPACITY_LABEL[kind]}</b>: limit {limit} · {used} allocated · {remaining} remaining
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function capacityKindForStep(step: WorkflowStep | undefined): ManagedKind | null {
+  if (!step) return null;
+  if (step.action === 'profile_view') return 'profile_view';
+  if (
+    step.action === 'connection_request' ||
+    step.action === 'invite_to_group' ||
+    step.action === 'invite_to_event' ||
+    step.action === 'invite_to_follow_company'
+  )
+    return 'invite';
+  if (
+    step.action === 'message' ||
+    step.action === 'inmail' ||
+    step.action === 'group_message' ||
+    step.action === 'event_message'
+  )
+    return 'dm';
+  if (
+    step.action === 'follow' ||
+    step.action === 'unfollow' ||
+    step.action === 'disconnect' ||
+    step.action === 'follow_company'
+  )
+    return 'follow';
+  return null;
+}
+
+function campaignBlockers({
+  campaign,
+  steps,
+  operations,
+  analytics,
+  ceilings,
+  report,
+  workerStatus,
+  companionStatus
+}: {
+  campaign: ManagedCampaign;
+  steps: readonly WorkflowStep[];
+  operations: { queues: CampaignQueueSummary; waves: ManagedCampaignWave[] } | null;
+  analytics: CampaignOperationalAnalytics | null;
+  ceilings: Record<ManagedKind, EnforcedCeiling> | null;
+  report: LinkedInLimitsReport | null;
+  workerStatus: LinkedInWorkerStatus | null;
+  companionStatus: LinkedInCompanionStatus | null;
+}): Array<{ title: string; detail: string }> {
+  const out: Array<{ title: string; detail: string }> = [];
+  if (campaign.status === 'draft')
+    return [
+      {
+        title: 'Campaign not started',
+        detail: 'No lead is admitted or planned until you start the campaign.'
+      }
+    ];
+  if (campaign.status === 'paused')
+    out.push({
+      title: 'Campaign paused',
+      detail:
+        'New planning is paused. Already-started browser work is not created while the campaign is paused.'
+    });
+  if (report?.seat.pausedReason)
+    out.push({ title: 'LinkedIn account paused', detail: report.seat.pausedReason });
+
+  if (operations && ceilings) {
+    const seen = new Set<ManagedKind>();
+    for (const backlog of operations.queues.backlogByStep) {
+      if (backlog.due <= 0) continue;
+      const step = steps.find((candidate) => candidate.id === backlog.stepId);
+      const kind = capacityKindForStep(step);
+      if (!kind || seen.has(kind)) continue;
+      seen.add(kind);
+      const allocated = operations.queues.allocatedCampaignDay[kind];
+      const limit = ceilings[kind].today;
+      if (allocated >= limit)
+        out.push({
+          title: `${CAPACITY_LABEL[kind]} capacity fully allocated`,
+          detail: `${backlog.due} lead(s) are sequence-eligible at this step, but this campaign's current ramp limit is ${limit} and ${allocated} are already allocated. Remaining planner capacity is 0.`
+        });
+    }
+  }
+
+  const queues = operations?.queues;
+  if (queues?.queuedReady) {
+    const onlineCompanion = Boolean(companionStatus?.devices.some((device) => device.online));
+    if (!workerStatus)
+      out.push({
+        title: 'Executor status unavailable',
+        detail: `${queues.queuedReady} planned action(s) are due, but Trevra could not read browser-worker status.`
+      });
+    else if (!workerStatus.ready)
+      out.push({
+        title: 'LinkedIn executor not ready',
+        detail: `${queues.queuedReady} planned action(s) are due. ${workerStatus.blockers.join(' ') || 'The browser worker is not ready.'}`
+      });
+    else if (workerStatus.companionBrowser && !onlineCompanion)
+      out.push({
+        title: 'Paired computer / companion offline',
+        detail: `${queues.queuedReady} planned action(s) are due, but the paired computer is not currently connected to Trevra, so no browser can claim them.`
+      });
+    else
+      out.push({
+        title: 'Waiting for browser worker',
+        detail: `${queues.queuedReady} planned action(s) have reached their scheduled time and are waiting for the LinkedIn executor to claim them.`
+      });
+  }
+  if (queues?.scheduledFuture)
+    out.push({
+      title: 'Waiting for scheduled slots',
+      detail: `${queues.scheduledFuture} action(s) are already allocated but intentionally scheduled for a later time.`
+    });
+  if (queues?.heldForReview)
+    out.push({
+      title: 'Actions held for review',
+      detail: `${queues.heldForReview} action(s) are held because Trevra cannot safely infer or repeat their outcome.`
+    });
+  if ((queues?.waitingForConnection ?? 0) + (queues?.waitingForReply ?? 0) > 0)
+    out.push({
+      title: 'Waiting on prospect outcomes',
+      detail: `${queues?.waitingForConnection ?? 0} lead(s) are waiting for connection evidence and ${queues?.waitingForReply ?? 0} are waiting for a reply or timeout.`
+    });
+  if (
+    analytics?.bottlenecks.reason &&
+    analytics.bottlenecks.reason !== 'No material campaign bottleneck is currently detected.'
+  )
+    out.push({ title: 'Planner diagnosis', detail: analytics.bottlenecks.reason });
+
+  return out;
+}
+
 function stepCopy(
   step: WorkflowStep,
   variantId: string | null
@@ -432,7 +764,7 @@ function MemberTimeline({
                   (member.status === 'pending' ||
                     member.status === 'active' ||
                     member.status === 'waiting') &&
-                  `Next up — ${dueIn(member.nextEligibleAt, now)}`}
+                  executionStateForMember(member, steps, now).label}
                 {current &&
                   (member.status === 'replied' ||
                     member.status === 'completed' ||
@@ -450,11 +782,462 @@ function MemberTimeline({
   );
 }
 
+function MemberRecoveryControls({
+  member,
+  steps,
+  busy,
+  onRerunCondition,
+  onResumeAtStep
+}: {
+  member: ManagedCampaignMember;
+  steps: readonly WorkflowStep[];
+  busy: boolean;
+  onRerunCondition: (member: ManagedCampaignMember, stepId: string) => void;
+  onResumeAtStep: (member: ManagedCampaignMember, stepId: string) => void;
+}) {
+  const current = steps[member.stepIndex] ?? null;
+  const [stepId, setStepId] = useState(current?.id ?? steps[0]?.id ?? '');
+  useEffect(() => {
+    setStepId(current?.id ?? steps[0]?.id ?? '');
+  }, [member.id, member.stepIndex, current?.id, steps]);
+  if (steps.length === 0) return null;
+  return (
+    <div className="li-row-actions mgr-recovery-controls">
+      <span className="li-hint">Executing workflow v{member.workflowVersion ?? '?'}</span>
+      {(current?.action === 'condition' || current?.action === 'monitor') && (
+        <button
+          className="li-mini-button"
+          type="button"
+          disabled={busy}
+          onClick={() => onRerunCondition(member, current.id)}
+        >
+          <RefreshCw size={12} /> Re-run condition
+        </button>
+      )}
+      <label className="li-inline-field">
+        Resume from
+        <select value={stepId} onChange={(event) => setStepId(event.target.value)}>
+          {steps.map((step, index) => (
+            <option key={step.id} value={step.id}>
+              {index + 1}. {ACTION_LABEL[step.action]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        className="li-mini-button"
+        type="button"
+        disabled={busy || !stepId || member.status === 'replied' || member.status === 'removed'}
+        onClick={() => onResumeAtStep(member, stepId)}
+      >
+        Resume at node
+      </button>
+    </div>
+  );
+}
+
 /* ==========================================================================
  * The member list: search, filter, sort, timeline, per-lead controls.
  * ======================================================================= */
 
 type MemberSort = 'next' | 'name' | 'status' | 'step';
+
+function CampaignExclusionEditor({
+  campaign,
+  lists,
+  busy,
+  onSave
+}: {
+  campaign: ManagedCampaign;
+  lists: readonly LinkedInLeadList[];
+  busy: boolean;
+  onSave: (policy: ManagedCampaign['exclusionPolicy']) => Promise<void>;
+}) {
+  const policy = campaign.exclusionPolicy;
+  const [companies, setCompanies] = useState((policy.suppressedCompanies ?? []).join(', '));
+  const [domains, setDomains] = useState((policy.suppressedDomains ?? []).join(', '));
+  const [excludedLists, setExcludedLists] = useState<string[]>(policy.excludedLeadListIds ?? []);
+  const [lookback, setLookback] = useState(policy.contactedLookbackDays ?? 0);
+  const [existingConversation, setExistingConversation] = useState(
+    policy.excludeExistingConversation === true
+  );
+  const [sameSender, setSameSender] = useState(policy.excludeSameSenderMessaged === true);
+  const [duplicateProfiles, setDuplicateProfiles] = useState(
+    policy.excludeDuplicateProfiles !== false
+  );
+  const [excludeKnownConnected, setExcludeKnownConnected] = useState(
+    policy.excludeKnownConnected === true
+  );
+  const [requireKnownConnected, setRequireKnownConnected] = useState(
+    policy.requireKnownConnected === true
+  );
+
+  useEffect(() => {
+    setCompanies((campaign.exclusionPolicy.suppressedCompanies ?? []).join(', '));
+    setDomains((campaign.exclusionPolicy.suppressedDomains ?? []).join(', '));
+    setExcludedLists(campaign.exclusionPolicy.excludedLeadListIds ?? []);
+    setLookback(campaign.exclusionPolicy.contactedLookbackDays ?? 0);
+    setExistingConversation(campaign.exclusionPolicy.excludeExistingConversation === true);
+    setSameSender(campaign.exclusionPolicy.excludeSameSenderMessaged === true);
+    setDuplicateProfiles(campaign.exclusionPolicy.excludeDuplicateProfiles !== false);
+    setExcludeKnownConnected(campaign.exclusionPolicy.excludeKnownConnected === true);
+    setRequireKnownConnected(campaign.exclusionPolicy.requireKnownConnected === true);
+  }, [campaign.id, campaign.exclusionPolicy]);
+
+  const values = (raw: string) => [
+    ...new Set(
+      raw
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  ];
+  return (
+    <details className="mgr-advanced" open={campaign.status === 'paused'}>
+      <summary>Exclusions and suppression</summary>
+      <p className="li-hint">
+        Pause the campaign before changing eligibility. Saving re-evaluates only unadmitted leads;
+        existing waves keep running exactly as admitted.
+      </p>
+      <div className="li-form-grid">
+        <label>
+          Suppressed companies
+          <input
+            value={companies}
+            onChange={(event) => setCompanies(event.target.value)}
+            placeholder="Acme, Example Inc"
+          />
+        </label>
+        <label>
+          Suppressed email domains
+          <input
+            value={domains}
+            onChange={(event) => setDomains(event.target.value)}
+            placeholder="competitor.com, agency.example"
+          />
+        </label>
+        <label>
+          Contacted lookback days
+          <input
+            type="number"
+            min={0}
+            max={3650}
+            value={lookback}
+            onChange={(event) =>
+              setLookback(Math.max(0, Math.trunc(Number(event.target.value) || 0)))
+            }
+          />
+        </label>
+        <label>
+          Excluded lead lists
+          <select
+            multiple
+            value={excludedLists}
+            onChange={(event) =>
+              setExcludedLists(
+                Array.from(event.currentTarget.selectedOptions, (option) => option.value)
+              )
+            }
+          >
+            {lists
+              .filter((list) => list.id !== campaign.leadListId)
+              .map((list) => (
+                <option key={list.id} value={list.id}>
+                  {list.name}
+                </option>
+              ))}
+          </select>
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={existingConversation}
+            onChange={(event) => setExistingConversation(event.target.checked)}
+          />
+          Exclude existing conversations
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={sameSender}
+            onChange={(event) => setSameSender(event.target.checked)}
+          />
+          Exclude leads already messaged by an assigned sender
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={duplicateProfiles}
+            onChange={(event) => setDuplicateProfiles(event.target.checked)}
+          />
+          Exclude normalized duplicate LinkedIn profiles
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={excludeKnownConnected}
+            disabled={requireKnownConnected}
+            onChange={(event) => setExcludeKnownConnected(event.target.checked)}
+          />
+          Exclude known 1st-degree connections
+        </label>
+        <label className="li-check-row">
+          <input
+            type="checkbox"
+            checked={requireKnownConnected}
+            disabled={excludeKnownConnected}
+            onChange={(event) => setRequireKnownConnected(event.target.checked)}
+          />
+          Require known 1st-degree connection evidence
+        </label>
+      </div>
+      <button
+        type="button"
+        className="secondary-button"
+        disabled={busy || campaign.status !== 'paused'}
+        onClick={() =>
+          void onSave({
+            ...campaign.exclusionPolicy,
+            suppressedCompanies: values(companies),
+            suppressedDomains: values(domains),
+            excludedLeadListIds: excludedLists,
+            contactedLookbackDays: lookback,
+            excludeExistingConversation: existingConversation,
+            excludeSameSenderMessaged: sameSender,
+            excludeDuplicateProfiles: duplicateProfiles,
+            excludeKnownConnected,
+            requireKnownConnected
+          })
+        }
+      >
+        Save exclusions and re-evaluate pending
+      </button>
+    </details>
+  );
+}
+
+function CampaignScheduleEditor({
+  campaign,
+  timezone,
+  busy,
+  onSave
+}: {
+  campaign: ManagedCampaign;
+  timezone: string;
+  busy: boolean;
+  onSave: (schedule: Partial<ManagedCampaign['schedule']>) => Promise<void>;
+}) {
+  const zonedParts = (date: Date) => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(date);
+    const read = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((part) => part.type === type)?.value ?? 0);
+    return {
+      year: read('year'),
+      month: read('month'),
+      day: read('day'),
+      hour: read('hour'),
+      minute: read('minute'),
+      second: read('second')
+    };
+  };
+  const toLocal = (iso: string | null) => {
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    const part = zonedParts(date);
+    return `${part.year.toString().padStart(4, '0')}-${part.month.toString().padStart(2, '0')}-${part.day.toString().padStart(2, '0')}T${part.hour.toString().padStart(2, '0')}:${part.minute.toString().padStart(2, '0')}`;
+  };
+  const zonedLocalToIso = (value: string): string | null => {
+    if (!value) return null;
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+    if (!match) return null;
+    const requested = {
+      year: Number(match[1]),
+      month: Number(match[2]),
+      day: Number(match[3]),
+      hour: Number(match[4]),
+      minute: Number(match[5])
+    };
+    const wallAsUtc = Date.UTC(
+      requested.year,
+      requested.month - 1,
+      requested.day,
+      requested.hour,
+      requested.minute
+    );
+    let instant = wallAsUtc;
+    // Two passes converge across ordinary offsets and DST boundaries because the
+    // timezone offset is derived from the candidate instant, never from the browser timezone.
+    for (let pass = 0; pass < 3; pass += 1) {
+      const shown = zonedParts(new Date(instant));
+      const shownAsUtc = Date.UTC(
+        shown.year,
+        shown.month - 1,
+        shown.day,
+        shown.hour,
+        shown.minute,
+        shown.second
+      );
+      instant += wallAsUtc - shownAsUtc;
+    }
+    const roundTrip = zonedParts(new Date(instant));
+    if (
+      roundTrip.year !== requested.year ||
+      roundTrip.month !== requested.month ||
+      roundTrip.day !== requested.day ||
+      roundTrip.hour !== requested.hour ||
+      roundTrip.minute !== requested.minute
+    )
+      return null;
+    return new Date(instant).toISOString();
+  };
+  const toTime = (minute: number | null) => {
+    if (minute === null) return '';
+    const h = Math.floor(minute / 60)
+      .toString()
+      .padStart(2, '0');
+    const m = (minute % 60).toString().padStart(2, '0');
+    return `${h}:${m}`;
+  };
+  const minuteOf = (value: string): number | null => {
+    if (!value) return null;
+    const [h, m] = value.split(':').map(Number);
+    return Number.isInteger(h) && Number.isInteger(m) ? h * 60 + m : null;
+  };
+  const [startAt, setStartAt] = useState(toLocal(campaign.schedule.startAt));
+  const [endAt, setEndAt] = useState(toLocal(campaign.schedule.endAt));
+  const [days, setDays] = useState<number[]>(campaign.schedule.workingDays ?? [1, 2, 3, 4, 5]);
+  const [startTime, setStartTime] = useState(toTime(campaign.schedule.workStartMinute));
+  const [endTime, setEndTime] = useState(toTime(campaign.schedule.workEndMinute));
+  const [endBehavior, setEndBehavior] = useState(campaign.schedule.endBehavior);
+  const [scheduleError, setScheduleError] = useState('');
+  useEffect(() => {
+    setStartAt(toLocal(campaign.schedule.startAt));
+    setEndAt(toLocal(campaign.schedule.endAt));
+    setDays(campaign.schedule.workingDays ?? [1, 2, 3, 4, 5]);
+    setStartTime(toTime(campaign.schedule.workStartMinute));
+    setEndTime(toTime(campaign.schedule.workEndMinute));
+    setEndBehavior(campaign.schedule.endBehavior);
+    setScheduleError('');
+  }, [campaign.id, campaign.schedule]);
+  const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return (
+    <details className="mgr-advanced" open={false}>
+      <summary>Campaign schedule</summary>
+      <p className="li-hint">
+        Uses {timezone}. Campaign hours can only narrow the LinkedIn account's working window; they
+        never widen it. Pause before editing.
+      </p>
+      <div className="li-form-grid">
+        <label>
+          Start date/time
+          <input
+            type="datetime-local"
+            value={startAt}
+            onChange={(event) => setStartAt(event.target.value)}
+          />
+        </label>
+        <label>
+          End date/time
+          <input
+            type="datetime-local"
+            value={endAt}
+            onChange={(event) => setEndAt(event.target.value)}
+          />
+        </label>
+        <label>
+          Earliest campaign time
+          <input
+            type="time"
+            value={startTime}
+            onChange={(event) => setStartTime(event.target.value)}
+          />
+        </label>
+        <label>
+          Latest campaign time
+          <input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} />
+        </label>
+        <fieldset className="li-span-2">
+          <legend>Working days</legend>
+          <div className="mgr-pick-grid">
+            {dayLabels.map((label, day) => (
+              <label className="li-check-row" key={label}>
+                <input
+                  type="checkbox"
+                  checked={days.includes(day)}
+                  onChange={(event) =>
+                    setDays((current) =>
+                      event.target.checked
+                        ? [...new Set([...current, day])].sort((a, b) => a - b)
+                        : current.filter((value) => value !== day)
+                    )
+                  }
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <label>
+          At campaign end
+          <select
+            value={endBehavior}
+            onChange={(event) =>
+              setEndBehavior(event.target.value as ManagedCampaign['schedule']['endBehavior'])
+            }
+          >
+            <option value="finish_waves">Stop new admission; finish admitted waves</option>
+            <option value="pause_all">Pause all campaign work</option>
+            <option value="stop_immediately">Stop immediately</option>
+          </select>
+        </label>
+      </div>
+      {scheduleError && <p className="error-banner">{scheduleError}</p>}
+      <button
+        type="button"
+        className="secondary-button"
+        disabled={
+          busy ||
+          campaign.status !== 'paused' ||
+          days.length === 0 ||
+          (startTime !== '' &&
+            endTime !== '' &&
+            (minuteOf(endTime) ?? 0) <= (minuteOf(startTime) ?? 0))
+        }
+        onClick={() => {
+          const resolvedStart = startAt ? zonedLocalToIso(startAt) : null;
+          const resolvedEnd = endAt ? zonedLocalToIso(endAt) : null;
+          if ((startAt && !resolvedStart) || (endAt && !resolvedEnd)) {
+            setScheduleError(
+              `That local date/time does not exist or is ambiguous in ${timezone}. Choose another time around the daylight-saving transition.`
+            );
+            return;
+          }
+          setScheduleError('');
+          void onSave({
+            startAt: resolvedStart,
+            endAt: resolvedEnd,
+            workingDays: days,
+            workStartMinute: minuteOf(startTime),
+            workEndMinute: minuteOf(endTime),
+            endBehavior
+          });
+        }}
+      >
+        Save campaign schedule
+      </button>
+    </details>
+  );
+}
 
 function CampaignMembers({
   members,
@@ -463,7 +1246,16 @@ function CampaignMembers({
   busy,
   onPause,
   onResume,
-  onRemove
+  onRemove,
+  timelines,
+  onLoadTimeline,
+  onSkip,
+  onEnd,
+  onRerunCondition,
+  onResumeAtStep,
+  followUpCampaigns,
+  onBulkRetry,
+  onMoveSelected
 }: {
   members: readonly ManagedCampaignMember[];
   steps: readonly WorkflowStep[];
@@ -472,12 +1264,23 @@ function CampaignMembers({
   onPause: (member: ManagedCampaignMember) => void;
   onResume: (member: ManagedCampaignMember) => void;
   onRemove: (member: ManagedCampaignMember) => void;
+  timelines: Readonly<Record<string, CampaignMemberTimeline>>;
+  onLoadTimeline: (member: ManagedCampaignMember) => void;
+  onSkip: (member: ManagedCampaignMember) => void;
+  onEnd: (member: ManagedCampaignMember) => void;
+  onRerunCondition: (member: ManagedCampaignMember, stepId: string) => void;
+  onResumeAtStep: (member: ManagedCampaignMember, stepId: string) => void;
+  followUpCampaigns: readonly ManagedCampaign[];
+  onBulkRetry: (memberIds: string[]) => void;
+  onMoveSelected: (targetCampaignId: string, memberIds: string[]) => void;
 }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<'all' | MemberStatus>('all');
   const [sort, setSort] = useState<MemberSort>('next');
   const [limit, setLimit] = useState(50);
   const [openId, setOpenId] = useState('');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [targetCampaignId, setTargetCampaignId] = useState('');
 
   useEffect(() => {
     setLimit(50);
@@ -504,6 +1307,11 @@ function CampaignMembers({
       return left - right || byName(a, b);
     });
   }, [members, query, status, sort]);
+
+  useEffect(() => {
+    const live = new Set(members.map((member) => member.id));
+    setSelectedIds((current) => new Set([...current].filter((id) => live.has(id))));
+  }, [members]);
 
   const present = STATUS_ORDER.filter((value) => members.some((member) => member.status === value));
 
@@ -547,6 +1355,52 @@ function CampaignMembers({
         </p>
       </div>
 
+      {selectedIds.size > 0 && (
+        <div className="li-filter-row mgr-bulk-actions">
+          <strong>{selectedIds.size} selected</strong>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busy !== ''}
+            onClick={() => onBulkRetry([...selectedIds])}
+          >
+            <RefreshCw size={13} /> Retry selected failures
+          </button>
+          {followUpCampaigns.length > 0 && (
+            <>
+              <label>
+                Follow-up campaign
+                <select
+                  value={targetCampaignId}
+                  onChange={(event) => setTargetCampaignId(event.target.value)}
+                >
+                  <option value="">Choose campaign…</option>
+                  {followUpCampaigns.map((campaign) => (
+                    <option key={campaign.id} value={campaign.id}>
+                      {campaign.name} ({CAMPAIGN_STATUS_LABEL[campaign.status]})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={busy !== '' || !targetCampaignId}
+                onClick={() => {
+                  onMoveSelected(targetCampaignId, [...selectedIds]);
+                  setSelectedIds(new Set());
+                }}
+              >
+                Move selected
+              </button>
+            </>
+          )}
+          <button className="ghost-button" type="button" onClick={() => setSelectedIds(new Set())}>
+            Clear selection
+          </button>
+        </div>
+      )}
+
       {shown.length === 0 ? (
         <p className="empty-copy">
           No lead matches that search. Clear the filters to see the whole list.
@@ -557,11 +1411,30 @@ function CampaignMembers({
             <table className="li-table">
               <thead>
                 <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      aria-label="Select visible leads"
+                      checked={
+                        shown.slice(0, limit).length > 0 &&
+                        shown.slice(0, limit).every((member) => selectedIds.has(member.id))
+                      }
+                      onChange={(event) => {
+                        const visible = shown.slice(0, limit).map((member) => member.id);
+                        setSelectedIds((current) => {
+                          const next = new Set(current);
+                          for (const id of visible)
+                            event.target.checked ? next.add(id) : next.delete(id);
+                          return next;
+                        });
+                      }}
+                    />
+                  </th>
                   <th>Lead</th>
                   <th>Company</th>
                   <th>Status</th>
                   <th>Step</th>
-                  <th>Next action</th>
+                  <th>Execution state</th>
                   <th>
                     <span className="mgr-sr">Controls</span>
                   </th>
@@ -571,14 +1444,32 @@ function CampaignMembers({
                 {shown.slice(0, limit).map((member) => {
                   const open = openId === member.id;
                   const rowBusy = busy.startsWith(`member:${member.id}`);
+                  const execution = executionStateForMember(member, steps, now);
                   return [
                     <tr key={member.id} className={open ? 'mgr-row-open' : undefined}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${member.firstName} ${member.lastName}`}
+                          checked={selectedIds.has(member.id)}
+                          onChange={(event) =>
+                            setSelectedIds((current) => {
+                              const next = new Set(current);
+                              event.target.checked ? next.add(member.id) : next.delete(member.id);
+                              return next;
+                            })
+                          }
+                        />
+                      </td>
                       <td>
                         <button
                           className="mgr-linkish"
                           type="button"
                           aria-expanded={open}
-                          onClick={() => setOpenId(open ? '' : member.id)}
+                          onClick={() => {
+                            setOpenId(open ? '' : member.id);
+                            if (!open) onLoadTimeline(member);
+                          }}
                         >
                           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                           {member.firstName} {member.lastName}
@@ -603,9 +1494,10 @@ function CampaignMembers({
                         )}
                       </td>
                       <td>
-                        {LIVE_STATUSES.includes(member.status)
-                          ? dueIn(member.nextEligibleAt, now)
-                          : '—'}
+                        <strong>{execution.label}</strong>
+                        <span className="mgr-step-name" title={execution.detail}>
+                          {execution.detail}
+                        </span>
                       </td>
                       <td>
                         <div className="li-row-actions">
@@ -639,6 +1531,30 @@ function CampaignMembers({
                               Resume
                             </button>
                           )}
+                          {(member.status === 'active' ||
+                            member.status === 'waiting' ||
+                            member.status === 'manual' ||
+                            member.status === 'paused') && (
+                            <button
+                              className="li-mini-button"
+                              type="button"
+                              disabled={busy !== ''}
+                              onClick={() => onSkip(member)}
+                            >
+                              Skip step
+                            </button>
+                          )}
+                          {(LIVE_STATUSES.includes(member.status) ||
+                            member.status === 'paused') && (
+                            <button
+                              className="li-mini-button"
+                              type="button"
+                              disabled={busy !== ''}
+                              onClick={() => onEnd(member)}
+                            >
+                              End automation
+                            </button>
+                          )}
                           {(LIVE_STATUSES.includes(member.status) ||
                             member.status === 'paused') && (
                             <button
@@ -655,8 +1571,44 @@ function CampaignMembers({
                     </tr>,
                     open ? (
                       <tr key={`${member.id}:detail`} className="mgr-row-detail">
-                        <td colSpan={6}>
+                        <td colSpan={7}>
                           <MemberTimeline steps={steps} member={member} now={now} />
+                          <MemberRecoveryControls
+                            member={member}
+                            steps={steps}
+                            busy={busy !== ''}
+                            onRerunCondition={onRerunCondition}
+                            onResumeAtStep={onResumeAtStep}
+                          />
+                          {timelines[member.id] && (
+                            <div className="mgr-timeline-events">
+                              <h5>Recorded history</h5>
+                              <ul>
+                                {timelines[member.id].events.map((event, index) => (
+                                  <li
+                                    key={`${event.kind}:${event.stepId ?? ''}:${event.at ?? ''}:${index}`}
+                                  >
+                                    <b>{event.label}</b>
+                                    {event.stepId
+                                      ? ` · ${event.stepLabel ?? event.stepId} (${event.stepId})`
+                                      : ''}
+                                    {event.senderKey ? ` · sender ${event.senderKey}` : ''}
+                                    {event.variantId ? ` · variant ${event.variantId}` : ''}
+                                    {event.status ? ` · ${event.status}` : ''}
+                                    {event.detail ? ` · ${event.detail}` : ''}
+                                    {event.approvedText ? (
+                                      <span className="mgr-step-name">
+                                        Approved: {event.approvedText}
+                                      </span>
+                                    ) : null}
+                                    {event.at ? (
+                                      <span> · {new Date(event.at).toLocaleString()}</span>
+                                    ) : null}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ) : null
@@ -856,6 +1808,8 @@ export function OutreachManagerRead({
    * a surprise nobody asked for.
    */
   const [activeSeatKey, setActiveSeatKey] = useActiveSeatKey();
+  const isWorkspaceOwner = useIsWorkspaceOwner();
+  const { members: workspaceMembers } = useWorkspaceMembers();
   const [seats, setSeats] = useState<LinkedInSeat[]>([]);
   const [lists, setLists] = useState<LinkedInLeadList[]>([]);
   const [workflows, setWorkflows] = useState<LinkedInWorkflow[]>([]);
@@ -863,11 +1817,25 @@ export function OutreachManagerRead({
   const [membersByCampaign, setMembersByCampaign] = useState<
     Record<string, ManagedCampaignMember[]>
   >({});
+  const [operationsByCampaign, setOperationsByCampaign] = useState<
+    Record<string, { queues: CampaignQueueSummary; waves: ManagedCampaignWave[] }>
+  >({});
+  const [operationalAnalyticsByCampaign, setOperationalAnalyticsByCampaign] = useState<
+    Record<string, CampaignOperationalAnalytics>
+  >({});
+  const [timelinesByMember, setTimelinesByMember] = useState<
+    Record<string, CampaignMemberTimeline>
+  >({});
   /** One effective-limits report per account, keyed by account. */
   const [limitsBySeat, setLimitsBySeat] = useState<Record<string, LinkedInLimitsReport>>({});
   const [tasks, setTasks] = useState<ManualTaskView[]>([]);
   const [analytics, setAnalytics] = useState<ManagedAnalytics | null>(null);
+  const [workerStatus, setWorkerStatus] = useState<LinkedInWorkerStatus | null>(null);
+  const [companionStatus, setCompanionStatus] = useState<LinkedInCompanionStatus | null>(null);
   const [openCampaignId, setOpenCampaignId] = useState(initialCampaignId ?? '');
+  const [waveFilterByCampaign, setWaveFilterByCampaign] = useState<Record<string, number | null>>(
+    {}
+  );
   const [openTaskId, setOpenTaskId] = useState('');
   const [loading, setLoading] = useState(true);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
@@ -910,30 +1878,46 @@ export function OutreachManagerRead({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextSeats, nextLists, nextWorkflows, nextCampaigns, nextTasks] = await Promise.all([
+      const [
+        nextSeats,
+        nextLists,
+        nextWorkflows,
+        nextCampaigns,
+        nextTasks,
+        nextWorkerStatus,
+        nextCompanionStatus
+      ] = await Promise.all([
         getLinkedInManagerSeats(),
         getLinkedInManagerLeadLists(),
         getLinkedInManagerWorkflows(),
         getLinkedInManagedCampaigns(),
-        getLinkedInManualTasks()
+        getLinkedInManualTasks(),
+        getLinkedInWorkerStatus().catch(() => null),
+        getLinkedInCompanionStatus().catch(() => null)
       ]);
       setSeats(nextSeats);
       setLists(nextLists);
       setWorkflows(nextWorkflows);
       setCampaigns(nextCampaigns);
       setTasks(nextTasks);
-      // lc-debt: one read per campaign to get its per-status counts; upgrade path:
-      // return the status histogram alongside member_count on GET /manager/campaigns.
-      const details = await Promise.all(
-        nextCampaigns.map(async (campaign) => {
-          try {
-            return [campaign.id, (await getLinkedInManagedCampaign(campaign.id)).members] as const;
-          } catch {
-            return [campaign.id, [] as ManagedCampaignMember[]] as const;
-          }
-        })
+      setWorkerStatus(nextWorkerStatus);
+      setCompanionStatus(nextCompanionStatus);
+      // Campaign rows already carry the operational status histogram. Member lists are loaded only
+      // when a campaign is opened, so this screen stays one aggregate read regardless of campaign count.
+      setMembersByCampaign((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([id]) =>
+            nextCampaigns.some((campaign) => campaign.id === id)
+          )
+        )
       );
-      setMembersByCampaign(Object.fromEntries(details));
+      setOperationsByCampaign((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([id]) =>
+            nextCampaigns.some((campaign) => campaign.id === id)
+          )
+        )
+      );
       // lc-debt: one limits read per account, so the ceilings this screen prints
       // are the gate's own numbers instead of a second opinion about them;
       // upgrade path: return the effective per-kind ceilings alongside the
@@ -1007,12 +1991,31 @@ export function OutreachManagerRead({
   );
 
   const refreshCampaign = async (campaignId: string) => {
-    const detail = await getLinkedInManagedCampaign(campaignId);
+    const [detail, operations, operationalAnalytics] = await Promise.all([
+      getLinkedInManagedCampaign(campaignId),
+      getLinkedInCampaignOperations(campaignId),
+      getLinkedInCampaignOperationalAnalytics(campaignId)
+    ]);
     setMembersByCampaign((current) => ({ ...current, [campaignId]: detail.members }));
+    setOperationsByCampaign((current) => ({
+      ...current,
+      [campaignId]: { queues: operations.queues, waves: operations.waves }
+    }));
+    setOperationalAnalyticsByCampaign((current) => ({
+      ...current,
+      [campaignId]: operationalAnalytics
+    }));
     setCampaigns((current) =>
       current.map((campaign) => (campaign.id === campaignId ? detail.campaign : campaign))
     );
   };
+
+  useEffect(() => {
+    if (!openCampaignId) return;
+    void refreshCampaign(openCampaignId).catch((err) =>
+      setError(errorMessage(err, 'Unable to read that campaign.'))
+    );
+  }, [openCampaignId]);
 
   const guard = async (key: string, work: () => Promise<void>, fallback: string) => {
     setBusy(key);
@@ -1048,6 +2051,21 @@ export function OutreachManagerRead({
         await refreshAll();
       },
       'Unable to pause that campaign.'
+    );
+
+  const applyLatestWorkflow = (campaign: ManagedCampaign) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await applyLatestLinkedInManagedCampaignWorkflow(campaign.id);
+        setToast(
+          result.pendingAffected > 0
+            ? `Pending leads in “${campaign.name}” will use workflow v${result.latestVersion}. Existing waves stay on their original versions.`
+            : `“${campaign.name}” now targets workflow v${result.latestVersion}; no pending leads were waiting to receive it.`
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to apply the latest workflow version.'
     );
 
   const stopCampaign = (campaign: ManagedCampaign) =>
@@ -1107,6 +2125,220 @@ export function OutreachManagerRead({
       'Unable to remove that lead.'
     );
 
+  const loadMemberTimeline = (member: ManagedCampaignMember) => {
+    if (timelinesByMember[member.id]) return;
+    void getLinkedInManagedMemberTimeline(member.id)
+      .then((timeline) =>
+        setTimelinesByMember((current) => ({ ...current, [member.id]: timeline }))
+      )
+      .catch((err) => setError(errorMessage(err, 'Unable to read that lead history.')));
+  };
+
+  const skipMember = (member: ManagedCampaignMember) =>
+    guard(
+      `member:${member.id}`,
+      async () => {
+        await skipLinkedInManagedMemberStep(member.id);
+        setToast(`${member.firstName} ${member.lastName} skipped the current step.`);
+        setTimelinesByMember((current) => {
+          const next = { ...current };
+          delete next[member.id];
+          return next;
+        });
+        await refreshCampaign(member.campaignId);
+      },
+      'Unable to skip that step.'
+    );
+
+  const rerunMemberCondition = (member: ManagedCampaignMember, stepId: string) =>
+    guard(
+      `member:${member.id}`,
+      async () => {
+        await rerunLinkedInManagedMemberCondition(member.id, stepId);
+        setToast(
+          `${member.firstName} ${member.lastName}'s condition will be evaluated again without re-sending the previous action.`
+        );
+        setTimelinesByMember((current) => {
+          const next = { ...current };
+          delete next[member.id];
+          return next;
+        });
+        await refreshCampaign(member.campaignId);
+      },
+      'Unable to re-run that condition.'
+    );
+
+  const resumeMemberAtStep = (member: ManagedCampaignMember, stepId: string) =>
+    guard(
+      `member:${member.id}`,
+      async () => {
+        await resumeLinkedInManagedMemberAtStep(member.id, stepId);
+        setToast(
+          `${member.firstName} ${member.lastName} will resume from the selected workflow node. Unstarted later work was cancelled.`
+        );
+        setTimelinesByMember((current) => {
+          const next = { ...current };
+          delete next[member.id];
+          return next;
+        });
+        await refreshCampaign(member.campaignId);
+      },
+      'Unable to resume that lead at the selected node.'
+    );
+
+  const endMember = (member: ManagedCampaignMember) =>
+    guard(
+      `member:${member.id}`,
+      async () => {
+        await endLinkedInManagedMember(member.id, 'completed');
+        setToast(
+          `${member.firstName} ${member.lastName} ended here. No later campaign action will run.`
+        );
+        setTimelinesByMember((current) => {
+          const next = { ...current };
+          delete next[member.id];
+          return next;
+        });
+        await refreshCampaign(member.campaignId);
+      },
+      'Unable to end automation for that lead.'
+    );
+
+  const retrySelectedFailures = (campaign: ManagedCampaign, memberIds: string[]) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await retryLinkedInManagedCampaignFailures(campaign.id, memberIds);
+        setToast(
+          `Selected leads: requeued ${result.linkedinActions + result.channelActions} definite failure(s); unknown outcomes were left untouched.`
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to retry the selected failures.'
+    );
+
+  const moveSelectedMembers = (
+    campaign: ManagedCampaign,
+    targetCampaignId: string,
+    memberIds: string[]
+  ) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await moveLinkedInManagedCampaignMembers(
+          campaign.id,
+          targetCampaignId,
+          memberIds
+        );
+        setToast(
+          `Moved ${result.moved} lead(s) to the follow-up campaign${result.skipped ? `; ${result.skipped} were skipped by dedupe/eligibility rules` : ''}.`
+        );
+        await refreshAll();
+      },
+      'Unable to move the selected leads.'
+    );
+
+  const retryCampaignFailures = (campaign: ManagedCampaign) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await retryLinkedInManagedCampaignFailures(campaign.id);
+        setToast(
+          result.linkedinActions + result.channelActions > 0
+            ? `Requeued ${result.linkedinActions + result.channelActions} definite failure(s). Unknown outcomes were left untouched.`
+            : 'No definite no-side-effect failures were eligible for retry.'
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to retry campaign failures.'
+    );
+
+  const transferCampaignOwner = (campaign: ManagedCampaign, ownerUserId: string) =>
+    guard(
+      `owner:${campaign.id}`,
+      async () => {
+        const updated = await setLinkedInManagedCampaignOwner(campaign.id, ownerUserId);
+        setToast(
+          `“${campaign.name}” is now owned by ${updated.ownerName ?? 'the selected teammate'}.`
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to transfer that campaign.'
+    );
+
+  const exportCampaign = (campaign: ManagedCampaign) =>
+    guard(
+      `export:${campaign.id}`,
+      async () => {
+        const blob = await downloadLinkedInManagedCampaignExport(campaign.id);
+        const href = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = href;
+        link.download = `${campaign.name.replace(/[^A-Za-z0-9._-]+/g, '-') || 'campaign'}-results.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(href);
+        setToast(`Exported “${campaign.name}”.`);
+      },
+      'Unable to export that campaign.'
+    );
+
+  const setCampaignPriority = (campaign: ManagedCampaign, priority: ManagedCampaign['priority']) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        await updateLinkedInCampaignControls(campaign.id, { priority });
+        setToast(`“${campaign.name}” priority is now ${priority}. Safety ceilings are unchanged.`);
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to change campaign priority.'
+    );
+
+  const saveCampaignSchedule = (
+    campaign: ManagedCampaign,
+    schedule: Partial<ManagedCampaign['schedule']>
+  ) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        await updateLinkedInCampaignControls(campaign.id, { schedule });
+        setToast(
+          `Updated the schedule for “${campaign.name}”. Seat-level working hours remain authoritative.`
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to update campaign schedule.'
+    );
+
+  const saveCampaignExclusions = (
+    campaign: ManagedCampaign,
+    exclusionPolicy: ManagedCampaign['exclusionPolicy']
+  ) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        await updateLinkedInCampaignControls(campaign.id, { exclusionPolicy });
+        setToast(`Re-evaluated pending leads for “${campaign.name}” with the updated exclusions.`);
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to update campaign exclusions.'
+    );
+
+  const duplicateCampaign = (campaign: ManagedCampaign) =>
+    guard(
+      `campaign:${campaign.id}`,
+      async () => {
+        const result = await duplicateLinkedInManagedCampaign(campaign.id);
+        setToast(
+          `Created draft “${result.campaign.name}” with the same audience, workflow, senders, exclusions, and wave controls.`
+        );
+        await refreshAll();
+        setOpenCampaignId(result.campaign.id);
+      },
+      'Unable to duplicate that campaign.'
+    );
+
   const completeTask = (task: ManualTaskView) =>
     guard(
       `task:${task.id}`,
@@ -1123,7 +2355,9 @@ export function OutreachManagerRead({
   const copyBody = async (task: ManualTaskView) => {
     try {
       await navigator.clipboard.writeText(task.suggestedBody ?? '');
-      setToast('Suggested message copied.');
+      setToast(
+        task.taskKind === 'comment' ? 'Suggested comment copied.' : 'Suggested message copied.'
+      );
     } catch {
       setError('Your browser blocked the copy. Select the text and copy it by hand.');
     }
@@ -1234,7 +2468,6 @@ export function OutreachManagerRead({
             </a>
           </span>
         </p>
-
         {loading && campaigns.length === 0 ? (
           <div className="mgr-list" aria-hidden="true">
             {[0, 1, 2].map((row) => (
@@ -1262,8 +2495,11 @@ export function OutreachManagerRead({
           <div className="mgr-list">
             {campaigns.map((campaign) => {
               const members = membersByCampaign[campaign.id] ?? [];
-              const counts = countByStatus(members);
+              const counts = campaignCountByStatus(campaign);
               const workflow = workflowOf(campaign);
+              const newerWorkflowAvailable = Boolean(
+                workflow && workflow.version > (campaign.workflowVersion ?? 0)
+              );
               const report = limitsBySeat[campaign.seatKey] ?? null;
               const warmup = warmupOf(campaign, now, report);
               /**
@@ -1286,6 +2522,18 @@ export function OutreachManagerRead({
               const rebuildable = Boolean(listOf(campaign) && workflowOf(campaign));
               const open = openCampaignId === campaign.id;
               const busyHere = busy === `campaign:${campaign.id}`;
+              const operations = operationsByCampaign[campaign.id] ?? null;
+              const operationalAnalytics = operationalAnalyticsByCampaign[campaign.id] ?? null;
+              const blockers = campaignBlockers({
+                campaign,
+                steps: campaignSteps,
+                operations,
+                analytics: operationalAnalytics,
+                ceilings,
+                report,
+                workerStatus,
+                companionStatus
+              });
               return (
                 <article className={`mgr-campaign${open ? ' is-open' : ''}`} key={campaign.id}>
                   <div className="mgr-campaign-head">
@@ -1379,6 +2627,45 @@ export function OutreachManagerRead({
                           <Copy size={14} /> Build it again
                         </button>
                       )}
+                      {!terminal &&
+                        (campaign.failedCount > 0 || (operations?.queues.failed ?? 0) > 0) && (
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={busy !== ''}
+                            title="Retries only failures known to have produced no side effect. Unknown sends remain held."
+                            onClick={() => void retryCampaignFailures(campaign)}
+                          >
+                            <RefreshCw size={14} /> Retry definite failures
+                          </button>
+                        )}
+                      {newerWorkflowAvailable && !terminal && (
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={busy !== ''}
+                          title="Only pending, unadmitted leads change. Existing waves keep their original workflow snapshot."
+                          onClick={() => void applyLatestWorkflow(campaign)}
+                        >
+                          <RefreshCw size={14} /> Apply workflow v{workflow!.version} to pending
+                        </button>
+                      )}
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={busy !== ''}
+                        onClick={() => void exportCampaign(campaign)}
+                      >
+                        <Download size={14} /> Export CSV
+                      </button>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={busy !== ''}
+                        onClick={() => void duplicateCampaign(campaign)}
+                      >
+                        <Copy size={14} /> Duplicate draft
+                      </button>
                       {terminal && (
                         <button
                           className="secondary-button"
@@ -1394,7 +2681,28 @@ export function OutreachManagerRead({
 
                   <p className="mgr-meta">
                     <span>
-                      Sends from <b>{seatLabel(campaign.seatKey)}</b>
+                      Sends from <b>{campaign.senderKeys.map(seatLabel).join(', ')}</b>
+                    </span>
+                    <span>
+                      Owned by <b>{campaign.ownerName ?? 'workspace owner'}</b>
+                      {isWorkspaceOwner && workspaceMembers.length > 0 && (
+                        <select
+                          aria-label={`Transfer ${campaign.name} owner`}
+                          value=""
+                          disabled={busy !== ''}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (value) void transferCampaignOwner(campaign, value);
+                          }}
+                        >
+                          <option value="">Transfer…</option>
+                          {workspaceMembers.map((member) => (
+                            <option key={member.userId} value={member.userId}>
+                              {member.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </span>
                     <span>
                       {plural(campaign.memberCount, 'lead')} from{' '}
@@ -1420,12 +2728,13 @@ export function OutreachManagerRead({
                     <p className="li-hint">
                       This campaign is locked to workflow v{campaign.workflowVersion ?? '—'} while
                       it is running. You can edit the saved workflow, but those changes only reach
-                      this campaign after you pause and resume it.
+                      pending/unadmitted leads after an explicit workflow upgrade; admitted waves
+                      keep their member snapshot.
                     </p>
                   )}
 
-                  <StatusBar counts={counts} total={members.length} />
-                  <StatusLegend counts={counts} total={members.length} />
+                  <StatusBar counts={counts} total={campaign.memberCount} />
+                  <StatusLegend counts={counts} total={campaign.memberCount} />
 
                   {/*
                   A TERMINAL CAMPAIGN GETS AN EXPLANATION, NOT A WARM-UP LINE.
@@ -1527,35 +2836,477 @@ export function OutreachManagerRead({
                         warmup &&
                         warmup.fraction < 1 &&
                         ceilings && (
-                          <p className="mgr-warmup mgr-warmup-detail">
-                            Allowed today
-                            <Allowance ceilings={ceilings} of="today" />. The invite ceiling is{' '}
-                            {ceilingSourceNote(ceilings.invite)}.
-                          </p>
+                          <>
+                            <p className="mgr-warmup mgr-warmup-detail">
+                              Campaign-day limits
+                              <Allowance ceilings={ceilings} of="today" />. The invite ceiling is{' '}
+                              {ceilingSourceNote(ceilings.invite)}. “Limit” is the ramp ceiling; it
+                              is not remaining capacity.
+                            </p>
+                            {operations && (
+                              <CapacityBreakdown
+                                ceilings={ceilings}
+                                allocated={operations.queues.allocatedCampaignDay}
+                              />
+                            )}
+                          </>
                         )}
                       {open &&
                         campaign.status !== 'draft' &&
                         warmup &&
                         warmup.fraction >= 1 &&
                         ceilings && (
-                          <p className="mgr-warmup mgr-warmup-detail">
-                            At full speed
-                            <Allowance ceilings={ceilings} of="full" />. The invite ceiling is{' '}
-                            {ceilingSourceNote(ceilings.invite)}.
-                          </p>
+                          <>
+                            <p className="mgr-warmup mgr-warmup-detail">
+                              At full speed
+                              <Allowance ceilings={ceilings} of="full" />. The invite ceiling is{' '}
+                              {ceilingSourceNote(ceilings.invite)}. “Limit” is the campaign ceiling;
+                              it is not remaining capacity.
+                            </p>
+                            {operations && (
+                              <CapacityBreakdown
+                                ceilings={ceilings}
+                                allocated={operations.queues.allocatedCampaignDay}
+                              />
+                            )}
+                          </>
                         )}
                     </>
                   )}
 
                   {open && (
+                    <div className="mgr-operations">
+                      <h4>Execution pipeline</h4>
+                      <p className="li-hint">
+                        Sequence eligibility, planner allocation, scheduling and browser execution
+                        are separate states.
+                      </p>
+                      <div className="li-stat-grid">
+                        <div>
+                          <span>Eligible · not allocated</span>
+                          <strong>{operations?.queues.dueNow ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Queued · due for executor</span>
+                          <strong>{operations?.queues.queuedReady ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Scheduled later</span>
+                          <strong>{operations?.queues.scheduledFuture ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Executing now</span>
+                          <strong>{operations?.queues.executing ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Held for review</span>
+                          <strong>{operations?.queues.heldForReview ?? 0}</strong>
+                        </div>
+                        <div>
+                          <span>Completed</span>
+                          <strong>{campaign.completedCount}</strong>
+                        </div>
+                      </div>
+
+                      <div className="mgr-callout">
+                        <strong>What is preventing progress right now?</strong>
+                        {blockers.length === 0 ? (
+                          <p className="li-hint">No blocking condition is currently detected.</p>
+                        ) : (
+                          <ul>
+                            {blockers.map((blocker, index) => (
+                              <li key={`${blocker.title}-${index}`}>
+                                <b>{blocker.title}:</b> {blocker.detail}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+
+                      <div className="li-stat-grid">
+                        <div>
+                          <span>Total audience</span>
+                          <strong>{campaign.memberCount}</strong>
+                        </div>
+                        <div>
+                          <span>Pending / not admitted</span>
+                          <strong>{campaign.pendingCount}</strong>
+                        </div>
+                        <div>
+                          <span>In sequence</span>
+                          <strong>{campaign.inSequenceCount}</strong>
+                        </div>
+                        <div>
+                          <span>Waiting on condition</span>
+                          <strong>{campaign.waitingCount}</strong>
+                        </div>
+                        <div>
+                          <span>Manual checkpoint</span>
+                          <strong>{campaign.manualCount}</strong>
+                        </div>
+                        <div>
+                          <span>Replied</span>
+                          <strong>{campaign.repliedCount}</strong>
+                        </div>
+                        <div>
+                          <span>Completed</span>
+                          <strong>{campaign.completedCount}</strong>
+                        </div>
+                        <div>
+                          <span>Failed</span>
+                          <strong>{campaign.failedCount}</strong>
+                        </div>
+                        <div>
+                          <span>Excluded</span>
+                          <strong>{campaign.excludedCount}</strong>
+                        </div>
+                        <div>
+                          <span>Paused leads</span>
+                          <strong>{campaign.pausedCount}</strong>
+                        </div>
+                      </div>
+                      <div className="li-filter-row">
+                        <label>
+                          Campaign priority
+                          <select
+                            value={campaign.priority}
+                            disabled={busy !== ''}
+                            onChange={(event) =>
+                              void setCampaignPriority(
+                                campaign,
+                                event.target.value as ManagedCampaign['priority']
+                              )
+                            }
+                          >
+                            <option value="low">Low</option>
+                            <option value="normal">Normal</option>
+                            <option value="high">High</option>
+                          </select>
+                        </label>
+                        <p className="li-hint">
+                          Priority allocates remaining sender capacity; it never raises a safety
+                          ceiling.
+                        </p>
+                      </div>
+                      <CampaignExclusionEditor
+                        campaign={campaign}
+                        lists={lists}
+                        busy={busy !== ''}
+                        onSave={(policy) => saveCampaignExclusions(campaign, policy)}
+                      />
+                      <CampaignScheduleEditor
+                        campaign={campaign}
+                        timezone={
+                          seats.find((seat) => seat.seatKey === campaign.seatKey)?.timezone ?? 'UTC'
+                        }
+                        busy={busy !== ''}
+                        onSave={(schedule) => saveCampaignSchedule(campaign, schedule)}
+                      />
+                      {operations ? (
+                        <>
+                          <h4>Queue and backlog</h4>
+                          <div className="li-stat-grid">
+                            <div>
+                              <span>Due now</span>
+                              <strong>{operations.queues.dueNow}</strong>
+                            </div>
+                            <div>
+                              <span>Scheduled next 24h</span>
+                              <strong>{operations.queues.scheduledToday}</strong>
+                            </div>
+                            <div>
+                              <span>Waiting for connection</span>
+                              <strong>{operations.queues.waitingForConnection}</strong>
+                            </div>
+                            <div>
+                              <span>Waiting for reply</span>
+                              <strong>{operations.queues.waitingForReply}</strong>
+                            </div>
+                            <div>
+                              <span>Other waits</span>
+                              <strong>{operations.queues.waitingOther}</strong>
+                            </div>
+                            <div>
+                              <span>Held by pause</span>
+                              <strong>{operations.queues.held}</strong>
+                            </div>
+                            <div>
+                              <span>Blocked</span>
+                              <strong>{operations.queues.blocked}</strong>
+                            </div>
+                            <div>
+                              <span>Failed</span>
+                              <strong>{operations.queues.failed}</strong>
+                            </div>
+                          </div>
+                          {operations.queues.backlogByStep.length > 0 && (
+                            <p className="li-hint">
+                              Backlog by node:{' '}
+                              {operations.queues.backlogByStep
+                                .map((row) => `${row.stepId} ${row.due}/${row.count} due`)
+                                .join(' · ')}
+                            </p>
+                          )}
+                          {operationalAnalytics && (
+                            <>
+                              <h4>Why this campaign is moving at this speed</h4>
+                              <p className="li-hint">{operationalAnalytics.bottlenecks.reason}</p>
+                              {operationalAnalytics.admissionForecast.reasons.length > 0 && (
+                                <p className="li-hint">
+                                  Admission throttle:{' '}
+                                  {operationalAnalytics.admissionForecast.reasons.join(' ')}
+                                </p>
+                              )}
+                              <div className="li-stat-grid">
+                                <div>
+                                  <span>Audience</span>
+                                  <strong>{operationalAnalytics.funnel.totalAudience}</strong>
+                                </div>
+                                <div>
+                                  <span>Pending</span>
+                                  <strong>{operationalAnalytics.funnel.pending}</strong>
+                                </div>
+                                <div>
+                                  <span>In sequence</span>
+                                  <strong>{operationalAnalytics.funnel.inSequence}</strong>
+                                </div>
+                                <div>
+                                  <span>Invited</span>
+                                  <strong>{operationalAnalytics.funnel.invited}</strong>
+                                </div>
+                                <div>
+                                  <span>Accepted</span>
+                                  <strong>{operationalAnalytics.funnel.accepted}</strong>
+                                </div>
+                                <div>
+                                  <span>Messaged</span>
+                                  <strong>{operationalAnalytics.funnel.messaged}</strong>
+                                </div>
+                                <div>
+                                  <span>Replied</span>
+                                  <strong>{operationalAnalytics.funnel.replied}</strong>
+                                </div>
+                                <div>
+                                  <span>Overdue actions</span>
+                                  <strong>{operationalAnalytics.bottlenecks.overdueActions}</strong>
+                                </div>
+                                <div>
+                                  <span>Forecast acceptance</span>
+                                  <strong>
+                                    {operationalAnalytics.admissionForecast.acceptanceRate === null
+                                      ? `learning (${operationalAnalytics.admissionForecast.acceptanceSampleSize}/20)`
+                                      : `${Math.round(operationalAnalytics.admissionForecast.acceptanceRate * 100)}%${operationalAnalytics.admissionForecast.acceptanceConfidence95 ? ` (95% ${Math.round(operationalAnalytics.admissionForecast.acceptanceConfidence95.low * 100)}–${Math.round(operationalAnalytics.admissionForecast.acceptanceConfidence95.high * 100)}%)` : ''}`}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>New-admission multiplier</span>
+                                  <strong>
+                                    {Math.round(
+                                      operationalAnalytics.admissionForecast.throttle * 100
+                                    )}
+                                    %
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>InMail sent</span>
+                                  <strong>{operationalAnalytics.channels.inmailSent}</strong>
+                                </div>
+                                <div>
+                                  <span>InMail replies</span>
+                                  <strong>{operationalAnalytics.channels.inmailReplied}</strong>
+                                </div>
+                                <div>
+                                  <span>InMail failures</span>
+                                  <strong>{operationalAnalytics.channels.inmailFailed}</strong>
+                                </div>
+                                <div>
+                                  <span>Paid InMail credits</span>
+                                  <strong>
+                                    {operationalAnalytics.channels.inmailPaidCreditsUsed}
+                                    {operationalAnalytics.channels.inmailPaidCreditCap === null
+                                      ? ''
+                                      : ` / ${operationalAnalytics.channels.inmailPaidCreditCap}`}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>Enrichment credits</span>
+                                  <strong>
+                                    {operationalAnalytics.channels.enrichmentCreditsUsed}
+                                    {operationalAnalytics.channels.enrichmentCreditCap === null
+                                      ? ''
+                                      : ` / ${operationalAnalytics.channels.enrichmentCreditCap}`}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>Emails found</span>
+                                  <strong>
+                                    {operationalAnalytics.channels.enrichmentFound} /{' '}
+                                    {operationalAnalytics.channels.enrichmentAttempts}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <span>Email replies</span>
+                                  <strong>{operationalAnalytics.channels.emailReplied}</strong>
+                                </div>
+                              </div>
+                              {operationalAnalytics.steps.length > 0 && (
+                                <p className="li-hint">
+                                  Step health:{' '}
+                                  {operationalAnalytics.steps
+                                    .map(
+                                      (row) =>
+                                        `${row.workflowStepId}: ${row.executed} done · ${row.skipped} skipped · ${row.failed} failed · ${row.overdue} overdue${row.outcomeRate === null ? '' : ` · ${Math.round(row.outcomeRate * 100)}% settled`}${row.slaMissRate === null ? '' : ` · SLA ${Math.round(row.slaMissRate * 100)}% missed (${row.slaMissed}/${row.slaMeasured})`}${row.medianDelayVsIntendedMinutes === null ? '' : ` · median ${Math.round(row.medianDelayVsIntendedMinutes)}m vs intended`}`
+                                    )
+                                    .join(' | ')}
+                                </p>
+                              )}
+                              {operationalAnalytics.variants.length > 0 && (
+                                <p className="li-hint">
+                                  Variant outcomes:{' '}
+                                  {operationalAnalytics.variants
+                                    .map((row) => {
+                                      const rates = [
+                                        row.acceptanceRate === null
+                                          ? ''
+                                          : `${Math.round(row.acceptanceRate * 100)}% accepted`,
+                                        row.replyRate === null
+                                          ? ''
+                                          : `${Math.round(row.replyRate * 100)}% replied`
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' · ');
+                                      return `${row.workflowStepId}/${row.variantId.toUpperCase()}: ${row.sent} sent${rates ? ` · ${rates}` : ''} · ${row.eligibleForWinner ? 'enough sample to compare' : 'learning (<20 sends)'}`;
+                                    })
+                                    .join(' | ')}
+                                </p>
+                              )}
+                              {operationalAnalytics.senders.length > 0 && (
+                                <p className="li-hint">
+                                  Sender allocation:{' '}
+                                  {operationalAnalytics.senders
+                                    .map((row) => {
+                                      const rates = [
+                                        row.acceptanceRate === null
+                                          ? ''
+                                          : `${Math.round(row.acceptanceRate * 100)}% accepted`,
+                                        row.replyRate === null
+                                          ? ''
+                                          : `${Math.round(row.replyRate * 100)}% replied`,
+                                        row.allocationShare === null
+                                          ? ''
+                                          : `${Math.round(row.allocationShare * 100)}% of executed work`
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' · ');
+                                      return `${seatLabel(row.seatKey)} ${row.executed} actions · ${row.safetyBlocks} safety blocks${rates ? ` · ${rates}` : ''}`;
+                                    })
+                                    .join(' | ')}
+                                </p>
+                              )}
+                            </>
+                          )}
+                          <h4>Admission waves</h4>
+                          {operations.waves.length === 0 ? (
+                            <p className="empty-copy">
+                              No wave has been admitted yet. Pending leads remain untouched until
+                              capacity is available.
+                            </p>
+                          ) : (
+                            <div className="mgr-wave-list">
+                              {operations.waves.map((wave) => (
+                                <article className="mgr-wave" key={wave.id}>
+                                  <strong>Wave {wave.ordinal}</strong> ·{' '}
+                                  {plural(wave.memberCount, 'lead')} ·{' '}
+                                  {new Date(wave.admittedAt).toLocaleString()}
+                                  {' · '}
+                                  <button
+                                    type="button"
+                                    className="li-mini-button"
+                                    onClick={() =>
+                                      setWaveFilterByCampaign((current) => ({
+                                        ...current,
+                                        [campaign.id]:
+                                          current[campaign.id] === wave.ordinal
+                                            ? null
+                                            : wave.ordinal
+                                      }))
+                                    }
+                                  >
+                                    {waveFilterByCampaign[campaign.id] === wave.ordinal
+                                      ? 'Show all leads'
+                                      : 'Filter leads to wave'}
+                                  </button>
+                                  <p className="li-hint">
+                                    Backlog {wave.backlog ?? 0} · accepted{' '}
+                                    {wave.acceptanceRate === null ||
+                                    wave.acceptanceRate === undefined
+                                      ? '—'
+                                      : `${Math.round(wave.acceptanceRate * 100)}%`}{' '}
+                                    · replies{' '}
+                                    {wave.replyRate === null || wave.replyRate === undefined
+                                      ? '—'
+                                      : `${Math.round(wave.replyRate * 100)}%`}{' '}
+                                    · failures{' '}
+                                    {wave.failureRate === null || wave.failureRate === undefined
+                                      ? '—'
+                                      : `${Math.round(wave.failureRate * 100)}%`}
+                                  </p>
+                                  {wave.admissionReason && (
+                                    <p className="li-hint">{wave.admissionReason}</p>
+                                  )}
+                                  {wave.stepFunnel && wave.stepFunnel.length > 0 && (
+                                    <p className="li-hint">
+                                      {wave.stepFunnel
+                                        .map(
+                                          (row) =>
+                                            `${row.stepId}: ${row.sent}/${row.planned} sent${row.accepted ? ` · ${row.accepted} accepted` : ''}${row.replied ? ` · ${row.replied} replied` : ''}${row.failed ? ` · ${row.failed} failed` : ''}${row.medianMinutesFromAdmission === null ? '' : ` · median ${Math.round(row.medianMinutesFromAdmission)}m from admission`}${row.medianQueueLatencyMinutes === null ? '' : ` · ${Math.round(row.medianQueueLatencyMinutes)}m queue latency`}`
+                                        )
+                                        .join(' | ')}
+                                    </p>
+                                  )}
+                                </article>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <p className="empty-copy">Loading queue and wave details…</p>
+                      )}
+                    </div>
+                  )}
+
+                  {open && (
                     <CampaignMembers
-                      members={members}
+                      members={
+                        waveFilterByCampaign[campaign.id]
+                          ? members.filter(
+                              (member) => member.waveOrdinal === waveFilterByCampaign[campaign.id]
+                            )
+                          : members
+                      }
                       steps={campaignSteps}
                       now={now}
                       busy={busy}
                       onPause={(member) => void setMemberPaused(member, true)}
                       onResume={(member) => void setMemberPaused(member, false)}
                       onRemove={(member) => void removeMember(member)}
+                      timelines={timelinesByMember}
+                      onLoadTimeline={loadMemberTimeline}
+                      onSkip={(member) => void skipMember(member)}
+                      onEnd={(member) => void endMember(member)}
+                      onRerunCondition={(member, stepId) =>
+                        void rerunMemberCondition(member, stepId)
+                      }
+                      onResumeAtStep={(member, stepId) => void resumeMemberAtStep(member, stepId)}
+                      followUpCampaigns={campaigns.filter(
+                        (candidate) =>
+                          candidate.id !== campaign.id &&
+                          !['stopped', 'completed'].includes(candidate.status)
+                      )}
+                      onBulkRetry={(memberIds) => void retrySelectedFailures(campaign, memberIds)}
+                      onMoveSelected={(targetCampaignId, memberIds) =>
+                        void moveSelectedMembers(campaign, targetCampaignId, memberIds)
+                      }
                     />
                   )}
                 </article>
@@ -1874,12 +3625,26 @@ export function OutreachManagerRead({
                                           type="button"
                                           onClick={() => void copyBody(task)}
                                         >
-                                          <Copy size={14} /> Copy message
+                                          <Copy size={14} />{' '}
+                                          {task.taskKind === 'comment'
+                                            ? 'Copy comment'
+                                            : 'Copy message'}
                                         </button>
                                       )}
-                                      <a className="secondary-button" href="/outreach/inbox">
-                                        <Inbox size={14} /> Send it in the inbox
-                                      </a>
+                                      {task.taskKind === 'comment' && task.postUrl ? (
+                                        <a
+                                          className="secondary-button"
+                                          href={task.postUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        >
+                                          Open post to comment
+                                        </a>
+                                      ) : (
+                                        <a className="secondary-button" href="/outreach/inbox">
+                                          <Inbox size={14} /> Send it in the inbox
+                                        </a>
+                                      )}
                                       {task.profileUrl && (
                                         <a
                                           className="li-link"

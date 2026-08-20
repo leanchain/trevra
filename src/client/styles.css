@@ -9648,3 +9648,119 @@ button:disabled {
   padding: 20px 4px 4px;
   margin: 0;
 }
+
+/* Campaign waves / queue controls. */
+.mgr-advanced {
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  padding: 10px 12px;
+  background: var(--t-surface-2);
+}
+.mgr-advanced > summary {
+  cursor: pointer;
+  font-size: var(--t-text-xs);
+  font-weight: 700;
+}
+.mgr-advanced[open] > summary {
+  margin-bottom: 12px;
+}
+.li-check-grid {
+  display: grid;
+  gap: 7px;
+  margin-top: 7px;
+}
+.li-check-row {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+}
+.li-check-row input[type='checkbox'] {
+  width: auto;
+  margin: 0;
+}
+.mgr-operations {
+  display: grid;
+  gap: 13px;
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.mgr-operations h4 {
+  margin: 2px 0 0;
+  font-size: var(--t-text-sm);
+}
+.mgr-callout {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--t-line-strong);
+  border-radius: var(--t-r-sm);
+  background: var(--surface);
+}
+.mgr-callout > strong {
+  font-size: var(--t-text-sm);
+}
+.mgr-callout p,
+.mgr-callout ul {
+  margin: 0;
+}
+.mgr-callout ul {
+  display: grid;
+  gap: 5px;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.li-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+}
+.li-stat-grid > div {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  padding: 8px 9px;
+  background: var(--surface);
+}
+.li-stat-grid span {
+  color: var(--muted);
+  font-size: var(--t-text-2xs);
+}
+.li-stat-grid strong {
+  font-size: var(--t-text-lg);
+  font-variant-numeric: tabular-nums;
+}
+.mgr-wave-list {
+  display: grid;
+  gap: 8px;
+}
+.mgr-wave {
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  padding: 9px 10px;
+  background: var(--surface);
+  font-size: var(--t-text-xs);
+}
+.mgr-wave p {
+  margin: 4px 0 0;
+}
+.mgr-timeline-events {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.mgr-timeline-events h5 {
+  margin: 0 0 6px;
+}
+.mgr-timeline-events ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: var(--t-text-xs);
+}

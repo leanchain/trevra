@@ -66,9 +66,14 @@ import type {
 } from '../server/linkedin/lead-lists';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
 import type {
+  CampaignLaunchPreview,
+  CampaignMemberTimeline,
+  CampaignOperationalAnalytics,
+  CampaignQueueSummary,
   ManagedAnalytics,
   ManagedCampaign,
   ManagedCampaignMember,
+  ManagedCampaignWave,
   ManualTaskView
 } from '../server/linkedin/managed-campaigns';
 import type {
@@ -1385,6 +1390,37 @@ export async function createLinkedInManagerLeadList(input: {
   ).list;
 }
 
+export async function ingestLinkedInManagerLeadSignal(
+  listId: string,
+  input: {
+    signalKind: 'profile_viewed' | 'post_engaged' | 'event_attended' | 'job_changed';
+    idempotencyKey: string;
+    profileUrl: string;
+    firstName: string;
+    lastName?: string | null;
+    company?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    country?: string | null;
+    sourceRef?: string | null;
+    occurredAt?: string | null;
+    customFields?: Record<string, string>;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<{
+  signalId: string;
+  contactId: string;
+  listId: string;
+  duplicateSignal: boolean;
+  insertedContact: boolean;
+  reusedContact: boolean;
+}> {
+  return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/signals`, {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+}
+
 export interface LinkedInLeadCsvPreview {
   headers: string[];
   mapping: Partial<
@@ -1432,6 +1468,22 @@ export async function previewLinkedInManagerLeadCsv(
     throw new ApiError(body.error ?? 'Lead CSV preview failed', response.status);
   }
   return response.json();
+}
+
+export async function importLinkedInManagerProfileUrls(
+  listId: string,
+  urls: string,
+  seatKey?: string
+): Promise<{
+  inserted: number;
+  duplicates: number;
+  reused: number;
+  rejected: Array<{ value: string; reason: string }>;
+}> {
+  return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/profile-urls`, {
+    method: 'POST',
+    body: JSON.stringify({ urls, ...(seatKey ? { seatKey } : {}) })
+  });
 }
 
 /** The write half of the preview: parses through the same scrub + automatch, and persists. */
@@ -1495,6 +1547,7 @@ export async function updateLinkedInManagerLeadContact(
     phone?: string | null;
     country?: string | null;
     profileUrl?: string | null;
+    doNotContact?: boolean;
   }
 ): Promise<LinkedInLeadContact> {
   return (
@@ -1519,9 +1572,19 @@ export async function getLinkedInManagerWorkflows(): Promise<LinkedInWorkflow[]>
     .workflows;
 }
 
+export async function validateLinkedInManagerWorkflow(
+  steps: WorkflowStep[]
+): Promise<{ valid: boolean; issues: Array<{ path: Array<string | number>; message: string }> }> {
+  return request('/api/linkedin/manager/workflows/validate', {
+    method: 'POST',
+    body: JSON.stringify({ steps })
+  });
+}
+
 export async function createLinkedInManagerWorkflow(input: {
   name: string;
   steps: WorkflowStep[];
+  scope?: 'workspace' | 'personal';
 }): Promise<LinkedInWorkflow> {
   return (
     await request<{ workflow: LinkedInWorkflow }>('/api/linkedin/manager/workflows', {
@@ -1533,7 +1596,7 @@ export async function createLinkedInManagerWorkflow(input: {
 
 export async function updateLinkedInManagerWorkflow(
   id: string,
-  input: { name: string; steps: WorkflowStep[] }
+  input: { name: string; steps: WorkflowStep[]; scope?: 'workspace' | 'personal' }
 ): Promise<LinkedInWorkflow> {
   return (
     await request<{ workflow: LinkedInWorkflow }>(
@@ -1552,22 +1615,240 @@ export async function deleteLinkedInManagerWorkflow(id: string): Promise<boolean
   ).deleted;
 }
 
+export interface CampaignMailbox {
+  id: string;
+  provider: string;
+  status: string;
+  dailyLimit: number;
+  timezone: string;
+  workingDays: number[];
+  workStartMinute: number;
+  workEndMinute: number;
+}
+
+export async function getLinkedInCampaignMailboxes(): Promise<CampaignMailbox[]> {
+  return (await request<{ mailboxes: CampaignMailbox[] }>('/api/linkedin/manager/mailboxes'))
+    .mailboxes;
+}
+
+export async function updateLinkedInCampaignMailbox(
+  id: string,
+  input: Omit<CampaignMailbox, 'id' | 'provider' | 'status'>
+): Promise<boolean> {
+  return (
+    await request<{ updated: boolean }>(
+      `/api/linkedin/manager/mailboxes/${encodeURIComponent(id)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(input)
+      }
+    )
+  ).updated;
+}
+
+export async function retryLinkedInCampaignChannelAction(id: string): Promise<boolean> {
+  return (
+    await request<{ retried: boolean }>(
+      `/api/linkedin/manager/channel-actions/${encodeURIComponent(id)}/retry`,
+      { method: 'POST', body: '{}' }
+    )
+  ).retried;
+}
+
+export async function recordLinkedInCampaignEmailEvent(
+  id: string,
+  input: {
+    eventKind: 'opened' | 'clicked' | 'bounced' | 'replied';
+    providerEventId?: string | null;
+    metadata?: Record<string, unknown>;
+    occurredAt?: string;
+  }
+): Promise<{ recorded: boolean; memberId: string | null }> {
+  return request(`/api/linkedin/manager/channel-actions/${encodeURIComponent(id)}/events`, {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateLinkedInSeatCapabilities(
+  seatKey: string,
+  input: {
+    inmail: 'unknown' | 'available' | 'unavailable';
+    premium?: boolean;
+    salesNavigator?: boolean;
+    recruiter?: boolean;
+    inmailMonthlyBudget?: number | null;
+    inmailPaidCreditCap?: number | null;
+  }
+): Promise<LinkedInSeat> {
+  return (
+    await request<{ seat: LinkedInSeat }>(
+      `/api/linkedin/manager/seats/${encodeURIComponent(seatKey)}/capabilities`,
+      { method: 'PATCH', body: JSON.stringify(input) }
+    )
+  ).seat;
+}
+
 export async function getLinkedInManagedCampaigns(): Promise<ManagedCampaign[]> {
   return (await request<{ campaigns: ManagedCampaign[] }>('/api/linkedin/manager/campaigns'))
     .campaigns;
 }
 
+export async function previewLinkedInManagedCampaign(input: {
+  seatKey?: string;
+  senderKeys?: string[];
+  mailboxAssignments?: Record<string, string>;
+  inmailCreditCap?: number | null;
+  enrichmentCreditCap?: number | null;
+  leadListId: string;
+  workflowId: string;
+  admissionPolicy?: ManagedCampaign['admissionPolicy'];
+}): Promise<CampaignLaunchPreview> {
+  return (
+    await request<{ preview: CampaignLaunchPreview }>('/api/linkedin/manager/campaigns/preview', {
+      method: 'POST',
+      body: JSON.stringify(input)
+    })
+  ).preview;
+}
+
 export async function createLinkedInManagedCampaign(input: {
   name: string;
   seatKey?: string;
+  senderKeys?: string[];
+  mailboxAssignments?: Record<string, string>;
+  inmailCreditCap?: number | null;
+  enrichmentCreditCap?: number | null;
   leadListId: string;
   workflowId: string;
-}): Promise<{ campaign: ManagedCampaign; enrolled: number; skippedAlreadyActive: number }> {
+  priority?: ManagedCampaign['priority'];
+  admissionPolicy?: ManagedCampaign['admissionPolicy'];
+  exclusionPolicy?: ManagedCampaign['exclusionPolicy'];
+  schedule?: Partial<ManagedCampaign['schedule']>;
+}): Promise<{
+  campaign: ManagedCampaign;
+  enrolled: number;
+  skippedAlreadyActive: number;
+  excluded: number;
+}> {
   return request('/api/linkedin/manager/campaigns', {
     method: 'POST',
     body: JSON.stringify(input)
   });
 }
+
+export async function getLinkedInCampaignOperations(id: string): Promise<{
+  campaign: ManagedCampaign;
+  queues: CampaignQueueSummary;
+  waves: ManagedCampaignWave[];
+}> {
+  return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/operations`);
+}
+
+export async function getLinkedInCampaignOperationalAnalytics(
+  id: string
+): Promise<CampaignOperationalAnalytics> {
+  return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/operational-analytics`);
+}
+
+export async function updateLinkedInCampaignControls(
+  id: string,
+  input: {
+    priority?: ManagedCampaign['priority'];
+    admissionPolicy?: ManagedCampaign['admissionPolicy'];
+    exclusionPolicy?: ManagedCampaign['exclusionPolicy'];
+    senderKeys?: string[];
+    mailboxAssignments?: Record<string, string>;
+    inmailCreditCap?: number | null;
+    enrichmentCreditCap?: number | null;
+    schedule?: Partial<ManagedCampaign['schedule']>;
+  }
+): Promise<ManagedCampaign> {
+  return (
+    await request<{ campaign: ManagedCampaign }>(
+      `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/controls`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(input)
+      }
+    )
+  ).campaign;
+}
+
+export async function applyLatestLinkedInManagedCampaignWorkflow(id: string): Promise<{
+  campaign: ManagedCampaign;
+  previousVersion: number | null;
+  latestVersion: number;
+  pendingAffected: number;
+}> {
+  return request(
+    `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/apply-latest-workflow`,
+    { method: 'POST', body: '{}' }
+  );
+}
+
+export async function retryLinkedInManagedCampaignFailures(
+  id: string,
+  memberIds: string[] = []
+): Promise<{ linkedinActions: number; channelActions: number; membersResumed: number }> {
+  return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/retry-failures`, {
+    method: 'POST',
+    body: JSON.stringify({ memberIds })
+  });
+}
+
+export async function moveLinkedInManagedCampaignMembers(
+  sourceCampaignId: string,
+  targetCampaignId: string,
+  memberIds: string[]
+): Promise<{ moved: number; skipped: number }> {
+  return request(
+    `/api/linkedin/manager/campaigns/${encodeURIComponent(sourceCampaignId)}/move-members`,
+    { method: 'POST', body: JSON.stringify({ targetCampaignId, memberIds }) }
+  );
+}
+
+export async function duplicateLinkedInManagedCampaign(
+  id: string,
+  name?: string
+): Promise<{
+  campaign: ManagedCampaign;
+  enrolled: number;
+  skippedAlreadyActive: number;
+  excluded: number;
+}> {
+  return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/duplicate`, {
+    method: 'POST',
+    body: JSON.stringify(name ? { name } : {})
+  });
+}
+
+export async function setLinkedInManagedCampaignOwner(
+  id: string,
+  ownerUserId: string | null
+): Promise<ManagedCampaign> {
+  return (
+    await request<{ campaign: ManagedCampaign }>(
+      `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/owner`,
+      { method: 'PATCH', body: JSON.stringify({ ownerUserId }) }
+    )
+  ).campaign;
+}
+
+export async function downloadLinkedInManagedCampaignExport(id: string): Promise<Blob> {
+  const response = await fetch(
+    `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/export.csv`,
+    {
+      credentials: 'include'
+    }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    throw new ApiError(body.error ?? 'Unable to export campaign', response.status);
+  }
+  return response.blob();
+}
+
 export async function getLinkedInManagedCampaign(
   id: string
 ): Promise<{ campaign: ManagedCampaign; members: ManagedCampaignMember[] }> {
@@ -1607,6 +1888,64 @@ export async function stopLinkedInManagedCampaign(id: string): Promise<ManagedCa
       { method: 'POST', body: '{}' }
     )
   ).campaign;
+}
+
+export async function getLinkedInManagedMemberTimeline(
+  id: string
+): Promise<CampaignMemberTimeline> {
+  return request(`/api/linkedin/manager/members/${encodeURIComponent(id)}/timeline`);
+}
+
+export async function rerunLinkedInManagedMemberCondition(
+  id: string,
+  stepId?: string
+): Promise<boolean> {
+  return (
+    await request<{ rerun: boolean }>(
+      `/api/linkedin/manager/members/${encodeURIComponent(id)}/rerun-condition`,
+      { method: 'POST', body: JSON.stringify(stepId ? { stepId } : {}) }
+    )
+  ).rerun;
+}
+
+export async function resumeLinkedInManagedMemberAtStep(
+  id: string,
+  stepId: string
+): Promise<boolean> {
+  return (
+    await request<{ resumed: boolean }>(
+      `/api/linkedin/manager/members/${encodeURIComponent(id)}/resume-at-step`,
+      { method: 'POST', body: JSON.stringify({ stepId }) }
+    )
+  ).resumed;
+}
+
+export async function endLinkedInManagedMember(
+  id: string,
+  outcome: 'completed' | 'excluded' | 'removed' = 'completed',
+  reason?: string
+): Promise<boolean> {
+  return (
+    await request<{ ended: boolean }>(
+      `/api/linkedin/manager/members/${encodeURIComponent(id)}/end`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ outcome, ...(reason ? { reason } : {}) })
+      }
+    )
+  ).ended;
+}
+
+export async function skipLinkedInManagedMemberStep(id: string, reason?: string): Promise<boolean> {
+  return (
+    await request<{ skipped: boolean }>(
+      `/api/linkedin/manager/members/${encodeURIComponent(id)}/skip`,
+      {
+        method: 'POST',
+        body: JSON.stringify(reason ? { reason } : {})
+      }
+    )
+  ).skipped;
 }
 
 export async function setLinkedInManagedMemberPaused(

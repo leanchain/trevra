@@ -18,6 +18,7 @@ import {
   getLinkedInManagerLeadContacts,
   getLinkedInManagerLeadLists,
   importLinkedInManagerLeadCsv,
+  importLinkedInManagerProfileUrls,
   previewLinkedInManagerLeadCsv,
   updateLinkedInManagerLeadContact,
   type LinkedInLeadCsvPreview
@@ -73,7 +74,13 @@ const SOURCE_LABELS: Record<LeadListSourceKind, string> = {
   csv: 'CSV',
   linkedin_search: 'LinkedIn people search',
   sales_navigator: 'Sales Navigator',
-  post_keyword: 'Post and comment keywords'
+  post_keyword: 'Post and comment keywords',
+  recruiter: 'LinkedIn Recruiter',
+  group_members: 'LinkedIn group',
+  event_attendees: 'LinkedIn event',
+  company_employees: 'LinkedIn company people',
+  profile_urls: 'LinkedIn profile URLs',
+  signal: 'External signal'
 };
 
 const plural = (count: number, one: string, many = `${one}s`) =>
@@ -182,6 +189,7 @@ interface ContactDraft {
   phone: string;
   country: string;
   profileUrl: string;
+  doNotContact: boolean;
 }
 
 export function LinkedInManagerLeadConfig({
@@ -228,6 +236,7 @@ export function LinkedInManagerLeadConfig({
     counts: ImportReport;
   } | null>(null);
   const [error, setError] = useState('');
+  const [profileUrls, setProfileUrls] = useState('');
   /** Last preview wins: changing two columns quickly must not race. */
   const previewToken = useRef(0);
 
@@ -515,6 +524,46 @@ export function LinkedInManagerLeadConfig({
     }
   };
 
+  const runProfileUrlImport = async () => {
+    if (!profileUrls.trim()) return;
+    if ((compact || destination === 'new') && !newName.trim()) {
+      setError('Name the new list before importing profile URLs.');
+      return;
+    }
+    setBusy('import');
+    setError('');
+    try {
+      const list =
+        destination === 'new'
+          ? await createLinkedInManagerLeadList({
+              seatKey: activeSeatKey,
+              name: newName.trim(),
+              sourceKind: 'profile_urls'
+            })
+          : destinationList!;
+      const counts = await importLinkedInManagerProfileUrls(list.id, profileUrls, activeSeatKey);
+      setToast(
+        counts.inserted > 0 || counts.reused > 0
+          ? `${plural(counts.inserted + counts.reused, 'profile')} added to “${list.name}”.${counts.rejected.length ? ` ${plural(counts.rejected.length, 'entry')} rejected.` : ''}`
+          : `Nothing new was added to “${list.name}”.`
+      );
+      setProfileUrls('');
+      setNewName('');
+      if (compact) {
+        onImported?.(list);
+      } else {
+        setDestination(list.id);
+        await loadLists();
+        await openList(list.id);
+      }
+      await onChanged();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to import those LinkedIn profile URLs.'));
+    } finally {
+      setBusy('');
+    }
+  };
+
   /* -- editing what is already in a list --------------------------------- */
 
   const startEdit = (contact: LinkedInLeadContact) => {
@@ -531,7 +580,8 @@ export function LinkedInManagerLeadConfig({
       email: contact.email ?? '',
       phone: contact.phone ?? '',
       country: contact.country ?? '',
-      profileUrl: contact.profileUrl ?? ''
+      profileUrl: contact.profileUrl ?? '',
+      doNotContact: contact.doNotContact
     });
   };
 
@@ -546,7 +596,8 @@ export function LinkedInManagerLeadConfig({
         email: draft.email.trim() || null,
         phone: draft.phone.trim() || null,
         country: draft.country.trim() || null,
-        profileUrl: draft.profileUrl.trim() || null
+        profileUrl: draft.profileUrl.trim() || null,
+        doNotContact: draft.doNotContact
       });
       setContacts((current) =>
         current.map((contact) => (contact.id === updated.id ? updated : contact))
@@ -699,6 +750,37 @@ export function LinkedInManagerLeadConfig({
         </div>
 
         {error && <div className="error-banner">{error}</div>}
+
+        <details className="mgr-advanced">
+          <summary>Paste LinkedIn profile URLs instead</summary>
+          <p className="li-hint">
+            One /in/ profile per line. Trevra stores only canonical profile identity here; names and
+            company stay blank until you edit or enrich them, so no fake personalization data is
+            created.
+          </p>
+          <textarea
+            rows={5}
+            value={profileUrls}
+            disabled={busy !== ''}
+            placeholder={
+              'https://www.linkedin.com/in/ada-lovelace/\nhttps://www.linkedin.com/in/grace-hopper/'
+            }
+            onChange={(event) => setProfileUrls(event.target.value)}
+          />
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={
+              busy !== '' ||
+              !profileUrls.trim() ||
+              ((compact || destination === 'new') && !newName.trim())
+            }
+            onClick={() => void runProfileUrlImport()}
+          >
+            {busy === 'import' ? <LoaderCircle className="spin" size={14} /> : <Users size={14} />}{' '}
+            Add pasted profiles
+          </button>
+        </details>
 
         <div className="li-form-grid">
           {!compact && (
@@ -1123,6 +1205,17 @@ export function LinkedInManagerLeadConfig({
                               setDraft({ ...draft, profileUrl: event.target.value })
                             }
                           />
+                        </label>
+                        <label className="li-span-2 li-check-row">
+                          <input
+                            type="checkbox"
+                            checked={draft.doNotContact}
+                            onChange={(event) =>
+                              setDraft({ ...draft, doNotContact: event.target.checked })
+                            }
+                          />
+                          Do not contact — exclude this person from every new campaign in this
+                          workspace
                         </label>
                       </div>
                       <p className="li-hint">

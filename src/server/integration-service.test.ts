@@ -9,7 +9,9 @@ const nangoMock = vi.hoisted(() => ({
   listRecords: vi.fn(async () => ({
     records: [] as Array<Record<string, unknown>>,
     next_cursor: null as string | null
-  }))
+  })),
+  get: vi.fn(async (_config: Record<string, unknown>) => ({ data: {}, headers: {} })),
+  post: vi.fn(async (_config: Record<string, unknown>) => ({ data: {}, headers: {} }))
 }));
 
 const notificationMock = vi.hoisted(() => ({
@@ -22,6 +24,8 @@ vi.mock('@nangohq/node', () => ({
     createConnectSession = nangoMock.createConnectSession;
     verifyIncomingWebhookRequest = nangoMock.verifyIncomingWebhookRequest;
     listRecords = nangoMock.listRecords;
+    get = nangoMock.get;
+    post = nangoMock.post;
   }
 }));
 
@@ -30,6 +34,7 @@ const {
   createNangoConnectSession,
   defaultConnectSessionIntegrations,
   handleNangoWebhook,
+  executeConnectedAction,
   ingestCanonicalRecord,
   listAvailableIntegrations,
   processStripeWebhook,
@@ -69,6 +74,10 @@ afterEach(async () => {
   nangoMock.createConnectSession.mockClear();
   nangoMock.verifyIncomingWebhookRequest.mockClear();
   nangoMock.listRecords.mockClear();
+  nangoMock.get.mockReset();
+  nangoMock.get.mockResolvedValue({ data: {}, headers: {} });
+  nangoMock.post.mockReset();
+  nangoMock.post.mockResolvedValue({ data: {}, headers: {} });
   notificationMock.notifyIntegrationNeedsReauth.mockClear();
   if (live) {
     for (const workspaceId of createdWorkspaces.splice(0)) {
@@ -607,6 +616,124 @@ describe('child rows carry their parent workspace', () => {
       )
       .get<{ total: number }>(recommendationId);
     expect(outcomes?.total).toBe(0);
+  });
+});
+
+describe('connected mailbox threading', () => {
+  async function mailbox(provider: 'gmail' | 'microsoft') {
+    const database = await openLiveDatabase();
+    process.env.NANGO_API_KEY = 'test-nango-key';
+    const tenant = await seedTenant(database, `INV-${provider}-${id('mail')}`);
+    const connectionId = id('conn');
+    await database
+      .prepare(
+        'INSERT INTO connections (id,workspace_id,provider,provider_config_key,external_connection_id,display_name,status,is_demo,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        connectionId,
+        tenant.workspaceId,
+        provider,
+        `trevra-${provider}`,
+        `${provider}-external`,
+        `${provider}@example.test`,
+        'connected',
+        0,
+        new Date().toISOString(),
+        new Date().toISOString()
+      );
+    return { database, workspaceId: tenant.workspaceId, connectionId };
+  }
+
+  it('threads Gmail follow-ups with threadId and RFC reply headers', async () => {
+    const { database, workspaceId, connectionId } = await mailbox('gmail');
+    nangoMock.post
+      .mockResolvedValueOnce({ data: { id: 'gmail-first', threadId: 'thread-1' }, headers: {} })
+      .mockResolvedValueOnce({ data: { id: 'gmail-second', threadId: 'thread-1' }, headers: {} });
+    nangoMock.get.mockResolvedValueOnce({ data: { threadId: 'thread-1' }, headers: {} });
+
+    const first = await executeConnectedAction(database, workspaceId, {
+      type: 'email_draft',
+      connection_id: connectionId,
+      recipient: 'lead@example.test',
+      subject: 'Same subject',
+      body: 'First body',
+      structured_payload_json: JSON.stringify({ threaded: true }),
+      payload_hash: 'first-key'
+    });
+    expect(first).toEqual({ provider: 'gmail', externalRef: 'gmail-first' });
+
+    const second = await executeConnectedAction(database, workspaceId, {
+      type: 'email_draft',
+      connection_id: connectionId,
+      recipient: 'lead@example.test',
+      subject: 'Same subject',
+      body: 'Second body',
+      structured_payload_json: JSON.stringify({
+        threaded: true,
+        threadExternalRef: 'gmail-first',
+        threadIdempotencyKey: 'first-key'
+      }),
+      payload_hash: 'second-key'
+    });
+    expect(second).toEqual({ provider: 'gmail', externalRef: 'gmail-second' });
+    expect(nangoMock.get.mock.calls[0]?.[0]).toMatchObject({
+      endpoint: '/gmail/v1/users/me/messages/gmail-first',
+      params: { format: 'minimal' }
+    });
+    const secondSend = nangoMock.post.mock.calls[1]?.[0] as {
+      data?: { raw?: string; threadId?: string };
+    };
+    expect(secondSend.data?.threadId).toBe('thread-1');
+    const mime = Buffer.from(String(secondSend.data?.raw ?? ''), 'base64url').toString('utf8');
+    expect(mime).toContain('In-Reply-To: <first-key@trevra.app>');
+    expect(mime).toContain('References: <first-key@trevra.app>');
+    expect(mime).toContain('Message-ID: <second-key@trevra.app>');
+  });
+
+  it('threads Microsoft follow-ups through Graph reply drafts', async () => {
+    const { database, workspaceId, connectionId } = await mailbox('microsoft');
+    nangoMock.post
+      .mockResolvedValueOnce({ data: { id: 'ms-first' }, headers: {} })
+      .mockResolvedValueOnce({ data: {}, headers: {} })
+      .mockResolvedValueOnce({ data: { id: 'ms-reply' }, headers: {} })
+      .mockResolvedValueOnce({ data: {}, headers: {} });
+
+    const first = await executeConnectedAction(database, workspaceId, {
+      type: 'email_draft',
+      connection_id: connectionId,
+      recipient: 'lead@example.test',
+      subject: 'Same subject',
+      body: 'First body',
+      structured_payload_json: JSON.stringify({ threaded: true }),
+      payload_hash: 'ms-first-key'
+    });
+    expect(first).toEqual({ provider: 'microsoft', externalRef: 'ms-first' });
+    expect(nangoMock.post.mock.calls[0]?.[0]).toMatchObject({ endpoint: '/v1.0/me/messages' });
+    expect(nangoMock.post.mock.calls[1]?.[0]).toMatchObject({
+      endpoint: '/v1.0/me/messages/ms-first/send'
+    });
+
+    const second = await executeConnectedAction(database, workspaceId, {
+      type: 'email_draft',
+      connection_id: connectionId,
+      recipient: 'lead@example.test',
+      subject: 'Same subject',
+      body: 'Second body',
+      structured_payload_json: JSON.stringify({
+        threaded: true,
+        threadExternalRef: 'ms-first',
+        threadIdempotencyKey: 'ms-first-key'
+      }),
+      payload_hash: 'ms-second-key'
+    });
+    expect(second).toEqual({ provider: 'microsoft', externalRef: 'ms-reply' });
+    expect(nangoMock.post.mock.calls[2]?.[0]).toMatchObject({
+      endpoint: '/v1.0/me/messages/ms-first/createReply',
+      data: { message: { body: { contentType: 'Text', content: 'Second body' } } }
+    });
+    expect(nangoMock.post.mock.calls[3]?.[0]).toMatchObject({
+      endpoint: '/v1.0/me/messages/ms-reply/send'
+    });
   });
 });
 

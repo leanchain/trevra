@@ -7,6 +7,8 @@ import { id, type Db } from '../db.js';
 // cycle.
 import { LinkedInApiError } from './errors.js';
 import {
+  canonicalProfileUrl,
+  leadDedupeKey,
   normalizeLeadRow,
   normalizeScrapedLead,
   parseLeadCsv,
@@ -29,7 +31,28 @@ import { OWNER_SEAT_KEY } from './seats.js';
  */
 export const LEAD_CONTACT_READ_LIMIT = 5_000;
 
-export type LeadListSourceKind = 'csv' | 'linkedin_search' | 'sales_navigator' | 'post_keyword';
+export type LeadListSourceKind =
+  | 'csv'
+  | 'profile_urls'
+  | 'linkedin_search'
+  | 'sales_navigator'
+  | 'post_keyword'
+  | 'recruiter'
+  | 'group_members'
+  | 'event_attendees'
+  | 'company_employees'
+  | 'signal';
+
+export type LeadSignalKind = 'profile_viewed' | 'post_engaged' | 'event_attended' | 'job_changed';
+
+export interface LeadSignalIngestResult {
+  signalId: string;
+  contactId: string;
+  listId: string;
+  duplicateSignal: boolean;
+  insertedContact: boolean;
+  reusedContact: boolean;
+}
 
 export interface LinkedInLeadList {
   id: string;
@@ -67,9 +90,15 @@ export interface LinkedInLeadContact {
   lastName: string;
   company: string;
   email: string | null;
+  emailSource: string | null;
+  emailProvenance: string | null;
+  emailConfidence: number | null;
+  emailVerificationStatus: string | null;
   phone: string | null;
   country: string | null;
   profileUrl: string | null;
+  doNotContact: boolean;
+  customFields: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }
@@ -93,9 +122,15 @@ interface ContactRow {
   last_name: string;
   company: string;
   email: string | null;
+  email_source: string | null;
+  email_provenance: string | null;
+  email_confidence: number | null;
+  email_verification_status: string | null;
   phone: string | null;
   country: string | null;
   profile_url: string | null;
+  do_not_contact: boolean;
+  custom_fields_json: unknown;
   created_at: string;
   updated_at: string;
 }
@@ -105,9 +140,9 @@ interface ContactRow {
 // being one contact row, and the column only records the list they first
 // landed in.
 const LIST_SELECT = `l.id,l.workspace_id,l.seat_key,l.name,l.source_kind,l.source_ref,l.created_at,l.updated_at,(SELECT COUNT(*)::int FROM linkedin_lead_list_members m WHERE m.list_id=l.id) AS lead_count`;
-const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,created_at,updated_at`;
+const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,email_source,email_provenance,email_confidence,email_verification_status,phone,country,profile_url,do_not_contact,custom_fields_json,created_at,updated_at`;
 /** The same columns through the membership join, where `list_id` is the list asked for. */
-const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.phone,c.country,c.profile_url,c.created_at,c.updated_at`;
+const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.email_source,c.email_provenance,c.email_confidence,c.email_verification_status,c.phone,c.country,c.profile_url,c.do_not_contact,c.custom_fields_json,c.created_at,c.updated_at`;
 
 function toList(row: ListRow): LinkedInLeadList {
   return {
@@ -122,6 +157,25 @@ function toList(row: ListRow): LinkedInLeadList {
     updatedAt: row.updated_at
   };
 }
+function customFieldsFromDb(value: unknown): Record<string, string> {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return {};
+          }
+        })()
+      : value;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string'
+    )
+  );
+}
+
 function toContact(row: ContactRow): LinkedInLeadContact {
   return {
     id: row.id,
@@ -131,9 +185,15 @@ function toContact(row: ContactRow): LinkedInLeadContact {
     lastName: row.last_name,
     company: row.company,
     email: row.email,
+    emailSource: row.email_source,
+    emailProvenance: row.email_provenance,
+    emailConfidence: row.email_confidence === null ? null : Number(row.email_confidence),
+    emailVerificationStatus: row.email_verification_status,
     phone: row.phone,
     country: row.country,
     profileUrl: row.profile_url,
+    doNotContact: Boolean(row.do_not_contact),
+    customFields: customFieldsFromDb(row.custom_fields_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -339,7 +399,7 @@ async function insertLead(
 ): Promise<LeadInsertOutcome> {
   const row = await db
     .prepare(
-      `INSERT INTO linkedin_lead_contacts (id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,dedupe_key,original_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?) ON CONFLICT DO NOTHING RETURNING id`
+      `INSERT INTO linkedin_lead_contacts (id,workspace_id,list_id,first_name,last_name,company,email,email_source,email_provenance,phone,country,profile_url,dedupe_key,original_json,custom_fields_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?) ON CONFLICT DO NOTHING RETURNING id`
     )
     .get<{ id: string }>(
       id('lilead'),
@@ -349,11 +409,14 @@ async function insertLead(
       lead.lastName,
       lead.company,
       lead.email,
+      lead.email ? 'imported' : null,
+      lead.email ? 'imported' : null,
       lead.phone,
       lead.country,
       lead.profileUrl,
       lead.dedupeKey,
       JSON.stringify(lead.original),
+      JSON.stringify(lead.customFields),
       now,
       now
     );
@@ -379,6 +442,18 @@ async function insertLead(
     '';
   if (!contactId) return { contactId: '', inserted: false, reused: false };
 
+  // A person reused from another list keeps one contact row, but new CSV enrichment is not lost.
+  // New non-empty custom fields win by key; built-in fields stay governed by their dedicated columns.
+  if (!row && Object.keys(lead.customFields).length > 0) {
+    await db
+      .prepare(
+        `UPDATE linkedin_lead_contacts
+         SET custom_fields_json=COALESCE(custom_fields_json,'{}'::jsonb) || ?::jsonb,updated_at=?
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(JSON.stringify(lead.customFields), now, workspaceId, contactId);
+  }
+
   const link = await db
     .prepare(
       'INSERT INTO linkedin_lead_list_members (workspace_id,list_id,contact_id,created_at) VALUES (?,?,?,?) ON CONFLICT DO NOTHING'
@@ -389,6 +464,184 @@ async function insertLead(
   // one of your leads and is now in this list too". A person who was ALREADY
   // in this list adds no membership row and is a plain duplicate.
   return { contactId, inserted: Boolean(row), reused: !row && link.changes > 0 };
+}
+
+export async function ingestLeadSignal(
+  db: Db,
+  input: {
+    workspaceId: string;
+    listId: string;
+    signalKind: LeadSignalKind;
+    idempotencyKey: string;
+    profileUrl: string;
+    firstName: string;
+    lastName?: string | null;
+    company?: string | null;
+    email?: string | null;
+    emailProvenance?: 'first_party' | 'imported' | 'manual' | 'external';
+    phone?: string | null;
+    country?: string | null;
+    sourceRef?: string | null;
+    occurredAt?: string | null;
+    customFields?: Record<string, string>;
+    metadata?: Record<string, unknown>;
+  },
+  now: Date = new Date()
+): Promise<LeadSignalIngestResult> {
+  const key = input.idempotencyKey.trim();
+  if (!key) throw new Error('Signal idempotency key is required.');
+  const list = await db
+    .prepare(`SELECT id,source_kind FROM linkedin_lead_lists WHERE workspace_id=? AND id=?`)
+    .get<{ id: string; source_kind: string }>(input.workspaceId, input.listId);
+  if (!list) throw new Error('Lead list not found.');
+  if (list.source_kind !== 'signal')
+    throw new Error('Inbound signals can only be written to a signal lead list.');
+
+  const normalized = normalizeScrapedLead({
+    profileUrl: input.profileUrl,
+    firstName: input.firstName,
+    lastName: input.lastName ?? '',
+    company: input.company ?? ''
+  });
+  if (!normalized)
+    throw new Error('Signal lead needs a valid LinkedIn profile URL and first name.');
+  normalized.email = input.email?.trim() || null;
+  normalized.phone = input.phone?.trim() || null;
+  normalized.country = input.country?.trim() || null;
+  normalized.customFields = { ...(input.customFields ?? {}) };
+  normalized.original = {
+    ...normalized.original,
+    signalKind: input.signalKind,
+    ...(input.sourceRef?.trim() ? { signalSource: input.sourceRef.trim() } : {})
+  };
+
+  const occurredAt = new Date(input.occurredAt ?? now.toISOString());
+  if (Number.isNaN(occurredAt.getTime()))
+    throw new Error('Signal occurredAt must be an ISO-8601 timestamp.');
+  const timestamp = now.toISOString();
+  let result: LeadSignalIngestResult | null = null;
+  await db.transaction(async (tx) => {
+    const existingSignal = await tx
+      .prepare(
+        `SELECT id,contact_id,list_id FROM linkedin_lead_signals WHERE workspace_id=? AND idempotency_key=?`
+      )
+      .get<{ id: string; contact_id: string; list_id: string }>(input.workspaceId, key);
+    if (existingSignal) {
+      result = {
+        signalId: existingSignal.id,
+        contactId: existingSignal.contact_id,
+        listId: existingSignal.list_id,
+        duplicateSignal: true,
+        insertedContact: false,
+        reusedContact: false
+      };
+      return;
+    }
+
+    const lead = await insertLead(tx, input.workspaceId, input.listId, normalized, timestamp);
+    if (!lead.contactId) throw new Error('Signal lead could not be stored.');
+    if (normalized.email) {
+      const provenance = input.emailProvenance ?? 'external';
+      await tx
+        .prepare(
+          `UPDATE linkedin_lead_contacts SET email_source=?,email_provenance=?,updated_at=? WHERE workspace_id=? AND id=?`
+        )
+        .run(provenance, provenance, timestamp, input.workspaceId, lead.contactId);
+    }
+    const signalId = id('lisig');
+    await tx
+      .prepare(
+        `INSERT INTO linkedin_lead_signals
+         (id,workspace_id,list_id,contact_id,signal_kind,idempotency_key,source_ref,occurred_at,metadata_json,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?::jsonb,?)`
+      )
+      .run(
+        signalId,
+        input.workspaceId,
+        input.listId,
+        lead.contactId,
+        input.signalKind,
+        key,
+        input.sourceRef?.trim() || null,
+        occurredAt.toISOString(),
+        JSON.stringify(input.metadata ?? {}),
+        timestamp
+      );
+    result = {
+      signalId,
+      contactId: lead.contactId,
+      listId: input.listId,
+      duplicateSignal: false,
+      insertedContact: lead.inserted,
+      reusedContact: lead.reused
+    };
+  });
+  if (!result) throw new Error('Signal could not be stored.');
+  return result;
+}
+
+export async function importLeadProfileUrls(
+  db: Db,
+  input: { workspaceId: string; seatKey?: string; listId: string; urls: readonly string[] },
+  now: Date = new Date()
+): Promise<{
+  inserted: number;
+  duplicates: number;
+  reused: number;
+  rejected: Array<{ value: string; reason: string }>;
+}> {
+  const list = await getLeadList(
+    db,
+    input.workspaceId,
+    input.listId,
+    input.seatKey ?? OWNER_SEAT_KEY
+  );
+  if (!list) throw new Error('Lead list not found.');
+  const unique = [...new Set(input.urls.map((value) => value.trim()).filter(Boolean))].slice(
+    0,
+    10_000
+  );
+  let inserted = 0;
+  let duplicates = Math.max(
+    0,
+    input.urls.map((value) => value.trim()).filter(Boolean).length - unique.length
+  );
+  let reused = 0;
+  const rejected: Array<{ value: string; reason: string }> = [];
+  const timestamp = now.toISOString();
+  await db.transaction(async (tx) => {
+    for (const raw of unique) {
+      const profileUrl = canonicalProfileUrl(raw);
+      if (!profileUrl) {
+        rejected.push({ value: raw, reason: 'Not a valid LinkedIn /in/ profile URL.' });
+        continue;
+      }
+      const lead: NormalizedLeadInput = {
+        firstName: '',
+        lastName: '',
+        company: '',
+        email: null,
+        phone: null,
+        country: null,
+        profileUrl,
+        dedupeKey: '',
+        customFields: {},
+        original: { profileUrl, source: 'pasted_profile_url' }
+      };
+      lead.dedupeKey = leadDedupeKey(lead);
+      const outcome = await insertLead(tx, input.workspaceId, input.listId, lead, timestamp);
+      if (!outcome.contactId) {
+        rejected.push({ value: raw, reason: 'Could not store this profile.' });
+        continue;
+      }
+      if (outcome.inserted) inserted += 1;
+      else {
+        duplicates += 1;
+        if (outcome.reused) reused += 1;
+      }
+    }
+  });
+  return { inserted, duplicates, reused, rejected };
 }
 
 export async function importLeadCsv(
@@ -449,7 +702,11 @@ const SOURCE_LIST_KIND: Record<LeadSourceKind, LeadListSourceKind> = {
   search: 'linkedin_search',
   sales_navigator: 'sales_navigator',
   post: 'post_keyword',
-  content: 'post_keyword'
+  content: 'post_keyword',
+  recruiter: 'recruiter',
+  group_members: 'group_members',
+  event_attendees: 'event_attendees',
+  company_employees: 'company_employees'
 };
 
 /**
@@ -571,6 +828,7 @@ export async function updateLeadContact(
     phone?: string | null;
     country?: string | null;
     profileUrl?: string | null;
+    doNotContact?: boolean;
   },
   now: Date = new Date()
 ): Promise<LinkedInLeadContact> {
@@ -625,17 +883,20 @@ export async function updateLeadContact(
     throw new Error(leadClashMessage(normalized, `${clash.first_name} ${clash.last_name}`.trim()));
   const row = await db
     .prepare(
-      `UPDATE linkedin_lead_contacts SET first_name=?,last_name=?,company=?,email=?,phone=?,country=?,profile_url=?,dedupe_key=?,updated_at=? WHERE workspace_id=? AND id=? RETURNING ${CONTACT_SELECT}`
+      `UPDATE linkedin_lead_contacts SET first_name=?,last_name=?,company=?,email=?,email_source=CASE WHEN ?::boolean THEN 'manual' ELSE email_source END,email_provenance=CASE WHEN ?::boolean THEN 'manual' ELSE email_provenance END,phone=?,country=?,profile_url=?,dedupe_key=?,do_not_contact=COALESCE(?,do_not_contact),updated_at=? WHERE workspace_id=? AND id=? RETURNING ${CONTACT_SELECT}`
     )
     .get<ContactRow>(
       normalized.firstName,
       normalized.lastName,
       normalized.company,
       normalized.email,
+      input.email !== undefined,
+      input.email !== undefined,
       normalized.phone,
       normalized.country,
       normalized.profileUrl,
       normalized.dedupeKey,
+      input.doNotContact === undefined ? null : input.doNotContact,
       now.toISOString(),
       input.workspaceId,
       input.contactId

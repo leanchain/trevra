@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   SELECTORS,
   normalisedProfileUrl,
+  parseConnectionDegree,
   profileUrlFor,
   type LinkedInDriverResult,
   type LinkedInFailureKind,
@@ -107,11 +108,20 @@ export const ENGAGE_SELECTORS = {
   followInMoreMenu: 'div[role="button"][aria-label^="Follow"]:not([aria-label^="Following"])',
   /** Already following. The control we must NOT click. */
   followingState: 'button[aria-label^="Following"], button[aria-label^="Unfollow"]',
+  /** Confirmation after choosing to stop following. */
+  unfollowConfirm:
+    'div[role="dialog"] button:has-text("Unfollow"), div[role="dialog"] button[aria-label*="Unfollow" i]',
+  /** Destructive relationship control, available only from the profile More menu. */
+  removeConnectionInMoreMenu:
+    'div[role="menu"] [role="menuitem"]:has-text("Remove connection"), div[role="menu"] button:has-text("Remove connection")',
+  removeConnectionConfirm:
+    'div[role="dialog"] button:has-text("Remove"), div[role="dialog"] button[aria-label*="Remove connection" i]',
 
   /** Every post on the activity feed. Counted only to answer "are there any?". */
   activityPost: ACTIVITY_POST,
   /** LinkedIn's own words for an empty activity feed. */
-  activityEmpty: 'text=/hasn.t posted|has not posted|No posts yet|Nothing to see for now|doesn.t have any activity/i',
+  activityEmpty:
+    'text=/hasn.t posted|has not posted|No posts yet|Nothing to see for now|doesn.t have any activity/i',
   /** The most recent post's Like control, unreacted. */
   firstPostLike: `${ACTIVITY_POST} >> nth=0 >> button[aria-label^="React Like"]`,
   /** The most recent post's Like control, already reacted by this seat. */
@@ -120,9 +130,11 @@ export const ENGAGE_SELECTORS = {
   /** An un-endorsed skill on the profile's skills detail page. */
   endorseButton: 'main button[aria-label^="Endorse"]',
   /** A skill this seat has already endorsed. */
-  endorsedState: 'main button[aria-label^="Remove endorsement"], main button[aria-label^="Endorsed"]',
+  endorsedState:
+    'main button[aria-label^="Remove endorsement"], main button[aria-label^="Endorsed"]',
   /** LinkedIn sometimes asks "how well does X know this skill?" after an endorse. */
-  endorseDialogDismiss: 'div[role="dialog"] button[aria-label="Dismiss"], div[role="dialog"] button[aria-label^="Close"]'
+  endorseDialogDismiss:
+    'div[role="dialog"] button[aria-label="Dismiss"], div[role="dialog"] button[aria-label^="Close"]'
 } as const;
 
 /** Where a checkpoint lands. URL-level, so it is caught before any selector is read. */
@@ -282,7 +294,10 @@ async function openAt(page: LinkedInPage, url: string): Promise<LinkedInDriverRe
   } catch (cause) {
     // Navigation failed, so no action was taken. Definite, and reported as
     // drift rather than `unknown`: nothing was clicked.
-    return fail('selector_drift', `Could not open ${url}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    return fail(
+      'selector_drift',
+      `Could not open ${url}: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
   }
   const wall = await detectWall(page);
   if (!wall) return null;
@@ -324,7 +339,10 @@ function unopenable(target: string, page: string): LinkedInDriverResult {
  * Follow and Following controls share an aria-label prefix and clicking the
  * wrong one UNFOLLOWS somebody.
  */
-export async function followProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult> {
+export async function followProfile(
+  page: LinkedInPage,
+  target: string
+): Promise<LinkedInDriverResult> {
   const url = canonicalProfileFor(target);
   if (!url) return unopenable(target, 'profile');
 
@@ -332,7 +350,10 @@ export async function followProfile(page: LinkedInPage, target: string): Promise
   if (blocked) return blocked;
 
   if (await present(page, ENGAGE_SELECTORS.followingState)) {
-    return fail('already_connected', `This seat already follows ${url}; a second follow is not a thing to send.`);
+    return fail(
+      'already_connected',
+      `This seat already follows ${url}; a second follow is not a thing to send.`
+    );
   }
 
   // Follow is either on the action bar or behind "More". Both are read before
@@ -350,11 +371,17 @@ export async function followProfile(page: LinkedInPage, target: string): Promise
       await hoverClick(page, more.first(), `${url}#more`, CLICK_TIMEOUT_MS);
       await settle(page, `${url}#more-open`);
     } catch (cause) {
-      return fail('selector_drift', `Opening the More menu on ${url} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      return fail(
+        'selector_drift',
+        `Opening the More menu on ${url} failed: ${cause instanceof Error ? cause.message : String(cause)}`
+      );
     }
     follow = page.locator(ENGAGE_SELECTORS.followInMoreMenu);
     if ((await follow.count()) === 0) {
-      return fail('selector_drift', `The More menu on ${url} contains no ${ENGAGE_SELECTORS.followInMoreMenu}. Nothing was clicked.`);
+      return fail(
+        'selector_drift',
+        `The More menu on ${url} contains no ${ENGAGE_SELECTORS.followInMoreMenu}. Nothing was clicked.`
+      );
     }
   }
 
@@ -367,7 +394,10 @@ export async function followProfile(page: LinkedInPage, target: string): Promise
 
     const wall = await detectWall(page);
     if (wall) {
-      return fail(wall, `LinkedIn answered the Follow click on ${url} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}. The follow was refused, not registered.`);
+      return fail(
+        wall,
+        `LinkedIn answered the Follow click on ${url} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}. The follow was refused, not registered.`
+      );
     }
 
     // The button flipping to "Following" is the confirmation. Without it we
@@ -375,9 +405,177 @@ export async function followProfile(page: LinkedInPage, target: string): Promise
     if (await present(page, ENGAGE_SELECTORS.followingState)) {
       return { ok: true, externalRef: url, failureKind: null };
     }
-    return fail('unknown', `The Follow control on ${url} did not flip to a following state after the click; whether the follow registered is unknown.`);
+    return fail(
+      'unknown',
+      `The Follow control on ${url} did not flip to a following state after the click; whether the follow registered is unknown.`
+    );
   } catch (cause) {
-    return fail('unknown', `The follow of ${url} was interrupted after the click: ${cause instanceof Error ? cause.message : String(cause)}. Whether it registered is unknown.`);
+    return fail(
+      'unknown',
+      `The follow of ${url} was interrupted after the click: ${cause instanceof Error ? cause.message : String(cause)}. Whether it registered is unknown.`
+    );
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * unfollow / disconnect cleanup
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Stop following a profile. This is intentionally reversible: `followProfile`
+ * can restore the state, and the worker paces it through the same follow bucket.
+ */
+export async function unfollowProfile(
+  page: LinkedInPage,
+  target: string
+): Promise<LinkedInDriverResult> {
+  const url = canonicalProfileFor(target);
+  if (!url) return unopenable(target, 'profile');
+  const blocked = await openAt(page, url);
+  if (blocked) return blocked;
+
+  const following = page.locator(ENGAGE_SELECTORS.followingState);
+  if ((await following.count()) === 0) {
+    if ((await page.locator(ENGAGE_SELECTORS.followButton).count()) > 0) {
+      return fail('not_found', `This seat is not following ${url}; there is nothing to unfollow.`);
+    }
+    return fail(
+      'selector_drift',
+      `Neither a Following nor Follow state could be read on ${url}. Nothing was clicked.`
+    );
+  }
+
+  try {
+    await hoverClick(page, following.first(), `${url}#unfollow`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#unfollow-open`);
+    const confirm = page.locator(ENGAGE_SELECTORS.unfollowConfirm);
+    if ((await confirm.count()) > 0) {
+      await hoverClick(page, confirm.first(), `${url}#unfollow-confirm`, CLICK_TIMEOUT_MS);
+      await settle(page, `${url}#after-unfollow-confirm`);
+    }
+    const wall = await detectWall(page);
+    if (wall)
+      return fail(
+        wall,
+        `LinkedIn answered the Unfollow action on ${url} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}.`
+      );
+    if (
+      (await page.locator(ENGAGE_SELECTORS.followingState).count()) === 0 &&
+      (await page.locator(ENGAGE_SELECTORS.followButton).count()) > 0
+    ) {
+      return { ok: true, externalRef: url, failureKind: null };
+    }
+    return fail(
+      'unknown',
+      `The follow state on ${url} did not confirm that the unfollow registered; whether it changed is unknown.`
+    );
+  } catch (cause) {
+    return fail(
+      'unknown',
+      `The unfollow of ${url} was interrupted after a click: ${cause instanceof Error ? cause.message : String(cause)}. Whether it registered is unknown.`
+    );
+  }
+}
+
+/**
+ * Remove a 1st-degree connection, with two independent eligibility proofs:
+ * LinkedIn's degree badge must read `1st`, and the destructive More-menu item
+ * must exist. No readable 1st-degree state means no click.
+ */
+export async function disconnectProfile(
+  page: LinkedInPage,
+  target: string
+): Promise<LinkedInDriverResult> {
+  const url = canonicalProfileFor(target);
+  if (!url) return unopenable(target, 'profile');
+  const blocked = await openAt(page, url);
+  if (blocked) return blocked;
+
+  const badge = page.locator(SELECTORS.degreeBadge);
+  if ((await badge.count()) === 0) {
+    return fail(
+      'selector_drift',
+      `The connection-degree badge could not be found on ${url}. Nothing destructive was clicked.`
+    );
+  }
+  const degree = parseConnectionDegree(
+    await badge.first().textContent({ timeout: CLICK_TIMEOUT_MS })
+  );
+  if (degree === null) {
+    return fail(
+      'selector_drift',
+      `The connection-degree badge on ${url} could not be read. Nothing destructive was clicked.`
+    );
+  }
+  if (degree !== 1) {
+    return fail(
+      'not_found',
+      `${url} is ${degree === 2 ? '2nd' : '3rd'}-degree, not a verified 1st-degree connection, so there is no connection Trevra may remove.`
+    );
+  }
+
+  const more = page.locator(SELECTORS.moreActionsButton);
+  if ((await more.count()) === 0) {
+    return fail(
+      'selector_drift',
+      `The More menu could not be found on verified 1st-degree profile ${url}. Nothing destructive was clicked.`
+    );
+  }
+  try {
+    await hoverClick(page, more.first(), `${url}#disconnect-more`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#disconnect-menu`);
+  } catch (cause) {
+    return fail(
+      'selector_drift',
+      `Opening the More menu on ${url} failed before any destructive control was clicked: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+  }
+
+  const remove = page.locator(ENGAGE_SELECTORS.removeConnectionInMoreMenu);
+  if ((await remove.count()) === 0) {
+    return fail(
+      'selector_drift',
+      `The verified 1st-degree profile ${url} has no readable Remove connection control. Nothing destructive was clicked.`
+    );
+  }
+
+  // Everything from here is post-destructive-control: ambiguity is UNKNOWN,
+  // never retried automatically.
+  try {
+    await hoverClick(page, remove.first(), `${url}#disconnect`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#disconnect-confirmation`);
+    const confirm = page.locator(ENGAGE_SELECTORS.removeConnectionConfirm);
+    if ((await confirm.count()) === 0) {
+      return fail(
+        'unknown',
+        `Remove connection was chosen on ${url} but no confirmation control appeared. Whether LinkedIn changed the relationship is unknown.`
+      );
+    }
+    await hoverClick(page, confirm.first(), `${url}#disconnect-confirm`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#after-disconnect`);
+    const wall = await detectWall(page);
+    if (wall)
+      return fail(
+        wall,
+        `LinkedIn answered the disconnect confirmation on ${url} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}.`
+      );
+    const after = page.locator(SELECTORS.degreeBadge);
+    const afterDegree =
+      (await after.count()) > 0
+        ? parseConnectionDegree(await after.first().textContent({ timeout: CLICK_TIMEOUT_MS }))
+        : null;
+    if (afterDegree !== 1) {
+      return { ok: true, externalRef: url, failureKind: null };
+    }
+    return fail(
+      'unknown',
+      `LinkedIn still reports ${url} as 1st-degree after confirmation; whether the removal registered is unknown.`
+    );
+  } catch (cause) {
+    return fail(
+      'unknown',
+      `Removing the connection to ${url} was interrupted after the destructive control was clicked: ${cause instanceof Error ? cause.message : String(cause)}. Whether it registered is unknown.`
+    );
   }
 }
 
@@ -403,7 +601,11 @@ export async function followProfile(page: LinkedInPage, target: string): Promise
  * `getAttribute` on the locator slice, which `driver.ts` does not expose --
  * see the integration note in the module header of `engagement.ts`.
  */
-export async function likeRecentPost(page: LinkedInPage, target: string, opts: EngageOptions = {}): Promise<LinkedInDriverResult> {
+export async function likeRecentPost(
+  page: LinkedInPage,
+  target: string,
+  opts: EngageOptions = {}
+): Promise<LinkedInDriverResult> {
   const profile = canonicalProfileFor(target);
   if (!profile) return unopenable(target, 'activity feed');
   const feed = `${profile}recent-activity/all/`;
@@ -421,12 +623,18 @@ export async function likeRecentPost(page: LinkedInPage, target: string, opts: E
   }
 
   if (await present(page, ENGAGE_SELECTORS.firstPostLiked)) {
-    return fail('already_connected', `This seat has already reacted to the most recent post on ${feed}; a second like is not a thing to send.`);
+    return fail(
+      'already_connected',
+      `This seat has already reacted to the most recent post on ${feed}; a second like is not a thing to send.`
+    );
   }
 
   const like = page.locator(ENGAGE_SELECTORS.firstPostLike);
   if ((await like.count()) === 0) {
-    return fail('selector_drift', `${ENGAGE_SELECTORS.firstPostLike} did not match on ${feed}. Nothing was clicked.`);
+    return fail(
+      'selector_drift',
+      `${ENGAGE_SELECTORS.firstPostLike} did not match on ${feed}. Nothing was clicked.`
+    );
   }
 
   // A person reads a post before reacting to it. Seeded, so this batch's
@@ -440,15 +648,29 @@ export async function likeRecentPost(page: LinkedInPage, target: string, opts: E
 
     const wall = await detectWall(page);
     if (wall) {
-      return fail(wall, `LinkedIn answered the Like click on ${feed} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}. The reaction was refused, not registered.`);
+      return fail(
+        wall,
+        `LinkedIn answered the Like click on ${feed} with a ${wall === 'challenge' ? 'challenge' : 'limit wall'}. The reaction was refused, not registered.`
+      );
     }
 
     if (await present(page, ENGAGE_SELECTORS.firstPostLiked)) {
-      return { ok: true, externalRef: profile, failureKind: null, detail: 'Liked the most recent post on the activity feed.' };
+      return {
+        ok: true,
+        externalRef: profile,
+        failureKind: null,
+        detail: 'Liked the most recent post on the activity feed.'
+      };
     }
-    return fail('unknown', `The Like control on ${feed} did not flip to a reacted state after the click; whether the reaction registered is unknown.`);
+    return fail(
+      'unknown',
+      `The Like control on ${feed} did not flip to a reacted state after the click; whether the reaction registered is unknown.`
+    );
   } catch (cause) {
-    return fail('unknown', `The like on ${feed} was interrupted after the click: ${cause instanceof Error ? cause.message : String(cause)}. Whether it registered is unknown.`);
+    return fail(
+      'unknown',
+      `The like on ${feed} was interrupted after the click: ${cause instanceof Error ? cause.message : String(cause)}. Whether it registered is unknown.`
+    );
   }
 }
 
@@ -482,12 +704,19 @@ export async function likeRecentPost(page: LinkedInPage, target: string, opts: E
  * the ledger row is one action either way, and an operator reading "limit wall
  * after 2 of 3" knows both facts, where "ok" would hide the one that matters.
  */
-export async function endorseSkills(page: LinkedInPage, target: string, opts: EndorseOptions = {}): Promise<LinkedInDriverResult> {
+export async function endorseSkills(
+  page: LinkedInPage,
+  target: string,
+  opts: EndorseOptions = {}
+): Promise<LinkedInDriverResult> {
   const profile = canonicalProfileFor(target);
   if (!profile) return unopenable(target, 'skills page');
   const skillsUrl = `${profile}details/skills/`;
   const sleep = opts.sleep ?? defaultSleep;
-  const limit = Math.min(MAX_ENDORSE_LIMIT, Math.max(1, Math.trunc(opts.limit ?? DEFAULT_ENDORSE_LIMIT)));
+  const limit = Math.min(
+    MAX_ENDORSE_LIMIT,
+    Math.max(1, Math.trunc(opts.limit ?? DEFAULT_ENDORSE_LIMIT))
+  );
 
   const blocked = await openAt(page, skillsUrl);
   if (blocked) return blocked;
@@ -495,7 +724,10 @@ export async function endorseSkills(page: LinkedInPage, target: string, opts: En
   const available = await page.locator(ENGAGE_SELECTORS.endorseButton).count();
   if (available === 0) {
     if (await present(page, ENGAGE_SELECTORS.endorsedState)) {
-      return fail('already_connected', `This seat has already endorsed every skill listed on ${skillsUrl}; there is nothing left to endorse.`);
+      return fail(
+        'already_connected',
+        `This seat has already endorsed every skill listed on ${skillsUrl}; there is nothing left to endorse.`
+      );
     }
     return fail(
       'not_found',

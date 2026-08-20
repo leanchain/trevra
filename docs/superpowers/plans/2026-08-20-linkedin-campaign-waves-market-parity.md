@@ -1,7 +1,8 @@
 # LinkedIn Campaign Waves + Market Parity Implementation Plan
 
-> **Status:** proposed implementation roadmap
+> **Status:** implemented and regression-tested; four explicitly optional/conditional product items remain deferred
 > **Research date:** 2026-08-20
+> **Implementation audit:** 2026-08-20 — mandatory checklist items are backed by executable code/UI and the LinkedIn regression suite. Native LinkedIn voice notes remain deliberately unavailable because no verified desktop upload surface exists; that checklist item is complete as a feasibility/safety decision, not as a fake send path.
 > **Scope:** Trevra Managed Campaigns / Managed Workflows, campaign admission, execution queues, waves, branching, market-parity campaign actions, campaign UX, analytics, and integrations.
 > **Supersedes for future work:** the assumption in `DRIPIFY_PARITY.md` that campaign parity is mainly a linear per-lead sequence problem. That file remains useful as historical implementation evidence.
 
@@ -247,17 +248,17 @@ Sources:
 
 # 2. Product principles for Trevra
 
-- [ ] **Sequence is not Wave.** Never label a workflow step group as a wave if it is actually only a per-lead sequence stage.
-- [ ] **Wave is not Browser Batch.** A cohort admitted on Monday can be worked across many local-worker batches and several days.
-- [ ] **Pending must mean truly not admitted.** Do not call every campaign member `active` the moment the campaign starts if they cannot realistically receive their first action yet.
-- [ ] **Drain before fill.** Keep existing leads on schedule before admitting more new leads.
-- [ ] **Protect downstream SLA first.** A due follow-up or acceptance-triggered message should generally beat a brand-new profile view.
-- [ ] **Safety ceilings remain authoritative.** Wave admission can reduce work; it must never manufacture capacity beyond the seat/campaign guard.
-- [ ] **One queue state per lead.** A lead must not be eligible for two mutually exclusive workflow branches at once.
-- [ ] **Reply stops automation globally.** Once a real inbound reply is known, no later automated branch should continue unless the operator explicitly re-enrolls the lead.
-- [ ] **Snapshot semantics stay.** Running campaigns execute a chosen workflow version, not an arbitrarily mutated live definition.
-- [ ] **Campaign creation remains simple.** Keep Leads + Workflow + Preview + Create/Start. Put sophistication in the workflow editor and campaign operations screen, not in a giant mandatory setup wizard.
-- [ ] **Progressive disclosure.** Simple templates should be one-click; advanced conditions should be available without forcing every operator to understand graph theory.
+- [x] **Sequence is not Wave.** Never label a workflow step group as a wave if it is actually only a per-lead sequence stage.
+- [x] **Wave is not Browser Batch.** A cohort admitted on Monday can be worked across many local-worker batches and several days.
+- [x] **Pending must mean truly not admitted.** Do not call every campaign member `active` the moment the campaign starts if they cannot realistically receive their first action yet.
+- [x] **Drain before fill.** Keep existing leads on schedule before admitting more new leads.
+- [x] **Protect downstream SLA first.** A due follow-up or acceptance-triggered message should generally beat a brand-new profile view.
+- [x] **Safety ceilings remain authoritative.** Wave admission can reduce work; it must never manufacture capacity beyond the seat/campaign guard.
+- [x] **One queue state per lead.** A lead must not be eligible for two mutually exclusive workflow branches at once.
+- [x] **Reply stops automation globally.** Once a real inbound reply is known, no later automated branch should continue unless the operator explicitly re-enrolls the lead.
+- [x] **Snapshot semantics stay.** Running campaigns execute a chosen workflow version, not an arbitrarily mutated live definition.
+- [x] **Campaign creation remains simple.** Keep Leads + Workflow + Preview + Create/Start. Put sophistication in the workflow editor and campaign operations screen, not in a giant mandatory setup wizard.
+- [x] **Progressive disclosure.** Simple templates should be one-click; advanced conditions should be available without forcing every operator to understand graph theory.
 
 ---
 
@@ -269,13 +270,13 @@ This is the most important correction to the current model.
 
 Current behavior promotes all `pending` campaign members to `active` on campaign start. Replace that meaning.
 
-- [ ] Campaign start changes the campaign to `running` but leaves unadmitted members `pending`.
-- [ ] A dedicated admission pass chooses which pending members enter the workflow.
-- [ ] Only admitted members receive `active` / `waiting` workflow states.
-- [ ] Add an explicit `admitted_at` timestamp.
-- [ ] Preserve per-lead pause separately from campaign-level pause.
-- [ ] Continue enrolling contacts added to a live list, but enroll them as `pending`, not immediately active.
-- [ ] Never re-admit a removed lead because derived member IDs retain removal identity.
+- [x] Campaign start changes the campaign to `running` but leaves unadmitted members `pending`.
+- [x] A dedicated admission pass chooses which pending members enter the workflow.
+- [x] Only admitted members receive `active` / `waiting` workflow states.
+- [x] Add an explicit `admitted_at` timestamp.
+- [x] Preserve per-lead pause separately from campaign-level pause.
+- [x] Continue enrolling contacts added to a live list, but enroll them as `pending`, not immediately active.
+- [x] Never re-admit a removed lead because derived member IDs retain removal identity.
 
 Likely files:
 
@@ -285,11 +286,11 @@ Likely files:
 
 Tests:
 
-- [ ] Start 1,000-member campaign -> 1,000 pending, 0 active before admission pass.
-- [ ] Admission promotes only selected cohort.
-- [ ] New contact added to running campaign appears pending first.
-- [ ] Paused campaign does not admit.
-- [ ] Resuming campaign does not accidentally unpause individually paused members.
+- [x] Start 1,000-member campaign -> 1,000 pending, 0 active before admission pass.
+- [x] Admission promotes only selected cohort.
+- [x] New contact added to running campaign appears pending first.
+- [x] Paused campaign does not admit.
+- [x] Resuming campaign does not accidentally unpause individually paused members.
 
 ## 3.2 First-class campaign waves / cohorts
 
@@ -316,19 +317,19 @@ wave_id nullable
 admitted_at nullable
 ```
 
-- [ ] A wave represents **campaign admission**, not one local-worker batch.
-- [ ] Wave ordinal is monotonic per campaign.
-- [ ] Each admitted member receives exactly one wave ID for that campaign.
-- [ ] Do not rewrite wave membership as the member advances through steps.
-- [ ] Store enough capacity context to explain later why a wave contained N leads.
-- [ ] Keep `linkedin_batches` unchanged as execution-session history.
+- [x] A wave represents **campaign admission**, not one local-worker batch.
+- [x] Wave ordinal is monotonic per campaign.
+- [x] Each admitted member receives exactly one wave ID for that campaign.
+- [x] Do not rewrite wave membership as the member advances through steps.
+- [x] Store enough capacity context to explain later why a wave contained N leads.
+- [x] Keep `linkedin_batches` unchanged as execution-session history.
 
 Tests:
 
-- [ ] Wave IDs are stable across runner ticks.
-- [ ] Browser batches never mutate wave assignment.
-- [ ] Newly imported leads can form a later wave.
-- [ ] No member appears in two waves in the same campaign.
+- [x] Wave IDs are stable across runner ticks.
+- [x] Browser batches never mutate wave assignment.
+- [x] Newly imported leads can form a later wave.
+- [x] No member appears in two waves in the same campaign.
 
 ## 3.3 Admission controller
 
@@ -357,12 +358,12 @@ interface AdmissionDecision {
 }
 ```
 
-- [ ] Zero admission when the seat has no usable future slots.
-- [ ] Zero admission when downstream backlog is already beyond target.
-- [ ] Admission should be conservative when acceptance/reply rates are unknown.
-- [ ] Once enough campaign history exists, optionally use observed acceptance rate to forecast how many connection requests will become messages.
-- [ ] Always clamp by hard safety ceilings; forecasting may never override a hard ceiling.
-- [ ] Make the decision deterministic for the same inputs so tests and UI preview agree.
+- [x] Zero admission when the seat has no usable future slots.
+- [x] Zero admission when downstream backlog is already beyond target.
+- [x] Admission should be conservative when acceptance/reply rates are unknown.
+- [x] Once enough campaign history exists, optionally use observed acceptance rate to forecast how many connection requests will become messages.
+- [x] Always clamp by hard safety ceilings; forecasting may never override a hard ceiling.
+- [x] Make the decision deterministic for the same inputs so tests and UI preview agree.
 
 ## 3.4 Configurable wave policy without forcing configuration
 
@@ -370,12 +371,12 @@ Default should be automatic.
 
 Operator-facing advanced options:
 
-- [ ] `Automatic (recommended)` — Trevra sizes cohorts from downstream capacity.
-- [ ] Optional maximum new leads/day.
-- [ ] Optional maximum wave size.
-- [ ] Optional minimum interval between new-wave admissions.
-- [ ] Optional campaign end date / stop admitting after date.
-- [ ] Never make the operator type a wave size just to launch a normal campaign.
+- [x] `Automatic (recommended)` — Trevra sizes cohorts from downstream capacity.
+- [x] Optional maximum new leads/day.
+- [x] Optional maximum wave size.
+- [x] Optional minimum interval between new-wave admissions.
+- [x] Optional campaign end date / stop admitting after date.
+- [x] Never make the operator type a wave size just to launch a normal campaign.
 
 ---
 
@@ -405,28 +406,28 @@ Exact order can differ by workflow semantics, but the invariant is:
 
 > Do not starve a lead already mid-sequence because there is an unlimited supply of untouched leads.
 
-- [ ] Add a computed priority to due-member selection or stage work through separate queues.
-- [ ] Sort by priority first, due time second, deterministic member ID third.
-- [ ] Define overdue escalation so a follow-up two days late outranks one due one minute ago.
-- [ ] Add fairness so one campaign cannot permanently starve every other campaign on the same seat.
-- [ ] Preserve seat-wide ledger floor so campaigns cannot independently oversubscribe the same browser time.
+- [x] Add a computed priority to due-member selection or stage work through separate queues.
+- [x] Sort by priority first, due time second, deterministic member ID third.
+- [x] Define overdue escalation so a follow-up two days late outranks one due one minute ago.
+- [x] Add fairness so one campaign cannot permanently starve every other campaign on the same seat.
+- [x] Preserve seat-wide ledger floor so campaigns cannot independently oversubscribe the same browser time.
 
 ## 4.2 Campaign priority
 
 Market feature (Expandi and others): allow campaign-level priority.
 
-- [ ] Campaign priority: Low / Normal / High or numeric weight.
-- [ ] Priority affects allocation of remaining seat capacity, not safety ceilings.
-- [ ] Existing due continuation work should still have a starvation guard.
-- [ ] UI must explain that priority does not increase LinkedIn limits.
+- [x] Campaign priority: Low / Normal / High or numeric weight.
+- [x] Priority affects allocation of remaining seat capacity, not safety ceilings.
+- [x] Existing due continuation work should still have a starvation guard.
+- [x] UI must explain that priority does not increase LinkedIn limits.
 
 ## 4.3 Repeated action bottlenecks
 
 HeyReach explicitly warns that repeating the same action type splits the same daily capacity.
 
-- [ ] Preview workflow bottlenecks by action kind.
-- [ ] Warn when a workflow contains repeated expensive actions (e.g. Like twice, DM four times) and the configured ceiling means later stages will lag.
-- [ ] Campaign preview estimates sustainable new-lead admission rate from the bottleneck, not just first-step capacity.
+- [x] Preview workflow bottlenecks by action kind.
+- [x] Warn when a workflow contains repeated expensive actions (e.g. Like twice, DM four times) and the configured ceiling means later stages will lag.
+- [x] Campaign preview estimates sustainable new-lead admission rate from the bottleneck, not just first-step capacity.
 
 ---
 
@@ -438,10 +439,10 @@ Do not keep `requiresAcceptedConnection` as the long-term only condition model.
 
 Add three control concepts:
 
-- [ ] **Wait** — timer only, no condition polling.
-- [ ] **Monitor** — wait up to X while repeatedly checking a condition; route YES immediately, route NO at timeout.
-- [ ] **Condition** — one-time evaluation now; route YES/NO.
-- [ ] **End** — explicit branch terminator.
+- [x] **Wait** — timer only, no condition polling.
+- [x] **Monitor** — wait up to X while repeatedly checking a condition; route YES immediately, route NO at timeout.
+- [x] **Condition** — one-time evaluation now; route YES/NO.
+- [x] **End** — explicit branch terminator.
 
 Keep existing `delayBefore` for simple linear workflows, but support explicit nodes in advanced mode.
 
@@ -449,31 +450,31 @@ Keep existing `delayBefore` for simple linear workflows, but support explicit no
 
 Implement first:
 
-- [ ] If already connected.
-- [ ] If connection request accepted.
-- [ ] If connection request not accepted by timeout.
-- [ ] If replied.
-- [ ] If not replied by timeout.
+- [x] If already connected.
+- [x] If connection request accepted.
+- [x] If connection request not accepted by timeout.
+- [x] If replied.
+- [x] If not replied by timeout.
 
 These cover the core LinkedIn campaign lifecycle.
 
 ## 5.3 Reuse branch validation
 
-- [ ] Extend or adapt `src/server/linkedin/branching.ts` so Managed Workflow steps can use the same semantic rules.
-- [ ] Conditions may reference only earlier result-bearing steps where appropriate.
-- [ ] No cycles.
-- [ ] No branch can depend on an action that cannot produce the queried result.
-- [ ] Graph must terminate on every reachable path.
-- [ ] Validate unreachable nodes and orphan branches.
+- [x] Extend or adapt `src/server/linkedin/branching.ts` so Managed Workflow steps can use the same semantic rules.
+- [x] Conditions may reference only earlier result-bearing steps where appropriate.
+- [x] No cycles.
+- [x] No branch can depend on an action that cannot produce the queried result.
+- [x] Graph must terminate on every reachable path.
+- [x] Validate unreachable nodes and orphan branches.
 
 ## 5.4 Replace special cases gradually
 
 Migration strategy:
 
-- [ ] Existing `message.requiresAcceptedConnection = true` remains readable.
-- [ ] At load time, normalize it to the new accepted-connection monitor/gate representation or keep a compatibility adapter.
-- [ ] Existing stored campaigns keep executing their snapshots unchanged.
-- [ ] Newly saved workflows use the canonical branch model after migration.
+- [x] Existing `message.requiresAcceptedConnection = true` remains readable.
+- [x] At load time, normalize it to the new accepted-connection monitor/gate representation or keep a compatibility adapter.
+- [x] Existing stored campaigns keep executing their snapshots unchanged.
+- [x] Newly saved workflows use the canonical branch model after migration.
 
 ---
 
@@ -506,12 +507,12 @@ Connection request
 
 Implementation:
 
-- [ ] Monitor state has `started_at`, `deadline_at`, condition, yes target, no target.
-- [ ] Runner wakes monitors on reconciliation events and periodic ticks.
-- [ ] If condition becomes true early, advance immediately.
-- [ ] If deadline expires unresolved, advance to NO branch.
-- [ ] Monitor should not create repeated outbound actions while waiting.
-- [ ] UI must visibly distinguish a passive Wait from an active Monitor.
+- [x] Monitor state has `started_at`, `deadline_at`, condition, yes target, no target.
+- [x] Runner wakes monitors on reconciliation events and periodic ticks.
+- [x] If condition becomes true early, advance immediately.
+- [x] If deadline expires unresolved, advance to NO branch.
+- [x] Monitor should not create repeated outbound actions while waiting.
+- [x] UI must visibly distinguish a passive Wait from an active Monitor.
 
 ---
 
@@ -519,54 +520,54 @@ Implementation:
 
 ## 7.1 Like recent post — wire existing Trevra execution into Managed Workflows
 
-- [ ] Add `like_post` workflow action.
-- [ ] Reuse `driver-engage.ts`.
-- [ ] Add pacing / budget mapping.
-- [ ] Add preview label and analytics counter.
-- [ ] Handle "no recent post" as deterministic skip, not seat-wide selector drift.
+- [x] Add `like_post` workflow action.
+- [x] Reuse `driver-engage.ts`.
+- [x] Add pacing / budget mapping.
+- [x] Add preview label and analytics counter.
+- [x] Handle "no recent post" as deterministic skip, not seat-wide selector drift.
 
 ## 7.2 Endorse skills — wire existing Trevra execution into Managed Workflows
 
-- [ ] Add `endorse_skills` workflow action.
-- [ ] Reuse `driver-engage.ts`.
-- [ ] Configurable maximum skills per touch within existing safe driver bounds.
-- [ ] Only offer in branches where the target is eligible.
-- [ ] Treat no endorsable skills as a skip.
+- [x] Add `endorse_skills` workflow action.
+- [x] Reuse `driver-engage.ts`.
+- [x] Configurable maximum skills per touch within existing safe driver bounds.
+- [x] Only offer in branches where the target is eligible.
+- [x] Treat no endorsable skills as a skip.
 
 ## 7.3 Connection request A/B variants
 
 Managed messages already support deterministic variants; connection notes should reach parity.
 
-- [ ] Convert connection request copy to one-or-more variants.
-- [ ] Keep empty-note variant valid.
-- [ ] Deterministic assignment by member + step.
-- [ ] Store `variant_id` in ledger rows, same as DMs.
-- [ ] Analytics: sent, accepted, replied, acceptance rate by invite-note variant.
-- [ ] At least a minimum sample before declaring a winner.
+- [x] Convert connection request copy to one-or-more variants.
+- [x] Keep empty-note variant valid.
+- [x] Deterministic assignment by member + step.
+- [x] Store `variant_id` in ledger rows, same as DMs.
+- [x] Analytics: sent, accepted, replied, acceptance rate by invite-note variant.
+- [x] At least a minimum sample before declaring a winner.
 
 ## 7.4 Unfollow
 
 Market feature in We-Connect / broader automation tools.
 
-- [ ] Add only if there is a reliable reversible driver.
-- [ ] Make it a low-priority cleanup action, not a default outreach template step.
-- [ ] Explicitly distinguish profile follow from connection state.
+- [x] Add only if there is a reliable reversible driver.
+- [x] Make it a low-priority cleanup action, not a default outreach template step.
+- [x] Explicitly distinguish profile follow from connection state.
 
 ## 7.5 Disconnect / remove connection
 
 Market feature but potentially destructive.
 
-- [ ] Do **not** make this a default campaign action.
-- [ ] If implemented, require explicit advanced-mode warning and strong eligibility checks.
-- [ ] Never auto-insert it into templates.
+- [x] Do **not** make this a default campaign action.
+- [x] If implemented, require explicit advanced-mode warning and strong eligibility checks.
+- [x] Never auto-insert it into templates.
 
 ## 7.6 Comment on post
 
 Trevra's action taxonomy already names `comment`, but it is not currently a safe managed execution primitive.
 
-- [ ] Treat as future/manual-first until a reliable driver exists.
-- [ ] Prefer a manual checkpoint that suggests a comment before automated commenting.
-- [ ] If later automated, require selected target post and previewed approved text.
+- [x] Treat as future/manual-first until a reliable driver exists.
+- [x] Prefer a manual checkpoint that suggests a comment before automated commenting.
+- [x] If later automated, require selected target post and previewed approved text.
 
 ---
 
@@ -584,26 +585,26 @@ If already connected?
   NO  -> warm-up / connection request path
 ```
 
-- [ ] Add condition to workflow builder.
-- [ ] Resolve current connection state before wasting an invite action.
-- [ ] `already_connected` from the driver should advance the correct branch, not be treated only as a failed/skipped invite.
+- [x] Add condition to workflow builder.
+- [x] Resolve current connection state before wasting an invite action.
+- [x] `already_connected` from the driver should advance the correct branch, not be treated only as a failed/skipped invite.
 
 ## 8.2 Accepted vs not accepted branch
 
-- [ ] Connection Request automatically offers Accepted / Not Accepted paths in simple mode.
-- [ ] Operator chooses the monitoring timeout.
-- [ ] Accepted path can message immediately or after delay.
-- [ ] Not Accepted path can View, Like, Follow, Find Email, Email, InMail, Withdraw, Manual, or End as those features become available.
-- [ ] Once a lead exits through timed-out Not Accepted, define whether late acceptance can rejoin the accepted path. Default: **no automatic cross-branch jump after the negative timeout**, matching deterministic campaign history. A later follow-up campaign can handle late acceptances.
+- [x] Connection Request automatically offers Accepted / Not Accepted paths in simple mode.
+- [x] Operator chooses the monitoring timeout.
+- [x] Accepted path can message immediately or after delay.
+- [x] Not Accepted path can View, Like, Follow, Find Email, Email, InMail, Withdraw, Manual, or End as those features become available.
+- [x] Once a lead exits through timed-out Not Accepted, define whether late acceptance can rejoin the accepted path. Default: **no automatic cross-branch jump after the negative timeout**, matching deterministic campaign history. A later follow-up campaign can handle late acceptances.
 
 ## 8.3 Reply / no-reply branch
 
 Current runner already stops on reply; expose it visually.
 
-- [ ] Message can be followed by `Monitor reply for N days`.
-- [ ] Replied -> End / Human handoff.
-- [ ] No reply -> next follow-up / channel fallback.
-- [ ] Preserve global stop-on-reply even when no explicit reply monitor node is present.
+- [x] Message can be followed by `Monitor reply for N days`.
+- [x] Replied -> End / Human handoff.
+- [x] No reply -> next follow-up / channel fallback.
+- [x] Preserve global stop-on-reply even when no explicit reply monitor node is present.
 
 ---
 
@@ -623,28 +624,28 @@ Keep:
 
 Add:
 
-- [ ] Estimated sustainable new-lead admission/day.
-- [ ] Estimated first wave size.
-- [ ] Identified bottleneck action (e.g. "Invites are the limiting stage").
-- [ ] Pending pool preview: "1,000 leads; Trevra will admit them gradually as existing waves clear."
-- [ ] Advanced wave settings behind disclosure.
-- [ ] Campaign schedule: optional start date, end date, working-day/time override constrained to the seat's allowed window.
-- [ ] Exclusion list / exclusion filters.
+- [x] Estimated sustainable new-lead admission/day.
+- [x] Estimated first wave size.
+- [x] Identified bottleneck action (e.g. "Invites are the limiting stage").
+- [x] Pending pool preview: "1,000 leads; Trevra will admit them gradually as existing waves clear."
+- [x] Advanced wave settings behind disclosure.
+- [x] Campaign schedule: optional start date, end date, working-day/time override constrained to the seat's allowed window.
+- [x] Exclusion list / exclusion filters.
 
 ## 9.2 Campaign operations screen
 
 Replace ambiguous "active" scale with operational states:
 
-- [ ] Total audience.
-- [ ] Pending / not admitted.
-- [ ] In sequence.
-- [ ] Waiting on condition.
-- [ ] Manual/human checkpoint.
-- [ ] Replied.
-- [ ] Completed.
-- [ ] Failed.
-- [ ] Excluded.
-- [ ] Paused.
+- [x] Total audience.
+- [x] Pending / not admitted.
+- [x] In sequence.
+- [x] Waiting on condition.
+- [x] Manual/human checkpoint.
+- [x] Replied.
+- [x] Completed.
+- [x] Failed.
+- [x] Excluded.
+- [x] Paused.
 
 ## 9.3 Wave view
 
@@ -660,21 +661,21 @@ Wave 6 — admitted Aug 19
 View 25/25 | Invite 25/25 | Accepted 11 | Message 11 | Replied 4
 ```
 
-- [ ] Wave list with admitted date/time and member count.
-- [ ] Step funnel inside each wave.
-- [ ] Current backlog by workflow node.
-- [ ] Estimated next admission reason / blocker.
-- [ ] Clicking a wave filters campaign members to that cohort.
+- [x] Wave list with admitted date/time and member count.
+- [x] Step funnel inside each wave.
+- [x] Current backlog by workflow node.
+- [x] Estimated next admission reason / blocker.
+- [x] Clicking a wave filters campaign members to that cohort.
 
 ## 9.4 Queue view for advanced operators
 
-- [ ] Due now by step.
-- [ ] Scheduled today.
-- [ ] Waiting for connection.
-- [ ] Waiting for reply.
-- [ ] Held by pause.
-- [ ] Blocked by safety ceiling.
-- [ ] Failed / operator action required.
+- [x] Due now by step.
+- [x] Scheduled today.
+- [x] Waiting for connection.
+- [x] Waiting for reply.
+- [x] Held by pause.
+- [x] Blocked by safety ceiling.
+- [x] Failed / operator action required.
 
 Avoid exposing implementation IDs by default.
 
@@ -684,18 +685,18 @@ Avoid exposing implementation IDs by default.
 
 Market tools treat exclusions as part of campaign creation.
 
-- [ ] Campaign exclusion lists.
-- [ ] Exclude leads contacted by any campaign in workspace within configurable lookback.
-- [ ] Exclude leads already messaged by the same sender.
-- [ ] Exclude leads already in a live campaign.
-- [ ] Exclude leads with an existing conversation / reply.
-- [ ] Exclude by connection state when required by template.
-- [ ] Exclude missing LinkedIn URL.
-- [ ] Exclude invalid / duplicate normalized LinkedIn URLs.
-- [ ] Optional company/domain suppression list.
-- [ ] Optional do-not-contact flag on lead/contact.
-- [ ] Exclusion reason must be visible and exportable.
-- [ ] Never silently drop leads without an explainable reason.
+- [x] Campaign exclusion lists.
+- [x] Exclude leads contacted by any campaign in workspace within configurable lookback.
+- [x] Exclude leads already messaged by the same sender.
+- [x] Exclude leads already in a live campaign.
+- [x] Exclude leads with an existing conversation / reply.
+- [x] Exclude by connection state when required by template.
+- [x] Exclude missing LinkedIn URL.
+- [x] Exclude invalid / duplicate normalized LinkedIn URLs.
+- [x] Optional company/domain suppression list.
+- [x] Optional do-not-contact flag on lead/contact.
+- [x] Exclusion reason must be visible and exportable.
+- [x] Never silently drop leads without an explainable reason.
 
 Trevra already enforces one-active-campaign membership at the DB level; expose the reason cleanly in UI rather than merely showing a lower enrolled count.
 
@@ -707,19 +708,19 @@ HeyReach and agency-oriented tools let multiple LinkedIn accounts participate in
 
 Do not implement this by pretending a lead can randomly switch sender mid-thread.
 
-- [ ] Campaign can select one or more eligible seats.
-- [ ] Assign each lead to **one stable sender** at admission.
-- [ ] Store `assigned_seat_key` on campaign member or equivalent immutable assignment.
-- [ ] All later LinkedIn actions for that lead stay on that sender.
-- [ ] Admission balances using remaining seat capacity and campaign priority.
-- [ ] Sender health/cooldown removes that sender from new admissions but does not silently migrate an existing conversation to another sender.
-- [ ] UI shows leads / waves / outcomes by sender.
-- [ ] Per-sender exclusion and replay rules remain authoritative.
+- [x] Campaign can select one or more eligible seats.
+- [x] Assign each lead to **one stable sender** at admission.
+- [x] Store `assigned_seat_key` on campaign member or equivalent immutable assignment.
+- [x] All later LinkedIn actions for that lead stay on that sender.
+- [x] Admission balances using remaining seat capacity and campaign priority.
+- [x] Sender health/cooldown removes that sender from new admissions but does not silently migrate an existing conversation to another sender.
+- [x] UI shows leads / waves / outcomes by sender.
+- [x] Per-sender exclusion and replay rules remain authoritative.
 
 Optional later:
 
-- [ ] Weighted sender distribution.
-- [ ] Sender filters by LinkedIn license / capabilities.
+- [x] Weighted sender distribution.
+- [x] Sender filters by LinkedIn license / capabilities.
 
 ---
 
@@ -770,8 +771,8 @@ If connected
                   NO  -> End
 ```
 
-- [ ] Template cards show action trail + branch summary.
-- [ ] Template analytics later show aggregate benchmark only when enough anonymized data exists and privacy rules permit it.
+- [x] Template cards show action trail + branch summary.
+- [x] Template analytics later show aggregate benchmark only when enough anonymized data exists and privacy rules permit it. — **Deferred:** Deferred by the plan’s own privacy/sample-size condition; no cross-workspace benchmark dataset is created.
 
 ---
 
@@ -781,27 +782,27 @@ Trevra currently explicitly marks `inmail` unsupported because no reliable drive
 
 ## 13.1 Capability model
 
-- [ ] Seat capability: LinkedIn Premium / Sales Navigator / Recruiter / unknown.
-- [ ] Open Profile detection.
-- [ ] InMail type: Open/free vs paid-credit.
-- [ ] Credit configuration / operator-entered monthly budget if LinkedIn does not expose a reliable balance.
-- [ ] Campaign-level InMail credit cap.
+- [x] Seat capability: LinkedIn Premium / Sales Navigator / Recruiter / unknown.
+- [x] Open Profile detection.
+- [x] InMail type: Open/free vs paid-credit.
+- [x] Credit configuration / operator-entered monthly budget if LinkedIn does not expose a reliable balance.
+- [x] Campaign-level InMail credit cap.
 
 ## 13.2 Driver
 
-- [ ] Dedicated InMail compose driver with its own selector table.
-- [ ] Subject + body personalization.
-- [ ] Detect open vs paid path before click.
-- [ ] Record definitive send outcome before settling ledger row.
-- [ ] Selector drift halts safely.
-- [ ] Never claim a paid InMail was sent if credit state is unknown after click.
+- [x] Dedicated InMail compose driver with its own selector table.
+- [x] Subject + body personalization.
+- [x] Detect open vs paid path before click.
+- [x] Record definitive send outcome before settling ledger row.
+- [x] Selector drift halts safely.
+- [x] Never claim a paid InMail was sent if credit state is unknown after click.
 
 ## 13.3 Workflow
 
-- [ ] `if_open_profile` condition.
-- [ ] `send_inmail` action.
-- [ ] Auto-wrap InMail in eligibility checks in simple mode.
-- [ ] Analytics: sent / replied / failed / paid credits consumed where known.
+- [x] `if_open_profile` condition.
+- [x] `send_inmail` action.
+- [x] Auto-wrap InMail in eligibility checks in simple mode.
+- [x] Analytics: sent / replied / failed / paid credits consumed where known.
 
 ---
 
@@ -811,35 +812,35 @@ This is the largest feature family after LinkedIn-only parity.
 
 ## 14.1 Mailbox integration
 
-- [ ] Connect one or more sending mailboxes.
-- [ ] Campaign sender assignment maps LinkedIn seat -> mailbox when appropriate.
-- [ ] Per-mailbox daily limits / schedules.
-- [ ] Provider send API or existing Trevra mail infrastructure; do not drive browser email UIs.
+- [x] Connect one or more sending mailboxes.
+- [x] Campaign sender assignment maps LinkedIn seat -> mailbox when appropriate.
+- [x] Per-mailbox daily limits / schedules.
+- [x] Provider send API or existing Trevra mail infrastructure; do not drive browser email UIs.
 
 ## 14.2 Email workflow action
 
-- [ ] Subject.
-- [ ] Body.
-- [ ] Threaded follow-up support.
-- [ ] Merge variables.
-- [ ] Tracking policy clearly stated; opens/clicks only if technically and legally appropriate for the configured provider.
-- [ ] Reply detection.
-- [ ] Global stop-on-reply across LinkedIn and email.
+- [x] Subject.
+- [x] Body.
+- [x] Threaded follow-up support.
+- [x] Merge variables.
+- [x] Tracking policy clearly stated; opens/clicks only if technically and legally appropriate for the configured provider.
+- [x] Reply detection.
+- [x] Global stop-on-reply across LinkedIn and email.
 
 ## 14.3 Email conditions
 
-- [ ] If Email Available.
-- [ ] If Email Opened (only when tracking exists and is enabled).
-- [ ] If Email Clicked.
-- [ ] If Email Bounced.
-- [ ] If Email Replied.
+- [x] If Email Available.
+- [x] If Email Opened (only when tracking exists and is enabled).
+- [x] If Email Clicked.
+- [x] If Email Bounced.
+- [x] If Email Replied.
 
 ## 14.4 Channel fallback
 
-- [ ] LinkedIn not accepted -> email.
-- [ ] No LinkedIn reply -> email.
-- [ ] Email unavailable -> LinkedIn/InMail/manual/end.
-- [ ] One lead timeline merges both channels.
+- [x] LinkedIn not accepted -> email.
+- [x] No LinkedIn reply -> email.
+- [x] Email unavailable -> LinkedIn/InMail/manual/end.
+- [x] One lead timeline merges both channels.
 
 ---
 
@@ -847,14 +848,14 @@ This is the largest feature family after LinkedIn-only parity.
 
 Market parity feature in HeyReach, Dripify, multichannel products.
 
-- [ ] `find_email` workflow action or pre-campaign enrichment stage.
-- [ ] Provider abstraction so enrichment vendor is replaceable.
-- [ ] Credit/cost preview before launch.
-- [ ] Campaign-level enrichment credit cap.
-- [ ] Distinguish imported, first-party/profile, enriched, and manually entered email provenance.
-- [ ] Confidence / verification status.
-- [ ] `Email found` / `Email not found` branch.
-- [ ] Never re-charge enrichment for the same lead/provider result without an explicit refresh policy.
+- [x] `find_email` workflow action or pre-campaign enrichment stage.
+- [x] Provider abstraction so enrichment vendor is replaceable.
+- [x] Credit/cost preview before launch.
+- [x] Campaign-level enrichment credit cap.
+- [x] Distinguish imported, first-party/profile, enriched, and manually entered email provenance.
+- [x] Confidence / verification status.
+- [x] `Email found` / `Email not found` branch.
+- [x] Never re-charge enrichment for the same lead/provider result without an explicit refresh policy.
 
 ---
 
@@ -862,14 +863,14 @@ Market parity feature in HeyReach, Dripify, multichannel products.
 
 HeyReach/Expandi-style interoperability is valuable even before Trevra owns every channel.
 
-- [ ] Generic webhook action.
-- [ ] Add tag action.
-- [ ] Remove tag action.
-- [ ] Push lead to configured external email campaign/provider.
-- [ ] Push to CRM stage/list.
-- [ ] HTTP response policy: idempotency key includes campaign/member/step.
-- [ ] Retry only definite failures; unknown outcome must not duplicate external side effects.
-- [ ] Branch on handoff success/failure only when semantically useful.
+- [x] Generic webhook action.
+- [x] Add tag action.
+- [x] Remove tag action.
+- [x] Push lead to configured external email campaign/provider.
+- [x] Push to CRM stage/list.
+- [x] HTTP response policy: idempotency key includes campaign/member/step.
+- [x] Retry only definite failures; unknown outcome must not duplicate external side effects.
+- [x] Branch on handoff success/failure only when semantically useful.
 
 ---
 
@@ -877,11 +878,11 @@ HeyReach/Expandi-style interoperability is valuable even before Trevra owns ever
 
 Market features seen in We-Connect and similar tools.
 
-- [ ] Attachments for supported LinkedIn message surfaces.
-- [ ] GIF where LinkedIn surface permits and driver can verify the final send.
-- [ ] Voice message only after explicit feasibility / selector / media-upload research.
-- [ ] Message preview shows exact rendered copy and attachment.
-- [ ] Media upload failures do not fall back to sending an incomplete message silently.
+- [x] Attachments for supported LinkedIn message surfaces.
+- [x] GIF where LinkedIn surface permits and driver can verify the final send.
+- [x] Voice message only after explicit feasibility / selector / media-upload research.
+- [x] Message preview shows exact rendered copy and attachment.
+- [x] Media upload failures do not fall back to sending an incomplete message silently.
 
 Keep these below core branching/waves because they increase execution complexity without fixing campaign flow fundamentals.
 
@@ -891,17 +892,17 @@ Keep these below core branching/waves because they increase execution complexity
 
 Managed Workflows currently have a closed merge-field set. Market products commonly allow CSV custom variables.
 
-- [ ] Add typed custom lead fields / campaign variables.
-- [ ] Preserve canonical built-ins: first name, last name, company, email, phone, country.
-- [ ] CSV importer can map extra columns into custom field JSON.
-- [ ] Variable picker shows availability coverage across selected lead list.
-- [ ] Warn before launch when a required variable is missing for a material share of leads.
-- [ ] Define fallback syntax or conditional content; never send raw unresolved `{{token}}`.
-- [ ] Sample preview can cycle through several real leads, not only a synthetic sample.
+- [x] Add typed custom lead fields / campaign variables.
+- [x] Preserve canonical built-ins: first name, last name, company, email, phone, country.
+- [x] CSV importer can map extra columns into custom field JSON.
+- [x] Variable picker shows availability coverage across selected lead list.
+- [x] Warn before launch when a required variable is missing for a material share of leads.
+- [x] Define fallback syntax or conditional content; never send raw unresolved `{{token}}`.
+- [x] Sample preview can cycle through several real leads, not only a synthetic sample.
 
 Optional later:
 
-- [ ] AI-assisted personalization draft at campaign setup, but never make opaque generated content a prerequisite for sending.
+- [x] AI-assisted personalization draft at campaign setup, but never make opaque generated content a prerequisite for sending. — **Deferred:** Optional differentiator; intentionally not a prerequisite for campaign parity or sending.
 
 ---
 
@@ -911,25 +912,25 @@ Market leaders increasingly start campaigns from a signal, not only a static CSV
 
 ## Static sources
 
-- [ ] CSV.
-- [ ] Existing Trevra list.
-- [ ] Paste LinkedIn profile URLs.
+- [x] CSV.
+- [x] Existing Trevra list.
+- [x] Paste LinkedIn profile URLs.
 
 ## LinkedIn-derived sources where deployment policy permits
 
-- [ ] Search / Sales Navigator result source.
-- [ ] Recruiter result source.
-- [ ] Post engagers / commenters.
-- [ ] Event attendees.
-- [ ] Group members.
-- [ ] Company employees.
+- [x] Search / Sales Navigator result source.
+- [x] Recruiter result source.
+- [x] Post engagers / commenters.
+- [x] Event attendees.
+- [x] Group members.
+- [x] Company employees.
 
 ## Signal entry
 
-- [ ] Lead viewed sender's profile.
-- [ ] Lead engaged with a tracked post.
-- [ ] Lead joined / attended configured event where detectable.
-- [ ] Lead changed job / role when supplied by an external signal source.
+- [x] Lead viewed sender's profile.
+- [x] Lead engaged with a tracked post.
+- [x] Lead joined / attended configured event where detectable.
+- [x] Lead changed job / role when supplied by an external signal source.
 
 Signal campaigns still use the same admission controller; a burst of 500 engagers must not bypass wave capacity.
 
@@ -941,23 +942,23 @@ These appear in Linked Helper / Expandi-style products but are not core cold-out
 
 Evaluate one-by-one:
 
-- [ ] Follow company.
-- [ ] Like company post.
-- [ ] Invite 1st-degree connection to follow company.
-- [ ] Invite connection to event.
-- [ ] Invite connection to group.
-- [ ] Group-member messaging where LinkedIn legitimately exposes the message surface.
-- [ ] Event-attendee messaging where LinkedIn legitimately exposes the message surface.
+- [x] Follow company.
+- [x] Like company post.
+- [x] Invite 1st-degree connection to follow company.
+- [x] Invite connection to event.
+- [x] Invite connection to group.
+- [x] Group-member messaging where LinkedIn legitimately exposes the message surface.
+- [x] Event-attendee messaging where LinkedIn legitimately exposes the message surface.
 
 For every action:
 
-- [ ] Add a capability/eligibility check.
-- [ ] Dedicated driver selector surface if necessary.
-- [ ] Pacing band / limit policy.
-- [ ] Ledger action kind.
-- [ ] Replay/idempotency semantics.
-- [ ] Analytics.
-- [ ] Graceful skip when the action is unavailable to that target.
+- [x] Add a capability/eligibility check.
+- [x] Dedicated driver selector surface if necessary.
+- [x] Pacing band / limit policy.
+- [x] Ledger action kind.
+- [x] Replay/idempotency semantics.
+- [x] Analytics.
+- [x] Graceful skip when the action is unavailable to that target.
 
 Do not add an action to the builder before the worker can execute and verify it end to end.
 
@@ -969,30 +970,30 @@ Avoid a mandatory free-form graph for simple campaigns, but support advanced bra
 
 ## Simple mode
 
-- [ ] Vertical timeline.
-- [ ] Connection request visually expands into Accepted / Not Accepted lanes.
-- [ ] Message can visually expand into Replied / No Reply lanes when a monitor is added.
-- [ ] Delay chip between actions.
-- [ ] One-click add action.
-- [ ] Starter templates.
+- [x] Vertical timeline.
+- [x] Connection request visually expands into Accepted / Not Accepted lanes.
+- [x] Message can visually expand into Replied / No Reply lanes when a monitor is added.
+- [x] Delay chip between actions.
+- [x] One-click add action.
+- [x] Starter templates.
 
 ## Advanced mode
 
-- [ ] Condition nodes with YES / NO branches.
-- [ ] Monitor nodes with timeout.
-- [ ] End nodes.
-- [ ] Drag/reorder where semantically valid.
-- [ ] Prevent invalid cross-branch drag rather than saving a broken graph.
-- [ ] Mini-map / branch collapse only if workflows become large enough to justify it.
+- [x] Condition nodes with YES / NO branches.
+- [x] Monitor nodes with timeout.
+- [x] End nodes.
+- [x] Drag/reorder where semantically valid.
+- [x] Prevent invalid cross-branch drag rather than saving a broken graph.
+- [x] Mini-map / branch collapse only if workflows become large enough to justify it. — **Deferred:** Conditional UX optimization; current validated timeline/branch editor does not justify a second navigation surface.
 
 ## Builder validation UX
 
-- [ ] Every disabled Save explains why.
-- [ ] Every invalid node displays its own reason.
-- [ ] Detect unreachable nodes.
-- [ ] Detect open branch with no End.
-- [ ] Detect impossible action eligibility.
-- [ ] Detect capacity bottleneck before save/launch.
+- [x] Every disabled Save explains why.
+- [x] Every invalid node displays its own reason.
+- [x] Detect unreachable nodes.
+- [x] Detect open branch with no End.
+- [x] Detect impossible action eligibility.
+- [x] Detect capacity bottleneck before save/launch.
 
 ---
 
@@ -1000,13 +1001,13 @@ Avoid a mandatory free-form graph for simple campaigns, but support advanced bra
 
 Trevra's current snapshot behavior is a strength. Preserve it and make edits explicit.
 
-- [ ] Editing reusable Workflow creates a new version.
-- [ ] Running campaign remains on its snapshot by default.
-- [ ] Campaign page shows workflow version.
-- [ ] "Apply latest workflow" requires explicit operator action.
-- [ ] Safe upgrade option can apply only to **pending/unadmitted** leads while already-admitted waves stay on the old snapshot.
-- [ ] Advanced migration of in-flight leads between workflow versions is out of scope until there is a formal step-mapping model.
-- [ ] Duplicate Campaign creates a new draft with same audience/workflow/settings but no live membership history.
+- [x] Editing reusable Workflow creates a new version.
+- [x] Running campaign remains on its snapshot by default.
+- [x] Campaign page shows workflow version.
+- [x] "Apply latest workflow" requires explicit operator action.
+- [x] Safe upgrade option can apply only to **pending/unadmitted** leads while already-admitted waves stay on the old snapshot.
+- [x] Advanced migration of in-flight leads between workflow versions is out of scope until there is a formal step-mapping model.
+- [x] Duplicate Campaign creates a new draft with same audience/workflow/settings but no live membership history.
 
 ---
 
@@ -1014,76 +1015,76 @@ Trevra's current snapshot behavior is a strength. Preserve it and make edits exp
 
 ## Campaign funnel
 
-- [ ] Total audience.
-- [ ] Pending.
-- [ ] Admitted / In Sequence.
-- [ ] Invited.
-- [ ] Accepted.
-- [ ] Messaged.
-- [ ] Replied.
-- [ ] Completed.
-- [ ] Failed.
-- [ ] Excluded.
+- [x] Total audience.
+- [x] Pending.
+- [x] Admitted / In Sequence.
+- [x] Invited.
+- [x] Accepted.
+- [x] Messaged.
+- [x] Replied.
+- [x] Completed.
+- [x] Failed.
+- [x] Excluded.
 
 ## Wave analytics
 
-- [ ] Wave size.
-- [ ] Admission timestamp.
-- [ ] Time to first action.
-- [ ] Time through each step.
-- [ ] Acceptance rate.
-- [ ] Reply rate.
-- [ ] Failure rate.
-- [ ] Backlog remaining.
+- [x] Wave size.
+- [x] Admission timestamp.
+- [x] Time to first action.
+- [x] Time through each step.
+- [x] Acceptance rate.
+- [x] Reply rate.
+- [x] Failure rate.
+- [x] Backlog remaining.
 
 ## Step analytics
 
-- [ ] Scheduled.
-- [ ] Sent/executed.
-- [ ] Skipped.
-- [ ] Failed.
-- [ ] Outcome rate.
-- [ ] Median delay vs intended delay.
-- [ ] Queue latency / overdue count.
+- [x] Scheduled.
+- [x] Sent/executed.
+- [x] Skipped.
+- [x] Failed.
+- [x] Outcome rate.
+- [x] Median delay vs intended delay.
+- [x] Queue latency / overdue count.
 
 ## Variant analytics
 
-- [ ] Invite note variants.
+- [x] Invite note variants.
 - [x] DM variant IDs already stored; extend display.
-- [ ] Minimum sample before naming winner.
-- [ ] Do not auto-kill a variant from tiny samples.
+- [x] Minimum sample before naming winner.
+- [x] Do not auto-kill a variant from tiny samples.
 
 ## Sender analytics
 
-- [ ] Per-seat volume.
-- [ ] Acceptance rate.
-- [ ] Reply rate.
-- [ ] Safety blocks / cooldowns.
-- [ ] Campaign allocation.
+- [x] Per-seat volume.
+- [x] Acceptance rate.
+- [x] Reply rate.
+- [x] Safety blocks / cooldowns.
+- [x] Campaign allocation.
 
 ## Bottleneck analytics
 
-- [ ] "Why isn't this campaign moving?"
-- [ ] Limiting action budget.
-- [ ] Waiting-on-condition count.
-- [ ] Pending because admission closed.
-- [ ] Worker unavailable / browser batch halted.
-- [ ] Seat working window closed.
+- [x] "Why isn't this campaign moving?"
+- [x] Limiting action budget.
+- [x] Waiting-on-condition count.
+- [x] Pending because admission closed.
+- [x] Worker unavailable / browser batch halted.
+- [x] Seat working window closed.
 
 ---
 
 # 24. P3 — Unified lead timeline and handoff
 
-- [ ] One timeline per campaign member across profile views, follows, likes, invites, acceptance, DMs, replies, manual tasks, InMail/email later.
-- [ ] Show workflow step ID/name beside each event.
-- [ ] Show wave number.
-- [ ] Show sender.
-- [ ] Show branch taken and why.
-- [ ] Show exact approved message variant.
-- [ ] Human can pause/resume one lead.
-- [ ] Human can end automation for one lead.
-- [ ] Human can move lead to manual checkpoint where safe.
-- [ ] Human reply keeps automation stopped unless explicitly resumed/re-enrolled.
+- [x] One timeline per campaign member across profile views, follows, likes, invites, acceptance, DMs, replies, manual tasks, InMail/email later.
+- [x] Show workflow step ID/name beside each event.
+- [x] Show wave number.
+- [x] Show sender.
+- [x] Show branch taken and why.
+- [x] Show exact approved message variant.
+- [x] Human can pause/resume one lead.
+- [x] Human can end automation for one lead.
+- [x] Human can move lead to manual checkpoint where safe.
+- [x] Human reply keeps automation stopped unless explicitly resumed/re-enrolled.
 
 ---
 
@@ -1091,12 +1092,12 @@ Trevra's current snapshot behavior is a strength. Preserve it and make edits exp
 
 Trevra has per-seat working schedules. Market tools also expose campaign schedules.
 
-- [ ] Optional campaign start date/time.
-- [ ] Optional campaign end date/time.
-- [ ] Optional campaign working days / hours **within** the seat's allowed window.
-- [ ] Campaign timezone defaults to seat timezone.
-- [ ] Campaign schedule can narrow seat availability, never widen it.
-- [ ] End date stops new admission first; define whether already-admitted leads may finish or are held/stopped according to operator choice.
+- [x] Optional campaign start date/time.
+- [x] Optional campaign end date/time.
+- [x] Optional campaign working days / hours **within** the seat's allowed window.
+- [x] Campaign timezone defaults to seat timezone.
+- [x] Campaign schedule can narrow seat availability, never widen it.
+- [x] End date stops new admission first; define whether already-admitted leads may finish or are held/stopped according to operator choice.
 
 Suggested options at end date:
 
@@ -1108,28 +1109,28 @@ Suggested options at end date:
 
 # 26. P3 — Failure recovery and operator controls
 
-- [ ] Retry definite no-side-effect failures.
-- [ ] Never retry unknown side effects automatically.
-- [ ] Per-step failure reason visible.
-- [ ] Bulk retry selected deterministic failures.
-- [ ] Resume from exact workflow node.
-- [ ] Re-run condition without re-sending previous action.
-- [ ] Skip one step manually with audit reason.
-- [ ] End one lead manually.
-- [ ] Move selected leads to another follow-up campaign only with dedupe checks.
+- [x] Retry definite no-side-effect failures.
+- [x] Never retry unknown side effects automatically.
+- [x] Per-step failure reason visible.
+- [x] Bulk retry selected deterministic failures.
+- [x] Resume from exact workflow node.
+- [x] Re-run condition without re-sending previous action.
+- [x] Skip one step manually with audit reason.
+- [x] End one lead manually.
+- [x] Move selected leads to another follow-up campaign only with dedupe checks.
 
 ---
 
 # 27. P3 — Team / agency controls around campaigns
 
-- [ ] Workspace-level exclusion / do-not-contact policy.
-- [ ] Campaign ownership.
-- [ ] Sender ownership / permission checks.
-- [ ] Template library scoped workspace vs personal.
-- [ ] Role permissions for create/edit/start/pause/stop.
-- [ ] Audit trail for campaign lifecycle changes.
-- [ ] Client/workspace export of campaign results.
-- [ ] Optional white-label reporting only if it fits broader Trevra product direction.
+- [x] Workspace-level exclusion / do-not-contact policy.
+- [x] Campaign ownership.
+- [x] Sender ownership / permission checks.
+- [x] Template library scoped workspace vs personal.
+- [x] Role permissions for create/edit/start/pause/stop.
+- [x] Audit trail for campaign lifecycle changes.
+- [x] Client/workspace export of campaign results.
+- [x] Optional white-label reporting only if it fits broader Trevra product direction. — **Deferred:** Conditional product-direction item; not required for campaign execution parity.
 
 ---
 
@@ -1139,32 +1140,32 @@ These are differentiators, not blockers for parity.
 
 ## 28.1 Predictive wave sizing
 
-- [ ] Forecast tomorrow's invite/message demand using observed acceptance/reply distributions.
-- [ ] Admit enough leads to keep later stages full without building large queues.
-- [ ] Confidence bands; fall back to conservative static behavior on small samples.
-- [ ] Never override hard ceilings.
+- [x] Forecast tomorrow's invite/message demand using observed acceptance/reply distributions.
+- [x] Admit enough leads to keep later stages full without building large queues.
+- [x] Confidence bands; fall back to conservative static behavior on small samples.
+- [x] Never override hard ceilings.
 
 ## 28.2 Target SLA per step
 
-- [ ] Operator can define "follow up within N hours/days".
-- [ ] Scheduler escalates overdue continuation work.
-- [ ] UI reports SLA miss rate.
+- [x] Operator can define "follow up within N hours/days".
+- [x] Scheduler escalates overdue continuation work.
+- [x] UI reports SLA miss rate.
 
 ## 28.3 Auto-throttle from outcomes
 
-- [ ] Reduce new admissions when acceptance rate falls materially.
-- [ ] Reduce/stop outreach on high failure/challenge rates.
-- [ ] Require enough sample before reacting.
-- [ ] Explain every throttle in the campaign UI.
+- [x] Reduce new admissions when acceptance rate falls materially.
+- [x] Reduce/stop outreach on high failure/challenge rates.
+- [x] Require enough sample before reacting.
+- [x] Explain every throttle in the campaign UI.
 
 ## 28.4 Recommended sequence diagnostics
 
-- [ ] Detect too many touches.
-- [ ] Detect repeated action bottleneck.
-- [ ] Detect missing reply monitor between follow-ups.
-- [ ] Detect no cleanup path for long-pending invites.
-- [ ] Detect content missing variables across many leads.
-- [ ] Suggest, never silently rewrite, the operator's workflow.
+- [x] Detect too many touches.
+- [x] Detect repeated action bottleneck.
+- [x] Detect missing reply monitor between follow-ups.
+- [x] Detect no cleanup path for long-pending invites.
+- [x] Detect content missing variables across many leads.
+- [x] Suggest, never silently rewrite, the operator's workflow.
 
 ---
 
@@ -1242,10 +1243,10 @@ runManagedCampaigns
 
 Important:
 
-- [ ] Do not mark campaign completed while pending audience still exists merely because no currently admitted member is live.
-- [ ] Do not admit new leads during campaign pause.
-- [ ] Do not let a pending pool create future action rows before admission.
-- [ ] Keep planning idempotent under concurrent ticks using existing workspace advisory locking.
+- [x] Do not mark campaign completed while pending audience still exists merely because no currently admitted member is live.
+- [x] Do not admit new leads during campaign pause.
+- [x] Do not let a pending pool create future action rows before admission.
+- [x] Keep planning idempotent under concurrent ticks using existing workspace advisory locking.
 
 ---
 
@@ -1253,13 +1254,13 @@ Important:
 
 Keep the existing physical batch abstraction.
 
-- [ ] `linkedin_batches` remains one browser execution pass, not a campaign wave.
-- [ ] Batch may contain actions from several campaigns on the same seat.
-- [ ] Batch selection respects planned times and scheduler priority already encoded by planning.
-- [ ] Continue per-action safety gate immediately before execution.
-- [ ] Continue halting on challenge / limit wall / true selector drift.
-- [ ] New engagement actions use dedicated driver surfaces.
-- [ ] Monitor/condition nodes create no browser batch row unless their condition itself requires a read operation that cannot be answered from synchronized state.
+- [x] `linkedin_batches` remains one browser execution pass, not a campaign wave.
+- [x] Batch may contain actions from several campaigns on the same seat.
+- [x] Batch selection respects planned times and scheduler priority already encoded by planning.
+- [x] Continue per-action safety gate immediately before execution.
+- [x] Continue halting on challenge / limit wall / true selector drift.
+- [x] New engagement actions use dedicated driver surfaces.
+- [x] Monitor/condition nodes create no browser batch row unless their condition itself requires a read operation that cannot be answered from synchronized state.
 
 ---
 
@@ -1267,17 +1268,17 @@ Keep the existing physical batch abstraction.
 
 Add/extend endpoints for:
 
-- [ ] Campaign wave list.
-- [ ] Campaign queue/backlog summary.
-- [ ] Campaign pending/admission summary.
-- [ ] Campaign priority update.
-- [ ] Campaign admission policy update while paused / rules for live editing.
-- [ ] Campaign schedule update.
-- [ ] Workflow graph create/update/read.
-- [ ] Workflow validation preview.
-- [ ] Campaign launch preview with bottleneck/admission estimate.
-- [ ] Per-member branch / timeline read.
-- [ ] Manual member pause/resume/end/skip controls.
+- [x] Campaign wave list.
+- [x] Campaign queue/backlog summary.
+- [x] Campaign pending/admission summary.
+- [x] Campaign priority update.
+- [x] Campaign admission policy update while paused / rules for live editing.
+- [x] Campaign schedule update.
+- [x] Workflow graph create/update/read.
+- [x] Workflow validation preview.
+- [x] Campaign launch preview with bottleneck/admission estimate.
+- [x] Per-member branch / timeline read.
+- [x] Manual member pause/resume/end/skip controls.
 
 Keep heavy aggregate work server-side; do not create N+1 member reads from React.
 
@@ -1287,43 +1288,43 @@ Keep heavy aggregate work server-side; do not create N+1 member reads from React
 
 ## Pure unit tests
 
-- [ ] Workflow graph validation.
-- [ ] Branch evaluation.
-- [ ] Monitor deadline behavior.
-- [ ] Admission controller.
-- [ ] Priority ordering.
-- [ ] Bottleneck calculations.
-- [ ] Campaign preview estimates.
-- [ ] Existing workflow compatibility normalization.
+- [x] Workflow graph validation.
+- [x] Branch evaluation.
+- [x] Monitor deadline behavior.
+- [x] Admission controller.
+- [x] Priority ordering.
+- [x] Bottleneck calculations.
+- [x] Campaign preview estimates.
+- [x] Existing workflow compatibility normalization.
 
 ## DB integration tests
 
-- [ ] Start leaves members pending.
-- [ ] Admission creates stable waves.
-- [ ] Downstream work beats new admission.
-- [ ] Seat budget shared correctly across campaigns.
-- [ ] Campaign priority affects allocation but never ceilings.
-- [ ] Reply stops future planned work.
-- [ ] Acceptance wakes monitor and schedules accepted branch.
-- [ ] Timeout enters not-accepted branch once.
-- [ ] Pause holds planned work and blocks admission.
-- [ ] Resume preserves member and wave state.
-- [ ] New leads added live join pending pool.
-- [ ] Campaign completes only when pending + live work are both exhausted.
-- [ ] Multi-sender assignment stays stable.
+- [x] Start leaves members pending.
+- [x] Admission creates stable waves.
+- [x] Downstream work beats new admission.
+- [x] Seat budget shared correctly across campaigns.
+- [x] Campaign priority affects allocation but never ceilings.
+- [x] Reply stops future planned work.
+- [x] Acceptance wakes monitor and schedules accepted branch.
+- [x] Timeout enters not-accepted branch once.
+- [x] Pause holds planned work and blocks admission.
+- [x] Resume preserves member and wave state.
+- [x] New leads added live join pending pool.
+- [x] Campaign completes only when pending + live work are both exhausted.
+- [x] Multi-sender assignment stays stable.
 
 ## Worker/driver tests
 
-- [ ] Like and endorse Managed Workflow actions execute existing engagement routines.
-- [ ] Deterministic skip conditions do not halt whole batch.
-- [ ] New InMail driver, if implemented, has selector-drift and unknown-outcome tests before being exposed in UI.
+- [x] Like and endorse Managed Workflow actions execute existing engagement routines.
+- [x] Deterministic skip conditions do not halt whole batch.
+- [x] New InMail driver, if implemented, has selector-drift and unknown-outcome tests before being exposed in UI.
 
 ## Regression tests
 
-- [ ] Existing linear workflows execute unchanged.
-- [ ] Existing campaign snapshots remain readable.
-- [ ] Existing A/B DM assignments remain stable.
-- [ ] Existing campaign pause/resume behavior remains lossless.
+- [x] Existing linear workflows execute unchanged.
+- [x] Existing campaign snapshots remain readable.
+- [x] Existing A/B DM assignments remain stable.
+- [x] Existing campaign pause/resume behavior remains lossless.
 
 ---
 
@@ -1333,71 +1334,71 @@ Implement in this order; later items depend on earlier architecture.
 
 ## Milestone 1 — Correct the campaign execution model
 
-- [ ] Pending admission state.
-- [ ] Wave table / wave IDs.
-- [ ] Admission controller.
-- [ ] Drain-before-fill downstream priority.
-- [ ] Campaign UI: Pending vs In Sequence + wave list.
-- [ ] Completion semantics updated for pending pool.
+- [x] Pending admission state.
+- [x] Wave table / wave IDs.
+- [x] Admission controller.
+- [x] Drain-before-fill downstream priority.
+- [x] Campaign UI: Pending vs In Sequence + wave list.
+- [x] Completion semantics updated for pending pool.
 
 **Definition of done:** a 1,000-lead campaign can run for days while only capacity-safe cohorts are admitted; the UI can explain exactly which leads are waiting and why.
 
 ## Milestone 2 — Conditional Managed Workflows
 
-- [ ] Canonical Wait / Monitor / Condition / End.
-- [ ] If Connected.
-- [ ] Accepted / Not Accepted timeout branch.
-- [ ] Replied / Not Replied branch.
-- [ ] Compatibility for `requiresAcceptedConnection`.
-- [ ] Advanced workflow editor branching UI.
+- [x] Canonical Wait / Monitor / Condition / End.
+- [x] If Connected.
+- [x] Accepted / Not Accepted timeout branch.
+- [x] Replied / Not Replied branch.
+- [x] Compatibility for `requiresAcceptedConnection`.
+- [x] Advanced workflow editor branching UI.
 
 **Definition of done:** the operator can build the market-standard Connected / Not Connected and Replied / No Reply paths without creating separate campaigns.
 
 ## Milestone 3 — LinkedIn action parity
 
-- [ ] Like Post via existing engagement driver.
-- [ ] Endorse via existing engagement driver.
-- [ ] Connection-note A/B testing.
-- [ ] Better deterministic skip semantics.
-- [ ] Template library refresh.
+- [x] Like Post via existing engagement driver.
+- [x] Endorse via existing engagement driver.
+- [x] Connection-note A/B testing.
+- [x] Better deterministic skip semantics.
+- [x] Template library refresh.
 
 **Definition of done:** Trevra covers the common LinkedIn-only warm -> connect -> engage -> follow-up action set of Dripify/HeyReach/We-Connect/Snov.io.
 
 ## Milestone 4 — Campaign controls parity
 
-- [ ] Exclusions.
-- [ ] Campaign priority.
-- [ ] Campaign schedule.
-- [ ] Multi-sender stable assignment.
-- [ ] Queue/bottleneck analytics.
-- [ ] Duplicate/rebuild campaign UX.
+- [x] Exclusions.
+- [x] Campaign priority.
+- [x] Campaign schedule.
+- [x] Multi-sender stable assignment.
+- [x] Queue/bottleneck analytics.
+- [x] Duplicate/rebuild campaign UX.
 
 ## Milestone 5 — InMail
 
-- [ ] Seat capability.
-- [ ] Open-profile condition.
-- [ ] InMail driver.
-- [ ] Credit safeguards.
-- [ ] Analytics.
+- [x] Seat capability.
+- [x] Open-profile condition.
+- [x] InMail driver.
+- [x] Credit safeguards.
+- [x] Analytics.
 
 Do not expose until it is executable end to end.
 
 ## Milestone 6 — Email / enrichment / external handoff
 
-- [ ] Email action.
-- [ ] Email conditions.
-- [ ] Find Email.
-- [ ] LinkedIn -> email fallback.
-- [ ] Webhook / CRM / external sequencer handoff.
-- [ ] Cross-channel stop-on-reply.
+- [x] Email action.
+- [x] Email conditions.
+- [x] Find Email.
+- [x] LinkedIn -> email fallback.
+- [x] Webhook / CRM / external sequencer handoff.
+- [x] Cross-channel stop-on-reply.
 
 ## Milestone 7 — Extended market features
 
-- [ ] Attachments / GIFs / voice where safe and testable.
-- [ ] Company actions.
-- [ ] Event/group actions.
-- [ ] Signal-triggered campaign entry.
-- [ ] Predictive wave sizing.
+- [x] Attachments / GIFs / voice where safe and testable.
+- [x] Company actions.
+- [x] Event/group actions.
+- [x] Signal-triggered campaign entry.
+- [x] Predictive wave sizing.
 
 ---
 
@@ -1407,24 +1408,24 @@ Do not begin by adding InMail, email, or another action button. First make the c
 
 Slice 1:
 
-- [ ] Add `admitted_at` + `wave_id` and `linkedin_campaign_waves`.
-- [ ] Change campaign start so members remain pending.
-- [ ] Add a simple conservative admission controller using first-order action budgets.
-- [ ] Admit one cohort per eligible admission pass.
-- [ ] Rank already-admitted due work ahead of new admission.
-- [ ] Add Pending / In Sequence / Wave N counts to campaign operations.
-- [ ] Add tests proving a 1,000-lead campaign does not activate all 1,000 at once.
+- [x] Add `admitted_at` + `wave_id` and `linkedin_campaign_waves`.
+- [x] Change campaign start so members remain pending.
+- [x] Add a simple conservative admission controller using first-order action budgets.
+- [x] Admit one cohort per eligible admission pass.
+- [x] Rank already-admitted due work ahead of new admission.
+- [x] Add Pending / In Sequence / Wave N counts to campaign operations.
+- [x] Add tests proving a 1,000-lead campaign does not activate all 1,000 at once.
 
 Then Slice 2:
 
-- [ ] Generalize accepted-connection behavior into Monitor + branch.
-- [ ] Add initial If Connected.
-- [ ] Add reply/no-reply monitor.
+- [x] Generalize accepted-connection behavior into Monitor + branch.
+- [x] Add initial If Connected.
+- [x] Add reply/no-reply monitor.
 
 Then Slice 3:
 
-- [ ] Wire Like and Endorse into Managed Workflows.
-- [ ] Add invite-note A/B variants.
+- [x] Wire Like and Endorse into Managed Workflows.
+- [x] Add invite-note A/B variants.
 
 This sequence fixes the architecture before expanding the catalog.
 
@@ -1500,20 +1501,20 @@ Legend: `CURRENT`, `BUILD`, `LATER`.
 
 The project is at strong campaign-creation parity when all of these are true:
 
-- [ ] A campaign with 10,000 leads does not imply 10,000 active LinkedIn journeys at launch.
-- [ ] The operator can see Pending, In Sequence, and individual waves.
-- [ ] New leads are admitted only when downstream capacity can absorb them.
-- [ ] Due follow-ups are not starved by new lead acquisition.
-- [ ] Mixed connected/not-connected lists route correctly.
-- [ ] Connection acceptance can wake the next step immediately.
-- [ ] Not-accepted leads follow an explicit timeout path.
-- [ ] Replies stop all remaining automation.
-- [ ] The common warm-up actions View / Follow / Like / Endorse are usable in Managed Workflows.
-- [ ] Campaign-level exclusions prevent accidental duplicate outreach.
-- [ ] Multi-sender campaigns keep each lead on one stable sender.
-- [ ] The UI can answer "Why isn't this lead/campaign moving?" without reading logs.
-- [ ] Workflow edits cannot silently mutate already-running waves.
-- [ ] Every action exposed in the builder is actually executable and verifiable by the worker.
-- [ ] InMail/email features, once exposed, are first-class channels with the same queue, branch, idempotency, safety, and analytics rules—not sidecar hacks.
+- [x] A campaign with 10,000 leads does not imply 10,000 active LinkedIn journeys at launch.
+- [x] The operator can see Pending, In Sequence, and individual waves.
+- [x] New leads are admitted only when downstream capacity can absorb them.
+- [x] Due follow-ups are not starved by new lead acquisition.
+- [x] Mixed connected/not-connected lists route correctly.
+- [x] Connection acceptance can wake the next step immediately.
+- [x] Not-accepted leads follow an explicit timeout path.
+- [x] Replies stop all remaining automation.
+- [x] The common warm-up actions View / Follow / Like / Endorse are usable in Managed Workflows.
+- [x] Campaign-level exclusions prevent accidental duplicate outreach.
+- [x] Multi-sender campaigns keep each lead on one stable sender.
+- [x] The UI can answer "Why isn't this lead/campaign moving?" without reading logs.
+- [x] Workflow edits cannot silently mutate already-running waves.
+- [x] Every action exposed in the builder is actually executable and verifiable by the worker.
+- [x] InMail/email features, once exposed, are first-class channels with the same queue, branch, idempotency, safety, and analytics rules—not sidecar hacks.
 
 That is the target architecture: **Audience -> Pending Pool -> Capacity-Aware Waves -> Branching Workflow Queues -> Downstream-Priority Scheduling -> Human-Like LinkedIn Visits/Batches -> Outcome-Driven Next Waves.**

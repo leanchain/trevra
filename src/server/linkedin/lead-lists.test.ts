@@ -6,6 +6,7 @@ import {
   deleteLeadList,
   getLeadList,
   importLeadCsv,
+  importLeadProfileUrls,
   importLeadSourceContacts,
   listLeadContacts,
   listLeadLists,
@@ -166,6 +167,40 @@ describe('account-scoped lead lists', () => {
   });
 });
 
+describe('pasted LinkedIn profile URLs', () => {
+  it('canonicalises member URLs, deduplicates them, and never invents identity fields', async () => {
+    const list = await createLeadList(
+      db,
+      { workspaceId: WORKSPACE_ID, name: 'Pasted profiles', sourceKind: 'profile_urls' },
+      NOW
+    );
+    const result = await importLeadProfileUrls(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        listId: list.id,
+        urls: [
+          'https://www.linkedin.com/in/maya-chen/?trk=feed',
+          'https://linkedin.com/in/maya-chen/#about',
+          'https://www.linkedin.com/company/acme/'
+        ]
+      },
+      NOW
+    );
+    expect(result.inserted).toBe(1);
+    expect(result.duplicates).toBe(1);
+    expect(result.rejected).toHaveLength(1);
+    const contacts = await listLeadContacts(db, WORKSPACE_ID, list.id);
+    expect(contacts).toHaveLength(1);
+    expect(contacts[0]).toMatchObject({
+      profileUrl: 'https://www.linkedin.com/in/maya-chen/',
+      firstName: '',
+      lastName: '',
+      company: ''
+    });
+  });
+});
+
 describe('materialising a harvest into a campaign-usable list', () => {
   it('creates the list, scrubs and splits every name, and counts what it could not use', async () => {
     const sourceId = await source();
@@ -295,6 +330,37 @@ describe('one person, one contact row, per workspace', () => {
     expect(await countLeadContacts(db, WORKSPACE_ID, second.id)).toBe(1);
     // The contact reports the list it was asked for, not the one it landed in.
     expect((await listLeadContacts(db, WORKSPACE_ID, second.id))[0].listId).toBe(second.id);
+  });
+
+  it('records imported and manual email provenance explicitly', async () => {
+    const list = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'Provenance' }, NOW);
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Chen,Acme,imported@example.com,https://www.linkedin.com/in/maya-provenance/'
+      },
+      NOW
+    );
+    let contact = (await listLeadContacts(db, WORKSPACE_ID, list.id))[0]!;
+    expect(contact.emailProvenance).toBe('imported');
+    expect(contact.emailSource).toBe('imported');
+    contact = await updateLeadContact(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        contactId: contact.id,
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        company: contact.company,
+        email: 'manual@example.com',
+        profileUrl: contact.profileUrl
+      },
+      NOW
+    );
+    expect(contact.emailProvenance).toBe('manual');
+    expect(contact.emailSource).toBe('manual');
   });
 
   it('deduplicates a lead that has only an email, across lists as well as inside one', async () => {

@@ -51,6 +51,15 @@ export const PACED_KIND_VALUES = [
   'inmail',
   'profile_view',
   'follow',
+  'unfollow',
+  'disconnect',
+  'company_follow',
+  'company_like',
+  'company_invite_follow',
+  'event_invite',
+  'group_invite',
+  'group_message',
+  'event_message',
   'like',
   'endorse'
 ] as const;
@@ -161,6 +170,19 @@ export const LINKEDIN_LIMITS: Readonly<
   inmail: { warmup: { perDay: 1, perMonth: 50 }, steady: { perDay: 3, perMonth: 50 } },
   profile_view: { warmup: { perDay: 30 }, steady: { perDay: 45 } },
   follow: { warmup: { perDay: 16 }, steady: { perDay: 20 } },
+  // Relationship cleanup shares Follow's conservative band; guard.ts also aggregates the three kinds into one bucket.
+  unfollow: { warmup: { perDay: 16 }, steady: { perDay: 20 } },
+  disconnect: { warmup: { perDay: 16 }, steady: { perDay: 20 } },
+  company_follow: { warmup: { perDay: 16 }, steady: { perDay: 20 } },
+  company_like: { warmup: { perDay: 10 }, steady: { perDay: 30 } },
+  company_invite_follow: {
+    warmup: { perDay: 10, perWeek: 20 },
+    steady: { perDay: 18, perWeek: 90 }
+  },
+  event_invite: { warmup: { perDay: 10, perWeek: 20 }, steady: { perDay: 18, perWeek: 90 } },
+  group_invite: { warmup: { perDay: 10, perWeek: 20 }, steady: { perDay: 18, perWeek: 90 } },
+  group_message: { warmup: { perDay: 4, perWeek: 10 }, steady: { perDay: 12, perWeek: 60 } },
+  event_message: { warmup: { perDay: 4, perWeek: 10 }, steady: { perDay: 12, perWeek: 60 } },
   like: { warmup: { perDay: 10 }, steady: { perDay: 30 } },
   endorse: { warmup: { perDay: 3 }, steady: { perDay: 8 } }
 };
@@ -316,7 +338,16 @@ export const WARMUP_WEEKS = WARMUP_MULTIPLIERS.length;
  * driver can perform it, without this list needing the pacing table to exist
  * for it first.
  */
-export const PASSIVE_KINDS: readonly string[] = ['profile_view', 'follow', 'like', 'endorse'];
+export const PASSIVE_KINDS: readonly string[] = [
+  'profile_view',
+  'follow',
+  'unfollow',
+  'disconnect',
+  'company_follow',
+  'company_like',
+  'like',
+  'endorse'
+];
 
 export function isPassiveKind(kind: string): boolean {
   return PASSIVE_KINDS.includes(kind);
@@ -374,14 +405,22 @@ export function seatOperatorLimit(seat: LinkedInSeat | undefined, kind: PacedKin
   if (!seat) return null;
   switch (kind) {
     case 'invite':
+    case 'company_invite_follow':
+    case 'event_invite':
+    case 'group_invite':
       return seat.dailyInviteLimit;
     case 'dm':
     case 'reply':
     case 'inmail':
+    case 'group_message':
+    case 'event_message':
       return seat.dailyMessageLimit;
     case 'profile_view':
       return seat.dailyProfileViewLimit;
     case 'follow':
+    case 'unfollow':
+    case 'disconnect':
+    case 'company_follow':
       return seat.dailyFollowLimit;
     default:
       return null;

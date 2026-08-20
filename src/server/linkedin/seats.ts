@@ -1,5 +1,10 @@
 import { id, type Db } from '../db.js';
-import { openSecret, sealSecret, secretsConfigured, type SecretContext } from '../secrets/crypto.js';
+import {
+  openSecret,
+  sealSecret,
+  secretsConfigured,
+  type SecretContext
+} from '../secrets/crypto.js';
 import { WARMUP_WEEKS } from './limits.js';
 
 /**
@@ -61,6 +66,8 @@ export const OWNER_SEAT_KEY = 'owner';
 export interface LinkedInSeat {
   workspaceId: string;
   seatKey: string;
+  ownerUserId: string | null;
+  ownerName: string | null;
   label: string;
   profileUrl: string | null;
   /** 'YYYY-MM-DD', or null. INFORMATIONAL -- nothing paces off it. */
@@ -127,6 +134,16 @@ export interface LinkedInSeat {
    * different ceiling, never an absence of one.
    */
   safetyBandOverride: boolean;
+  capabilities: {
+    inmail: 'unknown' | 'available' | 'unavailable';
+    premium: boolean;
+    salesNavigator: boolean;
+    recruiter: boolean;
+  };
+  /** Operator budget for InMail sends in one rolling month. Null uses the researched hard monthly ceiling. */
+  inmailMonthlyBudget: number | null;
+  /** Paid InMail credits this campaign automation may consume. Null means paid credits are not approved. */
+  inmailPaidCreditCap: number | null;
   /**
    * This account's own outbound proxy, REDACTED. Null when it has none.
    *
@@ -191,6 +208,7 @@ export function describeSeatProxy(raw: string | null): SeatProxyView | null {
  * a claim.
  */
 export interface SeatPatch {
+  ownerUserId?: string | null;
   label?: string;
   profileUrl?: string | null;
   accountOpenedOn?: string | null;
@@ -227,6 +245,8 @@ export interface SeatPatch {
 interface SeatRow {
   workspace_id: string;
   seat_key: string;
+  owner_user_id: string | null;
+  owner_name: string | null;
   label: string;
   profile_url: string | null;
   account_opened_on: string | null;
@@ -245,6 +265,9 @@ interface SeatRow {
   daily_profile_view_limit: number;
   daily_follow_limit: number;
   safety_band_override: boolean;
+  capabilities_json: unknown;
+  inmail_monthly_budget: number | null;
+  inmail_paid_credit_cap: number | null;
   proxy_server: string | null;
   proxy_username: string | null;
   proxy_has_password: boolean;
@@ -266,6 +289,8 @@ interface SeatRow {
 const SEAT_COLUMNS = `
   workspace_id,
   seat_key,
+  owner_user_id,
+  (SELECT COALESCE(u.name,u.email) FROM users u WHERE u.id=linkedin_seats.owner_user_id) AS owner_name,
   label,
   profile_url,
   TO_CHAR(account_opened_on, 'YYYY-MM-DD') AS account_opened_on,
@@ -284,21 +309,58 @@ const SEAT_COLUMNS = `
   daily_profile_view_limit,
   daily_follow_limit,
   safety_band_override,
+  capabilities_json,
+  inmail_monthly_budget,
+  inmail_paid_credit_cap,
   proxy_server,
   proxy_username,
   proxy_has_password
 `;
 
 function parsedWorkingDays(value: unknown): number[] {
-  const raw = typeof value === 'string' ? (() => { try { return JSON.parse(value) as unknown; } catch { return []; } })() : value;
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : value;
   if (!Array.isArray(raw)) return [];
   return raw.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6);
+}
+
+function parsedCapabilities(value: unknown): LinkedInSeat['capabilities'] {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return {};
+          }
+        })()
+      : value;
+  const object =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const inmail =
+    object.inmail === 'available' || object.inmail === 'unavailable' ? object.inmail : 'unknown';
+  return {
+    inmail,
+    premium: object.premium === true,
+    salesNavigator: object.salesNavigator === true,
+    recruiter: object.recruiter === true
+  };
 }
 
 function toSeat(row: SeatRow): LinkedInSeat {
   return {
     workspaceId: row.workspace_id,
     seatKey: row.seat_key,
+    ownerUserId: row.owner_user_id,
+    ownerName: row.owner_name,
     label: row.label,
     profileUrl: row.profile_url,
     accountOpenedOn: row.account_opened_on,
@@ -319,13 +381,20 @@ function toSeat(row: SeatRow): LinkedInSeat {
     // Fails CLOSED on a row this schema never wrote: an absent flag is not an
     // override, it is a seat nobody has opted in for.
     safetyBandOverride: row.safety_band_override === true,
+    capabilities: parsedCapabilities(row.capabilities_json),
+    inmailMonthlyBudget:
+      row.inmail_monthly_budget === null ? null : Number(row.inmail_monthly_budget),
+    inmailPaidCreditCap:
+      row.inmail_paid_credit_cap === null ? null : Number(row.inmail_paid_credit_cap),
     // Only non-secret metadata crosses the route boundary. The full URL lives
     // in linkedin_seat_proxy_secrets and is decrypted only by seatProxyUrl().
-    proxy: row.proxy_server ? {
-      server: row.proxy_server,
-      username: row.proxy_username,
-      hasPassword: row.proxy_has_password === true
-    } : null
+    proxy: row.proxy_server
+      ? {
+          server: row.proxy_server,
+          username: row.proxy_username,
+          hasPassword: row.proxy_has_password === true
+        }
+      : null
   };
 }
 
@@ -354,27 +423,38 @@ export async function seatProxyUrl(
   seatKey: string = OWNER_SEAT_KEY,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<string | null> {
-  const sealed = await db.prepare(`
+  const sealed = await db
+    .prepare(
+      `
     SELECT ciphertext,iv,auth_tag,key_version,key_id
     FROM linkedin_seat_proxy_secrets
     WHERE workspace_id=? AND seat_key=?
-  `).get<SeatProxySecretRow>(workspaceId, seatKey);
+  `
+    )
+    .get<SeatProxySecretRow>(workspaceId, seatKey);
   if (sealed) {
-    return openSecret({
-      ciphertext: sealed.ciphertext,
-      iv: sealed.iv,
-      authTag: sealed.auth_tag,
-      keyVersion: Number(sealed.key_version),
-      keyId: sealed.key_id
-    }, seatProxySecretContext(workspaceId, seatKey), env);
+    return openSecret(
+      {
+        ciphertext: sealed.ciphertext,
+        iv: sealed.iv,
+        authTag: sealed.auth_tag,
+        keyVersion: Number(sealed.key_version),
+        keyId: sealed.key_id
+      },
+      seatProxySecretContext(workspaceId, seatKey),
+      env
+    );
   }
 
-  const legacy = await db.prepare('SELECT proxy_url FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
+  const legacy = await db
+    .prepare('SELECT proxy_url FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
     .get<{ proxy_url: string | null }>(workspaceId, seatKey);
   const plaintext = legacy?.proxy_url?.trim() || null;
   if (!plaintext) return null;
   if (!secretsConfigured(env)) {
-    throw new Error('This LinkedIn account still has a legacy plaintext proxy credential, but TREVRA_SECRETS_KEY is not configured so Trevra cannot migrate it safely.');
+    throw new Error(
+      'This LinkedIn account still has a legacy plaintext proxy credential, but TREVRA_SECRETS_KEY is not configured so Trevra cannot migrate it safely.'
+    );
   }
   await putSeatProxySecret(db, workspaceId, seatKey, plaintext, env);
   return plaintext;
@@ -395,25 +475,40 @@ export async function putSeatProxySecret(
   const value = raw?.trim() || null;
   if (!value) {
     await db.transaction(async (tx) => {
-      await tx.prepare('DELETE FROM linkedin_seat_proxy_secrets WHERE workspace_id=? AND seat_key=?').run(workspaceId, seatKey);
-      await tx.prepare(`
+      await tx
+        .prepare('DELETE FROM linkedin_seat_proxy_secrets WHERE workspace_id=? AND seat_key=?')
+        .run(workspaceId, seatKey);
+      await tx
+        .prepare(
+          `
         UPDATE linkedin_seats
         SET proxy_url=NULL, proxy_server=NULL, proxy_username=NULL, proxy_has_password=FALSE, updated_at=CURRENT_TIMESTAMP
         WHERE workspace_id=? AND seat_key=?
-      `).run(workspaceId, seatKey);
+      `
+        )
+        .run(workspaceId, seatKey);
     });
     return;
   }
 
   let url: URL;
-  try { url = new URL(value); }
-  catch { throw new Error("This account's own proxy setting is not a URL. Use http://user:pass@host:port, https://... or socks5://host:port."); }
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(
+      "This account's own proxy setting is not a URL. Use http://user:pass@host:port, https://... or socks5://host:port."
+    );
+  }
   const scheme = url.protocol.replace(':', '');
   if (!['http', 'https', 'socks5'].includes(scheme) || !url.hostname) {
-    throw new Error("This account's own proxy setting must use http, https or socks5 and name a proxy host.");
+    throw new Error(
+      "This account's own proxy setting must use http, https or socks5 and name a proxy host."
+    );
   }
   if (scheme === 'socks5' && (url.username || url.password)) {
-    throw new Error("This account's own proxy setting is a SOCKS proxy with credentials, which Chromium cannot authenticate. Use an http proxy, or a SOCKS proxy that authorises this machine by IP.");
+    throw new Error(
+      "This account's own proxy setting is a SOCKS proxy with credentials, which Chromium cannot authenticate. Use an http proxy, or a SOCKS proxy that authorises this machine by IP."
+    );
   }
 
   const sealed = sealSecret(value, seatProxySecretContext(workspaceId, seatKey), env);
@@ -422,50 +517,93 @@ export async function putSeatProxySecret(
   const hasPassword = Boolean(url.password);
   const now = new Date().toISOString();
   await db.transaction(async (tx) => {
-    await tx.prepare(`
+    await tx
+      .prepare(
+        `
       INSERT INTO linkedin_seat_proxy_secrets
         (id,workspace_id,seat_key,ciphertext,iv,auth_tag,key_version,key_id,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT (workspace_id,seat_key) DO UPDATE SET
         ciphertext=EXCLUDED.ciphertext, iv=EXCLUDED.iv, auth_tag=EXCLUDED.auth_tag,
         key_version=EXCLUDED.key_version, key_id=EXCLUDED.key_id, updated_at=EXCLUDED.updated_at
-    `).run(id('lpxy'), workspaceId, seatKey, sealed.ciphertext, sealed.iv, sealed.authTag, sealed.keyVersion, sealed.keyId, now, now);
-    await tx.prepare(`
+    `
+      )
+      .run(
+        id('lpxy'),
+        workspaceId,
+        seatKey,
+        sealed.ciphertext,
+        sealed.iv,
+        sealed.authTag,
+        sealed.keyVersion,
+        sealed.keyId,
+        now,
+        now
+      );
+    await tx
+      .prepare(
+        `
       UPDATE linkedin_seats
       SET proxy_url=NULL, proxy_server=?, proxy_username=?, proxy_has_password=?, updated_at=?
       WHERE workspace_id=? AND seat_key=?
-    `).run(server, username, hasPassword, now, workspaceId, seatKey);
+    `
+      )
+      .run(server, username, hasPassword, now, workspaceId, seatKey);
   });
 }
 
 /** Seal every pre-076 plaintext proxy; used by the release migration job. */
-export async function migrateLegacySeatProxies(db: Db, env: NodeJS.ProcessEnv = process.env): Promise<number> {
-  const rows = await db.prepare(`
+export async function migrateLegacySeatProxies(
+  db: Db,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<number> {
+  const rows = await db
+    .prepare(
+      `
     SELECT workspace_id,seat_key,proxy_url
     FROM linkedin_seats
     WHERE proxy_url IS NOT NULL AND btrim(proxy_url) <> ''
     ORDER BY workspace_id,seat_key
-  `).all<{ workspace_id: string; seat_key: string; proxy_url: string }>();
+  `
+    )
+    .all<{ workspace_id: string; seat_key: string; proxy_url: string }>();
   if (rows.length > 0 && !secretsConfigured(env)) {
-    throw new Error(`Cannot migrate ${rows.length} legacy LinkedIn proxy credential(s): TREVRA_SECRETS_KEY is not configured.`);
+    throw new Error(
+      `Cannot migrate ${rows.length} legacy LinkedIn proxy credential(s): TREVRA_SECRETS_KEY is not configured.`
+    );
   }
-  for (const row of rows) await putSeatProxySecret(db, row.workspace_id, row.seat_key, row.proxy_url, env);
+  for (const row of rows)
+    await putSeatProxySecret(db, row.workspace_id, row.seat_key, row.proxy_url, env);
   return rows.length;
 }
 
 /** Hosted startup invariant: no proxy credential may remain in plaintext. */
-export async function assertNoLegacySeatProxyPlaintext(db: Db, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function assertNoLegacySeatProxyPlaintext(
+  db: Db,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<void> {
   if (env.TREVRA_DEPLOYMENT_MODE !== 'hosted') return;
-  const row = await db.prepare(`SELECT COUNT(*)::int AS total FROM linkedin_seats WHERE proxy_url IS NOT NULL AND btrim(proxy_url) <> ''`)
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*)::int AS total FROM linkedin_seats WHERE proxy_url IS NOT NULL AND btrim(proxy_url) <> ''`
+    )
     .get<{ total: number }>();
   if ((row?.total ?? 0) > 0) {
-    throw new Error(`Hosted startup refused: ${row!.total} LinkedIn seat proxy credential(s) are still stored in the legacy plaintext proxy_url column. Run the migration job before serving traffic.`);
+    throw new Error(
+      `Hosted startup refused: ${row!.total} LinkedIn seat proxy credential(s) are still stored in the legacy plaintext proxy_url column. Run the migration job before serving traffic.`
+    );
   }
 }
 
 /** The workspace's seat, or undefined when none is configured. */
-export async function getSeat(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): Promise<LinkedInSeat | undefined> {
-  const row = await db.prepare(`SELECT ${SEAT_COLUMNS} FROM linkedin_seats WHERE workspace_id=? AND seat_key=?`).get<SeatRow>(workspaceId, seatKey);
+export async function getSeat(
+  db: Db,
+  workspaceId: string,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<LinkedInSeat | undefined> {
+  const row = await db
+    .prepare(`SELECT ${SEAT_COLUMNS} FROM linkedin_seats WHERE workspace_id=? AND seat_key=?`)
+    .get<SeatRow>(workspaceId, seatKey);
   return row ? toSeat(row) : undefined;
 }
 
@@ -491,9 +629,13 @@ export async function getSeat(db: Db, workspaceId: string, seatKey: string = OWN
  * refuses for itself, and filtering here would put that rule in two places.
  */
 export async function linkedinWorkspaceIds(db: Db): Promise<string[]> {
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT DISTINCT workspace_id FROM linkedin_seats ORDER BY workspace_id
-  `).all<{ workspace_id: string }>();
+  `
+    )
+    .all<{ workspace_id: string }>();
   return rows.map((row) => row.workspace_id);
 }
 
@@ -518,14 +660,22 @@ export interface SeatRef {
  * refuses for itself, and filtering here would put that rule in two places.
  */
 export async function linkedinSeatRefs(db: Db): Promise<SeatRef[]> {
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT workspace_id, seat_key FROM linkedin_seats ORDER BY workspace_id, seat_key
-  `).all<{ workspace_id: string; seat_key: string }>();
+  `
+    )
+    .all<{ workspace_id: string; seat_key: string }>();
   return rows.map((row) => ({ workspaceId: row.workspace_id, seatKey: row.seat_key }));
 }
 
 export async function listSeats(db: Db, workspaceId: string): Promise<LinkedInSeat[]> {
-  const rows = await db.prepare(`SELECT ${SEAT_COLUMNS} FROM linkedin_seats WHERE workspace_id=? ORDER BY created_at ASC, seat_key ASC`).all<SeatRow>(workspaceId);
+  const rows = await db
+    .prepare(
+      `SELECT ${SEAT_COLUMNS} FROM linkedin_seats WHERE workspace_id=? ORDER BY created_at ASC, seat_key ASC`
+    )
+    .all<SeatRow>(workspaceId);
   return rows.map(toSeat);
 }
 
@@ -542,7 +692,9 @@ export function assertTimezone(timezone: string): void {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: timezone });
   } catch {
-    throw new Error(`'${timezone}' is not an IANA timezone name. Use something like 'Europe/Zurich' or 'America/New_York'.`);
+    throw new Error(
+      `'${timezone}' is not an IANA timezone name. Use something like 'Europe/Zurich' or 'America/New_York'.`
+    );
   }
 }
 
@@ -576,19 +728,28 @@ export async function upsertSeat(
   seatKey: string = OWNER_SEAT_KEY,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<LinkedInSeat> {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(seatKey)) throw new Error('seat_key must be 1-64 letters, numbers, underscores or dashes.');
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(seatKey))
+    throw new Error('seat_key must be 1-64 letters, numbers, underscores or dashes.');
   if (patch.proxyUrl?.trim() && !secretsConfigured(env)) {
-    throw new Error('TREVRA_SECRETS_KEY is required to store a LinkedIn proxy credential; Trevra will not write it in plaintext.');
+    throw new Error(
+      'TREVRA_SECRETS_KEY is required to store a LinkedIn proxy credential; Trevra will not write it in plaintext.'
+    );
   }
   const existing = await getSeat(db, workspaceId, seatKey);
 
   const label = patch.label ?? existing?.label;
   if (!label?.trim()) throw new Error('A LinkedIn seat needs a label, e.g. "Pankaj (founder)".');
   const timezone = patch.timezone ?? existing?.timezone;
-  if (!timezone?.trim()) throw new Error('A LinkedIn seat needs an IANA timezone; it decides which 08:00-18:00 the plan spreads across.');
+  if (!timezone?.trim())
+    throw new Error(
+      'A LinkedIn seat needs an IANA timezone; it decides which 08:00-18:00 the plan spreads across.'
+    );
   assertTimezone(timezone);
 
-  const accountOpenedOn = patch.accountOpenedOn === undefined ? (existing?.accountOpenedOn ?? null) : patch.accountOpenedOn;
+  const accountOpenedOn =
+    patch.accountOpenedOn === undefined
+      ? (existing?.accountOpenedOn ?? null)
+      : patch.accountOpenedOn;
   if (accountOpenedOn !== null && !ISO_DATE.test(accountOpenedOn)) {
     throw new Error(`account_opened_on must be a 'YYYY-MM-DD' date; got '${accountOpenedOn}'.`);
   }
@@ -597,39 +758,81 @@ export async function upsertSeat(
   // A seat that is no longer paused has no pause reason. Keeping the old
   // string around would leave the UI explaining a stop that is over.
   const pausedReason = posture === 'paused' ? (existing?.pausedReason ?? null) : null;
-  const detectedAt = patch.detectedAt === undefined ? (existing?.detectedAt ?? null) : patch.detectedAt;
-  const sessionValidAt = patch.sessionValidAt === undefined ? (existing?.sessionValidAt ?? null) : patch.sessionValidAt;
+  const detectedAt =
+    patch.detectedAt === undefined ? (existing?.detectedAt ?? null) : patch.detectedAt;
+  const sessionValidAt =
+    patch.sessionValidAt === undefined ? (existing?.sessionValidAt ?? null) : patch.sessionValidAt;
   const workingDays = patch.workingDays ?? existing?.workingDays ?? [1, 2, 3, 4, 5];
-  if (!Array.isArray(workingDays) || workingDays.some((day) => !Number.isInteger(day) || day < 0 || day > 6)) {
+  if (
+    !Array.isArray(workingDays) ||
+    workingDays.some((day) => !Number.isInteger(day) || day < 0 || day > 6)
+  ) {
     throw new Error('working_days must contain only weekday numbers 0-6.');
   }
   const workStartMinute = patch.workStartMinute ?? existing?.workStartMinute ?? 480;
   const workEndMinute = patch.workEndMinute ?? existing?.workEndMinute ?? 1080;
-  if (!Number.isInteger(workStartMinute) || !Number.isInteger(workEndMinute) || workStartMinute < 0 || workEndMinute > 1440 || workEndMinute <= workStartMinute) {
-    throw new Error('Working hours must be whole minutes in one local day, with the end after the start.');
+  if (
+    !Number.isInteger(workStartMinute) ||
+    !Number.isInteger(workEndMinute) ||
+    workStartMinute < 0 ||
+    workEndMinute > 1440 ||
+    workEndMinute <= workStartMinute
+  ) {
+    throw new Error(
+      'Working hours must be whole minutes in one local day, with the end after the start.'
+    );
   }
-  const resolveLimit = (value: number | undefined, fallback: number, max: number, name: string): number => {
+  const resolveLimit = (
+    value: number | undefined,
+    fallback: number,
+    max: number,
+    name: string
+  ): number => {
     const resolved = value ?? fallback;
-    if (!Number.isInteger(resolved) || resolved < 0 || resolved > max) throw new Error(`${name} must be a whole number from 0 to ${max}.`);
+    if (!Number.isInteger(resolved) || resolved < 0 || resolved > max)
+      throw new Error(`${name} must be a whole number from 0 to ${max}.`);
     return resolved;
   };
-  const dailyInviteLimit = resolveLimit(patch.dailyInviteLimit, existing?.dailyInviteLimit ?? 30, 75, 'daily_invite_limit');
-  const dailyMessageLimit = resolveLimit(patch.dailyMessageLimit, existing?.dailyMessageLimit ?? 25, 75, 'daily_message_limit');
-  const dailyProfileViewLimit = resolveLimit(patch.dailyProfileViewLimit, existing?.dailyProfileViewLimit ?? 25, 100, 'daily_profile_view_limit');
-  const dailyFollowLimit = resolveLimit(patch.dailyFollowLimit, existing?.dailyFollowLimit ?? 20, 50, 'daily_follow_limit');
+  const dailyInviteLimit = resolveLimit(
+    patch.dailyInviteLimit,
+    existing?.dailyInviteLimit ?? 30,
+    75,
+    'daily_invite_limit'
+  );
+  const dailyMessageLimit = resolveLimit(
+    patch.dailyMessageLimit,
+    existing?.dailyMessageLimit ?? 25,
+    75,
+    'daily_message_limit'
+  );
+  const dailyProfileViewLimit = resolveLimit(
+    patch.dailyProfileViewLimit,
+    existing?.dailyProfileViewLimit ?? 25,
+    100,
+    'daily_profile_view_limit'
+  );
+  const dailyFollowLimit = resolveLimit(
+    patch.dailyFollowLimit,
+    existing?.dailyFollowLimit ?? 20,
+    50,
+    'daily_follow_limit'
+  );
   // Absent means UNCHANGED, like every other field here; a seat that has never
   // been opted in is false. There is no path that turns this on by inference.
   const safetyBandOverride = patch.safetyBandOverride ?? existing?.safetyBandOverride ?? false;
   const timestamp = now.toISOString();
 
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO linkedin_seats (
-      workspace_id, seat_key, label, profile_url, account_opened_on, connections_count,
+      workspace_id, seat_key, owner_user_id, label, profile_url, account_opened_on, connections_count,
       timezone, activated_at, detected_at, session_valid_at, posture, paused_reason,
       working_days, work_start_minute, work_end_minute, daily_invite_limit,
       daily_message_limit, daily_profile_view_limit, daily_follow_limit, safety_band_override, created_at, updated_at
-    ) VALUES (?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?)
+    ) VALUES (?,?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, seat_key) DO UPDATE SET
+      owner_user_id = COALESCE(excluded.owner_user_id, linkedin_seats.owner_user_id),
       label = excluded.label,
       profile_url = excluded.profile_url,
       account_opened_on = excluded.account_opened_on,
@@ -652,30 +855,35 @@ export async function upsertSeat(
       safety_band_override = excluded.safety_band_override,
       updated_at = excluded.updated_at
     RETURNING workspace_id
-  `).run(
-    workspaceId,
-    seatKey,
-    label.trim(),
-    patch.profileUrl === undefined ? (existing?.profileUrl ?? null) : patch.profileUrl,
-    accountOpenedOn,
-    patch.connectionsCount === undefined ? (existing?.connectionsCount ?? null) : patch.connectionsCount,
-    timezone.trim(),
-    timestamp,
-    detectedAt,
-    sessionValidAt,
-    posture,
-    pausedReason,
-    JSON.stringify([...new Set(workingDays)]),
-    workStartMinute,
-    workEndMinute,
-    dailyInviteLimit,
-    dailyMessageLimit,
-    dailyProfileViewLimit,
-    dailyFollowLimit,
-    safetyBandOverride,
-    timestamp,
-    timestamp
-  );
+  `
+    )
+    .run(
+      workspaceId,
+      seatKey,
+      patch.ownerUserId === undefined ? (existing?.ownerUserId ?? null) : patch.ownerUserId,
+      label.trim(),
+      patch.profileUrl === undefined ? (existing?.profileUrl ?? null) : patch.profileUrl,
+      accountOpenedOn,
+      patch.connectionsCount === undefined
+        ? (existing?.connectionsCount ?? null)
+        : patch.connectionsCount,
+      timezone.trim(),
+      timestamp,
+      detectedAt,
+      sessionValidAt,
+      posture,
+      pausedReason,
+      JSON.stringify([...new Set(workingDays)]),
+      workStartMinute,
+      workEndMinute,
+      dailyInviteLimit,
+      dailyMessageLimit,
+      dailyProfileViewLimit,
+      dailyFollowLimit,
+      safetyBandOverride,
+      timestamp,
+      timestamp
+    );
 
   // Proxy writes are separate from the seat UPSERT because the full credential
   // belongs to the encrypted vault, not to the seat row. Absent means leave the
@@ -696,12 +904,65 @@ export async function upsertSeat(
  * column's whole job is to let the next run REUSE a session instead of
  * re-authenticating, and a timestamp written on hope would defeat it.
  */
-export async function stampSeatSessionValid(db: Db, workspaceId: string, now: Date, seatKey: string = OWNER_SEAT_KEY): Promise<LinkedInSeat | undefined> {
-  const row = await db.prepare(`
+export async function setSeatCapabilities(
+  db: Db,
+  workspaceId: string,
+  seatKey: string,
+  input: {
+    inmail: 'unknown' | 'available' | 'unavailable';
+    premium?: boolean;
+    salesNavigator?: boolean;
+    recruiter?: boolean;
+    inmailMonthlyBudget?: number | null;
+    inmailPaidCreditCap?: number | null;
+  },
+  now: Date = new Date()
+): Promise<LinkedInSeat> {
+  const monthly = input.inmailMonthlyBudget;
+  const paid = input.inmailPaidCreditCap;
+  if (monthly != null && (!Number.isInteger(monthly) || monthly < 0 || monthly > 10000))
+    throw new Error('InMail monthly budget must be a whole number from 0 to 10000.');
+  if (paid != null && (!Number.isInteger(paid) || paid < 0 || paid > 10000))
+    throw new Error('InMail paid credit cap must be a whole number from 0 to 10000.');
+  const result = await db
+    .prepare(
+      `
+    UPDATE linkedin_seats SET capabilities_json=?::jsonb,inmail_monthly_budget=?,inmail_paid_credit_cap=?,updated_at=?
+    WHERE workspace_id=? AND seat_key=?
+  `
+    )
+    .run(
+      JSON.stringify({
+        inmail: input.inmail,
+        premium: input.premium === true,
+        salesNavigator: input.salesNavigator === true,
+        recruiter: input.recruiter === true
+      }),
+      monthly ?? null,
+      paid ?? null,
+      now.toISOString(),
+      workspaceId,
+      seatKey
+    );
+  if (!result.changes) throw new Error(`LinkedIn account '${seatKey}' is not configured.`);
+  return (await getSeat(db, workspaceId, seatKey)) as LinkedInSeat;
+}
+
+export async function stampSeatSessionValid(
+  db: Db,
+  workspaceId: string,
+  now: Date,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<LinkedInSeat | undefined> {
+  const row = await db
+    .prepare(
+      `
     UPDATE linkedin_seats SET session_valid_at=?, updated_at=?
     WHERE workspace_id=? AND seat_key=?
     RETURNING ${SEAT_COLUMNS}
-  `).get<SeatRow>(now.toISOString(), now.toISOString(), workspaceId, seatKey);
+  `
+    )
+    .get<SeatRow>(now.toISOString(), now.toISOString(), workspaceId, seatKey);
   return row ? toSeat(row) : undefined;
 }
 
@@ -712,12 +973,22 @@ export async function stampSeatSessionValid(db: Db, workspaceId: string, now: Da
  * restricts an account, and "why is this stopped" three weeks later is the
  * question the column answers.
  */
-export async function pauseSeat(db: Db, workspaceId: string, reason: string, now: Date, seatKey: string = OWNER_SEAT_KEY): Promise<LinkedInSeat | undefined> {
-  const row = await db.prepare(`
+export async function pauseSeat(
+  db: Db,
+  workspaceId: string,
+  reason: string,
+  now: Date,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<LinkedInSeat | undefined> {
+  const row = await db
+    .prepare(
+      `
     UPDATE linkedin_seats SET posture='paused', paused_reason=?, updated_at=?
     WHERE workspace_id=? AND seat_key=?
     RETURNING ${SEAT_COLUMNS}
-  `).get<SeatRow>(reason, now.toISOString(), workspaceId, seatKey);
+  `
+    )
+    .get<SeatRow>(reason, now.toISOString(), workspaceId, seatKey);
   return row ? toSeat(row) : undefined;
 }
 
@@ -732,12 +1003,21 @@ export async function pauseSeat(db: Db, workspaceId: string, reason: string, now
  * not a reason to restart a ramp, and being able to earn one back by pausing
  * would be an incentive pointing the wrong way.
  */
-export async function resumeSeat(db: Db, workspaceId: string, now: Date, seatKey: string = OWNER_SEAT_KEY): Promise<LinkedInSeat | undefined> {
-  const row = await db.prepare(`
+export async function resumeSeat(
+  db: Db,
+  workspaceId: string,
+  now: Date,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<LinkedInSeat | undefined> {
+  const row = await db
+    .prepare(
+      `
     UPDATE linkedin_seats SET posture='warmup', paused_reason=NULL, updated_at=?
     WHERE workspace_id=? AND seat_key=?
     RETURNING ${SEAT_COLUMNS}
-  `).get<SeatRow>(now.toISOString(), workspaceId, seatKey);
+  `
+    )
+    .get<SeatRow>(now.toISOString(), workspaceId, seatKey);
   return row ? toSeat(row) : undefined;
 }
 
@@ -759,8 +1039,14 @@ export async function resumeSeat(db: Db, workspaceId: string, now: Date, seatKey
  * delete here must not quietly erase send history or a password the operator
  * did not ask to remove.
  */
-export async function deleteSeat(db: Db, workspaceId: string, seatKey: string = OWNER_SEAT_KEY): Promise<boolean> {
-  const result = await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=? AND seat_key=?').run(workspaceId, seatKey);
+export async function deleteSeat(
+  db: Db,
+  workspaceId: string,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<boolean> {
+  const result = await db
+    .prepare('DELETE FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
+    .run(workspaceId, seatKey);
   return result.changes > 0;
 }
 
@@ -797,7 +1083,12 @@ export function effectivePosture(seat: LinkedInSeat, now: Date): SeatPosture {
 }
 
 /** The effective posture for the workspace's seat, or null when it has none. */
-export async function getSeatPosture(db: Db, workspaceId: string, now: Date, seatKey: string = OWNER_SEAT_KEY): Promise<SeatPosture | null> {
+export async function getSeatPosture(
+  db: Db,
+  workspaceId: string,
+  now: Date,
+  seatKey: string = OWNER_SEAT_KEY
+): Promise<SeatPosture | null> {
   const seat = await getSeat(db, workspaceId, seatKey);
   return seat ? effectivePosture(seat, now) : null;
 }

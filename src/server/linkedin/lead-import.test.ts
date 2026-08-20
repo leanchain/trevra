@@ -246,3 +246,17 @@ describe('LinkedIn lead CSV import', () => {
     ]);
   });
 });
+
+describe('arbitrary CSV personalization fields', () => {
+  it('keeps every non-mapped non-empty column under a stable custom key', () => {
+    const result = parseLeadCsv(
+      'First Name,Last Name,Company,LinkedIn URL,Job Title,ICP Tier,Annual Revenue\nMaya,Smith,Acme,https://linkedin.com/in/maya-smith,VP Sales,1,$5M\n'
+    );
+    expect(result.accepted).toHaveLength(1);
+    expect(result.accepted[0]?.customFields).toEqual({
+      job_title: 'VP Sales',
+      icp_tier: '1',
+      annual_revenue: '$5M'
+    });
+  });
+});

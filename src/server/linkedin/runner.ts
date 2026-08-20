@@ -1,9 +1,25 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
-import { recordAction } from './actions.js';
-import { ACTION_GAP_SECONDS, bandFor, effectiveDailyCeiling, seatOperatorLimit } from './limits.js';
+import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
+import { acceptedTri, repliedTri } from './branching.js';
+import { runCampaignChannelActions } from './campaign-channels.js';
 import {
+  decideAdmission,
+  workflowAdmissionDemand,
+  type AdmissionKind,
+  type AdmissionPolicy
+} from './admission.js';
+import {
+  ACTION_GAP_SECONDS,
+  INMAIL_MONTHLY_QUOTA,
+  bandFor,
+  effectiveDailyCeiling,
+  seatOperatorLimit
+} from './limits.js';
+import {
+  admitPendingCampaignMembers,
   campaignActionLimit,
+  campaignAdmissionForecast,
   campaignSnapshotSteps,
   enrolNewContacts
 } from './managed-campaigns.js';
@@ -61,8 +77,34 @@ export interface RunnerResult {
 }
 
 /** Ledger kinds a workflow step can produce, and the four the ramp is budgeted per. */
-const BUDGETED_KINDS = ['invite', 'dm', 'profile_view', 'follow'] as const;
+const BUDGETED_KINDS = [
+  'invite',
+  'dm',
+  'inmail',
+  'profile_view',
+  'follow',
+  'like',
+  'endorse'
+] as const;
 type BudgetedKind = (typeof BUDGETED_KINDS)[number];
+const MANAGED_LEDGER_KINDS: readonly LinkedInActionKind[] = [
+  'invite',
+  'dm',
+  'inmail',
+  'profile_view',
+  'follow',
+  'unfollow',
+  'disconnect',
+  'company_follow',
+  'company_like',
+  'company_invite_follow',
+  'event_invite',
+  'group_invite',
+  'group_message',
+  'event_message',
+  'like',
+  'endorse'
+];
 
 /** Statuses that still hold the one-active-campaign claim on a contact. */
 const LIVE_MEMBER_STATUSES = ['pending', 'active', 'waiting', 'manual', 'paused'] as const;
@@ -95,9 +137,23 @@ const UNSENT_INVITE_RECHECK_MS = 3_600_000;
 interface CampaignRow {
   id: string;
   seat_key: string;
+  sender_keys_json: unknown;
+  mailbox_assignments_json: unknown;
   workflow_id: string;
   lead_list_id: string;
   sequence_json: unknown;
+  priority: number;
+  admission_policy_json: unknown;
+  scheduled_start_at: string | null;
+  scheduled_end_at: string | null;
+  schedule_days_json: unknown;
+  schedule_start_minute: number | null;
+  schedule_end_minute: number | null;
+  end_behavior: string;
+  inmail_credit_cap: number | null;
+  last_admission_at: string | null;
+  last_planned_at: string | null;
+  created_at: string;
   started_at: string | null;
 }
 
@@ -107,7 +163,13 @@ interface DueMemberRow {
   step_index: number;
   current_step_id: string | null;
   completed_step_ids: unknown;
+  next_eligible_at: string | null;
+  admitted_at: string | null;
+  assigned_seat_key: string | null;
+  workflow_snapshot_json: unknown;
+  workflow_version: number | null;
   assigned_variants: unknown;
+  branch_state_json: unknown;
   first_name: string;
   last_name: string;
   company: string;
@@ -115,6 +177,7 @@ interface DueMemberRow {
   phone: string | null;
   country: string | null;
   profile_url: string | null;
+  custom_fields_json: unknown;
 }
 
 interface InviteRow {
@@ -149,19 +212,42 @@ function seatDailyCeilingFor(seat: LinkedInSeat, kind: BudgetedKind, now: Date):
   return effectiveDailyCeiling(band.perDay, seatOperatorLimit(seat, kind), seat.safetyBandOverride);
 }
 
-/** The ledger kind a step writes, or null for the two steps that write none. */
-function kindForStep(step: WorkflowStep): BudgetedKind | null {
+/** The exact ledger kind a step writes. */
+function ledgerKindForStep(step: WorkflowStep): LinkedInActionKind | null {
   switch (step.action) {
     case 'connection_request':
       return 'invite';
     case 'message':
       return 'dm';
+    case 'inmail':
+      return 'inmail';
     case 'profile_view':
       return 'profile_view';
     case 'follow':
       return 'follow';
-    case 'manual_message':
-    case 'withdraw_pending':
+    case 'unfollow':
+      return 'unfollow';
+    case 'disconnect':
+      return 'disconnect';
+    case 'follow_company':
+      return 'company_follow';
+    case 'like_company_post':
+      return 'company_like';
+    case 'invite_to_follow_company':
+      return 'company_invite_follow';
+    case 'invite_to_event':
+      return 'event_invite';
+    case 'invite_to_group':
+      return 'group_invite';
+    case 'group_message':
+      return 'group_message';
+    case 'event_message':
+      return 'event_message';
+    case 'like_post':
+      return 'like';
+    case 'endorse_skills':
+      return 'endorse';
+    default:
       return null;
   }
 }
@@ -199,6 +285,71 @@ function resolveMemberStep(
   let index = lastCompletedIndex >= 0 ? lastCompletedIndex + 1 : Math.max(0, fallbackIndex);
   while (index < steps.length && completed.has(steps[index].id)) index += 1;
   return { index, step: steps[index] ?? null };
+}
+
+/** Capacity bucket a step consumes. Several distinct ledger kinds intentionally share one. */
+function budgetKindForStep(step: WorkflowStep): BudgetedKind | null {
+  const ledger = ledgerKindForStep(step);
+  return ledger ? budgetKindForLedgerKind(ledger) : null;
+}
+
+function budgetKindForLedgerKind(kind: LinkedInActionKind): BudgetedKind | null {
+  if (
+    kind === 'invite' ||
+    kind === 'company_invite_follow' ||
+    kind === 'event_invite' ||
+    kind === 'group_invite'
+  )
+    return 'invite';
+  if (kind === 'dm' || kind === 'group_message' || kind === 'event_message') return 'dm';
+  if (kind === 'inmail') return 'inmail';
+  if (kind === 'profile_view') return 'profile_view';
+  if (
+    kind === 'follow' ||
+    kind === 'unfollow' ||
+    kind === 'disconnect' ||
+    kind === 'company_follow'
+  )
+    return 'follow';
+  if (kind === 'like' || kind === 'company_like') return 'like';
+  if (kind === 'endorse') return 'endorse';
+  return null;
+}
+
+function admissionKindForStep(step: WorkflowStep): AdmissionKind | null {
+  return budgetKindForStep(step);
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return {};
+          }
+        })()
+      : value;
+  return raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {};
+}
+
+function parseStringArray(value: unknown): string[] {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : value;
+  return Array.isArray(raw)
+    ? raw.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+    : [];
 }
 
 function parseVariants(value: unknown): Record<string, string> {
@@ -414,7 +565,7 @@ export async function runManagedCampaigns(
   workspaceId: string,
   now: Date = new Date()
 ): Promise<RunnerResult> {
-  return db.withConnection('linkedin-runner-lease', async (lease) => {
+  const planned = await db.withConnection('linkedin-runner-lease', async (lease) => {
     const claimed = await lease.query<{ locked: boolean }>(
       'SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS locked',
       [RUNNER_LEASE_NAMESPACE, workspaceId]
@@ -439,6 +590,349 @@ export async function runManagedCampaigns(
         .catch(() => undefined);
     }
   });
+  // API-backed channels execute outside the LinkedIn planner lease: a mailbox or webhook
+  // network call must never hold the workspace's scheduling lock.
+  await runCampaignChannelActions(db, workspaceId, now);
+  return planned;
+}
+
+type ConditionOutcome = 'yes' | 'no' | 'unknown';
+
+function parseIso(value: unknown): Date | null {
+  if (typeof value !== 'string') return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? new Date(ms) : null;
+}
+
+function scheduleDays(value: unknown): number[] | null {
+  const raw =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : value;
+  if (!Array.isArray(raw)) return null;
+  const days = raw.filter((day): day is number => Number.isInteger(day) && day >= 0 && day <= 6);
+  return days.length > 0 ? days : [];
+}
+
+function campaignSeatWindow(seat: LinkedInSeat, campaign: CampaignRow): LinkedInSeat {
+  const overrideDays = scheduleDays(campaign.schedule_days_json);
+  const workingDays =
+    overrideDays === null
+      ? seat.workingDays
+      : seat.workingDays.filter((day) => overrideDays.includes(day));
+  const workStartMinute =
+    campaign.schedule_start_minute === null
+      ? seat.workStartMinute
+      : Math.max(seat.workStartMinute, campaign.schedule_start_minute);
+  const workEndMinute =
+    campaign.schedule_end_minute === null
+      ? seat.workEndMinute
+      : Math.min(seat.workEndMinute, campaign.schedule_end_minute);
+  return { ...seat, workingDays, workStartMinute, workEndMinute };
+}
+
+function campaignStartedForSchedule(campaign: CampaignRow, now: Date): boolean {
+  const start = parseIso(campaign.scheduled_start_at);
+  return !start || now.getTime() >= start.getTime();
+}
+
+function campaignAdmissionOpen(campaign: CampaignRow, now: Date): boolean {
+  if (!campaignStartedForSchedule(campaign, now)) return false;
+  const end = parseIso(campaign.scheduled_end_at);
+  return !end || now.getTime() < end.getTime();
+}
+
+async function evaluateWorkflowCondition(
+  db: Db,
+  workspaceId: string,
+  member: DueMemberRow,
+  condition: Extract<WorkflowStep, { action: 'condition' | 'monitor' }>['config']['condition'],
+  probeStepId?: string
+): Promise<ConditionOutcome> {
+  const branchState = parseJsonObject(member.branch_state_json);
+  const key = `condition:${condition.kind}`;
+  if (branchState[key] === true) return 'yes';
+  if (branchState[key] === false) return 'no';
+
+  if (condition.kind === 'email_available' || condition.kind === 'email_found') {
+    return member.email && member.email.trim().length > 0 ? 'yes' : 'no';
+  }
+
+  if (condition.kind === 'open_profile') {
+    const probe = await db
+      .prepare(
+        `SELECT external_ref,status FROM linkedin_actions
+         WHERE workspace_id=? AND campaign_member_id=? AND kind='profile_view' AND workflow_step_id=?
+         ORDER BY created_at DESC LIMIT 1`
+      )
+      .get<{ external_ref: string | null; status: string }>(
+        workspaceId,
+        member.id,
+        probeStepId ?? ''
+      );
+    if (probe?.external_ref === 'open-profile:true') return 'yes';
+    if (probe?.external_ref === 'open-profile:false') return 'no';
+    return 'unknown';
+  }
+
+  if (condition.kind === 'connected') {
+    const known = await db
+      .prepare(
+        `SELECT status,failure_kind,external_ref FROM linkedin_actions
+         WHERE workspace_id=? AND campaign_member_id=?
+           AND (kind='invite' OR (kind='profile_view' AND workflow_step_id=?))
+         ORDER BY created_at DESC LIMIT 10`
+      )
+      .all<{ status: string; failure_kind: string | null; external_ref: string | null }>(
+        workspaceId,
+        member.id,
+        probeStepId ?? ''
+      );
+    if (
+      known.some(
+        (row) =>
+          row.status === 'accepted' ||
+          row.status === 'replied' ||
+          row.failure_kind === 'already_connected'
+      )
+    )
+      return 'yes';
+    const probe = known.find(
+      (row) =>
+        typeof row.external_ref === 'string' && row.external_ref.startsWith('connection-degree:')
+    );
+    if (probe?.external_ref === 'connection-degree:1') return 'yes';
+    if (
+      probe?.external_ref === 'connection-degree:2' ||
+      probe?.external_ref === 'connection-degree:3'
+    )
+      return 'no';
+    return 'unknown';
+  }
+
+  if (condition.kind === 'accepted') {
+    if (!condition.ofStepId) return 'unknown';
+    const action = await db
+      .prepare(
+        `SELECT status FROM linkedin_actions
+         WHERE workspace_id=? AND campaign_member_id=? AND workflow_step_id=? AND kind='invite'
+         ORDER BY created_at DESC LIMIT 1`
+      )
+      .get<{ status: string }>(workspaceId, member.id, condition.ofStepId);
+    if (!action) return 'unknown';
+    return acceptedTri(action.status as LinkedInActionStatus);
+  }
+
+  if (condition.kind === 'replied') {
+    if (condition.ofStepId) {
+      const action = await db
+        .prepare(
+          `SELECT status FROM linkedin_actions
+           WHERE workspace_id=? AND campaign_member_id=? AND workflow_step_id=?
+           ORDER BY created_at DESC LIMIT 1`
+        )
+        .get<{ status: string }>(workspaceId, member.id, condition.ofStepId);
+      if (action) {
+        const verdict = repliedTri(action.status as LinkedInActionStatus);
+        if (verdict !== 'unknown') return verdict;
+      }
+    }
+    if (member.profile_url) {
+      const replied = await repliedProfiles(db, workspaceId, [member.profile_url]);
+      if (replied.has(targetKey(member.profile_url))) return 'yes';
+    }
+    return 'unknown';
+  }
+
+  // External-channel and capability evidence is written into branch_state_json by the
+  // channel executor. Unknown stays unknown; Monitor is what turns time into a No.
+  const externalValue = branchState[`external:${condition.kind}`];
+  if (externalValue === true) return 'yes';
+  if (externalValue === false) return 'no';
+  return 'unknown';
+}
+
+function monitorState(branchState: unknown, stepId: string): { startedAt: string | null } {
+  const raw = parseJsonObject(branchState)[`monitor:${stepId}`];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { startedAt: null };
+  const startedAt = (raw as Record<string, unknown>).startedAt;
+  return { startedAt: typeof startedAt === 'string' ? startedAt : null };
+}
+
+function branchStatePatch(key: string, value: unknown): string {
+  return JSON.stringify({ [key]: value });
+}
+
+function stayOnStep(
+  stepIndex: number,
+  currentStepId: string | null,
+  completedStepIds: readonly string[],
+  nextEligibleAt: Date | null,
+  now: Date,
+  branchState: string | null = null
+): MemberWrite {
+  return {
+    stepIndex,
+    currentStepId,
+    completedStepIds: [...completedStepIds],
+    status: 'waiting',
+    nextEligibleAt: nextEligibleAt?.toISOString() ?? null,
+    lastActionId: null,
+    variants: null,
+    branchState,
+    updatedAt: now.toISOString()
+  };
+}
+
+function targetIndexForBranch(steps: readonly WorkflowStep[], targetStepId: string): number | null {
+  return indexOfStepId(steps, targetStepId);
+}
+
+function queuePriorityForStep(
+  step: WorkflowStep,
+  stepIndex: number,
+  now: Date,
+  dueAt: string | null
+): number {
+  // Continuation before acquisition, then reply-sensitive/message work, then overdue age.
+  let score = stepIndex > 0 ? 1_000 : 0;
+  if (step.action === 'message' || step.action === 'manual_message' || step.action === 'monitor')
+    score += 300;
+  if (
+    step.action === 'connection_request' ||
+    step.action === 'invite_to_follow_company' ||
+    step.action === 'invite_to_event' ||
+    step.action === 'invite_to_group'
+  )
+    score += 150;
+  if (step.action === 'unfollow' || step.action === 'disconnect') score -= 250;
+  if (
+    step.action === 'profile_view' ||
+    step.action === 'follow' ||
+    step.action === 'follow_company' ||
+    step.action === 'like_company_post' ||
+    step.action === 'like_post' ||
+    step.action === 'endorse_skills'
+  )
+    score += 50;
+  if (dueAt) {
+    const due = Date.parse(dueAt);
+    if (Number.isFinite(due) && due < now.getTime()) {
+      const overdueMs = now.getTime() - due;
+      score += Math.min(500, Math.floor(overdueMs / 3_600_000));
+      if (step.sla) {
+        const slaMs = delayMilliseconds(step.sla);
+        if (slaMs > 0 && overdueMs >= slaMs) {
+          // A breached continuation SLA outranks ordinary continuation age.
+          score += 1_000 + Math.min(1_000, Math.floor((overdueMs - slaMs) / 3_600_000));
+        }
+      }
+    }
+  }
+  return score;
+}
+
+function workflowStepsForMember(
+  member: Pick<DueMemberRow, 'workflow_snapshot_json'>,
+  fallback: readonly WorkflowStep[]
+): WorkflowStep[] {
+  const snapshot = campaignSnapshotSteps(member.workflow_snapshot_json);
+  return snapshot.length > 0 ? snapshot : [...fallback];
+}
+
+function campaignPriorityWeight(priority: number): number {
+  return priority > 0 ? 4 : priority < 0 ? 1 : 2;
+}
+
+function campaignSenderKeys(campaign: CampaignRow): string[] {
+  const configured = parseStringArray(campaign.sender_keys_json);
+  return configured.length > 0 ? configured : [campaign.seat_key];
+}
+
+function campaignPlanningOpen(campaign: CampaignRow, now: Date): boolean {
+  if (!campaignStartedForSchedule(campaign, now)) return false;
+  const end = parseIso(campaign.scheduled_end_at);
+  if (!end || now.getTime() < end.getTime()) return true;
+  return campaign.end_behavior === 'finish_waves';
+}
+
+/** Capacity buckets this workflow may need while it still has live/pending work. */
+function workflowPlanningDemandKinds(steps: readonly WorkflowStep[]): BudgetedKind[] {
+  const kinds = new Set<BudgetedKind>();
+  for (const step of steps) {
+    const kind = budgetKindForStep(step);
+    if (kind) kinds.add(kind);
+    if (
+      (step.action === 'condition' || step.action === 'monitor') &&
+      (step.config.condition.kind === 'connected' || step.config.condition.kind === 'open_profile')
+    )
+      kinds.add('profile_view');
+  }
+  return [...kinds];
+}
+
+function fairQuotaKey(campaignId: string, seatKey: string, kind: BudgetedKind): string {
+  return `${campaignId}\u0000${seatKey}\u0000${kind}`;
+}
+
+/**
+ * Split an integer seat remainder between campaigns. Every demanding campaign
+ * receives one slot before priority weights matter when capacity permits. When
+ * capacity is scarcer than campaign count, oldest `last_planned_at` wins and is
+ * moved to the back when it actually plans work, producing deterministic
+ * round-robin starvation protection across ticks.
+ */
+export function allocateCampaignCapacity(
+  total: number,
+  campaigns: readonly Pick<CampaignRow, 'id' | 'priority' | 'last_planned_at' | 'created_at'>[]
+): Map<string, number> {
+  const capacity = Math.max(0, Math.trunc(total));
+  const out = new Map(campaigns.map((campaign) => [campaign.id, 0]));
+  if (capacity === 0 || campaigns.length === 0) return out;
+  const oldest = [...campaigns].sort((left, right) => {
+    const la = Date.parse(left.last_planned_at ?? left.created_at);
+    const ra = Date.parse(right.last_planned_at ?? right.created_at);
+    if (la !== ra) return la - ra;
+    if (left.priority !== right.priority) return right.priority - left.priority;
+    return left.id.localeCompare(right.id);
+  });
+  if (capacity < oldest.length) {
+    for (const campaign of oldest.slice(0, capacity)) out.set(campaign.id, 1);
+    return out;
+  }
+
+  for (const campaign of campaigns) out.set(campaign.id, 1);
+  let remaining = capacity - campaigns.length;
+  if (remaining <= 0) return out;
+  const weightTotal = campaigns.reduce(
+    (sum, campaign) => sum + campaignPriorityWeight(campaign.priority),
+    0
+  );
+  const fractions: Array<{ id: string; fraction: number }> = [];
+  let assigned = 0;
+  for (const campaign of campaigns) {
+    const raw = (remaining * campaignPriorityWeight(campaign.priority)) / Math.max(1, weightTotal);
+    const whole = Math.floor(raw);
+    out.set(campaign.id, (out.get(campaign.id) ?? 0) + whole);
+    assigned += whole;
+    fractions.push({ id: campaign.id, fraction: raw - whole });
+  }
+  let leftover = remaining - assigned;
+  fractions.sort(
+    (left, right) => right.fraction - left.fraction || left.id.localeCompare(right.id)
+  );
+  for (const row of fractions) {
+    if (leftover <= 0) break;
+    out.set(row.id, (out.get(row.id) ?? 0) + 1);
+    leftover -= 1;
+  }
+  return out;
 }
 
 async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Promise<RunnerResult> {
@@ -453,7 +947,10 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
   const campaigns = await db
     .prepare(
       `
-    SELECT id, seat_key, workflow_id, lead_list_id, sequence_json,
+    SELECT id,seat_key,sender_keys_json,mailbox_assignments_json,workflow_id,lead_list_id,sequence_json,priority,admission_policy_json,
+           scheduled_start_at,scheduled_end_at,schedule_days_json,schedule_start_minute,schedule_end_minute,end_behavior,inmail_credit_cap,last_admission_at,
+           TO_CHAR(last_planned_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS last_planned_at,
+           TO_CHAR(created_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS created_at,
            TO_CHAR(started_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS started_at
     FROM linkedin_campaigns
     WHERE workspace_id=? AND status='running' AND lead_list_id IS NOT NULL AND workflow_id IS NOT NULL
@@ -463,135 +960,423 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
     .all<CampaignRow>(workspaceId);
   if (campaigns.length === 0) return result;
 
-  // One seat may carry several campaigns. Both caches are per tick: the seat
-  // row does not change under us, and the slot floor MUST be shared or two
-  // campaigns would each schedule against the same starting point.
   const seats = new Map<string, LinkedInSeat | null>();
   const floors = new Map<string, Date | null>();
 
+  const loadSeat = async (seatKey: string): Promise<LinkedInSeat | null> => {
+    if (!seats.has(seatKey)) seats.set(seatKey, (await getSeat(db, workspaceId, seatKey)) ?? null);
+    return seats.get(seatKey) ?? null;
+  };
+
+  // ONE SEAT BUDGET, shared by every campaign that can spend it this tick.
+  // Before this pre-pass, each campaign independently subtracted only its own
+  // planned rows from the same seat ceiling. Two campaigns could therefore
+  // each plan "the remaining 10" and leave the send-time guard to reject the
+  // oversubscription. Fairness must happen before planning, not as a refusal
+  // after a browser worker has a queue.
+  const windowStart = new Date(now.getTime() - 86_400_000).toISOString();
+  const windowEnd = new Date(now.getTime() + 86_400_000).toISOString();
+  const cachedSteps = new Map<string, WorkflowStep[]>();
+  const cachedUsableSenders = new Map<string, Array<{ key: string; seat: LinkedInSeat }>>();
+  const demanders = new Map<string, CampaignRow[]>();
+  const seatsInDemand = new Set<string>();
+
   for (const campaign of campaigns) {
-    /* --- The steps this campaign is running. ---
-     *
-     * ITS OWN SNAPSHOT, NOT A LIVE READ OF THE WORKFLOW, and the difference is
-     * a promise the product makes out loud: the campaign screen says "editing
-     * one does not change campaigns already running on it". Loading the
-     * workflow by id here made that false -- saving an edit rewrote the
-     * sequence of every campaign already mid-flight, so a member who had had
-     * step 2 of the old workflow got step 3 of the new one, and shortening a
-     * workflow completed everybody past its new end.
-     *
-     * `startManagedCampaign` writes the snapshot, because STARTING is the
-     * operator's act of choosing a version. An edit therefore reaches a
-     * running campaign when, and only when, somebody restarts it.
-     *
-     * The live workflow is the FALLBACK, for campaigns created before this
-     * file read snapshots. A campaign with neither is one that cannot tick;
-     * skipped rather than thrown, because one broken campaign must not stop
-     * every other one.
-     */
+    if (!campaignPlanningOpen(campaign, now)) continue;
     const snapshot = campaignSnapshotSteps(campaign.sequence_json);
     const steps =
       snapshot.length > 0
         ? snapshot
         : ((await getWorkflow(db, workspaceId, campaign.workflow_id))?.steps ?? []);
     if (steps.length === 0) continue;
+    cachedSteps.set(campaign.id, steps);
 
-    if (!seats.has(campaign.seat_key)) {
-      seats.set(campaign.seat_key, (await getSeat(db, workspaceId, campaign.seat_key)) ?? null);
+    const live = await db
+      .prepare(
+        `SELECT EXISTS(
+           SELECT 1 FROM linkedin_campaign_members
+           WHERE workspace_id=? AND campaign_id=?
+             AND status IN ('pending','active','waiting')
+         ) AS live`
+      )
+      .get<{ live: boolean }>(workspaceId, campaign.id);
+    if (live?.live !== true) continue;
+
+    const usable: Array<{ key: string; seat: LinkedInSeat }> = [];
+    for (const key of campaignSenderKeys(campaign)) {
+      const loaded = await loadSeat(key);
+      if (!loaded) continue;
+      const posture = effectivePosture(loaded, now);
+      if (posture === 'paused' || posture === 'cooldown') continue;
+      const scoped = campaignSeatWindow(loaded, campaign);
+      if (scoped.workingDays.length === 0 || scoped.workEndMinute <= scoped.workStartMinute)
+        continue;
+      usable.push({ key, seat: scoped });
+      seatsInDemand.add(key);
+      for (const kind of workflowPlanningDemandKinds(steps)) {
+        const mapKey = `${key}\u0000${kind}`;
+        const rows = demanders.get(mapKey) ?? [];
+        if (!rows.some((row) => row.id === campaign.id)) rows.push(campaign);
+        demanders.set(mapKey, rows);
+      }
     }
-    const seat = seats.get(campaign.seat_key) ?? null;
-    if (!seat) {
+    cachedUsableSenders.set(campaign.id, usable);
+  }
+
+  const sharedRemaining = new Map<string, Map<BudgetedKind, number>>();
+  const paidInmailSeatRemaining = new Map<string, number>();
+  for (const seatKey of seatsInDemand) {
+    const seat = await loadSeat(seatKey);
+    if (!seat) continue;
+    const used = await db
+      .prepare(
+        `SELECT kind,COUNT(*)::int AS total FROM linkedin_actions
+         WHERE workspace_id=? AND seat_key=? AND status<>'skipped'
+           AND planned_for IS NOT NULL AND planned_for>=?::timestamptz AND planned_for<=?::timestamptz
+           AND kind = ANY(?::text[]) GROUP BY kind`
+      )
+      .all<{ kind: string; total: number }>(workspaceId, seatKey, windowStart, windowEnd, [
+        ...MANAGED_LEDGER_KINDS
+      ]);
+    const usedByKind = new Map<BudgetedKind, number>();
+    for (const row of used) {
+      const bucket = budgetKindForLedgerKind(row.kind as LinkedInActionKind);
+      if (bucket) usedByKind.set(bucket, (usedByKind.get(bucket) ?? 0) + Number(row.total));
+    }
+    const inmailUsage = await db
+      .prepare(
+        `SELECT COUNT(*) FILTER (WHERE kind='inmail' AND status<>'skipped')::int AS total,
+                COUNT(*) FILTER (WHERE kind='inmail' AND paid_credit_used=TRUE AND status<>'skipped')::int AS paid
+         FROM linkedin_actions
+         WHERE workspace_id=? AND seat_key=? AND COALESCE(recorded_at,planned_for,created_at)>=?::timestamptz`
+      )
+      .get<{ total: number; paid: number }>(
+        workspaceId,
+        seatKey,
+        new Date(now.getTime() - 30 * 86_400_000).toISOString()
+      );
+    const byKind = new Map<BudgetedKind, number>();
+    for (const kind of BUDGETED_KINDS) {
+      let remaining = Math.max(
+        0,
+        seatDailyCeilingFor(seat, kind, now) - (usedByKind.get(kind) ?? 0)
+      );
+      if (kind === 'inmail') {
+        const monthlyLimit = seat.inmailMonthlyBudget ?? INMAIL_MONTHLY_QUOTA;
+        remaining = Math.min(
+          remaining,
+          Math.max(0, monthlyLimit - Number(inmailUsage?.total ?? 0))
+        );
+      }
+      byKind.set(kind, remaining);
+    }
+    sharedRemaining.set(seatKey, byKind);
+    paidInmailSeatRemaining.set(
+      seatKey,
+      Math.max(0, (seat.inmailPaidCreditCap ?? 0) - Number(inmailUsage?.paid ?? 0))
+    );
+  }
+
+  const fairQuota = new Map<string, number>();
+  for (const [mapKey, rows] of demanders) {
+    const split = mapKey.indexOf('\u0000');
+    const seatKey = mapKey.slice(0, split);
+    const kind = mapKey.slice(split + 1) as BudgetedKind;
+    const total = sharedRemaining.get(seatKey)?.get(kind) ?? 0;
+    for (const [campaignId, quota] of allocateCampaignCapacity(total, rows))
+      fairQuota.set(fairQuotaKey(campaignId, seatKey, kind), quota);
+  }
+
+  for (const campaign of campaigns) {
+    const cached = cachedSteps.get(campaign.id);
+    const snapshot = cached ? [] : campaignSnapshotSteps(campaign.sequence_json);
+    const steps =
+      cached ??
+      (snapshot.length > 0
+        ? snapshot
+        : ((await getWorkflow(db, workspaceId, campaign.workflow_id))?.steps ?? []));
+    if (steps.length === 0) continue;
+
+    if (!campaignStartedForSchedule(campaign, now)) continue;
+    const endAt = parseIso(campaign.scheduled_end_at);
+    const ended = Boolean(endAt && now.getTime() >= endAt.getTime());
+    if (ended && campaign.end_behavior === 'stop_immediately') {
+      const timestamp = now.toISOString();
+      await db.transaction(async (tx) => {
+        await tx
+          .prepare(
+            `UPDATE linkedin_campaigns SET status='stopped',updated_at=? WHERE workspace_id=? AND id=? AND status='running'`
+          )
+          .run(timestamp, workspaceId, campaign.id);
+        await tx
+          .prepare(
+            `UPDATE linkedin_campaign_members SET status='removed',next_eligible_at=NULL,ended_at=?::timestamptz,updated_at=?::timestamptz WHERE workspace_id=? AND campaign_id=? AND status = ANY(?::text[])`
+          )
+          .run(timestamp, timestamp, workspaceId, campaign.id, [...LIVE_MEMBER_STATUSES]);
+        await tx
+          .prepare(
+            `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL WHERE workspace_id=? AND campaign_id=? AND status IN ('planned','held') AND claimed_at IS NULL`
+          )
+          .run(workspaceId, campaign.id);
+      });
+      continue;
+    }
+    if (ended && campaign.end_behavior === 'pause_all') {
+      const timestamp = now.toISOString();
+      await db.transaction(async (tx) => {
+        await tx
+          .prepare(
+            `UPDATE linkedin_campaigns SET status='paused',paused_at=?::timestamptz,updated_at=?::timestamptz WHERE workspace_id=? AND id=? AND status='running'`
+          )
+          .run(timestamp, timestamp, workspaceId, campaign.id);
+        await tx
+          .prepare(
+            `UPDATE linkedin_actions SET status='held' WHERE workspace_id=? AND campaign_id=? AND status='planned' AND claimed_at IS NULL`
+          )
+          .run(workspaceId, campaign.id);
+      });
+      continue;
+    }
+
+    const usableSenders =
+      cachedUsableSenders.get(campaign.id) ??
+      (await (async () => {
+        const usable: Array<{ key: string; seat: LinkedInSeat }> = [];
+        for (const key of campaignSenderKeys(campaign)) {
+          const loaded = await loadSeat(key);
+          if (!loaded) continue;
+          const posture = effectivePosture(loaded, now);
+          if (posture === 'paused' || posture === 'cooldown') continue;
+          const scoped = campaignSeatWindow(loaded, campaign);
+          if (scoped.workingDays.length === 0 || scoped.workEndMinute <= scoped.workStartMinute)
+            continue;
+          usable.push({ key, seat: scoped });
+        }
+        return usable;
+      })());
+    for (const sender of usableSenders)
+      if (!floors.has(sender.key))
+        floors.set(sender.key, await ledgerFloorFor(db, workspaceId, sender.key));
+    if (usableSenders.length === 0) {
       const blocked = await db
         .prepare(
-          `
-        SELECT COUNT(*)::int AS total FROM linkedin_campaign_members
-        WHERE workspace_id=? AND campaign_id=? AND status IN ('active','waiting')
-      `
+          `SELECT COUNT(*)::int AS total FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=? AND status IN ('active','waiting')`
         )
         .get<{ total: number }>(workspaceId, campaign.id);
       result.membersBlocked += blocked?.total ?? 0;
       continue;
     }
-    if (!floors.has(campaign.seat_key)) {
-      floors.set(campaign.seat_key, await ledgerFloorFor(db, workspaceId, campaign.seat_key));
-    }
 
     result.campaignsTicked += 1;
-
-    /* --- Contacts imported into this campaign's list since it started. ---
-     *
-     * Enrolment lived only in `createManagedCampaign`, so a campaign's
-     * membership was a photograph taken at creation and every lead added to
-     * the list afterwards was invisible to it forever. Done per tick, and only
-     * for a RUNNING campaign, which is what this loop already selects for.
-     */
-    await enrolNewContacts(
-      db,
-      workspaceId,
-      { id: campaign.id, leadListId: campaign.lead_list_id, steps },
-      now
-    );
-
-    /* --- The campaign warm-up budget. ---
-     *
-     * `campaignActionLimit` is the ramp; what it is measured against is every
-     * row this campaign has PLANNED, not what the seat has sent. A ceiling
-     * counted on confirmed sends would let one tick plan a week of invites for
-     * tomorrow morning and discover the problem from a restriction notice,
-     * which is precisely the failure the ramp exists to prevent. Rolling, not
-     * calendar, for the reason `actions.ts` gives.
-     *
-     * THE WINDOW LOOKS BOTH WAYS, and that is deliberate. A forward-only
-     * window ("the 24 hours ending at now+24h") re-grants the whole ramp on
-     * every tick: slots placed a minute ago fall out of it the moment the
-     * clock moves, so a campaign capped at two invites a day plans two more
-     * every time the job runs. Charging the 24 hours already spent as well as
-     * the 24 booked ahead is the conservative way to be wrong -- a ramp that
-     * under-grants delays a campaign, and one that over-grants is the ban this
-     * whole subsystem exists to avoid.
-     */
-    const windowStart = new Date(now.getTime() - 86_400_000).toISOString();
-    const windowEnd = new Date(now.getTime() + 86_400_000).toISOString();
-    const used = await db
-      .prepare(
-        `
-      SELECT kind, COUNT(*)::int AS total FROM linkedin_actions
-      WHERE workspace_id=? AND campaign_id=? AND status <> 'skipped'
-        AND planned_for IS NOT NULL AND planned_for >= ?::timestamptz AND planned_for <= ?::timestamptz
-        AND kind = ANY(?::text[])
-      GROUP BY kind
-    `
-      )
-      .all<{ kind: string; total: number }>(workspaceId, campaign.id, windowStart, windowEnd, [
-        ...BUDGETED_KINDS
-      ]);
-    const usedByKind = new Map(used.map((row) => [row.kind, Number(row.total)]));
-    const budget = new Map<BudgetedKind, number>();
-    for (const kind of BUDGETED_KINDS) {
-      // The ramp is a percentage of THE CEILING THE GATE WILL ENFORCE, not of
-      // the raw operator setting -- see `seatDailyCeilingFor`.
-      const limit = campaignActionLimit(
-        seatDailyCeilingFor(seat, kind, now),
-        campaign.started_at,
+    const actionsBeforeCampaign = result.actionsPlanned;
+    const admissionOpen = campaignAdmissionOpen(campaign, now);
+    if (admissionOpen) {
+      await enrolNewContacts(
+        db,
+        workspaceId,
+        { id: campaign.id, leadListId: campaign.lead_list_id, steps },
         now
       );
-      budget.set(kind, Math.max(0, limit - (usedByKind.get(kind) ?? 0)));
+    } else if (ended && campaign.end_behavior === 'finish_waves') {
+      // The audience that never entered a wave must not keep the campaign alive forever.
+      await db
+        .prepare(
+          `UPDATE linkedin_campaign_members SET status='excluded',exclusion_reason='Campaign admission window ended',ended_at=?::timestamptz,updated_at=?::timestamptz
+         WHERE workspace_id=? AND campaign_id=? AND status='pending' AND admitted_at IS NULL`
+        )
+        .run(now.toISOString(), now.toISOString(), workspaceId, campaign.id);
+    }
+
+    const budgetBySeat = new Map<string, Map<BudgetedKind, number>>();
+    const paidInmailRemainingBySeat = new Map<string, number>();
+    for (const sender of usableSenders) {
+      // Campaign warm-up is a SECOND, narrower ceiling inside the fair share.
+      // Count this campaign's already-planned rows so a rerun of the same tick
+      // cannot spend its share twice.
+      const used = await db
+        .prepare(
+          `SELECT kind,COUNT(*)::int AS total FROM linkedin_actions
+         WHERE workspace_id=? AND campaign_id=? AND seat_key=? AND status<>'skipped'
+           AND planned_for IS NOT NULL AND planned_for>=?::timestamptz AND planned_for<=?::timestamptz
+           AND kind = ANY(?::text[]) GROUP BY kind`
+        )
+        .all<{ kind: string; total: number }>(
+          workspaceId,
+          campaign.id,
+          sender.key,
+          windowStart,
+          windowEnd,
+          [...MANAGED_LEDGER_KINDS]
+        );
+      const campaignUsed = new Map<BudgetedKind, number>();
+      for (const row of used) {
+        const bucket = budgetKindForLedgerKind(row.kind as LinkedInActionKind);
+        if (bucket) campaignUsed.set(bucket, (campaignUsed.get(bucket) ?? 0) + Number(row.total));
+      }
+      const budget = new Map<BudgetedKind, number>();
+      for (const kind of BUDGETED_KINDS) {
+        const fairShare = fairQuota.get(fairQuotaKey(campaign.id, sender.key, kind)) ?? 0;
+        const campaignLimit = campaignActionLimit(
+          seatDailyCeilingFor(sender.seat, kind, now),
+          campaign.started_at,
+          now
+        );
+        budget.set(
+          kind,
+          Math.min(fairShare, Math.max(0, campaignLimit - (campaignUsed.get(kind) ?? 0)))
+        );
+      }
+
+      const campaignPaid = await db
+        .prepare(
+          `SELECT COUNT(*)::int AS total FROM linkedin_actions
+           WHERE workspace_id=? AND campaign_id=? AND seat_key=? AND kind='inmail'
+             AND paid_credit_used=TRUE AND status<>'skipped'
+             AND COALESCE(recorded_at,planned_for,created_at)>=?::timestamptz`
+        )
+        .get<{ total: number }>(
+          workspaceId,
+          campaign.id,
+          sender.key,
+          new Date(now.getTime() - 30 * 86_400_000).toISOString()
+        );
+      const campaignPaidRemaining = Math.max(
+        0,
+        (campaign.inmail_credit_cap ?? 0) - Number(campaignPaid?.total ?? 0)
+      );
+      paidInmailRemainingBySeat.set(
+        sender.key,
+        Math.min(paidInmailSeatRemaining.get(sender.key) ?? 0, campaignPaidRemaining)
+      );
+      budgetBySeat.set(sender.key, budget);
+    }
+
+    if (admissionOpen) {
+      const counts = await db
+        .prepare(
+          `SELECT
+           COUNT(*) FILTER (WHERE status='pending' AND admitted_at IS NULL)::int AS pending,
+           COUNT(*) FILTER (WHERE admitted_at IS NOT NULL AND status IN ('active','waiting','manual','paused'))::int AS in_sequence,
+           COUNT(*) FILTER (WHERE admitted_at>=?::timestamptz)::int AS admitted_today
+         FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=?`
+        )
+        .get<{ pending: number; in_sequence: number; admitted_today: number }>(
+          new Date(now.getTime() - 86_400_000).toISOString(),
+          workspaceId,
+          campaign.id
+        );
+
+      const backlogRows = await db
+        .prepare(
+          `SELECT step_index,COUNT(*)::int AS total FROM linkedin_campaign_members
+         WHERE workspace_id=? AND campaign_id=? AND admitted_at IS NOT NULL AND status IN ('active','waiting')
+         GROUP BY step_index`
+        )
+        .all<{ step_index: number; total: number }>(workspaceId, campaign.id);
+      const backlog: Partial<Record<AdmissionKind, number>> = {};
+      for (const row of backlogRows) {
+        const step = steps[Number(row.step_index)];
+        if (!step) continue;
+        const kind = admissionKindForStep(step);
+        if (kind) backlog[kind] = (backlog[kind] ?? 0) + Number(row.total);
+      }
+      const available: Partial<Record<AdmissionKind, number>> = {};
+      for (const kind of [
+        'invite',
+        'dm',
+        'inmail',
+        'profile_view',
+        'follow',
+        'like',
+        'endorse'
+      ] as const) {
+        available[kind] = usableSenders.reduce(
+          (sum, sender) => sum + (budgetBySeat.get(sender.key)?.get(kind) ?? 0),
+          0
+        );
+      }
+      const policy = parseJsonObject(campaign.admission_policy_json) as AdmissionPolicy;
+      const forecast = await campaignAdmissionForecast(db, workspaceId, campaign.id, now);
+      const decision = decideAdmission({
+        steps,
+        pending: counts?.pending ?? 0,
+        inSequence: counts?.in_sequence ?? 0,
+        admittedToday: counts?.admitted_today ?? 0,
+        available,
+        backlog,
+        policy,
+        lastAdmissionAt: campaign.last_admission_at,
+        now,
+        acceptanceRate: forecast.acceptanceRate,
+        acceptanceSampleSize: forecast.acceptanceSampleSize,
+        noReplyRate: forecast.noReplyRate,
+        replySampleSize: forecast.replySampleSize,
+        outcomeThrottle: forecast.throttle,
+        outcomeSampleSize: forecast.outcomeSampleSize,
+        outcomeThrottleReason: forecast.reasons.join(' '),
+        hasUsableFutureSlot: usableSenders.some(({ seat }) => nextOpenInstant(seat, now) !== null)
+      });
+      if (decision.admit > 0) {
+        const perLeadDemand = workflowAdmissionDemand(steps);
+        const hasPacedDemand = Object.values(perLeadDemand).some((demand) => demand > 0);
+        const senderCapacities: Record<string, number> = {};
+        if (hasPacedDemand) {
+          for (const sender of usableSenders) {
+            const limits: number[] = [];
+            for (const [kind, demand] of Object.entries(perLeadDemand) as Array<
+              [AdmissionKind, number]
+            >) {
+              if (demand <= 0) continue;
+              limits.push(
+                Math.floor((budgetBySeat.get(sender.key)?.get(kind) ?? 0) / Math.max(1, demand))
+              );
+            }
+            senderCapacities[sender.key] = Math.max(0, Math.min(...limits));
+          }
+        }
+        await admitPendingCampaignMembers(
+          db,
+          {
+            workspaceId,
+            campaignId: campaign.id,
+            steps,
+            decision,
+            senderKeys: usableSenders.map((sender) => sender.key),
+            ...(hasPacedDemand ? { senderCapacities } : {})
+          },
+          now
+        );
+      }
     }
 
     const members = await db
       .prepare(
-        `
-      SELECT m.id, m.contact_id, m.step_index, m.current_step_id, m.completed_step_ids, m.assigned_variants,
-             l.first_name, l.last_name, l.company, l.email, l.phone, l.country, l.profile_url
-      FROM linkedin_campaign_members m
-      JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
-      WHERE m.workspace_id=? AND m.campaign_id=? AND m.status IN ('active','waiting')
-        AND (m.next_eligible_at IS NULL OR m.next_eligible_at <= ?::timestamptz)
-      ORDER BY m.next_eligible_at ASC NULLS FIRST, m.id ASC
-      LIMIT ${MEMBER_BATCH}
-    `
+        `SELECT m.id,m.contact_id,m.step_index,m.current_step_id,m.completed_step_ids,m.next_eligible_at,m.admitted_at,m.assigned_seat_key,m.workflow_snapshot_json,m.workflow_version,m.assigned_variants,m.branch_state_json,
+              l.first_name,l.last_name,l.company,l.email,l.phone,l.country,l.profile_url,l.custom_fields_json
+       FROM linkedin_campaign_members m
+       JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
+       WHERE m.workspace_id=? AND m.campaign_id=? AND m.status IN ('active','waiting')
+         AND m.admitted_at IS NOT NULL AND (m.next_eligible_at IS NULL OR m.next_eligible_at<=?::timestamptz)
+       ORDER BY (CASE WHEN m.step_index>0 THEN 1 ELSE 0 END) DESC,
+                m.queue_priority DESC,m.next_eligible_at ASC NULLS FIRST,m.admitted_at ASC,m.id ASC
+       LIMIT ${MEMBER_BATCH}`
       )
       .all<DueMemberRow>(workspaceId, campaign.id, now.toISOString());
+
+    // Apply action-aware priority without losing the SQL's deterministic tie-breaks.
+    members.sort((left, right) => {
+      const leftSteps = workflowStepsForMember(left, steps);
+      const rightSteps = workflowStepsForMember(right, steps);
+      const a = leftSteps[Number(left.step_index)];
+      const b = rightSteps[Number(right.step_index)];
+      const aScore = a
+        ? queuePriorityForStep(a, Number(left.step_index), now, left.next_eligible_at)
+        : 0;
+      const bScore = b
+        ? queuePriorityForStep(b, Number(right.step_index), now, right.next_eligible_at)
+        : 0;
+      return bScore - aScore;
+    });
 
     const replied = await repliedProfiles(
       db,
@@ -599,83 +1384,49 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
       members.map((member) => member.profile_url).filter((url): url is string => Boolean(url))
     );
 
-    /* --- ONE TRANSACTION FOR THE CAMPAIGN, AND THE MEMBER WRITES BATCHED. ---
-     *
-     * This loop used to open a `db.transaction` PER MEMBER -- a pool checkout,
-     * a BEGIN and a COMMIT each -- and then spend six or seven more round
-     * trips inside it on single-row UPDATEs. At `MEMBER_BATCH` = 500 members a
-     * tick, times a campaign per seat, times thousands of seats, the tick was
-     * bounded by the connection pool rather than by anything Postgres was
-     * asked to do. `repliedProfiles` above was already batched for exactly
-     * this reason; this is the rest of the same fix.
-     *
-     * WHAT MOVED AND WHAT DID NOT. Every decision below is unchanged, in the
-     * same order, with the same short-circuits -- what changed is that the
-     * member's resulting row state is COLLECTED rather than written on the
-     * spot, and flushed once at the end in a single `UPDATE ... FROM unnest`.
-     * Each member is decided exactly once per tick, so no member appears twice
-     * in the batch and the last-write-wins ambiguity of a multi-row UPDATE
-     * never arises.
-     *
-     * THE ATOMICITY BOUNDARY WIDENED FROM ONE MEMBER TO ONE CAMPAIGN, and that
-     * is the deliberate half of the trade. A failure mid-tick used to leave
-     * earlier members advanced; now it leaves the campaign exactly as the tick
-     * found it. That is the safer direction: every write here is idempotent by
-     * construction -- `recordAction`'s replay guard, the manual task's partial
-     * unique index, a member's step index -- so the next tick re-plans what
-     * was rolled back, whereas a half-advanced campaign is a state nothing
-     * reconciles.
-     */
     const manualTaskIds: string[] = [];
     const manualTaskMemberIds: string[] = [];
     const manualTaskContactIds: string[] = [];
     const manualTaskStepIds: string[] = [];
     const manualTaskBodies: Array<string | null> = [];
+    const manualTaskKinds: Array<'message' | 'comment'> = [];
+    const manualTaskPostUrls: Array<string | null> = [];
+    const manualTaskSeatKeys: string[] = [];
     const memberWrites = new Map<string, MemberWrite>();
 
     await db.transaction(async (tx) => {
       for (const member of members) {
         const nowIso = now.toISOString();
-        // Every merge field the contact carries, not the three the renderer used
-        // to know about: email, phone and country are parsed on import, stored,
-        // and displayed, so a template asking for one gets it.
-        const lead = {
-          firstName: member.first_name,
-          lastName: member.last_name,
-          company: member.company,
-          email: member.email,
-          phone: member.phone,
-          country: member.country
-        };
+        const executionSteps = workflowStepsForMember(member, steps);
         const completedStepIds = parseStepIds(member.completed_step_ids);
         const cursor = resolveMemberStep(
-          steps,
+          executionSteps,
           member.current_step_id,
           completedStepIds,
           Number(member.step_index)
         );
         const stepIndex = cursor.index;
         const step = cursor.step;
-
-        /* --- Reply short-circuit. ---
-         *
-         * A conversation started is the campaign's whole objective, so the
-         * workflow stops the moment one does: the next scripted follow-up would
-         * arrive on top of a human answer.
-         */
-        if (member.profile_url && replied.has(targetKey(member.profile_url))) {
-          memberWrites.set(member.id, {
-            stepIndex,
-            currentStepId: null,
-            completedStepIds,
-            status: 'replied',
-            nextEligibleAt: null,
-            lastActionId: null,
-            variants: null,
-            updatedAt: nowIso
-          });
-          continue;
-        }
+        const senderKey =
+          member.assigned_seat_key && budgetBySeat.has(member.assigned_seat_key)
+            ? member.assigned_seat_key
+            : usableSenders[0].key;
+        const seat =
+          usableSenders.find((candidate) => candidate.key === senderKey)?.seat ??
+          usableSenders[0].seat;
+        const budget = budgetBySeat.get(senderKey)!;
+        const lead = {
+          firstName: member.first_name,
+          lastName: member.last_name,
+          company: member.company,
+          email: member.email,
+          phone: member.phone,
+          country: member.country,
+          customFields: parseJsonObject(member.custom_fields_json) as Record<
+            string,
+            string | number | boolean | null | undefined
+          >
+        };
 
         if (!step) {
           memberWrites.set(member.id, {
@@ -686,37 +1437,287 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             nextEligibleAt: null,
             lastActionId: null,
             variants: null,
+            branchState: null,
             updatedAt: nowIso
           });
           result.membersCompleted += 1;
           continue;
         }
 
-        /* --- Conditional message: accepted connection only. ---
-         * A pending invite must NOT send the message, but it also must not park
-         * the member forever in front of a later stale-invite withdrawal. We
-         * poll acceptance while it is undecided; once the configured withdrawal
-         * age arrives, this branch is skipped and the member advances to that
-         * cleanup step. Accepted/replied proceeds normally, while a terminal
-         * negative outcome skips the conditional message immediately.
-         */
+        const hasReply = Boolean(member.profile_url && replied.has(targetKey(member.profile_url)));
+        if (hasReply) {
+          if (
+            (step.action === 'condition' || step.action === 'monitor') &&
+            step.config.condition.kind === 'replied'
+          ) {
+            const target = targetIndexForBranch(executionSteps, step.config.yesStepId);
+            const transitioned = transitionMember({
+              stepIndex,
+              targetIndex: target,
+              steps: executionSteps,
+              completedStepIds,
+              from: now,
+              actionId: null,
+              now,
+              branchState: branchStatePatch(`branch:${step.id}`, { outcome: 'yes', at: nowIso })
+            });
+            memberWrites.set(member.id, transitioned.write);
+            if (transitioned.completed) result.membersCompleted += 1;
+          } else {
+            memberWrites.set(member.id, {
+              stepIndex,
+              currentStepId: null,
+              completedStepIds,
+              status: 'replied',
+              nextEligibleAt: null,
+              lastActionId: null,
+              variants: null,
+              branchState: null,
+              updatedAt: nowIso
+            });
+          }
+          continue;
+        }
+
+        if (step.action === 'wait') {
+          const waitUntil = new Date(now.getTime() + delayMilliseconds(step.config.duration));
+          const transitioned = transitionMember({
+            stepIndex,
+            targetIndex: nextStepIndex(executionSteps, stepIndex),
+            steps: executionSteps,
+            completedStepIds,
+            from: waitUntil,
+            actionId: null,
+            now,
+            branchState: branchStatePatch(`wait:${step.id}`, {
+              completedAt: waitUntil.toISOString()
+            })
+          });
+          memberWrites.set(member.id, transitioned.write);
+          if (transitioned.completed) result.membersCompleted += 1;
+          continue;
+        }
+
+        if (step.action === 'end') {
+          const terminal =
+            step.config.outcome === 'replied'
+              ? 'replied'
+              : step.config.outcome === 'excluded'
+                ? 'excluded'
+                : 'completed';
+          memberWrites.set(member.id, {
+            stepIndex,
+            currentStepId: null,
+            completedStepIds: completedStepIds.includes(step.id)
+              ? [...completedStepIds]
+              : [...completedStepIds, step.id],
+            status: terminal,
+            nextEligibleAt: null,
+            lastActionId: null,
+            variants: null,
+            branchState: branchStatePatch(`end:${step.id}`, {
+              outcome: step.config.outcome,
+              at: nowIso
+            }),
+            updatedAt: nowIso
+          });
+          if (terminal === 'completed') result.membersCompleted += 1;
+          continue;
+        }
+
+        if (step.action === 'condition' || step.action === 'monitor') {
+          const verdict = await evaluateWorkflowCondition(
+            tx,
+            workspaceId,
+            member,
+            step.config.condition,
+            step.id
+          );
+          const branchTarget = (outcome: 'yes' | 'no') =>
+            targetIndexForBranch(
+              executionSteps,
+              outcome === 'yes' ? step.config.yesStepId : step.config.noStepId
+            );
+
+          if (verdict === 'yes' || verdict === 'no') {
+            const transitioned = transitionMember({
+              stepIndex,
+              targetIndex: branchTarget(verdict),
+              steps: executionSteps,
+              completedStepIds,
+              from: now,
+              actionId: null,
+              now,
+              branchState: branchStatePatch(`branch:${step.id}`, { outcome: verdict, at: nowIso })
+            });
+            memberWrites.set(member.id, transitioned.write);
+            if (transitioned.completed) result.membersCompleted += 1;
+            continue;
+          }
+
+          // An initial connection-status decision is the one condition for which "unknown"
+          // can be resolved by Trevra itself. The probe is filed as a real profile view and
+          // consumes the same budget as any other view.
+          if (
+            step.config.condition.kind === 'connected' ||
+            step.config.condition.kind === 'open_profile'
+          ) {
+            if (!member.profile_url) {
+              memberWrites.set(member.id, {
+                stepIndex,
+                currentStepId: null,
+                completedStepIds,
+                status: 'failed',
+                nextEligibleAt: null,
+                lastActionId: null,
+                variants: null,
+                branchState: null,
+                updatedAt: nowIso
+              });
+              result.membersBlocked += 1;
+              continue;
+            }
+            const remaining = budget.get('profile_view') ?? 0;
+            if (remaining <= 0) continue;
+            const plannedFor = scheduleSlot(
+              seat,
+              now,
+              floors.get(senderKey) ?? null,
+              `${member.id}:${step.id}:connection-probe`
+            );
+            if (!plannedFor) {
+              result.membersBlocked += 1;
+              continue;
+            }
+            const written = await recordAction(
+              tx,
+              {
+                workspaceId,
+                seatKey: senderKey,
+                kind: 'profile_view',
+                targetRef: member.profile_url,
+                campaignId: campaign.id,
+                status: 'planned',
+                plannedFor: plannedFor.toISOString(),
+                source: 'campaign',
+                replayScope: `${member.id}:${step.id}:${step.config.condition.kind}-probe`
+              },
+              now
+            );
+            if (!written.duplicate) {
+              await tx
+                .prepare(
+                  `UPDATE linkedin_actions SET campaign_member_id=?,workflow_step_id=?,queue_priority=?,sla_deadline_at=?::timestamptz,channel_metadata_json=?::jsonb
+                 WHERE id=? AND workspace_id=?`
+                )
+                .run(
+                  member.id,
+                  step.id,
+                  queuePriorityForStep(step, stepIndex, now, nowIso),
+                  step.sla
+                    ? new Date(now.getTime() + delayMilliseconds(step.sla)).toISOString()
+                    : null,
+                  JSON.stringify(
+                    step.config.condition.kind === 'connected'
+                      ? { connectionProbe: true }
+                      : { openProfileProbe: true }
+                  ),
+                  written.id,
+                  workspaceId
+                );
+              budget.set('profile_view', remaining - 1);
+              floors.set(senderKey, plannedFor);
+              result.actionsPlanned += 1;
+            }
+            memberWrites.set(
+              member.id,
+              stayOnStep(
+                stepIndex,
+                step.id,
+                completedStepIds,
+                new Date(plannedFor.getTime() + 3_600_000),
+                now
+              )
+            );
+            continue;
+          }
+
+          if (step.action === 'condition') {
+            const transitioned = transitionMember({
+              stepIndex,
+              targetIndex: branchTarget('no'),
+              steps: executionSteps,
+              completedStepIds,
+              from: now,
+              actionId: null,
+              now,
+              branchState: branchStatePatch(`branch:${step.id}`, {
+                outcome: 'no',
+                at: nowIso,
+                reason: 'unknown treated as false by one-time condition'
+              })
+            });
+            memberWrites.set(member.id, transitioned.write);
+            if (transitioned.completed) result.membersCompleted += 1;
+            continue;
+          }
+
+          const state = monitorState(member.branch_state_json, step.id);
+          const startedAt = parseIso(state.startedAt) ?? now;
+          const timeoutAt = new Date(startedAt.getTime() + delayMilliseconds(step.config.timeout));
+          if (now.getTime() >= timeoutAt.getTime()) {
+            const transitioned = transitionMember({
+              stepIndex,
+              targetIndex: branchTarget('no'),
+              steps: executionSteps,
+              completedStepIds,
+              from: now,
+              actionId: null,
+              now,
+              branchState: branchStatePatch(`branch:${step.id}`, {
+                outcome: 'no',
+                at: nowIso,
+                reason: 'monitor timeout'
+              })
+            });
+            memberWrites.set(member.id, transitioned.write);
+            if (transitioned.completed) result.membersCompleted += 1;
+          } else {
+            const pollAt = new Date(
+              Math.min(timeoutAt.getTime(), now.getTime() + step.config.pollEveryMinutes * 60_000)
+            );
+            memberWrites.set(
+              member.id,
+              stayOnStep(
+                stepIndex,
+                step.id,
+                completedStepIds,
+                pollAt,
+                now,
+                state.startedAt
+                  ? null
+                  : branchStatePatch(`monitor:${step.id}`, { startedAt: startedAt.toISOString() })
+              )
+            );
+          }
+          continue;
+        }
+
+        // Legacy acceptance gate remains valid for old workflows; new graph workflows normally
+        // express the same rule with Monitor(accepted).
         if (step.action === 'message' && step.config.requiresAcceptedConnection) {
           const invite = await tx
             .prepare(
-              `
-            SELECT id, status,
-                   TO_CHAR(COALESCE(pending_since, recorded_at) AT TIME ZONE 'UTC', ${UTC_ISO}) AS sent_at
-            FROM linkedin_actions
-            WHERE workspace_id=? AND campaign_member_id=? AND kind='invite'
-            ORDER BY created_at DESC LIMIT 1
-          `
+              `SELECT id,status,TO_CHAR(COALESCE(pending_since,recorded_at) AT TIME ZONE 'UTC', ${UTC_ISO}) AS sent_at
+             FROM linkedin_actions WHERE workspace_id=? AND campaign_member_id=? AND kind='invite'
+             ORDER BY created_at DESC LIMIT 1`
             )
             .get<InviteRow>(workspaceId, member.id);
           const accepted = invite && ['accepted', 'replied'].includes(invite.status);
           if (!accepted) {
             const terminalNegative =
               invite && ['declined', 'withdrawn', 'skipped'].includes(invite.status);
-            const nextWithdraw = steps
+            const nextWithdraw = executionSteps
               .slice(stepIndex + 1)
               .find(
                 (candidate): candidate is Extract<WorkflowStep, { action: 'withdraw_pending' }> =>
@@ -728,11 +1729,10 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
                 ? new Date(sentAt.getTime() + nextWithdraw.config.afterDays * 86_400_000)
                 : null;
             const stale = staleAt !== null && now.getTime() >= staleAt.getTime();
-
             if (terminalNegative || stale) {
               const advanced = advanceMember({
                 stepIndex,
-                steps,
+                steps: executionSteps,
                 completedStepIds,
                 from: now,
                 actionId: null,
@@ -742,40 +1742,31 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
               if (advanced.completed) result.membersCompleted += 1;
               continue;
             }
-
             const recheckAt = new Date(now.getTime() + UNSENT_INVITE_RECHECK_MS);
             const nextCheck =
               staleAt && staleAt.getTime() < recheckAt.getTime() ? staleAt : recheckAt;
-            memberWrites.set(member.id, {
-              stepIndex,
-              currentStepId: step.id,
-              completedStepIds,
-              status: 'waiting',
-              nextEligibleAt: nextCheck.toISOString(),
-              lastActionId: null,
-              variants: null,
-              updatedAt: nowIso
-            });
+            memberWrites.set(
+              member.id,
+              stayOnStep(stepIndex, step.id, completedStepIds, nextCheck, now)
+            );
             continue;
           }
         }
 
-        /* --- The human checkpoint. --- */
-        if (step.action === 'manual_message') {
+        if (step.action === 'manual_message' || step.action === 'manual_comment') {
           const template = step.config.suggestedTemplate ?? '';
           const suggested =
             template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
-          // Collected for the one batched insert below, which carries the same
-          // ON CONFLICT DO NOTHING against the pending partial unique index:
-          // re-ticking a member that is already waiting on a human must not
-          // queue the same task twice.
           manualTaskIds.push(id('limt'));
           manualTaskMemberIds.push(member.id);
           manualTaskContactIds.push(member.contact_id);
           manualTaskStepIds.push(step.id);
           manualTaskBodies.push(suggested);
-          // NOT advanced: `completeManualTask` owns `step_index+1`, and doing it
-          // here as well would skip the step after this one.
+          manualTaskKinds.push(step.action === 'manual_comment' ? 'comment' : 'message');
+          manualTaskPostUrls.push(
+            step.action === 'manual_comment' ? (step.config.postUrl ?? null) : null
+          );
+          manualTaskSeatKeys.push(senderKey);
           memberWrites.set(member.id, {
             stepIndex,
             currentStepId: step.id,
@@ -784,38 +1775,30 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             nextEligibleAt: null,
             lastActionId: null,
             variants: null,
+            branchState: null,
             updatedAt: nowIso
           });
           continue;
         }
 
-        /* --- Withdraw a stale invite. Writes no outbound action of its own. --- */
         if (step.action === 'withdraw_pending') {
           const outcome = await handleWithdrawStep(tx, {
             workspaceId,
-            seatKey: campaign.seat_key,
+            seatKey: senderKey,
             memberId: member.id,
             afterDays: step.config.afterDays,
             now
           });
           if (outcome.waitUntil) {
-            // The invite is not stale yet. Left ON this step, woken at the exact
-            // instant it becomes stale rather than re-polled every tick.
-            memberWrites.set(member.id, {
-              stepIndex,
-              currentStepId: step.id,
-              completedStepIds,
-              status: 'waiting',
-              nextEligibleAt: outcome.waitUntil.toISOString(),
-              lastActionId: null,
-              variants: null,
-              updatedAt: nowIso
-            });
+            memberWrites.set(
+              member.id,
+              stayOnStep(stepIndex, step.id, completedStepIds, outcome.waitUntil, now)
+            );
             continue;
           }
           const advanced = advanceMember({
             stepIndex,
-            steps,
+            steps: executionSteps,
             completedStepIds,
             from: now,
             actionId: null,
@@ -826,14 +1809,172 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           continue;
         }
 
-        /* --- Everything else writes a `planned` ledger row. --- */
-        const kind = kindForStep(step);
-        if (!kind) continue;
+        if (step.action === 'add_tag' || step.action === 'remove_tag') {
+          const contact = await tx
+            .prepare(
+              `SELECT tags_json FROM linkedin_lead_contacts WHERE workspace_id=? AND id=? FOR UPDATE`
+            )
+            .get<{ tags_json: unknown }>(workspaceId, member.contact_id);
+          const tags = new Set(parseStringArray(contact?.tags_json));
+          if (step.action === 'add_tag') tags.add(step.config.tag);
+          else tags.delete(step.config.tag);
+          await tx
+            .prepare(
+              `UPDATE linkedin_lead_contacts SET tags_json=?::jsonb,updated_at=? WHERE workspace_id=? AND id=?`
+            )
+            .run(JSON.stringify([...tags]), nowIso, workspaceId, member.contact_id);
+          const advanced = advanceMember({
+            stepIndex,
+            steps: executionSteps,
+            completedStepIds,
+            from: now,
+            actionId: null,
+            now
+          });
+          memberWrites.set(member.id, advanced.write);
+          if (advanced.completed) result.membersCompleted += 1;
+          continue;
+        }
 
-        // An action with no target is unclaimable (`claimNextDueAction` requires
-        // `target_ref NOT NULL`), so a member with no profile URL would sit due
-        // forever and hold the contact's one-active-campaign claim. Failed is
-        // terminal and releases it.
+        if (
+          step.action === 'email' ||
+          step.action === 'find_email' ||
+          step.action === 'webhook' ||
+          step.action === 'external_handoff'
+        ) {
+          const existing = await tx
+            .prepare(
+              `SELECT status FROM linkedin_campaign_channel_actions
+               WHERE workspace_id=? AND member_id=? AND workflow_step_id=?
+               ORDER BY created_at DESC LIMIT 1`
+            )
+            .get<{ status: string }>(workspaceId, member.id, step.id);
+          if (existing) {
+            if (existing.status === 'unknown') {
+              memberWrites.set(
+                member.id,
+                stayOnStep(
+                  stepIndex,
+                  step.id,
+                  completedStepIds,
+                  new Date(now.getTime() + 24 * 3_600_000),
+                  now
+                )
+              );
+            } else if (existing.status === 'planned' || existing.status === 'claimed') {
+              memberWrites.set(
+                member.id,
+                stayOnStep(
+                  stepIndex,
+                  step.id,
+                  completedStepIds,
+                  new Date(now.getTime() + 5 * 60_000),
+                  now
+                )
+              );
+            }
+            // Known outcomes are advanced by campaign-channels.ts. If the member is still
+            // here, a later tick will see the channel executor's state update rather than
+            // planning the side effect a second time.
+            continue;
+          }
+
+          if (step.action === 'email' && (!member.email || !member.email.trim())) {
+            const advanced = advanceMember({
+              stepIndex,
+              steps: executionSteps,
+              completedStepIds,
+              from: now,
+              actionId: null,
+              now
+            });
+            memberWrites.set(member.id, {
+              ...advanced.write,
+              branchState: branchStatePatch('external:email_available', false)
+            });
+            if (advanced.completed) result.membersCompleted += 1;
+            continue;
+          }
+
+          let payload: Record<string, unknown>;
+          let variantId: string | null = null;
+          if (step.action === 'email') {
+            const assigned = parseVariants(member.assigned_variants)[step.id];
+            const variant =
+              step.config.variants.find((candidate) => candidate.id === assigned) ??
+              chooseMessageVariant(step.config.variants, `${member.id}:${step.id}`);
+            variantId = variant.id;
+            payload = {
+              recipient: member.email,
+              subject: renderWorkflowTemplate(step.config.subject, lead),
+              body: renderWorkflowTemplate(variant.body, lead),
+              threaded: step.config.threaded,
+              tracking: step.config.tracking
+            };
+          } else if (step.action === 'find_email') {
+            payload = { providerId: step.config.providerId ?? null, refresh: step.config.refresh };
+          } else if (step.action === 'webhook') {
+            payload = {
+              url: step.config.url,
+              method: step.config.method,
+              body: renderWorkflowTemplate(step.config.bodyTemplate, lead),
+              provider: 'webhook'
+            };
+          } else {
+            payload = {
+              provider: step.config.provider,
+              destination: step.config.destination,
+              payload: renderWorkflowTemplate(step.config.payloadTemplate, lead)
+            };
+          }
+          const mailboxMap = parseJsonObject(campaign.mailbox_assignments_json);
+          const connectionId =
+            step.action === 'email' && typeof mailboxMap[senderKey] === 'string'
+              ? String(mailboxMap[senderKey])
+              : null;
+          const channelId = id('licha');
+          const idempotencyKey = createHash('sha256')
+            .update(`${workspaceId}:${campaign.id}:${member.id}:${step.id}`)
+            .digest('hex');
+          await tx
+            .prepare(
+              `INSERT INTO linkedin_campaign_channel_actions (
+                 id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,variant_id,idempotency_key,connection_id,created_at,updated_at
+               ) VALUES (?,?,?,?,?,?,?,'planned',?::timestamptz,?::jsonb,?,?,?,?::timestamptz,?::timestamptz)
+               ON CONFLICT (workspace_id,idempotency_key) DO NOTHING`
+            )
+            .run(
+              channelId,
+              workspaceId,
+              campaign.id,
+              member.id,
+              member.contact_id,
+              step.id,
+              step.action,
+              nowIso,
+              JSON.stringify(payload),
+              variantId,
+              idempotencyKey,
+              connectionId,
+              nowIso,
+              nowIso
+            );
+          memberWrites.set(member.id, {
+            ...stayOnStep(
+              stepIndex,
+              step.id,
+              completedStepIds,
+              new Date(now.getTime() + 5 * 60_000),
+              now
+            ),
+            variants: variantId ? JSON.stringify({ [step.id]: variantId }) : null
+          });
+          continue;
+        }
+
+        const ledgerKind = ledgerKindForStep(step);
+        const budgetKind = budgetKindForStep(step);
+        if (!ledgerKind || !budgetKind) continue;
         if (!member.profile_url) {
           memberWrites.set(member.id, {
             stepIndex,
@@ -843,96 +1984,151 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             nextEligibleAt: null,
             lastActionId: null,
             variants: null,
+            branchState: null,
             updatedAt: nowIso
           });
           result.membersBlocked += 1;
           continue;
         }
 
-        const remaining = budget.get(kind) ?? 0;
-        // Out of ramp for this kind today. The member keeps its due-ness and is
-        // the first thing the next tick looks at.
+        if (ledgerKind === 'inmail' && seat.capabilities.inmail !== 'available') {
+          memberWrites.set(
+            member.id,
+            stayOnStep(
+              stepIndex,
+              step.id,
+              completedStepIds,
+              new Date(now.getTime() + 24 * 3_600_000),
+              now,
+              branchStatePatch(`blocked:${step.id}`, {
+                reason: `InMail capability is ${seat.capabilities.inmail}.`,
+                at: nowIso
+              })
+            )
+          );
+          result.membersBlocked += 1;
+          continue;
+        }
+
+        const remaining = budget.get(budgetKind) ?? 0;
         if (remaining <= 0) continue;
 
         let variantId: string | null = null;
         let body: string | null = null;
+        let subject: string | null = null;
+        let attachment: Record<string, unknown> | null = null;
         if (step.action === 'connection_request') {
-          const template = step.config.message ?? '';
-          body = template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
-        } else if (step.action === 'message') {
-          // The stored choice wins on every re-run: an A/B split that moved a
-          // contact between arms would measure nothing.
+          if (step.config.variants && step.config.variants.length > 0) {
+            const assigned = parseVariants(member.assigned_variants)[step.id];
+            const variant =
+              step.config.variants.find((candidate) => candidate.id === assigned) ??
+              chooseMessageVariant(step.config.variants, `${member.id}:${step.id}`);
+            variantId = variant.id;
+            body =
+              variant.body.trim().length > 0 ? renderWorkflowTemplate(variant.body, lead) : null;
+          } else {
+            const template = step.config.message ?? '';
+            body = template.trim().length > 0 ? renderWorkflowTemplate(template, lead) : null;
+          }
+        } else if (
+          step.action === 'message' ||
+          step.action === 'inmail' ||
+          step.action === 'group_message' ||
+          step.action === 'event_message'
+        ) {
           const assigned = parseVariants(member.assigned_variants)[step.id];
           const variant =
             step.config.variants.find((candidate) => candidate.id === assigned) ??
             chooseMessageVariant(step.config.variants, `${member.id}:${step.id}`);
           variantId = variant.id;
           body = renderWorkflowTemplate(variant.body, lead);
+          if (step.action === 'inmail') subject = renderWorkflowTemplate(step.config.subject, lead);
+          if (variant.attachmentUrl)
+            attachment = {
+              url: variant.attachmentUrl,
+              name: variant.attachmentName ?? null,
+              mediaKind: variant.mediaKind ?? 'file'
+            };
         }
 
         const plannedFor = scheduleSlot(
           seat,
           now,
-          floors.get(campaign.seat_key) ?? null,
+          floors.get(senderKey) ?? null,
           `${member.id}:${step.id}`
         );
         if (!plannedFor) {
           result.membersBlocked += 1;
           continue;
         }
-
         const written = await recordAction(
           tx,
           {
             workspaceId,
-            seatKey: campaign.seat_key,
-            kind,
+            seatKey: senderKey,
+            kind: ledgerKind,
             targetRef: member.profile_url,
             campaignId: campaign.id,
             status: 'planned',
             plannedFor: plannedFor.toISOString(),
             source: 'campaign',
-            // Member+step, so a workflow may touch one person twice with the
-            // same kind while the legacy one-kind-per-target guard stays exactly
-            // as strict for every other writer (migration 047).
             replayScope: `${member.id}:${step.id}`
           },
           now
         );
         if (!written.duplicate) {
-          // Same transaction as the ledger row: `claimNextDueAction` must never
-          // see a dm whose approved bytes have not landed yet. That promise is
-          // now the CAMPAIGN's transaction rather than this member's, which is
-          // strictly stronger -- the row and its bytes still commit together,
-          // and so does everything else this tick decided.
           await tx
             .prepare(
-              `
-            UPDATE linkedin_actions SET body=?, campaign_member_id=?, workflow_step_id=?, variant_id=?
-            WHERE id=? AND workspace_id=?
-          `
+              `UPDATE linkedin_actions SET body=?,subject=?,campaign_member_id=?,workflow_step_id=?,variant_id=?,queue_priority=?,sla_deadline_at=?::timestamptz,attachment_json=?::jsonb,channel_metadata_json=?::jsonb
+             WHERE id=? AND workspace_id=?`
             )
-            .run(body, member.id, step.id, variantId, written.id, workspaceId);
-        }
-
-        // A duplicate means this member already ran this step -- the slot is not
-        // consumed and the ramp is not charged, but the member still moves on.
-        if (!written.duplicate) {
+            .run(
+              body,
+              subject,
+              member.id,
+              step.id,
+              variantId,
+              queuePriorityForStep(step, stepIndex, now, plannedFor.toISOString()),
+              step.sla
+                ? new Date(plannedFor.getTime() + delayMilliseconds(step.sla)).toISOString()
+                : null,
+              attachment ? JSON.stringify(attachment) : null,
+              JSON.stringify(
+                step.action === 'endorse_skills'
+                  ? { maxSkills: step.config.maxSkills }
+                  : step.action === 'inmail'
+                    ? {
+                        allowPaid:
+                          step.config.allowPaid &&
+                          (paidInmailRemainingBySeat.get(senderKey) ?? 0) > 0,
+                        paidCreditCapRemaining: paidInmailRemainingBySeat.get(senderKey) ?? 0
+                      }
+                    : step.action === 'follow_company' ||
+                        step.action === 'like_company_post' ||
+                        step.action === 'invite_to_follow_company'
+                      ? { companyUrl: step.config.companyUrl }
+                      : step.action === 'invite_to_event' || step.action === 'event_message'
+                        ? { eventUrl: step.config.eventUrl }
+                        : step.action === 'invite_to_group' || step.action === 'group_message'
+                          ? { groupUrl: step.config.groupUrl }
+                          : {}
+              ),
+              written.id,
+              workspaceId
+            );
           result.actionsPlanned += 1;
-          budget.set(kind, remaining - 1);
-          floors.set(campaign.seat_key, plannedFor);
+          budget.set(budgetKind, remaining - 1);
+          floors.set(senderKey, plannedFor);
         }
 
         const advanced = advanceMember({
           stepIndex,
-          steps,
+          steps: executionSteps,
           completedStepIds,
           from: plannedFor,
           actionId: written.id,
           now
         });
-        // The variant assignment rides on the same batched update as the step
-        // advance, in the same transaction as the ledger row it belongs to.
         memberWrites.set(member.id, {
           ...advanced.write,
           variants: variantId === null ? null : JSON.stringify({ [step.id]: variantId })
@@ -943,16 +2139,11 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
       if (manualTaskIds.length > 0) {
         const inserted = await tx
           .prepare(
-            `
-          INSERT INTO linkedin_manual_tasks (
-            id, workspace_id, campaign_id, member_id, contact_id, seat_key, workflow_step_id, suggested_body, status, created_at
-          )
-          SELECT * FROM unnest(
-            ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::timestamptz[]
-          )
-          ON CONFLICT DO NOTHING
-          RETURNING id
-        `
+            `INSERT INTO linkedin_manual_tasks (
+             id,workspace_id,campaign_id,member_id,contact_id,seat_key,workflow_step_id,suggested_body,task_kind,post_url,status,created_at
+           ) SELECT * FROM unnest(
+             ?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::text[],?::timestamptz[]
+           ) ON CONFLICT DO NOTHING RETURNING id`
           )
           .all<{ id: string }>(
             manualTaskIds,
@@ -960,39 +2151,41 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             manualTaskIds.map(() => campaign.id),
             manualTaskMemberIds,
             manualTaskContactIds,
-            manualTaskIds.map(() => campaign.seat_key),
+            manualTaskSeatKeys,
             manualTaskStepIds,
             manualTaskBodies,
+            manualTaskKinds,
+            manualTaskPostUrls,
             manualTaskIds.map(() => 'pending'),
             manualTaskIds.map(() => now.toISOString())
           );
         result.manualTasksCreated += inserted.length;
       }
-
       await flushMemberWrites(tx, workspaceId, memberWrites);
     });
 
-    // A campaign with nothing left to do says so, rather than being re-scanned
-    // on every tick forever.
+    if (result.actionsPlanned > actionsBeforeCampaign) {
+      await db
+        .prepare(
+          `UPDATE linkedin_campaigns SET last_planned_at=?::timestamptz,updated_at=?::timestamptz
+           WHERE workspace_id=? AND id=?`
+        )
+        .run(now.toISOString(), now.toISOString(), workspaceId, campaign.id);
+    }
+
     const live = await db
       .prepare(
-        `
-      SELECT COUNT(*)::int AS total FROM linkedin_campaign_members
-      WHERE workspace_id=? AND campaign_id=? AND status = ANY(?::text[])
-    `
+        `SELECT COUNT(*)::int AS total FROM linkedin_campaign_members WHERE workspace_id=? AND campaign_id=? AND status = ANY(?::text[])`
       )
       .get<{ total: number }>(workspaceId, campaign.id, [...LIVE_MEMBER_STATUSES]);
     if ((live?.total ?? 0) === 0) {
       await db
         .prepare(
-          `
-        UPDATE linkedin_campaigns SET status='completed', updated_at=? WHERE workspace_id=? AND id=? AND status='running'
-      `
+          `UPDATE linkedin_campaigns SET status='completed',updated_at=? WHERE workspace_id=? AND id=? AND status='running'`
         )
         .run(now.toISOString(), workspaceId, campaign.id);
     }
   }
-
   return result;
 }
 
@@ -1012,6 +2205,8 @@ interface MemberWrite {
   lastActionId: string | null;
   /** A jsonb object merged into `assigned_variants`, or null to leave it alone. */
   variants: string | null;
+  /** A jsonb object merged into branch/monitor state, or null to leave it alone. */
+  branchState: string | null;
   updatedAt: string;
 }
 
@@ -1027,6 +2222,59 @@ interface MemberWrite {
  * and the UPDATE was always the same one. Returning the row state lets 500
  * members share one statement instead of paying a round trip each.
  */
+function indexOfStepId(
+  steps: readonly WorkflowStep[],
+  stepId: string | null | undefined
+): number | null {
+  if (!stepId) return null;
+  const index = steps.findIndex((step) => step.id === stepId);
+  return index >= 0 ? index : null;
+}
+
+function nextStepIndex(steps: readonly WorkflowStep[], stepIndex: number): number | null {
+  const step = steps[stepIndex];
+  if (!step) return null;
+  if (step.nextStepId === null) return null;
+  if (step.nextStepId) return indexOfStepId(steps, step.nextStepId);
+  const next = stepIndex + 1;
+  return next < steps.length ? next : null;
+}
+
+function transitionMember(input: {
+  stepIndex: number;
+  targetIndex: number | null;
+  steps: readonly WorkflowStep[];
+  completedStepIds: readonly string[];
+  from: Date;
+  actionId: string | null;
+  now: Date;
+  branchState?: string | null;
+}): { write: MemberWrite; completed: boolean } {
+  const currentStep = input.steps[input.stepIndex];
+  const completedStepIds = [...input.completedStepIds];
+  if (currentStep && !completedStepIds.includes(currentStep.id))
+    completedStepIds.push(currentStep.id);
+  const nextStep = input.targetIndex === null ? null : input.steps[input.targetIndex];
+  const status = nextStep ? 'waiting' : 'completed';
+  const nextEligible = nextStep
+    ? new Date(input.from.getTime() + delayMilliseconds(nextStep.delayBefore)).toISOString()
+    : null;
+  return {
+    write: {
+      stepIndex: input.targetIndex ?? input.steps.length,
+      currentStepId: nextStep?.id ?? null,
+      completedStepIds,
+      status,
+      nextEligibleAt: nextEligible,
+      lastActionId: input.actionId,
+      variants: null,
+      branchState: input.branchState ?? null,
+      updatedAt: input.now.toISOString()
+    },
+    completed: !nextStep
+  };
+}
+
 function advanceMember(input: {
   stepIndex: number;
   steps: readonly WorkflowStep[];
@@ -1034,33 +2282,18 @@ function advanceMember(input: {
   from: Date;
   actionId: string | null;
   now: Date;
+  branchState?: string | null;
 }): { write: MemberWrite; completed: boolean } {
-  const currentStep = input.steps[input.stepIndex];
-  const completedStepIds = [...input.completedStepIds];
-  if (currentStep && !completedStepIds.includes(currentStep.id))
-    completedStepIds.push(currentStep.id);
-
-  const completed = new Set(completedStepIds);
-  let nextIndex = input.stepIndex + 1;
-  while (nextIndex < input.steps.length && completed.has(input.steps[nextIndex].id)) nextIndex += 1;
-  const nextStep = input.steps[nextIndex];
-  const status = nextStep ? 'waiting' : 'completed';
-  const nextEligible = nextStep
-    ? new Date(input.from.getTime() + delayMilliseconds(nextStep.delayBefore)).toISOString()
-    : null;
-  return {
-    write: {
-      stepIndex: nextIndex,
-      currentStepId: nextStep?.id ?? null,
-      completedStepIds,
-      status,
-      nextEligibleAt: nextEligible,
-      lastActionId: input.actionId,
-      variants: null,
-      updatedAt: input.now.toISOString()
-    },
-    completed: !nextStep
-  };
+  return transitionMember({
+    stepIndex: input.stepIndex,
+    targetIndex: nextStepIndex(input.steps, input.stepIndex),
+    steps: input.steps,
+    completedStepIds: input.completedStepIds,
+    from: input.from,
+    actionId: input.actionId,
+    now: input.now,
+    branchState: input.branchState
+  });
 }
 
 /**
@@ -1105,9 +2338,13 @@ async function flushMemberWrites(
           WHEN w.variants IS NULL THEN m.assigned_variants
           ELSE COALESCE(m.assigned_variants, '{}'::jsonb) || w.variants
         END,
+        branch_state_json = CASE
+          WHEN w.branch_state IS NULL THEN m.branch_state_json
+          ELSE COALESCE(m.branch_state_json, '{}'::jsonb) || w.branch_state
+        END,
         updated_at = w.updated_at
-    FROM unnest(?::text[], ?::int[], ?::text[], ?::jsonb[], ?::text[], ?::timestamptz[], ?::text[], ?::jsonb[], ?::timestamptz[])
-      AS w(id, step_index, current_step_id, completed_step_ids, status, next_eligible_at, last_action_id, variants, updated_at)
+    FROM unnest(?::text[], ?::int[], ?::text[], ?::jsonb[], ?::text[], ?::timestamptz[], ?::text[], ?::jsonb[], ?::jsonb[], ?::timestamptz[])
+      AS w(id, step_index, current_step_id, completed_step_ids, status, next_eligible_at, last_action_id, variants, branch_state, updated_at)
     WHERE m.workspace_id=? AND m.id = w.id
   `
     )
@@ -1120,6 +2357,7 @@ async function flushMemberWrites(
       entries.map(([, write]) => write.nextEligibleAt),
       entries.map(([, write]) => write.lastActionId),
       entries.map(([, write]) => write.variants),
+      entries.map(([, write]) => write.branchState),
       entries.map(([, write]) => write.updatedAt),
       workspaceId
     );
