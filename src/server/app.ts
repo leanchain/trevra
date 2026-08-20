@@ -307,7 +307,7 @@ import {
 } from './linkedin/jobs.js';
 import { DEFAULT_SEQUENCE_TEMPLATE_ID, SEQUENCE_TEMPLATES } from './linkedin/templates.js';
 import { addExclusions, filterExcluded, listExclusions } from './linkedin/exclusions.js';
-import { parseLeadCsv, scrubNameField, splitAndScrubName } from './linkedin/lead-import.js';
+import { parseLeadCsv } from './linkedin/lead-import.js';
 import {
   LEAD_CONTACT_READ_LIMIT,
   countLeadContacts,
@@ -3204,39 +3204,6 @@ export function createApp(db: Db) {
     })
   );
 
-  // A DRY RUN. `planPacing` is pure with respect to the ledger -- it reads
-  // history and writes nothing -- and this route keeps it that way: no slot
-  // becomes a `linkedin_actions` row here. Persisting is the campaign path's
-  // job, downstream of a human approving the exact plan they were shown.
-  app.post(
-    '/api/linkedin/plan',
-    linkedinRoute(async (req, res) => {
-      const input = linkedinPlanSchema.parse(req.body ?? {});
-      const workspaceId = req.auth!.workspaceId;
-      // Exclusions are applied BEFORE planning, never at send time: a person
-      // filtered out later would still have been in the payload a founder read.
-      const { kept, excluded } = await filterExcluded(db, workspaceId, input.targets);
-      if (kept.length === 0) {
-        throw new LinkedInApiError(
-          'Every target on this list is on the workspace exclusion list, so there is nothing to plan.',
-          400
-        );
-      }
-      const plan = await planPacing(
-        db,
-        {
-          workspaceId,
-          kind: input.kind,
-          targets: kept,
-          horizonDays: input.horizonDays,
-          seatKey: input.seatKey ?? OWNER_SEAT_KEY
-        },
-        new Date()
-      );
-      res.json({ plan, excluded, persisted: false });
-    })
-  );
-
   app.get(
     '/api/linkedin/actions',
     linkedinRoute(async (req, res) => {
@@ -3294,41 +3261,6 @@ export function createApp(db: Db) {
         new Date()
       );
       res.json({ action });
-    })
-  );
-
-  /**
-   * The template library, and the vocabulary that goes with it.
-   *
-   * Static, so it needs no workspace -- but it stays behind the same auth as
-   * every other route here rather than becoming a public endpoint, because
-   * "which sequences does Trevra ship" is product surface and not marketing.
-   *
-   * `mergeFields` and `inviteNoteMaxChars` ride along on purpose: a client that
-   * hardcodes either will drift from the server that enforces both, and the
-   * failure mode is an editor that lets an operator type copy the API then
-   * refuses.
-   */
-  app.get(
-    '/api/linkedin/sequence-templates',
-    linkedinRoute(async (_req, res) => {
-      res.json({
-        templates: SEQUENCE_TEMPLATES,
-        defaultTemplateId: DEFAULT_SEQUENCE_TEMPLATE_ID,
-        mergeFields: SUPPORTED_MERGE_FIELDS,
-        inviteNoteMaxChars: INVITE_NOTE_MAX_CHARS,
-        maxSteps: MAX_SEQUENCE_STEPS,
-        /**
-         * The branch vocabulary, for the same reason `mergeFields` rides along:
-         * it is a CLOSED list of five, an editor has to render a dropdown of
-         * exactly those, and a client that hardcodes them drifts from the server
-         * that validates them. The failure mode is an editor that lets an
-         * operator pick a branch the API then refuses.
-         */
-        branchOn: BRANCH_ON_VALUES,
-        actionKinds: ACTION_KIND_VALUES,
-        pacedKinds: PACED_KIND_VALUES
-      });
     })
   );
 
@@ -3421,56 +3353,6 @@ export function createApp(db: Db) {
         new Date()
       );
       res.json({ post });
-    })
-  );
-
-  /**
-   * Read a target CSV.
-   *
-   * PERSISTS NOTHING, and says so in the response. The list comes back split
-   * three ways -- usable, excluded, already-contacted -- so a founder sees who
-   * would actually be approached before any of it becomes a plan. A row only
-   * enters `linkedin_actions` downstream of an approval.
-   */
-  app.post(
-    '/api/linkedin/targets/import',
-    linkedinTargetsUpload.single('file'),
-    linkedinRoute(async (req, res) => {
-      if (!req.file) throw new LinkedInApiError('A CSV file of LinkedIn targets is required', 400);
-      const options = linkedinImportSchema.parse(req.body ?? {});
-      const workspaceId = req.auth!.workspaceId;
-
-      const { contacts, skipped } = parseLinkedInTargetCsv(req.file.buffer);
-      const { kept, excluded } = await filterExcluded(
-        db,
-        workspaceId,
-        contacts.map((contact) => contact.targetRef)
-      );
-      const keptSet = new Set(kept);
-
-      const seat = await getSeat(db, workspaceId);
-      const seatRef = seat ? { workspaceId, seatKey: seat.seatKey } : ownerSeat(workspaceId);
-      const alreadyContacted: string[] = [];
-      for (const targetRef of kept) {
-        if (await hasTarget(db, seatRef, options.kind, targetRef)) alreadyContacted.push(targetRef);
-      }
-      const contacted = new Set(alreadyContacted);
-
-      res.status(200).json({
-        persisted: false,
-        parsed: contacts.length,
-        kind: options.kind,
-        targets: kept.filter((targetRef) => !contacted.has(targetRef)),
-        contacts: contacts.filter(
-          (contact) => keptSet.has(contact.targetRef) && !contacted.has(contact.targetRef)
-        ),
-        excluded,
-        // The seat has a non-skipped action of this kind against these already.
-        // Planning them again would be refused by the ledger's replay guard, so
-        // they are reported here rather than discovered at export time.
-        alreadyContacted,
-        skippedRows: skipped
-      });
     })
   );
 
@@ -3769,24 +3651,6 @@ export function createApp(db: Db) {
           404
         );
       res.json({ paused: input.paused });
-    })
-  );
-
-  app.post(
-    '/api/linkedin/manager/members/:id/resume',
-    linkedinRoute(async (req, res) => {
-      z.object({})
-        .strict()
-        .parse(req.body ?? {});
-      const resumed = await setCampaignMemberPaused(
-        db,
-        req.auth!.workspaceId,
-        String(req.params.id),
-        false,
-        new Date()
-      );
-      if (!resumed) throw new LinkedInApiError('Paused campaign member not found', 404);
-      res.json({ paused: false });
     })
   );
 
@@ -6505,15 +6369,6 @@ const linkedinResumeSchema = z.object({
   reason: z.string().trim().min(1).max(500).optional()
 });
 
-const linkedinPlanSchema = z
-  .object({
-    seatKey: z.string().trim().min(1).max(64).optional(),
-    kind: linkedinPacedKind,
-    targets: z.array(z.string().trim().min(1).max(500)).min(1).max(500),
-    horizonDays: z.number().int().min(1).max(MAX_HORIZON_DAYS).default(14)
-  })
-  .strict();
-
 const linkedinActionFiltersSchema = z.object({
   status: linkedinActionStatus.optional(),
   kind: linkedinActionKind.optional(),
@@ -6628,11 +6483,6 @@ const linkedinPostListSchema = z.object({
     .enum(['draft', 'scheduled', 'publishing', 'posted', 'failed', 'missed', 'canceled'])
     .optional(),
   limit: z.coerce.number().int().min(1).max(500).default(100)
-});
-
-const linkedinImportSchema = z.object({
-  /** Which action the list is destined for. Only used to report who has already had one. */
-  kind: linkedinActionKind.default('invite')
 });
 
 const linkedinExclusionSchema = z
@@ -7280,163 +7130,6 @@ async function effectiveLinkedInLimits(
       }
     }
   };
-}
-
-/* ---------------------------------------------------------------------------
- * The target CSV.
- * ------------------------------------------------------------------------ */
-
-/** The plan's own ceiling on one campaign. A longer file is truncated and says so. */
-const LINKEDIN_IMPORT_MAX_ROWS = 500;
-
-function linkedinCsvHeader(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
-}
-
-const LINKEDIN_TARGET_COLUMNS = [
-  'targetref',
-  'target',
-  'handle',
-  'profileurl',
-  'profile',
-  'url',
-  'linkedin',
-  'linkedinurl'
-];
-const LINKEDIN_PROFILE_COLUMNS = ['profileurl', 'profile', 'url', 'linkedin', 'linkedinurl'];
-const LINKEDIN_NAME_COLUMNS = ['name', 'fullname', 'displayname', 'contactname'];
-const LINKEDIN_FIRST_COLUMNS = ['firstname', 'first', 'givenname'];
-const LINKEDIN_LAST_COLUMNS = ['lastname', 'last', 'surname', 'familyname'];
-const LINKEDIN_COMPANY_COLUMNS = [
-  'company',
-  'companyname',
-  'organisation',
-  'organization',
-  'employer'
-];
-const LINKEDIN_ROLE_COLUMNS = ['role', 'title', 'jobtitle', 'position'];
-
-function linkedinCsvField(row: Record<string, unknown>, columns: readonly string[]): string {
-  for (const column of columns) {
-    const value = row[column];
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-  return '';
-}
-
-interface LinkedInImportedContact {
-  targetRef: string;
-  profileUrl: string | null;
-  firstName: string | null;
-  lastName: string | null;
-  company: string | null;
-  role: string | null;
-}
-
-/**
- * Parse a target CSV.
- *
- * RFC4180 through `csv-parse`, not a `split(',')`: `Acme, Inc.` and
- * `The "Good" Company` are ordinary LinkedIn company names, and a naive split
- * shifts every column right of them -- silently, so the first sign of it is a
- * message addressed to the wrong person. `export.ts` hand-rolls the WRITER for
- * the same rules; this is the reader, and it is a dependency the project
- * already carries.
- */
-function parseLinkedInTargetCsv(buffer: Buffer): {
-  contacts: LinkedInImportedContact[];
-  skipped: Array<{ row: number; reason: string }>;
-} {
-  let rows: Array<Record<string, unknown>>;
-  try {
-    rows = parseCsv(buffer.toString('utf8'), {
-      columns: (header: string[]) => header.map(linkedinCsvHeader),
-      skip_empty_lines: true,
-      trim: true,
-      bom: true,
-      relax_column_count: true
-    }) as Array<Record<string, unknown>>;
-  } catch (error) {
-    throw new LinkedInApiError(
-      `That file could not be read as CSV: ${error instanceof Error ? error.message : 'unparseable'}`,
-      400
-    );
-  }
-
-  const contacts: LinkedInImportedContact[] = [];
-  const skipped: Array<{ row: number; reason: string }> = [];
-  const seen = new Set<string>();
-
-  rows.forEach((row, index) => {
-    // +2: one for the header line, one because humans count from 1.
-    const line = index + 2;
-    if (contacts.length >= LINKEDIN_IMPORT_MAX_ROWS) {
-      skipped.push({
-        row: line,
-        reason: `Over the ${LINKEDIN_IMPORT_MAX_ROWS}-target limit for one campaign; split the list.`
-      });
-      return;
-    }
-    const targetRef = linkedinCsvField(row, LINKEDIN_TARGET_COLUMNS);
-    if (!targetRef) {
-      skipped.push({
-        row: line,
-        reason: 'No target column. Name one of: targetRef, handle, profileUrl, url.'
-      });
-      return;
-    }
-    const key = targetRef.toLowerCase();
-    if (seen.has(key)) {
-      skipped.push({
-        row: line,
-        reason: `Repeated target '${targetRef}'; one target gets one slot.`
-      });
-      return;
-    }
-    seen.add(key);
-
-    const profileUrl =
-      linkedinCsvField(row, LINKEDIN_PROFILE_COLUMNS) ||
-      (/^https?:\/\//i.test(targetRef) ? targetRef : '');
-
-    /**
-     * THE SAME SCRUB THE MANAGED LEAD PATH USES, and it was missing here.
-     *
-     * This route read its name columns with a bare `.trim()`, so a LinkedIn
-     * display name -- which is where these CSVs come from -- arrived intact:
-     * `Dr. Maya \u{1F642}` was stored as a FIRST NAME, exported to the file an
-     * operator sends from, and rendered verbatim into `Hi {{firstName}}`.
-     * `lead-import.ts` has owned the answer to that for the managed path all
-     * along (titles, degrees, emoji, flags, keycaps, decoration), and two name
-     * pipelines with two different ideas of what a first name is also means the
-     * same human imported twice is two different people to the dedupe key.
-     *
-     * `scrubNameField` FOR A DEDICATED COLUMN, because it is the one that
-     * refuses to empty a real name: `Do`, `Ma` and `Ba` are removable titles
-     * and they are also surnames, and a header that already said "Last name"
-     * settles which. `splitAndScrubName` for a single joined name column, which
-     * is the shape a scrape or a contact export usually has.
-     */
-    const joined = splitAndScrubName(linkedinCsvField(row, LINKEDIN_NAME_COLUMNS));
-    const firstName =
-      scrubNameField(linkedinCsvField(row, LINKEDIN_FIRST_COLUMNS)) || joined.firstName;
-    const lastName =
-      scrubNameField(linkedinCsvField(row, LINKEDIN_LAST_COLUMNS)) || joined.lastName;
-
-    contacts.push({
-      targetRef,
-      profileUrl: profileUrl || null,
-      firstName: firstName || null,
-      lastName: lastName || null,
-      company: linkedinCsvField(row, LINKEDIN_COMPANY_COLUMNS) || null,
-      role: linkedinCsvField(row, LINKEDIN_ROLE_COLUMNS) || null
-    });
-  });
-
-  return { contacts, skipped };
 }
 
 /* ---------------------------------------------------------------------------
