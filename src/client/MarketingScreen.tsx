@@ -10,7 +10,6 @@ import {
   Menu,
   Play,
   ScrollText,
-  Search,
   Server,
   ShieldCheck,
   UsersRound
@@ -57,42 +56,6 @@ type PublicModule = {
     rank: number | null;
   };
 };
-
-/**
- * The catalog has no visibility field.
- *
- * `scripts/build-public-catalog.ts` copies id, name, version, description,
- * sideEffect and requiresApproval off the skill manifest and hard-codes the
- * rest -- nothing anywhere says "public" or "private". Until the manifest
- * schema grows one, the split below is derived from the id namespace: `gtm.*`
- * is what a person composes, anything else (`net.*` today) is called by other
- * modules. A real field belongs in the manifest; this is a stand-in.
- */
-const SHOW_SYSTEM_MODULES = true;
-
-const MODULE_GROUPS = [
-  {
-    key: 'linkedin',
-    label: 'LinkedIn outreach',
-    blurb: 'Sequences, pacing, and account limits.',
-    system: false,
-    match: (id: string) => id.startsWith('gtm.linkedin-')
-  },
-  {
-    key: 'gtm',
-    label: 'Go-to-market skills',
-    blurb: 'Sourcing, qualification, research, and drafting.',
-    system: false,
-    match: (id: string) => id.startsWith('gtm.')
-  },
-  {
-    key: 'system',
-    label: 'System-facing',
-    blurb: 'Modules used by other modules.',
-    system: true,
-    match: () => true
-  }
-] as const;
 
 /**
  * Where each module actually lives, so a card is a link to the file that
@@ -157,20 +120,9 @@ const SUMMARIES: Record<string, string> = {
   'net.validate-host': 'Blocks requests to private, internal, and loopback addresses.'
 };
 
-function groupIndexOf(module: PublicModule): number {
-  const index = MODULE_GROUPS.findIndex((group) => group.match(module.id));
-  return index === -1 ? MODULE_GROUPS.length - 1 : index;
-}
+const byName = (left: PublicModule, right: PublicModule) => left.id.localeCompare(right.id);
 
-/**
- * Group, then name. Every module in the catalog has totalRuns: 0, so the old
- * popularity sort was alphabetical-by-id wearing a leaderboard's clothes.
- */
-function byGroupThenName(left: PublicModule, right: PublicModule): number {
-  return groupIndexOf(left) - groupIndexOf(right) || left.id.localeCompare(right.id);
-}
-
-const STATIC_MODULES = (moduleCatalog.modules as PublicModule[]).slice().sort(byGroupThenName);
+const STATIC_MODULES = (moduleCatalog.modules as PublicModule[]).slice().sort(byName);
 
 const POLICY_CHECKS = [
   { policy: 'max_recipients: 5', run: '5 recipients', verdict: 'within', stop: false },
@@ -324,7 +276,6 @@ export function MarketingScreen({
     import.meta.env.VITE_CATALOG_API_URL?.trim() ?? ''
   );
   const [liveModules, setLiveModules] = useState<PublicModule[]>(STATIC_MODULES);
-  const [moduleQuery, setModuleQuery] = useState('');
   const primaryHref = hostedAppUrl || '#hosted';
   const sourceHref = githubUrl || REPO_URL;
 
@@ -358,7 +309,7 @@ export function MarketingScreen({
           if (!id || known.has(id)) continue;
           merged.push(normalizeRegistryModule(current, null));
         }
-        setLiveModules(merged.sort(byGroupThenName));
+        setLiveModules(merged.sort(byName));
       })
       .catch(() => undefined);
   }, [registryApiUrl]);
@@ -374,23 +325,6 @@ export function MarketingScreen({
 
   const founderHref = `mailto:${supportEmail || FOUNDER_FALLBACK}`;
   const hostedHref = `${founderHref}?subject=${encodeURIComponent('Hosted workspace')}`;
-
-  const query = moduleQuery.trim().toLowerCase();
-  const installable = liveModules.filter(
-    (module) => SHOW_SYSTEM_MODULES || !MODULE_GROUPS[groupIndexOf(module)].system
-  );
-  const catalogModules = installable.filter((module) => {
-    if (!query) return true;
-    return `${module.id} ${module.name} ${SUMMARIES[module.id] ?? module.description}`
-      .toLowerCase()
-      .includes(query);
-  });
-  const moduleGroups = MODULE_GROUPS.map((group) => ({
-    group,
-    modules: catalogModules.filter(
-      (module) => MODULE_GROUPS[groupIndexOf(module)].key === group.key
-    )
-  })).filter((entry) => entry.modules.length > 0);
 
   return (
     <main className="static-launch" id="main" tabIndex={-1}>
@@ -470,7 +404,7 @@ export function MarketingScreen({
           </div>
           <p className="hero-facts">
             <a href="/catalog/modules.json" onClick={() => trackEvent('marketing_catalog_json')}>
-              {installable.length} modules in the catalog
+              {liveModules.length} modules in the catalog
             </a>
             <span aria-hidden="true">·</span>
             <a href="/catalog/trevra.sbom.cdx.json">Software bill of materials</a>
@@ -619,56 +553,6 @@ export function MarketingScreen({
         </div>
       </section>
 
-      <section className="launch-section catalog-section" id="modules">
-        <div className="split-heading">
-          <h2>{installable.length} modules with clear permissions.</h2>
-          <p>Each module states what it reads, what it writes, and whether it needs approval.</p>
-        </div>
-        <div className="catalog-bar">
-          <p className="catalog-links">
-            <a href="/catalog/modules.json" onClick={() => trackEvent('marketing_catalog_json')}>
-              Open the catalog as JSON
-            </a>
-            <span aria-hidden="true">·</span>
-            <a href="/catalog/trevra.sbom.cdx.json">Software bill of materials</a>
-            <span aria-hidden="true">·</span>
-            <a href="/llms.txt">Context file for language models</a>
-          </p>
-          <label className="catalog-filter">
-            <Search size={15} aria-hidden="true" />
-            <input
-              type="search"
-              value={moduleQuery}
-              onChange={(event) => setModuleQuery(event.target.value)}
-              placeholder="Filter modules"
-              aria-label="Filter modules by name, id, or summary"
-            />
-          </label>
-        </div>
-        {moduleGroups.length === 0 ? (
-          <p className="catalog-empty">
-            No modules match “{moduleQuery.trim()}”.{' '}
-            <a href="/catalog/modules.json">Open the full catalog</a>.
-          </p>
-        ) : (
-          moduleGroups.map(({ group, modules }) => (
-            <section
-              className="module-group"
-              key={group.key}
-              aria-labelledby={`module-group-${group.key}`}
-            >
-              <h3 id={`module-group-${group.key}`}>{group.label}</h3>
-              <p>{group.blurb}</p>
-              <ul className="module-list">
-                {modules.map((module) => (
-                  <ModuleRow module={module} key={module.id} />
-                ))}
-              </ul>
-            </section>
-          ))
-        )}
-      </section>
-
       <section className="launch-section deploy-section" id="deploy">
         <div className="split-heading">
           <h2>Hosted or self-hosted.</h2>
@@ -750,6 +634,14 @@ docker compose --env-file .env.dev \\
             </a>
           </article>
         </div>
+        <details className="deploy-modules">
+          <summary>See the {liveModules.length} modules</summary>
+          <ul className="module-list">
+            {liveModules.map((module) => (
+              <ModuleRow module={module} key={module.id} />
+            ))}
+          </ul>
+        </details>
         <div className="deploy-close">
           <div className="launch-actions">
             <a
