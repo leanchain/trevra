@@ -142,6 +142,28 @@ describe('account-scoped lead lists', () => {
     );
     expect(await getLeadList(db, WORKSPACE_ID, second.id, 'owner')).toBeUndefined();
   });
+
+  it('imports a CSV into a list created under a non-owner seat', async () => {
+    await upsertSeat(db, WORKSPACE_ID, { label: 'Second', timezone: 'UTC' }, NOW, 'second');
+    const list = await createLeadList(
+      db,
+      { workspaceId: WORKSPACE_ID, seatKey: 'second', name: 'NL Contacts' },
+      NOW
+    );
+
+    const result = await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'second',
+        listId: list.id,
+        csv: 'First Name,Last Name,Company\nAlexander,Wit,Acme'
+      },
+      NOW
+    );
+
+    expect(result.inserted).toBe(1);
+  });
 });
 
 describe('materialising a harvest into a campaign-usable list', () => {

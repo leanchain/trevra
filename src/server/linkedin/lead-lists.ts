@@ -409,7 +409,7 @@ export async function importLeadCsv(
   mapping: LeadFieldMapping;
   headers: string[];
 }> {
-  if (!(await getLeadList(db, input.workspaceId, input.listId)))
+  if (!(await getLeadList(db, input.workspaceId, input.listId, input.seatKey)))
     throw new Error('Lead list not found.');
   const parsed = parseLeadCsv(input.csv, input.mapping);
   const timestamp = now.toISOString();
