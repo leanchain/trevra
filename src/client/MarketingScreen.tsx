@@ -654,15 +654,6 @@ docker compose --env-file .env.dev \\
             >
               Open Trevra <ArrowRight size={17} />
             </a>
-            <a
-              className="launch-secondary light"
-              href={sourceHref}
-              target="_blank"
-              rel="noreferrer"
-              onClick={() => trackEvent('marketing_source_cta')}
-            >
-              <Github size={17} /> View source
-            </a>
           </div>
         </div>
       </section>

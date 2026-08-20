@@ -1465,6 +1465,11 @@ html:has(.static-launch) {
 .deploy-modules .module-list {
   margin-top: 16px;
 }
+.deploy-close {
+  display: flex;
+  justify-content: center;
+  margin-top: 32px;
+}
 
 .deploy-code {
   margin: 18px 0 10px;
