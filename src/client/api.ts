@@ -546,7 +546,8 @@ export async function updatePolicy(
   return result.policies;
 }
 
-export interface PublicConfig {
+// Not exported: nothing outside this file names the type, only the function.
+interface PublicConfig {
   googleAuthEnabled: boolean;
   emailPasswordAuthEnabled: boolean;
   modelExtractionEnabled: boolean;

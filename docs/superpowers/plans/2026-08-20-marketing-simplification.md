@@ -165,7 +165,7 @@ Rename the file to `public-site.test.tsx` if JSX in a `.ts` file fails to compil
 
 - [ ] **Step 5: Run the test.** `npx vitest run src/server/public-site.test.*`. Expected: green, including the `data-hosted-cta` rewrite case and the two placeholder cases.
 
-- [ ] **Step 6: Build.** `npm run build:marketing`. Expected: succeeds, prints the prerender byte count. Then verify: `grep -c 'data-hosted-cta' dist/index.html` is 3, `grep -c 'TREVRA_JSON_LD' dist/index.html` is 1, and `grep -c 'id="hosted"' dist/index.html` is 1.
+- [ ] **Step 6: Build.** `npm run build:marketing`. Expected: succeeds, prints the prerender byte count. Then verify: `grep -o 'data-hosted-cta' dist/index.html | wc -l` is 3, `grep -c 'TREVRA_JSON_LD' dist/index.html` is 1, and `grep -c 'id="hosted"' dist/index.html` is 1.
 
 - [ ] **Step 7: Commit.** `git add index.html scripts/prerender-marketing.tsx package.json src/server/public-site.test.* && git commit -m "marketing: prerender index.html from the component"`
 
@@ -191,5 +191,5 @@ Rename the file to `public-site.test.tsx` if JSX in a `.ts` file fails to compil
 
 - `npm run typecheck` clean.
 - `npx vitest run src/client src/server/public-site.test.*` green.
-- `npm run build:marketing` succeeds; `dist/index.html` contains the hero headline, the gate table, the deploy cards, both placeholders, and three `data-hosted-cta` attributes.
+- `npm run build:marketing` succeeds; `dist/index.html` contains the hero headline, the gate table, the deploy cards, both placeholders, and `grep -o 'data-hosted-cta' dist/index.html | wc -l` is 3.
 - The page still works with JavaScript disabled: anchors scroll, the burger menu opens, the approve disclosure opens.

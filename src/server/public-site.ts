@@ -7,7 +7,8 @@ import { id } from './db.js';
 import { listPublicModulePopularity, listPublicRegistryModules } from './registry/service.js';
 
 /** The landing page's own <meta name="description">, verbatim. One product sentence, not four. */
-const PRODUCT_DESCRIPTION = 'Trevra is open-source GTM infrastructure for Claude Code and Codex. Agents do the work, external actions require approval, and every run is logged.';
+const PRODUCT_DESCRIPTION =
+  'Trevra is open-source GTM infrastructure for Claude Code and Codex. Agents do the work, external actions require approval, and every run is logged.';
 const PUBLIC_PATHS = ['/', '/how-it-works', '/security', '/privacy', '/terms'] as const;
 
 export type MarketingEventName =
@@ -94,17 +95,26 @@ const marketingEventSchema = z.object({
 });
 
 export function getSiteConfig(env: NodeJS.ProcessEnv = process.env): SiteConfig {
-  const rawOrigin = env.PUBLIC_SITE_URL ?? env.BETTER_AUTH_URL ?? env.APP_ORIGIN?.split(',')[0]?.trim() ?? 'http://localhost:43173';
+  const rawOrigin =
+    env.PUBLIC_SITE_URL ??
+    env.BETTER_AUTH_URL ??
+    env.APP_ORIGIN?.split(',')[0]?.trim() ??
+    'http://localhost:43173';
   const origin = new URL(rawOrigin).origin;
   const hostname = new URL(origin).hostname;
   return {
     origin,
     name: env.PUBLIC_SITE_NAME?.trim() || 'Trevra',
     legalName: env.PUBLIC_LEGAL_NAME?.trim() || 'Trevra',
-    title: env.PUBLIC_SITE_TITLE?.trim() || 'Trevra — agent-run go-to-market that stops for your approval',
+    title:
+      env.PUBLIC_SITE_TITLE?.trim() ||
+      'Trevra — agent-run go-to-market that stops for your approval',
     description: env.PUBLIC_SITE_DESCRIPTION?.trim() || PRODUCT_DESCRIPTION,
     supportEmail: env.PUBLIC_SUPPORT_EMAIL?.trim() || `support@${hostname}`,
-    securityEmail: env.SECURITY_CONTACT_EMAIL?.trim() || env.PUBLIC_SUPPORT_EMAIL?.trim() || `security@${hostname}`,
+    securityEmail:
+      env.SECURITY_CONTACT_EMAIL?.trim() ||
+      env.PUBLIC_SUPPORT_EMAIL?.trim() ||
+      `security@${hostname}`,
     googleVerification: env.GOOGLE_SITE_VERIFICATION?.trim() || '',
     bingVerification: env.BING_SITE_VERIFICATION?.trim() || '',
     indexNowKey: env.INDEXNOW_KEY?.trim() || '',
@@ -136,12 +146,25 @@ function hostedWorkspaceUrl(env: NodeJS.ProcessEnv): string {
 
 export function registerPublicSiteRoutes(app: Express, db: Db): void {
   const config = getSiteConfig();
-  const publicLimiter = rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: true, legacyHeaders: false });
+  const publicLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 120,
+    standardHeaders: true,
+    legacyHeaders: false
+  });
 
-  const registryCorsOrigins = new Set((process.env.PUBLIC_REGISTRY_CORS_ORIGIN || config.origin).split(',').map((item) => item.trim()).filter(Boolean));
+  const registryCorsOrigins = new Set(
+    (process.env.PUBLIC_REGISTRY_CORS_ORIGIN || config.origin)
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  );
   const publicRegistryHeaders = (req: express.Request, res: Response) => {
     const requestOrigin = req.header('origin');
-    const allowedOrigin = requestOrigin && registryCorsOrigins.has(requestOrigin) ? requestOrigin : [...registryCorsOrigins][0] ?? config.origin;
+    const allowedOrigin =
+      requestOrigin && registryCorsOrigins.has(requestOrigin)
+        ? requestOrigin
+        : ([...registryCorsOrigins][0] ?? config.origin);
     res.set({
       'Cache-Control': 'public, max-age=60, stale-while-revalidate=300',
       'Access-Control-Allow-Origin': allowedOrigin,
@@ -153,14 +176,26 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
   app.get('/api/public/module-popularity', publicLimiter, async (req, res, next) => {
     try {
       publicRegistryHeaders(req, res);
-      res.json({ schemaVersion: '1.0.0', generatedAt: new Date().toISOString(), modules: await listPublicModulePopularity(db) });
-    } catch (error) { next(error); }
+      res.json({
+        schemaVersion: '1.0.0',
+        generatedAt: new Date().toISOString(),
+        modules: await listPublicModulePopularity(db)
+      });
+    } catch (error) {
+      next(error);
+    }
   });
   app.get('/api/public/modules', publicLimiter, async (req, res, next) => {
     try {
       publicRegistryHeaders(req, res);
-      res.json({ schemaVersion: '1.0.0', generatedAt: new Date().toISOString(), modules: await listPublicRegistryModules(db) });
-    } catch (error) { next(error); }
+      res.json({
+        schemaVersion: '1.0.0',
+        generatedAt: new Date().toISOString(),
+        modules: await listPublicRegistryModules(db)
+      });
+    } catch (error) {
+      next(error);
+    }
   });
   app.get('/api/public/modules/:id', publicLimiter, async (req, res, next) => {
     try {
@@ -169,26 +204,36 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
       const module = modules.find((item) => item.id === String(req.params.id));
       if (!module) return res.status(404).json({ error: 'Public module not found' });
       res.json({ module });
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get('/robots.txt', (_req, res) => {
     setTextResponse(res, 3600);
-    res.send([
-      'User-agent: *',
-      'Allow: /',
-      'Disallow: /api/',
-      '',
-      `Sitemap: ${config.origin}/sitemap.xml`,
-      `Host: ${new URL(config.origin).host}`,
-      ''
-    ].join('\n'));
+    res.send(
+      [
+        'User-agent: *',
+        'Allow: /',
+        'Disallow: /api/',
+        '',
+        `Sitemap: ${config.origin}/sitemap.xml`,
+        `Host: ${new URL(config.origin).host}`,
+        ''
+      ].join('\n')
+    );
   });
 
   app.get('/sitemap.xml', (_req, res) => {
-    res.type('application/xml').set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
-    const urls = PUBLIC_PATHS.map((path) => `  <url><loc>${escapeXml(`${config.origin}${path}`)}</loc></url>`).join('\n');
-    res.send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`);
+    res
+      .type('application/xml')
+      .set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
+    const urls = PUBLIC_PATHS.map(
+      (path) => `  <url><loc>${escapeXml(`${config.origin}${path}`)}</loc></url>`
+    ).join('\n');
+    res.send(
+      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`
+    );
   });
 
   app.get('/llms.txt', (_req, res) => {
@@ -202,13 +247,17 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
   });
 
   app.get('/agents.md', (_req, res) => {
-    res.type('text/markdown; charset=utf-8').set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
+    res
+      .type('text/markdown; charset=utf-8')
+      .set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
     res.send(renderPublicAgents(config));
   });
 
   app.get('/humans.txt', (_req, res) => {
     setTextResponse(res, 3600);
-    res.send(`/* TEAM */\nProduct: Trevra\nContact: ${config.supportEmail}\n\n/* PRODUCT */\nTrevra is the open-source ledger and control plane founders point their agents at. The agent does the work; Trevra records the evidence and holds the approval gate.\n\n/* STANDARDS */\nHTML5, accessibility-minded React, PostgreSQL, robots.txt, sitemap.xml, llms.txt, and RFC 9116 security.txt.\n`);
+    res.send(
+      `/* TEAM */\nProduct: Trevra\nContact: ${config.supportEmail}\n\n/* PRODUCT */\nTrevra is the open-source ledger and control plane founders point their agents at. The agent does the work; Trevra records the evidence and holds the approval gate.\n\n/* STANDARDS */\nHTML5, accessibility-minded React, PostgreSQL, robots.txt, sitemap.xml, llms.txt, and RFC 9116 security.txt.\n`
+    );
   });
 
   app.get('/.well-known/security.txt', (_req, res) => {
@@ -220,7 +269,11 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
       `Expires: ${expires}`,
       'Preferred-Languages: en'
     ];
-    if (secureOrigin) lines.push(`Canonical: ${config.origin}/.well-known/security.txt`, `Policy: ${config.origin}/security`);
+    if (secureOrigin)
+      lines.push(
+        `Canonical: ${config.origin}/.well-known/security.txt`,
+        `Policy: ${config.origin}/security`
+      );
     res.send(`${lines.join('\n')}\n`);
   });
 
@@ -233,13 +286,16 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
     });
   }
 
-  app.get('/how-it-works', (_req, res) => sendPublicPage(res, config, {
-    path: '/how-it-works',
-    title: 'How Trevra Works | Agentic GTM Ledger and Control Plane',
-    description: 'See how Trevra records agent runs, reconstructs the revenue loop from source to paid, builds proof packs, and holds every consequential action at an approval gate.',
-    heading: 'Claude runs the loop. Trevra keeps the record.',
-    intro: 'Trevra is the memory and the control plane behind agent-operated go-to-market: every run recorded, every action evidenced, every consequential step gated on your approval.',
-    body: `<div class="launch-faq">
+  app.get('/how-it-works', (_req, res) =>
+    sendPublicPage(res, config, {
+      path: '/how-it-works',
+      title: 'How Trevra Works | Agentic GTM Ledger and Control Plane',
+      description:
+        'See how Trevra records agent runs, reconstructs the revenue loop from source to paid, builds proof packs, and holds every consequential action at an approval gate.',
+      heading: 'Claude runs the loop. Trevra keeps the record.',
+      intro:
+        'Trevra is the memory and the control plane behind agent-operated go-to-market: every run recorded, every action evidenced, every consequential step gated on your approval.',
+      body: `<div class="launch-faq">
       ${docRow('1', 'Connect the source systems', 'Email, calendar, accounting, payment, and client-management systems remain the systems of record. Trevra normalizes their commercial events into one graph you own.')}
       ${docRow('2', 'Build the revenue memory', 'Leads, proposals, clauses, scope items, client requests, milestones, invoices, and payments become one evidence-linked graph spanning source to paid.')}
       ${docRow('3', 'Let the skills do the work', 'Skills are small, typed, testable units of go-to-market work. Claude calls them; Trevra records the inputs, outputs, evidence, and verdict of every run.')}
@@ -248,82 +304,133 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
       <details open><summary>Evidence before automation</summary><p>Every agent action carries a Revenue Proof Pack: why the agent acted, the agreement and scope it relied on, the client request and delivery evidence, the billing obligation, the payment state, and the exact payload you approved. The approved payload is cryptographically hashed before execution, so a modified payload is rejected.</p></details>
       <details open><summary>Designed to work with the existing stack</summary><p>Trevra supports live integration patterns for Gmail, Microsoft 365, Google Calendar, Stripe, QuickBooks, Xero, HoneyBook, and Bonsai. CSV exports can be imported when a direct API is unavailable. Run the whole thing on your own PostgreSQL and keep the ledger.</p></details>
     </div>`
-  }));
+    })
+  );
 
-  app.get('/security', (_req, res) => sendPublicPage(res, config, {
-    path: '/security',
-    title: 'Security and Responsible Disclosure | Trevra',
-    description: 'How Trevra protects commercial data, constrains automation, verifies webhooks, isolates workspaces, and receives responsible vulnerability reports.',
-    heading: 'Commercial automation needs explicit boundaries.',
-    intro: 'Trevra is designed around evidence, least privilege, approval integrity, and auditable execution.',
-    body: `<div class="launch-faq">
+  app.get('/security', (_req, res) =>
+    sendPublicPage(res, config, {
+      path: '/security',
+      title: 'Security and Responsible Disclosure | Trevra',
+      description:
+        'How Trevra protects commercial data, constrains automation, verifies webhooks, isolates workspaces, and receives responsible vulnerability reports.',
+      heading: 'Commercial automation needs explicit boundaries.',
+      intro:
+        'Trevra is designed around evidence, least privilege, approval integrity, and auditable execution.',
+      body: `<div class="launch-faq">
       ${docRow('01', 'Approval integrity', 'The exact approved payload, including structured financial fields, is hashed before execution. Modified payloads are rejected.')}
       ${docRow('02', 'Workspace isolation', 'Application queries are scoped by workspace, authentication data and commercial records use PostgreSQL, and external credentials are delegated to the integration layer.')}
       ${docRow('03', 'Verified events', 'Stripe and Nango webhooks are signature-verified, deduplicated, and processed idempotently.')}
       <details open id="disclosure"><summary>Responsible disclosure</summary><p>Report a suspected vulnerability to <a href="mailto:${escapeAttr(config.securityEmail)}">${escapeHtml(config.securityEmail)}</a>. Include reproduction steps, affected URLs, and the potential impact. Do not access data that is not yours, disrupt service availability, or use destructive testing.</p><p>The canonical machine-readable disclosure channel is <a href="/.well-known/security.txt">/.well-known/security.txt</a>.</p></details>
     </div>`
-  }));
+    })
+  );
 
   // /privacy and /terms are shipped documents, not routes: public/privacy/index.html
   // and public/terms/index.html are the single legal surface on every deploy
   // target, served here by the static middleware in src/server/index.ts.
 
-  app.post('/api/marketing/events', publicLimiter, express.json({ limit: '32kb' }), async (req, res) => {
-    const fetchSite = req.header('sec-fetch-site');
-    if (fetchSite && !['same-origin', 'none'].includes(fetchSite)) return res.status(403).json({ error: 'Cross-site events are not accepted' });
-    const input = marketingEventSchema.parse(req.body ?? {});
-    await recordMarketingEvent(db, input);
-    res.status(202).json({ accepted: true });
-  });
+  app.post(
+    '/api/marketing/events',
+    publicLimiter,
+    express.json({ limit: '32kb' }),
+    async (req, res) => {
+      const fetchSite = req.header('sec-fetch-site');
+      if (fetchSite && !['same-origin', 'none'].includes(fetchSite))
+        return res.status(403).json({ error: 'Cross-site events are not accepted' });
+      const input = marketingEventSchema.parse(req.body ?? {});
+      await recordMarketingEvent(db, input);
+      res.status(202).json({ accepted: true });
+    }
+  );
 
   app.get('/api/internal/traction', async (req, res) => {
     const expected = process.env.TRACTION_ADMIN_TOKEN?.trim();
     if (!expected) return res.status(404).json({ error: 'Not found' });
     const supplied = req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '';
-    if (!safeTokenEqual(supplied, expected)) return res.status(401).json({ error: 'Invalid token' });
-    const days = z.coerce.number().int().min(1).max(730).default(90).parse(req.query.days ?? 90);
+    if (!safeTokenEqual(supplied, expected))
+      return res.status(401).json({ error: 'Invalid token' });
+    const days = z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(730)
+      .default(90)
+      .parse(req.query.days ?? 90);
     res.json(await getTractionReport(db, days));
   });
 }
 
 export async function recordMarketingEvent(db: Db, input: MarketingEventInput): Promise<void> {
   try {
-    const salt = process.env.MARKETING_HASH_SALT ?? process.env.BETTER_AUTH_SECRET ?? 'development-marketing-salt';
-    const visitorHash = input.visitorId ? createHash('sha256').update(`${salt}:${input.visitorId}`).digest('hex') : null;
-    await db.prepare(`
+    const salt =
+      process.env.MARKETING_HASH_SALT ??
+      process.env.BETTER_AUTH_SECRET ??
+      'development-marketing-salt';
+    const visitorHash = input.visitorId
+      ? createHash('sha256').update(`${salt}:${input.visitorId}`).digest('hex')
+      : null;
+    await db
+      .prepare(
+        `
       INSERT INTO marketing_events (
         id,visitor_hash,workspace_id,event_name,path,referrer_domain,source,medium,campaign,content,term,metadata_json,created_at
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `).run(
-      id('mkt'), visitorHash, input.workspaceId ?? null, input.eventName,
-      cleanText(input.path, 500), referrerDomain(input.referrer), cleanText(input.source, 120), cleanText(input.medium, 120),
-      cleanText(input.campaign, 200), cleanText(input.content, 200), cleanText(input.term, 200),
-      JSON.stringify(input.metadata ?? {}), new Date().toISOString()
-    );
+    `
+      )
+      .run(
+        id('mkt'),
+        visitorHash,
+        input.workspaceId ?? null,
+        input.eventName,
+        cleanText(input.path, 500),
+        referrerDomain(input.referrer),
+        cleanText(input.source, 120),
+        cleanText(input.medium, 120),
+        cleanText(input.campaign, 200),
+        cleanText(input.content, 200),
+        cleanText(input.term, 200),
+        JSON.stringify(input.metadata ?? {}),
+        new Date().toISOString()
+      );
   } catch (error) {
-    console.warn('Marketing event recording failed', error instanceof Error ? error.message : error);
+    console.warn(
+      'Marketing event recording failed',
+      error instanceof Error ? error.message : error
+    );
   }
 }
 
 export async function getTractionReport(db: Db, days = 90) {
-  const totals = await db.prepare(`
+  const totals = await db
+    .prepare(
+      `
     SELECT event_name, COUNT(*) AS events, COUNT(DISTINCT visitor_hash) AS visitors, COUNT(DISTINCT workspace_id) AS workspaces
     FROM marketing_events
     WHERE created_at >= CURRENT_TIMESTAMP - (?::int * INTERVAL '1 day')
     GROUP BY event_name ORDER BY events DESC
-  `).all<{ event_name: string; events: number; visitors: number; workspaces: number }>(days);
-  const daily = await db.prepare(`
+  `
+    )
+    .all<{ event_name: string; events: number; visitors: number; workspaces: number }>(days);
+  const daily = await db
+    .prepare(
+      `
     SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day, event_name, COUNT(*) AS events
     FROM marketing_events
     WHERE created_at >= CURRENT_TIMESTAMP - (?::int * INTERVAL '1 day')
     GROUP BY 1,2 ORDER BY 1,2
-  `).all<{ day: string; event_name: string; events: number }>(days);
-  const sources = await db.prepare(`
+  `
+    )
+    .all<{ day: string; event_name: string; events: number }>(days);
+  const sources = await db
+    .prepare(
+      `
     SELECT COALESCE(NULLIF(source,''),'direct') AS source, COUNT(*) AS events, COUNT(DISTINCT visitor_hash) AS visitors
     FROM marketing_events
     WHERE created_at >= CURRENT_TIMESTAMP - (?::int * INTERVAL '1 day') AND source IS NOT NULL
     GROUP BY 1 ORDER BY visitors DESC, events DESC LIMIT 25
-  `).all<{ source: string; events: number; visitors: number }>(days);
+  `
+    )
+    .all<{ source: string; events: number; visitors: number }>(days);
   const stat = (name: string) => totals.find((item) => item.event_name === name);
   const count = (name: string) => Number(stat(name)?.events ?? 0);
   const workspaces = (name: string) => Number(stat(name)?.workspaces ?? 0);
@@ -371,17 +478,39 @@ export function renderAppIndex(template: string, nonce: string): string {
   }
   const jsonLd = JSON.stringify(structuredData(config)).replaceAll('<', '\\u003c');
   const verification = [
-    config.googleVerification ? `<meta name="google-site-verification" content="${escapeAttr(config.googleVerification)}" />` : '',
-    config.bingVerification ? `<meta name="msvalidate.01" content="${escapeAttr(config.bingVerification)}" />` : ''
-  ].filter(Boolean).join('\n    ');
+    config.googleVerification
+      ? `<meta name="google-site-verification" content="${escapeAttr(config.googleVerification)}" />`
+      : '',
+    config.bingVerification
+      ? `<meta name="msvalidate.01" content="${escapeAttr(config.bingVerification)}" />`
+      : ''
+  ]
+    .filter(Boolean)
+    .join('\n    ');
   const html = template
     .replaceAll('http://localhost:43173', config.origin)
     .replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(config.title)}</title>`)
-    .replace(/<meta name="description" content="[^"]*" \/>/, `<meta name="description" content="${escapeAttr(config.description)}" />`)
-    .replace(/<meta property="og:title" content="[^"]*" \/>/, `<meta property="og:title" content="${escapeAttr(config.title)}" />`)
-    .replace(/<meta name="twitter:title" content="[^"]*" \/>/, `<meta name="twitter:title" content="${escapeAttr(config.title)}" />`)
+    // \s+ rather than a literal space: this tag's copy runs past Prettier's
+    // printWidth, so the shipped index.html wraps it across three lines with
+    // one attribute per line -- and only this tag, since <title> and the two
+    // shorter og/twitter title tags stay on one line.
+    .replace(
+      /<meta\s+name="description"\s+content="[^"]*"\s*\/>/,
+      `<meta name="description" content="${escapeAttr(config.description)}" />`
+    )
+    .replace(
+      /<meta property="og:title" content="[^"]*" \/>/,
+      `<meta property="og:title" content="${escapeAttr(config.title)}" />`
+    )
+    .replace(
+      /<meta name="twitter:title" content="[^"]*" \/>/,
+      `<meta name="twitter:title" content="${escapeAttr(config.title)}" />`
+    )
     .replace('<!-- TREVRA_VERIFICATION -->', verification)
-    .replace('<!-- TREVRA_JSON_LD -->', `<script type="application/ld+json" nonce="${escapeAttr(nonce)}">${jsonLd}</script>`);
+    .replace(
+      '<!-- TREVRA_JSON_LD -->',
+      `<script type="application/ld+json" nonce="${escapeAttr(nonce)}">${jsonLd}</script>`
+    );
   return withHostedWorkspaceHrefs(html, config.hostedAppUrl);
 }
 
@@ -400,22 +529,25 @@ export function renderAppIndex(template: string, nonce: string): string {
 function withHostedWorkspaceHrefs(html: string, hostedAppUrl: string): string {
   if (!hostedAppUrl) return html;
   const href = `href="${escapeAttr(hostedAppUrl)}"`;
-  return html.replace(
-    /<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi,
-    (tag) => tag.replace(/\bhref\s*=\s*"[^"]*"/i, href)
+  return html.replace(/<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi, (tag) =>
+    tag.replace(/\bhref\s*=\s*"[^"]*"/i, href)
   );
 }
 
 export function renderNotFoundPage(nonce: string): string {
-  return renderPublicDocument(getSiteConfig(), {
-    path: '/404',
-    title: 'Page not found | Trevra',
-    description: 'The requested Trevra page could not be found.',
-    heading: 'That page is not part of the revenue brief.',
-    intro: 'Return to Trevra to create a workspace or continue your commercial work.',
-    body: '<p><a class="launch-button" href="/">Return to Trevra</a></p>',
-    noindex: true
-  }, nonce);
+  return renderPublicDocument(
+    getSiteConfig(),
+    {
+      path: '/404',
+      title: 'Page not found | Trevra',
+      description: 'The requested Trevra page could not be found.',
+      heading: 'That page is not part of the revenue brief.',
+      intro: 'Return to Trevra to create a workspace or continue your commercial work.',
+      body: '<p><a class="launch-button" href="/">Return to Trevra</a></p>',
+      noindex: true
+    },
+    nonce
+  );
 }
 
 function sendPublicPage(res: Response, config: SiteConfig, page: PublicPage): void {
@@ -478,8 +610,7 @@ ${siteFooter(config)}
  * same nav works on the static deploy target, where these sections are the
  * only place `/how-it-works` and `/security` exist.
  */
-const SITE_LINKS =
-  '<a href="/#how-it-works">How it runs</a><a href="/#approval">The gate</a><a href="/#modules">Catalog</a><a href="/#deploy">Deploy</a>';
+const SITE_LINKS = '<a href="/#approval">The gate</a><a href="/#deploy">Deploy</a>';
 
 /** Below 1050px `.launch-nav > nav` is hidden, so the links live here instead. */
 const MENU_ICON =
@@ -510,21 +641,43 @@ function structuredData(config: SiteConfig) {
     '@context': 'https://schema.org',
     '@graph': [
       {
-        '@type': 'Organization', '@id': `${config.origin}/#organization`, name: config.legalName, url: config.origin, email: config.supportEmail,
-        logo: { '@type': 'ImageObject', url: `${config.origin}/icons/trevra-512.png`, width: 512, height: 512 }
+        '@type': 'Organization',
+        '@id': `${config.origin}/#organization`,
+        name: config.legalName,
+        url: config.origin,
+        email: config.supportEmail,
+        logo: {
+          '@type': 'ImageObject',
+          url: `${config.origin}/icons/trevra-512.png`,
+          width: 512,
+          height: 512
+        }
       },
       {
-        '@type': 'WebSite', '@id': `${config.origin}/#website`, url: config.origin, name: config.name,
-        description: config.description, publisher: { '@id': `${config.origin}/#organization` }, inLanguage: 'en'
+        '@type': 'WebSite',
+        '@id': `${config.origin}/#website`,
+        url: config.origin,
+        name: config.name,
+        description: config.description,
+        publisher: { '@id': `${config.origin}/#organization` },
+        inLanguage: 'en'
       },
       {
-        '@type': 'WebApplication', '@id': `${config.origin}/#application`, name: config.name, url: config.origin,
-        description: config.description, applicationCategory: 'BusinessApplication', operatingSystem: 'Any',
+        '@type': 'WebApplication',
+        '@id': `${config.origin}/#application`,
+        name: config.name,
+        url: config.origin,
+        description: config.description,
+        applicationCategory: 'BusinessApplication',
+        operatingSystem: 'Any',
         browserRequirements: 'Requires JavaScript and a modern web browser',
         featureList: [
-          'Modular agent-run revenue loop from source to paid', 'Public GitHub-synced module catalog',
-          'Scope-creep detection and change-order preparation', 'Unbilled milestone detection and invoice preparation',
-          'Overdue invoice follow-up', 'Revenue Proof Packs behind every agent action',
+          'Modular agent-run revenue loop from source to paid',
+          'Public GitHub-synced module catalog',
+          'Scope-creep detection and change-order preparation',
+          'Unbilled milestone detection and invoice preparation',
+          'Overdue invoice follow-up',
+          'Revenue Proof Packs behind every agent action',
           'Approval-gated execution with cryptographic payload hashing',
           'Delegation scoped by action type, confidence, amount, and delay',
           'Open-source, self-hostable GTM runtime and revenue ledger'
@@ -533,7 +686,11 @@ function structuredData(config: SiteConfig) {
       },
       {
         '@type': 'FAQPage',
-        mainEntity: faqItems().map(([question, answer]) => ({ '@type': 'Question', name: question, acceptedAnswer: { '@type': 'Answer', text: answer } }))
+        mainEntity: faqItems().map(([question, answer]) => ({
+          '@type': 'Question',
+          name: question,
+          acceptedAnswer: { '@type': 'Answer', text: answer }
+        }))
       }
     ]
   };
@@ -551,10 +708,22 @@ function renderPublicAgents(config: SiteConfig): string {
 
 function faqItems(): Array<[string, string]> {
   return [
-    ['How do I actually use Trevra?', 'Give Claude Code, Codex, or another capable agent a go-to-market outcome. The agent calls typed Trevra modules for research, scoring, preparation, governance, and execution. Trevra records the run and stops at the approval boundary when the work could change an external system.'],
-    ['Can an agent send messages or create invoices by itself?', 'Only inside the policy you set. Consequential actions can require manual approval, and the exact approved payload is cryptographically hashed before execution. Changed payloads and out-of-scope actions are rejected.'],
-    ['How are community modules shared safely?', 'Modules are versioned through GitHub and declare their input and output schemas, side-effect class, approval requirement, and version. Validation and tests run before a catalog release. Publishing a module does not grant it external-write permission.'],
-    ['Can I self-host Trevra and keep my data?', 'Yes. Trevra runs on PostgreSQL, the module runner is open, and workspace data, ledger entries, evidence, configuration, and exports can remain in infrastructure you control.']
+    [
+      'How do I actually use Trevra?',
+      'Give Claude Code, Codex, or another capable agent a go-to-market outcome. The agent calls typed Trevra modules for research, scoring, preparation, governance, and execution. Trevra records the run and stops at the approval boundary when the work could change an external system.'
+    ],
+    [
+      'Can an agent send messages or create invoices by itself?',
+      'Only inside the policy you set. Consequential actions can require manual approval, and the exact approved payload is cryptographically hashed before execution. Changed payloads and out-of-scope actions are rejected.'
+    ],
+    [
+      'How are community modules shared safely?',
+      'Modules are versioned through GitHub and declare their input and output schemas, side-effect class, approval requirement, and version. Validation and tests run before a catalog release. Publishing a module does not grant it external-write permission.'
+    ],
+    [
+      'Can I self-host Trevra and keep my data?',
+      'Yes. Trevra runs on PostgreSQL, the module runner is open, and workspace data, ledger entries, evidence, configuration, and exports can remain in infrastructure you control.'
+    ]
   ];
 }
 
@@ -564,13 +733,15 @@ function faqItems(): Array<[string, string]> {
  * marketing.css has; the `<nav>` this used to emit matched nothing.
  */
 function siteFooter(config: SiteConfig): string {
-  return `<footer class="launch-footer">`
-    + `<div class="footer-brand">${brandLink()}<p>The open-source runtime, ledger and approval gate for agent-run go-to-market.</p></div>`
-    + `<div><strong>Product</strong><a href="/#how-it-works">How it runs</a><a href="/#approval">The approval gate</a><a href="/#modules">Module catalog</a><a href="/#deploy">Deploy</a></div>`
-    + `<div><strong>Source</strong><a href="https://github.com/leanchain/trevra" target="_blank" rel="noreferrer">GitHub repository</a><a href="/catalog/modules.json">Catalog JSON</a><a href="/catalog/trevra.sbom.cdx.json">SBOM (CycloneDX)</a><a href="/llms.txt">Context for language models</a></div>`
-    + `<div><strong>Company</strong><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:${escapeAttr(config.supportEmail)}">Talk to the founder</a></div>`
-    + `<p class="footer-note">&copy; ${new Date().getUTCFullYear()} ${escapeHtml(config.name)}. Built in the open.</p>`
-    + `</footer>`;
+  return (
+    `<footer class="launch-footer">` +
+    `<div class="footer-brand">${brandLink()}<p>The open-source runtime, ledger and approval gate for agent-run go-to-market.</p></div>` +
+    `<div><strong>Product</strong><a href="/#approval">The gate</a><a href="/#deploy">Deploy</a></div>` +
+    `<div><strong>Source</strong><a href="https://github.com/leanchain/trevra" target="_blank" rel="noreferrer">GitHub repository</a><a href="/catalog/modules.json">Catalog JSON</a><a href="/catalog/trevra.sbom.cdx.json">SBOM (CycloneDX)</a><a href="/llms.txt">Context for language models</a></div>` +
+    `<div><strong>Company</strong><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:${escapeAttr(config.supportEmail)}">Talk to the founder</a></div>` +
+    `<p class="footer-note">&copy; ${new Date().getUTCFullYear()} ${escapeHtml(config.name)}. Built in the open.</p>` +
+    `</footer>`
+  );
 }
 
 /**
@@ -584,7 +755,9 @@ function docRow(number: string, title: string, copy: string): string {
 }
 
 function setTextResponse(res: Response, seconds: number): void {
-  res.type('text/plain; charset=utf-8').set('Cache-Control', `public, max-age=${seconds}, stale-while-revalidate=${seconds * 4}`);
+  res
+    .type('text/plain; charset=utf-8')
+    .set('Cache-Control', `public, max-age=${seconds}, stale-while-revalidate=${seconds * 4}`);
 }
 
 function cleanText(value: string | null | undefined, max: number): string | null {
@@ -594,8 +767,11 @@ function cleanText(value: string | null | undefined, max: number): string | null
 
 function referrerDomain(value: string | null | undefined): string | null {
   if (!value) return null;
-  try { return new URL(value).hostname.slice(0, 255) || null; }
-  catch { return null; }
+  try {
+    return new URL(value).hostname.slice(0, 255) || null;
+  } catch {
+    return null;
+  }
 }
 
 function ratio(numerator: number, denominator: number): number | null {
@@ -609,8 +785,15 @@ function safeTokenEqual(supplied: string, expected: string): boolean {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char]!);
+  return value.replace(
+    /[&<>"']/g,
+    (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char]!
+  );
 }
 
-function escapeAttr(value: string): string { return escapeHtml(value); }
-function escapeXml(value: string): string { return escapeHtml(value); }
+function escapeAttr(value: string): string {
+  return escapeHtml(value);
+}
+function escapeXml(value: string): string {
+  return escapeHtml(value);
+}
