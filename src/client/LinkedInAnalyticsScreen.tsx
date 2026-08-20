@@ -13,9 +13,9 @@ import { FunnelBars, LiStat } from './LinkedInViz';
  * funnel, a per-campaign table, and a daily volume chart that the Seat screen
  * already drew from the same route. It is gone as a destination. The funnel is
  * a loop-level question -- how far does what goes out actually get -- so the
- * shell renders `LinkedInFunnel` on `/loop`; the per-campaign table is a
- * campaign question, so `LinkedInCampaignBreakdown` renders under
- * `/outreach`; the chart stayed where it was.
+ * shell renders `LinkedInFunnel` on `/loop`; the per-campaign table was a
+ * campaign question, and it has since been removed; the chart stayed where
+ * it was.
  *
  * THE WINDOW IS A CONTROL NOW, AND THE COPY IS THE SERVER'S ANSWER.
  * Both panels used to send a hardcoded 7 and then print "every action ever
@@ -278,90 +278,6 @@ export function LinkedInFunnel({
             {RATE_MIN_SAMPLE} in the denominator.
           </p>
         </>
-      )}
-    </section>
-  );
-}
-
-/**
- * The same funnel, split by campaign.
- *
- * Under Campaigns rather than on a screen of its own: “which of my campaigns is
- * working” is a question asked with the campaign list already on screen, and
- * it was two clicks and a different window away.
- */
-export function LinkedInCampaignBreakdown() {
-  const { analytics, loading, error, reload, days, setDays } = useOutreachAnalytics();
-
-  return (
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>By campaign</h3>
-          <p>
-            {analytics ? windowSentence(analytics.windowDays) : 'Reading the outreach ledger…'}{' '}
-            Acceptance is accepted out of invites sent, so a campaign whose invites are still
-            unanswered reads low rather than blank.
-          </p>
-        </div>
-      </div>
-
-      <WindowChoice days={days} onChange={setDays} loading={loading} />
-
-      {error && <ReadFailure message={error} loading={loading} onRetry={() => void reload()} />}
-
-      {!analytics || analytics.byCampaign.length === 0 ? (
-        <p className="empty-copy">
-          {loading
-            ? 'Reading the outreach ledger…'
-            : error
-              ? 'No count to show.'
-              : 'No campaign has filed an action in this window.'}
-        </p>
-      ) : (
-        <div className="li-table-scroll">
-          <table className="li-table">
-            <thead>
-              <tr>
-                <th>Campaign</th>
-                <th>Status</th>
-                <th>Planned</th>
-                <th>Exported</th>
-                <th>Sent</th>
-                <th>Accepted</th>
-                <th>Replied</th>
-                <th>Declined</th>
-                <th>Acceptance</th>
-              </tr>
-            </thead>
-            <tbody>
-              {analytics.byCampaign.map((row) => (
-                <tr key={row.campaignId}>
-                  <td>{row.name ?? row.campaignId}</td>
-                  <td>
-                    {row.status ? (
-                      <span className={`li-chip li-campaign-${row.status}`}>{row.status}</span>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td className="li-num">{row.planned}</td>
-                  <td className="li-num">{row.exported}</td>
-                  <td className="li-num">{row.sent}</td>
-                  <td className="li-num">{row.accepted}</td>
-                  <td className="li-num">{row.replied}</td>
-                  <td className="li-num">{row.declined}</td>
-                  <td
-                    className="li-num"
-                    title={`${row.invitesAccepted} accepted of ${row.invitesSent} invites sent`}
-                  >
-                    {ratePercent(row.invitesAccepted, row.invitesSent)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       )}
     </section>
   );

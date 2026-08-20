@@ -199,7 +199,7 @@ export function ceilingSourceNote(ceiling: EnforcedCeiling): string {
 }
 
 /** Everything needed to build the same campaign a second time, minus the name. */
-export interface CampaignPrefill {
+interface CampaignPrefill {
   /** A suggested name. The operator edits it before creating. */
   name: string;
   seatKey: string;

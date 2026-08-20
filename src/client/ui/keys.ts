@@ -16,14 +16,14 @@ import { useEffect, useRef } from 'react';
  * -------------------------------------------------------------------------- */
 
 /** Is the caret somewhere a letter means a letter? */
-export function isTypingTarget(target: EventTarget | null): boolean {
+function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   const tag = target.tagName;
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
-export interface ShortcutHandlers {
+interface ShortcutHandlers {
   /** Cmd/Ctrl+K -- jump to a screen. */
   onJump: () => void;
   /** `?` -- the sheet listing every one of these. */

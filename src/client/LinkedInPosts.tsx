@@ -174,7 +174,7 @@ function renderBlocksIntoDom(container: HTMLElement, blocks: PostBlock[]): void 
   });
 }
 
-export function PostComposer({
+function PostComposer({
   onCreated,
   setToast
 }: {

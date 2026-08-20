@@ -53,11 +53,14 @@ const POLL_QUIET_MS = 60_000;
 type Pending = 'seat' | 'agent' | 'everything';
 
 /** The one 404 that means "this build has no hosted agent", said in words. */
-const agentReach = (error: unknown) => error instanceof ApiError && error.status === 404
-  ? 'this workspace is on a build that does not run Trevra’s own agent, so there was nothing to stop there.'
-  : error instanceof Error ? error.message : 'the agent was not reached.';
+const agentReach = (error: unknown) =>
+  error instanceof ApiError && error.status === 404
+    ? 'this workspace is on a build that does not run Trevra’s own agent, so there was nothing to stop there.'
+    : error instanceof Error
+      ? error.message
+      : 'the agent was not reached.';
 
-export interface StopControls {
+interface StopControls {
   seat: ReturnType<typeof useSeatStop>;
   live: AgentRunSummary[];
   stopping: AgentRunSummary[];
@@ -111,17 +114,26 @@ export function useStopControls(setToast: (message: string) => void): StopContro
   const reloadSeat = seat.reload;
   useEffect(() => {
     let cancelled = false;
-    const tick = () => { if (!cancelled) { void readRuns(); void reloadSeat(); } };
+    const tick = () => {
+      if (!cancelled) {
+        void readRuns();
+        void reloadSeat();
+      }
+    };
     tick();
     const timer = window.setInterval(tick, anyLive || anyStopped ? POLL_LIVE_MS : POLL_QUIET_MS);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [anyLive, anyStopped, reloadSeat]);
 
   const state = anyStopped ? 'is-stopped' : anyLive ? 'is-live' : 'is-idle';
 
   const askAgent = async (reason: string): Promise<string> => {
     const targets = live.filter((run) => !run.stopRequestedAt);
-    if (targets.length === 0) return 'nothing was running by the time this went through, so there was nothing to stop.';
+    if (targets.length === 0)
+      return 'nothing was running by the time this went through, so there was nothing to stop.';
     const asked = await Promise.all(targets.map((run) => stopAgentRun(run.id, reason)));
     const total = asked.reduce((sum, count) => sum + count, 0);
     return total > 1
@@ -137,7 +149,11 @@ export function useStopControls(setToast: (message: string) => void): StopContro
   const run = async (what: Pending, reason: string) => {
     setBusy(what);
     setFailure('');
-    const jobs: Array<{ actor: string; work: Promise<string>; failed: (error: unknown) => string }> = [];
+    const jobs: Array<{
+      actor: string;
+      work: Promise<string>;
+      failed: (error: unknown) => string;
+    }> = [];
     if ((what === 'seat' || what === 'everything') && seatLive) {
       jobs.push({
         actor: 'Outreach seat',
@@ -148,22 +164,30 @@ export function useStopControls(setToast: (message: string) => void): StopContro
           if (!ok) throw new Error(SEAT_STOP_COPY.pauseFailed);
           return SEAT_STOP_COPY.pausedToast;
         }),
-        failed: (error) => error instanceof Error ? error.message : SEAT_STOP_COPY.pauseFailed
+        failed: (error) => (error instanceof Error ? error.message : SEAT_STOP_COPY.pauseFailed)
       });
     }
     if ((what === 'agent' || what === 'everything') && live.length > 0) {
       jobs.push({ actor: 'Agent', work: askAgent(reason), failed: agentReach });
     }
-    if (jobs.length === 0) { setBusy(''); setPending(null); return; }
+    if (jobs.length === 0) {
+      setBusy('');
+      setPending(null);
+      return;
+    }
 
     const settled = await Promise.allSettled(jobs.map((job) => job.work));
-    const lines = settled.map((result, index) => result.status === 'fulfilled'
-      ? `${jobs[index].actor}: ${result.value}`
-      : `${jobs[index].actor} did NOT stop — ${jobs[index].failed(result.reason)}`);
+    const lines = settled.map((result, index) =>
+      result.status === 'fulfilled'
+        ? `${jobs[index].actor}: ${result.value}`
+        : `${jobs[index].actor} did NOT stop — ${jobs[index].failed(result.reason)}`
+    );
     setToast(lines.join(' '));
     const broken = lines.filter((_, index) => settled[index].status === 'rejected');
     if (broken.length > 0) {
-      setFailure(`${broken.join(' ')} Everything else here did go through. Try that one again, or stop the campaigns individually on Campaigns.`);
+      setFailure(
+        `${broken.join(' ')} Everything else here did go through. Try that one again, or stop the campaigns individually on Campaigns.`
+      );
     }
     await readRuns();
     setBusy('');
@@ -197,14 +221,28 @@ export function useStopControls(setToast: (message: string) => void): StopContro
     setBusy('');
   };
 
-  const agentDetail = live.length === 1
-    ? `step ${live[0].stepCount} of ${live[0].maxSteps}`
-    : `${live.length} runs going`;
+  const agentDetail =
+    live.length === 1
+      ? `step ${live[0].stepCount} of ${live[0].maxSteps}`
+      : `${live.length} runs going`;
 
   return {
-    seat, live, stopping, agentLive, seatLive, state,
-    pending, setPending, confirmResume, setConfirmResume,
-    busy, failure, setFailure, run, resume, agentDetail
+    seat,
+    live,
+    stopping,
+    agentLive,
+    seatLive,
+    state,
+    pending,
+    setPending,
+    confirmResume,
+    setConfirmResume,
+    busy,
+    failure,
+    setFailure,
+    run,
+    resume,
+    agentDetail
   };
 }
 
@@ -224,32 +262,54 @@ export function SeatPauseButton({ controls }: { controls: StopControls }) {
   const { seat } = controls;
   if (!seat.configured) return null;
   if (seat.paused) {
-    return <button
-      className="secondary-button"
-      type="button"
-      title={SEAT_STOP_COPY.paused(seat.pausedReason)}
-      disabled={seat.busy}
-      onClick={() => controls.setConfirmResume(true)}
-    >
-      {controls.busy === 'resume' ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />} {SEAT_STOP_COPY.resumeLabel}
-    </button>;
+    return (
+      <button
+        className="secondary-button"
+        type="button"
+        title={SEAT_STOP_COPY.paused(seat.pausedReason)}
+        disabled={seat.busy}
+        onClick={() => controls.setConfirmResume(true)}
+      >
+        {controls.busy === 'resume' ? (
+          <LoaderCircle className="spin" size={15} />
+        ) : (
+          <Play size={15} />
+        )}{' '}
+        {SEAT_STOP_COPY.resumeLabel}
+      </button>
+    );
   }
-  return <button
-    className="li-danger-button"
-    type="button"
-    title={`Outreach seat · sending. ${SEAT_STOP_COPY.running}`}
-    disabled={seat.busy || controls.busy !== ''}
-    onClick={() => controls.setPending('seat')}
-  >
-    <CircleStop size={15} /> {SEAT_STOP_COPY.pauseLabel}
-  </button>;
+  return (
+    <button
+      className="li-danger-button"
+      type="button"
+      title={`Outreach seat · sending. ${SEAT_STOP_COPY.running}`}
+      disabled={seat.busy || controls.busy !== ''}
+      onClick={() => controls.setPending('seat')}
+    >
+      <CircleStop size={15} /> {SEAT_STOP_COPY.pauseLabel}
+    </button>
+  );
 }
 
 export function StopBar({ controls }: { controls: StopControls }) {
   const {
-    seat, live, stopping, agentLive, seatLive, state,
-    pending, setPending, confirmResume, setConfirmResume,
-    busy, failure, setFailure, run, resume, agentDetail
+    seat,
+    live,
+    stopping,
+    agentLive,
+    seatLive,
+    state,
+    pending,
+    setPending,
+    confirmResume,
+    setConfirmResume,
+    busy,
+    failure,
+    setFailure,
+    run,
+    resume,
+    agentDetail
   } = controls;
 
   // The seat's own row moved to the header (`SeatPauseButton`); what is left
@@ -257,94 +317,172 @@ export function StopBar({ controls }: { controls: StopControls }) {
   // banners. A seat sending normally -- the common case -- now leaves this
   // section with nothing of its own to say, and it renders nothing rather
   // than an empty coloured bar under the H1.
-  const hasBarContent = state === 'is-idle' || live.length > 0 || Boolean(failure || seat.failure || seat.readError);
+  const hasBarContent =
+    state === 'is-idle' || live.length > 0 || Boolean(failure || seat.failure || seat.readError);
 
-  return <>
-    {hasBarContent && <section className={`stopbar ${state}`} aria-label="What is running, and how to stop it">
-    {/* Not `.stopbar-actor`: that class carries the amber outline an actor row
+  return (
+    <>
+      {hasBarContent && (
+        <section className={`stopbar ${state}`} aria-label="What is running, and how to stop it">
+          {/* Not `.stopbar-actor`: that class carries the amber outline an actor row
         needs, and idle is not an actor. Wearing it put a 1px amber alert under
         the H1 on every route, which is how amber stops meaning anything by the
         time it is true. `.stopbar.is-idle` already supplies the muted colour,
         the size and the hairline. */}
-    {/* "Nothing is running" is a CLAIM, and before the seat read lands nobody
+          {/* "Nothing is running" is a CLAIM, and before the seat read lands nobody
         has checked. `seat.loading` is the difference between the two, and the
         bar says which one it is rather than asserting the safe-sounding one
         while the answer is still on the wire. */}
-    {state === 'is-idle' && <p className="stopbar-idle">{seat.loading ? 'Reading what is running…' : 'Nothing is running.'}</p>}
+          {state === 'is-idle' && (
+            <p className="stopbar-idle">
+              {seat.loading ? 'Reading what is running…' : 'Nothing is running.'}
+            </p>
+          )}
 
-    {live.length > 0 && <div className="stopbar-actor">
-      <span className="run-status run-running">Agent</span>
-      <span>{stopping.length === live.length
-        ? 'Stop asked for. It finishes the step it is on and then stops — it will not start another. Anything it already prepared stays waiting for you.'
-        : `Agent · ${agentDetail}. Asking it to stop is cooperative: it finishes the step it is on, then stops. Anything it already prepared stays waiting for you.`}</span>
-      <button
-        className="ghost-button danger"
-        type="button"
-        disabled={busy !== '' || !agentLive}
-        onClick={() => setPending('agent')}
-      >
-        {busy === 'agent' ? <LoaderCircle className="spin" size={15} /> : <CircleStop size={15} />}
-        {agentLive ? 'Ask it to stop' : 'Stop asked for'}
-      </button>
-    </div>}
+          {live.length > 0 && (
+            <div className="stopbar-actor">
+              <span className="run-status run-running">Agent</span>
+              <span>
+                {stopping.length === live.length
+                  ? 'Stop asked for. It finishes the step it is on and then stops — it will not start another. Anything it already prepared stays waiting for you.'
+                  : `Agent · ${agentDetail}. Asking it to stop is cooperative: it finishes the step it is on, then stops. Anything it already prepared stays waiting for you.`}
+              </span>
+              <button
+                className="ghost-button danger"
+                type="button"
+                disabled={busy !== '' || !agentLive}
+                onClick={() => setPending('agent')}
+              >
+                {busy === 'agent' ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <CircleStop size={15} />
+                )}
+                {agentLive ? 'Ask it to stop' : 'Stop asked for'}
+              </button>
+            </div>
+          )}
 
-    {seatLive && agentLive && <div className="stopbar-actor">
-      <span>Both are going. These are two different stops, so one button asks each of them separately and tells you what each one answered.</span>
-      <button className="li-danger-button" type="button" disabled={busy !== '' || seat.busy} onClick={() => setPending('everything')}>
-        {busy === 'everything' ? <LoaderCircle className="spin" size={15} /> : <CircleStop size={15} />} Stop everything
-      </button>
-    </div>}
+          {seatLive && agentLive && (
+            <div className="stopbar-actor">
+              <span>
+                Both are going. These are two different stops, so one button asks each of them
+                separately and tells you what each one answered.
+              </span>
+              <button
+                className="li-danger-button"
+                type="button"
+                disabled={busy !== '' || seat.busy}
+                onClick={() => setPending('everything')}
+              >
+                {busy === 'everything' ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <CircleStop size={15} />
+                )}{' '}
+                Stop everything
+              </button>
+            </div>
+          )}
 
-    {(failure || seat.failure || seat.readError) && !confirmResume
-      && <div className="error-banner">{failure || seat.failure || seat.readError}</div>}
-  </section>}
+          {(failure || seat.failure || seat.readError) && !confirmResume && (
+            <div className="error-banner">{failure || seat.failure || seat.readError}</div>
+          )}
+        </section>
+      )}
 
-    {pending && <ConfirmDrawer
-      title={pending === 'seat' ? 'Pause the outreach seat?'
-        : pending === 'agent' ? 'Ask the agent to stop?'
-          : 'Stop the seat and the agent?'}
-      tone={pending === 'agent' ? 'caution' : 'danger'}
-      requireReason
-      reasonLabel={pending === 'agent' ? 'Why are you stopping it?' : SEAT_STOP_COPY.reasonFieldLabel}
-      body={pending === 'seat'
-        ? <>
-            <p>{SEAT_STOP_COPY.running}</p>
-            {/* The throttle factor is the server's, not this file's: the
+      {pending && (
+        <ConfirmDrawer
+          title={
+            pending === 'seat'
+              ? 'Pause the outreach seat?'
+              : pending === 'agent'
+                ? 'Ask the agent to stop?'
+                : 'Stop the seat and the agent?'
+          }
+          tone={pending === 'agent' ? 'caution' : 'danger'}
+          requireReason
+          reasonLabel={
+            pending === 'agent' ? 'Why are you stopping it?' : SEAT_STOP_COPY.reasonFieldLabel
+          }
+          body={
+            pending === 'seat' ? (
+              <>
+                <p>{SEAT_STOP_COPY.running}</p>
+                {/* The throttle factor is the server's, not this file's: the
                 sentence used to say "halves" whatever the payload said. */}
-            <p>{SEAT_STOP_COPY.onlyAHumanZeroesASeat(seat.throttleFactor)}</p>
-            <p>{SEAT_STOP_COPY.reasonRequired}</p>
-          </>
-        : pending === 'agent'
-          ? <>
-              <p>Stopping is cooperative: the run ends when it reaches the end of the step it is already in the middle of, which may be a model call halfway through generating. Nothing says “stopped” until the run’s own status does.</p>
-              <p>Anything it already prepared stays waiting for you. {SEAT_STOP_COPY.reasonRequired}</p>
-            </>
-          : <>
-              <p>These are two different stops. The seat stops <strong>immediately</strong>: ceilings to zero, worker halted within one tick. The agent is <strong>asked</strong> to stop, and ends when it finishes the step it is on.</p>
-              <p>They are two separate calls and each one answers for itself. If one fails you will be told which — and the other still went through.</p>
-              <p>{SEAT_STOP_COPY.reasonRequired}</p>
-            </>}
-      confirmLabel={pending === 'seat' ? SEAT_STOP_COPY.pauseLabel
-        : pending === 'agent' ? 'Ask it to stop'
-          : 'Stop everything'}
-      busy={busy === pending}
-      error={busy === '' ? failure || null : null}
-      onCancel={() => { if (busy === '') { setPending(null); setFailure(''); seat.clearFailure(); } }}
-      onConfirm={(reason) => void run(pending, reason)}
-    />}
+                <p>{SEAT_STOP_COPY.onlyAHumanZeroesASeat(seat.throttleFactor)}</p>
+                <p>{SEAT_STOP_COPY.reasonRequired}</p>
+              </>
+            ) : pending === 'agent' ? (
+              <>
+                <p>
+                  Stopping is cooperative: the run ends when it reaches the end of the step it is
+                  already in the middle of, which may be a model call halfway through generating.
+                  Nothing says “stopped” until the run’s own status does.
+                </p>
+                <p>
+                  Anything it already prepared stays waiting for you.{' '}
+                  {SEAT_STOP_COPY.reasonRequired}
+                </p>
+              </>
+            ) : (
+              <>
+                <p>
+                  These are two different stops. The seat stops <strong>immediately</strong>:
+                  ceilings to zero, worker halted within one tick. The agent is{' '}
+                  <strong>asked</strong> to stop, and ends when it finishes the step it is on.
+                </p>
+                <p>
+                  They are two separate calls and each one answers for itself. If one fails you will
+                  be told which — and the other still went through.
+                </p>
+                <p>{SEAT_STOP_COPY.reasonRequired}</p>
+              </>
+            )
+          }
+          confirmLabel={
+            pending === 'seat'
+              ? SEAT_STOP_COPY.pauseLabel
+              : pending === 'agent'
+                ? 'Ask it to stop'
+                : 'Stop everything'
+          }
+          busy={busy === pending}
+          error={busy === '' ? failure || null : null}
+          onCancel={() => {
+            if (busy === '') {
+              setPending(null);
+              setFailure('');
+              seat.clearFailure();
+            }
+          }}
+          onConfirm={(reason) => void run(pending, reason)}
+        />
+      )}
 
-    {confirmResume && <ConfirmDrawer
-      title={SEAT_STOP_COPY.resume.title}
-      body={<>
-        <p>{SEAT_STOP_COPY.resume.whatRestarts(seat.pausedReason)}</p>
-        <p>{SEAT_STOP_COPY.resume.warmupKeeps}</p>
-        <p>{SEAT_STOP_COPY.resume.noRecord}</p>
-      </>}
-      confirmLabel={SEAT_STOP_COPY.resume.confirmLabel}
-      busy={seat.busy}
-      error={seat.failure || null}
-      onCancel={() => { if (!seat.busy) { setConfirmResume(false); seat.clearFailure(); } }}
-      onConfirm={() => void resume()}
-    />}
-  </>;
+      {confirmResume && (
+        <ConfirmDrawer
+          title={SEAT_STOP_COPY.resume.title}
+          body={
+            <>
+              <p>{SEAT_STOP_COPY.resume.whatRestarts(seat.pausedReason)}</p>
+              <p>{SEAT_STOP_COPY.resume.warmupKeeps}</p>
+              <p>{SEAT_STOP_COPY.resume.noRecord}</p>
+            </>
+          }
+          confirmLabel={SEAT_STOP_COPY.resume.confirmLabel}
+          busy={seat.busy}
+          error={seat.failure || null}
+          onCancel={() => {
+            if (!seat.busy) {
+              setConfirmResume(false);
+              seat.clearFailure();
+            }
+          }}
+          onConfirm={() => void resume()}
+        />
+      )}
+    </>
+  );
 }

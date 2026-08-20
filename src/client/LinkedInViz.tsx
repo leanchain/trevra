@@ -153,7 +153,7 @@ export function WindowPicker({
  * The funnel.
  * ---------------------------------------------------------------------- */
 
-export interface FunnelStage {
+interface FunnelStage {
   label: string;
   value: number;
   hint?: string;

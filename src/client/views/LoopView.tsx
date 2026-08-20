@@ -44,7 +44,7 @@ interface Block {
   href: string;
 }
 
-export interface LoopData {
+interface LoopData {
   planned: number;
   exported: number;
   /** Of `planned`/`exported`, the subset that is an invite rather than a follow-up step. */

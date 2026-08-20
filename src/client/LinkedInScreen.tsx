@@ -90,10 +90,6 @@ const LIMIT_REASON: Record<string, string> = {
   'cooldown-band': 'this account is in cooldown, so the careful starter limits apply'
 };
 
-/** The server's rule name in the operator's words, or the rule name made readable. */
-export const limitReason = (boundBy: string) =>
-  LIMIT_REASON[boundBy] ?? boundBy.replaceAll('-', ' ');
-
 /* -------------------------------------------------------------------------
  * `/setup/limits` -- the never-contact list.
  * ---------------------------------------------------------------------- */
