@@ -59,36 +59,6 @@ export const usd = (cents: number) =>
     currency: 'USD'
   }).format(cents / 100);
 
-const SYMBOLS = new Map<string, string | null>();
-
-function currencySymbol(code: string): string | null {
-  const cached = SYMBOLS.get(code);
-  if (cached !== undefined) return cached;
-  let symbol: string | null = null;
-  try {
-    // The reader's locale, for the same reason `money()` uses it: which glyph
-    // stands for a currency is a fact about the reader. 'en-US' writes
-    // Canadian dollars as `CA$` and Australian ones as `A$`; a reader in
-    // either country writes `$`, and this function exists to make a server
-    // sentence match the chip beside it in THEIR notation.
-    symbol =
-      new Intl.NumberFormat(undefined, { style: 'currency', currency: code })
-        .formatToParts(0)
-        .find((part) => part.type === 'currency')?.value ?? null;
-  } catch {
-    // Not an ISO 4217 code -- `INV`, `SOW`, an acronym in a sentence. Left alone.
-    symbol = null;
-  }
-  // A locale with no glyph for this currency hands the CODE back as its own
-  // "symbol" -- `RUB` and `XAF` do that in most English locales. Substituting
-  // that would turn "RUB 1,850" into "RUB1,850": the same three letters, minus
-  // the space that made it readable. Having no symbol is the honest answer,
-  // and `moneyProse` leaves the text untouched on null.
-  const resolved = symbol === code ? null : symbol;
-  SYMBOLS.set(code, resolved);
-  return resolved;
-}
-
 export function initials(value: string): string {
   return value
     .split(/[\s-]+/)

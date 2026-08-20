@@ -78,18 +78,6 @@ export const sourceNote = (confidence: LinkedInLimitConfidence) =>
  * itself. An operator asks "why can I only send 12 today", and every one of
  * these is an answer to that question in words they never had to learn.
  */
-const LIMIT_REASON: Record<string, string> = {
-  'band-ceiling': 'the normal daily limit for an account this size',
-  'weekly-band': 'the weekly limit for an account this size',
-  'monthly-quota': 'LinkedIn’s own monthly quota',
-  'seat-unconfigured': 'no LinkedIn account is connected, so nothing may go out',
-  'seat-paused': 'this account is paused',
-  'acceptance-rate':
-    'too few invites are being accepted, so the daily number is halved until that recovers',
-  'warmup-multiplier': 'this account is still ramping up, so it sends less than its full allowance',
-  'cooldown-band': 'this account is in cooldown, so the careful starter limits apply'
-};
-
 /* -------------------------------------------------------------------------
  * `/setup/limits` -- the never-contact list.
  * ---------------------------------------------------------------------- */

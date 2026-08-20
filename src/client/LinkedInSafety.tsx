@@ -67,8 +67,6 @@ export const KIND_LABELS: Record<PacedKind, string> = {
   endorse: 'Endorsements'
 };
 
-const WINDOW_LABELS = { day: 'any 24 hours', week: 'any 7 days', month: 'any 30 days' } as const;
-
 /**
  * The three kinds ONE operator “messages” number counts together.
  *

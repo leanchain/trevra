@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
 import { LoaderCircle, RefreshCw, TrendingUp } from 'lucide-react';
 import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
-import { getLinkedInAnalytics, type LinkedInAnalytics } from './api';
-import { errorMessage, useOutreachRefresh } from './LinkedInSafety';
+import { type LinkedInAnalytics } from './api';
 import { FunnelBars, LiStat } from './LinkedInViz';
 
 /**
@@ -58,44 +56,6 @@ function windowSentence(windowDays: number | null): string {
   return windowDays === null
     ? 'Every LinkedIn action this workspace has ever filed — all of it, from the first slot planned to the last reply recorded.'
     : `Every LinkedIn action filed in the last ${windowDays} days — a window, not all time. Widen it to count further back.`;
-}
-
-interface AnalyticsRead {
-  analytics: LinkedInAnalytics | null;
-  loading: boolean;
-  error: string;
-  reload: () => Promise<void>;
-  days: number;
-  setDays: (days: number) => void;
-}
-
-/** `GET /api/linkedin/analytics`, over the window the reader picked. */
-function useOutreachAnalytics(): AnalyticsRead {
-  const [days, setDays] = useState<number>(DEFAULT_WINDOW_DAYS);
-  const [analytics, setAnalytics] = useState<LinkedInAnalytics | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      setAnalytics(await getLinkedInAnalytics(days));
-      setError('');
-    } catch (err) {
-      setError(
-        errorMessage(err, 'Unable to read the outreach ledger. Nothing was changed — try again.')
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [days]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-  useOutreachRefresh(reload);
-
-  return { analytics, loading, error, reload, days, setDays };
 }
 
 /** The picker itself, in the same clothes as every other window control in the product. */
