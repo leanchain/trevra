@@ -4,11 +4,12 @@ import pg from 'pg';
 import { APIError, betterAuth } from 'better-auth';
 import { fromNodeHeaders } from 'better-auth/node';
 import { getMigrations } from 'better-auth/db/migration';
-import { organization } from 'better-auth/plugins';
+import { magicLink, organization } from 'better-auth/plugins';
 import type { Db } from './db.js';
 import { DEMO_WORKSPACE_ID, id } from './db.js';
 import {
   sendInvitationAcceptedEmail,
+  sendMagicLinkEmail,
   sendOrganizationInvitationEmail,
   sendWorkspaceAccessRemovedEmail,
   smtpConfigured
@@ -17,17 +18,27 @@ import { recordMarketingEvent } from './public-site.js';
 
 const { Pool } = pg;
 const production = process.env.NODE_ENV === 'production';
-// Hosted launch remains OAuth-only: SMTP below covers organization invitations,
-// not account ownership verification/password recovery yet. Self-hosted keeps
-// local email/password auth unchanged.
+// Hosted has transactional SMTP as a boot requirement, so email ownership can
+// be proved with a short-lived, single-use magic link instead of a password.
+// Local/self-hosted installs keep password auth available as the no-SMTP escape
+// hatch; when SMTP exists the UI prefers the same magic-link flow as hosted.
+export const magicLinkAuthEnabled = smtpConfigured();
 export const emailPasswordAuthEnabled = process.env.TREVRA_DEPLOYMENT_MODE !== 'hosted';
 const connectionString = process.env.DATABASE_URL;
-if (!connectionString) throw new Error('DATABASE_URL is required; Better Auth uses PostgreSQL only');
+if (!connectionString)
+  throw new Error('DATABASE_URL is required; Better Auth uses PostgreSQL only');
 
-const secret = process.env.BETTER_AUTH_SECRET ?? (production ? '' : 'development-only-trevra-secret-change-before-production');
-if (production && secret.length < 32) throw new Error('BETTER_AUTH_SECRET must be at least 32 characters in production');
+const secret =
+  process.env.BETTER_AUTH_SECRET ??
+  (production ? '' : 'development-only-trevra-secret-change-before-production');
+if (production && secret.length < 32)
+  throw new Error('BETTER_AUTH_SECRET must be at least 32 characters in production');
 
-const baseURL = (process.env.BETTER_AUTH_URL ?? process.env.APP_ORIGIN?.split(',')[0]?.trim() ?? 'http://localhost:43173').replace(/\/$/, '');
+const baseURL = (
+  process.env.BETTER_AUTH_URL ??
+  process.env.APP_ORIGIN?.split(',')[0]?.trim() ??
+  'http://localhost:43173'
+).replace(/\/$/, '');
 const trustedOrigins = (process.env.APP_ORIGIN ?? 'http://localhost:43173,http://localhost:43887')
   .split(',')
   .map((item) => item.trim())
@@ -39,18 +50,19 @@ if (Boolean(googleClientId) !== Boolean(googleClientSecret)) {
   throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured together');
 }
 
-const socialProviders = googleClientId && googleClientSecret
-  ? {
-      google: {
-        clientId: googleClientId,
-        clientSecret: googleClientSecret,
-        disableDefaultScope: true,
-        scope: ['openid', 'email', 'profile'],
-        prompt: 'select_account' as const,
-        redirectURI: `${baseURL}/api/auth/callback/google`
+const socialProviders =
+  googleClientId && googleClientSecret
+    ? {
+        google: {
+          clientId: googleClientId,
+          clientSecret: googleClientSecret,
+          disableDefaultScope: true,
+          scope: ['openid', 'email', 'profile'],
+          prompt: 'select_account' as const,
+          redirectURI: `${baseURL}/api/auth/callback/google`
+        }
       }
-    }
-  : undefined;
+    : undefined;
 
 const authPool = new Pool({
   connectionString,
@@ -59,7 +71,9 @@ const authPool = new Pool({
   connectionTimeoutMillis: 10_000,
   application_name: 'trevra-auth'
 });
-authPool.on('error', (error) => console.error('Unexpected Better Auth PostgreSQL pool error', error));
+authPool.on('error', (error) =>
+  console.error('Unexpected Better Auth PostgreSQL pool error', error)
+);
 
 /* ===========================================================================
  * Team workspace access (docs/superpowers/specs/2026-08-13-team-workspace-
@@ -141,7 +155,9 @@ export function configureAuthProvisioning(db: Db): void {
 
 function requireProvisioningDb(): Db {
   if (!provisioningDb) {
-    throw new Error('Auth provisioning database not configured; call configureAuthProvisioning(db) before serving requests');
+    throw new Error(
+      'Auth provisioning database not configured; call configureAuthProvisioning(db) before serving requests'
+    );
   }
   return provisioningDb;
 }
@@ -156,7 +172,10 @@ function requireProvisioningDb(): Db {
  * the same way the plugin does.
  */
 function hasOwnerRole(role: string): boolean {
-  return role.split(',').map((part) => part.trim()).includes('owner');
+  return role
+    .split(',')
+    .map((part) => part.trim())
+    .includes('owner');
 }
 
 /**
@@ -184,7 +203,9 @@ export function assertOwnerChangeAllowed(
   const owners = members.filter((member) => hasOwnerRole(member.role));
   const targetIsOwner = owners.some((owner) => owner.userId === targetUserId);
   if (targetIsOwner && owners.length <= 1) {
-    throw new APIError('BAD_REQUEST', { message: 'Cannot remove or demote the only owner of a workspace' });
+    throw new APIError('BAD_REQUEST', {
+      message: 'Cannot remove or demote the only owner of a workspace'
+    });
   }
 }
 
@@ -203,7 +224,9 @@ export function assertOwnerChangeAllowed(
  * WRITE this file makes to better-auth's tables still goes through
  * `auth.api.*`, never raw SQL -- see the block comment above.
  */
-async function listOrganizationMembers(organizationId: string): Promise<Array<{ userId: string; role: string }>> {
+async function listOrganizationMembers(
+  organizationId: string
+): Promise<Array<{ userId: string; role: string }>> {
   const result = await authPool.query<{ userId: string; role: string }>(
     'SELECT "userId","role" FROM member WHERE "organizationId"=$1',
     [organizationId]
@@ -237,36 +260,48 @@ export const auth = betterAuth({
     useSecureCookies: production && process.env.COOKIE_SECURE !== 'false'
   },
   plugins: [
+    magicLink({
+      expiresIn: 15 * 60,
+      storeToken: 'hashed',
+      rateLimit: { window: 60, max: 5 },
+      sendMagicLink: async ({ email, url }) =>
+        sendMagicLinkEmail({ to: email, signInUrl: url, expiresMinutes: 15 })
+    }),
     // Default roles only (owner / admin / member), no custom access-control
     // statements and no teams -- spec Non-goals. This workspace uses exactly
     // two of the three: 'owner' (the credential-management carve-out) and
     // 'member' (everyone else, full data parity).
     organization({
-      ...(smtpConfigured() ? {
-        sendInvitationEmail: async (data) => {
-          try {
-            await sendOrganizationInvitationEmail({
-              to: data.email,
-              inviteLink: `${baseURL}/setup/team/${encodeURIComponent(data.id)}`,
-              inviterName: data.inviter.user.name,
-              inviterEmail: data.inviter.user.email,
-              organizationName: data.organization.name,
-              role: data.role,
-              expiresAt: data.invitation.expiresAt
-            });
-          } catch (error) {
-            // The invitation itself remains usable through the copy-link fallback.
-            // Do not turn a transient SMTP failure into a failed membership write.
-            console.error('Failed to deliver Trevra organization invitation email', error);
+      ...(smtpConfigured()
+        ? {
+            sendInvitationEmail: async (data) => {
+              try {
+                await sendOrganizationInvitationEmail({
+                  to: data.email,
+                  inviteLink: `${baseURL}/setup/team/${encodeURIComponent(data.id)}`,
+                  inviterName: data.inviter.user.name,
+                  inviterEmail: data.inviter.user.email,
+                  organizationName: data.organization.name,
+                  role: data.role,
+                  expiresAt: data.invitation.expiresAt
+                });
+              } catch (error) {
+                // The invitation itself remains usable through the copy-link fallback.
+                // Do not turn a transient SMTP failure into a failed membership write.
+                console.error('Failed to deliver Trevra organization invitation email', error);
+              }
+            }
           }
-        }
-      } : {}),
+        : {}),
       organizationHooks: {
         // Pins `organization.id` to the workspace id the caller chose -- see the
         // block comment above this section for the full mechanism.
         beforeCreateOrganization: async ({ organization: orgData }) => {
           const metadata = (orgData.metadata ?? {}) as Record<string, unknown>;
-          const pinnedId = typeof metadata[PINNED_WORKSPACE_ID_KEY] === 'string' ? (metadata[PINNED_WORKSPACE_ID_KEY] as string) : undefined;
+          const pinnedId =
+            typeof metadata[PINNED_WORKSPACE_ID_KEY] === 'string'
+              ? (metadata[PINNED_WORKSPACE_ID_KEY] as string)
+              : undefined;
           // Every call site in this codebase pins one (resolveBetterAuthIdentity's
           // first-sign-in path and the boot-time backfill); a call with no pinned
           // id would only come from something outside this file, which nothing
@@ -282,7 +317,8 @@ export const auth = betterAuth({
             const existing = await requireProvisioningDb()
               .prepare('SELECT id FROM workspaces WHERE id=?')
               .get<{ id: string }>(pinnedId);
-            if (existing) throw new APIError('FORBIDDEN', { message: 'That workspace id is already in use' });
+            if (existing)
+              throw new APIError('FORBIDDEN', { message: 'That workspace id is already in use' });
           }
           // SENDER_NAME_KEY is deliberately NOT stripped here (only the id is):
           // `afterCreateOrganization` below reads it back off the PERSISTED
@@ -290,7 +326,12 @@ export const auth = betterAuth({
           // and that hook only ever sees the metadata as it ends up stored --
           // stripping it here would mean nothing downstream could ever read it.
           const { [PINNED_WORKSPACE_ID_KEY]: _pinned, ...restMetadata } = metadata;
-          return { data: { id: pinnedId, metadata: Object.keys(restMetadata).length > 0 ? restMetadata : undefined } };
+          return {
+            data: {
+              id: pinnedId,
+              metadata: Object.keys(restMetadata).length > 0 ? restMetadata : undefined
+            }
+          };
         },
         // Does what resolveBetterAuthIdentity's hand-rolled transaction used to do
         // on first sign-in: insert `workspaces`, `workspace_settings`, the default
@@ -310,19 +351,46 @@ export const auth = betterAuth({
           const db = requireProvisioningDb();
           const now = new Date().toISOString();
           await db.transaction(async (tx) => {
-            const already = await tx.prepare('SELECT id FROM workspaces WHERE id=?').get<{ id: string }>(org.id);
+            const already = await tx
+              .prepare('SELECT id FROM workspaces WHERE id=?')
+              .get<{ id: string }>(org.id);
             if (already) return;
 
             const metadata = (org.metadata ?? {}) as Record<string, unknown>;
-            const senderName = typeof metadata[SENDER_NAME_KEY] === 'string' ? (metadata[SENDER_NAME_KEY] as string) : org.name;
+            const senderName =
+              typeof metadata[SENDER_NAME_KEY] === 'string'
+                ? (metadata[SENDER_NAME_KEY] as string)
+                : org.name;
 
-            await tx.prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)').run(org.id, org.name, now);
-            await tx.prepare('INSERT INTO workspace_settings (workspace_id,currency,sender_name,timezone,demo_mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
+            await tx
+              .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+              .run(org.id, org.name, now);
+            await tx
+              .prepare(
+                'INSERT INTO workspace_settings (workspace_id,currency,sender_name,timezone,demo_mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?)'
+              )
               .run(org.id, 'EUR', senderName, 'Europe/Zurich', 0, now, now);
             await createDefaultAutomationRules(tx, org.id, now);
-            await tx.prepare('INSERT INTO audit_events (id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-              .run(id('audit'), org.id, 'system', null, 'workspace.created', 'workspace', org.id, JSON.stringify({ authUserId: user.id }), now);
-            await recordMarketingEvent(tx, { eventName: 'signup_completed', workspaceId: org.id, metadata: { source: 'authenticated_identity' } });
+            await tx
+              .prepare(
+                'INSERT INTO audit_events (id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+              )
+              .run(
+                id('audit'),
+                org.id,
+                'system',
+                null,
+                'workspace.created',
+                'workspace',
+                org.id,
+                JSON.stringify({ authUserId: user.id }),
+                now
+              );
+            await recordMarketingEvent(tx, {
+              eventName: 'signup_completed',
+              workspaceId: org.id,
+              metadata: { source: 'authenticated_identity' }
+            });
           });
         },
         // Last-owner protection (spec "Error handling & edge cases"). Wired here
@@ -389,7 +457,9 @@ export async function migrateAuthDatabase(): Promise<void> {
     const { runMigrations } = await getMigrations(auth.options);
     await runMigrations();
   } finally {
-    await lockClient.query("SELECT pg_advisory_unlock(hashtext('trevra-better-auth-migrations'))").catch(() => undefined);
+    await lockClient
+      .query("SELECT pg_advisory_unlock(hashtext('trevra-better-auth-migrations'))")
+      .catch(() => undefined);
     lockClient.release();
   }
 }
@@ -409,7 +479,10 @@ export async function migrateAuthDatabase(): Promise<void> {
  * workspace returned here when it is absent or the membership behind it was
  * revoked.
  */
-export async function resolveBetterAuthIdentity(db: Db, headers: IncomingHttpHeaders): Promise<{
+export async function resolveBetterAuthIdentity(
+  db: Db,
+  headers: IncomingHttpHeaders
+): Promise<{
   userId: string;
   email: string;
   homeWorkspaceId: string;
@@ -421,9 +494,16 @@ export async function resolveBetterAuthIdentity(db: Db, headers: IncomingHttpHea
   const email = session.user.email.toLowerCase();
   const activeOrganizationId = session.session.activeOrganizationId ?? null;
 
-  const existing = await db.prepare('SELECT id,workspace_id,email FROM users WHERE lower(email)=?')
+  const existing = await db
+    .prepare('SELECT id,workspace_id,email FROM users WHERE lower(email)=?')
     .get<{ id: string; workspace_id: string; email: string }>(email);
-  if (existing) return { userId: existing.id, homeWorkspaceId: existing.workspace_id, email: existing.email, activeOrganizationId };
+  if (existing)
+    return {
+      userId: existing.id,
+      homeWorkspaceId: existing.workspace_id,
+      email: existing.email,
+      activeOrganizationId
+    };
 
   const now = new Date().toISOString();
   const displayName = session.user.name?.trim() || email.split('@')[0];
@@ -491,16 +571,32 @@ export async function resolveBetterAuthIdentity(db: Db, headers: IncomingHttpHea
   // above and now.
   try {
     return await db.transaction(async (tx) => {
-      const raced = await tx.prepare('SELECT id,workspace_id,email FROM users WHERE lower(email)=? FOR UPDATE')
+      const raced = await tx
+        .prepare('SELECT id,workspace_id,email FROM users WHERE lower(email)=? FOR UPDATE')
         .get<{ id: string; workspace_id: string; email: string }>(email);
-      if (raced) return { userId: raced.id, homeWorkspaceId: raced.workspace_id, email: raced.email, activeOrganizationId };
-      await tx.prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?)').run(userId, workspaceId, email, displayName, now);
+      if (raced)
+        return {
+          userId: raced.id,
+          homeWorkspaceId: raced.workspace_id,
+          email: raced.email,
+          activeOrganizationId
+        };
+      await tx
+        .prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?)')
+        .run(userId, workspaceId, email, displayName, now);
       return { userId, homeWorkspaceId: workspaceId, email, activeOrganizationId };
     });
   } catch (error) {
-    const raced = await db.prepare('SELECT id,workspace_id,email FROM users WHERE lower(email)=?')
+    const raced = await db
+      .prepare('SELECT id,workspace_id,email FROM users WHERE lower(email)=?')
       .get<{ id: string; workspace_id: string; email: string }>(email);
-    if (raced) return { userId: raced.id, homeWorkspaceId: raced.workspace_id, email: raced.email, activeOrganizationId };
+    if (raced)
+      return {
+        userId: raced.id,
+        homeWorkspaceId: raced.workspace_id,
+        email: raced.email,
+        activeOrganizationId
+      };
     throw error;
   }
 }
@@ -541,21 +637,30 @@ export async function resolveBetterAuthIdentity(db: Db, headers: IncomingHttpHea
  * on that fallback, since it is reset by `resetDemoData` and was never meant
  * to carry a real identity.
  */
-export async function backfillWorkspaceOrganizations(db: Db): Promise<{ created: number; skipped: number }> {
+export async function backfillWorkspaceOrganizations(
+  db: Db
+): Promise<{ created: number; skipped: number }> {
   configureAuthProvisioning(db);
 
-  const candidates = await db.prepare(`
+  const candidates = await db
+    .prepare(
+      `
     SELECT w.id AS workspace_id, w.name AS workspace_name, u.email AS user_email
     FROM workspaces w
     JOIN users u ON u.workspace_id = w.id
     WHERE w.id <> ?
       AND NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = w.id)
-  `).all<{ workspace_id: string; workspace_name: string; user_email: string }>(DEMO_WORKSPACE_ID);
+  `
+    )
+    .all<{ workspace_id: string; workspace_name: string; user_email: string }>(DEMO_WORKSPACE_ID);
 
   let created = 0;
   let skipped = 0;
   for (const candidate of candidates) {
-    const authUser = await authPool.query<{ id: string }>('SELECT id FROM "user" WHERE lower(email)=$1', [candidate.user_email.toLowerCase()]);
+    const authUser = await authPool.query<{ id: string }>(
+      'SELECT id FROM "user" WHERE lower(email)=$1',
+      [candidate.user_email.toLowerCase()]
+    );
     const authUserId = authUser.rows[0]?.id;
     if (!authUserId) {
       // No better-auth account for this email yet -- nothing to backfill until
@@ -600,7 +705,11 @@ export async function closeAuthDatabase(): Promise<void> {
   await authPool.end();
 }
 
-async function createDefaultAutomationRules(db: Db, workspaceId: string, now: string): Promise<void> {
+async function createDefaultAutomationRules(
+  db: Db,
+  workspaceId: string,
+  now: string
+): Promise<void> {
   const defaults = [
     ['stale_proposal', 'prepare', 0.85, 25000, 0, 1],
     ['overdue_invoice', 'prepare', 0.95, 5000, 0, 1],
@@ -608,7 +717,10 @@ async function createDefaultAutomationRules(db: Db, workspaceId: string, now: st
     ['unbilled_milestone', 'prepare', 0.95, 10000, 0, 1]
   ] as const;
   for (const rule of defaults) {
-    await db.prepare('INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,max_amount,delay_minutes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    await db
+      .prepare(
+        'INSERT INTO automation_rules (id,workspace_id,recommendation_type,mode,min_confidence,max_amount,delay_minutes,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+      )
       .run(id('rule'), workspaceId, ...rule, now, now);
   }
 }

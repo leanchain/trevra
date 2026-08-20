@@ -1,5 +1,5 @@
 import { createAuthClient } from 'better-auth/react';
-import { organizationClient } from 'better-auth/client/plugins';
+import { magicLinkClient, organizationClient } from 'better-auth/client/plugins';
 
 /**
  * The `organization` plugin (docs/superpowers/specs/2026-08-13-team-
@@ -18,7 +18,7 @@ import { organizationClient } from 'better-auth/client/plugins';
  */
 export const authClient = createAuthClient({
   baseURL: window.location.origin,
-  plugins: [organizationClient()]
+  plugins: [magicLinkClient(), organizationClient()]
 });
 
 /**

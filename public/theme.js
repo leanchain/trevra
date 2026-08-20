@@ -3,8 +3,8 @@
  *
  * Loaded as a blocking script in <head> on purpose. A deferred script would let
  * the browser paint light stock and repaint dark, which reads as a fault. This
- * resolves the stored choice (falling back to the system preference) and stamps
- * `data-theme` on <html> before first paint.
+ * resolves the stored choice (falling back to light) and stamps `data-theme`
+ * on <html> before first paint.
  *
  * Served from /public as a real file rather than inlined, so it needs no CSP
  * nonce ('self' covers it) and behaves identically under the Vite dev server
@@ -18,32 +18,35 @@
   var KEY = 'trevra-theme';
   var root = document.documentElement;
 
-  function systemTheme() {
-    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
-
   function currentTheme() {
-    return root.getAttribute('data-theme') || systemTheme();
+    return root.getAttribute('data-theme') || 'light';
   }
 
   function labelToggles(theme) {
     var buttons = document.querySelectorAll('[data-theme-toggle]');
     for (var i = 0; i < buttons.length; i += 1) {
-      buttons[i].setAttribute('aria-label', 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' theme');
+      buttons[i].setAttribute(
+        'aria-label',
+        'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' theme'
+      );
     }
   }
 
-  // Restore before paint. Anything other than an explicit choice stays unset so
-  // the system preference keeps tracking.
+  // Restore before paint. Light is Trevra's product default; only an explicit
+  // saved dark choice overrides it. Setting the attribute even for the default
+  // also prevents the CSS system-theme media query from taking over on first paint.
+  var initialTheme = 'light';
   try {
     var stored = localStorage.getItem(KEY);
-    if (stored === 'dark' || stored === 'light') root.setAttribute('data-theme', stored);
+    if (stored === 'dark' || stored === 'light') initialTheme = stored;
   } catch (error) {
-    /* Storage blocked: fall through to the system preference. */
+    /* Storage blocked: keep the product default. */
   }
+  root.setAttribute('data-theme', initialTheme);
 
   function setTheme(theme) {
-    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var reduced =
+      window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (reduced) {
       root.setAttribute('data-theme', theme);
     } else {
@@ -64,7 +67,8 @@
   }
 
   document.addEventListener('click', function (event) {
-    var target = event.target && event.target.closest && event.target.closest('[data-theme-toggle]');
+    var target =
+      event.target && event.target.closest && event.target.closest('[data-theme-toggle]');
     if (!target) return;
     event.preventDefault();
     setTheme(currentTheme() === 'dark' ? 'light' : 'dark');

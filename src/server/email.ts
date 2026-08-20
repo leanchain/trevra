@@ -76,6 +76,31 @@ export async function sendTransactionalEmail(input: {
   });
 }
 
+export async function sendMagicLinkEmail(input: {
+  to: string;
+  signInUrl: string;
+  expiresMinutes?: number;
+}): Promise<void> {
+  if (!smtpConfigured()) throw new Error('Email sign-in is not configured on this Trevra server.');
+  const expiresMinutes = input.expiresMinutes ?? 15;
+  const subject = 'Sign in to Trevra';
+  const text = [
+    'Use this secure link to sign in to Trevra:',
+    '',
+    input.signInUrl,
+    '',
+    `This link expires in ${expiresMinutes} minutes and can only be used once.`,
+    'If you did not request this link, you can ignore this email.'
+  ].join('\n');
+  const html = `
+    <p>Use this secure link to sign in to Trevra:</p>
+    <p><a href="${escapeHtml(input.signInUrl)}">Sign in to Trevra</a></p>
+    <p>This link expires in ${expiresMinutes} minutes and can only be used once.</p>
+    <p>If you did not request this link, you can ignore this email.</p>
+  `.trim();
+  await sendTransactionalEmail({ to: input.to, subject, text, html });
+}
+
 export async function sendOrganizationInvitationEmail(input: {
   to: string;
   inviteLink: string;

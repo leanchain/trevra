@@ -272,6 +272,18 @@ describe('Trevra API on PostgreSQL', () => {
     expect(JSON.stringify(response.body)).not.toContain('northstar.studio');
   });
 
+  it('exposes the usable email auth mode without showing a dead password form', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    const config = (await request(app).get('/api/public-config').expect(200)).body as {
+      magicLinkAuthEnabled: boolean;
+      emailPasswordAuthEnabled: boolean;
+    };
+    expect(typeof config.magicLinkAuthEnabled).toBe('boolean');
+    expect(typeof config.emailPasswordAuthEnabled).toBe('boolean');
+    expect(config.magicLinkAuthEnabled && config.emailPasswordAuthEnabled).toBe(false);
+  });
+
   it('exposes Google OAuth only when both credentials are configured', async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const app = createApp(db);

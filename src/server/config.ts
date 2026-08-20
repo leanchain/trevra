@@ -322,7 +322,7 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       !(base.GOOGLE_CLIENT_ID && base.GOOGLE_CLIENT_SECRET)
     ) {
       problems.push(
-        'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted because hosted password signup is disabled'
+        'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted so hosted sign-in offers Google alongside the required email magic-link flow'
       );
     }
     // Hosted operational alerts are a product dependency, not an optional

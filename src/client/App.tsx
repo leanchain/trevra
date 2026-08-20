@@ -651,15 +651,35 @@ function AuthScreen({
   const [googleBusy, setGoogleBusy] = useState(false);
   const [authError, setAuthError] = useState('');
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [magicLinkEnabled, setMagicLinkEnabled] = useState(false);
+  const [magicLinkSent, setMagicLinkSent] = useState(false);
   const [emailPasswordEnabled, setEmailPasswordEnabled] = useState(false);
 
   useEffect(() => {
     void getPublicConfig()
       .then((config) => {
         setGoogleEnabled(config.googleAuthEnabled);
+        setMagicLinkEnabled(config.magicLinkAuthEnabled);
         setEmailPasswordEnabled(config.emailPasswordAuthEnabled);
       })
       .catch(() => undefined);
+
+    const params = new URLSearchParams(window.location.search);
+    const magicError = params.get('error');
+    if (magicError) {
+      setAuthError(
+        magicError === 'INVALID_TOKEN'
+          ? 'That sign-in link is invalid, expired, or has already been used. Request a new one.'
+          : 'That sign-in link could not be used. Request a new one.'
+      );
+      params.delete('error');
+      const query = params.toString();
+      window.history.replaceState(
+        null,
+        '',
+        `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`
+      );
+    }
   }, []);
 
   const signInWithGoogle = async () => {
@@ -678,6 +698,31 @@ function AuthScreen({
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : 'Google sign-in failed');
       setGoogleBusy(false);
+    }
+  };
+
+  const sendMagicLink = async () => {
+    setBusy(true);
+    setAuthError('');
+    setMagicLinkSent(false);
+    try {
+      const normalizedEmail = email.trim();
+      const result = await authClient.signIn.magicLink({
+        email: normalizedEmail,
+        name: normalizedEmail.split('@')[0] || 'Trevra user',
+        callbackURL: '/',
+        newUserCallbackURL: '/',
+        errorCallbackURL: '/'
+      });
+      if (result.error) {
+        setAuthError(result.error.message ?? 'Unable to send the sign-in link');
+        return;
+      }
+      setMagicLinkSent(true);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Unable to send the sign-in link');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -750,9 +795,19 @@ function AuthScreen({
             <span className="auth-icon">
               <ShieldCheck />
             </span>
-            <h2>{mode === 'signin' ? 'Sign in to Trevra' : 'Create your workspace'}</h2>
+            <h2>
+              {magicLinkEnabled
+                ? 'Sign in to Trevra'
+                : mode === 'signin'
+                  ? 'Sign in to Trevra'
+                  : 'Create your workspace'}
+            </h2>
             <p>
-              {mode === 'signin' ? 'Continue to your workspace.' : 'Create a Trevra workspace.'}
+              {magicLinkEnabled
+                ? 'Enter your email and we’ll send you a secure sign-in link.'
+                : mode === 'signin'
+                  ? 'Continue to your workspace.'
+                  : 'Create a Trevra workspace.'}
             </p>
             {googleEnabled && (
               <button
@@ -764,10 +819,43 @@ function AuthScreen({
                 with Google
               </button>
             )}
-            {googleEnabled && emailPasswordEnabled && (
+            {googleEnabled && (magicLinkEnabled || emailPasswordEnabled) && (
               <div className="auth-divider">
                 <span>or</span>
               </div>
+            )}
+            {magicLinkEnabled && (
+              <>
+                <label>
+                  Email
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    value={email}
+                    onChange={(event) => {
+                      setEmail(event.target.value);
+                      setMagicLinkSent(false);
+                    }}
+                    placeholder="you@company.com"
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && email.trim()) void sendMagicLink();
+                    }}
+                  />
+                </label>
+                <button
+                  className="primary-button auth-submit"
+                  disabled={busy || googleBusy || !email.trim()}
+                  onClick={() => void sendMagicLink()}
+                >
+                  {busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
+                  {magicLinkSent ? 'Send another link' : 'Continue with email'}
+                </button>
+                {magicLinkSent && (
+                  <p className="auth-consent" role="status">
+                    Check your inbox. The sign-in link expires in 15 minutes and can be used once.
+                  </p>
+                )}
+              </>
             )}
             {emailPasswordEnabled && (
               <>

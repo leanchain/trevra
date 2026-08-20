@@ -555,6 +555,7 @@ export async function updatePolicy(
 // Not exported: nothing outside this file names the type, only the function.
 interface PublicConfig {
   googleAuthEnabled: boolean;
+  magicLinkAuthEnabled: boolean;
   emailPasswordAuthEnabled: boolean;
   modelExtractionEnabled: boolean;
   supportEmail: string;

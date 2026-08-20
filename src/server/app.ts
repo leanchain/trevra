@@ -20,6 +20,8 @@ import { listConnections } from './serializers.js';
 import {
   auth as betterAuth,
   configureAuthProvisioning,
+  emailPasswordAuthEnabled,
+  magicLinkAuthEnabled,
   resolveBetterAuthIdentity
 } from './auth-service.js';
 import {
@@ -535,10 +537,11 @@ export function createApp(db: Db) {
   app.get('/api/public-config', (_req, res) =>
     res.json({
       googleAuthEnabled: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
-      // Password signup is intentionally self-hosted-only for now. Hosted users
-      // prove email ownership through Google OAuth instead of creating an
-      // immediately authenticated, unverified password identity.
-      emailPasswordAuthEnabled: process.env.TREVRA_DEPLOYMENT_MODE !== 'hosted',
+      // Hosted always has SMTP by configuration, so it gets passwordless email
+      // sign-in. Self-hosted prefers the same flow when SMTP exists and exposes
+      // password auth as the fallback when it does not.
+      magicLinkAuthEnabled,
+      emailPasswordAuthEnabled: emailPasswordAuthEnabled && !magicLinkAuthEnabled,
       modelExtractionEnabled: Boolean(process.env.OPENAI_API_KEY),
       supportEmail: getSiteConfig().supportEmail,
       catalogApiUrl: process.env.PUBLIC_REGISTRY_API_URL?.trim() || '',
