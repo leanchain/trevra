@@ -919,6 +919,8 @@ export async function admitPendingCampaignMembers(
     steps: readonly WorkflowStep[];
     decision: AdmissionDecision;
     senderKeys: readonly string[];
+    /** Sustainable new-lead capacity remaining on each sender for this wave. */
+    senderCapacities?: Readonly<Record<string, number>>;
   },
   now: Date = new Date()
 ): Promise<{ wave: ManagedCampaignWave | null; admitted: number }> {
@@ -947,6 +949,41 @@ export async function admitPendingCampaignMembers(
       )
       .all<{ id: string }>(input.workspaceId, input.campaignId, amount);
     if (pending.length === 0) return;
+
+    const senderKeys = input.senderKeys.length > 0 ? [...input.senderKeys] : [OWNER_SEAT_KEY];
+    const rotated = senderKeys.map((_, at) => senderKeys[(ordinal - 1 + at) % senderKeys.length]);
+    const hasCapacity = input.senderCapacities !== undefined;
+    const capacities = new Map(
+      rotated.map((key) => [
+        key,
+        hasCapacity
+          ? Math.max(0, Math.trunc(input.senderCapacities?.[key] ?? 0))
+          : Number.POSITIVE_INFINITY
+      ])
+    );
+    const weights = new Map(
+      rotated.map((key) => [
+        key,
+        hasCapacity ? Math.max(1, Math.trunc(input.senderCapacities?.[key] ?? 0)) : 1
+      ])
+    );
+    const assigned = new Map(rotated.map((key) => [key, 0]));
+    const assignments: Array<{ memberId: string; sender: string }> = [];
+    for (const member of pending) {
+      const eligible = rotated.filter((key) => (capacities.get(key) ?? 0) > 0);
+      if (eligible.length === 0) break;
+      eligible.sort((left, right) => {
+        const leftLoad = (assigned.get(left) ?? 0) / Math.max(1, weights.get(left) ?? 1);
+        const rightLoad = (assigned.get(right) ?? 0) / Math.max(1, weights.get(right) ?? 1);
+        return leftLoad - rightLoad || rotated.indexOf(left) - rotated.indexOf(right);
+      });
+      const sender = eligible[0];
+      assignments.push({ memberId: member.id, sender });
+      assigned.set(sender, (assigned.get(sender) ?? 0) + 1);
+      if (hasCapacity) capacities.set(sender, Math.max(0, (capacities.get(sender) ?? 0) - 1));
+    }
+    if (assignments.length === 0) return;
+
     await tx
       .prepare(
         `INSERT INTO linkedin_campaign_waves (id,workspace_id,campaign_id,ordinal,admitted_at,member_count,admission_reason,capacity_snapshot,created_at)
@@ -958,15 +995,14 @@ export async function admitPendingCampaignMembers(
         input.campaignId,
         ordinal,
         timestamp,
-        pending.length,
+        assignments.length,
         input.decision.reasons.join(' '),
         JSON.stringify(input.decision.capacitySnapshot),
         timestamp
       );
-    const senderKeys = input.senderKeys.length > 0 ? [...input.senderKeys] : [OWNER_SEAT_KEY];
-    // Stable deterministic round-robin: wave ordinal and row order decide once; assignment is persisted.
-    for (let at = 0; at < pending.length; at += 1) {
-      const sender = senderKeys[(ordinal - 1 + at) % senderKeys.length];
+    // The choice is made once at admission and persisted. Later capacity changes
+    // never migrate an in-flight thread to another sender.
+    for (const assignment of assignments) {
       const result = await tx
         .prepare(
           `UPDATE linkedin_campaign_members m
@@ -979,11 +1015,11 @@ export async function admitPendingCampaignMembers(
         .run(
           timestamp,
           waveId,
-          sender,
+          assignment.sender,
           firstEligible,
           timestamp,
           input.workspaceId,
-          pending[at].id
+          assignment.memberId
         );
       admitted += result.changes;
     }

@@ -49,6 +49,76 @@ describe('LinkedIn manager workflows', () => {
     expect(delayMilliseconds(result[2].delayBefore)).toBe(14 * 24 * 3_600_000);
   });
 
+  it('reuses branching result semantics for Managed replied references', () => {
+    expect(
+      workflowStepsSchema.safeParse([
+        {
+          id: 'group-msg',
+          action: 'group_message',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {
+            groupUrl: 'https://www.linkedin.com/groups/123/',
+            variants: [{ id: 'a', body: 'Hi', weight: 100 }]
+          }
+        },
+        {
+          id: 'end-yes',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'replied' }
+        },
+        {
+          id: 'end-no',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        },
+        {
+          id: 'reply-check',
+          action: 'condition',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {
+            condition: { kind: 'replied', ofStepId: 'group-msg' },
+            yesStepId: 'end-yes',
+            noStepId: 'end-no'
+          }
+        }
+      ]).success
+    ).toBe(false); // backward branch targets remain invalid even though the result kind is valid.
+    expect(
+      workflowStepsSchema.safeParse([
+        {
+          id: 'view',
+          action: 'profile_view',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {}
+        },
+        {
+          id: 'check',
+          action: 'condition',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {
+            condition: { kind: 'replied', ofStepId: 'view' },
+            yesStepId: 'yes',
+            noStepId: 'no'
+          }
+        },
+        {
+          id: 'yes',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'replied' }
+        },
+        {
+          id: 'no',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        }
+      ]).success
+    ).toBe(false);
+  });
+
   it('accepts only LinkedIn company/event/group destinations for community nodes', () => {
     expect(() =>
       workflowStepsSchema.parse([

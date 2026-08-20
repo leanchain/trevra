@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { id, type Db } from '../db.js';
+import { actionKindSupportsBranch } from './branching.js';
+import type { LinkedInActionKind } from './actions.js';
 
 /**
  * The merge fields a managed-workflow template may use.
@@ -402,6 +404,26 @@ export const workflowStepSchema = z.discriminatedUnion('action', [
 ]);
 export type WorkflowStep = z.infer<typeof workflowStepSchema>;
 
+function workflowLinkedInResultKind(
+  step: WorkflowStep | null | undefined
+): LinkedInActionKind | null {
+  if (!step) return null;
+  switch (step.action) {
+    case 'connection_request':
+      return 'invite';
+    case 'message':
+      return 'dm';
+    case 'inmail':
+      return 'inmail';
+    case 'group_message':
+      return 'group_message';
+    case 'event_message':
+      return 'event_message';
+    default:
+      return null;
+  }
+}
+
 export const workflowStepsSchema = z
   .array(workflowStepSchema)
   .min(1)
@@ -513,12 +535,12 @@ export const workflowStepsSchema = z
           } else {
             const referencedIndex = indexById.get(condition.ofStepId);
             const referenced = referencedIndex === undefined ? null : steps[referencedIndex];
+            const linkedInKind = workflowLinkedInResultKind(referenced);
             const valid =
               condition.kind === 'accepted'
-                ? referenced?.action === 'connection_request'
-                : ['message', 'inmail', 'email', 'group_message', 'event_message'].includes(
-                    referenced?.action ?? ''
-                  );
+                ? linkedInKind !== null && actionKindSupportsBranch(linkedInKind, 'accepted')
+                : referenced?.action === 'email' ||
+                  (linkedInKind !== null && actionKindSupportsBranch(linkedInKind, 'replied'));
             if (referencedIndex === undefined || referencedIndex >= index || !valid)
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,

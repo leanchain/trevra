@@ -150,6 +150,7 @@ const RESULT_BEARING_KINDS: readonly LinkedInActionKind[] = [
   'invite',
   'dm',
   'reply',
+  'inmail',
   'group_message',
   'event_message'
 ];
@@ -179,6 +180,15 @@ const KIND_NOUNS: Record<LinkedInActionKind, string> = {
 
 /** Branches that ask whether an invite was accepted. Only an invite can answer. */
 const ACCEPTANCE_BRANCHES: readonly BranchOn[] = ['accepted', 'not_accepted'];
+
+/** One semantic contract for both legacy sequences and Managed Workflow condition references. */
+export function actionKindSupportsBranch(kind: LinkedInActionKind, on: BranchOn): boolean {
+  if (on === 'always') return true;
+  if (on === 'accepted' || on === 'not_accepted') return kind === 'invite';
+  if (on === 'replied' || on === 'not_replied')
+    return ['dm', 'reply', 'inmail', 'group_message', 'event_message'].includes(kind);
+  return false;
+}
 
 function isBranchOn(value: unknown): value is BranchOn {
   return typeof value === 'string' && (BRANCH_ON_VALUES as readonly string[]).includes(value);
@@ -369,7 +379,7 @@ export interface BranchEvaluationInput {
 const DAY_MS = 86_400_000;
 
 /** Three-valued, because "nobody has answered yet" is not "no". */
-type Tri = 'yes' | 'no' | 'unknown';
+export type BranchTri = 'yes' | 'no' | 'unknown';
 
 /**
  * Did they accept?
@@ -379,16 +389,16 @@ type Tri = 'yes' | 'no' | 'unknown';
  * did not accept. A row still sitting at 'planned', 'exported' or 'sent' has no
  * answer in it, which is `unknown` and not `no`.
  */
-function acceptedTri(status: LinkedInActionStatus): Tri {
+export function acceptedTri(status: LinkedInActionStatus): BranchTri {
   if (status === 'accepted' || status === 'replied') return 'yes';
-  if (status === 'declined') return 'no';
+  if (status === 'declined' || status === 'withdrawn' || status === 'skipped') return 'no';
   return 'unknown';
 }
 
 /** Did they reply? An accepted invite is not a reply; a declined one will never become one. */
-function repliedTri(status: LinkedInActionStatus): Tri {
+export function repliedTri(status: LinkedInActionStatus): BranchTri {
   if (status === 'replied') return 'yes';
-  if (status === 'declined') return 'no';
+  if (status === 'declined' || status === 'withdrawn' || status === 'skipped') return 'no';
   return 'unknown';
 }
 

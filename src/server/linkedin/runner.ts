@@ -1,8 +1,14 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
-import { recordAction, type LinkedInActionKind } from './actions.js';
+import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
+import { acceptedTri, repliedTri } from './branching.js';
 import { runCampaignChannelActions } from './campaign-channels.js';
-import { decideAdmission, type AdmissionKind, type AdmissionPolicy } from './admission.js';
+import {
+  decideAdmission,
+  workflowAdmissionDemand,
+  type AdmissionKind,
+  type AdmissionPolicy
+} from './admission.js';
 import {
   ACTION_GAP_SECONDS,
   INMAIL_MONTHLY_QUOTA,
@@ -146,6 +152,8 @@ interface CampaignRow {
   end_behavior: string;
   inmail_credit_cap: number | null;
   last_admission_at: string | null;
+  last_planned_at: string | null;
+  created_at: string;
   started_at: string | null;
 }
 
@@ -681,9 +689,7 @@ async function evaluateWorkflowCondition(
       )
       .get<{ status: string }>(workspaceId, member.id, condition.ofStepId);
     if (!action) return 'unknown';
-    if (action.status === 'accepted' || action.status === 'replied') return 'yes';
-    if (['declined', 'withdrawn', 'skipped'].includes(action.status)) return 'no';
-    return 'unknown';
+    return acceptedTri(action.status as LinkedInActionStatus);
   }
 
   if (condition.kind === 'replied') {
@@ -695,8 +701,10 @@ async function evaluateWorkflowCondition(
            ORDER BY created_at DESC LIMIT 1`
         )
         .get<{ status: string }>(workspaceId, member.id, condition.ofStepId);
-      if (action?.status === 'replied') return 'yes';
-      if (action && ['declined', 'withdrawn', 'skipped'].includes(action.status)) return 'no';
+      if (action) {
+        const verdict = repliedTri(action.status as LinkedInActionStatus);
+        if (verdict !== 'unknown') return verdict;
+      }
     }
     if (member.profile_url) {
       const replied = await repliedProfiles(db, workspaceId, [member.profile_url]);
@@ -797,6 +805,95 @@ function workflowStepsForMember(
   return snapshot.length > 0 ? snapshot : [...fallback];
 }
 
+function campaignPriorityWeight(priority: number): number {
+  return priority > 0 ? 4 : priority < 0 ? 1 : 2;
+}
+
+function campaignSenderKeys(campaign: CampaignRow): string[] {
+  const configured = parseStringArray(campaign.sender_keys_json);
+  return configured.length > 0 ? configured : [campaign.seat_key];
+}
+
+function campaignPlanningOpen(campaign: CampaignRow, now: Date): boolean {
+  if (!campaignStartedForSchedule(campaign, now)) return false;
+  const end = parseIso(campaign.scheduled_end_at);
+  if (!end || now.getTime() < end.getTime()) return true;
+  return campaign.end_behavior === 'finish_waves';
+}
+
+/** Capacity buckets this workflow may need while it still has live/pending work. */
+function workflowPlanningDemandKinds(steps: readonly WorkflowStep[]): BudgetedKind[] {
+  const kinds = new Set<BudgetedKind>();
+  for (const step of steps) {
+    const kind = budgetKindForStep(step);
+    if (kind) kinds.add(kind);
+    if (
+      (step.action === 'condition' || step.action === 'monitor') &&
+      (step.config.condition.kind === 'connected' || step.config.condition.kind === 'open_profile')
+    )
+      kinds.add('profile_view');
+  }
+  return [...kinds];
+}
+
+function fairQuotaKey(campaignId: string, seatKey: string, kind: BudgetedKind): string {
+  return `${campaignId}\u0000${seatKey}\u0000${kind}`;
+}
+
+/**
+ * Split an integer seat remainder between campaigns. Every demanding campaign
+ * receives one slot before priority weights matter when capacity permits. When
+ * capacity is scarcer than campaign count, oldest `last_planned_at` wins and is
+ * moved to the back when it actually plans work, producing deterministic
+ * round-robin starvation protection across ticks.
+ */
+export function allocateCampaignCapacity(
+  total: number,
+  campaigns: readonly Pick<CampaignRow, 'id' | 'priority' | 'last_planned_at' | 'created_at'>[]
+): Map<string, number> {
+  const capacity = Math.max(0, Math.trunc(total));
+  const out = new Map(campaigns.map((campaign) => [campaign.id, 0]));
+  if (capacity === 0 || campaigns.length === 0) return out;
+  const oldest = [...campaigns].sort((left, right) => {
+    const la = Date.parse(left.last_planned_at ?? left.created_at);
+    const ra = Date.parse(right.last_planned_at ?? right.created_at);
+    if (la !== ra) return la - ra;
+    if (left.priority !== right.priority) return right.priority - left.priority;
+    return left.id.localeCompare(right.id);
+  });
+  if (capacity < oldest.length) {
+    for (const campaign of oldest.slice(0, capacity)) out.set(campaign.id, 1);
+    return out;
+  }
+
+  for (const campaign of campaigns) out.set(campaign.id, 1);
+  let remaining = capacity - campaigns.length;
+  if (remaining <= 0) return out;
+  const weightTotal = campaigns.reduce(
+    (sum, campaign) => sum + campaignPriorityWeight(campaign.priority),
+    0
+  );
+  const fractions: Array<{ id: string; fraction: number }> = [];
+  let assigned = 0;
+  for (const campaign of campaigns) {
+    const raw = (remaining * campaignPriorityWeight(campaign.priority)) / Math.max(1, weightTotal);
+    const whole = Math.floor(raw);
+    out.set(campaign.id, (out.get(campaign.id) ?? 0) + whole);
+    assigned += whole;
+    fractions.push({ id: campaign.id, fraction: raw - whole });
+  }
+  let leftover = remaining - assigned;
+  fractions.sort(
+    (left, right) => right.fraction - left.fraction || left.id.localeCompare(right.id)
+  );
+  for (const row of fractions) {
+    if (leftover <= 0) break;
+    out.set(row.id, (out.get(row.id) ?? 0) + 1);
+    leftover -= 1;
+  }
+  return out;
+}
+
 async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Promise<RunnerResult> {
   const result: RunnerResult = {
     campaignsTicked: 0,
@@ -811,10 +908,12 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
       `
     SELECT id,seat_key,sender_keys_json,mailbox_assignments_json,workflow_id,lead_list_id,sequence_json,priority,admission_policy_json,
            scheduled_start_at,scheduled_end_at,schedule_days_json,schedule_start_minute,schedule_end_minute,end_behavior,inmail_credit_cap,last_admission_at,
+           TO_CHAR(last_planned_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS last_planned_at,
+           TO_CHAR(created_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS created_at,
            TO_CHAR(started_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS started_at
     FROM linkedin_campaigns
     WHERE workspace_id=? AND status='running' AND lead_list_id IS NOT NULL AND workflow_id IS NOT NULL
-    ORDER BY priority DESC, COALESCE(last_admission_at,created_at) ASC, created_at ASC, id ASC
+    ORDER BY created_at ASC, id ASC
   `
     )
     .all<CampaignRow>(workspaceId);
@@ -828,12 +927,133 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
     return seats.get(seatKey) ?? null;
   };
 
+  // ONE SEAT BUDGET, shared by every campaign that can spend it this tick.
+  // Before this pre-pass, each campaign independently subtracted only its own
+  // planned rows from the same seat ceiling. Two campaigns could therefore
+  // each plan "the remaining 10" and leave the send-time guard to reject the
+  // oversubscription. Fairness must happen before planning, not as a refusal
+  // after a browser worker has a queue.
+  const windowStart = new Date(now.getTime() - 86_400_000).toISOString();
+  const windowEnd = new Date(now.getTime() + 86_400_000).toISOString();
+  const cachedSteps = new Map<string, WorkflowStep[]>();
+  const cachedUsableSenders = new Map<string, Array<{ key: string; seat: LinkedInSeat }>>();
+  const demanders = new Map<string, CampaignRow[]>();
+  const seatsInDemand = new Set<string>();
+
   for (const campaign of campaigns) {
+    if (!campaignPlanningOpen(campaign, now)) continue;
     const snapshot = campaignSnapshotSteps(campaign.sequence_json);
     const steps =
       snapshot.length > 0
         ? snapshot
         : ((await getWorkflow(db, workspaceId, campaign.workflow_id))?.steps ?? []);
+    if (steps.length === 0) continue;
+    cachedSteps.set(campaign.id, steps);
+
+    const live = await db
+      .prepare(
+        `SELECT EXISTS(
+           SELECT 1 FROM linkedin_campaign_members
+           WHERE workspace_id=? AND campaign_id=?
+             AND status IN ('pending','active','waiting')
+         ) AS live`
+      )
+      .get<{ live: boolean }>(workspaceId, campaign.id);
+    if (live?.live !== true) continue;
+
+    const usable: Array<{ key: string; seat: LinkedInSeat }> = [];
+    for (const key of campaignSenderKeys(campaign)) {
+      const loaded = await loadSeat(key);
+      if (!loaded) continue;
+      const posture = effectivePosture(loaded, now);
+      if (posture === 'paused' || posture === 'cooldown') continue;
+      const scoped = campaignSeatWindow(loaded, campaign);
+      if (scoped.workingDays.length === 0 || scoped.workEndMinute <= scoped.workStartMinute)
+        continue;
+      usable.push({ key, seat: scoped });
+      seatsInDemand.add(key);
+      for (const kind of workflowPlanningDemandKinds(steps)) {
+        const mapKey = `${key}\u0000${kind}`;
+        const rows = demanders.get(mapKey) ?? [];
+        if (!rows.some((row) => row.id === campaign.id)) rows.push(campaign);
+        demanders.set(mapKey, rows);
+      }
+    }
+    cachedUsableSenders.set(campaign.id, usable);
+  }
+
+  const sharedRemaining = new Map<string, Map<BudgetedKind, number>>();
+  const paidInmailSeatRemaining = new Map<string, number>();
+  for (const seatKey of seatsInDemand) {
+    const seat = await loadSeat(seatKey);
+    if (!seat) continue;
+    const used = await db
+      .prepare(
+        `SELECT kind,COUNT(*)::int AS total FROM linkedin_actions
+         WHERE workspace_id=? AND seat_key=? AND status<>'skipped'
+           AND planned_for IS NOT NULL AND planned_for>=?::timestamptz AND planned_for<=?::timestamptz
+           AND kind = ANY(?::text[]) GROUP BY kind`
+      )
+      .all<{ kind: string; total: number }>(workspaceId, seatKey, windowStart, windowEnd, [
+        ...MANAGED_LEDGER_KINDS
+      ]);
+    const usedByKind = new Map<BudgetedKind, number>();
+    for (const row of used) {
+      const bucket = budgetKindForLedgerKind(row.kind as LinkedInActionKind);
+      if (bucket) usedByKind.set(bucket, (usedByKind.get(bucket) ?? 0) + Number(row.total));
+    }
+    const inmailUsage = await db
+      .prepare(
+        `SELECT COUNT(*) FILTER (WHERE kind='inmail' AND status<>'skipped')::int AS total,
+                COUNT(*) FILTER (WHERE kind='inmail' AND paid_credit_used=TRUE AND status<>'skipped')::int AS paid
+         FROM linkedin_actions
+         WHERE workspace_id=? AND seat_key=? AND COALESCE(recorded_at,planned_for,created_at)>=?::timestamptz`
+      )
+      .get<{ total: number; paid: number }>(
+        workspaceId,
+        seatKey,
+        new Date(now.getTime() - 30 * 86_400_000).toISOString()
+      );
+    const byKind = new Map<BudgetedKind, number>();
+    for (const kind of BUDGETED_KINDS) {
+      let remaining = Math.max(
+        0,
+        seatDailyCeilingFor(seat, kind, now) - (usedByKind.get(kind) ?? 0)
+      );
+      if (kind === 'inmail') {
+        const monthlyLimit = seat.inmailMonthlyBudget ?? INMAIL_MONTHLY_QUOTA;
+        remaining = Math.min(
+          remaining,
+          Math.max(0, monthlyLimit - Number(inmailUsage?.total ?? 0))
+        );
+      }
+      byKind.set(kind, remaining);
+    }
+    sharedRemaining.set(seatKey, byKind);
+    paidInmailSeatRemaining.set(
+      seatKey,
+      Math.max(0, (seat.inmailPaidCreditCap ?? 0) - Number(inmailUsage?.paid ?? 0))
+    );
+  }
+
+  const fairQuota = new Map<string, number>();
+  for (const [mapKey, rows] of demanders) {
+    const split = mapKey.indexOf('\u0000');
+    const seatKey = mapKey.slice(0, split);
+    const kind = mapKey.slice(split + 1) as BudgetedKind;
+    const total = sharedRemaining.get(seatKey)?.get(kind) ?? 0;
+    for (const [campaignId, quota] of allocateCampaignCapacity(total, rows))
+      fairQuota.set(fairQuotaKey(campaignId, seatKey, kind), quota);
+  }
+
+  for (const campaign of campaigns) {
+    const cached = cachedSteps.get(campaign.id);
+    const snapshot = cached ? [] : campaignSnapshotSteps(campaign.sequence_json);
+    const steps =
+      cached ??
+      (snapshot.length > 0
+        ? snapshot
+        : ((await getWorkflow(db, workspaceId, campaign.workflow_id))?.steps ?? []));
     if (steps.length === 0) continue;
 
     if (!campaignStartedForSchedule(campaign, now)) continue;
@@ -877,20 +1097,25 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
       continue;
     }
 
-    const configuredSenders = parseStringArray(campaign.sender_keys_json);
-    const senderKeys = configuredSenders.length > 0 ? configuredSenders : [campaign.seat_key];
-    const usableSenders: Array<{ key: string; seat: LinkedInSeat }> = [];
-    for (const key of senderKeys) {
-      const loaded = await loadSeat(key);
-      if (!loaded) continue;
-      const posture = effectivePosture(loaded, now);
-      if (posture === 'paused' || posture === 'cooldown') continue;
-      const scoped = campaignSeatWindow(loaded, campaign);
-      if (scoped.workingDays.length === 0 || scoped.workEndMinute <= scoped.workStartMinute)
-        continue;
-      usableSenders.push({ key, seat: scoped });
-      if (!floors.has(key)) floors.set(key, await ledgerFloorFor(db, workspaceId, key));
-    }
+    const usableSenders =
+      cachedUsableSenders.get(campaign.id) ??
+      (await (async () => {
+        const usable: Array<{ key: string; seat: LinkedInSeat }> = [];
+        for (const key of campaignSenderKeys(campaign)) {
+          const loaded = await loadSeat(key);
+          if (!loaded) continue;
+          const posture = effectivePosture(loaded, now);
+          if (posture === 'paused' || posture === 'cooldown') continue;
+          const scoped = campaignSeatWindow(loaded, campaign);
+          if (scoped.workingDays.length === 0 || scoped.workEndMinute <= scoped.workStartMinute)
+            continue;
+          usable.push({ key, seat: scoped });
+        }
+        return usable;
+      })());
+    for (const sender of usableSenders)
+      if (!floors.has(sender.key))
+        floors.set(sender.key, await ledgerFloorFor(db, workspaceId, sender.key));
     if (usableSenders.length === 0) {
       const blocked = await db
         .prepare(
@@ -902,6 +1127,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
     }
 
     result.campaignsTicked += 1;
+    const actionsBeforeCampaign = result.actionsPlanned;
     const admissionOpen = campaignAdmissionOpen(campaign, now);
     if (admissionOpen) {
       await enrolNewContacts(
@@ -920,11 +1146,12 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         .run(now.toISOString(), now.toISOString(), workspaceId, campaign.id);
     }
 
-    const windowStart = new Date(now.getTime() - 86_400_000).toISOString();
-    const windowEnd = new Date(now.getTime() + 86_400_000).toISOString();
     const budgetBySeat = new Map<string, Map<BudgetedKind, number>>();
     const paidInmailRemainingBySeat = new Map<string, number>();
     for (const sender of usableSenders) {
+      // Campaign warm-up is a SECOND, narrower ceiling inside the fair share.
+      // Count this campaign's already-planned rows so a rerun of the same tick
+      // cannot spend its share twice.
       const used = await db
         .prepare(
           `SELECT kind,COUNT(*)::int AS total FROM linkedin_actions
@@ -940,46 +1167,45 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
           windowEnd,
           [...MANAGED_LEDGER_KINDS]
         );
-      const usedByKind = new Map<BudgetedKind, number>();
+      const campaignUsed = new Map<BudgetedKind, number>();
       for (const row of used) {
         const bucket = budgetKindForLedgerKind(row.kind as LinkedInActionKind);
-        if (bucket) usedByKind.set(bucket, (usedByKind.get(bucket) ?? 0) + Number(row.total));
+        if (bucket) campaignUsed.set(bucket, (campaignUsed.get(bucket) ?? 0) + Number(row.total));
       }
-      const inmailUsage = await db
-        .prepare(
-          `SELECT COUNT(*) FILTER (WHERE kind='inmail' AND status<>'skipped')::int AS total,
-                  COUNT(*) FILTER (WHERE kind='inmail' AND paid_credit_used=TRUE AND status<>'skipped')::int AS paid
-           FROM linkedin_actions
-           WHERE workspace_id=? AND seat_key=? AND COALESCE(recorded_at,planned_for,created_at)>=?::timestamptz`
-        )
-        .get<{ total: number; paid: number }>(
-          workspaceId,
-          sender.key,
-          new Date(now.getTime() - 30 * 86_400_000).toISOString()
-        );
       const budget = new Map<BudgetedKind, number>();
       for (const kind of BUDGETED_KINDS) {
-        const limit = campaignActionLimit(
+        const fairShare = fairQuota.get(fairQuotaKey(campaign.id, sender.key, kind)) ?? 0;
+        const campaignLimit = campaignActionLimit(
           seatDailyCeilingFor(sender.seat, kind, now),
           campaign.started_at,
           now
         );
-        let remaining = Math.max(0, limit - (usedByKind.get(kind) ?? 0));
-        if (kind === 'inmail') {
-          const monthlyLimit = sender.seat.inmailMonthlyBudget ?? INMAIL_MONTHLY_QUOTA;
-          remaining = Math.min(
-            remaining,
-            Math.max(0, monthlyLimit - Number(inmailUsage?.total ?? 0))
-          );
-        }
-        budget.set(kind, remaining);
+        budget.set(
+          kind,
+          Math.min(fairShare, Math.max(0, campaignLimit - (campaignUsed.get(kind) ?? 0)))
+        );
       }
-      const seatPaidCap = sender.seat.inmailPaidCreditCap ?? 0;
-      const campaignPaidCap = campaign.inmail_credit_cap ?? 0;
-      const effectivePaidCap = Math.min(seatPaidCap, campaignPaidCap);
+
+      const campaignPaid = await db
+        .prepare(
+          `SELECT COUNT(*)::int AS total FROM linkedin_actions
+           WHERE workspace_id=? AND campaign_id=? AND seat_key=? AND kind='inmail'
+             AND paid_credit_used=TRUE AND status<>'skipped'
+             AND COALESCE(recorded_at,planned_for,created_at)>=?::timestamptz`
+        )
+        .get<{ total: number }>(
+          workspaceId,
+          campaign.id,
+          sender.key,
+          new Date(now.getTime() - 30 * 86_400_000).toISOString()
+        );
+      const campaignPaidRemaining = Math.max(
+        0,
+        (campaign.inmail_credit_cap ?? 0) - Number(campaignPaid?.total ?? 0)
+      );
       paidInmailRemainingBySeat.set(
         sender.key,
-        Math.max(0, effectivePaidCap - Number(inmailUsage?.paid ?? 0))
+        Math.min(paidInmailSeatRemaining.get(sender.key) ?? 0, campaignPaidRemaining)
       );
       budgetBySeat.set(sender.key, budget);
     }
@@ -1050,6 +1276,23 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         hasUsableFutureSlot: usableSenders.some(({ seat }) => nextOpenInstant(seat, now) !== null)
       });
       if (decision.admit > 0) {
+        const perLeadDemand = workflowAdmissionDemand(steps);
+        const hasPacedDemand = Object.values(perLeadDemand).some((demand) => demand > 0);
+        const senderCapacities: Record<string, number> = {};
+        if (hasPacedDemand) {
+          for (const sender of usableSenders) {
+            const limits: number[] = [];
+            for (const [kind, demand] of Object.entries(perLeadDemand) as Array<
+              [AdmissionKind, number]
+            >) {
+              if (demand <= 0) continue;
+              limits.push(
+                Math.floor((budgetBySeat.get(sender.key)?.get(kind) ?? 0) / Math.max(1, demand))
+              );
+            }
+            senderCapacities[sender.key] = Math.max(0, Math.min(...limits));
+          }
+        }
         await admitPendingCampaignMembers(
           db,
           {
@@ -1057,7 +1300,8 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             campaignId: campaign.id,
             steps,
             decision,
-            senderKeys: usableSenders.map((sender) => sender.key)
+            senderKeys: usableSenders.map((sender) => sender.key),
+            ...(hasPacedDemand ? { senderCapacities } : {})
           },
           now
         );
@@ -1800,6 +2044,15 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
       }
       await flushMemberWrites(tx, workspaceId, memberWrites);
     });
+
+    if (result.actionsPlanned > actionsBeforeCampaign) {
+      await db
+        .prepare(
+          `UPDATE linkedin_campaigns SET last_planned_at=?::timestamptz,updated_at=?::timestamptz
+           WHERE workspace_id=? AND id=?`
+        )
+        .run(now.toISOString(), now.toISOString(), workspaceId, campaign.id);
+    }
 
     const live = await db
       .prepare(

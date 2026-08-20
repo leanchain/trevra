@@ -12,7 +12,11 @@ import {
   setCampaignMemberPaused,
   startManagedCampaign
 } from './managed-campaigns.js';
-import { runManagedCampaigns, runManagedCampaignsForAllWorkspaces } from './runner.js';
+import {
+  allocateCampaignCapacity,
+  runManagedCampaigns,
+  runManagedCampaignsForAllWorkspaces
+} from './runner.js';
 import { upsertSeat } from './seats.js';
 import { saveWorkflow } from './workflows.js';
 
@@ -151,6 +155,87 @@ function plus(iso: string | null, ms: number): string {
 }
 
 describe('managed campaign runner', () => {
+  it('allocates scarce shared-seat capacity with a starvation floor and weighted remainder', () => {
+    const campaigns = [
+      { id: 'low', priority: -1, last_planned_at: null, created_at: '2026-08-01T00:00:00.000Z' },
+      { id: 'normal', priority: 0, last_planned_at: null, created_at: '2026-08-01T00:00:01.000Z' },
+      { id: 'high', priority: 1, last_planned_at: null, created_at: '2026-08-01T00:00:02.000Z' }
+    ];
+    expect(Object.fromEntries(allocateCampaignCapacity(14, campaigns))).toEqual({
+      low: 3,
+      normal: 4,
+      high: 7
+    });
+    // Fewer slots than campaigns: service age wins before priority.
+    expect(
+      Object.fromEntries(
+        allocateCampaignCapacity(1, [
+          { ...campaigns[2], last_planned_at: '2026-08-03T08:00:00.000Z' },
+          { ...campaigns[0], last_planned_at: '2026-08-03T07:00:00.000Z' },
+          { ...campaigns[1], last_planned_at: '2026-08-03T06:00:00.000Z' }
+        ])
+      )
+    ).toEqual({ high: 0, low: 0, normal: 1 });
+  });
+
+  it('shares one sender ceiling across competing campaigns instead of recreating it per campaign', async () => {
+    await upsertSeat(db, WORKSPACE, { dailyProfileViewLimit: 10, safetyBandOverride: true }, NOW);
+    await db
+      .prepare(
+        `
+      INSERT INTO linkedin_actions
+        (id,workspace_id,seat_key,kind,target_ref,status,planned_for,recorded_at,source,replay_scope,created_at)
+      SELECT 'lact_fair_used_' || g, ?, 'owner', 'profile_view',
+             'https://www.linkedin.com/in/fair-used-' || g || '/', 'sent', ?::timestamptz, ?::timestamptz,
+             'export', 'legacy', ?::timestamptz
+      FROM generate_series(1,8) AS g
+    `
+      )
+      .run(WORKSPACE, NOW.toISOString(), NOW.toISOString(), NOW.toISOString());
+    const workflow = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Fair shared seat',
+        steps: [
+          {
+            id: 'view',
+            action: 'profile_view',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          }
+        ]
+      },
+      NOW
+    );
+    const campaignIds: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const listId = await seededList(`Fair ${index}`, [
+        { first: `Lead${index}`, last: 'Fair', company: 'Acme', slug: `fair-${index}` }
+      ]);
+      campaignIds.push(await runningCampaign(listId, workflow.id, `Fair ${index}`));
+    }
+
+    const tick = await runManagedCampaigns(db, WORKSPACE, NOW);
+    expect(tick.actionsPlanned).toBe(2);
+    const planned = await db
+      .prepare(
+        `SELECT campaign_id,COUNT(*)::int AS total FROM linkedin_actions
+         WHERE workspace_id=? AND kind='profile_view' AND status='planned'
+         GROUP BY campaign_id ORDER BY campaign_id`
+      )
+      .all<{ campaign_id: string; total: number }>(WORKSPACE);
+    expect(planned).toHaveLength(2);
+    expect(planned.every((row) => row.total === 1)).toBe(true);
+    const rotation = await db
+      .prepare(
+        `SELECT id,last_planned_at IS NOT NULL AS served FROM linkedin_campaigns
+         WHERE workspace_id=? AND id = ANY(?::text[]) ORDER BY id`
+      )
+      .all<{ id: string; served: boolean }>(WORKSPACE, campaignIds);
+    expect(rotation.filter((row) => row.served)).toHaveLength(2);
+    expect(rotation.filter((row) => !row.served)).toHaveLength(1);
+  });
   it('plans every company, event and group workflow action with a distinct ledger kind and destination metadata', async () => {
     const listId = await seededList('Community actions', [
       { first: 'Maya', last: 'Smith', company: 'Acme', slug: 'maya-community' }

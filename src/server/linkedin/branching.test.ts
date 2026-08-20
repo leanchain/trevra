@@ -5,7 +5,10 @@ import {
   conditionOf,
   conditionRejection,
   cycleRejection,
+  acceptedTri,
+  actionKindSupportsBranch,
   evaluateBranches,
+  repliedTri,
   hasBranching,
   stepConditionSchema,
   type BranchActionRow,
@@ -33,7 +36,12 @@ function branchingSequence(): BranchableStep[] {
     { id: 'view', day: 0, kind: 'profile_view' },
     { id: 'invite', day: 1, kind: 'invite' },
     { id: 'accepted-dm', day: 3, kind: 'dm', condition: { on: 'accepted', ofStepId: 'invite' } },
-    { id: 'fallback-inmail', day: 3, kind: 'inmail', condition: { on: 'not_accepted', ofStepId: 'invite' } },
+    {
+      id: 'fallback-inmail',
+      day: 3,
+      kind: 'inmail',
+      condition: { on: 'not_accepted', ofStepId: 'invite' }
+    },
     { id: 'nudge', day: 7, kind: 'dm', condition: { on: 'not_replied', ofStepId: 'accepted-dm' } }
   ];
 }
@@ -49,7 +57,11 @@ function evaluate(overrides: Partial<BranchEvaluationInput> = {}) {
   });
 }
 
-function row(kind: BranchActionRow['kind'], status: BranchActionRow['status'], extra: Partial<BranchActionRow> = {}): BranchActionRow {
+function row(
+  kind: BranchActionRow['kind'],
+  status: BranchActionRow['status'],
+  extra: Partial<BranchActionRow> = {}
+): BranchActionRow {
   return { kind, status, ...extra };
 }
 
@@ -59,16 +71,50 @@ function outcomeOf(evaluation: ReturnType<typeof evaluate>, stepId: string): str
   return decision.outcome;
 }
 
+describe('shared branch outcome semantics', () => {
+  it('uses the same three-valued accepted/replied reading for every campaign runtime', () => {
+    expect(acceptedTri('accepted')).toBe('yes');
+    expect(acceptedTri('replied')).toBe('yes');
+    expect(acceptedTri('declined')).toBe('no');
+    expect(acceptedTri('withdrawn')).toBe('no');
+    expect(acceptedTri('sent')).toBe('unknown');
+    expect(repliedTri('replied')).toBe('yes');
+    expect(repliedTri('declined')).toBe('no');
+    expect(repliedTri('sent')).toBe('unknown');
+  });
+
+  it('shares result-bearing eligibility with Managed Workflow condition references', () => {
+    expect(actionKindSupportsBranch('invite', 'accepted')).toBe(true);
+    expect(actionKindSupportsBranch('dm', 'accepted')).toBe(false);
+    expect(actionKindSupportsBranch('inmail', 'replied')).toBe(true);
+    expect(actionKindSupportsBranch('group_message', 'replied')).toBe(true);
+    expect(actionKindSupportsBranch('profile_view', 'replied')).toBe(false);
+  });
+});
+
 describe('the vocabulary is closed', () => {
   it('has exactly the five branches, and the schema accepts nothing else', () => {
-    expect([...BRANCH_ON_VALUES]).toEqual(['accepted', 'replied', 'not_accepted', 'not_replied', 'always']);
-    expect(stepConditionSchema.safeParse({ on: 'accepted', ofStepId: 'invite' }).success).toBe(true);
-    expect(stepConditionSchema.safeParse({ on: 'if_they_seem_keen', ofStepId: 'invite' }).success).toBe(false);
+    expect([...BRANCH_ON_VALUES]).toEqual([
+      'accepted',
+      'replied',
+      'not_accepted',
+      'not_replied',
+      'always'
+    ]);
+    expect(stepConditionSchema.safeParse({ on: 'accepted', ofStepId: 'invite' }).success).toBe(
+      true
+    );
+    expect(
+      stepConditionSchema.safeParse({ on: 'if_they_seem_keen', ofStepId: 'invite' }).success
+    ).toBe(false);
     expect(stepConditionSchema.safeParse({ on: 'accepted' }).success).toBe(false);
   });
 
   it('keeps the migration and the union spelling the same five values', () => {
-    const sql = readFileSync(new URL('../../../migrations/033_linkedin_sequence_branching.sql', import.meta.url), 'utf8');
+    const sql = readFileSync(
+      new URL('../../../migrations/033_linkedin_sequence_branching.sql', import.meta.url),
+      'utf8'
+    );
     for (const branch of BRANCH_ON_VALUES) expect(sql).toContain(`"${branch}"`);
   });
 });
@@ -84,7 +130,9 @@ describe('branching is a pure extension', () => {
   it('reads an absent condition, and an explicit always, as no condition at all', () => {
     expect(conditionOf({ id: 'a', day: 0, kind: 'dm' })).toBeNull();
     expect(conditionOf({ id: 'a', day: 0, kind: 'dm', condition: null })).toBeNull();
-    expect(conditionOf({ id: 'a', day: 0, kind: 'dm', condition: { on: 'always', ofStepId: 'invite' } })).toBeNull();
+    expect(
+      conditionOf({ id: 'a', day: 0, kind: 'dm', condition: { on: 'always', ofStepId: 'invite' } })
+    ).toBeNull();
   });
 
   it('gates an unconditional sequence on its day and nothing else', () => {
@@ -115,7 +163,12 @@ describe('conditionRejection', () => {
   it('refuses a branch outside the closed vocabulary', () => {
     const message = reject([
       { id: 'invite', day: 0, kind: 'invite' },
-      { id: 'dm', day: 2, kind: 'dm', condition: { on: 'seems_interested' as never, ofStepId: 'invite' } }
+      {
+        id: 'dm',
+        day: 2,
+        kind: 'dm',
+        condition: { on: 'seems_interested' as never, ofStepId: 'invite' }
+      }
     ]);
     expect(message).toContain("Step 'dm'");
     expect(message).toContain('seems_interested');
@@ -170,7 +223,10 @@ describe('conditionRejection', () => {
       { id: 'first', day: 2, kind: 'dm' }
     ];
     for (const on of ['accepted', 'not_accepted'] as const) {
-      const message = reject([...base, { id: 'second', day: 4, kind: 'dm', condition: { on, ofStepId: 'first' } }]);
+      const message = reject([
+        ...base,
+        { id: 'second', day: 4, kind: 'dm', condition: { on, ofStepId: 'first' } }
+      ]);
       expect(message).toContain("Step 'second'");
       expect(message).toContain('only a connection request can be accepted');
     }
@@ -182,7 +238,12 @@ describe('conditionRejection', () => {
         { id: 'invite', day: 0, kind: 'invite' },
         { id: 'dm', day: 2, kind: 'dm', condition: { on: 'accepted', ofStepId: 'invite' } },
         { id: 'nudge', day: 5, kind: 'dm', condition: { on: 'not_replied', ofStepId: 'dm' } },
-        { id: 'inmail', day: 6, kind: 'inmail', condition: { on: 'not_accepted', ofStepId: 'invite' } }
+        {
+          id: 'inmail',
+          day: 6,
+          kind: 'inmail',
+          condition: { on: 'not_accepted', ofStepId: 'invite' }
+        }
       ])
     ).toBeNull();
   });
@@ -216,7 +277,9 @@ describe('evaluateBranches -- three-way, because "not yet" is the common case', 
     const evaluation = evaluate({ actions: [row('invite', 'sent')], now: at(3) });
     expect(outcomeOf(evaluation, 'accepted-dm')).toBe('pending');
     expect(outcomeOf(evaluation, 'fallback-inmail')).toBe('due');
-    expect(evaluation.decisions.find((entry) => entry.stepId === 'accepted-dm')?.reason).toContain('not yet');
+    expect(evaluation.decisions.find((entry) => entry.stepId === 'accepted-dm')?.reason).toContain(
+      'not yet'
+    );
   });
 
   it('runs the accepted arm and skips the fallback once the invite is accepted', () => {
@@ -277,7 +340,11 @@ describe('evaluateBranches -- three-way, because "not yet" is the common case', 
         { id: 'first', day: 2, kind: 'dm' },
         { id: 'second', day: 5, kind: 'dm', condition: { on: 'replied', ofStepId: 'first' } }
       ],
-      actions: [row('invite', 'accepted'), row('dm', 'replied', { stepId: 'first' }), row('dm', 'sent', { stepId: 'second' })],
+      actions: [
+        row('invite', 'accepted'),
+        row('dm', 'replied', { stepId: 'first' }),
+        row('dm', 'sent', { stepId: 'second' })
+      ],
       now: at(5)
     });
     expect(outcomeOf(evaluation, 'second')).toBe('due');
@@ -303,7 +370,15 @@ describe('a branch gates whether a step runs, never when', () => {
   });
 
   it('never reports a step due before its declared day, under any condition or answer', () => {
-    const statuses: BranchActionRow['status'][] = ['planned', 'exported', 'sent', 'accepted', 'replied', 'declined', 'skipped'];
+    const statuses: BranchActionRow['status'][] = [
+      'planned',
+      'exported',
+      'sent',
+      'accepted',
+      'replied',
+      'declined',
+      'skipped'
+    ];
     const steps = branchingSequence();
 
     for (const inviteStatus of statuses) {
@@ -320,7 +395,8 @@ describe('a branch gates whether a step runs, never when', () => {
             const declaredDay = START.getTime() + (step?.day ?? 0) * DAY_MS;
             // The floor holds for every decision, and a due step is at or past it.
             expect(Date.parse(decision.notBefore)).toBeGreaterThanOrEqual(declaredDay);
-            if (decision.outcome === 'due') expect(now.getTime()).toBeGreaterThanOrEqual(Date.parse(decision.notBefore));
+            if (decision.outcome === 'due')
+              expect(now.getTime()).toBeGreaterThanOrEqual(Date.parse(decision.notBefore));
           }
         }
       }
@@ -331,13 +407,21 @@ describe('a branch gates whether a step runs, never when', () => {
     const steps: BranchableStep[] = [{ id: 'invite', day: 1, kind: 'invite' }];
 
     // Pacing put the slot two days past the declared day: the later one wins.
-    const later = evaluate({ steps, actions: [row('invite', 'planned', { plannedFor: at(3).toISOString() })], now: at(2) });
+    const later = evaluate({
+      steps,
+      actions: [row('invite', 'planned', { plannedFor: at(3).toISOString() })],
+      now: at(2)
+    });
     expect(later.decisions[0].notBefore).toBe(at(3).toISOString());
     expect(later.decisions[0].outcome).toBe('pending');
 
     // A slot BEFORE the declared day cannot lower the floor. Pacing owns time;
     // branching owns eligibility; they compose with max, never with min.
-    const earlier = evaluate({ steps, actions: [row('invite', 'planned', { plannedFor: at(0).toISOString() })], now: at(0, 12) });
+    const earlier = evaluate({
+      steps,
+      actions: [row('invite', 'planned', { plannedFor: at(0).toISOString() })],
+      now: at(0, 12)
+    });
     expect(earlier.decisions[0].notBefore).toBe(at(1).toISOString());
     expect(earlier.decisions[0].outcome).toBe('pending');
   });

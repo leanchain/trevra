@@ -4,6 +4,7 @@ import { id, openDatabase, type Db } from '../db.js';
 import { recordAction } from './actions.js';
 import { createLeadList, importLeadCsv, ingestLeadSignal } from './lead-lists.js';
 import {
+  admitPendingCampaignMembers,
   campaignAdmissionForecast,
   campaignWorkflowSteps,
   createManagedCampaign,
@@ -450,6 +451,72 @@ describe('signal-backed live audiences', () => {
       )
       .get<{ total: number }>(WORKSPACE, 'job-change:maya:2026-08-06');
     expect(signals?.total).toBe(1);
+  });
+});
+
+describe('capacity-weighted sender assignment', () => {
+  it('assigns a new wave proportionally to sender capacity and persists the choice', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE,
+      { label: 'Sales', timezone: 'Europe/Zurich' },
+      new Date('2026-01-01T09:00:00.000Z'),
+      'sales'
+    );
+    const listId = await leadList('Weighted senders', [
+      'weighted-a',
+      'weighted-b',
+      'weighted-c',
+      'weighted-d'
+    ]);
+    const workflowId = await workflow('Weighted sender flow');
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Weighted sender campaign',
+        leadListId: listId,
+        workflowId,
+        senderKeys: ['owner', 'sales']
+      },
+      NOW
+    );
+    await startManagedCampaign(db, WORKSPACE, created.campaign.id, NOW);
+    const steps = await campaignWorkflowSteps(db, WORKSPACE, created.campaign.id);
+    const admitted = await admitPendingCampaignMembers(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        campaignId: created.campaign.id,
+        steps,
+        decision: {
+          admit: 4,
+          limitingKind: 'invite',
+          reasons: ['test weighted capacity'],
+          capacitySnapshot: { invite: 4 }
+        },
+        senderKeys: ['owner', 'sales'],
+        senderCapacities: { owner: 3, sales: 1 }
+      },
+      NOW
+    );
+    expect(admitted.admitted).toBe(4);
+    const members = await listCampaignMembers(db, WORKSPACE, created.campaign.id);
+    const counts = members.reduce<Record<string, number>>((acc, member) => {
+      const key = member.assignedSeatKey ?? 'none';
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {});
+    expect(counts).toEqual({ owner: 3, sales: 1 });
+
+    // Capacity changes after admission must not migrate an in-flight lead.
+    const before = members.map((member) => [member.id, member.assignedSeatKey] as const);
+    expect(
+      (await listCampaignMembers(db, WORKSPACE, created.campaign.id)).map((member) => [
+        member.id,
+        member.assignedSeatKey
+      ])
+    ).toEqual(before);
   });
 });
 
