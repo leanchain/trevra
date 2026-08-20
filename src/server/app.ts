@@ -26,6 +26,7 @@ import {
   createNangoConnectSession,
   disconnectIntegration,
   handleNangoWebhook,
+  processStripeWebhook,
   ingestCanonicalRecord,
   isMoneyIntegrationProvider,
   listAvailableIntegrations,
@@ -533,6 +534,23 @@ export function createApp(db: Db) {
         res
           .status(401)
           .json({ error: error instanceof Error ? error.message : 'Invalid Nango webhook' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/webhooks/stripe',
+    express.raw({ type: 'application/json', limit: '2mb' }),
+    async (req, res) => {
+      try {
+        const signature = String(req.headers['stripe-signature'] ?? '');
+        const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body ?? ''));
+        const result = await processStripeWebhook(db, raw, signature);
+        res.status(result.duplicate ? 200 : 202).json(result);
+      } catch (error) {
+        res
+          .status(400)
+          .json({ error: error instanceof Error ? error.message : 'Invalid Stripe webhook' });
       }
     }
   );
