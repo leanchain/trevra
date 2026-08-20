@@ -53,7 +53,7 @@ import {
   type WithdrawalRecord,
   type WithdrawalStatus
 } from './api';
-import { slugifyAccountKey, useActiveSeatKey } from './LinkedInActiveAccount';
+import { OWNER_ACCOUNT_KEY, slugifyAccountKey, useActiveSeatKey } from './LinkedInActiveAccount';
 import { errorMessage, reloadOutreach, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime, sourceNote } from './LinkedInScreen';
 import { MAINTENANCE_TASK_LABELS, formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
@@ -80,17 +80,6 @@ import { Hint } from './ui/hint';
  * reads a profile back, and writes limits -- the same four things the single-
  * account setup screen always did, once per account instead of once.
  */
-
-/**
- * The account key every workspace already has, and what an absent `seatKey`
- * means on every route in `api.ts`.
- *
- * Restated rather than imported: `OWNER_SEAT_KEY` lives in
- * `server/linkedin/seats.ts`, and importing a value from there would pull the
- * module -- and what it imports -- into the browser bundle for the sake of one
- * five-letter string.
- */
-export const OWNER_ACCOUNT_KEY = 'owner';
 
 /**
  * The server's own rule for an account key (`linkedinSeatKeySchema` in
