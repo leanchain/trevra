@@ -571,6 +571,21 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
     () => managed.filter((campaign) => campaign.seatKey === activeSeatKey),
     [managed, activeSeatKey]
   );
+  /**
+   * A campaign filter chosen under one account does not carry over to another:
+   * once `seatCampaigns` re-scopes, an id no longer among them would keep
+   * querying by it while the select can show nothing selected -- an inbox
+   * that reads empty with no visible reason. Cleared here, the same tick the
+   * options change, so the visible filter and the query never disagree.
+   */
+  useEffect(() => {
+    if (
+      filters.campaignId &&
+      !seatCampaigns.some((campaign) => campaign.id === filters.campaignId)
+    ) {
+      setFilters((current) => ({ ...current, campaignId: '' }));
+    }
+  }, [seatCampaigns, filters.campaignId]);
   const replyStageFor = useCallback(
     (action: LinkedInActionView) => replyStage(action, seatDetail?.execution.waitingFor),
     [seatDetail]
