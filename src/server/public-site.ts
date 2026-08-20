@@ -5,11 +5,14 @@ import { z } from 'zod';
 import type { Db } from './db.js';
 import { id } from './db.js';
 import { listPublicModulePopularity, listPublicRegistryModules } from './registry/service.js';
-
-/** The landing page's own <meta name="description">, verbatim. One product sentence, not four. */
-const PRODUCT_DESCRIPTION =
-  'Trevra is open-source GTM infrastructure for Claude Code and Codex. Agents do the work, external actions require approval, and every run is logged.';
-const PUBLIC_PATHS = ['/', '/how-it-works', '/security', '/privacy', '/terms'] as const;
+import {
+  buildStructuredData,
+  buildWebPageStructuredData,
+  PUBLIC_PATHS,
+  SITE_DESCRIPTION,
+  SITE_TITLE,
+  SOCIAL_IMAGE
+} from '../shared/site-metadata.js';
 
 export type MarketingEventName =
   | 'page_view'
@@ -44,6 +47,8 @@ export interface SiteConfig {
   indexNowKey: string;
   /** Hosted workspace entry point, or '' when this deployment has none. */
   hostedAppUrl: string;
+  /** GitHub org/repo URL for Organization.sameAs, or '' when unset. */
+  githubUrl: string;
 }
 
 interface MarketingEventInput {
@@ -106,10 +111,8 @@ export function getSiteConfig(env: NodeJS.ProcessEnv = process.env): SiteConfig 
     origin,
     name: env.PUBLIC_SITE_NAME?.trim() || 'Trevra',
     legalName: env.PUBLIC_LEGAL_NAME?.trim() || 'Trevra',
-    title:
-      env.PUBLIC_SITE_TITLE?.trim() ||
-      'Trevra — agent-run go-to-market that stops for your approval',
-    description: env.PUBLIC_SITE_DESCRIPTION?.trim() || PRODUCT_DESCRIPTION,
+    title: env.PUBLIC_SITE_TITLE?.trim() || SITE_TITLE,
+    description: env.PUBLIC_SITE_DESCRIPTION?.trim() || SITE_DESCRIPTION,
     supportEmail: env.PUBLIC_SUPPORT_EMAIL?.trim() || `support@${hostname}`,
     securityEmail:
       env.SECURITY_CONTACT_EMAIL?.trim() ||
@@ -118,7 +121,8 @@ export function getSiteConfig(env: NodeJS.ProcessEnv = process.env): SiteConfig 
     googleVerification: env.GOOGLE_SITE_VERIFICATION?.trim() || '',
     bingVerification: env.BING_SITE_VERIFICATION?.trim() || '',
     indexNowKey: env.INDEXNOW_KEY?.trim() || '',
-    hostedAppUrl: hostedWorkspaceUrl(env)
+    hostedAppUrl: hostedWorkspaceUrl(env),
+    githubUrl: env.PUBLIC_GITHUB_URL?.trim() || env.VITE_GITHUB_URL?.trim() || ''
   };
 }
 
@@ -462,12 +466,6 @@ export async function getTractionReport(db: Db, days = 90) {
   };
 }
 
-/**
- * index.html ships three deliberately different descriptions -- one for search,
- * one for Open Graph, one for Twitter. Only `<meta name="description">` is
- * overwritten from config; the two social ones are the page's own copy and are
- * left alone.
- */
 export function renderAppIndex(template: string, nonce: string): string {
   const config = getSiteConfig();
   // The hosted product build has its own HTML shell. Do not turn it back into
@@ -476,7 +474,16 @@ export function renderAppIndex(template: string, nonce: string): string {
   if (template.includes('data-trevra-app-shell')) {
     return template.replaceAll('http://localhost:43173', config.origin);
   }
-  const jsonLd = JSON.stringify(structuredData(config)).replaceAll('<', '\\u003c');
+  const jsonLd = JSON.stringify(
+    buildStructuredData({
+      origin: config.origin,
+      name: config.name,
+      legalName: config.legalName,
+      description: config.description,
+      supportEmail: config.supportEmail,
+      githubUrl: config.githubUrl
+    })
+  ).replaceAll('<', '\\u003c');
   const verification = [
     config.googleVerification
       ? `<meta name="google-site-verification" content="${escapeAttr(config.googleVerification)}" />`
@@ -505,6 +512,14 @@ export function renderAppIndex(template: string, nonce: string): string {
     .replace(
       /<meta name="twitter:title" content="[^"]*" \/>/,
       `<meta name="twitter:title" content="${escapeAttr(config.title)}" />`
+    )
+    .replace(
+      /<meta\s+property="og:description"\s+content="[^"]*"\s*\/>/,
+      `<meta property="og:description" content="${escapeAttr(config.description)}" />`
+    )
+    .replace(
+      /<meta\s+name="twitter:description"\s+content="[^"]*"\s*\/>/,
+      `<meta name="twitter:description" content="${escapeAttr(config.description)}" />`
     )
     .replace('<!-- TREVRA_VERIFICATION -->', verification)
     .replace(
@@ -571,15 +586,15 @@ interface PublicPage {
 
 function renderPublicDocument(config: SiteConfig, page: PublicPage, nonce: string): string {
   const canonical = `${config.origin}${page.path}`;
-  const jsonLd = JSON.stringify({
-    '@context': 'https://schema.org',
-    '@type': 'WebPage',
-    name: page.title,
-    description: page.description,
-    url: canonical,
-    isPartOf: { '@id': `${config.origin}/#website` },
-    about: { '@id': `${config.origin}/#application` }
-  }).replaceAll('<', '\\u003c');
+  const socialImage = `${config.origin}${SOCIAL_IMAGE.path}`;
+  const jsonLd = JSON.stringify(
+    buildWebPageStructuredData({
+      origin: config.origin,
+      path: page.path,
+      title: page.title,
+      description: page.description
+    })
+  ).replaceAll('<', '\\u003c');
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -590,9 +605,9 @@ function renderPublicDocument(config: SiteConfig, page: PublicPage, nonce: strin
 <script defer src="/marketing-analytics.js"></script>
 <meta property="og:type" content="website" /><meta property="og:site_name" content="${escapeAttr(config.name)}" />
 <meta property="og:title" content="${escapeAttr(page.title)}" /><meta property="og:description" content="${escapeAttr(page.description)}" />
-<meta property="og:url" content="${escapeAttr(canonical)}" /><meta property="og:image" content="${escapeAttr(`${config.origin}/og/trevra-social.png`)}" />
-<meta property="og:image:width" content="1200" /><meta property="og:image:height" content="630" /><meta property="og:image:alt" content="Trevra — the open-source runtime for agent-run go-to-market" />
-<meta name="twitter:card" content="summary_large_image" /><meta name="twitter:title" content="${escapeAttr(page.title)}" /><meta name="twitter:description" content="${escapeAttr(page.description)}" /><meta name="twitter:image" content="${escapeAttr(`${config.origin}/og/trevra-social.png`)}" />
+<meta property="og:url" content="${escapeAttr(canonical)}" /><meta property="og:image" content="${escapeAttr(socialImage)}" />
+<meta property="og:image:width" content="${SOCIAL_IMAGE.width}" /><meta property="og:image:height" content="${SOCIAL_IMAGE.height}" /><meta property="og:image:alt" content="${escapeAttr(SOCIAL_IMAGE.alt)}" />
+<meta name="twitter:card" content="summary_large_image" /><meta name="twitter:title" content="${escapeAttr(page.title)}" /><meta name="twitter:description" content="${escapeAttr(page.description)}" /><meta name="twitter:image" content="${escapeAttr(socialImage)}" />
 <script type="application/ld+json" nonce="${escapeAttr(nonce)}">${jsonLd}</script>
 <script src="/theme.js"></script>
 </head><body>
@@ -636,66 +651,6 @@ const THEME_ICONS =
   '<svg class="icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
 
-function structuredData(config: SiteConfig) {
-  return {
-    '@context': 'https://schema.org',
-    '@graph': [
-      {
-        '@type': 'Organization',
-        '@id': `${config.origin}/#organization`,
-        name: config.legalName,
-        url: config.origin,
-        email: config.supportEmail,
-        logo: {
-          '@type': 'ImageObject',
-          url: `${config.origin}/icons/trevra-512.png`,
-          width: 512,
-          height: 512
-        }
-      },
-      {
-        '@type': 'WebSite',
-        '@id': `${config.origin}/#website`,
-        url: config.origin,
-        name: config.name,
-        description: config.description,
-        publisher: { '@id': `${config.origin}/#organization` },
-        inLanguage: 'en'
-      },
-      {
-        '@type': 'WebApplication',
-        '@id': `${config.origin}/#application`,
-        name: config.name,
-        url: config.origin,
-        description: config.description,
-        applicationCategory: 'BusinessApplication',
-        operatingSystem: 'Any',
-        browserRequirements: 'Requires JavaScript and a modern web browser',
-        featureList: [
-          'Modular agent-run revenue loop from source to paid',
-          'Public GitHub-synced module catalog',
-          'Scope-creep detection and change-order preparation',
-          'Unbilled milestone detection and invoice preparation',
-          'Overdue invoice follow-up',
-          'Revenue Proof Packs behind every agent action',
-          'Approval-gated execution with cryptographic payload hashing',
-          'Delegation scoped by action type, confidence, amount, and delay',
-          'Open-source, self-hostable GTM runtime and revenue ledger'
-        ],
-        publisher: { '@id': `${config.origin}/#organization` }
-      },
-      {
-        '@type': 'FAQPage',
-        mainEntity: faqItems().map(([question, answer]) => ({
-          '@type': 'Question',
-          name: question,
-          acceptedAnswer: { '@type': 'Answer', text: answer }
-        }))
-      }
-    ]
-  };
-}
-
 function renderLlmsText(config: SiteConfig, full: boolean): string {
   const base = `# Trevra\n\n> ${config.description}\n\n## Primary pages\n- [Trevra](${config.origin}/): Product overview and workspace access.\n- [How Trevra works](${config.origin}/how-it-works): Product workflow, evidence model, integrations, and automation boundaries.\n- [Security](${config.origin}/security): Security architecture and responsible disclosure.\n- [Privacy](${config.origin}/privacy): Data categories, purposes, analytics, retention, and requests.\n- [Terms](${config.origin}/terms): Baseline service terms.\n\n## Machine-readable resources\n- [Sitemap](${config.origin}/sitemap.xml)\n- [Robots](${config.origin}/robots.txt)\n- [Full LLM context](${config.origin}/llms-full.txt)\n- [Agent guidance](${config.origin}/agents.md)\n- [Security contact](${config.origin}/.well-known/security.txt)\n\n## Contact\n- Product support: ${config.supportEmail}\n- Security reports: ${config.securityEmail}\n`;
   if (!full) return base;
@@ -704,27 +659,6 @@ function renderLlmsText(config: SiteConfig, full: boolean): string {
 
 function renderPublicAgents(config: SiteConfig): string {
   return `# Trevra public agent guidance\n\nCanonical site: ${config.origin}\n\n## Allowed public retrieval\nAgents may read the public pages, sitemap, robots.txt, llms.txt, llms-full.txt, security.txt, and public image assets. Use canonical URLs when citing Trevra.\n\n## Restricted areas\nDo not attempt to access /api routes without an authenticated user request and valid authorization. Do not probe connected providers, enumerate workspaces, submit fabricated marketing events, or treat public product descriptions as permission to execute commercial actions.\n\n## Product description\n${config.description}\n\n## Preferred sources\n1. ${config.origin}/how-it-works\n2. ${config.origin}/security\n3. ${config.origin}/privacy\n4. ${config.origin}/terms\n5. ${config.origin}/llms-full.txt\n\n## Contact\nProduct: ${config.supportEmail}\nSecurity: ${config.securityEmail}\n`;
-}
-
-function faqItems(): Array<[string, string]> {
-  return [
-    [
-      'How do I actually use Trevra?',
-      'Give Claude Code, Codex, or another capable agent a go-to-market outcome. The agent calls typed Trevra modules for research, scoring, preparation, governance, and execution. Trevra records the run and stops at the approval boundary when the work could change an external system.'
-    ],
-    [
-      'Can an agent send messages or create invoices by itself?',
-      'Only inside the policy you set. Consequential actions can require manual approval, and the exact approved payload is cryptographically hashed before execution. Changed payloads and out-of-scope actions are rejected.'
-    ],
-    [
-      'How are community modules shared safely?',
-      'Modules are versioned through GitHub and declare their input and output schemas, side-effect class, approval requirement, and version. Validation and tests run before a catalog release. Publishing a module does not grant it external-write permission.'
-    ],
-    [
-      'Can I self-host Trevra and keep my data?',
-      'Yes. Trevra runs on PostgreSQL, the module runner is open, and workspace data, ledger entries, evidence, configuration, and exports can remain in infrastructure you control.'
-    ]
-  ];
 }
 
 /**

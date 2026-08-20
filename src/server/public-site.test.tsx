@@ -7,6 +7,7 @@ import { openDatabase, type Db } from './db.js';
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
 import { renderAppIndex, renderNotFoundPage } from './public-site.js';
+import { SITE_DESCRIPTION, SITE_TITLE } from '../shared/site-metadata.js';
 import { MarketingApp } from '../client/MarketingApp';
 
 const HOSTED = 'https://app.usetrevra.example/#get-started';
@@ -140,6 +141,39 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
     expect(rendered).toContain(
       '<meta name="description" content="a distinct configured description" />'
     );
+  });
+
+  /**
+   * og:description and twitter:description used to be the page's own,
+   * different copy, deliberately left untouched. There is one description
+   * now: these two get the same config-driven rewrite as <meta
+   * name="description">, and both are wrapped by Prettier the same way.
+   */
+  it('rewrites the wrapped og:description and twitter:description tags too', () => {
+    expect(indexHtml).toMatch(/<meta\s+property="og:description"[\s\S]*?\/>/);
+    expect(indexHtml).toMatch(/<meta\s+name="twitter:description"[\s\S]*?\/>/);
+    process.env.PUBLIC_SITE_DESCRIPTION = 'a distinct configured description';
+    const rendered = renderAppIndex(indexHtml, 'test-nonce');
+    expect(rendered).toContain(
+      '<meta property="og:description" content="a distinct configured description" />'
+    );
+    expect(rendered).toContain(
+      '<meta name="twitter:description" content="a distinct configured description" />'
+    );
+  });
+
+  it('defaults the title to SITE_TITLE, one title everywhere', () => {
+    const rendered = renderAppIndex(indexHtml, 'test-nonce');
+    expect(rendered).toContain(`<title>${SITE_TITLE}</title>`);
+    expect(rendered).toContain(`<meta property="og:title" content="${SITE_TITLE}" />`);
+    expect(rendered).toContain(`<meta name="twitter:title" content="${SITE_TITLE}" />`);
+  });
+
+  it('defaults the description to SITE_DESCRIPTION everywhere it appears', () => {
+    const rendered = renderAppIndex(indexHtml, 'test-nonce');
+    expect(rendered).toContain(`<meta name="description" content="${SITE_DESCRIPTION}" />`);
+    expect(rendered).toContain(`<meta property="og:description" content="${SITE_DESCRIPTION}" />`);
+    expect(rendered).toContain(`<meta name="twitter:description" content="${SITE_DESCRIPTION}" />`);
   });
 
   it('leaves the shipped CTAs on their own fallback when nothing is configured', () => {
