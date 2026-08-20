@@ -1303,7 +1303,13 @@ function MessageVariants({
   const written = variants.filter((variant) => variant.body.trim().length > 0);
   const total = written.reduce((sum, variant) => sum + Math.max(1, variant.weight), 0);
 
-  const setVariants = (next: Variant[]) => onChange({ ...step, config: { variants: next } });
+  // `...step.config` matters: dropping it silently reset `requiresAcceptedConnection`
+  // to false (the option this step doesn't render its own control for the
+  // opposite of) on every keystroke in a variant body, every weight tweak, and
+  // every add/remove -- so choosing "only if accepted" and then editing the
+  // copy quietly threw the condition away.
+  const setVariants = (next: Variant[]) =>
+    onChange({ ...step, config: { ...step.config, variants: next } });
   const patch = (at: number, changes: Partial<Variant>) =>
     setVariants(
       variants.map((variant, index) => (index === at ? { ...variant, ...changes } : variant))
