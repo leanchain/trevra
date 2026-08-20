@@ -480,6 +480,10 @@ function AccountPanel({
 }) {
   const auth = detail?.auth ?? null;
   const state = accountState(account, detail);
+  // Healthy is 'connected' or 'easing-in' -- the two states STATE_TONES marks
+  // 'ok'. Everything else (needs-signin, not-connected, paused, cooling-down)
+  // is something an operator may need to act on, so the panel opens for it.
+  const needsAttention = STATE_TONES[state] !== 'ok';
 
   // Sign-in. `password` is the one value here that must not outlive its own
   // submit: nothing else reads it and it is cleared the moment the request
@@ -734,100 +738,107 @@ function AccountPanel({
           </span>
         </div>
 
-        {actionError && <div className="error-banner">{actionError}</div>}
+        {/* `.li-manual-fields`, not `.mgr-inputs`: this screen runs inside
+          `.outreach-simple`, which hides `.mgr-inputs` outright (see
+          styles.css and PendingInviteWithdrawalsSection below), so that class
+          would have shipped a toggle nobody could ever open. */}
+        <details className="li-manual-fields" open={needsAttention}>
+          <summary>Details</summary>
 
-        {blocked && (
-          <Wall title="One thing has to happen on your own machine first." message={blocked} />
-        )}
+          {actionError && <div className="error-banner">{actionError}</div>}
 
-        {queued && (
-          <Wall
-            title={
-              queueWaitCopy(request?.waitingFor) ??
-              (companion ? 'Waiting for your connected computer.' : 'Waiting on your own worker.')
-            }
-          >
-            <p>
-              {request?.nextAttemptAt
-                ? `Expected by ${new Date(request.nextAttemptAt).toLocaleString()}. `
-                : request?.waitingFor
-                  ? 'There is no honest clock time until that prerequisite is back. '
-                  : ''}
-              Queued {request?.requestedAt ? relativeTime(request.requestedAt) : 'now'}. Missed
-              worker checks are not replayed; once the prerequisite is ready, the next normal worker
-              cycle picks it up.
-            </p>
-          </Wall>
-        )}
+          {blocked && (
+            <Wall title="One thing has to happen on your own machine first." message={blocked} />
+          )}
 
-        {request?.status === 'failed' && request.failureReason && (
-          <Wall
-            title="The last read of this account did not finish."
-            message={request.failureReason}
-          />
-        )}
+          {queued && (
+            <Wall
+              title={
+                queueWaitCopy(request?.waitingFor) ??
+                (companion ? 'Waiting for your connected computer.' : 'Waiting on your own worker.')
+              }
+            >
+              <p>
+                {request?.nextAttemptAt
+                  ? `Expected by ${new Date(request.nextAttemptAt).toLocaleString()}. `
+                  : request?.waitingFor
+                    ? 'There is no honest clock time until that prerequisite is back. '
+                    : ''}
+                Queued {request?.requestedAt ? relativeTime(request.requestedAt) : 'now'}. Missed
+                worker checks are not replayed; once the prerequisite is ready, the next normal
+                worker cycle picks it up.
+              </p>
+            </Wall>
+          )}
 
-        {detail?.backgroundRun && (
-          <div className="li-next-background-run">
-            <Clock3 size={17} aria-hidden="true" />
-            <div>
-              <span>Next LinkedIn background run</span>
-              <strong>
-                {queueWaitCopy(detail.backgroundRun.waitingFor) ??
-                  formatVisitWindow(
-                    detail.backgroundRun.startAt,
-                    detail.backgroundRun.endAt,
-                    detail.backgroundRun.timezone
-                  ) ??
-                  'No scheduled window'}
-              </strong>
-              {detail.backgroundRun.waitingFor && (
-                <small>
-                  Scheduled window:{' '}
-                  {formatVisitWindow(
-                    detail.backgroundRun.startAt,
-                    detail.backgroundRun.endAt,
-                    detail.backgroundRun.timezone
-                  )}
-                </small>
-              )}
+          {request?.status === 'failed' && request.failureReason && (
+            <Wall
+              title="The last read of this account did not finish."
+              message={request.failureReason}
+            />
+          )}
+
+          {detail?.backgroundRun && (
+            <div className="li-next-background-run">
+              <Clock3 size={17} aria-hidden="true" />
+              <div>
+                <span>Next LinkedIn background run</span>
+                <strong>
+                  {queueWaitCopy(detail.backgroundRun.waitingFor) ??
+                    formatVisitWindow(
+                      detail.backgroundRun.startAt,
+                      detail.backgroundRun.endAt,
+                      detail.backgroundRun.timezone
+                    ) ??
+                    'No scheduled window'}
+                </strong>
+                {detail.backgroundRun.waitingFor && (
+                  <small>
+                    Scheduled window:{' '}
+                    {formatVisitWindow(
+                      detail.backgroundRun.startAt,
+                      detail.backgroundRun.endAt,
+                      detail.backgroundRun.timezone
+                    )}
+                  </small>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {detail?.maintenance && detail.maintenance.length > 0 && (
-          <details className="li-maintenance-schedule">
-            <summary>Next LinkedIn background activity</summary>
-            <div className="li-maintenance-list">
-              {detail.maintenance.map((timing) => {
-                const visit = formatVisitWindow(
-                  timing.nextRunAt,
-                  timing.nextRunWindowEndAt,
-                  timing.timezone
-                );
-                const wait = queueWaitCopy(timing.waitingFor);
-                return (
-                  <div className="li-maintenance-row" key={timing.task}>
-                    <span>{MAINTENANCE_TASK_LABELS[timing.task]}</span>
-                    <strong>{wait ?? visit ?? 'No eligible visit in the next two weeks'}</strong>
-                    {wait && visit && <small>Next normal visit {visit}</small>}
-                  </div>
-                );
-              })}
+          {detail?.maintenance && detail.maintenance.length > 0 && (
+            <details className="li-maintenance-schedule">
+              <summary>Next LinkedIn background activity</summary>
+              <div className="li-maintenance-list">
+                {detail.maintenance.map((timing) => {
+                  const visit = formatVisitWindow(
+                    timing.nextRunAt,
+                    timing.nextRunWindowEndAt,
+                    timing.timezone
+                  );
+                  const wait = queueWaitCopy(timing.waitingFor);
+                  return (
+                    <div className="li-maintenance-row" key={timing.task}>
+                      <span>{MAINTENANCE_TASK_LABELS[timing.task]}</span>
+                      <strong>{wait ?? visit ?? 'No eligible visit in the next two weeks'}</strong>
+                      {wait && visit && <small>Next normal visit {visit}</small>}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="li-hint">
+                If this computer sleeps through a visit, Trevra skips that window and shows the next
+                normal one. Missed visits are never replayed as a catch-up burst.
+              </p>
+            </details>
+          )}
+
+          <div className="li-seat-card">
+            <div className="li-seat-head">
+              <strong>{account.label}</strong>
+              <span className="li-acct-key">{account.seatKey}</span>
             </div>
-            <p className="li-hint">
-              If this computer sleeps through a visit, Trevra skips that window and shows the next
-              normal one. Missed visits are never replayed as a catch-up burst.
-            </p>
-          </details>
-        )}
-
-        <div className="li-seat-card">
-          <div className="li-seat-head">
-            <strong>{account.label}</strong>
-            <span className="li-acct-key">{account.seatKey}</span>
-          </div>
-          {/* WHAT A READ LEAVES BEHIND.
+            {/* WHAT A READ LEAVES BEHIND.
 
             "Check this account on LinkedIn" writes four things onto the seat --
             which profile the session is signed in as, how many connections it
@@ -836,107 +847,160 @@ function AccountPanel({
             then as nothing, so the only way to find out what it had said was to
             run it again. These are the seat's own columns, not this component's
             memory of a response: they are still here after a reload. */}
-          <dl className="li-seat-facts">
-            <div>
-              <dt>Signs in as</dt>
-              <dd>
-                {auth?.maskedEmail ??
-                  (auth?.sessionValidAt ? (
-                    'Local browser session'
+            <dl className="li-seat-facts">
+              <div>
+                <dt>Signs in as</dt>
+                <dd>
+                  {auth?.maskedEmail ??
+                    (auth?.sessionValidAt ? (
+                      'Local browser session'
+                    ) : (
+                      <span className="li-unknown">Not connected</span>
+                    ))}
+                </dd>
+              </div>
+              <div>
+                <dt>LinkedIn profile</dt>
+                <dd>
+                  {account.profileUrl ? (
+                    <a href={account.profileUrl} target="_blank" rel="noreferrer noopener">
+                      {lastRead?.name ?? profileLabel(account.profileUrl)}
+                    </a>
                   ) : (
-                    <span className="li-unknown">Not connected</span>
-                  ))}
-              </dd>
-            </div>
-            <div>
-              <dt>LinkedIn profile</dt>
-              <dd>
-                {account.profileUrl ? (
-                  <a href={account.profileUrl} target="_blank" rel="noreferrer noopener">
-                    {lastRead?.name ?? profileLabel(account.profileUrl)}
-                  </a>
-                ) : (
-                  <span className="li-unknown">Not read yet</span>
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>Timezone</dt>
-              <dd>{account.timezone}</dd>
-            </div>
-            <div>
-              <dt>Works</dt>
-              <dd>
-                {describeDays(account.workingDays)}, {minutesToClock(account.workStartMinute)}–
-                {minutesToClock(account.workEndMinute)}
-              </dd>
-            </div>
-            <div>
-              <dt>Session confirmed</dt>
-              <dd>
-                {auth?.sessionValidAt ? (
-                  relativeTime(auth.sessionValidAt)
-                ) : (
-                  <span className="li-unknown">Not yet</span>
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>Connections</dt>
-              {/* Unknown, never zero: an unreadable count is reported in `degraded` and left as it was. */}
-              <dd>
-                {account.connectionsCount === null ? (
-                  <span className="li-unknown">Unknown</span>
-                ) : (
-                  account.connectionsCount.toLocaleString()
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>Profile last read</dt>
-              <dd>
-                {account.detectedAt ? (
-                  relativeTime(account.detectedAt)
-                ) : (
-                  <span className="li-unknown">Never</span>
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>Account opened</dt>
-              {/* Informational, and nothing paces off it -- the ramp clock is
+                    <span className="li-unknown">Not read yet</span>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Timezone</dt>
+                <dd>{account.timezone}</dd>
+              </div>
+              <div>
+                <dt>Works</dt>
+                <dd>
+                  {describeDays(account.workingDays)}, {minutesToClock(account.workStartMinute)}–
+                  {minutesToClock(account.workEndMinute)}
+                </dd>
+              </div>
+              <div>
+                <dt>Session confirmed</dt>
+                <dd>
+                  {auth?.sessionValidAt ? (
+                    relativeTime(auth.sessionValidAt)
+                  ) : (
+                    <span className="li-unknown">Not yet</span>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Connections</dt>
+                {/* Unknown, never zero: an unreadable count is reported in `degraded` and left as it was. */}
+                <dd>
+                  {account.connectionsCount === null ? (
+                    <span className="li-unknown">Unknown</span>
+                  ) : (
+                    account.connectionsCount.toLocaleString()
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Profile last read</dt>
+                <dd>
+                  {account.detectedAt ? (
+                    relativeTime(account.detectedAt)
+                  ) : (
+                    <span className="li-unknown">Never</span>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Account opened</dt>
+                {/* Informational, and nothing paces off it -- the ramp clock is
                 `activatedAt`, which is when THIS seat started sending through
                 Trevra. LinkedIn does not publish the opening date, so this is
                 filled only when somebody says so. */}
-              <dd>{account.accountOpenedOn ?? <span className="li-unknown">Not recorded</span>}</dd>
-            </div>
-          </dl>
-        </div>
-
-        {degraded.length > 0 && (
-          <div className="li-degraded">
-            <strong>Read, but not all of it came back:</strong>
-            <ul>
-              {degraded.map((entry) => (
-                <li key={entry}>{entry}</li>
-              ))}
-            </ul>
-            <p>Anything missing is held as unknown, never as zero.</p>
+                <dd>
+                  {account.accountOpenedOn ?? <span className="li-unknown">Not recorded</span>}
+                </dd>
+              </div>
+            </dl>
           </div>
-        )}
 
-        {connected ? (
-          <div className="li-signin-row">
-            <span className="li-signin-id">
-              <Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}
-            </span>
-            <span>
-              {auth?.sessionValidAt
-                ? `${companion ? 'Browser session' : 'Session'} confirmed ${relativeTime(auth.sessionValidAt)}`
-                : 'No session yet — the sign-in has not completed.'}
-            </span>
-            <div className="li-signin-actions">
-              {auth?.hasCredentials && (
+          {degraded.length > 0 && (
+            <div className="li-degraded">
+              <strong>Read, but not all of it came back:</strong>
+              <ul>
+                {degraded.map((entry) => (
+                  <li key={entry}>{entry}</li>
+                ))}
+              </ul>
+              <p>Anything missing is held as unknown, never as zero.</p>
+            </div>
+          )}
+
+          {connected ? (
+            <div className="li-signin-row">
+              <span className="li-signin-id">
+                <Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}
+              </span>
+              <span>
+                {auth?.sessionValidAt
+                  ? `${companion ? 'Browser session' : 'Session'} confirmed ${relativeTime(auth.sessionValidAt)}`
+                  : 'No session yet — the sign-in has not completed.'}
+              </span>
+              <div className="li-signin-actions">
+                {auth?.hasCredentials && (
+                  <button
+                    className="ghost-button danger"
+                    type="button"
+                    disabled={forgetting}
+                    onClick={() => void forgetSignIn()}
+                  >
+                    {forgetting ? (
+                      <LoaderCircle className="spin" size={14} />
+                    ) : (
+                      <Unplug size={14} />
+                    )}{' '}
+                    Forget stored password
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : companion && !auth?.hasCredentials && !wantsCredentialsForm ? (
+            <div className="li-dryrun li-acct-promise">
+              <Laptop size={20} />
+              <div>
+                <strong>No LinkedIn password is needed in Trevra.</strong>
+                <p>
+                  Keep <code>npx trevra linkedin</code> running, sign into LinkedIn in the Chrome
+                  window it opens, then use <b>Check this account on LinkedIn</b> below. The
+                  profile, cookies and IP stay on that computer.
+                </p>
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => setWantsCredentialsForm(true)}
+                >
+                  Or save a password here to sign in automatically
+                </button>
+              </div>
+            </div>
+          ) : storedSignIn ? (
+            <div className="li-signin-row">
+              <span className="li-signin-id">
+                <Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}
+              </span>
+              <span>The password is stored, but no live session has been confirmed yet.</span>
+              <div className="li-signin-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={signingIn}
+                  onClick={() => void attempt(() => runLogin())}
+                >
+                  {signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />}{' '}
+                  Sign in
+                </button>
                 <button
                   className="ghost-button danger"
                   type="button"
@@ -944,98 +1008,51 @@ function AccountPanel({
                   onClick={() => void forgetSignIn()}
                 >
                   {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />}{' '}
-                  Forget stored password
+                  Forget this sign-in
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* The reassurance comes BEFORE the field, not under it: a promise
+              made after the password is typed is a receipt, not a promise. */}
+              {stage === 'credentials' && (
+                <div className="li-dryrun li-acct-promise">
+                  <ShieldCheck size={20} />
+                  <div>
+                    <strong>Before you type it — what happens to this password.</strong>
+                    <p>
+                      Encrypted at rest, sent nowhere but LinkedIn, used only to open this account’s
+                      browser session. Remove it any time — no screen ever shows it back; the masked
+                      address is the most Trevra will say.
+                      {companion &&
+                        ' On a paired computer, it is also used to sign that computer’s browser in automatically whenever its session needs to be renewed, instead of asking you to do it by hand there.'}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {companion && !auth?.hasCredentials && stage === 'credentials' && (
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => setWantsCredentialsForm(false)}
+                >
+                  ← Back to signing in manually on the paired computer
                 </button>
               )}
-            </div>
-          </div>
-        ) : companion && !auth?.hasCredentials && !wantsCredentialsForm ? (
-          <div className="li-dryrun li-acct-promise">
-            <Laptop size={20} />
-            <div>
-              <strong>No LinkedIn password is needed in Trevra.</strong>
-              <p>
-                Keep <code>npx trevra linkedin</code> running, sign into LinkedIn in the Chrome
-                window it opens, then use <b>Check this account on LinkedIn</b> below. The profile,
-                cookies and IP stay on that computer.
-              </p>
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => setWantsCredentialsForm(true)}
-              >
-                Or save a password here to sign in automatically
-              </button>
-            </div>
-          </div>
-        ) : storedSignIn ? (
-          <div className="li-signin-row">
-            <span className="li-signin-id">
-              <Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}
-            </span>
-            <span>The password is stored, but no live session has been confirmed yet.</span>
-            <div className="li-signin-actions">
-              <button
-                className="secondary-button"
-                type="button"
-                disabled={signingIn}
-                onClick={() => void attempt(() => runLogin())}
-              >
-                {signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />} Sign
-                in
-              </button>
-              <button
-                className="ghost-button danger"
-                type="button"
-                disabled={forgetting}
-                onClick={() => void forgetSignIn()}
-              >
-                {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />}{' '}
-                Forget this sign-in
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            {/* The reassurance comes BEFORE the field, not under it: a promise
-              made after the password is typed is a receipt, not a promise. */}
-            {stage === 'credentials' && (
-              <div className="li-dryrun li-acct-promise">
-                <ShieldCheck size={20} />
-                <div>
-                  <strong>Before you type it — what happens to this password.</strong>
-                  <p>
-                    Encrypted at rest, sent nowhere but LinkedIn, used only to open this account’s
-                    browser session. Remove it any time — no screen ever shows it back; the masked
-                    address is the most Trevra will say.
-                    {companion &&
-                      ' On a paired computer, it is also used to sign that computer’s browser in automatically whenever its session needs to be renewed, instead of asking you to do it by hand there.'}
-                  </p>
-                </div>
-              </div>
-            )}
 
-            {companion && !auth?.hasCredentials && stage === 'credentials' && (
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => setWantsCredentialsForm(false)}
-              >
-                ← Back to signing in manually on the paired computer
-              </button>
-            )}
-
-            <div className="li-signin">
-              <strong>Connect {account.label}</strong>
-              {stage === 'otp' ? (
-                <form
-                  className="li-signin-fields li-signin-otp"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void attempt(() => runLogin(otp.trim()));
-                  }}
-                >
-                  {/* NO LENGTH RULE, IN EITHER DIRECTION. LinkedIn's own
+              <div className="li-signin">
+                <strong>Connect {account.label}</strong>
+                {stage === 'otp' ? (
+                  <form
+                    className="li-signin-fields li-signin-otp"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void attempt(() => runLogin(otp.trim()));
+                    }}
+                  >
+                    {/* NO LENGTH RULE, IN EITHER DIRECTION. LinkedIn's own
                     verification codes are six digits today, but the same field
                     takes whatever a challenge asks for -- and `maxLength={6}`
                     with a `< 6` guard on the button meant a code of any other
@@ -1043,83 +1060,92 @@ function AccountPanel({
                     is a dead end with no way out of it. Whether a code is right
                     is LinkedIn's answer to give; this refuses only an empty
                     one, because an empty one is not an attempt. */}
-                  <label>
-                    Verification code
-                    <input
-                      value={otp}
-                      onChange={(event) => setOtp(event.target.value)}
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      placeholder="123456"
-                      aria-label="Verification code"
-                    />
-                  </label>
-                  <button
-                    className="primary-button"
-                    type="submit"
-                    disabled={signingIn || otp.trim().length === 0}
+                    <label>
+                      Verification code
+                      <input
+                        value={otp}
+                        onChange={(event) => setOtp(event.target.value)}
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        placeholder="123456"
+                        aria-label="Verification code"
+                      />
+                    </label>
+                    <button
+                      className="primary-button"
+                      type="submit"
+                      disabled={signingIn || otp.trim().length === 0}
+                    >
+                      {signingIn ? (
+                        <LoaderCircle className="spin" size={15} />
+                      ) : (
+                        <Check size={15} />
+                      )}{' '}
+                      Verify
+                    </button>
+                  </form>
+                ) : (
+                  <form
+                    className="li-signin-fields"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      signIn();
+                    }}
                   >
-                    {signingIn ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}{' '}
-                    Verify
-                  </button>
-                </form>
-              ) : (
-                <form
-                  className="li-signin-fields"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    signIn();
-                  }}
-                >
-                  <label>
-                    LinkedIn email
-                    <input
-                      type="email"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      autoComplete="username"
-                      placeholder="you@example.com"
-                    />
-                  </label>
-                  <label>
-                    LinkedIn password
-                    <input
-                      type="password"
-                      value={password}
-                      onChange={(event) => setPassword(event.target.value)}
-                      autoComplete="current-password"
-                    />
-                  </label>
-                  <button className="primary-button" type="submit" disabled={signingIn}>
-                    {signingIn ? <LoaderCircle className="spin" size={15} /> : <LogIn size={15} />}{' '}
-                    Sign in to LinkedIn
-                  </button>
-                </form>
-              )}
-              {stage === 'otp' && (
-                <p className="li-hint">
-                  LinkedIn sent a code to this account’s email or phone. Enter it to finish signing
-                  in.
-                </p>
-              )}
-              {note && (
-                <>
-                  <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>
-                    {note.message}
+                    <label>
+                      LinkedIn email
+                      <input
+                        type="email"
+                        value={email}
+                        onChange={(event) => setEmail(event.target.value)}
+                        autoComplete="username"
+                        placeholder="you@example.com"
+                      />
+                    </label>
+                    <label>
+                      LinkedIn password
+                      <input
+                        type="password"
+                        value={password}
+                        onChange={(event) => setPassword(event.target.value)}
+                        autoComplete="current-password"
+                      />
+                    </label>
+                    <button className="primary-button" type="submit" disabled={signingIn}>
+                      {signingIn ? (
+                        <LoaderCircle className="spin" size={15} />
+                      ) : (
+                        <LogIn size={15} />
+                      )}{' '}
+                      Sign in to LinkedIn
+                    </button>
+                  </form>
+                )}
+                {stage === 'otp' && (
+                  <p className="li-hint">
+                    LinkedIn sent a code to this account’s email or phone. Enter it to finish
+                    signing in.
                   </p>
-                  {note.tone === 'instruction' && (
-                    <p className="li-hint">
-                      LinkedIn wants a person, not a script. Finish that step in a browser signed in
-                      as this account, then sign in here again.
+                )}
+                {note && (
+                  <>
+                    <p className={note.tone === 'error' ? 'li-signin-error' : 'li-signin-note'}>
+                      {note.message}
                     </p>
-                  )}
-                </>
-              )}
-            </div>
-          </>
-        )}
+                    {note.tone === 'instruction' && (
+                      <p className="li-hint">
+                        LinkedIn wants a person, not a script. Finish that step in a browser signed
+                        in as this account, then sign in here again.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            </>
+          )}
 
-        {connected && note && <p className="li-signin-error">{note.message}</p>}
+          {connected && note && <p className="li-signin-error">{note.message}</p>}
+        </details>
 
         <div className="li-seat-actions">
           <button
