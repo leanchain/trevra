@@ -165,10 +165,27 @@ export function leadSourcingOffReason(
  *   'content'         -- /search/results/content/, keyword discovery: the posts
  *                        that match, then their authors and commenters
  */
-export type LeadSourceKind = 'search' | 'post' | 'sales_navigator' | 'content';
+export type LeadSourceKind =
+  | 'search'
+  | 'post'
+  | 'sales_navigator'
+  | 'content'
+  | 'recruiter'
+  | 'group_members'
+  | 'event_attendees'
+  | 'company_employees';
 
 /** Every accepted kind, for the route schema that has to name them. */
-export const LEAD_SOURCE_KINDS = ['search', 'post', 'sales_navigator', 'content'] as const;
+export const LEAD_SOURCE_KINDS = [
+  'search',
+  'post',
+  'sales_navigator',
+  'content',
+  'recruiter',
+  'group_members',
+  'event_attendees',
+  'company_employees'
+] as const;
 
 export type LeadSourceStatus = 'pending' | 'running' | 'completed' | 'failed';
 
@@ -336,6 +353,32 @@ export interface LeadSourceInsert {
  * `https://evil.example/x` is a row some later worker will try to open in an
  * authenticated browser, and the fix for that is to never write it.
  */
+function linkedInAudienceUrlFor(kind: LeadSourceKind, raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== 'https:' ||
+    !['linkedin.com', 'www.linkedin.com'].includes(url.hostname.toLowerCase())
+  )
+    return null;
+  const path = url.pathname.replace(/\/+$/, '');
+  const allowed =
+    kind === 'recruiter'
+      ? /^\/(talent|recruiter)(\/|$)/i.test(path)
+      : kind === 'group_members'
+        ? /^\/groups\/[^/]+(?:\/members)?$/i.test(path)
+        : kind === 'event_attendees'
+          ? /^\/events\/[^/]+/i.test(path)
+          : kind === 'company_employees'
+            ? /^\/company\/[^/]+\/people$/i.test(path)
+            : false;
+  return allowed ? url.toString() : null;
+}
+
 export function leadSourceUrlFor(kind: LeadSourceKind, url: string): string | null {
   switch (kind) {
     case 'search':
@@ -346,6 +389,11 @@ export function leadSourceUrlFor(kind: LeadSourceKind, url: string): string | nu
       return salesNavigatorUrlFor(url);
     case 'content':
       return contentSearchUrlFor(url);
+    case 'recruiter':
+    case 'group_members':
+    case 'event_attendees':
+    case 'company_employees':
+      return linkedInAudienceUrlFor(kind, url);
     default:
       return null;
   }
@@ -358,7 +406,11 @@ const LEAD_SOURCE_SHAPES: Record<LeadSourceKind, string> = {
   sales_navigator:
     'a LinkedIn Sales Navigator people-search URL (https://www.linkedin.com/sales/search/people?...)',
   content:
-    'a LinkedIn content-search URL (https://www.linkedin.com/search/results/content/?keywords=...)'
+    'a LinkedIn content-search URL (https://www.linkedin.com/search/results/content/?keywords=...)',
+  recruiter: 'a LinkedIn Recruiter or Talent search URL',
+  group_members: 'a LinkedIn group URL (/groups/<id>/ or /groups/<id>/members/)',
+  event_attendees: 'a LinkedIn event URL (/events/<event>/...)',
+  company_employees: 'a LinkedIn company people URL (/company/<slug>/people/)'
 };
 
 /**
@@ -951,6 +1003,21 @@ function walkFor(
       return scraper.scrapeSalesNavigatorResults(page, source.url, options);
     case 'content':
       return scraper.scrapeContentSearch(page, source.url, options);
+    case 'recruiter':
+    case 'group_members':
+    case 'event_attendees':
+    case 'company_employees':
+      return scraper.scrapeProfileList
+        ? scraper.scrapeProfileList(page, source.url, options)
+        : Promise.resolve({
+            ok: false,
+            failureKind: 'not_found',
+            detail: 'This build has no generic member-list reader.',
+            leads: [],
+            degraded: [],
+            pagesWalked: 0,
+            dropped: 0
+          });
     default:
       // A kind no walk answers is a row written by a version that knew
       // something this one does not. Refused, never guessed at.

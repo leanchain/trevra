@@ -7,6 +7,7 @@ import {
   CircleAlert,
   ClipboardList,
   Copy,
+  Download,
   Inbox,
   LoaderCircle,
   Pause,
@@ -23,6 +24,7 @@ import {
   applyLatestLinkedInManagedCampaignWorkflow,
   completeLinkedInManualTask,
   duplicateLinkedInManagedCampaign,
+  downloadLinkedInManagedCampaignExport,
   endLinkedInManagedMember,
   getLinkedInCampaignOperationalAnalytics,
   getLinkedInCampaignOperations,
@@ -41,6 +43,7 @@ import {
   rerunLinkedInManagedMemberCondition,
   resumeLinkedInManagedMemberAtStep,
   retryLinkedInManagedCampaignFailures,
+  setLinkedInManagedCampaignOwner,
   setLinkedInManagedMemberPaused,
   skipLinkedInManagedMemberStep,
   startLinkedInManagedCampaign,
@@ -75,6 +78,8 @@ import {
 } from './LinkedInManagerCampaignConfig';
 import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
 import { useActiveSeatKey } from './LinkedInActiveAccount';
+import { useIsWorkspaceOwner } from './auth-client';
+import { useWorkspaceMembers } from './TeamScreen';
 import { ConfirmDrawer } from './ui/dialog';
 
 /**
@@ -110,7 +115,12 @@ const SOURCE_LABELS: Record<LinkedInLeadList['sourceKind'], string> = {
   csv: 'CSV',
   linkedin_search: 'LinkedIn people search',
   sales_navigator: 'Sales Navigator',
-  post_keyword: 'Post/comment keywords'
+  post_keyword: 'Post/comment keywords',
+  recruiter: 'LinkedIn Recruiter',
+  group_members: 'LinkedIn group',
+  event_attendees: 'LinkedIn event',
+  company_employees: 'LinkedIn company people',
+  signal: 'External signal'
 };
 
 /** Bar and legend order: what is moving first, what has stopped last. */
@@ -1118,6 +1128,8 @@ export function OutreachManagerRead({
    * a surprise nobody asked for.
    */
   const [activeSeatKey, setActiveSeatKey] = useActiveSeatKey();
+  const isWorkspaceOwner = useIsWorkspaceOwner();
+  const { members: workspaceMembers } = useWorkspaceMembers();
   const [seats, setSeats] = useState<LinkedInSeat[]>([]);
   const [lists, setLists] = useState<LinkedInLeadList[]>([]);
   const [workflows, setWorkflows] = useState<LinkedInWorkflow[]>([]);
@@ -1526,6 +1538,37 @@ export function OutreachManagerRead({
       'Unable to retry campaign failures.'
     );
 
+  const transferCampaignOwner = (campaign: ManagedCampaign, ownerUserId: string) =>
+    guard(
+      `owner:${campaign.id}`,
+      async () => {
+        const updated = await setLinkedInManagedCampaignOwner(campaign.id, ownerUserId);
+        setToast(
+          `“${campaign.name}” is now owned by ${updated.ownerName ?? 'the selected teammate'}.`
+        );
+        await refreshCampaign(campaign.id);
+      },
+      'Unable to transfer that campaign.'
+    );
+
+  const exportCampaign = (campaign: ManagedCampaign) =>
+    guard(
+      `export:${campaign.id}`,
+      async () => {
+        const blob = await downloadLinkedInManagedCampaignExport(campaign.id);
+        const href = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = href;
+        link.download = `${campaign.name.replace(/[^A-Za-z0-9._-]+/g, '-') || 'campaign'}-results.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(href);
+        setToast(`Exported “${campaign.name}”.`);
+      },
+      'Unable to export that campaign.'
+    );
+
   const setCampaignPriority = (campaign: ManagedCampaign, priority: ManagedCampaign['priority']) =>
     guard(
       `campaign:${campaign.id}`,
@@ -1888,6 +1931,14 @@ export function OutreachManagerRead({
                         className="secondary-button"
                         type="button"
                         disabled={busy !== ''}
+                        onClick={() => void exportCampaign(campaign)}
+                      >
+                        <Download size={14} /> Export CSV
+                      </button>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={busy !== ''}
                         onClick={() => void duplicateCampaign(campaign)}
                       >
                         <Copy size={14} /> Duplicate draft
@@ -1898,6 +1949,27 @@ export function OutreachManagerRead({
                   <p className="mgr-meta">
                     <span>
                       Sends from <b>{campaign.senderKeys.map(seatLabel).join(', ')}</b>
+                    </span>
+                    <span>
+                      Owned by <b>{campaign.ownerName ?? 'workspace owner'}</b>
+                      {isWorkspaceOwner && workspaceMembers.length > 0 && (
+                        <select
+                          aria-label={`Transfer ${campaign.name} owner`}
+                          value=""
+                          disabled={busy !== ''}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (value) void transferCampaignOwner(campaign, value);
+                          }}
+                        >
+                          <option value="">Transfer…</option>
+                          {workspaceMembers.map((member) => (
+                            <option key={member.userId} value={member.userId}>
+                              {member.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </span>
                     <span>
                       {plural(campaign.memberCount, 'lead')} from{' '}

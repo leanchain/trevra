@@ -38,7 +38,8 @@ import {
   type LinkedInDriverResult,
   type LinkedInFailureKind,
   type LinkedInLocator,
-  type LinkedInPage
+  type LinkedInPage,
+  type LinkedInAttachment
 } from './driver.js';
 import {
   isThreadListing,
@@ -870,7 +871,9 @@ async function execute(
     case 'invite':
       return deps.driver.sendInvite(deps.page, action.targetRef, action.body ?? undefined);
     case 'dm':
-      return deps.driver.sendDm(deps.page, action.targetRef, action.body ?? '');
+      return deps.driver.sendDm(deps.page, action.targetRef, action.body ?? '', {
+        attachment: action.attachment as LinkedInAttachment | null | undefined
+      });
     case 'inmail': {
       if (!deps.driver.sendInMail) {
         return {
@@ -884,7 +887,10 @@ async function execute(
         action.targetRef,
         action.subject ?? '',
         action.body ?? '',
-        { allowPaid: action.channelMetadata?.allowPaid === true }
+        {
+          allowPaid: action.channelMetadata?.allowPaid === true,
+          attachment: action.attachment as LinkedInAttachment | null | undefined
+        }
       );
     }
     case 'reply': {

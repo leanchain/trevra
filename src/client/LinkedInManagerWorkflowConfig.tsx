@@ -23,6 +23,7 @@ import {
 } from './api';
 import type { LinkedInWorkflow, WorkflowDelay, WorkflowStep } from '../server/linkedin/workflows';
 import { errorMessage } from './LinkedInSafety';
+import { useIsWorkspaceOwner } from './auth-client';
 
 /* ---------------------------------------------------------------------------
  * The reusable workflow builder.
@@ -467,6 +468,19 @@ function stepProblems(step: WorkflowStep, index: number, steps: readonly Workflo
       if (!Number.isInteger(variant.weight) || variant.weight < 1 || variant.weight > 100) {
         problems.push(`Variant ${variant.id.toUpperCase()} needs a weight between 1 and 100.`);
       }
+      if (variant.attachmentUrl) {
+        try {
+          const media = new URL(variant.attachmentUrl);
+          if (media.protocol !== 'https:')
+            problems.push(`Variant ${variant.id.toUpperCase()} attachment must use HTTPS.`);
+        } catch {
+          problems.push(`Variant ${variant.id.toUpperCase()} attachment URL is invalid.`);
+        }
+      }
+      if (variant.mediaKind === 'voice')
+        problems.push(
+          'Native LinkedIn voice notes are not available in the verified desktop composer; use a manual checkpoint instead.'
+        );
     }
   }
 
@@ -493,6 +507,21 @@ function stepProblems(step: WorkflowStep, index: number, steps: readonly Workflo
       step.config.variants.every((variant) => !variant.body.trim())
     )
       problems.push(`${step.action === 'email' ? 'Email' : 'InMail'} needs message copy.`);
+    for (const variant of step.config.variants) {
+      if (variant.attachmentUrl) {
+        try {
+          const media = new URL(variant.attachmentUrl);
+          if (media.protocol !== 'https:')
+            problems.push(`Variant ${variant.id.toUpperCase()} attachment must use HTTPS.`);
+        } catch {
+          problems.push(`Variant ${variant.id.toUpperCase()} attachment URL is invalid.`);
+        }
+      }
+      if (variant.mediaKind === 'voice')
+        problems.push(
+          'Native LinkedIn voice notes are not available in the verified desktop composer; use a manual checkpoint instead.'
+        );
+    }
   }
   if (step.action === 'condition' || step.action === 'monitor') {
     if (!step.config.yesStepId || step.config.yesStepId.startsWith('__'))
@@ -1074,9 +1103,13 @@ export function LinkedInManagerWorkflowConfig({
   /** Compact mode only: fires with the workflow a starter click just created. */
   onCreated?: (workflow: LinkedInWorkflow) => void;
 }) {
+  const isOwner = useIsWorkspaceOwner();
   const [library, setLibrary] = useState<LinkedInWorkflow[]>([]);
   const [id, setId] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [scope, setScope] = useState<'workspace' | 'personal'>(() =>
+    isOwner ? 'workspace' : 'personal'
+  );
   const [steps, setSteps] = useState<WorkflowStep[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1124,6 +1157,7 @@ export function LinkedInManagerWorkflowConfig({
       const mint = () => `step-${nextId++}`;
       const workflow = await createLinkedInManagerWorkflow({
         name: starter.label,
+        scope: isOwner ? 'workspace' : 'personal',
         steps: serializeSteps(starter.build(mint))
       });
       setToast(`Workflow “${workflow.name}” saved. This stored configuration and queued nothing.`);
@@ -1177,6 +1211,7 @@ export function LinkedInManagerWorkflowConfig({
   const reset = () => {
     setId(null);
     setName('');
+    setScope(isOwner ? 'workspace' : 'personal');
     setSteps([]);
     setError('');
   };
@@ -1184,6 +1219,7 @@ export function LinkedInManagerWorkflowConfig({
     claimIds(workflow.steps);
     setId(workflow.id);
     setName(workflow.name);
+    setScope(workflow.scope);
     setSteps(workflow.steps);
     setError('');
   };
@@ -1254,7 +1290,7 @@ export function LinkedInManagerWorkflowConfig({
     setBusy(true);
     setError('');
     try {
-      const payload = { name: trimmed, steps: serializeSteps(steps) };
+      const payload = { name: trimmed, scope, steps: serializeSteps(steps) };
       const saved = id
         ? await updateLinkedInManagerWorkflow(id, payload)
         : await createLinkedInManagerWorkflow(payload);
@@ -1343,6 +1379,27 @@ export function LinkedInManagerWorkflowConfig({
           onChange={(event) => setName(event.target.value)}
           placeholder="Founder connect + follow-up"
         />
+      </label>
+
+      <label className="li-block-label">
+        Template library
+        {isOwner ? (
+          <select
+            value={scope}
+            disabled={Boolean(id)}
+            onChange={(event) => setScope(event.target.value as 'workspace' | 'personal')}
+          >
+            <option value="workspace">Workspace — visible to everyone</option>
+            <option value="personal">Personal — visible only to me</option>
+          </select>
+        ) : (
+          <span className="li-hint">Personal — visible only to you</span>
+        )}
+        {id && (
+          <small className="li-hint">
+            Scope is fixed for an existing workflow. Duplicate it to move it between libraries.
+          </small>
+        )}
       </label>
 
       {steps.length === 0 ? (
@@ -1481,6 +1538,7 @@ export function LinkedInManagerWorkflowConfig({
             <thead>
               <tr>
                 <th>Workflow</th>
+                <th>Library</th>
                 <th>Steps</th>
                 <th>Version</th>
                 <th />
@@ -1494,6 +1552,7 @@ export function LinkedInManagerWorkflowConfig({
                       {workflow.name}
                     </button>
                   </td>
+                  <td>{workflow.scope === 'workspace' ? 'Workspace' : 'Personal'}</td>
                   <td>{workflow.steps.length}</td>
                   <td>v{workflow.version}</td>
                   <td>
@@ -2445,6 +2504,70 @@ function WorkflowStepCard({
  * A/B variants.
  * ------------------------------------------------------------------------ */
 
+function VariantMediaFields({
+  variant,
+  onPatch
+}: {
+  variant: Variant;
+  onPatch: (changes: Partial<Variant>) => void;
+}) {
+  const mediaKind = variant.attachmentUrl ? (variant.mediaKind === 'gif' ? 'gif' : 'file') : 'none';
+  return (
+    <div className="li-form-grid li-wf-media-fields">
+      <label>
+        Attachment
+        <select
+          value={mediaKind}
+          onChange={(event) => {
+            const next = event.target.value as 'none' | 'file' | 'gif';
+            if (next === 'none')
+              onPatch({ attachmentUrl: null, attachmentName: null, mediaKind: null });
+            else onPatch({ mediaKind: next });
+          }}
+        >
+          <option value="none">No attachment</option>
+          <option value="file">File / image</option>
+          <option value="gif">GIF</option>
+        </select>
+      </label>
+      {mediaKind !== 'none' && (
+        <>
+          <label>
+            HTTPS file URL
+            <input
+              type="url"
+              value={variant.attachmentUrl ?? ''}
+              placeholder="https://…/deck.pdf"
+              onChange={(event) => onPatch({ attachmentUrl: event.target.value, mediaKind })}
+            />
+          </label>
+          <label>
+            File name (optional)
+            <input
+              value={variant.attachmentName ?? ''}
+              placeholder={mediaKind === 'gif' ? 'demo.gif' : 'deck.pdf'}
+              onChange={(event) => onPatch({ attachmentName: event.target.value || null })}
+            />
+          </label>
+          <p className="li-hint li-span-2">
+            Trevra downloads at execution time (HTTPS, max 10 MB), uploads into LinkedIn, and sends
+            only after the composer shows an attachment preview. A failed upload leaves the text
+            unsent.
+          </p>
+          {variant.attachmentUrl && (
+            <p className="li-wf-preview li-span-2">
+              <span className="li-wf-preview-label">Attachment preview</span>
+              <a href={variant.attachmentUrl} target="_blank" rel="noreferrer noopener">
+                {variant.attachmentName || variant.attachmentUrl}
+              </a>
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function CompactVariants({
   variants,
   bodyMax,
@@ -2526,6 +2649,7 @@ function CompactVariants({
               trailing={<CharCount length={variant.body.length} max={bodyMax} />}
             />
             <TemplatePreview value={variant.body} />
+            <VariantMediaFields variant={variant} onPatch={(changes) => patch(at, changes)} />
           </div>
         );
       })}
@@ -2660,6 +2784,7 @@ function MessageVariants({
               trailing={<CharCount length={variant.body.length} max={BODY_MAX} />}
             />
             <TemplatePreview value={variant.body} />
+            <VariantMediaFields variant={variant} onPatch={(changes) => patch(at, changes)} />
           </div>
         );
       })}

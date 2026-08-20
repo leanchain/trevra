@@ -100,6 +100,8 @@ export interface LinkedInLocator {
   first(): LinkedInLocator;
   click(options?: { timeout?: number }): Promise<void>;
   fill(text: string, options?: { timeout?: number }): Promise<void>;
+  /** Optional Playwright file-input primitive, used only after a workflow explicitly carries media. */
+  setInputFiles?(files: { name: string; mimeType: string; buffer: Buffer }): Promise<void>;
   /**
    * Optional because only the sign-in form needs it, and every fake in the
    * tests would otherwise have to grow a method it never calls. Absent means
@@ -213,15 +215,26 @@ export function isOtpRequired(value: LinkedInLoginResult): value is { ok: false;
  * that: it dispatches one action to one driver, and the split is a fact about
  * where the selectors are maintained, not about how a batch is executed.
  */
+export interface LinkedInAttachment {
+  url: string;
+  name?: string | null;
+  mediaKind?: 'file' | 'gif' | 'voice' | null;
+}
+
 export interface LinkedInDriver {
   sendInvite(page: LinkedInPage, target: string, note?: string): Promise<LinkedInDriverResult>;
-  sendDm(page: LinkedInPage, target: string, body: string): Promise<LinkedInDriverResult>;
+  sendDm(
+    page: LinkedInPage,
+    target: string,
+    body: string,
+    options?: { attachment?: LinkedInAttachment | null }
+  ): Promise<LinkedInDriverResult>;
   sendInMail?(
     page: LinkedInPage,
     target: string,
     subject: string,
     body: string,
-    options?: { allowPaid?: boolean }
+    options?: { allowPaid?: boolean; attachment?: LinkedInAttachment | null }
   ): Promise<LinkedInDriverResult>;
   /**
    * Answer inside an existing conversation, by thread id rather than by
@@ -349,6 +362,10 @@ export const SELECTORS = {
   messageButton: 'button[aria-label^="Message"]',
   messageComposeBox: 'div.msg-form__contenteditable[contenteditable="true"]',
   messageSendButton: 'button.msg-form__send-button, button[type="submit"][aria-label="Send"]',
+  messageAttachmentInput:
+    'div.msg-form__msg-content-container input[type="file"], form input[type="file"]',
+  messageAttachmentPreview:
+    '.msg-form__attachment-upload, .msg-attachment-list, [data-test-attachment], [aria-label*="attachment" i] img',
   /** InMail is a distinct paid/entitled surface; never fall back to Message. */
   inmailButton:
     'button[aria-label*="InMail" i], a[aria-label*="InMail" i], button:has-text("InMail")',
@@ -360,6 +377,9 @@ export const SELECTORS = {
     'button[aria-label*="Send InMail" i], button.msg-form__send-button, button[type="submit"]:has-text("Send")',
   inmailPaidWarning:
     'text=/paid InMail|credit will be used|use an InMail credit|purchase.*credit/i',
+  inmailAttachmentInput: 'div[role="dialog"] input[type="file"], form input[type="file"]',
+  inmailAttachmentPreview:
+    'div[role="dialog"] .msg-form__attachment-upload, div[role="dialog"] .msg-attachment-list, div[role="dialog"] [data-test-attachment]',
   /** "You've reached the weekly invitation limit" and its siblings. */
   limitWall:
     'text=/reached the weekly invitation limit|You.ve reached the limit|try again next week|invitation limit/i',
@@ -796,11 +816,104 @@ export async function sendInvite(
   }
 }
 
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+function attachmentMime(name: string, contentType: string | null): string {
+  if (contentType?.trim()) return contentType.split(';')[0]!.trim();
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  return 'application/octet-stream';
+}
+
+async function uploadComposerAttachment(
+  page: LinkedInPage,
+  attachment: LinkedInAttachment,
+  inputSelector: string,
+  previewSelector: string
+): Promise<LinkedInDriverResult | null> {
+  if (attachment.mediaKind === 'voice') {
+    return fail(
+      'compose_unavailable',
+      'Native LinkedIn voice messages are not exposed through a verified upload surface. The text draft was not sent.'
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(attachment.url);
+  } catch {
+    return fail(
+      'compose_unavailable',
+      'The attachment URL is invalid. The text draft was not sent.'
+    );
+  }
+  if (parsed.protocol !== 'https:') {
+    return fail(
+      'compose_unavailable',
+      'LinkedIn campaign attachments must use HTTPS. The text draft was not sent.'
+    );
+  }
+  const input = page.locator(inputSelector);
+  if ((await input.count()) === 0 || !input.first().setInputFiles) {
+    return fail(
+      'compose_unavailable',
+      `The LinkedIn composer has no verified file-input surface (${inputSelector}). The text draft was not sent.`
+    );
+  }
+  try {
+    const response = await fetch(parsed, { signal: AbortSignal.timeout(15_000) });
+    if (!response.ok)
+      return fail(
+        'compose_unavailable',
+        `Attachment download returned HTTP ${response.status}. The text draft was not sent.`
+      );
+    const declared = Number(response.headers.get('content-length') ?? 0);
+    if (Number.isFinite(declared) && declared > MAX_ATTACHMENT_BYTES)
+      return fail(
+        'compose_unavailable',
+        'Attachment is larger than the 10 MB campaign limit. The text draft was not sent.'
+      );
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_ATTACHMENT_BYTES)
+      return fail(
+        'compose_unavailable',
+        bytes.byteLength === 0
+          ? 'Attachment is empty. The text draft was not sent.'
+          : 'Attachment is larger than the 10 MB campaign limit. The text draft was not sent.'
+      );
+    const fallbackName = decodeURIComponent(
+      parsed.pathname.split('/').filter(Boolean).at(-1) ?? 'attachment'
+    );
+    const name = attachment.name?.trim() || fallbackName || 'attachment';
+    await input.first().setInputFiles!({
+      name: name.slice(0, 255),
+      mimeType: attachmentMime(name, response.headers.get('content-type')),
+      buffer: bytes
+    });
+    await settle(page, `${parsed.toString()}#attachment-upload`);
+    if ((await page.locator(previewSelector).count()) === 0) {
+      return fail(
+        'unknown',
+        'The file input accepted the attachment but LinkedIn did not show a verifiable attachment preview. Nothing was sent; inspect or discard the open draft.'
+      );
+    }
+    return null;
+  } catch (cause) {
+    return fail(
+      'compose_unavailable',
+      `The attachment could not be prepared for LinkedIn: ${cause instanceof Error ? cause.message : String(cause)}. The text draft was not sent.`
+    );
+  }
+}
+
 /** Send a direct message. 1st-degree only, which the Message control is the proof of. */
 export async function sendDm(
   page: LinkedInPage,
   target: string,
-  body: string
+  body: string,
+  options: { attachment?: LinkedInAttachment | null } = {}
 ): Promise<LinkedInDriverResult> {
   if (!body.trim()) {
     return fail(
@@ -839,6 +952,15 @@ export async function sendDm(
       );
     }
     await typeLike(page, compose.first(), body, `${url}#dm`, CLICK_TIMEOUT_MS);
+    if (options.attachment) {
+      const attachmentResult = await uploadComposerAttachment(
+        page,
+        options.attachment,
+        SELECTORS.messageAttachmentInput,
+        SELECTORS.messageAttachmentPreview
+      );
+      if (attachmentResult) return attachmentResult;
+    }
 
     const send = page.locator(SELECTORS.messageSendButton);
     if ((await send.count()) === 0) {
@@ -903,7 +1025,7 @@ export async function sendInMail(
   target: string,
   subject: string,
   body: string,
-  options: { allowPaid?: boolean } = {}
+  options: { allowPaid?: boolean; attachment?: LinkedInAttachment | null } = {}
 ): Promise<LinkedInDriverResult> {
   if (!subject.trim() || !body.trim())
     return fail('selector_drift', 'Refusing to open InMail without an approved subject and body.');
@@ -941,6 +1063,15 @@ export async function sendInMail(
       );
     await typeLike(page, subjectBox.first(), subject, `${url}#inmail-subject`, CLICK_TIMEOUT_MS);
     await typeLike(page, compose.first(), body, `${url}#inmail-body`, CLICK_TIMEOUT_MS);
+    if (options.attachment) {
+      const attachmentResult = await uploadComposerAttachment(
+        page,
+        options.attachment,
+        SELECTORS.inmailAttachmentInput,
+        SELECTORS.inmailAttachmentPreview
+      );
+      if (attachmentResult) return attachmentResult;
+    }
     const send = page.locator(SELECTORS.inmailSendButton);
     if ((await send.count()) === 0)
       return fail(

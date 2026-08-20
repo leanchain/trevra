@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   SELECTORS,
   readOpenProfile,
@@ -13,6 +13,7 @@ function fakePage(initial: Record<string, number> = {}) {
   const counts = { ...initial };
   const clicked: string[] = [];
   const filled: Array<{ selector: string; value: string }> = [];
+  const uploaded: Array<{ selector: string; name: string; mimeType: string; size: number }> = [];
   let current = 'https://www.linkedin.com/feed/';
   const locator = (selector: string): LinkedInLocator => ({
     count: async () => counts[selector] ?? 0,
@@ -22,6 +23,14 @@ function fakePage(initial: Record<string, number> = {}) {
     },
     fill: async (value: string) => {
       filled.push({ selector, value });
+    },
+    setInputFiles: async (file) => {
+      uploaded.push({
+        selector,
+        name: file.name,
+        mimeType: file.mimeType,
+        size: file.buffer.byteLength
+      });
     },
     textContent: async () => null
   });
@@ -34,8 +43,10 @@ function fakePage(initial: Record<string, number> = {}) {
     locator,
     waitForTimeout: async () => undefined
   };
-  return { page, clicked, filled, counts };
+  return { page, clicked, filled, uploaded, counts };
 }
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('InMail driver', () => {
   it('reports a profile without an InMail control as not Open Profile', async () => {
@@ -102,5 +113,82 @@ describe('InMail driver', () => {
       { selector: SELECTORS.inmailComposeBox, value: 'Approved body' }
     ]);
     expect(fake.clicked).toEqual([SELECTORS.inmailButton, SELECTORS.inmailSendButton]);
+  });
+  it('never sends the text when an attachment cannot be verified in the composer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([1, 2, 3]), {
+            status: 200,
+            headers: { 'content-type': 'application/pdf', 'content-length': '3' }
+          })
+      )
+    );
+    const fake = fakePage({
+      [SELECTORS.inmailButton]: 1,
+      [SELECTORS.inmailSubject]: 1,
+      [SELECTORS.inmailComposeBox]: 1,
+      [SELECTORS.inmailSendButton]: 1,
+      [SELECTORS.inmailAttachmentInput]: 1
+    });
+    const result = await sendInMail(fake.page, TARGET, 'Subject', 'Approved body', {
+      attachment: {
+        url: 'https://files.example.test/deck.pdf',
+        name: 'deck.pdf',
+        mediaKind: 'file'
+      }
+    });
+    expect(result).toMatchObject({ ok: false, failureKind: 'unknown' });
+    expect(fake.uploaded).toEqual([
+      {
+        selector: SELECTORS.inmailAttachmentInput,
+        name: 'deck.pdf',
+        mimeType: 'application/pdf',
+        size: 3
+      }
+    ]);
+    expect(fake.clicked).toEqual([SELECTORS.inmailButton]);
+  });
+
+  it('sends only after the requested file is uploaded and a LinkedIn attachment preview appears', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([71, 73, 70]), {
+            status: 200,
+            headers: { 'content-type': 'image/gif', 'content-length': '3' }
+          })
+      )
+    );
+    const fake = fakePage({
+      [SELECTORS.inmailButton]: 1,
+      [SELECTORS.inmailSubject]: 1,
+      [SELECTORS.inmailComposeBox]: 1,
+      [SELECTORS.inmailSendButton]: 1,
+      [SELECTORS.inmailAttachmentInput]: 1,
+      [SELECTORS.inmailAttachmentPreview]: 1
+    });
+    const result = await sendInMail(fake.page, TARGET, 'Subject', 'Approved body', {
+      attachment: { url: 'https://files.example.test/demo.gif', mediaKind: 'gif' }
+    });
+    expect(result).toMatchObject({ ok: true, failureKind: null });
+    expect(fake.uploaded[0]).toMatchObject({ name: 'demo.gif', mimeType: 'image/gif', size: 3 });
+    expect(fake.clicked).toEqual([SELECTORS.inmailButton, SELECTORS.inmailSendButton]);
+  });
+
+  it('refuses native voice metadata instead of sending a text-only fallback', async () => {
+    const fake = fakePage({
+      [SELECTORS.inmailButton]: 1,
+      [SELECTORS.inmailSubject]: 1,
+      [SELECTORS.inmailComposeBox]: 1,
+      [SELECTORS.inmailSendButton]: 1
+    });
+    const result = await sendInMail(fake.page, TARGET, 'Subject', 'Approved body', {
+      attachment: { url: 'https://files.example.test/note.m4a', mediaKind: 'voice' }
+    });
+    expect(result).toMatchObject({ ok: false, failureKind: 'compose_unavailable' });
+    expect(fake.clicked).toEqual([SELECTORS.inmailButton]);
   });
 });

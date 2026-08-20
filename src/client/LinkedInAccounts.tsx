@@ -42,7 +42,8 @@ import {
   type LinkedInWithdrawalCandidates,
   type LinkedInWorkerStatus,
   type WithdrawalRecord,
-  type WithdrawalStatus
+  type WithdrawalStatus,
+  updateLinkedInManagerSeat
 } from './api';
 import { OWNER_ACCOUNT_KEY, useActiveSeatKey } from './LinkedInActiveAccount';
 import {
@@ -63,6 +64,8 @@ import { MAINTENANCE_TASK_LABELS, formatVisitWindow, queueWaitCopy } from './Lin
 import { ConfidenceTag, LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 import { Hint } from './ui/hint';
+import { useIsWorkspaceOwner } from './auth-client';
+import { useWorkspaceMembers } from './TeamScreen';
 
 /**
  * Every LinkedIn account this workspace sends from -- adding one, connecting
@@ -163,6 +166,8 @@ function stateSentence(
  * ---------------------------------------------------------------------- */
 
 export function LinkedInAccounts({ setToast }: { setToast: (message: string) => void }) {
+  const isWorkspaceOwner = useIsWorkspaceOwner();
+  const { members: workspaceMembers } = useWorkspaceMembers();
   const [activeKey, setActiveKey] = useActiveSeatKey();
   const [accounts, setAccounts] = useState<LinkedInSeat[] | null>(null);
   const [details, setDetails] = useState<Record<string, LinkedInSeatResponse>>({});
@@ -243,6 +248,18 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
       if (sequence === loadSequence.current) setLoading(false);
     }
   }, []);
+
+  const assignAccountOwner = async (account: LinkedInSeat, ownerUserId: string) => {
+    try {
+      const updated = await updateLinkedInManagerSeat(account.seatKey, { ownerUserId });
+      setToast(
+        `“${account.label}” is now assigned to ${updated.ownerName ?? 'the selected teammate'}.`
+      );
+      await load();
+    } catch (error) {
+      setFailure(errorMessage(error, 'Unable to assign that LinkedIn account.'));
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -432,6 +449,9 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
               safety={safety}
               companion={Boolean(worker?.companionBrowser)}
               setToast={setToast}
+              canAssignOwner={isWorkspaceOwner}
+              workspaceMembers={workspaceMembers}
+              onAssignOwner={assignAccountOwner}
               onChanged={load}
               onRemoved={() => {
                 setActiveKey(OWNER_ACCOUNT_KEY);
@@ -465,6 +485,9 @@ function AccountPanel({
   safety,
   companion,
   setToast,
+  canAssignOwner,
+  workspaceMembers,
+  onAssignOwner,
   onChanged,
   onRemoved
 }: {
@@ -475,6 +498,9 @@ function AccountPanel({
   /** Hosted execution through the paired member computer, with local browser-session custody. */
   companion: boolean;
   setToast: (message: string) => void;
+  canAssignOwner: boolean;
+  workspaceMembers: Array<{ userId: string; name: string }>;
+  onAssignOwner: (account: LinkedInSeat, ownerUserId: string) => Promise<void>;
   onChanged: () => Promise<void>;
   onRemoved: () => void;
 }) {
@@ -842,6 +868,29 @@ function AccountPanel({
               <div>
                 <dt>Timezone</dt>
                 <dd>{account.timezone}</dd>
+              </div>
+              <div>
+                <dt>Assigned to</dt>
+                <dd>
+                  {account.ownerName ?? 'Workspace owner'}
+                  {canAssignOwner && workspaceMembers.length > 0 && (
+                    <select
+                      aria-label={`Assign ${account.label} owner`}
+                      value=""
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        if (value) void onAssignOwner(account, value);
+                      }}
+                    >
+                      <option value="">Assign teammate…</option>
+                      {workspaceMembers.map((member) => (
+                        <option key={member.userId} value={member.userId}>
+                          {member.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </dd>
               </div>
               <div>
                 <dt>Works</dt>

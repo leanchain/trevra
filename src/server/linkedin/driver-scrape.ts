@@ -228,12 +228,34 @@ export interface ScrapeOptions {
 
 /** What `leads.ts` needs; the fake in the tests implements exactly this. */
 export interface LinkedInScrapeDriver {
-  scrapeSearchResults(page: LinkedInScrapePage, searchUrl: string, opts?: ScrapeOptions): Promise<ScrapeResult>;
-  scrapePostEngagers(page: LinkedInScrapePage, postUrl: string, opts?: ScrapeOptions): Promise<ScrapeResult>;
+  scrapeSearchResults(
+    page: LinkedInScrapePage,
+    searchUrl: string,
+    opts?: ScrapeOptions
+  ): Promise<ScrapeResult>;
+  scrapePostEngagers(
+    page: LinkedInScrapePage,
+    postUrl: string,
+    opts?: ScrapeOptions
+  ): Promise<ScrapeResult>;
   /** `/sales/search/people` -- a different page, the same walk. */
-  scrapeSalesNavigatorResults(page: LinkedInScrapePage, searchUrl: string, opts?: ScrapeOptions): Promise<ScrapeResult>;
+  scrapeSalesNavigatorResults(
+    page: LinkedInScrapePage,
+    searchUrl: string,
+    opts?: ScrapeOptions
+  ): Promise<ScrapeResult>;
   /** `/search/results/content` -- keyword discovery through posts and comments. */
-  scrapeContentSearch(page: LinkedInScrapePage, contentUrl: string, opts?: ScrapeOptions): Promise<ScrapeResult>;
+  scrapeContentSearch(
+    page: LinkedInScrapePage,
+    contentUrl: string,
+    opts?: ScrapeOptions
+  ): Promise<ScrapeResult>;
+  /** Bounded one-page reader for Recruiter, group-member, event-attendee and company-people surfaces. */
+  scrapeProfileList?(
+    page: LinkedInScrapePage,
+    listUrl: string,
+    opts?: ScrapeOptions
+  ): Promise<ScrapeResult>;
 }
 
 /**
@@ -289,7 +311,11 @@ const CLICK_TIMEOUT_MS = 10_000;
 export { settleMs };
 export const browseList = readPage;
 
-function fail(failureKind: LinkedInFailureKind, detail: string, partial: Partial<ScrapeResult> = {}): ScrapeResult {
+function fail(
+  failureKind: LinkedInFailureKind,
+  detail: string,
+  partial: Partial<ScrapeResult> = {}
+): ScrapeResult {
   return {
     ok: false,
     failureKind,
@@ -324,6 +350,7 @@ function fail(failureKind: LinkedInFailureKind, detail: string, partial: Partial
  * what keeps a harvest working across one.
  */
 export const SCRAPE_SELECTORS = {
+  genericProfileLink: 'main a[href*="/in/"], a[href*="/in/"]',
   /* --- /search/results/people/ ---------------------------------------- */
 
   /**
@@ -339,9 +366,9 @@ export const SCRAPE_SELECTORS = {
    * `profileUrlIn` falls back to reading the card's own href.
    */
   searchResultCard:
-    'li.reusable-search__result-container, div[data-chameleon-result-urn], '
-    + 'div.search-results-container ul[role="list"] > li, ul.reusable-search__entity-result-list > li, '
-    + 'a[componentkey][href*="/in/"]',
+    'li.reusable-search__result-container, div[data-chameleon-result-urn], ' +
+    'div.search-results-container ul[role="list"] > li, ul.reusable-search__entity-result-list > li, ' +
+    'a[componentkey][href*="/in/"]',
   /** The profile link on a card. `/in/` is the only part LinkedIn cannot change. */
   searchResultProfileLink: 'a[href*="/in/"]',
   /**
@@ -365,8 +392,8 @@ export const SCRAPE_SELECTORS = {
 
   /** The reaction count under a post; clicking it opens the reactors modal. */
   reactionsEntry:
-    'button.social-details-social-counts__count-value, button[aria-label*="reaction" i], '
-    + 'span.social-details-social-counts__reactions-count',
+    'button.social-details-social-counts__count-value, button[aria-label*="reaction" i], ' +
+    'span.social-details-social-counts__reactions-count',
   /** The modal itself. Its absence after the click is drift, not a wall. */
   reactorsModal: 'div.social-details-reactors-modal, div[role="dialog"]',
   /** One reactor row inside the modal. */
@@ -379,16 +406,19 @@ export const SCRAPE_SELECTORS = {
   engagerHeadline: '.artdeco-entity-lockup__subtitle, .artdeco-entity-lockup__caption',
   /** "Load more" inside the modal. Each click is another fetch, so each is paced. */
   loadMoreReactors:
-    'div[role="dialog"] button.scaffold-finite-scroll__load-button, '
-    + 'div[role="dialog"] button[aria-label*="Load more" i], div[role="dialog"] button.artdeco-button--muted',
+    'div[role="dialog"] button.scaffold-finite-scroll__load-button, ' +
+    'div[role="dialog"] button[aria-label*="Load more" i], div[role="dialog"] button.artdeco-button--muted',
   /** One comment on the post page. */
-  commentItem: 'article.comments-comment-entity, article.comments-comment-item, article.comments-post-meta',
-  commentAuthorName: '.comments-post-meta__name-text, span.comments-comment-meta__description-title',
-  commentAuthorHeadline: '.comments-post-meta__headline, span.comments-comment-meta__description-subtitle',
+  commentItem:
+    'article.comments-comment-entity, article.comments-comment-item, article.comments-post-meta',
+  commentAuthorName:
+    '.comments-post-meta__name-text, span.comments-comment-meta__description-title',
+  commentAuthorHeadline:
+    '.comments-post-meta__headline, span.comments-comment-meta__description-subtitle',
   /** "Load more comments". Same pacing rule as the reactors button. */
   loadMoreComments:
-    'button.comments-comments-list__load-more-comments-button, button[aria-label*="more comments" i], '
-    + 'button.comments-comments-list__show-previous-container button',
+    'button.comments-comments-list__load-more-comments-button, button[aria-label*="more comments" i], ' +
+    'button.comments-comments-list__show-previous-container button',
 
   /* --- /sales/search/people (Sales Navigator) -------------------------- */
 
@@ -404,8 +434,8 @@ export const SCRAPE_SELECTORS = {
    * for a page that was rendering perfectly.
    */
   salesResultCard:
-    'ol.artdeco-list > li.artdeco-list__item, div[data-x-search-result], '
-    + 'li.search-results__result-item, div.search-results-container ol > li',
+    'ol.artdeco-list > li.artdeco-list__item, div[data-x-search-result], ' +
+    'li.search-results__result-item, div.search-results-container ol > li',
   /**
    * The PUBLIC profile link on a lead row.
    *
@@ -417,18 +447,21 @@ export const SCRAPE_SELECTORS = {
    * counted -- never stored under a Sales Navigator URN.
    */
   salesResultProfileLink: 'a[href*="/in/"]',
-  salesResultName: 'span[data-anonymize="person-name"], .result-lockup__name, .artdeco-entity-lockup__title',
-  salesResultHeadline: 'span[data-anonymize="title"], .result-lockup__highlight-keyword, .artdeco-entity-lockup__subtitle',
+  salesResultName:
+    'span[data-anonymize="person-name"], .result-lockup__name, .artdeco-entity-lockup__title',
+  salesResultHeadline:
+    'span[data-anonymize="title"], .result-lockup__highlight-keyword, .artdeco-entity-lockup__subtitle',
   /** Sales Navigator DOES render an employer of its own, unlike every other surface here. */
-  salesResultCompany: 'a[data-anonymize="company-name"], span[data-anonymize="company-name"], .result-lockup__position-company',
+  salesResultCompany:
+    'a[data-anonymize="company-name"], span[data-anonymize="company-name"], .result-lockup__position-company',
   salesNoResults: 'text=/No results found|No leads found|try a different search/i',
 
   /* --- /search/results/content (keyword discovery) --------------------- */
 
   /** One post in a content-search result list. */
   contentResultCard:
-    'div.search-results-container div.feed-shared-update-v2, div[data-urn*="urn:li:activity"], '
-    + 'li.reusable-search__result-container, div[data-chameleon-result-urn]',
+    'div.search-results-container div.feed-shared-update-v2, div[data-urn*="urn:li:activity"], ' +
+    'li.reusable-search__result-container, div[data-chameleon-result-urn]',
   /**
    * The permalink on a content-search row. Falls back to the card's own
    * `data-urn`, which the feed renderer has carried through every layout so
@@ -437,8 +470,10 @@ export const SCRAPE_SELECTORS = {
   contentPostLink: 'a[href*="/feed/update/"], a[href*="/posts/"]',
   /** The post's AUTHOR -- interaction kind `post`. */
   contentAuthorLink: 'a[href*="/in/"]',
-  contentAuthorName: '.update-components-actor__title, span.update-components-actor__title span[aria-hidden="true"]',
-  contentAuthorHeadline: '.update-components-actor__description, span.update-components-actor__description',
+  contentAuthorName:
+    '.update-components-actor__title, span.update-components-actor__title span[aria-hidden="true"]',
+  contentAuthorHeadline:
+    '.update-components-actor__description, span.update-components-actor__description',
   contentNoResults: 'text=/No results found|no results matched|try different keywords/i'
 } as const;
 
@@ -525,7 +560,9 @@ export function postUrlFor(raw: string): string | null {
   const parsed = linkedInUrl(raw);
   if (!parsed) return null;
   const path = parsed.pathname;
-  const isPermalink = /^\/feed\/update\/urn:li:(activity|share|ugcPost):[A-Za-z0-9_-]+\/?$/.test(path);
+  const isPermalink = /^\/feed\/update\/urn:li:(activity|share|ugcPost):[A-Za-z0-9_-]+\/?$/.test(
+    path
+  );
   const isShareLink = /^\/posts\/[A-Za-z0-9%._-]+\/?$/.test(path);
   if (!isPermalink && !isShareLink) return null;
   parsed.hash = '';
@@ -669,9 +706,10 @@ async function textIn(card: LinkedInScrapeLocator, selector: string): Promise<st
 async function profileUrlIn(card: LinkedInScrapeLocator, selector: string): Promise<string | null> {
   try {
     const link = card.locator(selector);
-    const href = (await link.count()) === 0
-      ? await card.getAttribute('href', { timeout: CLICK_TIMEOUT_MS })
-      : await link.first().getAttribute('href', { timeout: CLICK_TIMEOUT_MS });
+    const href =
+      (await link.count()) === 0
+        ? await card.getAttribute('href', { timeout: CLICK_TIMEOUT_MS })
+        : await link.first().getAttribute('href', { timeout: CLICK_TIMEOUT_MS });
     if (!href) return null;
     // Relative hrefs are the common case in LinkedIn's markup. Resolved against
     // the canonical host rather than `page.url()`, so a redirect to a foreign
@@ -704,7 +742,9 @@ async function profileUrlIn(card: LinkedInScrapeLocator, selector: string): Prom
  * is the only line naming an employer, through the one shared
  * {@link companyFromHeadline} every surface in this file now uses.
  */
-async function readRowLines(card: LinkedInScrapeLocator): Promise<Pick<ScrapedLead, 'name' | 'headline' | 'company'>> {
+async function readRowLines(
+  card: LinkedInScrapeLocator
+): Promise<Pick<ScrapedLead, 'name' | 'headline' | 'company'>> {
   const empty = { name: null, headline: null, company: null };
   try {
     const lines = card.locator(SCRAPE_SELECTORS.searchResultLine);
@@ -718,7 +758,11 @@ async function readRowLines(card: LinkedInScrapeLocator): Promise<Pick<ScrapedLe
 
     const name = (read[0] ?? '').split('•')[0]?.trim() || null;
     const headline = read[1]?.trim() || null;
-    const employer = read.slice(2).map((line) => companyFromHeadline(line)).find(Boolean) ?? null;
+    const employer =
+      read
+        .slice(2)
+        .map((line) => companyFromHeadline(line))
+        .find(Boolean) ?? null;
     return { name, headline, company: employer || null };
   } catch {
     return empty;
@@ -816,7 +860,10 @@ class Harvest {
       // landed first would throw away the strongest signal on the page for
       // every person who did both -- the same loss the enrichment above exists
       // to prevent, one field over.
-      if (lead.interactionKind && (!existing.interactionKind || lead.interactionKind === 'comment')) {
+      if (
+        lead.interactionKind &&
+        (!existing.interactionKind || lead.interactionKind === 'comment')
+      ) {
         existing.interactionKind = lead.interactionKind;
       }
       if (!existing.postUrl && lead.postUrl) existing.postUrl = lead.postUrl;
@@ -854,7 +901,12 @@ class Harvest {
         `${this.dropped} row${this.dropped === 1 ? ' was' : 's were'} seen and not returned: the ${this.maxResults}-result cap was reached, or the row carried no readable profile link. Narrow the source or raise the cap.`
       );
     }
-    return { leads: this.leads, degraded: this.degraded, pagesWalked: this.pagesWalked, dropped: this.dropped };
+    return {
+      leads: this.leads,
+      degraded: this.degraded,
+      pagesWalked: this.pagesWalked,
+      dropped: this.dropped
+    };
   }
 }
 
@@ -901,9 +953,10 @@ function makeLead(input: {
 async function postUrlIn(card: LinkedInScrapeLocator, selector: string): Promise<string | null> {
   try {
     const link = card.locator(selector);
-    const href = (await link.count()) === 0
-      ? await card.getAttribute('href', { timeout: CLICK_TIMEOUT_MS })
-      : await link.first().getAttribute('href', { timeout: CLICK_TIMEOUT_MS });
+    const href =
+      (await link.count()) === 0
+        ? await card.getAttribute('href', { timeout: CLICK_TIMEOUT_MS })
+        : await link.first().getAttribute('href', { timeout: CLICK_TIMEOUT_MS });
     if (href) {
       let absolute: string | null = null;
       try {
@@ -926,6 +979,83 @@ function bounded(value: number | undefined, fallback: number, hardMax: number): 
   const raw = Math.trunc(value ?? fallback);
   if (!Number.isFinite(raw) || raw < 1) return fallback;
   return Math.min(raw, hardMax);
+}
+
+/**
+ * Read one bounded LinkedIn page whose meaningful rows are member profile links.
+ * Used only for explicitly validated Recruiter/group/event/company audience URLs.
+ * Infinite-scroll surfaces deliberately stop after one human-like page read; a later source run can be requested again.
+ */
+export async function scrapeProfileList(
+  page: LinkedInScrapePage,
+  listUrl: string,
+  opts: ScrapeOptions = {}
+): Promise<ScrapeResult> {
+  let parsed: URL;
+  try {
+    parsed = new URL(listUrl);
+  } catch {
+    return fail('not_found', `'${listUrl}' is not an absolute LinkedIn audience URL.`);
+  }
+  if (parsed.protocol !== 'https:' || !ALLOWED_HOSTS.has(parsed.hostname.toLowerCase()))
+    return fail('not_found', `'${listUrl}' is not on linkedin.com.`);
+  const maxResults = bounded(opts.maxResults, DEFAULT_MAX_RESULTS, HARD_MAX_RESULTS);
+  const harvest = new Harvest(maxResults);
+  try {
+    await page.goto(parsed.toString(), { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+    await page.waitForTimeout(settleMs(`${opts.seed ?? listUrl}:settle`));
+    await browseList(page, `${opts.seed ?? listUrl}:scroll`);
+  } catch (cause) {
+    return fail(
+      'selector_drift',
+      `The audience page could not be opened: ${cause instanceof Error ? cause.message : String(cause)}.`
+    );
+  }
+  harvest.pagesWalked = 1;
+  const wall = await detectWall(page);
+  if (wall)
+    return fail(
+      wall,
+      `LinkedIn showed a ${wall === 'challenge' ? 'challenge' : 'limit/restriction notice'} while reading this audience.`,
+      harvest.done()
+    );
+  const links = page.locator(SCRAPE_SELECTORS.genericProfileLink);
+  const total = await count(links);
+  if (total === 0) {
+    harvest.degraded.push(
+      `No member profile links matched ${SCRAPE_SELECTORS.genericProfileLink}. The surface may be empty, private, or its selector may have changed.`
+    );
+  }
+  for (let index = 0; index < total; index += 1) {
+    if (harvest.full) {
+      harvest.dropRemaining(total - index);
+      break;
+    }
+    const link = links.nth(index);
+    const href = await link.getAttribute('href', { timeout: CLICK_TIMEOUT_MS }).catch(() => null);
+    const profileUrl = href
+      ? normalisedProfileUrl(new URL(href, 'https://www.linkedin.com').toString())
+      : null;
+    if (!profileUrl) {
+      harvest.dropUnreadable();
+      continue;
+    }
+    const rawName = (
+      (await link.innerText?.({ timeout: CLICK_TIMEOUT_MS }).catch(() => '')) ||
+      (await link.textContent({ timeout: CLICK_TIMEOUT_MS }).catch(() => null)) ||
+      ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
+    harvest.add(makeLead({ profileUrl, name: rawName || null, headline: null, company: null }));
+  }
+  return {
+    ok: true,
+    failureKind: null,
+    externalRef: parsed.toString(),
+    ...harvest.done(),
+    exhausted: true
+  };
 }
 
 /* ---------------------------------------------------------------------------
@@ -1065,7 +1195,8 @@ async function walkResultList(
   for (let pageNumber = startPage; pageNumber <= lastPage; pageNumber += 1) {
     // The gap goes BEFORE the fetch and not after it, so a run that ends on the
     // cap does not sit sleeping for a minute with nothing left to do.
-    if (pageNumber > startPage) await sleep(Math.round(scrapeGapSeconds(`${seed}:page:${pageNumber}`) * 1000));
+    if (pageNumber > startPage)
+      await sleep(Math.round(scrapeGapSeconds(`${seed}:page:${pageNumber}`) * 1000));
 
     const target = new URL(base);
     target.searchParams.set(surface.pageParam, String(pageNumber));
@@ -1141,14 +1272,17 @@ async function walkResultList(
       // The named selectors are the older markup and are tried first. A row
       // where NONE of them matched is the 2026 layout, whose only readable
       // structure is the order of its paragraphs.
-      const fields = named.name || named.headline || named.company || !surface.positional
-        ? named
-        : await readRowLines(card);
+      const fields =
+        named.name || named.headline || named.company || !surface.positional
+          ? named
+          : await readRowLines(card);
       harvest.add(makeLead({ profileUrl, ...fields }));
     }
 
     if (harvest.full) {
-      opts.log?.(`LinkedIn lead sourcing stopped at the ${maxResults}-result cap after ${harvest.pagesWalked} page(s).`);
+      opts.log?.(
+        `LinkedIn lead sourcing stopped at the ${maxResults}-result cap after ${harvest.pagesWalked} page(s).`
+      );
       break;
     }
   }
@@ -1229,7 +1363,15 @@ export async function scrapePostEngagers(
       // the two-word vocabulary this product speaks; null would render as an
       // em dash under "How" for every reactor on a post source. A reactor who
       // also commented is upgraded to `comment` by `Harvest.add`.
-      await collect(page, harvest, SCRAPE_SELECTORS.reactorItem, SCRAPE_SELECTORS.engagerName, SCRAPE_SELECTORS.engagerHeadline, base, 'post');
+      await collect(
+        page,
+        harvest,
+        SCRAPE_SELECTORS.reactorItem,
+        SCRAPE_SELECTORS.engagerName,
+        SCRAPE_SELECTORS.engagerHeadline,
+        base,
+        'post'
+      );
 
       for (let step = 1; step < maxPages && !harvest.full; step += 1) {
         const more = page.locator(SCRAPE_SELECTORS.loadMoreReactors);
@@ -1243,8 +1385,17 @@ export async function scrapePostEngagers(
         }
         harvest.pagesWalked += 1;
         const loadWall = await detectWall(page);
-        if (loadWall) return fail(loadWall, wallDetail(loadWall, page, 'the reactions list'), harvest.done());
-        await collect(page, harvest, SCRAPE_SELECTORS.reactorItem, SCRAPE_SELECTORS.engagerName, SCRAPE_SELECTORS.engagerHeadline, base, 'post');
+        if (loadWall)
+          return fail(loadWall, wallDetail(loadWall, page, 'the reactions list'), harvest.done());
+        await collect(
+          page,
+          harvest,
+          SCRAPE_SELECTORS.reactorItem,
+          SCRAPE_SELECTORS.engagerName,
+          SCRAPE_SELECTORS.engagerHeadline,
+          base,
+          'post'
+        );
       }
     }
   }
@@ -1252,7 +1403,9 @@ export async function scrapePostEngagers(
   /* --- Commenters ----------------------------------------------------- */
 
   if (harvest.full) {
-    opts.log?.(`LinkedIn lead sourcing filled the ${maxResults}-result cap on reactors alone; comments were not walked.`);
+    opts.log?.(
+      `LinkedIn lead sourcing filled the ${maxResults}-result cap on reactors alone; comments were not walked.`
+    );
     return { ok: true, failureKind: null, externalRef: base, ...harvest.done() };
   }
 
@@ -1263,7 +1416,15 @@ export async function scrapePostEngagers(
   const reopened = await openPost(page, base, harvest);
   if (reopened) return reopened;
 
-  await collect(page, harvest, SCRAPE_SELECTORS.commentItem, SCRAPE_SELECTORS.commentAuthorName, SCRAPE_SELECTORS.commentAuthorHeadline, base, 'comment');
+  await collect(
+    page,
+    harvest,
+    SCRAPE_SELECTORS.commentItem,
+    SCRAPE_SELECTORS.commentAuthorName,
+    SCRAPE_SELECTORS.commentAuthorHeadline,
+    base,
+    'comment'
+  );
 
   for (let step = 1; step < maxPages && !harvest.full; step += 1) {
     const more = page.locator(SCRAPE_SELECTORS.loadMoreComments);
@@ -1277,15 +1438,28 @@ export async function scrapePostEngagers(
     }
     harvest.pagesWalked += 1;
     const loadWall = await detectWall(page);
-    if (loadWall) return fail(loadWall, wallDetail(loadWall, page, 'the comments list'), harvest.done());
-    await collect(page, harvest, SCRAPE_SELECTORS.commentItem, SCRAPE_SELECTORS.commentAuthorName, SCRAPE_SELECTORS.commentAuthorHeadline, base, 'comment');
+    if (loadWall)
+      return fail(loadWall, wallDetail(loadWall, page, 'the comments list'), harvest.done());
+    await collect(
+      page,
+      harvest,
+      SCRAPE_SELECTORS.commentItem,
+      SCRAPE_SELECTORS.commentAuthorName,
+      SCRAPE_SELECTORS.commentAuthorHeadline,
+      base,
+      'comment'
+    );
   }
 
   return { ok: true, failureKind: null, externalRef: base, ...harvest.done() };
 }
 
 /** Open the post and read the walls. Returns a failure to report, or null. */
-async function openPost(page: LinkedInScrapePage, url: string, harvest: Harvest): Promise<ScrapeResult | null> {
+async function openPost(
+  page: LinkedInScrapePage,
+  url: string,
+  harvest: Harvest
+): Promise<ScrapeResult | null> {
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     await page.waitForTimeout(settleMs(`${url}:post`));
@@ -1347,18 +1521,20 @@ async function collect(
       continue;
     }
     const headline = await textIn(item, headlineSelector);
-    harvest.add(makeLead({
-      profileUrl,
-      name: await textIn(item, nameSelector),
-      headline,
-      // Neither surface renders a company element of its own, so the headline
-      // is the only place one can come from -- and `Company` is one of the
-      // three fields every lead is promised. Read, never invented: a headline
-      // that names no employer still gives null. See `companyFromHeadline`.
-      company: companyFromHeadline(headline),
-      postUrl,
-      interactionKind
-    }));
+    harvest.add(
+      makeLead({
+        profileUrl,
+        name: await textIn(item, nameSelector),
+        headline,
+        // Neither surface renders a company element of its own, so the headline
+        // is the only place one can come from -- and `Company` is one of the
+        // three fields every lead is promised. Read, never invented: a headline
+        // that names no employer still gives null. See `companyFromHeadline`.
+        company: companyFromHeadline(headline),
+        postUrl,
+        interactionKind
+      })
+    );
   }
 }
 
@@ -1410,12 +1586,16 @@ export async function scrapeContentSearch(
 
   for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
     if (harvest.full || harvest.pagesWalked >= maxPages) break;
-    if (pageNumber > 1) await sleep(Math.round(scrapeGapSeconds(`${seed}:content:${pageNumber}`) * 1000));
+    if (pageNumber > 1)
+      await sleep(Math.round(scrapeGapSeconds(`${seed}:content:${pageNumber}`) * 1000));
 
     const target = new URL(base);
     target.searchParams.set('page', String(pageNumber));
     try {
-      await page.goto(target.toString(), { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+      await page.goto(target.toString(), {
+        waitUntil: 'domcontentloaded',
+        timeout: NAV_TIMEOUT_MS
+      });
       await page.waitForTimeout(settleMs(`${seed}:content:${pageNumber}`));
       await browseList(page, `${seed}:content:scroll:${pageNumber}`);
     } catch (cause) {
@@ -1442,7 +1622,10 @@ export async function scrapeContentSearch(
       break;
     }
 
-    const posts: Array<{ postUrl: string; author: { profileUrl: string; name: string | null; headline: string | null } | null }> = [];
+    const posts: Array<{
+      postUrl: string;
+      author: { profileUrl: string; name: string | null; headline: string | null } | null;
+    }> = [];
     for (let index = 0; index < cardCount; index += 1) {
       const card = cards.nth(index);
       const postUrl = await postUrlIn(card, SCRAPE_SELECTORS.contentPostLink);
@@ -1471,14 +1654,16 @@ export async function scrapeContentSearch(
       walked.add(post.postUrl);
       // The author costs no fetch: the results row already showed them.
       if (post.author) {
-        harvest.add(makeLead({
-          ...post.author,
-          // Same rule as a commenter's: the actor line under a post is a
-          // headline and it is the only employer this surface renders.
-          company: companyFromHeadline(post.author.headline),
-          postUrl: post.postUrl,
-          interactionKind: 'post'
-        }));
+        harvest.add(
+          makeLead({
+            ...post.author,
+            // Same rule as a commenter's: the actor line under a post is a
+            // headline and it is the only employer this surface renders.
+            company: companyFromHeadline(post.author.headline),
+            postUrl: post.postUrl,
+            interactionKind: 'post'
+          })
+        );
       }
       if (harvest.full || harvest.pagesWalked >= maxPages) break;
 
@@ -1505,5 +1690,6 @@ export const playwrightScrapeDriver: LinkedInScrapeDriver = {
   scrapeSearchResults,
   scrapePostEngagers,
   scrapeSalesNavigatorResults,
-  scrapeContentSearch
+  scrapeContentSearch,
+  scrapeProfileList
 };

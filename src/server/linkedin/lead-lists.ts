@@ -29,7 +29,27 @@ import { OWNER_SEAT_KEY } from './seats.js';
  */
 export const LEAD_CONTACT_READ_LIMIT = 5_000;
 
-export type LeadListSourceKind = 'csv' | 'linkedin_search' | 'sales_navigator' | 'post_keyword';
+export type LeadListSourceKind =
+  | 'csv'
+  | 'linkedin_search'
+  | 'sales_navigator'
+  | 'post_keyword'
+  | 'recruiter'
+  | 'group_members'
+  | 'event_attendees'
+  | 'company_employees'
+  | 'signal';
+
+export type LeadSignalKind = 'profile_viewed' | 'post_engaged' | 'event_attended' | 'job_changed';
+
+export interface LeadSignalIngestResult {
+  signalId: string;
+  contactId: string;
+  listId: string;
+  duplicateSignal: boolean;
+  insertedContact: boolean;
+  reusedContact: boolean;
+}
 
 export interface LinkedInLeadList {
   id: string;
@@ -70,6 +90,7 @@ export interface LinkedInLeadContact {
   phone: string | null;
   country: string | null;
   profileUrl: string | null;
+  doNotContact: boolean;
   customFields: Record<string, string>;
   createdAt: string;
   updatedAt: string;
@@ -97,6 +118,7 @@ interface ContactRow {
   phone: string | null;
   country: string | null;
   profile_url: string | null;
+  do_not_contact: boolean;
   custom_fields_json: unknown;
   created_at: string;
   updated_at: string;
@@ -107,9 +129,9 @@ interface ContactRow {
 // being one contact row, and the column only records the list they first
 // landed in.
 const LIST_SELECT = `l.id,l.workspace_id,l.seat_key,l.name,l.source_kind,l.source_ref,l.created_at,l.updated_at,(SELECT COUNT(*)::int FROM linkedin_lead_list_members m WHERE m.list_id=l.id) AS lead_count`;
-const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,custom_fields_json,created_at,updated_at`;
+const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,phone,country,profile_url,do_not_contact,custom_fields_json,created_at,updated_at`;
 /** The same columns through the membership join, where `list_id` is the list asked for. */
-const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.phone,c.country,c.profile_url,c.custom_fields_json,c.created_at,c.updated_at`;
+const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.phone,c.country,c.profile_url,c.do_not_contact,c.custom_fields_json,c.created_at,c.updated_at`;
 
 function toList(row: ListRow): LinkedInLeadList {
   return {
@@ -155,6 +177,7 @@ function toContact(row: ContactRow): LinkedInLeadContact {
     phone: row.phone,
     country: row.country,
     profileUrl: row.profile_url,
+    doNotContact: Boolean(row.do_not_contact),
     customFields: customFieldsFromDb(row.custom_fields_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -426,6 +449,111 @@ async function insertLead(
   return { contactId, inserted: Boolean(row), reused: !row && link.changes > 0 };
 }
 
+export async function ingestLeadSignal(
+  db: Db,
+  input: {
+    workspaceId: string;
+    listId: string;
+    signalKind: LeadSignalKind;
+    idempotencyKey: string;
+    profileUrl: string;
+    firstName: string;
+    lastName?: string | null;
+    company?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    country?: string | null;
+    sourceRef?: string | null;
+    occurredAt?: string | null;
+    customFields?: Record<string, string>;
+    metadata?: Record<string, unknown>;
+  },
+  now: Date = new Date()
+): Promise<LeadSignalIngestResult> {
+  const key = input.idempotencyKey.trim();
+  if (!key) throw new Error('Signal idempotency key is required.');
+  const list = await db
+    .prepare(`SELECT id,source_kind FROM linkedin_lead_lists WHERE workspace_id=? AND id=?`)
+    .get<{ id: string; source_kind: string }>(input.workspaceId, input.listId);
+  if (!list) throw new Error('Lead list not found.');
+  if (list.source_kind !== 'signal')
+    throw new Error('Inbound signals can only be written to a signal lead list.');
+
+  const normalized = normalizeScrapedLead({
+    profileUrl: input.profileUrl,
+    firstName: input.firstName,
+    lastName: input.lastName ?? '',
+    company: input.company ?? ''
+  });
+  if (!normalized)
+    throw new Error('Signal lead needs a valid LinkedIn profile URL and first name.');
+  normalized.email = input.email?.trim() || null;
+  normalized.phone = input.phone?.trim() || null;
+  normalized.country = input.country?.trim() || null;
+  normalized.customFields = { ...(input.customFields ?? {}) };
+  normalized.original = {
+    ...normalized.original,
+    signalKind: input.signalKind,
+    ...(input.sourceRef?.trim() ? { signalSource: input.sourceRef.trim() } : {})
+  };
+
+  const occurredAt = new Date(input.occurredAt ?? now.toISOString());
+  if (Number.isNaN(occurredAt.getTime()))
+    throw new Error('Signal occurredAt must be an ISO-8601 timestamp.');
+  const timestamp = now.toISOString();
+  let result: LeadSignalIngestResult | null = null;
+  await db.transaction(async (tx) => {
+    const existingSignal = await tx
+      .prepare(
+        `SELECT id,contact_id,list_id FROM linkedin_lead_signals WHERE workspace_id=? AND idempotency_key=?`
+      )
+      .get<{ id: string; contact_id: string; list_id: string }>(input.workspaceId, key);
+    if (existingSignal) {
+      result = {
+        signalId: existingSignal.id,
+        contactId: existingSignal.contact_id,
+        listId: existingSignal.list_id,
+        duplicateSignal: true,
+        insertedContact: false,
+        reusedContact: false
+      };
+      return;
+    }
+
+    const lead = await insertLead(tx, input.workspaceId, input.listId, normalized, timestamp);
+    if (!lead.contactId) throw new Error('Signal lead could not be stored.');
+    const signalId = id('lisig');
+    await tx
+      .prepare(
+        `INSERT INTO linkedin_lead_signals
+         (id,workspace_id,list_id,contact_id,signal_kind,idempotency_key,source_ref,occurred_at,metadata_json,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?::jsonb,?)`
+      )
+      .run(
+        signalId,
+        input.workspaceId,
+        input.listId,
+        lead.contactId,
+        input.signalKind,
+        key,
+        input.sourceRef?.trim() || null,
+        occurredAt.toISOString(),
+        JSON.stringify(input.metadata ?? {}),
+        timestamp
+      );
+    result = {
+      signalId,
+      contactId: lead.contactId,
+      listId: input.listId,
+      duplicateSignal: false,
+      insertedContact: lead.inserted,
+      reusedContact: lead.reused
+    };
+  });
+  if (!result) throw new Error('Signal could not be stored.');
+  return result;
+}
+
 export async function importLeadCsv(
   db: Db,
   input: {
@@ -484,7 +612,11 @@ const SOURCE_LIST_KIND: Record<LeadSourceKind, LeadListSourceKind> = {
   search: 'linkedin_search',
   sales_navigator: 'sales_navigator',
   post: 'post_keyword',
-  content: 'post_keyword'
+  content: 'post_keyword',
+  recruiter: 'recruiter',
+  group_members: 'group_members',
+  event_attendees: 'event_attendees',
+  company_employees: 'company_employees'
 };
 
 /**
@@ -606,6 +738,7 @@ export async function updateLeadContact(
     phone?: string | null;
     country?: string | null;
     profileUrl?: string | null;
+    doNotContact?: boolean;
   },
   now: Date = new Date()
 ): Promise<LinkedInLeadContact> {
@@ -660,7 +793,7 @@ export async function updateLeadContact(
     throw new Error(leadClashMessage(normalized, `${clash.first_name} ${clash.last_name}`.trim()));
   const row = await db
     .prepare(
-      `UPDATE linkedin_lead_contacts SET first_name=?,last_name=?,company=?,email=?,phone=?,country=?,profile_url=?,dedupe_key=?,updated_at=? WHERE workspace_id=? AND id=? RETURNING ${CONTACT_SELECT}`
+      `UPDATE linkedin_lead_contacts SET first_name=?,last_name=?,company=?,email=?,phone=?,country=?,profile_url=?,dedupe_key=?,do_not_contact=COALESCE(?,do_not_contact),updated_at=? WHERE workspace_id=? AND id=? RETURNING ${CONTACT_SELECT}`
     )
     .get<ContactRow>(
       normalized.firstName,
@@ -671,6 +804,7 @@ export async function updateLeadContact(
       normalized.country,
       normalized.profileUrl,
       normalized.dedupeKey,
+      input.doNotContact === undefined ? null : input.doNotContact,
       now.toISOString(),
       input.workspaceId,
       input.contactId

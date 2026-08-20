@@ -66,6 +66,8 @@ export const OWNER_SEAT_KEY = 'owner';
 export interface LinkedInSeat {
   workspaceId: string;
   seatKey: string;
+  ownerUserId: string | null;
+  ownerName: string | null;
   label: string;
   profileUrl: string | null;
   /** 'YYYY-MM-DD', or null. INFORMATIONAL -- nothing paces off it. */
@@ -205,6 +207,7 @@ export function describeSeatProxy(raw: string | null): SeatProxyView | null {
  * a claim.
  */
 export interface SeatPatch {
+  ownerUserId?: string | null;
   label?: string;
   profileUrl?: string | null;
   accountOpenedOn?: string | null;
@@ -241,6 +244,8 @@ export interface SeatPatch {
 interface SeatRow {
   workspace_id: string;
   seat_key: string;
+  owner_user_id: string | null;
+  owner_name: string | null;
   label: string;
   profile_url: string | null;
   account_opened_on: string | null;
@@ -283,6 +288,8 @@ interface SeatRow {
 const SEAT_COLUMNS = `
   workspace_id,
   seat_key,
+  owner_user_id,
+  (SELECT COALESCE(u.name,u.email) FROM users u WHERE u.id=linkedin_seats.owner_user_id) AS owner_name,
   label,
   profile_url,
   TO_CHAR(account_opened_on, 'YYYY-MM-DD') AS account_opened_on,
@@ -350,6 +357,8 @@ function toSeat(row: SeatRow): LinkedInSeat {
   return {
     workspaceId: row.workspace_id,
     seatKey: row.seat_key,
+    ownerUserId: row.owner_user_id,
+    ownerName: row.owner_name,
     label: row.label,
     profileUrl: row.profile_url,
     accountOpenedOn: row.account_opened_on,
@@ -815,12 +824,13 @@ export async function upsertSeat(
     .prepare(
       `
     INSERT INTO linkedin_seats (
-      workspace_id, seat_key, label, profile_url, account_opened_on, connections_count,
+      workspace_id, seat_key, owner_user_id, label, profile_url, account_opened_on, connections_count,
       timezone, activated_at, detected_at, session_valid_at, posture, paused_reason,
       working_days, work_start_minute, work_end_minute, daily_invite_limit,
       daily_message_limit, daily_profile_view_limit, daily_follow_limit, safety_band_override, created_at, updated_at
-    ) VALUES (?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?)
+    ) VALUES (?,?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, seat_key) DO UPDATE SET
+      owner_user_id = COALESCE(excluded.owner_user_id, linkedin_seats.owner_user_id),
       label = excluded.label,
       profile_url = excluded.profile_url,
       account_opened_on = excluded.account_opened_on,
@@ -848,6 +858,7 @@ export async function upsertSeat(
     .run(
       workspaceId,
       seatKey,
+      patch.ownerUserId === undefined ? (existing?.ownerUserId ?? null) : patch.ownerUserId,
       label.trim(),
       patch.profileUrl === undefined ? (existing?.profileUrl ?? null) : patch.profileUrl,
       accountOpenedOn,

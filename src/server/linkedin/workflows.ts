@@ -599,6 +599,8 @@ export interface LinkedInWorkflow {
   id: string;
   workspaceId: string;
   name: string;
+  scope: 'workspace' | 'personal';
+  ownerUserId: string | null;
   steps: WorkflowStep[];
   version: number;
   createdAt: string;
@@ -609,6 +611,8 @@ interface WorkflowRow {
   id: string;
   workspace_id: string;
   name: string;
+  scope: string;
+  owner_user_id: string | null;
   steps_json: unknown;
   version: number;
   created_at: string;
@@ -650,6 +654,8 @@ function toWorkflow(row: WorkflowRow): LinkedInWorkflow {
     id: row.id,
     workspaceId: row.workspace_id,
     name: row.name,
+    scope: row.scope === 'personal' ? 'personal' : 'workspace',
+    ownerUserId: row.owner_user_id,
     steps: parseSteps(row.steps_json),
     version: Number(row.version),
     createdAt: row.created_at,
@@ -657,12 +663,26 @@ function toWorkflow(row: WorkflowRow): LinkedInWorkflow {
   };
 }
 
-export async function listWorkflows(db: Db, workspaceId: string): Promise<LinkedInWorkflow[]> {
-  const rows = await db
-    .prepare(
-      `SELECT id,workspace_id,name,steps_json,version,created_at,updated_at FROM linkedin_workflows WHERE workspace_id=? ORDER BY updated_at DESC`
-    )
-    .all<WorkflowRow>(workspaceId);
+export async function listWorkflows(
+  db: Db,
+  workspaceId: string,
+  viewerUserId?: string
+): Promise<LinkedInWorkflow[]> {
+  const rows = viewerUserId
+    ? await db
+        .prepare(
+          `SELECT id,workspace_id,name,scope,owner_user_id,steps_json,version,created_at,updated_at
+           FROM linkedin_workflows
+           WHERE workspace_id=? AND (scope='workspace' OR owner_user_id=?)
+           ORDER BY updated_at DESC`
+        )
+        .all<WorkflowRow>(workspaceId, viewerUserId)
+    : await db
+        .prepare(
+          `SELECT id,workspace_id,name,scope,owner_user_id,steps_json,version,created_at,updated_at
+           FROM linkedin_workflows WHERE workspace_id=? ORDER BY updated_at DESC`
+        )
+        .all<WorkflowRow>(workspaceId);
   return rows.map(toWorkflow);
 }
 
@@ -673,7 +693,7 @@ export async function getWorkflow(
 ): Promise<LinkedInWorkflow | undefined> {
   const row = await db
     .prepare(
-      `SELECT id,workspace_id,name,steps_json,version,created_at,updated_at FROM linkedin_workflows WHERE workspace_id=? AND id=?`
+      `SELECT id,workspace_id,name,scope,owner_user_id,steps_json,version,created_at,updated_at FROM linkedin_workflows WHERE workspace_id=? AND id=?`
     )
     .get<WorkflowRow>(workspaceId, workflowId);
   return row ? toWorkflow(row) : undefined;
@@ -681,7 +701,14 @@ export async function getWorkflow(
 
 export async function saveWorkflow(
   db: Db,
-  input: { workspaceId: string; id?: string; name: string; steps: unknown },
+  input: {
+    workspaceId: string;
+    id?: string;
+    name: string;
+    steps: unknown;
+    scope?: 'workspace' | 'personal';
+    ownerUserId?: string | null;
+  },
   now: Date = new Date()
 ): Promise<LinkedInWorkflow> {
   const name = input.name.trim();
@@ -692,21 +719,25 @@ export async function saveWorkflow(
   const row = await db
     .prepare(
       `
-    INSERT INTO linkedin_workflows (id,workspace_id,name,steps_json,version,created_at,updated_at)
-    VALUES (?,?,?,?::jsonb,1,?,?)
+    INSERT INTO linkedin_workflows (id,workspace_id,name,scope,owner_user_id,steps_json,version,created_at,updated_at)
+    VALUES (?,?,?,?,?,?::jsonb,1,?,?)
     ON CONFLICT (id) DO UPDATE SET
       name=EXCLUDED.name,
+      scope=CASE WHEN EXCLUDED.scope IN ('workspace','personal') THEN EXCLUDED.scope ELSE linkedin_workflows.scope END,
+      owner_user_id=COALESCE(EXCLUDED.owner_user_id,linkedin_workflows.owner_user_id),
       steps_json=EXCLUDED.steps_json,
       version=linkedin_workflows.version+1,
       updated_at=EXCLUDED.updated_at
     WHERE linkedin_workflows.workspace_id=EXCLUDED.workspace_id
-    RETURNING id,workspace_id,name,steps_json,version,created_at,updated_at
+    RETURNING id,workspace_id,name,scope,owner_user_id,steps_json,version,created_at,updated_at
   `
     )
     .get<WorkflowRow>(
       workflowId,
       input.workspaceId,
       name,
+      input.scope ?? 'workspace',
+      input.ownerUserId ?? null,
       JSON.stringify(steps),
       timestamp,
       timestamp

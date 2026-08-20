@@ -56,6 +56,8 @@ export interface CampaignSchedule {
 export interface ManagedCampaign {
   id: string;
   workspaceId: string;
+  ownerUserId: string | null;
+  ownerName: string | null;
   name: string;
   status: ManagedCampaignStatus;
   seatKey: string;
@@ -162,6 +164,8 @@ export interface CampaignQueueSummary {
 interface CampaignRow {
   id: string;
   workspace_id: string;
+  owner_user_id: string | null;
+  owner_name: string | null;
   name: string;
   status: CampaignStatus;
   seat_key: string;
@@ -226,7 +230,7 @@ interface MemberRow {
 
 const ACTIVE_MEMBER_STATUSES = ['pending', 'active', 'waiting', 'manual', 'paused'] as const;
 const CAMPAIGN_SELECT = `
-  c.id,c.workspace_id,c.name,c.status,c.seat_key,c.lead_list_id,c.workflow_id,c.sequence_json,
+  c.id,c.workspace_id,c.owner_user_id,(SELECT COALESCE(u.name,u.email) FROM users u WHERE u.id=c.owner_user_id) AS owner_name,c.name,c.status,c.seat_key,c.lead_list_id,c.workflow_id,c.sequence_json,
   c.priority,c.admission_policy_json,c.exclusion_policy_json,c.sender_keys_json,c.mailbox_assignments_json,
   c.scheduled_start_at,c.scheduled_end_at,c.schedule_days_json,c.schedule_start_minute,c.schedule_end_minute,c.end_behavior,c.inmail_credit_cap,c.last_admission_at,
   c.started_at,c.paused_at,c.created_at,c.updated_at,
@@ -337,6 +341,8 @@ function toCampaign(row: CampaignRow): ManagedCampaign {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
+    ownerUserId: row.owner_user_id,
+    ownerName: row.owner_name,
     name: row.name,
     status: row.status,
     seatKey: row.seat_key,
@@ -500,6 +506,7 @@ export async function createManagedCampaign(
   db: Db,
   input: {
     workspaceId: string;
+    ownerUserId?: string | null;
     name: string;
     seatKey?: string;
     senderKeys?: string[];
@@ -554,16 +561,17 @@ export async function createManagedCampaign(
       .prepare(
         `
       INSERT INTO linkedin_campaigns (
-        id,workspace_id,name,status,sequence_json,playbook_run_id,seat_key,sender_keys_json,mailbox_assignments_json,lead_list_id,workflow_id,
+        id,workspace_id,owner_user_id,name,status,sequence_json,playbook_run_id,seat_key,sender_keys_json,mailbox_assignments_json,lead_list_id,workflow_id,
         priority,admission_policy_json,exclusion_policy_json,scheduled_start_at,scheduled_end_at,schedule_days_json,
         schedule_start_minute,schedule_end_minute,end_behavior,inmail_credit_cap,created_at,updated_at
       )
-      VALUES (?,?,?,'draft',?::jsonb,NULL,?,?::jsonb,?::jsonb,?,?,?,?::jsonb,?::jsonb,?,?,?::jsonb,?,?,?,?, ?,?)
+      VALUES (?,?,?,?,'draft',?::jsonb,NULL,?,?::jsonb,?::jsonb,?,?,?,?::jsonb,?::jsonb,?,?,?::jsonb,?,?,?,?, ?,?)
     `
       )
       .run(
         campaignId,
         input.workspaceId,
+        input.ownerUserId ?? null,
         name,
         JSON.stringify({
           manager: true,
@@ -1874,6 +1882,22 @@ export async function updateManagedCampaignControls(
   return (await getManagedCampaign(db, workspaceId, campaignId)) as ManagedCampaign;
 }
 
+export async function setManagedCampaignOwner(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  ownerUserId: string | null,
+  now: Date = new Date()
+): Promise<ManagedCampaign> {
+  const result = await db
+    .prepare(
+      'UPDATE linkedin_campaigns SET owner_user_id=?,updated_at=? WHERE workspace_id=? AND id=?'
+    )
+    .run(ownerUserId, now.toISOString(), workspaceId, campaignId);
+  if (result.changes === 0) throw new Error('Campaign not found.');
+  return (await getManagedCampaign(db, workspaceId, campaignId)) as ManagedCampaign;
+}
+
 export async function duplicateManagedCampaign(
   db: Db,
   workspaceId: string,
@@ -1892,6 +1916,7 @@ export async function duplicateManagedCampaign(
     db,
     {
       workspaceId,
+      ownerUserId: campaign.ownerUserId,
       name: (name?.trim() || `${campaign.name} copy`).slice(0, 120),
       senderKeys: campaign.senderKeys,
       leadListId: campaign.leadListId,
@@ -2135,6 +2160,80 @@ export async function skipManagedCampaignMemberStep(
       );
   });
   return true;
+}
+
+function csvCell(value: unknown): string {
+  const text = value === null || value === undefined ? '' : String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+/** Exportable campaign result rows with no internal ledger identifiers required by the recipient. */
+export async function exportManagedCampaignCsv(
+  db: Db,
+  workspaceId: string,
+  campaignId: string
+): Promise<string | null> {
+  const campaign = await getManagedCampaign(db, workspaceId, campaignId);
+  if (!campaign) return null;
+  const rows = await db
+    .prepare(
+      `SELECT m.status,m.step_index,m.admitted_at,m.wave_id,w.ordinal AS wave_ordinal,m.assigned_seat_key,
+              m.exclusion_reason,m.last_failure_reason,l.first_name,l.last_name,l.company,l.email,l.phone,l.country,l.profile_url,
+              COUNT(a.id) FILTER (WHERE a.status IN ('sent','accepted','replied'))::int AS actions_sent,
+              COUNT(a.id) FILTER (WHERE a.status='replied')::int AS replies,
+              COUNT(a.id) FILTER (WHERE a.kind='invite' AND a.status IN ('accepted','replied'))::int AS invites_accepted
+       FROM linkedin_campaign_members m
+       JOIN linkedin_lead_contacts l ON l.id=m.contact_id AND l.workspace_id=m.workspace_id
+       LEFT JOIN linkedin_campaign_waves w ON w.id=m.wave_id AND w.workspace_id=m.workspace_id
+       LEFT JOIN linkedin_actions a ON a.campaign_member_id=m.id AND a.workspace_id=m.workspace_id
+       WHERE m.workspace_id=? AND m.campaign_id=?
+       GROUP BY m.id,w.ordinal,l.id
+       ORDER BY m.created_at,m.id`
+    )
+    .all<Record<string, unknown>>(workspaceId, campaignId);
+  const headers = [
+    'first_name',
+    'last_name',
+    'company',
+    'email',
+    'phone',
+    'country',
+    'linkedin_url',
+    'status',
+    'workflow_step',
+    'wave',
+    'sender',
+    'admitted_at',
+    'actions_sent',
+    'invites_accepted',
+    'replies',
+    'exclusion_reason',
+    'failure_reason'
+  ];
+  const lines = [headers.join(',')];
+  for (const row of rows) {
+    const values = [
+      row.first_name,
+      row.last_name,
+      row.company,
+      row.email,
+      row.phone,
+      row.country,
+      row.profile_url,
+      row.status,
+      Number(row.step_index ?? 0) + 1,
+      row.wave_ordinal,
+      row.assigned_seat_key,
+      row.admitted_at,
+      row.actions_sent,
+      row.invites_accepted,
+      row.replies,
+      row.exclusion_reason,
+      row.last_failure_reason
+    ];
+    lines.push(values.map(csvCell).join(','));
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 export async function recordManagedCampaignAudit(

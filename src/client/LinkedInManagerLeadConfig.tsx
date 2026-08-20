@@ -73,7 +73,12 @@ const SOURCE_LABELS: Record<LeadListSourceKind, string> = {
   csv: 'CSV',
   linkedin_search: 'LinkedIn people search',
   sales_navigator: 'Sales Navigator',
-  post_keyword: 'Post and comment keywords'
+  post_keyword: 'Post and comment keywords',
+  recruiter: 'LinkedIn Recruiter',
+  group_members: 'LinkedIn group',
+  event_attendees: 'LinkedIn event',
+  company_employees: 'LinkedIn company people',
+  signal: 'External signal'
 };
 
 const plural = (count: number, one: string, many = `${one}s`) =>
@@ -182,6 +187,7 @@ interface ContactDraft {
   phone: string;
   country: string;
   profileUrl: string;
+  doNotContact: boolean;
 }
 
 export function LinkedInManagerLeadConfig({
@@ -531,7 +537,8 @@ export function LinkedInManagerLeadConfig({
       email: contact.email ?? '',
       phone: contact.phone ?? '',
       country: contact.country ?? '',
-      profileUrl: contact.profileUrl ?? ''
+      profileUrl: contact.profileUrl ?? '',
+      doNotContact: contact.doNotContact
     });
   };
 
@@ -546,7 +553,8 @@ export function LinkedInManagerLeadConfig({
         email: draft.email.trim() || null,
         phone: draft.phone.trim() || null,
         country: draft.country.trim() || null,
-        profileUrl: draft.profileUrl.trim() || null
+        profileUrl: draft.profileUrl.trim() || null,
+        doNotContact: draft.doNotContact
       });
       setContacts((current) =>
         current.map((contact) => (contact.id === updated.id ? updated : contact))
@@ -1123,6 +1131,17 @@ export function LinkedInManagerLeadConfig({
                               setDraft({ ...draft, profileUrl: event.target.value })
                             }
                           />
+                        </label>
+                        <label className="li-span-2 li-check-row">
+                          <input
+                            type="checkbox"
+                            checked={draft.doNotContact}
+                            onChange={(event) =>
+                              setDraft({ ...draft, doNotContact: event.target.checked })
+                            }
+                          />
+                          Do not contact — exclude this person from every new campaign in this
+                          workspace
                         </label>
                       </div>
                       <p className="li-hint">

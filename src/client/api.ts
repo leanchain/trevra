@@ -1389,6 +1389,37 @@ export async function createLinkedInManagerLeadList(input: {
   ).list;
 }
 
+export async function ingestLinkedInManagerLeadSignal(
+  listId: string,
+  input: {
+    signalKind: 'profile_viewed' | 'post_engaged' | 'event_attended' | 'job_changed';
+    idempotencyKey: string;
+    profileUrl: string;
+    firstName: string;
+    lastName?: string | null;
+    company?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    country?: string | null;
+    sourceRef?: string | null;
+    occurredAt?: string | null;
+    customFields?: Record<string, string>;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<{
+  signalId: string;
+  contactId: string;
+  listId: string;
+  duplicateSignal: boolean;
+  insertedContact: boolean;
+  reusedContact: boolean;
+}> {
+  return request(`/api/linkedin/manager/lead-lists/${encodeURIComponent(listId)}/signals`, {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+}
+
 export interface LinkedInLeadCsvPreview {
   headers: string[];
   mapping: Partial<
@@ -1499,6 +1530,7 @@ export async function updateLinkedInManagerLeadContact(
     phone?: string | null;
     country?: string | null;
     profileUrl?: string | null;
+    doNotContact?: boolean;
   }
 ): Promise<LinkedInLeadContact> {
   return (
@@ -1526,6 +1558,7 @@ export async function getLinkedInManagerWorkflows(): Promise<LinkedInWorkflow[]>
 export async function createLinkedInManagerWorkflow(input: {
   name: string;
   steps: WorkflowStep[];
+  scope?: 'workspace' | 'personal';
 }): Promise<LinkedInWorkflow> {
   return (
     await request<{ workflow: LinkedInWorkflow }>('/api/linkedin/manager/workflows', {
@@ -1537,7 +1570,7 @@ export async function createLinkedInManagerWorkflow(input: {
 
 export async function updateLinkedInManagerWorkflow(
   id: string,
-  input: { name: string; steps: WorkflowStep[] }
+  input: { name: string; steps: WorkflowStep[]; scope?: 'workspace' | 'personal' }
 ): Promise<LinkedInWorkflow> {
   return (
     await request<{ workflow: LinkedInWorkflow }>(
@@ -1757,6 +1790,32 @@ export async function duplicateLinkedInManagedCampaign(
     method: 'POST',
     body: JSON.stringify(name ? { name } : {})
   });
+}
+
+export async function setLinkedInManagedCampaignOwner(
+  id: string,
+  ownerUserId: string | null
+): Promise<ManagedCampaign> {
+  return (
+    await request<{ campaign: ManagedCampaign }>(
+      `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/owner`,
+      { method: 'PATCH', body: JSON.stringify({ ownerUserId }) }
+    )
+  ).campaign;
+}
+
+export async function downloadLinkedInManagedCampaignExport(id: string): Promise<Blob> {
+  const response = await fetch(
+    `/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/export.csv`,
+    {
+      credentials: 'include'
+    }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    throw new ApiError(body.error ?? 'Unable to export campaign', response.status);
+  }
+  return response.blob();
 }
 
 export async function getLinkedInManagedCampaign(

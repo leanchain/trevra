@@ -317,6 +317,7 @@ import {
   getLeadList,
   importLeadCsv,
   importLeadSourceContacts,
+  ingestLeadSignal,
   listLeadContacts,
   listLeadLists,
   removeLeadContact,
@@ -328,7 +329,8 @@ import {
   getWorkflow,
   listWorkflows,
   saveWorkflow,
-  workflowStepsSchema
+  workflowStepsSchema,
+  type LinkedInWorkflow
 } from './linkedin/workflows.js';
 import { runManagedCampaigns } from './linkedin/runner.js';
 import {
@@ -348,6 +350,7 @@ import {
   createManagedCampaign,
   duplicateManagedCampaign,
   endManagedCampaignMember,
+  exportManagedCampaignCsv,
   getManagedCampaign,
   listCampaignMembers,
   listCampaignWaves,
@@ -364,10 +367,12 @@ import {
   resumeManagedCampaignMemberAtStep,
   retryManagedCampaignFailures,
   setCampaignMemberPaused,
+  setManagedCampaignOwner,
   skipManagedCampaignMemberStep,
   startManagedCampaign,
   stopManagedCampaign,
-  updateManagedCampaignControls
+  updateManagedCampaignControls,
+  type ManagedCampaign
 } from './linkedin/managed-campaigns.js';
 // The account spine (migration 039). `accounts/types.ts` is the contract these
 // three modules and this file are written against; nothing here reaches past
@@ -3574,9 +3579,18 @@ export function createApp(db: Db) {
     linkedinRoute(async (req, res) => {
       assertWorkspaceOwner(req, "change a LinkedIn account's limits");
       const input = linkedinManagerSeatCreateSchema.parse(req.body ?? {});
+      const ownerUserId =
+        (await resolveWorkspaceMemberUserId(db, req, input.ownerUserId ?? req.auth!.userId)) ??
+        req.auth!.userId;
       assertSeatProxyUsable(req.auth!.workspaceId, input.seatKey, input.proxyUrl);
       try {
-        const seat = await upsertSeat(db, req.auth!.workspaceId, input, new Date(), input.seatKey);
+        const seat = await upsertSeat(
+          db,
+          req.auth!.workspaceId,
+          { ...input, ownerUserId },
+          new Date(),
+          input.seatKey
+        );
         res.status(201).json({ seat });
       } catch (error) {
         rethrowLinkedInManagerError(error);
@@ -3590,11 +3604,23 @@ export function createApp(db: Db) {
       assertWorkspaceOwner(req, "change a LinkedIn account's limits");
       const seatKey = linkedinSeatKeySchema.parse(String(req.params.seatKey));
       const input = linkedinSeatSchema.parse(req.body ?? {});
+      const ownerUserId =
+        input.ownerUserId === undefined
+          ? undefined
+          : await resolveWorkspaceMemberUserId(db, req, input.ownerUserId);
       assertSeatProxyUsable(req.auth!.workspaceId, seatKey, input.proxyUrl);
       if (!(await getSeat(db, req.auth!.workspaceId, seatKey)))
         throw new LinkedInApiError('LinkedIn account not found', 404);
       try {
-        res.json({ seat: await upsertSeat(db, req.auth!.workspaceId, input, new Date(), seatKey) });
+        res.json({
+          seat: await upsertSeat(
+            db,
+            req.auth!.workspaceId,
+            { ...input, ...(ownerUserId !== undefined ? { ownerUserId } : {}) },
+            new Date(),
+            seatKey
+          )
+        });
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
@@ -3706,7 +3732,7 @@ export function createApp(db: Db) {
   app.get(
     '/api/linkedin/manager/workflows',
     linkedinRoute(async (req, res) => {
-      res.json({ workflows: await listWorkflows(db, req.auth!.workspaceId) });
+      res.json({ workflows: await listWorkflows(db, req.auth!.workspaceId, req.auth!.userId) });
     })
   );
 
@@ -3739,11 +3765,36 @@ export function createApp(db: Db) {
     '/api/linkedin/manager/campaigns',
     linkedinRoute(async (req, res) => {
       const input = linkedinManagedCampaignCreateSchema.parse(req.body ?? {});
+      const senderKeys = input.senderKeys?.length
+        ? input.senderKeys
+        : [input.seatKey ?? OWNER_SEAT_KEY];
+      await assertCanUseLinkedInSeats(db, req, senderKeys, 'create a campaign');
+      const workflow = await getWorkflow(db, req.auth!.workspaceId, input.workflowId);
+      if (
+        !workflow ||
+        (workflow.scope === 'personal' &&
+          workflow.ownerUserId !== req.auth!.userId &&
+          req.auth!.role !== 'owner')
+      )
+        throw new LinkedInApiError('Workflow not found', 404);
       try {
+        const now = new Date();
         const created = await createManagedCampaign(
           db,
-          { workspaceId: req.auth!.workspaceId, ...input },
-          new Date()
+          { workspaceId: req.auth!.workspaceId, ownerUserId: req.auth!.userId, ...input },
+          now
+        );
+        await recordManagedCampaignAudit(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            actorId: req.auth!.userId,
+            eventType: 'linkedin_campaign.created',
+            entityType: 'linkedin_campaign',
+            entityId: created.campaign.id,
+            metadata: { leadListId: input.leadListId, workflowId: input.workflowId, senderKeys }
+          },
+          now
         );
         res.status(201).json(created);
       } catch (error) {
@@ -3762,6 +3813,22 @@ export function createApp(db: Db) {
         campaign,
         members: await listCampaignMembers(db, req.auth!.workspaceId, campaignId)
       });
+    })
+  );
+
+  app.get(
+    '/api/linkedin/manager/campaigns/:id/export.csv',
+    linkedinRoute(async (req, res) => {
+      const campaignId = String(req.params.id);
+      const campaign = await getManagedCampaign(db, req.auth!.workspaceId, campaignId);
+      if (!campaign) throw new LinkedInApiError('Managed campaign not found', 404);
+      const csv = await exportManagedCampaignCsv(db, req.auth!.workspaceId, campaignId);
+      if (csv === null) throw new LinkedInApiError('Managed campaign not found', 404);
+      const safeName =
+        campaign.name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'campaign';
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}-results.csv"`);
+      res.send(csv);
     })
   );
 
@@ -3832,40 +3899,119 @@ export function createApp(db: Db) {
   app.patch(
     '/api/linkedin/manager/campaigns/:id/controls',
     linkedinRoute(async (req, res) => {
-      assertWorkspaceOwner(req, 'change managed campaign controls');
+      const campaignId = String(req.params.id);
+      await assertCanManageManagedCampaign(db, req, campaignId, 'change managed campaign controls');
       const input = linkedinManagedCampaignControlsSchema.parse(req.body ?? {});
+      if (input.senderKeys)
+        await assertCanUseLinkedInSeats(db, req, input.senderKeys, 'assign campaign senders');
       try {
-        res.json({
-          campaign: await updateManagedCampaignControls(
-            db,
-            req.auth!.workspaceId,
-            String(req.params.id),
-            input,
-            new Date()
-          )
-        });
+        const now = new Date();
+        const campaign = await updateManagedCampaignControls(
+          db,
+          req.auth!.workspaceId,
+          campaignId,
+          input,
+          now
+        );
+        await recordManagedCampaignAudit(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            actorId: req.auth!.userId,
+            eventType: 'linkedin_campaign.controls_changed',
+            entityType: 'linkedin_campaign',
+            entityId: campaignId,
+            metadata: input
+          },
+          now
+        );
+        res.json({ campaign });
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
     })
   );
 
+  app.patch(
+    '/api/linkedin/manager/campaigns/:id/owner',
+    linkedinRoute(async (req, res) => {
+      assertWorkspaceOwner(req, 'transfer campaign ownership');
+      const campaignId = String(req.params.id);
+      const campaign = await getManagedCampaign(db, req.auth!.workspaceId, campaignId);
+      if (!campaign) throw new LinkedInApiError('Managed campaign not found', 404);
+      const input = z
+        .object({ ownerUserId: z.string().trim().min(1).max(200).nullable() })
+        .strict()
+        .parse(req.body ?? {});
+      const ownerUserId = await resolveWorkspaceMemberUserId(db, req, input.ownerUserId);
+      if (ownerUserId && ownerUserId !== req.auth!.userId) {
+        for (const seatKey of campaign.senderKeys) {
+          const seat = await getSeat(db, req.auth!.workspaceId, seatKey);
+          if (!seat || seat.ownerUserId !== ownerUserId)
+            throw new LinkedInApiError(
+              `Assign LinkedIn account “${seat?.label ?? seatKey}” to that teammate before transferring this campaign.`,
+              409
+            );
+        }
+      }
+      const now = new Date();
+      const updated = await setManagedCampaignOwner(
+        db,
+        req.auth!.workspaceId,
+        campaignId,
+        ownerUserId,
+        now
+      );
+      await recordManagedCampaignAudit(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          actorId: req.auth!.userId,
+          eventType: 'linkedin_campaign.owner_changed',
+          entityType: 'linkedin_campaign',
+          entityId: campaignId,
+          metadata: { ownerUserId }
+        },
+        now
+      );
+      res.json({ campaign: updated });
+    })
+  );
+
   app.post(
     '/api/linkedin/manager/campaigns/:id/apply-latest-workflow',
     linkedinRoute(async (req, res) => {
-      assertWorkspaceOwner(req, 'apply a newer workflow version to pending campaign leads');
+      const campaignId = String(req.params.id);
+      await assertCanManageManagedCampaign(
+        db,
+        req,
+        campaignId,
+        'apply a newer workflow version to pending campaign leads'
+      );
       z.object({})
         .strict()
         .parse(req.body ?? {});
       try {
-        res.json(
-          await applyLatestWorkflowToPendingMembers(
-            db,
-            req.auth!.workspaceId,
-            String(req.params.id),
-            new Date()
-          )
+        const now = new Date();
+        const result = await applyLatestWorkflowToPendingMembers(
+          db,
+          req.auth!.workspaceId,
+          campaignId,
+          now
         );
+        await recordManagedCampaignAudit(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            actorId: req.auth!.userId,
+            eventType: 'linkedin_campaign.workflow_upgraded',
+            entityType: 'linkedin_campaign',
+            entityId: campaignId,
+            metadata: result
+          },
+          now
+        );
+        res.json(result);
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
@@ -3875,7 +4021,8 @@ export function createApp(db: Db) {
   app.post(
     '/api/linkedin/manager/campaigns/:id/duplicate',
     linkedinRoute(async (req, res) => {
-      assertWorkspaceOwner(req, 'duplicate a managed campaign');
+      const campaignId = String(req.params.id);
+      await assertCanManageManagedCampaign(db, req, campaignId, 'duplicate a managed campaign');
       const input = z
         .object({ name: z.string().trim().min(1).max(200).optional() })
         .strict()
@@ -3903,19 +4050,33 @@ export function createApp(db: Db) {
   app.post(
     '/api/linkedin/manager/campaigns/:id/start',
     linkedinRoute(async (req, res) => {
-      assertWorkspaceOwner(req, 'start a managed campaign');
+      const campaignId = String(req.params.id);
+      const campaign = await assertCanManageManagedCampaign(
+        db,
+        req,
+        campaignId,
+        'start a managed campaign'
+      );
+      await assertCanUseLinkedInSeats(db, req, campaign.senderKeys, 'start this campaign');
       z.object({})
         .strict()
         .parse(req.body ?? {});
       try {
-        res.json({
-          campaign: await startManagedCampaign(
-            db,
-            req.auth!.workspaceId,
-            String(req.params.id),
-            new Date()
-          )
-        });
+        const now = new Date();
+        const started = await startManagedCampaign(db, req.auth!.workspaceId, campaignId, now);
+        await recordManagedCampaignAudit(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            actorId: req.auth!.userId,
+            eventType: 'linkedin_campaign.started',
+            entityType: 'linkedin_campaign',
+            entityId: campaignId,
+            metadata: { workflowVersion: started.workflowVersion }
+          },
+          now
+        );
+        res.json({ campaign: started });
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
@@ -3944,7 +4105,20 @@ export function createApp(db: Db) {
         throw new LinkedInApiError('Managed campaign not found', 404);
       }
       try {
-        res.json({ campaign: await pauseManagedCampaign(db, workspaceId, campaignId, new Date()) });
+        const now = new Date();
+        const paused = await pauseManagedCampaign(db, workspaceId, campaignId, now);
+        await recordManagedCampaignAudit(
+          db,
+          {
+            workspaceId,
+            actorId: req.auth!.userId,
+            eventType: 'linkedin_campaign.paused',
+            entityType: 'linkedin_campaign',
+            entityId: campaignId
+          },
+          now
+        );
+        res.json({ campaign: paused });
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
@@ -3957,19 +4131,26 @@ export function createApp(db: Db) {
   app.post(
     '/api/linkedin/manager/campaigns/:id/stop',
     linkedinRoute(async (req, res) => {
-      assertWorkspaceOwner(req, 'stop a managed campaign');
+      const campaignId = String(req.params.id);
+      await assertCanManageManagedCampaign(db, req, campaignId, 'stop a managed campaign');
       z.object({})
         .strict()
         .parse(req.body ?? {});
       try {
-        res.json({
-          campaign: await stopManagedCampaign(
-            db,
-            req.auth!.workspaceId,
-            String(req.params.id),
-            new Date()
-          )
-        });
+        const now = new Date();
+        const stopped = await stopManagedCampaign(db, req.auth!.workspaceId, campaignId, now);
+        await recordManagedCampaignAudit(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            actorId: req.auth!.userId,
+            eventType: 'linkedin_campaign.stopped',
+            entityType: 'linkedin_campaign',
+            entityId: campaignId
+          },
+          now
+        );
+        res.json({ campaign: stopped });
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
@@ -3979,12 +4160,13 @@ export function createApp(db: Db) {
   app.post(
     '/api/linkedin/manager/campaigns/:id/retry-failures',
     linkedinRoute(async (req, res) => {
-      assertWorkspaceOwner(req, 'retry managed campaign failures');
+      const campaignId = String(req.params.id);
+      await assertCanManageManagedCampaign(db, req, campaignId, 'retry managed campaign failures');
       const input = z
         .object({ memberIds: z.array(z.string().trim().min(1).max(160)).max(1000).default([]) })
         .strict()
         .parse(req.body ?? {});
-      const campaignId = String(req.params.id);
+
       if (!(await getManagedCampaign(db, req.auth!.workspaceId, campaignId)))
         throw new LinkedInApiError('Managed campaign not found', 404);
       const now = new Date();
@@ -4014,7 +4196,13 @@ export function createApp(db: Db) {
   app.post(
     '/api/linkedin/manager/campaigns/:id/move-members',
     linkedinRoute(async (req, res) => {
-      assertWorkspaceOwner(req, 'move managed campaign leads to a follow-up campaign');
+      const sourceCampaignId = String(req.params.id);
+      await assertCanManageManagedCampaign(
+        db,
+        req,
+        sourceCampaignId,
+        'move managed campaign leads to a follow-up campaign'
+      );
       const input = z
         .object({
           targetCampaignId: z.string().trim().min(1).max(160),
@@ -4022,7 +4210,7 @@ export function createApp(db: Db) {
         })
         .strict()
         .parse(req.body ?? {});
-      const sourceCampaignId = String(req.params.id);
+
       const now = new Date();
       const result = await moveManagedCampaignMembers(
         db,
@@ -4074,6 +4262,7 @@ export function createApp(db: Db) {
         .parse(req.body ?? {});
       const now = new Date();
       const memberId = String(req.params.id);
+      await assertCanManageCampaignMember(db, req, memberId, 're-run a campaign condition');
       const changed = await rerunManagedCampaignCondition(
         db,
         req.auth!.workspaceId,
@@ -4108,6 +4297,7 @@ export function createApp(db: Db) {
         .parse(req.body ?? {});
       const now = new Date();
       const memberId = String(req.params.id);
+      await assertCanManageCampaignMember(db, req, memberId, 'resume a lead at a workflow step');
       const changed = await resumeManagedCampaignMemberAtStep(
         db,
         req.auth!.workspaceId,
@@ -4144,6 +4334,7 @@ export function createApp(db: Db) {
         .parse(req.body ?? {});
       const now = new Date();
       const memberId = String(req.params.id);
+      await assertCanManageCampaignMember(db, req, memberId, 'end automation for a lead');
       const ended = await endManagedCampaignMember(
         db,
         req.auth!.workspaceId,
@@ -4177,6 +4368,7 @@ export function createApp(db: Db) {
         .parse(req.body ?? {});
       const now = new Date();
       const memberId = String(req.params.id);
+      await assertCanManageCampaignMember(db, req, memberId, 'skip a workflow step');
       const skipped = await skipManagedCampaignMemberStep(db, req.auth!.workspaceId, memberId, now);
       if (!skipped) throw new LinkedInApiError('Skippable campaign member step not found', 404);
       await recordManagedCampaignAudit(
@@ -4206,6 +4398,8 @@ export function createApp(db: Db) {
   app.post(
     '/api/linkedin/manager/members/:id/pause',
     linkedinRoute(async (req, res) => {
+      const memberId = String(req.params.id);
+      await assertCanManageCampaignMember(db, req, memberId, 'pause or resume a lead');
       const input = z
         .object({ paused: z.boolean().default(true) })
         .strict()
@@ -4213,7 +4407,7 @@ export function createApp(db: Db) {
       const changed = await setCampaignMemberPaused(
         db,
         req.auth!.workspaceId,
-        String(req.params.id),
+        memberId,
         input.paused,
         new Date()
       );
@@ -4229,13 +4423,15 @@ export function createApp(db: Db) {
   app.post(
     '/api/linkedin/manager/members/:id/resume',
     linkedinRoute(async (req, res) => {
+      const memberId = String(req.params.id);
+      await assertCanManageCampaignMember(db, req, memberId, 'resume a lead');
       z.object({})
         .strict()
         .parse(req.body ?? {});
       const resumed = await setCampaignMemberPaused(
         db,
         req.auth!.workspaceId,
-        String(req.params.id),
+        memberId,
         false,
         new Date()
       );
@@ -4247,12 +4443,9 @@ export function createApp(db: Db) {
   app.delete(
     '/api/linkedin/manager/members/:id',
     linkedinRoute(async (req, res) => {
-      const removed = await removeCampaignMember(
-        db,
-        req.auth!.workspaceId,
-        String(req.params.id),
-        new Date()
-      );
+      const memberId = String(req.params.id);
+      await assertCanManageCampaignMember(db, req, memberId, 'remove a lead from a campaign');
+      const removed = await removeCampaignMember(db, req.auth!.workspaceId, memberId, new Date());
       if (!removed) throw new LinkedInApiError('Active campaign member not found', 404);
       res.json({ removed: true });
     })
@@ -4462,6 +4655,52 @@ export function createApp(db: Db) {
   );
 
   /**
+   * Ingest one externally observed intent signal into a signal-backed list.
+   *
+   * This writes evidence + lead-list membership only. If a running campaign is
+   * watching the list, its normal runner tick sees the new membership through
+   * `enrolNewContacts` and adds the member as Pending. No signal can skip the
+   * admission controller or create an outbound action directly.
+   */
+  app.post(
+    '/api/linkedin/manager/lead-lists/:id/signals',
+    linkedinRoute(async (req, res) => {
+      const input = z
+        .object({
+          signalKind: z.enum(['profile_viewed', 'post_engaged', 'event_attended', 'job_changed']),
+          idempotencyKey: z.string().trim().min(1).max(300),
+          profileUrl: z.string().trim().url().max(1000),
+          firstName: z.string().trim().min(1).max(200),
+          lastName: z.string().trim().max(200).nullable().optional(),
+          company: z.string().trim().max(300).nullable().optional(),
+          email: z.string().trim().email().max(320).nullable().optional(),
+          phone: z.string().trim().max(100).nullable().optional(),
+          country: z.string().trim().max(120).nullable().optional(),
+          sourceRef: z.string().trim().max(2000).nullable().optional(),
+          occurredAt: z.string().datetime().nullable().optional(),
+          customFields: z.record(z.string()).optional(),
+          metadata: z.record(z.unknown()).optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      try {
+        const result = await ingestLeadSignal(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            listId: String(req.params.id),
+            ...input
+          },
+          new Date()
+        );
+        res.status(result.duplicateSignal ? 200 : 201).json(result);
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
+    })
+  );
+
+  /**
    * Delete a lead list, and everyone on it.
    *
    * `deleteLeadList` owns the refusal, not this route: a list a RUNNING
@@ -4552,11 +4791,19 @@ export function createApp(db: Db) {
     '/api/linkedin/manager/workflows',
     linkedinRoute(async (req, res) => {
       const input = linkedinWorkflowWriteSchema.parse(req.body ?? {});
+      const scope = input.scope ?? (req.auth!.role === 'owner' ? 'workspace' : 'personal');
+      if (scope === 'workspace') assertWorkspaceOwner(req, 'create workspace workflow templates');
       try {
         res.status(201).json({
           workflow: await saveWorkflow(
             db,
-            { workspaceId: req.auth!.workspaceId, name: input.name, steps: input.steps },
+            {
+              workspaceId: req.auth!.workspaceId,
+              name: input.name,
+              steps: input.steps,
+              scope,
+              ownerUserId: scope === 'personal' ? req.auth!.userId : null
+            },
             new Date()
           )
         });
@@ -4570,8 +4817,14 @@ export function createApp(db: Db) {
     '/api/linkedin/manager/workflows/:id',
     linkedinRoute(async (req, res) => {
       const input = linkedinWorkflowWriteSchema.parse(req.body ?? {});
-      if (!(await getWorkflow(db, req.auth!.workspaceId, String(req.params.id))))
-        throw new LinkedInApiError('Workflow not found', 404);
+      const existingWorkflow = await getWorkflow(db, req.auth!.workspaceId, String(req.params.id));
+      if (!existingWorkflow) throw new LinkedInApiError('Workflow not found', 404);
+      assertCanManageWorkflow(req, existingWorkflow, 'edit this workflow');
+      if (input.scope && input.scope !== existingWorkflow.scope)
+        throw new LinkedInApiError(
+          'Workflow scope cannot be changed in place; duplicate it into the desired library instead.',
+          409
+        );
       try {
         res.json({
           workflow: await saveWorkflow(
@@ -4580,7 +4833,9 @@ export function createApp(db: Db) {
               workspaceId: req.auth!.workspaceId,
               id: String(req.params.id),
               name: input.name,
-              steps: input.steps
+              steps: input.steps,
+              scope: existingWorkflow.scope,
+              ownerUserId: existingWorkflow.ownerUserId
             },
             new Date()
           )
@@ -5927,6 +6182,94 @@ function assertWorkspaceOwner(req: AuthedRequest, act: string): void {
     throw new LinkedInApiError(`Only the workspace owner can ${act}`, 403);
 }
 
+async function resolveWorkspaceMemberUserId(
+  db: Db,
+  req: AuthedRequest,
+  candidate: string | null | undefined
+): Promise<string | null> {
+  if (!candidate) return null;
+
+  let trevra = await db
+    .prepare('SELECT id,email FROM users WHERE id=?')
+    .get<{ id: string; email: string }>(candidate);
+  let authUser = trevra
+    ? await db
+        .prepare('SELECT id,email FROM "user" WHERE lower(email)=lower(?) LIMIT 1')
+        .get<{ id: string; email: string }>(trevra.email)
+    : await db
+        .prepare('SELECT id,email FROM "user" WHERE id=? LIMIT 1')
+        .get<{ id: string; email: string }>(candidate);
+
+  if (!trevra && authUser) {
+    trevra = await db
+      .prepare('SELECT id,email FROM users WHERE lower(email)=lower(?) LIMIT 1')
+      .get<{ id: string; email: string }>(authUser.email);
+  }
+  if (!trevra || !authUser)
+    throw new LinkedInApiError('Assigned owner must be a member of this workspace', 400);
+
+  const member = await db
+    .prepare('SELECT id FROM member WHERE "organizationId"=? AND "userId"=? LIMIT 1')
+    .get<{ id: string }>(req.auth!.workspaceId, authUser.id);
+  if (!member) throw new LinkedInApiError('Assigned owner must be a member of this workspace', 400);
+  return trevra.id;
+}
+
+async function assertCanUseLinkedInSeats(
+  db: Db,
+  req: AuthedRequest,
+  seatKeys: readonly string[],
+  act: string
+): Promise<void> {
+  if (req.auth!.role === 'owner') return;
+  for (const seatKey of [...new Set(seatKeys)]) {
+    const seat = await getSeat(db, req.auth!.workspaceId, seatKey);
+    if (!seat) throw new LinkedInApiError('LinkedIn account not found', 404);
+    if (seat.ownerUserId !== req.auth!.userId)
+      throw new LinkedInApiError(
+        `Only the assigned account owner can ${act} with “${seat.label}”`,
+        403
+      );
+  }
+}
+
+async function assertCanManageManagedCampaign(
+  db: Db,
+  req: AuthedRequest,
+  campaignId: string,
+  act: string
+): Promise<ManagedCampaign> {
+  const campaign = await getManagedCampaign(db, req.auth!.workspaceId, campaignId);
+  if (!campaign) throw new LinkedInApiError('Managed campaign not found', 404);
+  if (req.auth!.role !== 'owner' && campaign.ownerUserId !== req.auth!.userId)
+    throw new LinkedInApiError(`Only the campaign owner or workspace owner can ${act}`, 403);
+  return campaign;
+}
+
+function assertCanManageWorkflow(
+  req: AuthedRequest,
+  workflow: LinkedInWorkflow,
+  act: string
+): void {
+  if (req.auth!.role === 'owner') return;
+  if (workflow.scope !== 'personal' || workflow.ownerUserId !== req.auth!.userId)
+    throw new LinkedInApiError(`Only the workflow owner or workspace owner can ${act}`, 403);
+}
+
+async function assertCanManageCampaignMember(
+  db: Db,
+  req: AuthedRequest,
+  memberId: string,
+  act: string
+): Promise<string> {
+  const row = await db
+    .prepare('SELECT campaign_id FROM linkedin_campaign_members WHERE workspace_id=? AND id=?')
+    .get<{ campaign_id: string }>(req.auth!.workspaceId, memberId);
+  if (!row) throw new LinkedInApiError('Campaign member not found', 404);
+  await assertCanManageManagedCampaign(db, req, row.campaign_id, act);
+  return row.campaign_id;
+}
+
 /* ===========================================================================
  * Workspace export and erasure: which tables, and how they are found.
  * ======================================================================== */
@@ -6734,6 +7077,7 @@ function operatorLimitField(limit: LinkedInOperatorLimit) {
 const linkedinSeatSchema = z
   .object({
     seatKey: linkedinSeatKeySchema.optional(),
+    ownerUserId: z.string().trim().min(1).max(160).nullable().optional(),
     label: z.string().trim().min(1).max(120).optional(),
     profileUrl: z.string().trim().max(500).nullable().optional(),
     accountOpenedOn: z.string().trim().max(20).nullable().optional(),
@@ -6813,7 +7157,17 @@ const linkedinLeadListCreateSchema = z
     seatKey: linkedinSeatKeySchema.default(OWNER_SEAT_KEY),
     name: z.string().trim().min(1).max(200),
     sourceKind: z
-      .enum(['csv', 'linkedin_search', 'sales_navigator', 'post_keyword'])
+      .enum([
+        'csv',
+        'linkedin_search',
+        'sales_navigator',
+        'post_keyword',
+        'recruiter',
+        'group_members',
+        'event_attendees',
+        'company_employees',
+        'signal'
+      ])
       .default('csv'),
     sourceRef: z.string().trim().max(2000).nullable().optional()
   })
@@ -6839,13 +7193,15 @@ const linkedinLeadContactUpdateSchema = z
     email: z.string().trim().max(320).nullable().optional(),
     phone: z.string().trim().max(100).nullable().optional(),
     country: z.string().trim().max(120).nullable().optional(),
-    profileUrl: z.string().trim().max(1000).nullable().optional()
+    profileUrl: z.string().trim().max(1000).nullable().optional(),
+    doNotContact: z.boolean().optional()
   })
   .strict();
 
 const linkedinWorkflowWriteSchema = z
   .object({
     name: z.string().trim().min(1).max(200),
+    scope: z.enum(['workspace', 'personal']).optional(),
     steps: workflowStepsSchema
   })
   .strict();
