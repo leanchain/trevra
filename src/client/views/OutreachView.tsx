@@ -101,7 +101,10 @@ export function OutreachView({
             className="mgr-inputs"
             id="leads"
             onToggle={(event) =>
-              setOpenFolds((current) => ({ ...current, leads: event.currentTarget.open }))
+              setOpenFolds((current) => ({
+                ...current,
+                leads: current.leads || event.currentTarget.open
+              }))
             }
           >
             <summary>Find people</summary>
@@ -113,7 +116,10 @@ export function OutreachView({
             className="mgr-inputs"
             id="accounts"
             onToggle={(event) =>
-              setOpenFolds((current) => ({ ...current, accounts: event.currentTarget.open }))
+              setOpenFolds((current) => ({
+                ...current,
+                accounts: current.accounts || event.currentTarget.open
+              }))
             }
           >
             <summary>Target accounts</summary>
