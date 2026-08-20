@@ -7,14 +7,14 @@ code actually joins today, and what the call says the spine should be.
 
 **Does the plan take anything from a lead source? No.** Verified end to end:
 
-| Piece | Reads from | Writes to |
-| --- | --- | --- |
-| `linkedin_leads` (migrations/030) | the LinkedIn walk | nothing downstream reads it server-side |
-| `gtm.source-leads` (`src/server/research/source.ts:47`) | a free-text ICP query to a provider | returns `CandidateCompany[]` to the caller, stored nowhere |
-| `gtm.channel-plan` (`src/server/channels/plan.ts:182`) | caller-supplied `audience: string[]` — free-form tags | a plan object |
-| LinkedIn campaign targets (`src/server/app.ts:2049`) | CSV upload, 500 cap | `linkedin_actions` |
-| `gtm.watch-signal` (`src/server/skills/signal.ts:350`) | the target's own site: careers, pricing, homepage | a standalone skill result, attached to no entity |
-| `gtm.scout-threads` (`src/server/outreach/scout.ts`) | devto, github, hn, lobsters, mastodon, reddit, SO | a standalone skill result |
+| Piece                                                   | Reads from                                            | Writes to                                                  |
+| ------------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------- |
+| `linkedin_leads` (migrations/030)                       | the LinkedIn walk                                     | nothing downstream reads it server-side                    |
+| `gtm.source-leads` (`src/server/research/source.ts:47`) | a free-text ICP query to a provider                   | returns `CandidateCompany[]` to the caller, stored nowhere |
+| `gtm.channel-plan` (`src/server/channels/plan.ts:182`)  | caller-supplied `audience: string[]` — free-form tags | a plan object                                              |
+| LinkedIn campaign targets (`src/server/app.ts:2049`)    | CSV upload, 500 cap                                   | `linkedin_actions`                                         |
+| `gtm.watch-signal` (`src/server/skills/signal.ts:350`)  | the target's own site: careers, pricing, homepage     | a standalone skill result, attached to no entity           |
+| `gtm.scout-threads` (`src/server/outreach/scout.ts`)    | devto, github, hn, lobsters, mastodon, reddit, SO     | a standalone skill result                                  |
 
 The only join that exists is client-side: `sendToBuilder` in `LinkedInLeads.tsx`
 stages picked profile URLs into the campaign builder's targets textarea
@@ -34,7 +34,7 @@ the screens are all about.
 - Data quality first; **funding is a bad trigger** — noisy, late, and every rep
   chases the same event. We have no funding trigger, which turns out to be fine.
 - **Layer signals**: hiring + site change + public commentary, combined, to infer
-  intent *before* it pops. Relevance beats volume. Our `watch-signal` diffs are
+  intent _before_ it pops. Relevance beats volume. Our `watch-signal` diffs are
   exactly this shape (hiring-up, pricing-changed, tech-added) but fire once, by
   hand, on one URL you type.
 - **Real-time alerts on a known account list** beat broad discovery. Guido will
@@ -52,7 +52,7 @@ the two ends and none of the middle.
    tags, `source` (csv | sourced | lead-walk). One CSV/paste import, 500 rows.
    This is the missing noun; nothing else can be built cleanly without it.
 2. **`account_signals`** — one row per observed change, `(account_id, kind,
-   observed_at, evidence_url, payload)`. `watch-signal` writes here instead of
+observed_at, evidence_url, payload)`. `watch-signal` writes here instead of
    returning into the void. Dedupe on (account, kind, fingerprint).
 3. **Put the signal sweep on the worker cycle** — `runAutomationCycle` gains a
    signal pass over accounts due for a re-check, paced. This is the whole
@@ -65,7 +65,7 @@ the two ends and none of the middle.
    typed audience tags, and campaign targets come from an account selection
    rather than a CSV.
 6. **Demote LinkedIn walking to a source, not the front door.** A lead walk
-   *imports into accounts* like every other source. `/outreach/leads` stops
+   _imports into accounts_ like every other source. The Find people fold stops
    being where lead generation begins.
 
 Order matters: 1 and 2 unblock everything, 3 makes it a product rather than a

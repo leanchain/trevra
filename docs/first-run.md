@@ -34,16 +34,16 @@ step complete.
 
 Four verifiable steps, in order:
 
-1. **Add the LinkedIn account you will send from** → `/outreach`
+1. **Add the LinkedIn account you will send from** → `/outreach/settings`
    - name the sending account;
    - set timezone, working days/hours and operator ceilings;
    - connect/sign in when the deployment supports browser execution.
-2. **Build one lead list** → `/outreach/manager`
-   - import people directly, or use `/outreach/leads` to turn a LinkedIn source
-     into a reviewed list.
-3. **Build one workflow** → `/outreach/manager`
+2. **Build one lead list** → `/outreach/new`
+   - import people directly, or use the Find people fold at `/outreach#leads`
+     to turn a LinkedIn source into a reviewed list.
+3. **Build one workflow** → `/outreach/new`
    - view, invite, message, follow, wait, or stop for a manual message.
-4. **Create the campaign** → `/outreach/manager`
+4. **Create the campaign** → `/outreach/new`
    - pick one sending account, one lead list and one workflow;
    - creation sends nothing; Start is a separate decision.
 
@@ -57,10 +57,10 @@ list, workflow, campaign. There are no permanently-untracked circles.
 
 ### Related prospecting routes
 
-- `/outreach/accounts` — **Target accounts**: ranked companies and the evidence
+- `/outreach#accounts` — **Target accounts**: ranked companies and the evidence
   behind their score. This used to be a sixth primary nav destination at `/leads`.
   `/leads` remains a compatibility alias and is replaced with this route.
-- `/outreach/leads` — **Find people**: turn LinkedIn searches, posts or keyword
+- `/outreach#leads` — **Find people**: turn LinkedIn searches, posts or keyword
   sources into people, then save reviewed results into lead lists.
 
 These are ways to produce campaign inputs, not primary app destinations.
