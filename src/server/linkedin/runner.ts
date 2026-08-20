@@ -77,6 +77,8 @@ const BUDGETED_KINDS = [
   'inmail',
   'profile_view',
   'follow',
+  'unfollow',
+  'disconnect',
   'like',
   'endorse'
 ] as const;
@@ -197,6 +199,10 @@ function kindForStep(step: WorkflowStep): BudgetedKind | null {
       return 'profile_view';
     case 'follow':
       return 'follow';
+    case 'unfollow':
+      return 'unfollow';
+    case 'disconnect':
+      return 'disconnect';
     case 'like_post':
       return 'like';
     case 'endorse_skills':
@@ -207,7 +213,9 @@ function kindForStep(step: WorkflowStep): BudgetedKind | null {
 }
 
 function admissionKindForStep(step: WorkflowStep): AdmissionKind | null {
-  return kindForStep(step);
+  const kind = kindForStep(step);
+  if (kind === 'unfollow' || kind === 'disconnect') return 'follow';
+  return kind;
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> {
@@ -691,6 +699,7 @@ function queuePriorityForStep(
   if (step.action === 'message' || step.action === 'manual_message' || step.action === 'monitor')
     score += 300;
   if (step.action === 'connection_request') score += 150;
+  if (step.action === 'unfollow' || step.action === 'disconnect') score -= 250;
   if (
     step.action === 'profile_view' ||
     step.action === 'follow' ||
@@ -936,7 +945,15 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         if (kind) backlog[kind] = (backlog[kind] ?? 0) + Number(row.total);
       }
       const available: Partial<Record<AdmissionKind, number>> = {};
-      for (const kind of BUDGETED_KINDS) {
+      for (const kind of [
+        'invite',
+        'dm',
+        'inmail',
+        'profile_view',
+        'follow',
+        'like',
+        'endorse'
+      ] as const) {
         available[kind] = usableSenders.reduce(
           (sum, sender) => sum + (budgetBySeat.get(sender.key)?.get(kind) ?? 0),
           0

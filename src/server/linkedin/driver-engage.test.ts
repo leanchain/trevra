@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { SELECTORS, type LinkedInDriverResult, type LinkedInLocator, type LinkedInPage } from './driver.js';
+import {
+  SELECTORS,
+  type LinkedInDriverResult,
+  type LinkedInLocator,
+  type LinkedInPage
+} from './driver.js';
 import {
   ENGAGE_SELECTORS,
+  disconnectProfile,
   endorseSkills,
   engageGapMs,
   followProfile,
   likeRecentPost,
+  unfollowProfile,
   type EngageOptions
 } from './driver-engage.js';
 
@@ -38,11 +45,13 @@ interface FakeSpec {
   landOn?: (url: string) => string;
   gotoError?: string;
   clickError?: string;
-  onClick?: (selector: string, counts: Counts) => void;
+  texts?: Record<string, string | null>;
+  onClick?: (selector: string, counts: Counts, texts: Record<string, string | null>) => void;
 }
 
 function fakePage(spec: FakeSpec = {}) {
   const counts: Counts = { ...(spec.counts ?? {}) };
+  const texts: Record<string, string | null> = { ...(spec.texts ?? {}) };
   const visited: string[] = [];
   const clicked: string[] = [];
   const slept: number[] = [];
@@ -54,12 +63,12 @@ function fakePage(spec: FakeSpec = {}) {
     click: async () => {
       clicked.push(selector);
       if (spec.clickError) throw new Error(spec.clickError);
-      spec.onClick?.(selector, counts);
+      spec.onClick?.(selector, counts, texts);
     },
     fill: async () => {
       throw new Error('an engagement routine must never fill a field');
     },
-    textContent: async () => null
+    textContent: async () => texts[selector] ?? null
   });
 
   const page: LinkedInPage = {
@@ -83,11 +92,9 @@ function fakePage(spec: FakeSpec = {}) {
 
 describe('target resolution', () => {
   it('refuses a non-LinkedIn target without navigating anywhere', async () => {
-    const routines: Array<(page: LinkedInPage, target: string, opts: EngageOptions) => Promise<LinkedInDriverResult>> = [
-      followProfile,
-      likeRecentPost,
-      endorseSkills
-    ];
+    const routines: Array<
+      (page: LinkedInPage, target: string, opts: EngageOptions) => Promise<LinkedInDriverResult>
+    > = [followProfile, unfollowProfile, disconnectProfile, likeRecentPost, endorseSkills];
     for (const routine of routines) {
       const fake = fakePage();
       const result = await routine(fake.page, 'https://evil.example/steal', { sleep: fake.sleep });
@@ -98,7 +105,9 @@ describe('target resolution', () => {
   });
 
   it('reduces a profile URL with query junk to the canonical form before appending sub-pages', async () => {
-    const fake = fakePage({ counts: { [ENGAGE_SELECTORS.activityPost]: 1, [ENGAGE_SELECTORS.firstPostLike]: 1 } });
+    const fake = fakePage({
+      counts: { [ENGAGE_SELECTORS.activityPost]: 1, [ENGAGE_SELECTORS.firstPostLike]: 1 }
+    });
     await likeRecentPost(fake.page, TARGET, { sleep: fake.sleep });
     expect(fake.visited).toEqual([FEED]);
 
@@ -138,7 +147,8 @@ describe('followProfile', () => {
       counts: { [SELECTORS.moreActionsButton]: 1 },
       onClick: (selector, counts) => {
         if (selector === SELECTORS.moreActionsButton) counts[ENGAGE_SELECTORS.followInMoreMenu] = 1;
-        if (selector === ENGAGE_SELECTORS.followInMoreMenu) counts[ENGAGE_SELECTORS.followingState] = 1;
+        if (selector === ENGAGE_SELECTORS.followInMoreMenu)
+          counts[ENGAGE_SELECTORS.followingState] = 1;
       }
     });
     const result = await followProfile(fake.page, TARGET);
@@ -150,7 +160,9 @@ describe('followProfile', () => {
   // and Following controls share an aria-label prefix, so a naive selector
   // UNFOLLOWS somebody. Reading the state first is what prevents it.
   it('never clicks anything when the seat already follows the target', async () => {
-    const fake = fakePage({ counts: { [ENGAGE_SELECTORS.followingState]: 1, [ENGAGE_SELECTORS.followButton]: 1 } });
+    const fake = fakePage({
+      counts: { [ENGAGE_SELECTORS.followingState]: 1, [ENGAGE_SELECTORS.followButton]: 1 }
+    });
     const result = await followProfile(fake.page, TARGET);
     expect(result.ok).toBe(false);
     expect(result.failureKind).toBe('already_connected');
@@ -192,9 +204,92 @@ describe('followProfile', () => {
   });
 
   it('is unknown when the click itself is interrupted', async () => {
-    const fake = fakePage({ counts: { [ENGAGE_SELECTORS.followButton]: 1 }, clickError: 'Target closed' });
+    const fake = fakePage({
+      counts: { [ENGAGE_SELECTORS.followButton]: 1 },
+      clickError: 'Target closed'
+    });
     const result = await followProfile(fake.page, TARGET);
     expect(result.failureKind).toBe('unknown');
+  });
+});
+
+describe('profile cleanup actions', () => {
+  it('unfollows only when the current following state is visible and verifies the reversal', async () => {
+    const fake = fakePage({
+      counts: { [ENGAGE_SELECTORS.followingState]: 1 },
+      onClick: (selector, counts) => {
+        if (selector === ENGAGE_SELECTORS.followingState) {
+          counts[ENGAGE_SELECTORS.followingState] = 0;
+          counts[ENGAGE_SELECTORS.followButton] = 1;
+        }
+      }
+    });
+    const result = await unfollowProfile(fake.page, TARGET);
+    expect(result).toMatchObject({ ok: true, failureKind: null, externalRef: PROFILE });
+    expect(fake.clicked).toEqual([ENGAGE_SELECTORS.followingState]);
+  });
+
+  it('treats an already-unfollowed profile as a definite no-op', async () => {
+    const fake = fakePage({ counts: { [ENGAGE_SELECTORS.followButton]: 1 } });
+    const result = await unfollowProfile(fake.page, TARGET);
+    expect(result).toMatchObject({ ok: false, failureKind: 'not_found' });
+    expect(fake.clicked).toEqual([]);
+  });
+
+  it('refuses disconnect before clicking when 1st-degree eligibility cannot be proven', async () => {
+    const unreadable = fakePage({ counts: { [SELECTORS.degreeBadge]: 1 } });
+    expect(await disconnectProfile(unreadable.page, TARGET)).toMatchObject({
+      ok: false,
+      failureKind: 'selector_drift'
+    });
+    expect(unreadable.clicked).toEqual([]);
+
+    const second = fakePage({
+      counts: { [SELECTORS.degreeBadge]: 1 },
+      texts: { [SELECTORS.degreeBadge]: '2nd' }
+    });
+    expect(await disconnectProfile(second.page, TARGET)).toMatchObject({
+      ok: false,
+      failureKind: 'not_found'
+    });
+    expect(second.clicked).toEqual([]);
+  });
+
+  it('disconnects only after verified 1st-degree, More-menu and confirmation controls', async () => {
+    const fake = fakePage({
+      counts: { [SELECTORS.degreeBadge]: 1, [SELECTORS.moreActionsButton]: 1 },
+      texts: { [SELECTORS.degreeBadge]: '1st' },
+      onClick: (selector, counts, texts) => {
+        if (selector === SELECTORS.moreActionsButton)
+          counts[ENGAGE_SELECTORS.removeConnectionInMoreMenu] = 1;
+        if (selector === ENGAGE_SELECTORS.removeConnectionInMoreMenu)
+          counts[ENGAGE_SELECTORS.removeConnectionConfirm] = 1;
+        if (selector === ENGAGE_SELECTORS.removeConnectionConfirm)
+          texts[SELECTORS.degreeBadge] = '2nd';
+      }
+    });
+    const result = await disconnectProfile(fake.page, TARGET);
+    expect(result).toMatchObject({ ok: true, failureKind: null, externalRef: PROFILE });
+    expect(fake.clicked).toEqual([
+      SELECTORS.moreActionsButton,
+      ENGAGE_SELECTORS.removeConnectionInMoreMenu,
+      ENGAGE_SELECTORS.removeConnectionConfirm
+    ]);
+  });
+
+  it('holds ambiguity after the destructive disconnect control rather than retrying', async () => {
+    const fake = fakePage({
+      counts: { [SELECTORS.degreeBadge]: 1, [SELECTORS.moreActionsButton]: 1 },
+      texts: { [SELECTORS.degreeBadge]: '1st' },
+      onClick: (selector, counts) => {
+        if (selector === SELECTORS.moreActionsButton)
+          counts[ENGAGE_SELECTORS.removeConnectionInMoreMenu] = 1;
+      }
+    });
+    expect(await disconnectProfile(fake.page, TARGET)).toMatchObject({
+      ok: false,
+      failureKind: 'unknown'
+    });
   });
 });
 
@@ -287,9 +382,12 @@ describe('endorseSkills', () => {
       counts: { [ENGAGE_SELECTORS.endorseButton]: n },
       onClick: (selector, counts) => {
         if (selector === ENGAGE_SELECTORS.endorseButton) {
-          counts[ENGAGE_SELECTORS.endorseButton] = Math.max(0, (counts[ENGAGE_SELECTORS.endorseButton] ?? 0) - 1);
+          counts[ENGAGE_SELECTORS.endorseButton] = Math.max(
+            0,
+            (counts[ENGAGE_SELECTORS.endorseButton] ?? 0) - 1
+          );
         }
-        extra.onClick?.(selector, counts);
+        extra.onClick?.(selector, counts, {});
       },
       ...(extra.landOn ? { landOn: extra.landOn } : {})
     });
@@ -345,19 +443,30 @@ describe('endorseSkills', () => {
   it('dismisses the proficiency dialog rather than answering it', async () => {
     const fake = skillsPage(5, {
       onClick: (selector, counts) => {
-        if (selector === ENGAGE_SELECTORS.endorseButton) counts[ENGAGE_SELECTORS.endorseDialogDismiss] = 1;
-        if (selector === ENGAGE_SELECTORS.endorseDialogDismiss) counts[ENGAGE_SELECTORS.endorseDialogDismiss] = 0;
+        if (selector === ENGAGE_SELECTORS.endorseButton)
+          counts[ENGAGE_SELECTORS.endorseDialogDismiss] = 1;
+        if (selector === ENGAGE_SELECTORS.endorseDialogDismiss)
+          counts[ENGAGE_SELECTORS.endorseDialogDismiss] = 0;
       }
     });
     const result = await endorseSkills(fake.page, TARGET, { sleep: fake.sleep, limit: 2 });
     expect(result.ok).toBe(true);
-    expect(fake.clicked.filter((entry) => entry === ENGAGE_SELECTORS.endorseDialogDismiss)).toHaveLength(2);
+    expect(
+      fake.clicked.filter((entry) => entry === ENGAGE_SELECTORS.endorseDialogDismiss)
+    ).toHaveLength(2);
   });
 
   it('pauses between endorsements, seeded, and never before the first', async () => {
     const fake = skillsPage(5);
-    await endorseSkills(fake.page, TARGET, { sleep: fake.sleep, seed: 'batch-2:action-7', limit: 3 });
-    expect(fake.slept).toEqual([engageGapMs('batch-2:action-7:1'), engageGapMs('batch-2:action-7:2')]);
+    await endorseSkills(fake.page, TARGET, {
+      sleep: fake.sleep,
+      seed: 'batch-2:action-7',
+      limit: 3
+    });
+    expect(fake.slept).toEqual([
+      engageGapMs('batch-2:action-7:1'),
+      engageGapMs('batch-2:action-7:2')
+    ]);
   });
 
   it('reports a mid-loop wall with the count that already registered', async () => {
@@ -379,7 +488,10 @@ describe('endorseSkills', () => {
   });
 
   it('is unknown when a click is interrupted, and says how many had registered', async () => {
-    const fake = fakePage({ counts: { [ENGAGE_SELECTORS.endorseButton]: 4 }, clickError: 'Target closed' });
+    const fake = fakePage({
+      counts: { [ENGAGE_SELECTORS.endorseButton]: 4 },
+      clickError: 'Target closed'
+    });
     const result = await endorseSkills(fake.page, TARGET, { sleep: fake.sleep });
     expect(result.failureKind).toBe('unknown');
     expect(result.detail).toContain('0 endorsement(s)');

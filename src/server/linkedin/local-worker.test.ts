@@ -323,6 +323,14 @@ function fakeDriver(
       calls.push({ method: 'followProfile', target });
       return answer(target, calls.length - 1);
     },
+    unfollowProfile: async (_page, target) => {
+      calls.push({ method: 'unfollowProfile', target });
+      return answer(target, calls.length - 1);
+    },
+    disconnectProfile: async (_page, target) => {
+      calls.push({ method: 'disconnectProfile', target });
+      return answer(target, calls.length - 1);
+    },
     // `seed` is recorded as the body, because the thing worth asserting about
     // these two is that the BATCH-SCOPED seed reaches them: it is what makes
     // the in-action click jitter reproducible, and a driver handed no seed
@@ -393,6 +401,8 @@ describe('dispatch is exhaustive', () => {
       }),
       action({ id: 'lact_view', kind: 'profile_view', targetRef: 'in/d', body: null }),
       action({ id: 'lact_follow', kind: 'follow', targetRef: 'in/e', body: null }),
+      action({ id: 'lact_unfollow', kind: 'unfollow', targetRef: 'in/e2', body: null }),
+      action({ id: 'lact_disconnect', kind: 'disconnect', targetRef: 'in/e3', body: null }),
       action({ id: 'lact_like', kind: 'like', targetRef: 'in/f', body: null }),
       action({ id: 'lact_endorse', kind: 'endorse', targetRef: 'in/g', body: null })
     ]);
@@ -406,13 +416,15 @@ describe('dispatch is exhaustive', () => {
       evaluate: async () => verdict()
     });
 
-    expect(result.executed).toBe(7);
+    expect(result.executed).toBe(9);
     expect(calls.map((entry) => entry.method)).toEqual([
       'sendInvite',
       'sendDm',
       'sendReply',
       'viewProfile',
       'followProfile',
+      'unfollowProfile',
+      'disconnectProfile',
       'likeRecentPost',
       'endorseSkills'
     ]);

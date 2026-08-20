@@ -176,6 +176,16 @@ describe('volume ceilings', () => {
     expect(check(capped, 'rolling-24h').passed).toBe(false);
   });
 
+  it('shares one relationship-change bucket across follow, unfollow and disconnect', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 10; index += 1) await log('follow', 'sent', 1);
+    for (let index = 0; index < 5; index += 1) await log('unfollow', 'sent', 1);
+    for (let index = 0; index < 5; index += 1) await log('disconnect', 'sent', 1);
+    const verdict = await guard({ kind: 'unfollow' }, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(verdict, 'rolling-24h').passed).toBe(false);
+    expect(check(verdict, 'rolling-24h').detail).toContain('20 of 20');
+  });
+
   it('blocks the invite that would exceed the rolling 24h band', async () => {
     await seat('2026-01-01');
     for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 1);

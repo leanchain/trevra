@@ -51,6 +51,8 @@ export const PACED_KIND_VALUES = [
   'inmail',
   'profile_view',
   'follow',
+  'unfollow',
+  'disconnect',
   'like',
   'endorse'
 ] as const;
@@ -161,6 +163,9 @@ export const LINKEDIN_LIMITS: Readonly<
   inmail: { warmup: { perDay: 1, perMonth: 50 }, steady: { perDay: 3, perMonth: 50 } },
   profile_view: { warmup: { perDay: 30 }, steady: { perDay: 45 } },
   follow: { warmup: { perDay: 16 }, steady: { perDay: 20 } },
+  // Relationship cleanup shares Follow's conservative band; guard.ts also aggregates the three kinds into one bucket.
+  unfollow: { warmup: { perDay: 16 }, steady: { perDay: 20 } },
+  disconnect: { warmup: { perDay: 16 }, steady: { perDay: 20 } },
   like: { warmup: { perDay: 10 }, steady: { perDay: 30 } },
   endorse: { warmup: { perDay: 3 }, steady: { perDay: 8 } }
 };
@@ -382,6 +387,8 @@ export function seatOperatorLimit(seat: LinkedInSeat | undefined, kind: PacedKin
     case 'profile_view':
       return seat.dailyProfileViewLimit;
     case 'follow':
+    case 'unfollow':
+    case 'disconnect':
       return seat.dailyFollowLimit;
     default:
       return null;

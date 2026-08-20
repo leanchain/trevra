@@ -63,6 +63,8 @@ export const KIND_LABELS: Record<PacedKind, string> = {
   inmail: 'InMail (not sent by Trevra)',
   profile_view: 'Profile views',
   follow: 'Follows',
+  unfollow: 'Unfollows',
+  disconnect: 'Connection removals',
   like: 'Likes',
   endorse: 'Endorsements'
 };

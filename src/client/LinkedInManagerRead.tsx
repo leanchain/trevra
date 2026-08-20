@@ -156,6 +156,8 @@ const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   message: 'Send a message',
   manual_message: 'A message you write yourself',
   follow: 'Follow them',
+  unfollow: 'Unfollow them',
+  disconnect: 'Remove the connection',
   withdraw_pending: 'Withdraw the invite if still pending',
   like_post: 'Like a recent post',
   endorse_skills: 'Endorse skills',

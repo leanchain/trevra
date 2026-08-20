@@ -198,6 +198,18 @@ const ACTION_META: Record<Action, ActionMeta> = {
     chip: 'li-kind-profile_view',
     blurb: 'Follows the profile.'
   },
+  unfollow: {
+    label: 'Unfollow profile',
+    Icon: UserMinus,
+    chip: 'li-kind-profile_view',
+    blurb: 'Low-priority reversible cleanup. Shares the Follow safety bucket.'
+  },
+  disconnect: {
+    label: 'Remove connection',
+    Icon: UserMinus,
+    chip: 'li-kind-inmail',
+    blurb: 'Advanced destructive cleanup; only runs for a verified 1st-degree connection.'
+  },
   withdraw_pending: {
     label: 'Withdraw pending invite',
     Icon: UserMinus,
@@ -293,6 +305,8 @@ const ACTION_META: Record<Action, ActionMeta> = {
 const ACTION_ORDER: readonly Action[] = [
   'profile_view',
   'follow',
+  'unfollow',
+  'disconnect',
   'like_post',
   'endorse_skills',
   'connection_request',
@@ -592,8 +606,14 @@ function blankStep(action: Action, stepId: string, delayBefore: WorkflowDelay): 
   const base = { id: stepId, delayBefore };
   if (action === 'connection_request') return { ...base, action, config: { message: '' } };
   if (action === 'withdraw_pending') return { ...base, action, config: { afterDays: 14 } };
-  if (action === 'profile_view' || action === 'follow' || action === 'like_post')
+  if (
+    action === 'profile_view' ||
+    action === 'follow' ||
+    action === 'unfollow' ||
+    action === 'like_post'
+  )
     return { ...base, action, config: {} };
+  if (action === 'disconnect') return { ...base, action, config: { acknowledgeDestructive: true } };
   if (action === 'endorse_skills') return { ...base, action, config: { maxSkills: 3 } };
   if (action === 'message')
     return {
@@ -1812,6 +1832,14 @@ function WorkflowStepCard({
             ? `If this step is still waiting ${step.sla.amount} ${step.sla.unit} after it becomes due, Trevra escalates it ahead of newer continuation work. This never raises LinkedIn limits.`
             : 'Optional: set a follow-up SLA to escalate this step if it waits too long. It changes priority, not LinkedIn limits.'}
         </p>
+
+        {step.action === 'disconnect' && (
+          <div className="li-span-2 mgr-danger-note">
+            <strong>Destructive action.</strong> Trevra verifies the lead is a 1st-degree connection
+            before exposing LinkedIn’s Remove connection control. Unknown relationship state stops
+            the batch; it never guesses.
+          </div>
+        )}
 
         {step.action === 'connection_request' && (
           <div className="li-span-2">

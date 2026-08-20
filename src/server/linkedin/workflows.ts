@@ -189,6 +189,14 @@ export const workflowStepSchema = z.discriminatedUnion('action', [
     })
     .strict(),
   z.object({ ...common, action: z.literal('follow'), config: z.object({}).strict() }).strict(),
+  z.object({ ...common, action: z.literal('unfollow'), config: z.object({}).strict() }).strict(),
+  z
+    .object({
+      ...common,
+      action: z.literal('disconnect'),
+      config: z.object({ acknowledgeDestructive: z.literal(true) }).strict()
+    })
+    .strict(),
   z.object({ ...common, action: z.literal('like_post'), config: z.object({}).strict() }).strict(),
   z
     .object({

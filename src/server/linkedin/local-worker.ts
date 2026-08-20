@@ -148,7 +148,16 @@ import {
  * in an hour is a ban signal however harmless one like is.
  */
 export type ExecutableKind =
-  'invite' | 'dm' | 'reply' | 'inmail' | 'profile_view' | 'follow' | 'like' | 'endorse';
+  | 'invite'
+  | 'dm'
+  | 'reply'
+  | 'inmail'
+  | 'profile_view'
+  | 'follow'
+  | 'unfollow'
+  | 'disconnect'
+  | 'like'
+  | 'endorse';
 export const EXECUTABLE_KINDS: readonly ExecutableKind[] = [
   'invite',
   'dm',
@@ -156,6 +165,8 @@ export const EXECUTABLE_KINDS: readonly ExecutableKind[] = [
   'inmail',
   'profile_view',
   'follow',
+  'unfollow',
+  'disconnect',
   'like',
   'endorse'
 ];
@@ -928,6 +939,10 @@ async function execute(
     }
     case 'follow':
       return deps.driver.followProfile(deps.page, action.targetRef);
+    case 'unfollow':
+      return deps.driver.unfollowProfile(deps.page, action.targetRef);
+    case 'disconnect':
+      return deps.driver.disconnectProfile(deps.page, action.targetRef);
     case 'like':
       return deps.driver.likeRecentPost(deps.page, action.targetRef, { seed });
     case 'endorse':

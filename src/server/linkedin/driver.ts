@@ -51,7 +51,13 @@
 
 // The sibling selector tables. Type-only in the other direction, so this pair
 // of cycles resolves before either module body needs a binding from the other.
-import { endorseSkills, followProfile, likeRecentPost } from './driver-engage.js';
+import {
+  disconnectProfile,
+  endorseSkills,
+  followProfile,
+  likeRecentPost,
+  unfollowProfile
+} from './driver-engage.js';
 import { publishPost } from './driver-post.js';
 import {
   listConversations,
@@ -276,6 +282,8 @@ export interface LinkedInDriver {
   ): Promise<LinkedInThreadListing | LinkedInDriverResult>;
   viewProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
   followProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
+  unfollowProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
+  disconnectProfile(page: LinkedInPage, target: string): Promise<LinkedInDriverResult>;
   /** `seed` is the batch-scoped seed for the deterministic in-action click jitter. */
   likeRecentPost(
     page: LinkedInPage,
@@ -1905,6 +1913,8 @@ export const playwrightDriver: LinkedInDriver = {
   listConversations,
   viewProfile,
   followProfile,
+  unfollowProfile,
+  disconnectProfile,
   likeRecentPost,
   endorseSkills,
   publishPost,

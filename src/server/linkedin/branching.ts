@@ -63,7 +63,13 @@ import type { LinkedInActionKind, LinkedInActionStatus } from './actions.js';
  * because a UI that renders a dropdown needs a value for the default arm and
  * a stored sequence that spells it out must not be refused.
  */
-export const BRANCH_ON_VALUES = ['accepted', 'replied', 'not_accepted', 'not_replied', 'always'] as const;
+export const BRANCH_ON_VALUES = [
+  'accepted',
+  'replied',
+  'not_accepted',
+  'not_replied',
+  'always'
+] as const;
 
 export type BranchOn = (typeof BRANCH_ON_VALUES)[number];
 
@@ -151,6 +157,8 @@ const KIND_NOUNS: Record<LinkedInActionKind, string> = {
   profile_view: 'profile view',
   comment: 'comment',
   follow: 'follow',
+  unfollow: 'unfollow',
+  disconnect: 'disconnect',
   like: 'like',
   endorse: 'skill endorsement',
   withdraw: 'invite withdrawal'
@@ -202,7 +210,9 @@ export function conditionRejection(steps: readonly BranchableStep[]): string | n
 
       const referenced = seenBefore.get(ofStepId);
       if (!referenced) {
-        const laterInList = steps.some((other) => typeof other.id === 'string' && other.id.trim() === ofStepId);
+        const laterInList = steps.some(
+          (other) => typeof other.id === 'string' && other.id.trim() === ofStepId
+        );
         return laterInList
           ? `Step '${stepId}' waits on step '${ofStepId}', which comes after it in this sequence; a branch can only read a step that has already run.`
           : `Step '${stepId}' waits on step '${ofStepId}', which is not in this sequence, so nothing would ever decide whether this step runs.`;
@@ -376,9 +386,15 @@ function instantOf(value: string | Date | null | undefined): number | null {
 }
 
 /** The row this step produced, by step id when the ledger has one, else by kind. */
-function rowForStep(step: BranchableStep, actions: readonly BranchActionRow[]): BranchActionRow | undefined {
+function rowForStep(
+  step: BranchableStep,
+  actions: readonly BranchActionRow[]
+): BranchActionRow | undefined {
   const stepId = typeof step.id === 'string' ? step.id.trim() : '';
-  const byStepId = actions.find((action) => typeof action.stepId === 'string' && action.stepId.trim() === stepId && stepId !== '');
+  const byStepId = actions.find(
+    (action) =>
+      typeof action.stepId === 'string' && action.stepId.trim() === stepId && stepId !== ''
+  );
   if (byStepId) return byStepId;
   // A 'skipped' row released the target (022's replay guard excludes it), so a
   // live row for the same kind is the better answer when both exist.
@@ -451,9 +467,13 @@ export function evaluateBranches(input: BranchEvaluationInput): BranchEvaluation
           verdict = 'failed';
           reason = `Step '${stepId}' waits on step '${ofStepId}', which was skipped for this target, so its outcome will never arrive.`;
         } else {
-          const positive = condition.on === 'accepted' || condition.on === 'not_accepted' ? acceptedTri(row.status) : repliedTri(row.status);
+          const positive =
+            condition.on === 'accepted' || condition.on === 'not_accepted'
+              ? acceptedTri(row.status)
+              : repliedTri(row.status);
           const wantsPositive = condition.on === 'accepted' || condition.on === 'replied';
-          const verb = condition.on === 'accepted' || condition.on === 'not_accepted' ? 'accepted' : 'replied';
+          const verb =
+            condition.on === 'accepted' || condition.on === 'not_accepted' ? 'accepted' : 'replied';
 
           if (wantsPositive) {
             if (positive === 'yes') {
@@ -492,7 +512,14 @@ export function evaluateBranches(input: BranchEvaluationInput): BranchEvaluation
       }
     }
 
-    const outcome: BranchOutcome = verdict === 'failed' ? 'skipped' : verdict === 'undecided' ? 'pending' : dayReached ? 'due' : 'pending';
+    const outcome: BranchOutcome =
+      verdict === 'failed'
+        ? 'skipped'
+        : verdict === 'undecided'
+          ? 'pending'
+          : dayReached
+            ? 'due'
+            : 'pending';
 
     decisions.push({ stepId, outcome, notBefore, reason });
     if (stepId) {
@@ -504,8 +531,14 @@ export function evaluateBranches(input: BranchEvaluationInput): BranchEvaluation
   return {
     targetRef: input.targetRef,
     decisions,
-    due: decisions.filter((decision) => decision.outcome === 'due').map((decision) => decision.stepId),
-    skipped: decisions.filter((decision) => decision.outcome === 'skipped').map((decision) => decision.stepId),
-    pending: decisions.filter((decision) => decision.outcome === 'pending').map((decision) => decision.stepId)
+    due: decisions
+      .filter((decision) => decision.outcome === 'due')
+      .map((decision) => decision.stepId),
+    skipped: decisions
+      .filter((decision) => decision.outcome === 'skipped')
+      .map((decision) => decision.stepId),
+    pending: decisions
+      .filter((decision) => decision.outcome === 'pending')
+      .map((decision) => decision.stepId)
   };
 }

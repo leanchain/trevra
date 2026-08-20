@@ -49,6 +49,29 @@ describe('LinkedIn manager workflows', () => {
     expect(delayMilliseconds(result[2].delayBefore)).toBe(14 * 24 * 3_600_000);
   });
 
+  it('requires an explicit destructive acknowledgement for disconnect steps', () => {
+    expect(() =>
+      workflowStepsSchema.parse([
+        {
+          id: 'disconnect',
+          action: 'disconnect',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {}
+        }
+      ])
+    ).toThrow();
+    expect(
+      workflowStepsSchema.parse([
+        {
+          id: 'disconnect',
+          action: 'disconnect',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { acknowledgeDestructive: true }
+        }
+      ])[0].action
+    ).toBe('disconnect');
+  });
+
   it('rejects unsupported merge variables and duplicate step ids', () => {
     expect(() =>
       workflowStepsSchema.parse([

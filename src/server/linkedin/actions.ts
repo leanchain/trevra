@@ -45,6 +45,8 @@ export const ACTION_KIND_VALUES = [
   'profile_view',
   'comment',
   'follow',
+  'unfollow',
+  'disconnect',
   'like',
   'endorse',
   'withdraw'
