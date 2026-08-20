@@ -1,129 +1,130 @@
 # What Trevra owns, and what it borrows
 
-The question this page answers: *why is there a `clients` table at all when the
-team already pays for HubSpot?*
+**Canonical product boundary:** `docs/superpowers/specs/2026-08-20-agent-native-gtm-os-design.md`.
 
 ---
 
 ## The rule
 
-**Trevra is a system of REFERENCE, not a system of RECORD** — except for the
-revenue graph, which no CRM models.
+**Trevra is the system of record for GTM operational state and agent execution. It is not the system of record for the rest of the business.**
 
-Every object below has exactly one owner. Where the owner is external, Trevra
-keeps a thin projection so it can reason and rank, and treats the external
-system as truth on conflict.
+Trevra must contain enough local state to let founders and agents safely operate GTM even when no CRM is connected. When an external system owns a richer business record, Trevra keeps only the projection/link/evidence required to operate GTM and treats the external owner as authoritative for its own fields.
 
-| Object | System of record | What Trevra keeps | Why |
-|---|---|---|---|
-| Contacts, companies | **HubSpot / Attio** | `clients` — 10 columns, plus `contact_identities` | Ranking needs a name, an email and a last-touch date. It does not need 300 CRM properties. |
-| Deals, pipeline stage | **HubSpot / Attio** | `opportunities` projection | Stage is the CRM's to move. Trevra reads it. |
-| Invoices, payments | **Xero / QuickBooks / Stripe** | `invoices`, `payments` projection | Accounting is regulated and reconciled. Never Trevra's call. |
-| Email | **Gmail / Outlook** | `messages` projection | The mailbox is the archive. |
-| Calendar | **Google / Microsoft** | — | Read at query time. |
-| **Contract → scope → milestone → deliverable** | **Trevra** | full model | **No CRM has this.** HubSpot stops at closed-won; accounting starts at invoice. This is the gap. |
-| **Skill runs, playbook runs, approvals, evidence** | **Trevra** | full model | The audit trail of what an agent did and who approved it. Nothing else owns it. |
-| **Outreach threads, post log, cooldowns** | **Trevra** | full model | Rate limits are per-workspace operational state. A CRM has no concept of a subreddit cooldown. |
+| Object                                                                       | Trevra role                                                                                | External owner when present                                      |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| People used by GTM                                                           | **GTM operational truth**: explicit identity, provenance, channel identities, suppressions | CRM may own richer contact properties                            |
+| Accounts targeted by GTM                                                     | **GTM operational truth**: domain, targeting, signals, score, tags                         | CRM may own richer company properties                            |
+| Inbound submissions                                                          | **System of record**                                                                       | Website/landing runtime only transports them                     |
+| GTM signals                                                                  | **System of record**                                                                       | Source systems remain evidence providers                         |
+| Campaigns / playbooks                                                        | **System of record**                                                                       | —                                                                |
+| Conversations required for Trevra execution                                  | **GTM operational truth**                                                                  | Gmail/Outlook/LinkedIn remain provider archives where applicable |
+| Suppressions / consent enforcement                                           | **System of record for Trevra execution**                                                  | Provider/CRM may contribute additional constraints               |
+| Agent runs, skill runs, approvals, evidence, prepared actions                | **System of record**                                                                       | —                                                                |
+| Opportunity-lite                                                             | **Minimal native GTM state when needed**                                                   | CRM may be authoritative for its canonical deal/pipeline record  |
+| CRM-specific custom properties, ownership, territory, pipeline configuration | Projection/link only                                                                       | **CRM**                                                          |
+| Calendar                                                                     | Read/use for GTM                                                                           | **Google / Microsoft**                                           |
+| Product analytics                                                            | Not Trevra core                                                                            | Product analytics system                                         |
+| Accounting, invoices, payments                                               | Not Trevra core                                                                            | Accounting/payment systems                                       |
+| Contracts, projects, milestones, deliverables                                | Not Trevra core                                                                            | Appropriate external business system                             |
 
-`clients` is 10 columns. That is the evidence for the claim: it is an index, not
-a CRM.
+Legacy tables for non-GTM concepts may remain during migration. They are not part of the target architecture and new GTM features must not depend on them.
 
 ---
 
-## Write-back: activity, never records
+## CRM boundary
 
-Until now the CRM connectors were read-only, which meant a founder could approve
-outreach, watch it post — and the team's CRM never learned. For anyone whose
-SDRs live in HubSpot, that made the work invisible.
+Trevra should work without a CRM but should not try to replace one.
 
-Write-back now exists, and is deliberately the narrowest thing that closes the
-loop:
+### Without a CRM
 
-| Trevra writes | Trevra never writes |
-|---|---|
-| A note on an **existing** contact | A new contact |
-| …with the subject, body, link and evidence | Any contact property |
-| …timestamped, attributed to an approved action | A deal, stage, amount, or owner |
+The founder can operate with Trevra's minimal People, Accounts, Conversations, Signals, Campaigns, and Opportunity-lite state.
 
-Why so narrow: a second writer is how two systems start disagreeing. The worst
-case here is a note nobody wanted. There is no path that mutates a pipeline.
+### With a CRM
 
-**It will not invent a contact to have somewhere to write.** The common outcome
-for community outreach is `skipped` — a GitHub handle usually belongs to nobody
-in the CRM. Creating records from forum handles is how a sales database turns to
-noise, and it is the one thing a CRM owner never forgives. The miss is still
-recorded in `crm_activities` so "we could not attribute this" is countable.
+The CRM remains authoritative for CRM-specific records and fields. Trevra continues to own the operational GTM state required by its agents, campaigns, safety controls, approvals, and execution ledger.
+
+Do not copy every CRM property into Trevra.
+
+---
+
+## Write-back: activity, never records by default
+
+The current CRM write-back boundary is intentionally narrow and remains the safe default:
+
+| Trevra writes                                         | Trevra does not write by default        |
+| ----------------------------------------------------- | --------------------------------------- |
+| A note/activity on an **existing** contact            | A new CRM contact                       |
+| Subject/body/link/evidence for an approved GTM action | Contact/company properties              |
+| Timestamp/source attribution                          | Deal stage, owner, amount, or territory |
+
+A second silent writer is how two systems begin disagreeing.
+
+Trevra must not invent a CRM contact merely to have somewhere to write an activity. A failed match is a valid, auditable `skipped` result.
 
 ### How it runs
 
+```text
+approved GTM action
+  -> external execution
+  -> crm.log-activity (best effort)
 ```
-approved action  ──▶  external write  ──▶  crm.log-activity
-     │                    (post/email)          │
-  payload hash                                best-effort,
-  gates both                                  never fails the action
-```
 
-- Action type **`crm.log-activity`**, usable standalone from any playbook.
-- Automatically after a community reply — *after* the post, best-effort. The
-  reply is already public; a CRM outage must never turn a delivered reply into a
-  failed action the engine then retries.
-- Reached through the **Nango proxy**, so no Nango action script has to be
-  deployed. A connected HubSpot works on day one.
-- Idempotent per source: an action retry cannot leave two identical notes. Same
-  claim-before-write discipline as the outreach post log — a 4xx releases the
-  claim, an unknown outcome holds it.
+The CRM activity write must not cause an already-delivered external action to be retried.
 
-### Turning it off
+The existing claim/idempotency discipline remains required.
 
-No new setting. Deny the existing policy:
+### Turning CRM write-back off
+
+Use the existing policy layer rather than adding a second bespoke switch:
 
 ```sql
 INSERT INTO workspace_policies (id, workspace_id, name, priority, action_pattern, effect, enabled)
 VALUES ('pol_no_crm_write', 'YOUR_WS', 'No CRM writes', 100, 'action:crm.log-activity', 'deny', TRUE);
 ```
 
-The policy engine already gates every action; a bespoke toggle would be a second
-place to look.
+### Current scopes
 
-### Scopes to grant
+| CRM     | Scopes                                                 | Intentionally absent         |
+| ------- | ------------------------------------------------------ | ---------------------------- |
+| HubSpot | `crm.objects.contacts.read`, `crm.objects.notes.write` | `crm.objects.contacts.write` |
+| Attio   | record read, note write                                | record write                 |
 
-| CRM | Scopes | Notably absent |
-|---|---|---|
-| HubSpot | `crm.objects.contacts.read`, `crm.objects.notes.write` | `crm.objects.contacts.write` — so it *cannot* edit a contact even if a future bug asked it to |
-| Attio | record read, note write | record write |
-
----
-
-## Small teams vs big teams
-
-| | Small team / solo | Big team |
-|---|---|---|
-| CRM | Often none. `clients` is the whole CRM, populated by Gmail + Stripe sync and CSV import. | HubSpot/Attio is truth; Trevra projects from it and writes activity back. |
-| Approvals | The founder approves everything. | **Gap** — no queue, assignment, or per-user routing. `workspace_policies` is the mechanism; nothing drives it. |
-| Delivery graph | The main draw. | Also the main draw — it is the half no incumbent has. |
-| Outreach | Manual handoffs are fine at 3–5/day. | Caps are per workspace, not per seat. Multi-seat outreach needs per-user accounting. |
-
-The honest statement: **the data model is ready for big teams; the product
-surface is not.** Multi-user approval routing is the next real gap, not more
-connectors.
+If Trevra later needs broader CRM mutation, that requires an explicit design for authority, field ownership, conflicts, scopes, approvals, and reconciliation. It must not arrive as an incidental connector expansion.
 
 ---
 
-## One licensing constraint
+## Agents and provider credentials
 
-From [`connector-vendors.md`](./connector-vendors.md): Nango is **ELv2**.
-Self-hosting Trevra with Nango is permitted. A paid Trevra Cloud that resells
-Nango's OAuth flows as a feature likely is not, without a commercial agreement.
+Agents are GTM principals, not credential containers.
 
-This bites precisely when selling to big teams — the ones who want hosted. Worth
-resolving before that becomes the go-to-market motion, not after.
+Provider credentials belong to workspace connections in Nango/Secret Manager or the provider-appropriate custody layer. An Agent may receive permission to use a connection capability, but it must not receive or persist the underlying secret.
+
+---
+
+## Small teams vs larger teams
+
+|                                    | Solo founder / small GTM team               | Team with CRM                             |
+| ---------------------------------- | ------------------------------------------- | ----------------------------------------- |
+| Core operating surface             | Trevra                                      | Trevra                                    |
+| CRM required                       | No                                          | Optional/likely                           |
+| People/Accounts                    | Trevra's minimal GTM identity is sufficient | Trevra GTM projection + CRM richer record |
+| Opportunity                        | Trevra Opportunity-lite                     | CRM can be authoritative                  |
+| Campaigns/actions/approvals/agents | Trevra                                      | Trevra                                    |
+| CRM activity visibility            | n/a                                         | Best-effort activity write-back           |
+| Accounting/project/revenue state   | Outside Trevra                              | Outside Trevra                            |
+
+The product should scale by adding better principal permissions, team queues, assignment, and CRM interoperability—not by expanding Trevra into a general CRM or business-management suite.
+
+---
+
+## One connector licensing constraint
+
+From `connector-vendors.md`: Nango is ELv2. Self-hosting Trevra with Nango is permitted. A paid hosted Trevra offering that resells Nango's OAuth flows may require a commercial agreement. Resolve this before hosted connector volume becomes material.
 
 ---
 
 ## Adding a CRM
 
-One file in `src/server/crm/adapters/`, one entry in `registry.ts`. The adapter
-declares `writes` — a plain-language list shown on the connect screen — and
-implements exactly two methods: `findContact` (by email only, never by handle)
-and `logActivity`. A provider with no adapter simply cannot be written to, which
-is the safe default.
+The current adapter pattern remains intentionally small: one adapter file, one registry entry, explicit `writes`, contact lookup, and activity logging.
+
+A provider with no adapter cannot be written to. Safe absence is preferable to generic fallback mutation.

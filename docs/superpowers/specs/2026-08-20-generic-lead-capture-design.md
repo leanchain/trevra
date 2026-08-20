@@ -174,8 +174,8 @@ An optional company/account association can be added when a real company identit
 - inbox/operator workflow;
 - outreach approvals/execution;
 - replies and suppressions;
-- opportunities and revenue attribution;
-- append-only commercial events.
+- minimal opportunity linkage and GTM outcome attribution;
+- append-only GTM events.
 
 A landing page must not become a second CRM.
 
@@ -675,7 +675,7 @@ Every submission should be able to answer:
 - when it occurred;
 - when Trevra received it.
 
-Revenue-attribution policy belongs downstream and must not be silently decided by ingestion.
+GTM attribution belongs downstream and must not be silently decided by ingestion. Capture preserves the evidence required to explain later qualification, campaign, conversation, and opportunity outcomes; it does not attempt to own revenue/accounting attribution.
 
 ---
 

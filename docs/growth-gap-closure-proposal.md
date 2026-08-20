@@ -107,22 +107,20 @@ Outbound / account-led
     -> Outreach message / delivery
     -> Reply outcome
     -> Opportunity
-    -> Client
-    -> Project
-    -> Invoice
-    -> Payment
+    -> Won | Lost | Disqualified
 
 Inbound / person-led
   Website / product / form
     -> Person
     -> Inbound submission
     -> optional Account association
-    -> Opportunity / follow-up
+    -> qualification / conversation
+    -> optional Opportunity
 ```
 
 A Person does **not** require an Account. Outbound company discovery converges at `accounts`; inbound website/product capture converges at the shared Person model. When a real company identity is explicitly known, both paths can be associated without creating a second lead database.
 
-This follows the intent of migration `039_accounts.sql` for company identity while keeping inbound people independent of company identity. The generic capture boundary is specified in `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`.
+This follows the intent of migration `039_accounts.sql` for company identity while keeping inbound people independent of company identity. The generic capture boundary is specified in `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`, and the canonical GTM-only product boundary is `docs/superpowers/specs/2026-08-20-agent-native-gtm-os-design.md`.
 
 ### Proposed new nouns
 
@@ -539,36 +537,34 @@ This lets the existing workspace policy layer deny or require approval at a high
 
 ---
 
-## 9. Funnel and revenue linkage
+## 9. GTM outcome linkage
 
-Closing the runtime gap is not complete if Trevra can send and receive but still cannot connect the result to the paid side of the graph.
+Closing the runtime gap is not complete if Trevra can send and receive but still cannot connect activity to a GTM outcome.
 
 Target graph:
 
 ```text
-Account
-  -> Outreach thread
-  -> verified Reply
+Account / Person
+  -> Outreach thread or Inbound Submission
+  -> verified Reply / Qualification
   -> Opportunity
-  -> Client
-  -> Project
-  -> Invoice
-  -> Payment
+  -> Won | Lost | Disqualified
 ```
 
 The initial implementation does not need automated causal attribution. It does need stable IDs and explicit relationships so Trevra can later answer:
 
 ```text
-source provider
-  -> account
-  -> audit wedge
-  -> outreach variant
-  -> reply
-  -> opportunity
-  -> paid outcome
+source provider / capture source
+  -> account / person
+  -> signal / audit wedge
+  -> campaign / outreach variant
+  -> reply / qualification
+  -> opportunity outcome
 ```
 
-Until a causal edge exists, UI/analytics must not claim that same-period revenue was caused by a given outreach run. `docs/gtm-shell-shape.md` already establishes this epistemic rule for cost/yield reporting.
+Trevra does not need a revenue, invoice, payment, contract, or project graph to close the GTM loop. Those business records belong to external systems and are outside the target GTM-OS boundary.
+
+---
 
 ---
 
@@ -644,8 +640,8 @@ Design: `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`.
 
 ### Phase E — loop integration
 
-- [ ] Connect replied threads to opportunity creation/association.
-- [ ] Expose funnel counts from account -> sent -> replied -> opportunity -> paid.
+- [ ] Connect replied/qualified threads to opportunity creation/association.
+- [ ] Expose funnel counts from sourced/inbound -> engaged -> replied/qualified -> opportunity -> won/lost.
 - [ ] Add run/message/reply links in the ledger.
 - [ ] Update `docs/founder-skills.md` to reflect what is actually live after implementation.
 
