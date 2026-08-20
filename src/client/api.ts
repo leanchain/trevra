@@ -107,28 +107,14 @@ import type {
 } from '../server/linkedin/sequence';
 
 /**
- * `LinkedInCampaign` and `ExportFormat` are declared locally rather than
- * imported: the sequence-builder campaign routes (`campaigns.ts`, `export.ts`,
- * `queue.ts`) that used to own these shapes are gone, and every function that
- * only served those routes is gone with them (deleted in the outreach
- * simplification plan). These two survive because they are still live --
- * `getLinkedInCampaigns` reads a plain list of campaigns for the inbox screen,
- * and `ExportFormat` is still the Safety screen's export-format vocabulary --
- * so they are copied verbatim rather than reintroducing the deleted modules.
+ * `ExportFormat` is declared locally rather than imported: the
+ * sequence-builder campaign routes (`campaigns.ts`, `export.ts`, `queue.ts`)
+ * that used to own this shape are gone, and every function that only served
+ * those routes is gone with them (deleted in the outreach simplification
+ * plan). This one survives because it is still live -- the Safety screen's
+ * export-format vocabulary -- so it is copied verbatim rather than
+ * reintroducing the deleted modules.
  */
-interface LinkedInCampaign {
-  id: string;
-  workspaceId: string;
-  name: string;
-  seatKey: string;
-  status: CampaignStatus;
-  sequence: unknown;
-  playbookRunId: string | null;
-  stopRequestedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 type ExportFormat = 'dripify' | 'heyreach' | 'expandi' | 'generic';
 export class ApiError extends Error {
   constructor(
@@ -767,7 +753,6 @@ export type {
   LinkedInActionStatus,
   LinkedInActionView,
   LinkedInAnalytics,
-  LinkedInCampaign,
   LinkedInConversation,
   LinkedInExclusion,
   LinkedInIcp,
@@ -1259,22 +1244,6 @@ export async function editLinkedInActionBody(
     }
   );
   return result.action;
-}
-
-/**
- * The sequence-builder campaigns, for one account or for all of them.
- *
- * `seatKey` FILTERS. A campaign is filed against the LinkedIn account it sends
- * from, and this call used to ask for every campaign in the workspace whatever
- * account the operator had switched to -- so the list offered Stop, Edit and
- * Queue on campaigns belonging to somebody else's profile. Omit it only where
- * the question really is workspace-wide.
- */
-export async function getLinkedInCampaigns(seatKey?: string): Promise<LinkedInCampaign[]> {
-  const result = await request<{ campaigns: LinkedInCampaign[] }>(
-    `/api/linkedin/campaigns${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`
-  );
-  return result.campaigns;
 }
 
 export async function listLinkedInPosts(

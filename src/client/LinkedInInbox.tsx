@@ -20,7 +20,6 @@ import {
   completeLinkedInManualTask,
   editLinkedInActionBody,
   getLinkedInActions,
-  getLinkedInCampaigns,
   getLinkedInManagedCampaigns,
   getLinkedInManualTasks,
   getLinkedInSeat,
@@ -31,7 +30,6 @@ import {
   syncLinkedInInbox,
   syncLinkedInThread,
   type LinkedInActionView,
-  type LinkedInCampaign,
   type LinkedInConversation,
   type LinkedInMessageRecord,
   type LinkedInSafetyVerdict,
@@ -379,7 +377,6 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
    */
   const [activeSeatKey] = useActiveSeatKey();
   const [threads, setThreads] = useState<LinkedInThreadRecord[]>([]);
-  const [campaigns, setCampaigns] = useState<LinkedInCampaign[]>([]);
   const [seatDetail, setSeatDetail] = useState<LinkedInSeatResponse | null>(null);
   const [managed, setManaged] = useState<ManagedCampaign[]>([]);
   /** Campaign steps waiting on a human. Pending only: a closed task is not a to-do. */
@@ -541,11 +538,6 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
 
   useEffect(() => {
     void (async () => {
-      try {
-        setCampaigns(await getLinkedInCampaigns(activeSeatKey));
-      } catch {
-        /* no error banner over the inbox for a filter */
-      }
       try {
         setManaged(await getLinkedInManagedCampaigns());
       } catch {
@@ -1138,7 +1130,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
             }
           >
             <option value="">Any campaign</option>
-            {campaigns.map((campaign) => (
+            {managed.map((campaign) => (
               <option key={campaign.id} value={campaign.id}>
                 {campaign.name}
               </option>

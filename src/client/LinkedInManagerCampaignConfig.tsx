@@ -437,7 +437,7 @@ export function LinkedInManagerCampaignConfig({
           <h4 aria-level={3}>Add a LinkedIn account first</h4>
           <p>A campaign sends from a real LinkedIn account, with its own hours and limits.</p>
           <div className="mgr-actions">
-            <a className="primary-button" href="/outreach">
+            <a className="primary-button" href="/outreach/settings">
               Add a LinkedIn account
             </a>
           </div>
