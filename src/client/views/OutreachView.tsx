@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { AccountsScreen } from '../AccountsScreen';
 import { LinkedInAccounts, LinkedInCompanionAttention } from '../LinkedInAccounts';
 import { OutreachInbox } from '../LinkedInInbox';
+import { OutreachLeads } from '../LinkedInLeads';
 import { OutreachManagerBuilder } from '../LinkedInManagerBuilder';
 import { OutreachManagerRead } from '../LinkedInManagerRead';
 import { LinkedInPosts } from '../LinkedInPosts';
@@ -60,6 +62,8 @@ export function OutreachView({
 
   useEffect(() => {
     if (!anchor) return;
+    const node = document.getElementById(anchor.id);
+    if (node instanceof HTMLDetailsElement) node.open = true;
     return scrollToId(anchor.id);
   }, [anchor]);
 
@@ -86,7 +90,23 @@ export function OutreachView({
       {sub === 'posts' && <LinkedInPosts setToast={setToast} />}
       {sub === 'settings' && <LinkedInAccounts setToast={setToast} />}
       {sub === 'new' && <OutreachManagerBuilder setToast={setToast} onNavigate={onNavigate} />}
-      {sub === '' && <OutreachManagerRead setToast={setToast} onNavigate={onNavigate} />}
+      {sub === '' && (
+        <>
+          <OutreachManagerRead setToast={setToast} onNavigate={onNavigate} />
+          <details className="mgr-inputs" id="leads">
+            <summary>Find people</summary>
+            <div className="mgr-inputs-body">
+              <OutreachLeads setToast={setToast} />
+            </div>
+          </details>
+          <details className="mgr-inputs" id="accounts">
+            <summary>Target accounts</summary>
+            <div className="mgr-inputs-body">
+              <AccountsScreen setToast={setToast} />
+            </div>
+          </details>
+        </>
+      )}
     </div>
   );
 }

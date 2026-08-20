@@ -457,7 +457,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
     setToast(
       `${list.length} profile URL(s) staged for the campaign builder. Nothing was created — they land in the targets field.`
     );
-    navigate('/outreach/campaigns');
+    navigate('/outreach/new');
   };
 
   return (

@@ -952,7 +952,7 @@ export function LinkedInManagerLeadConfig({
                 <dd>People who reacted to or commented on posts matching your keywords.</dd>
               </div>
             </dl>
-            <a className="li-link" href="/outreach/leads">
+            <a className="li-link" href="/outreach#leads">
               Open Lead sources <ArrowRight size={13} />
             </a>
           </div>
@@ -1000,7 +1000,7 @@ export function LinkedInManagerLeadConfig({
                 nobody to reach.
               </p>
               <div className="mgr-actions">
-                <a className="secondary-button" href="/outreach/leads">
+                <a className="secondary-button" href="/outreach#leads">
                   Open Lead sources <ArrowRight size={14} />
                 </a>
               </div>
